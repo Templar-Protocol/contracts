@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec as AllocVec;
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, BytesN, Env, Vec};
-use stellar_access::ownable::{set_owner, Ownable};
+use stellar_access::ownable::{get_owner, set_owner, Ownable};
 use stellar_macros::only_owner;
 use templar_primitives::Nanoseconds;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
@@ -125,12 +125,24 @@ impl SorobanProxyOracle {
         set_owner(&env, &governance);
     }
 
-    /// Owner-only runtime upgrade. Takes an already-uploaded WASM hash;
-    /// does not accept a `migrate` payload to avoid widening the owner's
+    /// Owner-only runtime upgrade. Signature matches the OpenZeppelin
+    /// `stellar-contract-utils::upgradeable::Upgradeable` trait's
+    /// `fn upgrade(env, new_wasm_hash, operator)`. The contract isn't
+    /// pulled in directly (see "Known Limits" in the soroban README for
+    /// the toolchain × sdk version blocker), but matching the shape now
+    /// means migrating to the trait later is a no-op at the ABI level.
+    /// Does not accept a `migrate` payload — avoids widening the owner's
     /// authority surface beyond a typed code swap.
-    #[only_owner]
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        operator: Address,
+    ) -> Result<(), ContractError> {
         extend_instance_ttl(&env);
+        operator.require_auth();
+        if get_owner(&env).as_ref() != Some(&operator) {
+            return Err(ContractError::Unauthorized);
+        }
         if is_zero_wasm_hash(&new_wasm_hash) {
             return Err(ContractError::InvalidInput);
         }

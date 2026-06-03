@@ -6,8 +6,8 @@ extern crate std;
 use super::*;
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
-    Address, Env, Symbol,
+    testutils::{Address as _, Events as _, Ledger, LedgerInfo},
+    Address, Env, Event, Symbol,
 };
 use templar_proxy_oracle_soroban_common::{Asset as CommonAsset, NormalizedPrice};
 
@@ -122,8 +122,9 @@ fn constructor_persists_fields_and_owner() {
     assert_eq!(f.adapter.base(), f.base);
     assert_eq!(f.adapter.assets().len(), 1);
     assert_eq!(f.adapter.assets().get(0).unwrap(), f.asset);
-    assert_eq!(f.adapter.parent_oracle(), Some(f.parent_id));
-    assert_eq!(f.adapter.price_asset(), Some(f.asset));
+    let config = f.adapter.config().unwrap();
+    assert_eq!(config.parent_oracle, f.parent_id);
+    assert_eq!(config.asset, f.asset);
     assert_eq!(f.adapter.get_owner(), Some(f.owner));
 }
 
@@ -233,7 +234,7 @@ fn price_finds_matching_timestamp() {
 }
 
 #[test]
-fn set_decimals_owner_gated_changes_scaling() {
+fn set_metadata_owner_gated_changes_decimals_resolution_and_base() {
     let f = fixture(8, 1);
     f.parent.set_aggregated(
         &f.asset,
@@ -245,40 +246,65 @@ fn set_decimals_owner_gated_changes_scaling() {
     );
     assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 5_000_000_000);
 
-    // Owner can change decimals; auth is mocked.
-    f.adapter.set_decimals(&4);
+    // Owner replaces the mutable triple in a single call; auth is mocked.
+    let new_base = CommonAsset::Other(Symbol::new(&f.env, "EUR"));
+    f.adapter.set_metadata(&4, &2, &new_base);
     assert_eq!(f.adapter.decimals(), 4);
-    // Now scaling: 500_000 with expo=-4 at decimals=4 → 500_000 * 10^0 = 500_000.
+    assert_eq!(f.adapter.resolution(), 2);
+    assert_eq!(f.adapter.base(), new_base);
+    // New scaling: 500_000 with expo=-4 at decimals=4 → 500_000 * 10^0 = 500_000.
     assert_eq!(f.adapter.lastprice(&f.asset).unwrap().price, 500_000);
 }
 
 #[test]
-#[should_panic]
-fn set_decimals_rejects_above_18() {
-    let f = fixture(8, 1);
-    f.adapter.set_decimals(&19);
-}
-
-#[test]
-#[should_panic]
-fn set_resolution_rejects_zero() {
-    let f = fixture(8, 1);
-    f.adapter.set_resolution(&0);
-}
-
-#[test]
-fn set_base_owner_gated_persists() {
+fn set_metadata_emits_event_with_changed_fields() {
     let f = fixture(8, 1);
     let new_base = CommonAsset::Other(Symbol::new(&f.env, "EUR"));
-    f.adapter.set_base(&new_base);
-    assert_eq!(f.adapter.base(), new_base);
+    f.adapter.set_metadata(&4, &2, &new_base);
+    let emitted = f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.adapter.address)
+        .events()
+        .to_vec();
+    let expected = MetadataUpdated {
+        decimals: 4,
+        resolution: 2,
+        base: new_base,
+    }
+    .to_xdr(&f.env, &f.adapter.address);
+    assert!(emitted.contains(&expected));
+}
+
+#[test]
+#[should_panic]
+fn set_metadata_rejects_decimals_above_18() {
+    let f = fixture(8, 1);
+    f.adapter.set_metadata(&19, &1, &f.base);
+}
+
+#[test]
+#[should_panic]
+fn set_metadata_rejects_zero_resolution() {
+    let f = fixture(8, 1);
+    f.adapter.set_metadata(&8, &0, &f.base);
 }
 
 #[test]
 fn upgrade_rejects_zero_wasm_hash() {
     let f = fixture(8, 1);
     let zero = soroban_sdk::BytesN::from_array(&f.env, &[0; 32]);
-    let res = f.adapter.try_upgrade(&zero);
+    let res = f.adapter.try_upgrade(&zero, &f.owner);
+    assert!(res.is_err());
+}
+
+#[test]
+fn upgrade_rejects_operator_that_isnt_owner() {
+    let f = fixture(8, 1);
+    let rando = Address::generate(&f.env);
+    let dummy_hash = soroban_sdk::BytesN::from_array(&f.env, &[1; 32]);
+    let res = f.adapter.try_upgrade(&dummy_hash, &rando);
     assert!(res.is_err());
 }
 

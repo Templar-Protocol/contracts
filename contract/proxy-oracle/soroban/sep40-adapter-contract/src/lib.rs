@@ -3,8 +3,11 @@
 // every `#[contractimpl]` method in this crate is an ABI entry point.
 #![allow(clippy::needless_pass_by_value)]
 
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, BytesN, Env, Vec};
-use stellar_access::ownable::{set_owner, Ownable};
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    Symbol, Vec,
+};
+use stellar_access::ownable::{get_owner, set_owner, Ownable};
 use stellar_macros::only_owner;
 use templar_proxy_oracle_soroban_common::{
     extend_instance_ttl, is_zero_wasm_hash, normalized_to_sep40, Asset, ContractError, PriceData,
@@ -13,32 +16,39 @@ use templar_proxy_oracle_soroban_common::{
 
 const MAX_HISTORY_RECORDS: u32 = 32;
 
+/// Single instance-storage key; all adapter state lives in one `Config`
+/// entry. Soroban's instance storage doesn't charge per-field, and every
+/// `PriceFeedTrait` method reads at least two of these together, so the
+/// per-field `DataKey` enum the adapter used to carry was pure overhead.
+const CONFIG: Symbol = symbol_short!("CONFIG");
+
 soroban_sdk::contractmeta!(key = "sep", val = "40");
+
+/// Emitted whenever the owner-mutable triple is updated. Constant fields
+/// (`parent_oracle`, `asset`) intentionally omitted: they never change,
+/// and including them would just duplicate constructor data on every event.
+#[contractevent]
+#[derive(Clone)]
+pub struct MetadataUpdated {
+    pub decimals: u32,
+    pub resolution: u32,
+    pub base: Asset,
+}
 
 #[contract]
 pub struct Sep40Adapter;
 
-#[derive(Clone)]
+/// All adapter state. `parent_oracle` and `asset` are set once at
+/// construction and never mutated thereafter — the typed setter
+/// (`set_metadata`) only touches `decimals` / `resolution` / `base`.
 #[contracttype]
-enum DataKey {
-    ParentOracle,
-    PriceAsset,
-    Decimals,
-    Resolution,
-    Base,
-}
-
-#[contractevent]
 #[derive(Clone)]
-pub struct Sep40AdapterDeployed {
-    #[topic]
-    pub owner: Address,
-    #[topic]
+pub struct Config {
     pub parent_oracle: Address,
-    #[topic]
     pub asset: Asset,
     pub decimals: u32,
     pub resolution: u32,
+    pub base: Asset,
 }
 
 #[contractimpl]
@@ -56,54 +66,62 @@ impl Sep40Adapter {
             return Err(ContractError::InvalidInput);
         }
         extend_instance_ttl(&env);
-        let storage = env.storage().instance();
-        storage.set(&DataKey::ParentOracle, &parent_oracle);
-        storage.set(&DataKey::PriceAsset, &asset);
-        storage.set(&DataKey::Decimals, &decimals);
-        storage.set(&DataKey::Resolution, &resolution);
-        storage.set(&DataKey::Base, &base);
+        env.storage().instance().set(
+            &CONFIG,
+            &Config {
+                parent_oracle,
+                asset,
+                decimals,
+                resolution,
+                base,
+            },
+        );
         set_owner(&env, &owner);
-        Sep40AdapterDeployed {
-            owner,
-            parent_oracle,
-            asset,
+        Ok(())
+    }
+
+    /// Update the mutable SEP-40 metadata triple in one call. The
+    /// `parent_oracle` and `asset` fields are intentionally immutable —
+    /// repointing an adapter at a different parent or asset would
+    /// silently invalidate downstream consumers, and the right answer is
+    /// to deploy a new adapter.
+    #[only_owner]
+    pub fn set_metadata(
+        env: Env,
+        decimals: u32,
+        resolution: u32,
+        base: Asset,
+    ) -> Result<(), ContractError> {
+        if decimals > 18 || resolution == 0 {
+            return Err(ContractError::InvalidInput);
+        }
+        extend_instance_ttl(&env);
+        let mut config = load_config(&env);
+        config.decimals = decimals;
+        config.resolution = resolution;
+        config.base = base.clone();
+        env.storage().instance().set(&CONFIG, &config);
+        MetadataUpdated {
             decimals,
             resolution,
+            base,
         }
         .publish(&env);
         Ok(())
     }
 
-    #[only_owner]
-    pub fn set_decimals(env: Env, decimals: u32) -> Result<(), ContractError> {
-        if decimals > 18 {
-            return Err(ContractError::InvalidInput);
+    /// Signature matches the OpenZeppelin `Upgradeable` trait shape
+    /// (`upgrade(env, new_wasm_hash, operator)`) so this adapter is
+    /// forward-compatible with `stellar-contract-utils` adoption later.
+    pub fn upgrade(
+        env: Env,
+        new_wasm_hash: BytesN<32>,
+        operator: Address,
+    ) -> Result<(), ContractError> {
+        operator.require_auth();
+        if get_owner(&env).as_ref() != Some(&operator) {
+            return Err(ContractError::Unauthorized);
         }
-        extend_instance_ttl(&env);
-        env.storage().instance().set(&DataKey::Decimals, &decimals);
-        Ok(())
-    }
-
-    #[only_owner]
-    pub fn set_resolution(env: Env, resolution: u32) -> Result<(), ContractError> {
-        if resolution == 0 {
-            return Err(ContractError::InvalidInput);
-        }
-        extend_instance_ttl(&env);
-        env.storage()
-            .instance()
-            .set(&DataKey::Resolution, &resolution);
-        Ok(())
-    }
-
-    #[only_owner]
-    pub fn set_base(env: Env, base: Asset) {
-        extend_instance_ttl(&env);
-        env.storage().instance().set(&DataKey::Base, &base);
-    }
-
-    #[only_owner]
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), ContractError> {
         if is_zero_wasm_hash(&new_wasm_hash) {
             return Err(ContractError::InvalidInput);
         }
@@ -112,12 +130,8 @@ impl Sep40Adapter {
         Ok(())
     }
 
-    pub fn parent_oracle(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::ParentOracle)
-    }
-
-    pub fn price_asset(env: Env) -> Option<Asset> {
-        env.storage().instance().get(&DataKey::PriceAsset)
+    pub fn config(env: Env) -> Option<Config> {
+        env.storage().instance().get(&CONFIG)
     }
 }
 
@@ -130,98 +144,72 @@ impl Ownable for Sep40Adapter {}
 #[contractimpl]
 impl PriceFeedTrait for Sep40Adapter {
     fn base(env: Env) -> Asset {
-        env.storage().instance().get(&DataKey::Base).expect("base")
+        load_config(&env).base
     }
 
     fn assets(env: Env) -> Vec<Asset> {
-        let asset: Asset = env
-            .storage()
-            .instance()
-            .get(&DataKey::PriceAsset)
-            .expect("asset");
         let mut v = Vec::new(&env);
-        v.push_back(asset);
+        v.push_back(load_config(&env).asset);
         v
     }
 
     fn decimals(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Decimals)
-            .expect("decimals")
+        load_config(&env).decimals
     }
 
     fn resolution(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Resolution)
-            .expect("resolution")
+        load_config(&env).resolution
     }
 
     fn price(env: Env, asset: Asset, timestamp: u64) -> Option<PriceData> {
-        if !matches_tracked_asset(&env, &asset) {
+        let config = load_config(&env);
+        if config.asset != asset {
             return None;
         }
-        let parent = parent_oracle_address(&env)?;
-        let decimals = stored_decimals(&env);
-        let client = ProxyOracleClient::new(&env, &parent);
+        let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let history = client.aggregated_history(&asset, &MAX_HISTORY_RECORDS)?;
         for entry in history.iter().rev() {
             if entry.timestamp == timestamp {
-                return normalized_to_sep40(&entry, decimals).ok();
+                return normalized_to_sep40(&entry, config.decimals).ok();
             }
         }
         None
     }
 
     fn prices(env: Env, asset: Asset, records: u32) -> Option<Vec<PriceData>> {
-        if records == 0 || !matches_tracked_asset(&env, &asset) {
+        if records == 0 {
             return None;
         }
-        let parent = parent_oracle_address(&env)?;
-        let decimals = stored_decimals(&env);
-        let client = ProxyOracleClient::new(&env, &parent);
+        let config = load_config(&env);
+        if config.asset != asset {
+            return None;
+        }
+        let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let history = client.aggregated_history(&asset, &records)?;
         if history.is_empty() {
             return None;
         }
         let mut out = Vec::new(&env);
         for entry in history.iter() {
-            out.push_back(normalized_to_sep40(&entry, decimals).ok()?);
+            out.push_back(normalized_to_sep40(&entry, config.decimals).ok()?);
         }
         Some(out)
     }
 
     fn lastprice(env: Env, asset: Asset) -> Option<PriceData> {
-        if !matches_tracked_asset(&env, &asset) {
+        let config = load_config(&env);
+        if config.asset != asset {
             return None;
         }
-        let parent = parent_oracle_address(&env)?;
-        let decimals = stored_decimals(&env);
-        let client = ProxyOracleClient::new(&env, &parent);
+        let client = ProxyOracleClient::new(&env, &config.parent_oracle);
         let normalized = client.aggregated_latest(&asset)?;
-        normalized_to_sep40(&normalized, decimals).ok()
+        normalized_to_sep40(&normalized, config.decimals).ok()
     }
 }
 
-fn matches_tracked_asset(env: &Env, asset: &Asset) -> bool {
-    env.storage()
-        .instance()
-        .get::<_, Asset>(&DataKey::PriceAsset)
-        .as_ref()
-        == Some(asset)
-}
-
-fn parent_oracle_address(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&DataKey::ParentOracle)
-}
-
 #[allow(clippy::expect_used)]
-fn stored_decimals(env: &Env) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::Decimals)
-        .expect("decimals")
+fn load_config(env: &Env) -> Config {
+    env.storage().instance().get(&CONFIG).expect("CONFIG")
 }
 
 #[cfg(test)]

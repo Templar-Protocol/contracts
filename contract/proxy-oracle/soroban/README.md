@@ -36,7 +36,8 @@ SEP-40 metadata (`contractmeta!(key = "sep", val = "40")`) is declared on `Sep40
 
 Each adapter is independently owned (via `stellar-access`'s `Ownable` two-step transfer pattern) and tracks a single `(parent_oracle, asset)` pairing. Admin entrypoints, all owner-gated:
 
-- `set_decimals(u32)`, `set_resolution(u32)`, `set_base(Asset)` — change the SEP-40 surface metadata.
+- `set_metadata(decimals, resolution, base)` — replace the owner-mutable SEP-40 metadata triple in a single call; emits `MetadataUpdated { decimals, resolution, base }`. `parent_oracle` and `asset` are immutable post-construction — repointing an adapter at a different parent or asset would silently invalidate downstream consumers, and the correct response is to deploy a new adapter.
+- `config() -> Option<Config>` — single getter returning the entire `Config { parent_oracle, asset, decimals, resolution, base }` struct. Replaces the per-field getter views; the SEP-40 `PriceFeedTrait` reads (`base`, `assets`, `decimals`, `resolution`, `price`, `prices`, `lastprice`) remain as required by the trait.
 - `upgrade(BytesN<32>)` — swap the adapter wasm.
 - `transfer_ownership` / `accept_ownership` / `renounce_ownership` — from the `Ownable` trait.
 

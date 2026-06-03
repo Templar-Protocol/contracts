@@ -220,7 +220,13 @@ pub fn execute_action(
             env,
             &proxy,
             "upgrade",
-            Vec::from_array(env, [new_wasm_hash.clone().into_val(env)]),
+            Vec::from_array(
+                env,
+                [
+                    new_wasm_hash.clone().into_val(env),
+                    env.current_contract_address().into_val(env),
+                ],
+            ),
         ),
     }
 }
