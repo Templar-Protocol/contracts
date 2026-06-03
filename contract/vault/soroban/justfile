@@ -34,6 +34,9 @@ set dotenv-load := false
 #   SOROBAN_VIRTUAL_ASSETS   Initial virtual assets offset (default: 0)
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
+#   HOT_BRIDGE_ADAPTER_ID    Deployed HOT bridge adapter contract ID
+#   HOT_STELLAR_LOCKER_CONTRACT HOT Stellar locker contract ID
+#   HOT_STELLAR_RECEIVER_HEX Proven HOT receiver bytes for the NEAR counterparty
 #   SOROBAN_ADAPTER_ADMIN    Blend adapter admin contract (default: governance, then vault)
 #
 # =============================================================================
@@ -48,6 +51,7 @@ remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-pre
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
+hot_bridge_adapter_wasm := wasm_dir + "/templar_soroban_hot_bridge_adapter.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
@@ -134,6 +138,12 @@ build-blend-adapter:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
+# Build and optimize the HOT bridge adapter WASM.
+build-hot-bridge-adapter:
+	@echo "Building HOT bridge adapter WASM..."
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-hot-bridge-adapter "{{wasm_dir}}/templar_soroban_hot_bridge_adapter.wasm"
+	@echo "✓ Built: {{hot_bridge_adapter_wasm}}"
+
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
@@ -143,8 +153,8 @@ check-4626-proxy:
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
-# Build all WASMs (vault + governance + share token + blend adapter).
-build-all: build build-blend-adapter
+# Build all WASMs (vault + governance + share token + adapters).
+build-all: build build-blend-adapter build-hot-bridge-adapter
 	@echo "✓ All contracts built"
 
 # Build debug WASM, emit twiggy reports, and print them.
@@ -538,6 +548,87 @@ deploy-blend-adapter pool_address:
 	mkdir -p "{{state_dir}}"; \
 	echo "$adapter_id" > "{{state_dir}}/blend_adapter_id"; \
 	echo "{{pool_address}}" > "{{state_dir}}/blend_pool_id"
+
+# =============================================================================
+# HOT BRIDGE ADAPTER DEPLOYMENT
+# =============================================================================
+#
+# The HOT bridge adapter presents Stellar -> HOT -> NEAR routing as a Soroban
+# vault market adapter. HOT_STELLAR_RECEIVER_HEX must be copied from a
+# proven-good HOT receiver for the NEAR counterparty; do not recompute it here.
+#
+# =============================================================================
+
+# Deploy the HOT bridge adapter contract.
+deploy-hot-bridge-adapter:
+	@wasm="${HOT_BRIDGE_ADAPTER_WASM:-{{hot_bridge_adapter_wasm}}}"; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: HOT bridge adapter WASM not found at $wasm"; \
+		echo "Run: just build-hot-bridge-adapter"; \
+		exit 1; \
+	fi; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$vault_id"; \
+	fi; \
+	hot_locker="${HOT_STELLAR_LOCKER_CONTRACT:?set HOT_STELLAR_LOCKER_CONTRACT}"; \
+	hot_receiver_id="${HOT_STELLAR_RECEIVER_HEX:?set HOT_STELLAR_RECEIVER_HEX to the proven HOT receiver bytes}"; \
+	if ! printf '%s' "$hot_receiver_id" | grep -Eq '^[0-9A-Fa-f]{64}$'; then \
+		echo "Error: HOT_STELLAR_RECEIVER_HEX must be exactly 64 hex characters"; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying HOT bridge adapter..."; \
+	echo "  Admin:        $admin"; \
+	echo "  Vault:        $vault_id"; \
+	echo "  HOT locker:   $hot_locker"; \
+	echo "  HOT receiver: $hot_receiver_id"; \
+	adapter_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source-account "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--hot-locker "$hot_locker" \
+		--hot-receiver-id "$hot_receiver_id"); \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: deploy failed — no adapter ID returned"; \
+		exit 1; \
+	fi; \
+	echo "✓ HOT bridge adapter deployed: $adapter_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$adapter_id" > "{{state_dir}}/hot_bridge_adapter_id"; \
+	echo "$hot_locker" > "{{state_dir}}/hot_locker_id"; \
+	echo "$hot_receiver_id" > "{{state_dir}}/hot_receiver_id"
+
+# Invoke a function on the HOT bridge adapter contract.
+hot-bridge-invoke *args:
+	@adapter_id="${HOT_BRIDGE_ADAPTER_ID:-$(cat {{state_dir}}/hot_bridge_adapter_id 2>/dev/null)}"; \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: HOT bridge adapter not deployed."; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	stellar contract invoke \
+		--id "$adapter_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- {{args}}
+
+# Show HOT bridge adapter status.
+hot-bridge-adapter-status:
+	@adapter_id="$(cat {{state_dir}}/hot_bridge_adapter_id 2>/dev/null || echo 'not deployed')"; \
+	echo "HOT Bridge Adapter ID: $adapter_id"; \
+	if [ -f "{{state_dir}}/hot_locker_id" ]; then echo "HOT Locker: $(cat {{state_dir}}/hot_locker_id)"; fi; \
+	if [ -f "{{state_dir}}/hot_receiver_id" ]; then echo "HOT Receiver Hex: $(cat {{state_dir}}/hot_receiver_id)"; fi
 
 # Invoke a function on the Blend adapter contract.
 blend-invoke *args:
@@ -1159,6 +1250,7 @@ help:
 	@echo "BUILD:"
 	@echo "  just build                    Build vault WASM"
 	@echo "  just build-blend-adapter      Build Blend adapter WASM"
+	@echo "  just build-hot-bridge-adapter Build HOT bridge adapter WASM"
 	@echo "  just build-all                Build all WASMs"
 	@echo "  just wasm-analyze [rows]      Generate twiggy analysis reports"
 	@echo "  just wasm-analyze-print [report] [lines]  Print analysis reports"
@@ -1186,6 +1278,11 @@ help:
 	@echo "  just fund-adapter <amount>       Transfer tokens to adapter (manual)"
 	@echo "  just blend-adapter-set-admin <admin_contract>"
 	@echo "  just demo-e2e-blend              Full Blend integration e2e"
+	@echo ""
+	@echo "HOT BRIDGE ADAPTER:"
+	@echo "  just deploy-hot-bridge-adapter   Deploy adapter for HOT bridge"
+	@echo "  just hot-bridge-adapter-status   Show HOT bridge adapter status"
+	@echo "  just hot-bridge-invoke <fn> ...  Invoke HOT bridge adapter"
 	@echo ""
 	@echo "DEPOSITS:"
 	@echo "  just deposit <owner> <receiver> <assets> [min_shares]"
