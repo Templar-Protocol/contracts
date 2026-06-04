@@ -49,6 +49,8 @@ fn required_i128(value: Option<i128>) -> Result<i128, ContractError> {
 fn require_unique_addresses(
     addresses: &soroban_sdk::Vec<soroban_sdk::Address>,
 ) -> Result<(), ContractError> {
+    // Allocator and adapter allowlists are expected to stay short; the nested
+    // scan keeps this no_std Soroban path simple without adding a set type.
     for i in 0..addresses.len() {
         let address = addresses.get_unchecked(i);
         for j in (i + 1)..addresses.len() {
