@@ -724,7 +724,7 @@ fn sentinel_pause_immediate_governance_unpause_timelocked() {
         SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), false)
             .unwrap()
     });
-    assert_eq!(unpause_id, 3);
+    assert_eq!(unpause_id, 2);
 
     let early = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), unpause_id)
@@ -1309,12 +1309,29 @@ fn pending_queue_cap_does_not_block_immediate_pause() {
         SorobanVaultGovernanceContract,
         (&admin, &vault, &(5_000_000_000u64)),
     );
+    let sentinel = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
 
     fill_pending_other_queue(&env, &governance, &admin);
-    let pause = env.as_contract(&governance, || {
+
+    let admin_pause = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), true)
     });
-    assert!(pause.is_ok());
+    assert_eq!(admin_pause, Err(GovernanceError::InvalidInput));
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_paused(env.clone(), sentinel.clone(), true).unwrap();
+    });
+    let paused = env.as_contract(&vault, || MockVault::is_paused(env.clone()));
+    assert!(paused);
 
     let pending_after = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::pending_ids(env.clone())

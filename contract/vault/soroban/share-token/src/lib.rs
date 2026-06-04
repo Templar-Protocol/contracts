@@ -123,10 +123,13 @@ impl SorobanShareTokenContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         Base::set_metadata(&env, decimals, name.clone(), symbol.clone());
-        env.events().publish(
-            (symbol_short!("config"), admin, vault),
-            (name, symbol, decimals),
-        );
+        #[allow(deprecated)]
+        {
+            env.events().publish(
+                (symbol_short!("config"), admin, vault),
+                (name, symbol, decimals),
+            );
+        }
     }
 
     pub fn mint(env: Env, to: Address, amount: i128) {

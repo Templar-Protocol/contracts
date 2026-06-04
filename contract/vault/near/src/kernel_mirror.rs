@@ -197,9 +197,14 @@ mod tests {
         let mut c = new_test_contract(&vault_id);
         set_block_ts(&vault_id, &vault_id, 1_000);
 
-        c.idle_balance = 2_000;
-        c.fee_anchor.total_assets = U128(2_000);
-        c.fee_anchor.timestamp_ns = U64(1_000);
+        let market = mk(9);
+        let cfg = make_market_config(10_000);
+        let market_id = c.insert_market_for_tests(market, cfg, 0);
+        c.supply_queue.push(market_id);
+
+        let seed_owner = mk(1);
+        let refund = c.execute_supply(seed_owner, c.underlying_asset.contract_id().into(), 2_000);
+        assert_eq!(refund, 0);
 
         let assets_in = 500u128;
         let near_preview = c.preview_deposit(U128(assets_in)).0;
@@ -244,9 +249,14 @@ mod tests {
         let mut c = new_test_contract(&vault_id);
         set_block_ts(&vault_id, &vault_id, 2_000);
 
-        c.idle_balance = 5_000;
-        c.fee_anchor.total_assets = U128(5_000);
-        c.fee_anchor.timestamp_ns = U64(2_000);
+        let market = mk(9);
+        let cfg = make_market_config(10_000);
+        let market_id = c.insert_market_for_tests(market, cfg, 0);
+        c.supply_queue.push(market_id);
+
+        let seed_owner = mk(1);
+        let refund = c.execute_supply(seed_owner, c.underlying_asset.contract_id().into(), 5_000);
+        assert_eq!(refund, 0);
 
         let shares = 250u128;
         let near_expected = c.convert_to_assets(U128(shares)).0;

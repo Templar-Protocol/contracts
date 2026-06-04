@@ -245,11 +245,11 @@ mod serde_impl {
 
             #[cfg(not(feature = "postcard"))]
             {
-                return FeeSlotFields {
+                FeeSlotFields {
                     fee_wad: self.fee_wad,
                     recipient: self.recipient,
                 }
-                .serialize(serializer);
+                .serialize(serializer)
             }
 
             #[cfg(feature = "postcard")]
@@ -272,7 +272,7 @@ mod serde_impl {
             #[cfg(not(feature = "postcard"))]
             {
                 let value = FeeSlotFields::deserialize(deserializer)?;
-                return Ok(Self::new(value.fee_wad, value.recipient));
+                Ok(Self::new(value.fee_wad, value.recipient))
             }
 
             #[cfg(feature = "postcard")]
@@ -299,12 +299,12 @@ mod serde_impl {
 
             #[cfg(not(feature = "postcard"))]
             {
-                return FeesSpecFields {
+                FeesSpecFields {
                     performance: self.performance,
                     management: self.management,
                     max_total_assets_growth_rate: self.max_total_assets_growth_rate,
                 }
-                .serialize(serializer);
+                .serialize(serializer)
             }
 
             #[cfg(feature = "postcard")]
@@ -336,11 +336,11 @@ mod serde_impl {
             #[cfg(not(feature = "postcard"))]
             {
                 let value = FeesSpecFields::deserialize(deserializer)?;
-                return Ok(Self::new(
+                Ok(Self::new(
                     value.performance,
                     value.management,
                     value.max_total_assets_growth_rate,
-                ));
+                ))
             }
 
             #[cfg(feature = "postcard")]

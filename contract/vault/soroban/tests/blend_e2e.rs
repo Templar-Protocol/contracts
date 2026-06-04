@@ -11,6 +11,7 @@ use soroban_sdk::{
 use std::string::String as AllocString;
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_blend_adapter::BlendAdapterContract;
+use templar_soroban_governance::SorobanVaultGovernanceContract;
 use templar_soroban_runtime::{
     contract::SorobanVaultContract,
     storage::{SorobanStorage, Storage},
@@ -157,10 +158,13 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let governance = Address::generate(&env);
     let allocator = Address::generate(&env);
     let user = Address::generate(&env);
     let vault = env.register(SorobanVaultContract, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&allocator, &vault, &(0u64)),
+    );
 
     let (pool, pool_client, asset, asset_admin, _deployer) = setup_blend_pool(&env);
     let share = env
@@ -354,10 +358,13 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
     let env = Env::default();
     env.mock_all_auths();
 
-    let governance = Address::generate(&env);
     let allocator = Address::generate(&env);
     let user = Address::generate(&env);
     let vault = env.register(SorobanVaultContract, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&allocator, &vault, &(0u64)),
+    );
     let asset_admin = Address::generate(&env);
     let asset_sac = env.register_stellar_asset_contract_v2(asset_admin);
     let asset = asset_sac.address();
@@ -398,6 +405,20 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
         execute_governance_command(
             &env,
             &governance,
+            &GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
+                primary: None,
+                many: Some(vec![address_wire(&adapter)]),
+                value_a: None,
+                value_b: None,
+            },
+        )
+        .unwrap();
+    });
+    env.as_contract(&vault, || {
+        execute_governance_command(
+            &env,
+            &governance,
             &GovernanceCommand::SetGovernancePolicy {
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
                 target_ids: Some(vec![0u32]),
@@ -408,20 +429,6 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
                 value: None,
                 value_b: None,
                 value_c: None,
-            },
-        )
-        .unwrap();
-    });
-    env.as_contract(&vault, || {
-        execute_governance_command(
-            &env,
-            &governance,
-            &GovernanceCommand::SetGovernanceConfig {
-                kind: GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
-                primary: None,
-                many: Some(vec![address_wire(&adapter)]),
-                value_a: None,
-                value_b: None,
             },
         )
         .unwrap();

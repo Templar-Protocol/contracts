@@ -1902,7 +1902,7 @@ fn deposit_near_max_rejected() {
     let mut state = default_state();
     state.total_assets = u128::MAX - 10;
     state.idle_assets = u128::MAX - 10;
-    state.total_shares = 1_000_000;
+    state.total_shares = u128::MAX / 2;
     let config = default_config();
 
     let result = apply_action(

@@ -550,9 +550,9 @@ mod tests {
         let (contract_id, admin, vault, _pool) = setup_adapter(&env);
         let asset = Address::generate(&env);
         env.as_contract(&contract_id, || {
-            assert_eq!(BlendAdapterContract::paused(env.clone()), false);
+            assert!(!BlendAdapterContract::paused(env.clone()));
             BlendAdapterContract::set_paused(env.clone(), admin, true).unwrap();
-            assert_eq!(BlendAdapterContract::paused(env.clone()), true);
+            assert!(BlendAdapterContract::paused(env.clone()));
 
             let result = BlendAdapterContract::supply(env.clone(), vault, asset, 100);
             assert_eq!(result, Err(AdapterError::Paused));
