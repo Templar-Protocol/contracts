@@ -625,19 +625,7 @@ pub(crate) fn require_governance_control_plane(
     caller: &SdkAddress,
 ) -> Result<(), ContractError> {
     require_signed(caller);
-    if ensure_governance_identity(env, caller).is_ok() {
-        return Ok(());
-    }
-    if let Some(sentinel) = env
-        .storage()
-        .instance()
-        .get::<soroban_sdk::Symbol, SdkAddress>(&VaultDataKey::Sentinel)
-    {
-        if caller == &sentinel {
-            return Ok(());
-        }
-    }
-    Err(ContractError::Unauthorized)
+    ensure_governance_identity(env, caller)
 }
 
 #[inline(never)]

@@ -5140,6 +5140,10 @@ mod storage_tests {
                 &crate::contract::VaultDataKey::SkimRecipient,
                 &governance,
             );
+            assert_eq!(
+                crate::contract::helpers::require_governance_control_plane(&env, &sentinel),
+                Err(crate::error::ContractError::Unauthorized)
+            );
         });
 
         let sentinel_config = env.try_invoke_contract::<(), crate::error::ContractError>(

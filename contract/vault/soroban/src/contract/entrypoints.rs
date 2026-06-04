@@ -1036,6 +1036,52 @@ fn cancel_migration_impl(env: &Env, caller: soroban_sdk::Address) -> Result<(), 
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum GovernanceCommandCaller {
+    Governance,
+    Sentinel,
+}
+
+fn governance_command_caller_kind(
+    env: &Env,
+    caller: &soroban_sdk::Address,
+) -> Result<GovernanceCommandCaller, ContractError> {
+    if ensure_governance_identity(env, caller).is_ok() {
+        require_governance_control_plane(env, caller)?;
+        return Ok(GovernanceCommandCaller::Governance);
+    }
+
+    require_signed(caller);
+    let sentinel: Option<soroban_sdk::Address> =
+        env.storage().instance().get(&VaultDataKey::Sentinel);
+    if sentinel.as_ref().is_some_and(|sentinel| sentinel == caller) {
+        return Ok(GovernanceCommandCaller::Sentinel);
+    }
+
+    Err(ContractError::Unauthorized)
+}
+
+fn governance_command_allows_sentinel(command: &GovernanceCommand) -> bool {
+    matches!(
+        command,
+        GovernanceCommand::SetGovernancePolicy {
+            kind: GOVERNANCE_POLICY_KIND_RESTRICTIONS | GOVERNANCE_POLICY_KIND_PAUSED,
+            ..
+        }
+    )
+}
+
+fn require_governance_command_authorization(
+    caller_kind: GovernanceCommandCaller,
+    command: &GovernanceCommand,
+) -> Result<(), ContractError> {
+    match caller_kind {
+        GovernanceCommandCaller::Governance => Ok(()),
+        GovernanceCommandCaller::Sentinel if governance_command_allows_sentinel(command) => Ok(()),
+        GovernanceCommandCaller::Sentinel => Err(ContractError::Unauthorized),
+    }
+}
+
 fn execute_public_command(
     env: &Env,
     command: VaultCommand,
@@ -1330,9 +1376,10 @@ impl SorobanVaultContract {
         caller: soroban_sdk::Address,
         payload: Bytes,
     ) -> Result<(), ContractError> {
-        require_governance_control_plane(&env, &caller)?;
+        let caller_kind = governance_command_caller_kind(&env, &caller)?;
         let command = GovernanceCommand::decode(&payload.to_alloc_vec())
             .map_err(|_| ContractError::InvalidInput)?;
+        require_governance_command_authorization(caller_kind, &command)?;
         execute_governance_command(&env, caller, command, true)
     }
 
