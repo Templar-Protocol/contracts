@@ -246,6 +246,14 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 `HOT_STELLAR_RECEIVER_HEX` is intentionally explicit. It should be copied from a proven HOT receiver
 for the NEAR counterparty, not recomputed locally during deployment.
 
+`deploy-hot-bridge-adapter` pins the production HOT Stellar locker by contract ID and fetched WASM
+SHA-256 before deploying. For non-production testing only, set `HOT_STELLAR_LOCKER_ALLOW_UNPINNED=1`
+and override `HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256` for the test locker.
+
+Withdrawal settlement is observable on Soroban only when returned Stellar-side token balance reaches
+the adapter. Without a NEAR/HOT proof verifier, operators must treat the HOT bridge/relayer path as a
+trusted settlement dependency before calling `progress_withdrawal`.
+
 ## Deployment Artifact
 
 The Soroban justfile builds two runtime artifacts:
