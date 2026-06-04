@@ -76,7 +76,12 @@ def parse_u32_json(value: str) -> list[int]:
     parsed = json.loads(value)
     if not isinstance(parsed, list):
         raise ValueError("expected a JSON array of u32 values")
-    return [int(item) for item in parsed]
+    values: list[int] = []
+    for item in parsed:
+        if type(item) is not int or not 0 <= item <= 0xFFFFFFFF:
+            raise ValueError("expected a JSON array of u32 values")
+        values.append(item)
+    return values
 
 
 def encode_vault(args: argparse.Namespace) -> str:

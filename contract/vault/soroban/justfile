@@ -342,7 +342,7 @@ deploy-share-token:
 		echo "Run: just build"; \
 		exit 1; \
 	fi; \
-	admin="${SOROBAN_SHARE_ADMIN:-$vault_id}"; \
+	admin="$vault_id"; \
 	name="${SOROBAN_SHARE_NAME:-Templar Vault Share}"; \
 	symbol="${SOROBAN_SHARE_SYMBOL:-tvSHARE}"; \
 	decimals="${SOROBAN_SHARE_DECIMALS:-7}"; \
