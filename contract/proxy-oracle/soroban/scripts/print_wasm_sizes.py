@@ -5,6 +5,7 @@ Usage:
   print_wasm_sizes.py --wasm PATH [--optimized PATH] [--label LABEL]
   print_wasm_sizes.py --wasm PATH --optimized PATH
 """
+
 import argparse
 from pathlib import Path
 

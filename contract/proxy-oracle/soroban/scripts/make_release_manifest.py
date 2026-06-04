@@ -22,17 +22,16 @@ Usage:
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def sha256_file(path: Path) -> str:
     """Return the SHA-256 hex digest of a file."""
@@ -152,13 +151,18 @@ def build_initialize_command(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Write a deterministic release manifest for proxy-oracle Soroban WASMs."
     )
     parser.add_argument("--root", required=True, help="Workspace root directory")
-    parser.add_argument("--runtime-wasm", required=True, help="Path to runtime optimized WASM")
-    parser.add_argument("--governance-wasm", required=True, help="Path to governance optimized WASM")
+    parser.add_argument(
+        "--runtime-wasm", required=True, help="Path to runtime optimized WASM"
+    )
+    parser.add_argument(
+        "--governance-wasm", required=True, help="Path to governance optimized WASM"
+    )
     parser.add_argument(
         "--adapter-wasm",
         required=True,
@@ -179,7 +183,9 @@ def main() -> None:
         default="templar-proxy-oracle-soroban-sep40-adapter-contract",
         help="SEP-40 adapter Cargo package name",
     )
-    parser.add_argument("--out", required=True, help="Output path for release-manifest.json")
+    parser.add_argument(
+        "--out", required=True, help="Output path for release-manifest.json"
+    )
     args = parser.parse_args()
 
     root = Path(args.root).resolve()

@@ -29,10 +29,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -45,6 +45,7 @@ def sha256_file(path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
 
 def validate_artifacts(manifest: dict, root: Path) -> list[str]:
     """Return a list of error strings; empty list means all checks passed."""
@@ -84,6 +85,7 @@ def validate_artifacts(manifest: dict, root: Path) -> list[str]:
 # Report
 # ---------------------------------------------------------------------------
 
+
 def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     lines: list[str] = []
     now = datetime.now(timezone.utc).isoformat()
@@ -114,7 +116,12 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     dry = manifest.get("dry_run_commands", {})
     lines.append(f"  note: {dry.get('note', '')}")
     lines.append("")
-    for cmd_key in ("install_runtime", "install_governance", "initialize_runtime", "initialize_governance"):
+    for cmd_key in (
+        "install_runtime",
+        "install_governance",
+        "initialize_runtime",
+        "initialize_governance",
+    ):
         cmd = dry.get(cmd_key, "<not set>")
         lines.append(f"  {cmd_key}:")
         lines.append(f"    {cmd}")
@@ -137,6 +144,7 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -184,7 +192,9 @@ def main() -> None:
         print("FAIL: artifact validation errors found.", file=sys.stderr)
         sys.exit(1)
 
-    print("PASS: dry-run deploy validation complete (no broadcast, no secrets required).")
+    print(
+        "PASS: dry-run deploy validation complete (no broadcast, no secrets required)."
+    )
 
 
 if __name__ == "__main__":

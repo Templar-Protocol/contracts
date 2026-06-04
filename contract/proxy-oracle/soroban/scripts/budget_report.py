@@ -23,10 +23,11 @@ To obtain real resource budgets, run:
 
 Limitation is noted in the evidence file.
 """
+
 import argparse
+import re
 import subprocess
 import sys
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -130,7 +131,11 @@ def main() -> None:
         }
         for scenario, pattern in runtime_scenarios.items():
             matched, status = map_scenario(pattern, runtime_results)
-            ok_marker = "PASS" if status == "ok" else ("SKIP" if status == "SKIPPED" else "FAIL")
+            ok_marker = (
+                "PASS"
+                if status == "ok"
+                else ("SKIP" if status == "SKIPPED" else "FAIL")
+            )
             if ok_marker == "FAIL":
                 all_ok = False
             lines.append(f"  [{ok_marker}] {scenario:<25} -> {matched} ({status})")
@@ -161,7 +166,11 @@ def main() -> None:
         }
         for scenario, pattern in gov_scenarios.items():
             matched, status = map_scenario(pattern, gov_results)
-            ok_marker = "PASS" if status == "ok" else ("SKIP" if status == "SKIPPED" else "FAIL")
+            ok_marker = (
+                "PASS"
+                if status == "ok"
+                else ("SKIP" if status == "SKIPPED" else "FAIL")
+            )
             if ok_marker == "FAIL":
                 all_ok = False
             lines.append(f"  [{ok_marker}] {scenario:<25} -> {matched} ({status})")
