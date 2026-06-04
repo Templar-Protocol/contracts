@@ -254,7 +254,7 @@ pub struct VaultConfiguration {
     pub refresh_cooldown_ns: Option<U64>,
     /// Optional cooldown (ns) between `idle_resync` calls; defaults to 120 seconds when `None`.
     pub idle_resync_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 24 hours when `None`.
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 1 hour when `None`.
     pub withdrawal_cooldown_ns: Option<U64>,
 }
 

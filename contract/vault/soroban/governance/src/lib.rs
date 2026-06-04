@@ -29,7 +29,7 @@ use templar_soroban_shared_types::{
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::math::wad::Wad;
-use templar_vault_kernel::{DurationNs, TimestampNs};
+use templar_vault_kernel::{DurationNs, TimestampNs, DEFAULT_COOLDOWN_NS};
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
@@ -38,7 +38,7 @@ const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
 const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
-const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = 10 * 60 * 1_000_000_000;
+const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = DEFAULT_COOLDOWN_NS;
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120 * 1_000_000_000;
 
 #[derive(Clone, Copy, Eq, PartialEq)]

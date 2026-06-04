@@ -21,9 +21,9 @@ pub const MIN_WITHDRAWAL_ASSETS: u128 = 1_000;
 /// with the kernel config limit and avoid ambiguous capacity thresholds.
 pub const MAX_QUEUE_LENGTH: u32 = crate::state::vault::MAX_PENDING as u32;
 
-/// Default cooldown period in nanoseconds (24 hours).
+/// Default cooldown period in nanoseconds (1 hour).
 /// Withdrawals cannot be processed until this time has elapsed.
-pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+pub const DEFAULT_COOLDOWN_NS: u64 = 60 * 60 * 1_000_000_000;
 
 /// A pending withdrawal request in the queue.
 ///
