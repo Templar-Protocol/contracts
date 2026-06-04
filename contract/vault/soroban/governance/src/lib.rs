@@ -89,7 +89,7 @@ impl GovernanceAction {
             Self::SetPaused(_) => GovernanceActionKey::Pause,
             Self::SetCurator(_) => GovernanceActionKey::Curator,
             Self::SetGovernance(_) => GovernanceActionKey::Governance,
-            Self::SetSupplyQueue(_, _) => GovernanceActionKey::SupplyQueue,
+            Self::SetSupplyQueue(_) => GovernanceActionKey::SupplyQueue,
             Self::SetFees(_) => GovernanceActionKey::Fees,
             Self::SetWithdrawalCooldown(_) => GovernanceActionKey::WithdrawalCooldown,
             Self::SetIdleResyncCooldown(_) => GovernanceActionKey::IdleResyncCooldown,
@@ -219,14 +219,9 @@ impl SorobanVaultGovernanceContract {
     pub fn submit_set_supply_queue(
         env: Env,
         caller: Address,
-        target_ids: Vec<u32>,
-        adapters: Vec<Address>,
+        entries: Vec<SupplyQueueProposalEntry>,
     ) -> Result<u64, GovernanceError> {
-        Self::submit(
-            env,
-            caller,
-            GovernanceAction::SetSupplyQueue(target_ids, adapters),
-        )
+        Self::submit(env, caller, GovernanceAction::SetSupplyQueue(entries))
     }
 
     pub fn submit_set_fees(
@@ -757,7 +752,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetPaused(_) => GovernanceActionKind::Pause,
         GovernanceAction::SetCurator(_) => GovernanceActionKind::Curator,
         GovernanceAction::SetGovernance(_) => GovernanceActionKind::Governance,
-        GovernanceAction::SetSupplyQueue(_, _) => GovernanceActionKind::SupplyQueue,
+        GovernanceAction::SetSupplyQueue(_) => GovernanceActionKind::SupplyQueue,
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
         GovernanceAction::SetWithdrawalCooldown(_) => GovernanceActionKind::WithdrawalCooldown,
         GovernanceAction::SetIdleResyncCooldown(_) => GovernanceActionKind::IdleResyncCooldown,
@@ -787,7 +782,7 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetPaused(_) => TimelockKind::Pause,
         GovernanceAction::SetCurator(_) => TimelockKind::Curator,
         GovernanceAction::SetGovernance(_) => TimelockKind::Governance,
-        GovernanceAction::SetSupplyQueue(_, _) => TimelockKind::SupplyQueue,
+        GovernanceAction::SetSupplyQueue(_) => TimelockKind::SupplyQueue,
         GovernanceAction::SetFees(_)
         | GovernanceAction::SetWithdrawalCooldown(_)
         | GovernanceAction::SetIdleResyncCooldown(_) => TimelockKind::Fees,
@@ -808,11 +803,13 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
     }
 }
 
-fn require_unique_target_ids(target_ids: &Vec<u32>) -> Result<(), GovernanceError> {
-    for i in 0..target_ids.len() {
-        let target_id = target_ids.get_unchecked(i);
-        for j in (i + 1)..target_ids.len() {
-            if target_id == target_ids.get_unchecked(j) {
+fn require_unique_supply_queue_targets(
+    entries: &Vec<SupplyQueueProposalEntry>,
+) -> Result<(), GovernanceError> {
+    for i in 0..entries.len() {
+        let entry = entries.get_unchecked(i);
+        for j in (i + 1)..entries.len() {
+            if entry.target_id == entries.get_unchecked(j).target_id {
                 return Err(GovernanceError::InvalidInput);
             }
         }
@@ -823,13 +820,10 @@ fn require_unique_target_ids(target_ids: &Vec<u32>) -> Result<(), GovernanceErro
 fn validate_action(env: &Env, action: &GovernanceAction) -> Result<(), GovernanceError> {
     match action {
         GovernanceAction::SetGovernance(governance) => require_governance_target(env, governance),
-        GovernanceAction::SetSupplyQueue(target_ids, adapters) => {
-            require_unique_target_ids(target_ids)?;
-            if !adapters.is_empty() && adapters.len() != target_ids.len() {
-                return Err(GovernanceError::InvalidInput);
-            }
-            for adapter in adapters.iter() {
-                require_contract_address(&adapter)?;
+        GovernanceAction::SetSupplyQueue(entries) => {
+            require_unique_supply_queue_targets(entries)?;
+            for entry in entries.iter() {
+                require_contract_address(&entry.adapter)?;
             }
             Ok(())
         }
@@ -1080,7 +1074,7 @@ fn decide_submission(
         GovernanceAction::Skim(_) => Ok(TimelockDecision::Timelocked),
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_, _)
+        | GovernanceAction::SetSupplyQueue(_)
         | GovernanceAction::SetAllocators(_)
         | GovernanceAction::SetAllowedAdapters(_)
         | GovernanceAction::Upgrade(_)
@@ -1333,7 +1327,7 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
         }
         GovernanceAction::SetCurator(_)
         | GovernanceAction::SetGovernance(_)
-        | GovernanceAction::SetSupplyQueue(_, _)
+        | GovernanceAction::SetSupplyQueue(_)
         | GovernanceAction::SetAllocators(_)
         | GovernanceAction::SetAllowedAdapters(_) => {
             execute_vault_governance_action(env, &vault, action)?
@@ -1584,15 +1578,16 @@ fn governance_payload_for_action(
         GovernanceAction::Skim(token) => Some(GovernanceCommand::Skim {
             token: sdk_address_to_alloc_string(token)?,
         }),
-        GovernanceAction::SetSupplyQueue(target_ids, adapters) => {
+        GovernanceAction::SetSupplyQueue(entries) => {
+            let (target_ids, adapters) = supply_queue_payload_parts(entries)?;
             Some(GovernanceCommand::SetGovernancePolicy {
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
-                target_ids: Some(soroban_u32_vec_to_alloc(target_ids)),
+                target_ids: Some(target_ids),
                 mode: None,
                 accounts: if adapters.is_empty() {
                     None
                 } else {
-                    Some(soroban_address_vec_to_alloc(adapters)?)
+                    Some(adapters)
                 },
                 market_id: None,
                 cap_group_id: None,
@@ -1726,12 +1721,16 @@ fn sdk_string_to_alloc_string(value: &String) -> Result<AllocString, GovernanceE
         .map_err(|_| GovernanceError::InvalidInput)
 }
 
-fn soroban_u32_vec_to_alloc(values: &Vec<u32>) -> alloc::vec::Vec<u32> {
-    let mut result = alloc::vec::Vec::new();
-    for value in values.iter() {
-        result.push(value);
+fn supply_queue_payload_parts(
+    entries: &Vec<SupplyQueueProposalEntry>,
+) -> Result<(AllocVec<u32>, AllocVec<AllocString>), GovernanceError> {
+    let mut target_ids = AllocVec::new();
+    let mut adapters = AllocVec::new();
+    for entry in entries.iter() {
+        target_ids.push(entry.target_id);
+        adapters.push(sdk_address_to_alloc_string(&entry.adapter)?);
     }
-    result
+    Ok((target_ids, adapters))
 }
 
 fn soroban_address_vec_to_alloc(

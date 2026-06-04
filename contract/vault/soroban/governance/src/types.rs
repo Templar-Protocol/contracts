@@ -185,6 +185,13 @@ pub struct FeeParams {
 }
 
 #[contracttype]
+#[derive(Clone, Eq, PartialEq)]
+pub struct SupplyQueueProposalEntry {
+    pub target_id: u32,
+    pub adapter: Address,
+}
+
+#[contracttype]
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum RestrictionMode {
     None,
@@ -218,7 +225,7 @@ pub enum GovernanceAction {
     SetPaused(bool),
     SetCurator(Address),
     SetGovernance(Address),
-    SetSupplyQueue(Vec<u32>, Vec<Address>),
+    SetSupplyQueue(Vec<SupplyQueueProposalEntry>),
     SetFees(FeeParams),
     SetRestrictions(RestrictionMode, Vec<Address>),
     SetSentinel(Address),

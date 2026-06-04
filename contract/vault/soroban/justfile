@@ -956,16 +956,15 @@ set-allowed-adapters adapters_json:
 # Set supply queue via governance (submit + accept).
 # For instant local acceptance, deploy governance with SOROBAN_GOV_TIMELOCK_NS=0 and
 # SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1.
-set-supply-queue target_ids_json adapters_json:
+set-supply-queue entries_json:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then \
 		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
-	echo "Setting supply queue via governance: targets={{target_ids_json}} adapters={{adapters_json}}"; \
+	echo "Setting supply queue via governance: entries={{entries_json}}"; \
 	proposal_id=$(just gov-invoke submit_set_supply_queue \
 		--caller "$admin" \
-		--target_ids '{{target_ids_json}}' \
-		--adapters '{{adapters_json}}' 2>/dev/null | tail -1); \
+		--entries '{{entries_json}}' 2>/dev/null | tail -1); \
 	echo "  Submitted proposal: $proposal_id"; \
 	echo "  Waiting for ledger confirmation..."; \
 	sleep 6; \
@@ -1190,7 +1189,7 @@ help:
 	@echo "  just refresh-markets '<json_market_ids>'"
 	@echo "  just refresh-fees / resync-idle-balance"
 	@echo "  just set-allowed-adapters '<json_adapters>'"
-	@echo "  just set-supply-queue '<json_target_ids>' '<json_adapters>'"
+	@echo "  just set-supply-queue '<json_entries>'"
 	@echo ""
 	@echo "ADMIN:"
 	@echo "  just pause / unpause"

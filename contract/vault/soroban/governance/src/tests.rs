@@ -641,6 +641,17 @@ fn sdk_u32_vec(env: &Env, values: &[u32]) -> Vec<u32> {
     entries
 }
 
+fn sdk_supply_queue_entries(env: &Env, values: &[(u32, Address)]) -> Vec<SupplyQueueProposalEntry> {
+    let mut entries = Vec::new(env);
+    for (target_id, adapter) in values {
+        entries.push_back(SupplyQueueProposalEntry {
+            target_id: *target_id,
+            adapter: adapter.clone(),
+        });
+    }
+    entries
+}
+
 #[test]
 fn sentinel_first_change_immediate_second_timelocked() {
     let env = Env::default();
@@ -1639,13 +1650,13 @@ fn submit_set_supply_queue_rejects_duplicate_targets() {
         SorobanVaultGovernanceContract,
         (&admin, &vault, &(5_000_000_000u64)),
     );
+    let adapter = env.register(MockVault, ());
 
     let err = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_supply_queue(
             env.clone(),
             admin.clone(),
-            sdk_u32_vec(&env, &[7u32, 7u32]),
-            Vec::new(&env),
+            sdk_supply_queue_entries(&env, &[(7u32, adapter.clone()), (7u32, adapter.clone())]),
         )
     });
 
@@ -1668,7 +1679,6 @@ fn submit_set_supply_queue_allows_empty_clear_policy() {
         SorobanVaultGovernanceContract::submit_set_supply_queue(
             env.clone(),
             admin.clone(),
-            sdk_u32_vec(&env, &[]),
             Vec::new(&env),
         )
     });
@@ -1993,8 +2003,14 @@ fn supply_queue_submission_routes_to_vault() {
         SorobanVaultGovernanceContract::submit_set_supply_queue(
             env.clone(),
             admin.clone(),
-            target_ids.clone(),
-            adapters.clone(),
+            sdk_supply_queue_entries(
+                &env,
+                &[
+                    (1u32, adapters.get_unchecked(0)),
+                    (2u32, adapters.get_unchecked(1)),
+                    (3u32, adapters.get_unchecked(2)),
+                ],
+            ),
         )
         .unwrap()
     });
