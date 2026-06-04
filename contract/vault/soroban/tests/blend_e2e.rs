@@ -402,7 +402,7 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
                 kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
                 target_ids: Some(vec![0u32]),
                 mode: None,
-                accounts: None,
+                accounts: Some(vec![address_wire(&adapter)]),
                 market_id: None,
                 cap_group_id: None,
                 value: None,
