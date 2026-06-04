@@ -37,7 +37,7 @@ def push_string(out: bytearray, value: str) -> None:
 def push_u32_vec(out: bytearray, values: list[int]) -> None:
     push_u32(out, len(values))
     for value in values:
-        push_u32(out, int(value))
+        push_u32(out, value)
 
 
 def read_exact(data: bytes, cursor: int, length: int) -> tuple[bytes, int]:
