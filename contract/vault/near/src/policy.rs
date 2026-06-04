@@ -159,6 +159,13 @@ impl MarketExecutionLock {
     }
 
     #[must_use]
+    pub fn has_current_lease(&self, market: MarketId, op_id: u64, token: FencingToken) -> bool {
+        self.inner
+            .get_active(market.into_target_id(), TimestampNs(env::block_timestamp()))
+            .is_some_and(|lease| lease.op_id == Some(op_id) && lease.fencing_token == token)
+    }
+
+    #[must_use]
     pub fn has_active_lease(&self, market: MarketId) -> bool {
         self.inner
             .is_leased(market.into_target_id(), TimestampNs(env::block_timestamp()))

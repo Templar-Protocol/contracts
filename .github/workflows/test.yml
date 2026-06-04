@@ -26,7 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
       - run: cargo fmt --check
 
   code-linter:
@@ -34,7 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/rust
         with:
           components: clippy
@@ -42,7 +46,39 @@ jobs:
         env:
           SQLX_OFFLINE: true
         run: |
-          cargo clippy --all-features --workspace --tests -- -D warnings
+          cargo clippy --all-features --workspace --tests \
+            --exclude templar-soroban-blend-adapter \
+            --exclude templar-soroban-governance \
+            --exclude templar-soroban-runtime \
+            --exclude templar-soroban-share-token \
+            --exclude templar-soroban-shared-types \
+            -- -D warnings
+
+  soroban-code-linter:
+    name: Soroban Code Linter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Install Soroban lint Rust toolchain
+        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e
+        with:
+          targets: wasm32-unknown-unknown,wasm32v1-none
+          components: clippy
+      - name: Run Soroban cargo clippy
+        env:
+          RUSTUP_TOOLCHAIN: 1.89.0
+          SQLX_OFFLINE: true
+        run: |
+          cargo clippy --all-features --tests \
+            -p templar-soroban-blend-adapter \
+            -p templar-soroban-governance \
+            -p templar-soroban-runtime \
+            -p templar-soroban-share-token \
+            -p templar-soroban-shared-types \
+            -- -D warnings
 
   soroban:
     name: Soroban
@@ -50,25 +86,36 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
-      - uses: ./.github/actions/rust
+      - name: Install Soroban Rust toolchain
+        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e
+        with:
+          targets: wasm32-unknown-unknown,wasm32v1-none
 
       - name: Install tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
           tool: just,nextest
 
-      - name: Run Soroban runtime tests
+      - name: Run Soroban contract tests
         env:
+          RUSTUP_TOOLCHAIN: 1.89.0
           SQLX_OFFLINE: true
-        run: cargo nextest run -p templar-soroban-runtime
+        run: |
+          cargo nextest run \
+            -p templar-soroban-runtime \
+            -p templar-soroban-governance \
+            -p templar-soroban-share-token \
+            -p templar-soroban-blend-adapter
 
       - name: Install packages
-        run: sudo apt install libdbus-1-dev pkg-config
+        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stellar CLI
-        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
+        run: contract/vault/soroban/scripts/install-stellar-cli.sh
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
@@ -88,6 +135,61 @@ jobs:
 
       - name: Test curator-primitives (boundary)
         run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
+
+  soroban-proxy-oracle:
+    name: Soroban Proxy Oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+        with:
+          targets: wasm32-unknown-unknown,wasm32v1-none
+
+      - name: Install tools
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        with:
+          tool: just,nextest
+
+      - name: Run proxy-oracle Soroban runtime tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-contract
+
+      - name: Run proxy-oracle Soroban governance tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-governance-contract
+
+      - name: Run proxy-oracle Soroban SEP-40 adapter tests
+        run: cargo nextest run -p templar-proxy-oracle-soroban-sep40-adapter-contract
+
+      - name: Install packages
+        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
+
+      - name: Install stellar CLI
+        run: contract/vault/soroban/scripts/install-stellar-cli.sh
+
+      - name: Build and optimize proxy-oracle Soroban WASMs
+        run: just -f contract/proxy-oracle/soroban/justfile optimize
+
+      - name: Enforce proxy-oracle Soroban size budget (runtime)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_contract.optimized.wasm \
+            --max-bytes 131072
+
+      - name: Enforce proxy-oracle Soroban size budget (governance)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
+            --max-bytes 131072
+
+      - name: Enforce proxy-oracle Soroban size budget (sep40-adapter)
+        run: |
+          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
+            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm \
+            --max-bytes 32768
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
@@ -167,7 +269,9 @@ jobs:
             target: wasm32-unknown-unknown
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/rust
 
@@ -211,12 +315,14 @@ jobs:
           df -h
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/rust
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
           tool: nextest
 
@@ -231,7 +337,15 @@ jobs:
           # Optimize cargo build for faster compilation
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
-        run: ./script/test.sh --workspace
+        run: |
+          # Soroban crates require their dedicated toolchain and are tested in the
+          # Soroban job. Keep the default workspace test pass on rust-toolchain.toml.
+          ./script/test.sh --workspace \
+            --exclude templar-soroban-blend-adapter \
+            --exclude templar-soroban-governance \
+            --exclude templar-soroban-runtime \
+            --exclude templar-soroban-share-token \
+            --exclude templar-soroban-shared-types
 
       - name: Cleanup Docker resources
         if: always()
@@ -272,14 +386,16 @@ jobs:
           df -h
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/rust
         with:
           components: llvm-tools-preview
 
       - name: Install tools
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
           tool: cargo-llvm-cov,nextest
 
@@ -293,8 +409,15 @@ jobs:
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
         run: |
-          # --lib: unit tests only (excludes slow WASM integration tests)
-          cargo llvm-cov nextest --lib --lcov --output-path coverage.lcov
+          # --lib: unit tests only (excludes slow WASM integration tests).
+          # Soroban crates are tested in the dedicated Soroban job with their
+          # newer toolchain; exclude them from the default 1.86 coverage build.
+          cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov \
+            --exclude templar-soroban-blend-adapter \
+            --exclude templar-soroban-governance \
+            --exclude templar-soroban-runtime \
+            --exclude templar-soroban-share-token \
+            --exclude templar-soroban-shared-types
 
           # Aggressive cleanup to free disk space
           echo "Cleaning up build artifacts..."
@@ -313,7 +436,7 @@ jobs:
           df -h
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe
         with:
           files: coverage.lcov
           flags: unittests

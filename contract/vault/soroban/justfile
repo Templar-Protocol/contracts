@@ -17,7 +17,7 @@ set dotenv-load := false
 #
 # PREREQUISITES:
 #   - Rust toolchain with wasm32-unknown-unknown target
-#   - Stellar CLI: cargo install --locked stellar-cli --features opt
+#   - Stellar CLI: cargo install --locked stellar-cli
 #   - curl (for friendbot funding)
 #
 # ENVIRONMENT VARIABLES (optional overrides):
@@ -29,9 +29,12 @@ set dotenv-load := false
 #   SOROBAN_SHARE_TOKEN      Share token contract ID
 #   SOROBAN_GOVERNANCE       Governance contract ID
 #   SOROBAN_ADMIN            Admin address (defaults to identity)
-#   SOROBAN_GOV_TIMLOCK_NS   Governance timelock in nanoseconds
+#   SOROBAN_GOV_TIMELOCK_NS  Governance timelock in nanoseconds
+#   SOROBAN_VIRTUAL_SHARES   Initial virtual shares offset (default: 0)
+#   SOROBAN_VIRTUAL_ASSETS   Initial virtual assets offset (default: 0)
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
+#   SOROBAN_ADAPTER_ADMIN    Blend adapter admin contract (default: governance, then vault)
 #
 # =============================================================================
 
@@ -39,13 +42,15 @@ root := justfile_directory() + "/../../.."
 wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
-optimized_wasm := wasm_dir + "/templar_soroban_runtime.optimized.wasm"
+optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
 deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
-blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.optimized.wasm"
-governance_wasm := wasm_dir + "/templar_soroban_governance.optimized.wasm"
-share_token_wasm := wasm_dir + "/templar_soroban_share_token.optimized.wasm"
+blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
+governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
+share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
+payload_script := justfile_directory() + "/scripts/vault_payload.py"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -78,37 +83,35 @@ deploy-all: _ensure-setup build deploy-test-token deploy deploy-share-token depl
 	@echo "For Blend integration: just deploy-blend-adapter"
 
 # Deploy everything including Blend adapter for yield strategies.
-# NOTE: Blend integration requires manual market registration after deployment.
+# NOTE: Blend integration requires allowed-adapter and supply-queue governance after deployment.
 deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter deploy-test-token deploy deploy-share-token deploy-governance init
 	@just deploy-blend-adapter "{{pool_address}}"
 	@echo ""
 	@echo "✓ Full deployment with Blend adapter complete!"
-	@echo "NOTE: Register the Blend adapter as a market in the vault to enable allocation."
+	@echo "NOTE: Run set-allowed-adapters and set-supply-queue before allocation."
 	@just status
 
 # =============================================================================
 # BUILD
 # =============================================================================
 
-# Optimize a built WASM artifact.
-# Prefer the non-deprecated `stellar contract build --optimize`; if unavailable
-# in the local toolchain (for example missing wasm32v1-none support), fall back
-# to `stellar contract optimize` on the prebuilt wasm32-unknown-unknown artifact.
+# Build and optimize a WASM artifact. Spec shaking v2 requires
+# `stellar contract build` from stellar-cli v25.2.0+.
 _optimize-wasm package wasm_path:
-	@if stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
-		:; \
-	else \
-		stellar contract optimize --wasm "{{wasm_path}}" >/dev/null 2>&1; \
+	@if ! command -v stellar >/dev/null 2>&1; then \
+		echo "Error: stellar CLI not found. Install with:"; \
+		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
+		exit 1; \
+	fi
+	@if ! RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}"; then \
+		echo "Error: failed to build {{package}} with stellar CLI."; \
+		echo "Spec shaking v2 requires stellar-cli v25.2.0+; v26 is recommended."; \
+		exit 1; \
 	fi
 
 # Build and optimize the Soroban vault WASM.
 build:
 	@echo "Building Soroban vault/governance/share-token WASMs..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
-		--manifest-path "{{root}}/Cargo.toml" \
-		-p templar-soroban-runtime \
-		-p templar-soroban-governance \
-		-p templar-soroban-share-token
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-runtime "{{wasm_dir}}/templar_soroban_runtime.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-governance "{{wasm_dir}}/templar_soroban_governance.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-share-token "{{wasm_dir}}/templar_soroban_share_token.wasm"
@@ -128,10 +131,17 @@ size-budget-check max_bytes="131072": build
 # Build and optimize the Blend adapter WASM.
 build-blend-adapter:
 	@echo "Building Blend adapter WASM..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
-		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-blend-adapter
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
+
+# Check the Soroban ERC-4626 proxy crate.
+check-4626-proxy:
+	@echo "Checking Soroban ERC-4626 proxy crate..."
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+		--manifest-path "{{root}}/Cargo.toml" \
+		--target wasm32-unknown-unknown \
+		-p templar-4626-proxy-soroban
+	@echo "✓ Checked: templar-4626-proxy-soroban"
 
 # Build all WASMs (vault + governance + share token + blend adapter).
 build-all: build build-blend-adapter
@@ -145,7 +155,7 @@ wasm-analyze rows="250" lines="120":
 		exit 1; \
 	fi
 	@echo "Building debug WASM for analysis..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime
 	@mkdir -p "{{wasm_analysis_dir}}"
 	@twiggy top "{{debug_wasm}}" -n "{{rows}}" > "{{wasm_analysis_dir}}/top.txt"
@@ -157,12 +167,12 @@ wasm-analyze rows="250" lines="120":
 	@echo "  {{wasm_analysis_dir}}/monos.txt"
 	@echo ""
 	@echo "Computing release/optimized WASM sizes..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
+	@RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo build --profile release-soroban --target wasm32-unknown-unknown \
 		--manifest-path "{{root}}/Cargo.toml" -p templar-soroban-runtime >/dev/null
 	@if [ -d "/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib" ]; then \
 		export LD_LIBRARY_PATH="/nix/store/cglbp8zpmbyyvb75ghj6v73n418r9n5n-dbus-1.14.10-lib/lib:${LD_LIBRARY_PATH:-}"; \
 	fi; \
-	if stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
+	if RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "templar-soroban-runtime" --optimize --out-dir "{{wasm_dir}}" >/dev/null 2>&1; then \
 		:; \
 	else \
 		stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null 2>&1; \
@@ -181,7 +191,7 @@ wasm-analyze-print report="all" lines="120":
 		--report "{{report}}" \
 		--lines "{{lines}}"
 
-# Print the default WASM path (deploy artifact, contractspecv0 stripped).
+# Print the default WASM path (optimized artifact with contractspec metadata).
 wasm-path:
 	@echo "{{default_wasm}}"
 
@@ -216,7 +226,7 @@ network-init:
 	passphrase="${SOROBAN_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"; \
 	if ! command -v stellar >/dev/null 2>&1; then \
 		echo "Error: stellar CLI not found. Install with:"; \
-		echo "  cargo install --locked stellar-cli --features opt"; \
+		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
 		exit 1; \
 	fi; \
 	echo "Configuring network: $network"; \
@@ -332,17 +342,14 @@ deploy-share-token:
 		echo "Run: just build"; \
 		exit 1; \
 	fi; \
-	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	if [ -z "$admin" ]; then \
-		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	fi; \
+	admin="$vault_id"; \
 	name="${SOROBAN_SHARE_NAME:-Templar Vault Share}"; \
 	symbol="${SOROBAN_SHARE_SYMBOL:-tvSHARE}"; \
 	decimals="${SOROBAN_SHARE_DECIMALS:-7}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying share token contract..."; \
-	echo "  Admin: $admin"; \
+	echo "  Admin: $admin (vault-bound)"; \
 	echo "  Vault: $vault_id"; \
 	share_id=$(stellar contract deploy \
 		--wasm "$wasm" \
@@ -379,7 +386,16 @@ deploy-governance:
 	if [ -z "$admin" ]; then \
 		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
-	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-0}"; \
+	timelock_ns="${SOROBAN_GOV_TIMELOCK_NS:-}"; \
+	if [ -z "$timelock_ns" ]; then \
+		echo "Error: set SOROBAN_GOV_TIMELOCK_NS before deploying governance."; \
+		echo "For ephemeral local testing only, set SOROBAN_GOV_TIMELOCK_NS=0 and SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1."; \
+		exit 1; \
+	fi; \
+	if [ "$timelock_ns" = "0" ] && [ "${SOROBAN_ALLOW_ZERO_GOV_TIMELOCK:-0}" != "1" ]; then \
+		echo "Error: zero governance timelock requires SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1."; \
+		exit 1; \
+	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying governance contract..."; \
@@ -415,7 +431,8 @@ init:
 	fi; \
 	governance="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
 	if [ -z "$governance" ]; then \
-		governance="$curator"; \
+		echo "Error: No governance contract. Run 'just deploy-governance' first or set SOROBAN_GOVERNANCE"; \
+		exit 1; \
 	fi; \
 	asset_token="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 	if [ -z "$asset_token" ]; then \
@@ -424,8 +441,11 @@ init:
 	fi; \
 	share_token="${SOROBAN_SHARE_TOKEN:-$(cat {{state_dir}}/share_token_id 2>/dev/null)}"; \
 	if [ -z "$share_token" ]; then \
-		share_token="$contract_id"; \
+		echo "Error: No share token. Run 'just deploy-share-token' first or set SOROBAN_SHARE_TOKEN"; \
+		exit 1; \
 	fi; \
+	virtual_shares="${SOROBAN_VIRTUAL_SHARES:-0}"; \
+	virtual_assets="${SOROBAN_VIRTUAL_ASSETS:-0}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Initializing vault..."; \
@@ -433,6 +453,7 @@ init:
 	echo "  Governance:  $governance"; \
 	echo "  Asset Token: $asset_token"; \
 	echo "  Share Token: $share_token"; \
+	echo "  Virtual:     shares=$virtual_shares assets=$virtual_assets"; \
 	if ! stellar contract invoke \
 		--id "$contract_id" \
 		--network "$network" \
@@ -441,7 +462,9 @@ init:
 		--curator "$curator" \
 		--governance "$governance" \
 		--asset_token "$asset_token" \
-		--share_token "$share_token"; then \
+		--share_token "$share_token" \
+		--virtual_shares "$virtual_shares" \
+		--virtual_assets "$virtual_assets"; then \
 		echo "Error: vault initialize failed"; \
 		exit 1; \
 	fi; \
@@ -489,9 +512,9 @@ deploy-blend-adapter pool_address:
 		echo "Error: Vault not deployed. Run 'just deploy' first."; \
 		exit 1; \
 	fi; \
-	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then \
-		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+		admin="$vault_id"; \
 	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
@@ -548,21 +571,6 @@ blend-adapter-pool:
 blend-adapter-total-assets asset_address:
 	@just blend-invoke total_assets --asset "{{asset_address}}"
 
-# Update the Blend pool address (admin only).
-blend-adapter-set-pool new_pool:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Updating Blend adapter pool to {{new_pool}}..."; \
-	just blend-invoke set_pool --caller "$admin" --pool "{{new_pool}}"; \
-	echo "{{new_pool}}" > "{{state_dir}}/blend_pool_id"; \
-	echo "✓ Pool updated"
-
-# Update the Blend adapter's vault reference (admin only).
-blend-adapter-set-vault new_vault:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Updating Blend adapter vault to {{new_vault}}..."; \
-	just blend-invoke set_vault --caller "$admin" --vault "{{new_vault}}"; \
-	echo "✓ Vault updated"
-
 # Rescue stuck assets from the adapter (vault only - for emergencies).
 blend-adapter-rescue asset amount receiver:
 	@vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
@@ -587,28 +595,7 @@ blend-adapter-extend-ttl ledgers="100000":
 		--ledgers-to-extend {{ledgers}}; \
 	echo "✓ TTL extended"
 
-# Supply tokens from adapter into the Blend pool (admin-only).
-# Tokens must already be on the adapter address.
-blend-supply asset amount:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Supplying {{amount}} to Blend pool..."; \
-	just blend-invoke supply_balance \
-		--caller "$admin" \
-		--asset "{{asset}}" \
-		--amount "{{amount}}"; \
-	echo "✓ Supplied to Blend"
-
-# Withdraw tokens from Blend pool and send to vault (admin-only).
-blend-withdraw asset amount:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Withdrawing {{amount}} from Blend pool to vault..."; \
-	just blend-invoke withdraw_to_vault \
-		--caller "$admin" \
-		--asset "{{asset}}" \
-		--amount "{{amount}}"; \
-	echo "✓ Withdrawn from Blend to vault"
-
-# Transfer tokens to the adapter address (for funding before blend-supply).
+# Transfer tokens to the adapter address for operator-managed recovery workflows.
 fund-adapter amount:
 	@asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
@@ -637,6 +624,21 @@ blend-adapter-status:
 		echo "Pool:       $(just blend-invoke pool 2>/dev/null || echo 'error')"; \
 	fi
 
+# Propose a new Blend adapter admin contract.
+blend-adapter-set-admin new_admin:
+	@admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then admin="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; fi; \
+	echo "Proposing Blend adapter admin: {{new_admin}}"; \
+	just blend-invoke set_admin --caller "$admin" --admin "{{new_admin}}"
+
+# Accept a pending Blend adapter admin proposal.
+blend-adapter-accept-admin caller:
+	@just blend-invoke accept_admin --caller "{{caller}}"
+
+# Get pending Blend adapter admin.
+blend-adapter-pending-admin:
+	@just blend-invoke pending_admin
+
 # =============================================================================
 # CORE OPERATIONS
 # =============================================================================
@@ -656,6 +658,12 @@ invoke *args:
 		--source-account "$source" \
 		-- {{args}}
 
+# Invoke the current compact VaultCommand ABI.
+vault-execute *args:
+	@payload=$(python3 "{{payload_script}}" vault {{args}}); \
+	echo "VaultCommand payload: $payload"; \
+	just invoke execute --payload "$payload"
+
 # Generic governance contract invocation.
 gov-invoke *args:
 	@gov_id="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
@@ -671,6 +679,21 @@ gov-invoke *args:
 		--source-account "$source" \
 		-- {{args}}
 
+# Generic share-token contract invocation.
+share-invoke *args:
+	@share_id="${SOROBAN_SHARE_TOKEN:-$(cat {{state_dir}}/share_token_id 2>/dev/null)}"; \
+	if [ -z "$share_id" ]; then \
+		echo "Error: No share token ID. Set SOROBAN_SHARE_TOKEN or run 'just deploy-share-token'"; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	stellar contract invoke \
+		--id "$share_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- {{args}}
+
 # =============================================================================
 # DEPOSIT OPERATIONS
 # =============================================================================
@@ -679,11 +702,11 @@ gov-invoke *args:
 # Usage: just deposit <owner> <receiver> <assets> [min_shares_out]
 deposit owner receiver assets min_shares_out="0":
 	@echo "Depositing {{assets}} assets..."
-	@just invoke deposit_with_min \
+	@just vault-execute deposit-with-min \
 		--owner "{{owner}}" \
 		--receiver "{{receiver}}" \
 		--assets "{{assets}}" \
-		--min_shares_out "{{min_shares_out}}"
+		--min-shares-out "{{min_shares_out}}"
 	@echo "✓ Deposit complete"
 
 # Deposit using the current identity as both owner and receiver.
@@ -707,11 +730,11 @@ demo-deposit:
 # Usage: just request-withdraw <owner> <receiver> <shares> [min_assets_out]
 request-withdraw owner receiver shares min_assets_out="0":
 	@echo "Requesting withdrawal of {{shares}} shares..."
-	@just invoke request_withdraw \
+	@just vault-execute request-withdraw \
 		--owner "{{owner}}" \
 		--receiver "{{receiver}}" \
 		--shares "{{shares}}" \
-		--min_assets_out "{{min_assets_out}}"
+		--min-assets-out "{{min_assets_out}}"
 	@echo "✓ Withdrawal requested"
 
 # Request withdrawal using current identity.
@@ -724,8 +747,15 @@ request-withdraw-self shares min_assets_out="0":
 execute-withdraw:
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo "Executing pending withdrawal..."; \
-	just invoke execute_withdraw --caller "$addr"
+	just vault-execute execute-withdraw --caller "$addr"
 	@echo "✓ Withdrawal executed"
+
+# Abort an in-progress withdrawal operation.
+abort-withdrawing op_id:
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	echo "Aborting withdrawal operation {{op_id}}..."; \
+	just vault-execute abort-withdrawing --caller "$addr" --op-id "{{op_id}}"
+	@echo "✓ Withdrawal abort submitted"
 
 # Demo: Request withdrawal of 500 shares and execute.
 demo-withdraw:
@@ -738,17 +768,10 @@ demo-withdraw:
 	@echo ""
 	@just vault-state
 
-# Atomic withdraw (immediate, requires idle vault with sufficient assets).
-# Usage: just withdraw <assets> <receiver> <owner>
-withdraw assets receiver owner:
-	@echo "Atomic withdrawal of {{assets}} assets..."
-	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	just invoke withdraw \
-		--assets "{{assets}}" \
-		--receiver "{{receiver}}" \
-		--owner "{{owner}}" \
-		--operator "$addr"
-	@echo "✓ Withdrawal complete"
+# Atomic withdraw/redeem is not exposed by the current vault ABI.
+withdraw:
+	@echo "Atomic withdraw is not available in the current Soroban vault ABI."
+	@echo "Use: just request-withdraw-self <shares> && just execute-withdraw"
 
 # =============================================================================
 # ALLOCATOR OPERATIONS (Privileged)
@@ -757,61 +780,66 @@ withdraw assets receiver owner:
 # Supply assets to a market.
 # Allocate supply to a market via adapter (accounting + transfer + adapter.supply).
 allocate-supply market_id amount:
-	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
-	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
-	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
-	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
-	addr="$(stellar keys address "$source")"; \
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo "Allocating {{amount}} to market {{market_id}}..."; \
-	stellar contract invoke \
-		--id "$contract_id" \
-		--network "$network" \
-		--source-account "$source" \
-		-- allocate_supply \
+	just vault-execute allocate \
 		--caller "$addr" \
-		--adapter "$adapter" \
 		--market "{{market_id}}" \
-		--amount "{{amount}}"
+		--amount "{{amount}}" \
+		--supply
 	@echo "✓ Supply complete"
 
 # Withdraw from a market via adapter (adapter.withdraw + accounting).
 allocate-withdraw market_id amount:
-	@contract_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
-	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
-	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
-	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
-	addr="$(stellar keys address "$source")"; \
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo "Withdrawing {{amount}} from market {{market_id}}..."; \
-	stellar contract invoke \
-		--id "$contract_id" \
-		--network "$network" \
-		--source-account "$source" \
-		--instruction-leeway 5000000 \
-		-- allocate_withdraw \
+	just vault-execute allocate \
 		--caller "$addr" \
-		--adapter "$adapter" \
 		--market "{{market_id}}" \
-		--amount "{{amount}}"
+		--amount "{{amount}}" \
+		--no-supply
 	@echo "✓ Withdraw complete"
+
+# Refresh market accounting for a JSON list of market ids.
+refresh-markets markets_json:
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	echo "Refreshing markets {{markets_json}}..."; \
+	just vault-execute refresh-markets --caller "$addr" --markets '{{markets_json}}'
+
+# Refresh fee anchor and crystallize accrued fees.
+refresh-fees:
+	@just vault-execute refresh-fees
+
+# Reconcile idle balance with the underlying token balance.
+resync-idle-balance:
+	@just vault-execute resync-idle-balance
+
+# Extend vault instance storage through the contract command surface.
+vault-extend-storage:
+	@just vault-execute extend-ttl
 
 # Full end-to-end flow:
 # deposit -> withdraw -> deposit -> allocate -> withdraw -> allocate(withdraw) -> withdraw
 demo-e2e-full:
 	@echo "=== FULL E2E FLOW (ON-CHAIN) ==="
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	echo "0) configure supply queue"; \
-	just set-supply-queue '[0]'; \
+	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
+	if [ -z "$adapter" ]; then echo "Error: deploy Blend adapter first or set BLEND_ADAPTER_ID"; exit 1; fi; \
+	echo "0) allow adapter and configure supply queue"; \
+	just set-allowed-adapters "[\"$adapter\"]"; \
+	just set-supply-queue '[0]' "[\"$adapter\"]"; \
 	echo "1) deposit"; \
 	just deposit "$addr" "$addr" 2000000 0; \
-	echo "2) withdraw (idle)"; \
-	just withdraw 200000 "$addr" "$addr"; \
-	echo "3) deposit"; \
+	echo "2) request and execute idle withdrawal"; \
+	just request-withdraw "$addr" "$addr" 200000 0; \
+	if ! just execute-withdraw; then \
+		echo "NOTE: execute_withdraw may be blocked by cooldown; re-run 'just execute-withdraw' later."; \
+	fi; \
+	echo "3) deposit again"; \
 	just deposit "$addr" "$addr" 1000000 0; \
 	echo "4) allocator supplies to market"; \
 	just allocate-supply 0 1500000; \
-	echo "5) withdraw (idle)"; \
-	just withdraw 300000 "$addr" "$addr"; \
-	echo "6) user requests withdrawal, allocator withdraws from market"; \
+	echo "5) user requests withdrawal, allocator withdraws from market"; \
 	just request-withdraw "$addr" "$addr" 1500000 0; \
 	if just execute-withdraw; then \
 		echo "execute_withdraw completed immediately"; \
@@ -819,7 +847,7 @@ demo-e2e-full:
 		echo "execute_withdraw pending (cooldown/insufficient idle), continuing..."; \
 	fi; \
 	just allocate-withdraw 0 1000000; \
-	echo "7) user withdraws queued request (execute after cooldown)"; \
+	echo "6) user withdraws queued request (execute after cooldown)"; \
 	if ! just execute-withdraw; then \
 		echo "NOTE: execute_withdraw still blocked by cooldown; re-run 'just execute-withdraw' after cooldown window."; \
 	fi; \
@@ -831,20 +859,20 @@ demo-e2e-finalize:
 	@just execute-withdraw
 	@just vault-state
 
-# Full Blend integration e2e (direct adapter invocation):
-# deposit -> set supply queue -> supply_to_market -> verify -> withdraw_from_market -> vault withdraw
+# Full Blend integration e2e through vault-routed adapter commands.
+# deposit -> configure adapter/queue -> allocate -> refresh/verify -> deallocate -> queued withdraw
 demo-e2e-blend:
 	@echo "=== BLEND INTEGRATION E2E (direct invocation) ==="
 	@asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 	adapter="${BLEND_ADAPTER_ID:-$(cat {{state_dir}}/blend_adapter_id 2>/dev/null)}"; \
 	addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo ""; \
-	echo "--- Step 1: Register Blend adapter in vault address book ---"; \
-	just register-address "$adapter"; \
+	echo "--- Step 1: Allow Blend adapter through governance ---"; \
+	just set-allowed-adapters "[\"$adapter\"]"; \
 	sleep 4; \
 	echo ""; \
 	echo "--- Step 2: Configure supply queue via governance ---"; \
-	just set-supply-queue '[0]'; \
+	just set-supply-queue '[0]' "[\"$adapter\"]"; \
 	sleep 4; \
 	echo ""; \
 	echo "--- Step 3: Deposit 2 XLM (20000000 stroops) into vault ---"; \
@@ -869,8 +897,11 @@ demo-e2e-blend:
 	just allocate-withdraw 0 10000000; \
 	sleep 4; \
 	echo ""; \
-	echo "--- Step 7: Withdraw from vault ---"; \
-	just withdraw 5000000 "$addr" "$addr"; \
+	echo "--- Step 7: Request and execute vault withdrawal ---"; \
+	just request-withdraw "$addr" "$addr" 5000000 0; \
+	if ! just execute-withdraw; then \
+		echo "NOTE: execute_withdraw may be blocked by cooldown; re-run 'just execute-withdraw' later."; \
+	fi; \
 	echo ""; \
 	echo "=== Final vault state ==="; \
 	just vault-state; \
@@ -885,59 +916,60 @@ demo-e2e-blend:
 pause:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
 	echo "Pausing vault..."; \
-	just invoke set_paused --caller "$admin" --paused true; \
+	proposal_id=$(just gov-invoke submit_set_paused --caller "$admin" --paused true 2>/dev/null | tail -1); \
+	echo "  Submitted proposal: $proposal_id"; \
+	sleep 6; \
+	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Vault paused"
 
 # Unpause the vault (admin only).
 unpause:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
 	echo "Unpausing vault..."; \
-	just invoke set_paused --caller "$admin" --paused false; \
+	proposal_id=$(just gov-invoke submit_set_paused --caller "$admin" --paused false 2>/dev/null | tail -1); \
+	echo "  Submitted proposal: $proposal_id"; \
+	sleep 6; \
+	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Vault unpaused"
 
-# Register an address in the vault's address book (curator-only).
-# This maps a kernel address index to a Soroban contract/account address.
+# Historical helper kept as a guardrail: address-book registration is no longer public ABI.
 register-address address:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Registering address {{address}} in vault..."; \
-	just invoke register_address \
-		--caller "$admin" \
-		--address "{{address}}"; \
-	echo "✓ Address registered"
+	@echo "register_address is not exposed by the current vault ABI."
+	@echo "Use governance recipes such as set-allowed-adapters and set-supply-queue instead."
+	@exit 1
 
-set-curator new_curator:
-	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
-	echo "Setting curator to {{new_curator}}..."; \
-	just invoke set_curator --caller "$admin" --new_curator "{{new_curator}}"; \
-	mkdir -p "{{state_dir}}"; \
-	echo "{{new_curator}}" > "{{state_dir}}/admin_address"; \
-	echo "✓ Curator updated"
-
-# Set supply queue via governance (submit + accept).
-# Requires governance contract deployed with timelock=0 for instant acceptance.
-set-supply-queue target_ids_json:
+# Set allowed adapters via governance (submit + accept).
+set-allowed-adapters adapters_json:
 	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then \
 		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	fi; \
-	echo "Setting supply queue via governance: {{target_ids_json}}"; \
+	echo "Setting allowed adapters via governance: {{adapters_json}}"; \
+	proposal_id=$(just gov-invoke submit_set_allowed_adapters \
+		--caller "$admin" \
+		--adapters '{{adapters_json}}' 2>/dev/null | tail -1); \
+	echo "  Submitted proposal: $proposal_id"; \
+	sleep 6; \
+	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
+	echo "✓ Allowed adapters updated"
+
+# Set supply queue via governance (submit + accept).
+# For instant local acceptance, deploy governance with SOROBAN_GOV_TIMELOCK_NS=0 and
+# SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1.
+set-supply-queue entries_json:
+	@admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	echo "Setting supply queue via governance: entries={{entries_json}}"; \
 	proposal_id=$(just gov-invoke submit_set_supply_queue \
 		--caller "$admin" \
-		--target_ids "{{target_ids_json}}" 2>/dev/null | tail -1); \
+		--entries '{{entries_json}}' 2>/dev/null | tail -1); \
 	echo "  Submitted proposal: $proposal_id"; \
 	echo "  Waiting for ledger confirmation..."; \
 	sleep 6; \
 	just gov-invoke accept --caller "$admin" --proposal_id "$proposal_id"; \
 	echo "✓ Supply queue updated"
-
-# Set share token metadata (SEP-41).
-set-metadata name="Templar Vault Share" symbol="tvSHARE" decimals="7":
-	@echo "Setting share token metadata..."
-	@just invoke set_metadata \
-		--name "{{name}}" \
-		--symbol "{{symbol}}" \
-		--decimals "{{decimals}}"
-	@echo "✓ Metadata set"
 
 # =============================================================================
 # VIEW FUNCTIONS (Read-only)
@@ -946,58 +978,91 @@ set-metadata name="Templar Vault Share" symbol="tvSHARE" decimals="7":
 # Get vault state summary.
 vault-state:
 	@echo "=== Vault State ==="
-	@echo "Total Assets:  $(just invoke total_assets 2>/dev/null || echo 'error')"
-	@snapshot="$(just invoke vault_snapshot 2>/dev/null || echo 'error')"; \
-	echo "Snapshot:      $snapshot"
-	@echo "Paused:        $(just invoke is_paused 2>/dev/null || echo 'error')"
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	if [ -z "$addr" ]; then echo "Error: no identity/admin address available"; exit 1; fi; \
+	just proxy-view "$addr" 0 0
+
+# Raw vault proxy view.
+proxy-view owner assets="0" shares="0":
+	@just invoke proxy_view --owner "{{owner}}" --assets "{{assets}}" --shares "{{shares}}"
 
 # Get admin address.
 admin:
-	@just invoke curator
+	@echo "Curator/governance addresses are returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Get asset token address.
 asset-token:
-	@just invoke asset_token
+	@echo "Asset token is returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Get share token address.
 share-token:
-	@just invoke share_token
+	@cat "{{state_dir}}/share_token_id" 2>/dev/null || echo "${SOROBAN_SHARE_TOKEN:-}"
 
 supply-queue:
-	@just invoke supply_queue
+	@echo "Supply queue is returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Get total assets under management.
 total-assets:
-	@just invoke total_assets
+	@echo "Totals are returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Get total shares issued.
 total-shares:
-	@just invoke total_shares
+	@just share-invoke total_supply
 
 # Get idle (unallocated) assets.
 idle-assets:
-	@just invoke idle_assets
+	@echo "Idle assets are returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Check if vault is paused.
 is-paused:
-	@just invoke is_paused
+	@echo "Paused state is returned by proxy-view."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null || cat {{state_dir}}/admin_address 2>/dev/null || true)"; \
+	just proxy-view "$addr" 0 0
 
 # Get share balance for an address.
 balance-of addr:
-	@just invoke balance_of --address "{{addr}}"
+	@just share-invoke balance --account "{{addr}}"
 
 # Get share balance for current identity.
 my-balance:
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	just invoke balance_of --address "$addr"
+	just share-invoke balance --account "$addr"
 
 # Preview shares for a deposit amount.
 preview-deposit assets:
-	@just invoke preview_deposit --assets "{{assets}}"
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	just proxy-view "$addr" "{{assets}}" 0
 
 # Preview assets for a withdrawal amount.
 preview-withdraw shares:
-	@just invoke preview_withdraw --shares "{{shares}}"
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	just proxy-view "$addr" 0 "{{shares}}"
+
+# Get share-token admin.
+share-token-admin:
+	@just share-invoke admin
+
+# Get share-token pending admin.
+share-token-pending-admin:
+	@just share-invoke pending_admin
+
+# Get share-token vault binding.
+share-token-vault:
+	@just share-invoke vault
+
+# Get share-token paused state.
+share-token-paused:
+	@just share-invoke paused
 
 # =============================================================================
 # UTILITIES
@@ -1071,7 +1136,7 @@ help:
 	@echo ""
 	@echo "QUICK START:"
 	@echo "  just setup                    Full setup (build, network, keys, fund)"
-	@echo "  just deploy-all               Deploy vault + test token, initialize"
+	@echo "  just deploy-all               Deploy vault + share token + governance + test token, initialize"
 	@echo "  just deploy-all-with-blend <pool>  Deploy with Blend adapter"
 	@echo "  just demo-deposit             Run deposit demonstration"
 	@echo "  just demo-withdraw            Run withdrawal demonstration"
@@ -1104,9 +1169,8 @@ help:
 	@echo "  just blend-adapter-total-assets <asset>  Query pool position"
 	@echo "  just allocate-supply <mkt> <amt>  Supply to market via adapter"
 	@echo "  just allocate-withdraw <mkt> <amt>  Withdraw from market via adapter"
-	@echo "  just blend-supply <asset> <amt>  Supply tokens to Blend pool (manual)"
-	@echo "  just blend-withdraw <asset> <amt>  Withdraw from Blend (manual)"
 	@echo "  just fund-adapter <amount>       Transfer tokens to adapter (manual)"
+	@echo "  just blend-adapter-set-admin <admin_contract>"
 	@echo "  just demo-e2e-blend              Full Blend integration e2e"
 	@echo ""
 	@echo "DEPOSITS:"
@@ -1117,22 +1181,26 @@ help:
 	@echo "  just request-withdraw <owner> <receiver> <shares> [min_assets]"
 	@echo "  just request-withdraw-self <shares> [min_assets]"
 	@echo "  just execute-withdraw"
-	@echo "  just withdraw <assets> <receiver> <owner>"
+	@echo "  just abort-withdrawing <op_id>"
 	@echo ""
 	@echo "ALLOCATOR:"
 	@echo "  just allocate-supply <market_id> <amount>"
 	@echo "  just allocate-withdraw <market_id> <amount>"
-	@echo "  just set-supply-queue '<json_target_ids>'"
+	@echo "  just refresh-markets '<json_market_ids>'"
+	@echo "  just refresh-fees / resync-idle-balance"
+	@echo "  just set-allowed-adapters '<json_adapters>'"
+	@echo "  just set-supply-queue '<json_entries>'"
 	@echo ""
 	@echo "ADMIN:"
 	@echo "  just pause / unpause"
-	@echo "  just set-curator <new_curator_address>"
-	@echo "  just set-metadata [name] [symbol] [decimals]"
+	@echo "  just vault-extend-storage"
 	@echo ""
 	@echo "VIEW:"
 	@echo "  just vault-state              Show vault summary"
+	@echo "  just proxy-view <owner> [assets] [shares]"
 	@echo "  just supply-queue             Show configured supply queue"
 	@echo "  just my-balance               Show share balance"
+	@echo "  just share-token-admin / share-token-vault"
 	@echo "  just status                   Show deployment status"
 	@echo ""
 	@echo "For full command list: just --list"

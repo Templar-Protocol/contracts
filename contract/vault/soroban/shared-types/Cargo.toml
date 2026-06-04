@@ -14,6 +14,6 @@ default = []
 testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
-soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

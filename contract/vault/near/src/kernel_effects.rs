@@ -487,7 +487,7 @@ mod tests {
         let mut c = new_test_contract(&vault_id);
 
         let alice = mk(1);
-        let ctx = context_for(&[alice.clone()]);
+        let ctx = context_for(std::slice::from_ref(&alice));
 
         let effects = vec![KernelEffect::TransferAssets {
             to: account_id_to_address(&alice),
@@ -503,7 +503,7 @@ mod tests {
         let mut c = new_test_contract(&vault_id);
 
         let alice = mk(1);
-        let ctx = context_for(&[alice.clone()]);
+        let ctx = context_for(std::slice::from_ref(&alice));
 
         let effects = vec![KernelEffect::ExternalCall {
             target: account_id_to_address(&alice),

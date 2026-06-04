@@ -1662,7 +1662,7 @@ version = "2.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdf0e34a9219e894aa1f14b212bdad5111e7e695743b447e0290d744f083601e"
 dependencies = [
- "soroban-sdk 25.3.0",
+ "soroban-sdk",
 ]
 
 [[package]]
@@ -11209,18 +11209,6 @@ dependencies = [
 
 [[package]]
 name = "soroban-builtin-sdk-macros"
-version = "23.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9336adeabcd6f636a4e0889c8baf494658ef5a3c4e7e227569acd2ce9091e85"
-dependencies = [
- "itertools 0.10.5",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "soroban-builtin-sdk-macros"
 version = "25.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7192e3a5551a7aeee90d2110b11b615798e81951fd8c8293c87ea7f88b0168f5"
@@ -11250,25 +11238,6 @@ dependencies = [
 
 [[package]]
 name = "soroban-env-common"
-version = "23.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00067f52e8bbf1abf0de03fe3e2fbb06910893cfbe9a7d9093d6425658833ff3"
-dependencies = [
- "arbitrary",
- "crate-git-revision",
- "ethnum",
- "num-derive",
- "num-traits",
- "serde",
- "soroban-env-macros 23.0.1",
- "soroban-wasmi",
- "static_assertions",
- "stellar-xdr 23.0.0",
- "wasmparser 0.116.1",
-]
-
-[[package]]
-name = "soroban-env-common"
 version = "25.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfc49a80a68fc1005847308e63b9fce39874de731940b1807b721d472de3ff01"
@@ -11279,7 +11248,7 @@ dependencies = [
  "num-derive",
  "num-traits",
  "serde",
- "soroban-env-macros 25.0.1",
+ "soroban-env-macros",
  "soroban-wasmi",
  "static_assertions",
  "stellar-xdr 25.0.0",
@@ -11288,58 +11257,12 @@ dependencies = [
 
 [[package]]
 name = "soroban-env-guest"
-version = "23.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccd1e40963517b10963a8e404348d3fe6caf9c278ac47a6effd48771297374d6"
-dependencies = [
- "soroban-env-common 23.0.1",
- "static_assertions",
-]
-
-[[package]]
-name = "soroban-env-guest"
 version = "25.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2334ba1cfe0a170ab744d96db0b4ca86934de9ff68187ceebc09dc342def55"
 dependencies = [
- "soroban-env-common 25.0.1",
+ "soroban-env-common",
  "static_assertions",
-]
-
-[[package]]
-name = "soroban-env-host"
-version = "23.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9766c5ad78e9d8ae10afbc076301f7d610c16407a1ebb230766dbe007a48725"
-dependencies = [
- "ark-bls12-381",
- "ark-ec",
- "ark-ff 0.4.2",
- "ark-serialize 0.4.2",
- "curve25519-dalek",
- "ecdsa",
- "ed25519-dalek",
- "elliptic-curve",
- "generic-array",
- "getrandom 0.2.17",
- "hex-literal",
- "hmac",
- "k256",
- "num-derive",
- "num-integer",
- "num-traits",
- "p256",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
- "sec1",
- "sha2 0.10.9",
- "sha3",
- "soroban-builtin-sdk-macros 23.0.1",
- "soroban-env-common 23.0.1",
- "soroban-wasmi",
- "static_assertions",
- "stellar-strkey 0.0.13",
- "wasmparser 0.116.1",
 ]
 
 [[package]]
@@ -11371,27 +11294,12 @@ dependencies = [
  "sec1",
  "sha2 0.10.9",
  "sha3",
- "soroban-builtin-sdk-macros 25.0.1",
- "soroban-env-common 25.0.1",
+ "soroban-builtin-sdk-macros",
+ "soroban-env-common",
  "soroban-wasmi",
  "static_assertions",
  "stellar-strkey 0.0.13",
  "wasmparser 0.116.1",
-]
-
-[[package]]
-name = "soroban-env-macros"
-version = "23.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0e6a1c5844257ce96f5f54ef976035d5bd0ee6edefaf9f5e0bcb8ea4b34228c"
-dependencies = [
- "itertools 0.10.5",
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "stellar-xdr 23.0.0",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -11411,20 +11319,6 @@ dependencies = [
 
 [[package]]
 name = "soroban-ledger-snapshot"
-version = "23.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fea7299402f5f445089fde192cc68587baf0cc6432be300bce99d997fd85b4cb"
-dependencies = [
- "serde",
- "serde_json",
- "serde_with",
- "soroban-env-common 23.0.1",
- "soroban-env-host 23.0.1",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "soroban-ledger-snapshot"
 version = "25.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "760124fb65a2acdea7d241b8efdfab9a39287ae8dc5bf8feb6fd9dfb664c1ad5"
@@ -11432,33 +11326,9 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "soroban-env-common 25.0.1",
- "soroban-env-host 25.0.1",
+ "soroban-env-common",
+ "soroban-env-host",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "soroban-sdk"
-version = "23.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd1e11f9fd537f9df29ec1a66c1b78d666094df56e196565d292ebf9a72732b4"
-dependencies = [
- "arbitrary",
- "bytes-lit",
- "crate-git-revision",
- "ctor",
- "derive_arbitrary",
- "ed25519-dalek",
- "rand 0.8.5",
- "rustc_version 0.4.1",
- "serde",
- "serde_json",
- "soroban-env-guest 23.0.1",
- "soroban-env-host 23.0.1",
- "soroban-ledger-snapshot 23.5.3",
- "soroban-sdk-macros 23.5.3",
- "stellar-strkey 0.0.16",
- "visibility",
 ]
 
 [[package]]
@@ -11477,32 +11347,12 @@ dependencies = [
  "rustc_version 0.4.1",
  "serde",
  "serde_json",
- "soroban-env-guest 25.0.1",
- "soroban-env-host 25.0.1",
- "soroban-ledger-snapshot 25.3.0",
- "soroban-sdk-macros 25.3.0",
+ "soroban-env-guest",
+ "soroban-env-host",
+ "soroban-ledger-snapshot",
+ "soroban-sdk-macros",
  "stellar-strkey 0.0.16",
  "visibility",
-]
-
-[[package]]
-name = "soroban-sdk-macros"
-version = "23.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa7114e2f031b6fbd30376e844f3c55f6daf56f6f9d33ce309f846ffced316d"
-dependencies = [
- "darling 0.20.11",
- "heck 0.5.0",
- "itertools 0.10.5",
- "macro-string",
- "proc-macro2",
- "quote",
- "sha2 0.10.9",
- "soroban-env-common 23.0.1",
- "soroban-spec 23.5.3",
- "soroban-spec-rust 23.5.3",
- "stellar-xdr 23.0.0",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -11518,23 +11368,11 @@ dependencies = [
  "proc-macro2",
  "quote",
  "sha2 0.10.9",
- "soroban-env-common 25.0.1",
- "soroban-spec 25.3.0",
- "soroban-spec-rust 25.3.0",
+ "soroban-env-common",
+ "soroban-spec",
+ "soroban-spec-rust",
  "stellar-xdr 25.0.0",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "soroban-spec"
-version = "23.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1303589e67e7c76d0571b8d797b75f9fa33a1ceb1b4361a981570a3ebf00ac19"
-dependencies = [
- "base64 0.22.1",
- "stellar-xdr 23.0.0",
- "thiserror 1.0.69",
- "wasmparser 0.116.1",
 ]
 
 [[package]]
@@ -11552,22 +11390,6 @@ dependencies = [
 
 [[package]]
 name = "soroban-spec-rust"
-version = "23.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956188f28b750b80a2bb4cd5698038746edae1be51ec19a29c7efc6dcd922e5f"
-dependencies = [
- "prettyplease 0.2.37",
- "proc-macro2",
- "quote",
- "sha2 0.10.9",
- "soroban-spec 23.5.3",
- "stellar-xdr 23.0.0",
- "syn 2.0.117",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "soroban-spec-rust"
 version = "25.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93c558bca7a693ec8ed67d2d8c8f5b300f3772141d619a4a694ad5dd48461256"
@@ -11576,7 +11398,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "sha2 0.10.9",
- "soroban-spec 25.3.0",
+ "soroban-spec",
  "stellar-xdr 25.0.0",
  "syn 2.0.117",
  "thiserror 1.0.69",
@@ -12324,6 +12146,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-access"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec08d321dff797b611228fea28527311f2f03721cb264433490f711d5afd1d6"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "stellar-base"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12372,10 +12203,31 @@ dependencies = [
 
 [[package]]
 name = "stellar-contract-utils"
-version = "0.5.0"
-source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acd8001a84e189032af6d8d17355a923d98ea97917064d6e6003ff3e5accb0f5"
 dependencies = [
- "soroban-sdk 23.5.3",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-governance"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783d933cb0ff013020315cc37272d6cf1361b8fe4f5e97407e2a716f51a3e5bb"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
+name = "stellar-macros"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad14d3698274547aa5a61874c986855c549231f95b39c0de03b0bd96b6bcac9f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -12413,30 +12265,13 @@ dependencies = [
 
 [[package]]
 name = "stellar-tokens"
-version = "0.5.0"
-source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
-dependencies = [
- "soroban-sdk 23.5.3",
- "stellar-contract-utils",
-]
-
-[[package]]
-name = "stellar-xdr"
-version = "23.0.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89d2848e1694b0c8db81fd812bfab5ea71ee28073e09ccc45620ef3cf7a75a9b"
+checksum = "324600b7c2f7bfbc3bda9b793ea097155108ce8b36e2d27052c933367aafdc54"
 dependencies = [
- "arbitrary",
- "base64 0.22.1",
- "cfg_eval",
- "crate-git-revision",
- "escape-bytes",
- "ethnum",
- "hex",
- "serde",
- "serde_with",
- "sha2 0.10.9",
- "stellar-strkey 0.0.13",
+ "soroban-sdk",
+ "stellar-contract-utils",
+ "stellar-governance",
 ]
 
 [[package]]
@@ -12992,6 +12827,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-governance-kernel"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "templar-primitives",
+]
+
+[[package]]
 name = "templar-proxy-oracle-kernel"
 version = "0.1.0"
 dependencies = [
@@ -13044,6 +12890,7 @@ dependencies = [
  "near-sdk",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-governance-kernel",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "thiserror 2.0.18",
@@ -13059,6 +12906,79 @@ dependencies = [
  "templar-common",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-common"
+version = "0.1.0"
+dependencies = [
+ "rstest",
+ "soroban-sdk",
+ "templar-primitives",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-contract"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-macros",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-governance-common"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-primitives",
+ "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-governance-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-access",
+ "templar-primitives",
+ "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-common",
+ "templar-proxy-oracle-soroban-governance-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "blend-contract-sdk",
+ "rstest",
+ "soroban-sdk",
+ "templar-primitives",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-common",
+ "templar-proxy-oracle-soroban-governance-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "stellar-access",
+ "stellar-macros",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
 ]
 
 [[package]]
@@ -13144,7 +13064,8 @@ name = "templar-soroban-blend-adapter"
 version = "0.1.0"
 dependencies = [
  "blend-contract-sdk",
- "soroban-sdk 25.3.0",
+ "soroban-sdk",
+ "stellar-contract-utils",
 ]
 
 [[package]]
@@ -13152,7 +13073,7 @@ name = "templar-soroban-governance"
 version = "0.1.0"
 dependencies = [
  "postcard",
- "soroban-sdk 25.3.0",
+ "soroban-sdk",
  "templar-curator-primitives",
  "templar-soroban-shared-types",
  "templar-vault-kernel",
@@ -13168,9 +13089,10 @@ dependencies = [
  "proptest",
  "rstest",
  "serde",
- "soroban-sdk 25.3.0",
+ "soroban-sdk",
  "templar-curator-primitives",
  "templar-soroban-blend-adapter",
+ "templar-soroban-governance",
  "templar-soroban-runtime",
  "templar-soroban-shared-types",
  "templar-vault-kernel",
@@ -13180,7 +13102,8 @@ dependencies = [
 name = "templar-soroban-share-token"
 version = "0.1.0"
 dependencies = [
- "soroban-sdk 23.5.3",
+ "soroban-sdk",
+ "stellar-contract-utils",
  "stellar-tokens",
 ]
 
@@ -13190,7 +13113,7 @@ version = "0.1.0"
 dependencies = [
  "postcard",
  "serde",
- "soroban-sdk 25.3.0",
+ "soroban-sdk",
 ]
 
 [[package]]
@@ -13314,6 +13237,7 @@ dependencies = [
  "proptest",
  "schemars 0.8.22",
  "serde",
+ "serde_json",
  "templar-vault-kernel",
  "templar-vault-macros",
 ]

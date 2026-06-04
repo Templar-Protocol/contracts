@@ -87,7 +87,7 @@ pub struct RealAssetsReport {
 pub enum IdleResyncOutcome {
     /// Resync succeeded.
     Ok,
-    /// ft_balance_of call failed.
+    /// `ft_balance_of` call failed.
     BalanceReadFailed,
     /// Vault not in expected state.
     UnexpectedState,
@@ -230,7 +230,7 @@ impl From<Fees<U128>> for Fees<Wad> {
 pub struct VaultConfiguration {
     /// The account that owns this vault.
     pub owner: AccountId,
-    /// The account that can submit allocation plans. See [AllocationMode].
+    /// The account that can submit allocation plans. See [`AllocationMode`].
     pub curator: AccountId,
     /// The emergency role that can cancel withdrawals and trigger deallocations.
     pub sentinel: AccountId,
@@ -254,7 +254,7 @@ pub struct VaultConfiguration {
     pub refresh_cooldown_ns: Option<U64>,
     /// Optional cooldown (ns) between `idle_resync` calls; defaults to 120 seconds when `None`.
     pub idle_resync_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 24 hours when `None`.
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 1 hour when `None`.
     pub withdrawal_cooldown_ns: Option<U64>,
 }
 

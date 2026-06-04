@@ -47,7 +47,7 @@ async fn collateral_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
             .unwrap();
     });
 
-    let had_failure = successful_withdrawals.iter().any(|amount| *amount == 0);
+    let had_failure = successful_withdrawals.contains(&0);
     assert!(
         had_failure,
         "At least one withdrawal should fail due to storage unregistration"

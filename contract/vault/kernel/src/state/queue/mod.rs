@@ -21,9 +21,9 @@ pub const MIN_WITHDRAWAL_ASSETS: u128 = 1_000;
 /// with the kernel config limit and avoid ambiguous capacity thresholds.
 pub const MAX_QUEUE_LENGTH: u32 = crate::state::vault::MAX_PENDING as u32;
 
-/// Default cooldown period in nanoseconds (24 hours).
+/// Default cooldown period in nanoseconds (1 hour).
 /// Withdrawals cannot be processed until this time has elapsed.
-pub const DEFAULT_COOLDOWN_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+pub const DEFAULT_COOLDOWN_NS: u64 = 60 * 60 * 1_000_000_000;
 
 /// A pending withdrawal request in the queue.
 ///
@@ -531,6 +531,14 @@ impl PendingWithdrawals {
     #[inline]
     #[must_use]
     pub fn from_sorted_entries(entries: Vec<(u64, PendingWithdrawal)>) -> Self {
+        let mut last_id = None;
+        for (id, _) in &entries {
+            if last_id.is_some_and(|last| last >= *id) {
+                crate::abort!("pending withdrawal entries must be sorted by unique id");
+            }
+            last_id = Some(*id);
+        }
+
         Self {
             entries: entries
                 .into_iter()

@@ -56,8 +56,6 @@ pub struct ContractConfig {
     pub curator: Address,
     /// Vault contract address.
     pub vault_address: Address,
-    /// Guardian addresses (can pause).
-    pub guardians: Vec<Address>,
     /// Allocator addresses (can manage allocations).
     pub allocators: Vec<Address>,
     /// Underlying asset contract address.
@@ -70,6 +68,8 @@ pub struct ContractConfig {
     pub virtual_shares: u128,
     /// Virtual asset offset passed through to kernel conversion math.
     pub virtual_assets: u128,
+    /// Cooldown between withdrawal request and execution, in nanoseconds.
+    pub withdrawal_cooldown_ns: u64,
 }
 
 impl ContractConfig {
@@ -79,7 +79,6 @@ impl ContractConfig {
     pub fn new(
         curator: Address,
         vault_address: Address,
-        guardians: Vec<Address>,
         allocators: Vec<Address>,
         asset_address: Address,
         share_address: Address,
@@ -87,13 +86,13 @@ impl ContractConfig {
         Self {
             curator,
             vault_address,
-            guardians,
             allocators,
             asset_address,
             share_address,
             fees: FeesSpec::zero(),
             virtual_shares: 0,
             virtual_assets: 0,
+            withdrawal_cooldown_ns: super::SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
         }
     }
 
@@ -114,18 +113,19 @@ impl ContractConfig {
         self
     }
 
+    /// Attach withdrawal cooldown configuration.
+    #[inline]
+    #[must_use]
+    pub fn with_withdrawal_cooldown_ns(mut self, withdrawal_cooldown_ns: u64) -> Self {
+        self.withdrawal_cooldown_ns = withdrawal_cooldown_ns;
+        self
+    }
+
     /// Check if the given address is the curator.
     #[inline]
     #[must_use]
     pub fn is_curator(&self, addr: &Address) -> bool {
         &self.curator == addr
-    }
-
-    /// Check if the given address is a guardian.
-    #[inline]
-    #[must_use]
-    pub fn is_guardian(&self, addr: &Address) -> bool {
-        self.guardians.iter().any(|g| g == addr)
     }
 
     /// Check if the given address is an allocator.
@@ -158,14 +158,16 @@ impl VaultDataKey {
     pub const Sentinel: Symbol = soroban_sdk::symbol_short!("sntnl");
     pub const FeesSpec: Symbol = soroban_sdk::symbol_short!("fees");
     pub const Initialized: Symbol = soroban_sdk::symbol_short!("init");
-    pub const Paused: Symbol = soroban_sdk::symbol_short!("paused");
-    pub const Guardians: Symbol = soroban_sdk::symbol_short!("guards");
     pub const Allocators: Symbol = soroban_sdk::symbol_short!("allctrs");
     pub const AllowedAdapters: Symbol = soroban_sdk::symbol_short!("adapters");
+    pub const AdapterBindings: Symbol = soroban_sdk::symbol_short!("adapmap");
     pub const SkimRecipient: Symbol = soroban_sdk::symbol_short!("skimrcp");
     pub const VirtualShares: Symbol = soroban_sdk::symbol_short!("vshares");
     pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");
+    pub const VirtualOffsetsLocked: Symbol = soroban_sdk::symbol_short!("vofflock");
     pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
+    pub const IdleResyncCooldownNs: Symbol = soroban_sdk::symbol_short!("irscd");
+    pub const WithdrawalCooldownNs: Symbol = soroban_sdk::symbol_short!("wdcooldn");
 }
 
 pub struct VaultBootstrap<'a> {

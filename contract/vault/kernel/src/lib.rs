@@ -21,10 +21,11 @@ pub mod types;
 pub mod utils;
 
 pub use actions::{
-    apply_action, convert_to_assets, convert_to_assets_ceil, convert_to_shares,
-    convert_to_shares_ceil, effective_totals, plan_idle_payout, preview_deposit_shares,
-    preview_withdraw_assets, EffectiveTotals, IdlePayoutPlan, KernelAction, KernelResult,
-    PayoutOutcome,
+    apply_action, convert_to_assets, convert_to_assets_bounded, convert_to_assets_ceil,
+    convert_to_assets_ceil_bounded, convert_to_shares, convert_to_shares_bounded,
+    convert_to_shares_ceil, convert_to_shares_ceil_bounded, effective_totals, plan_idle_payout,
+    preview_deposit_shares, preview_withdraw_assets, EffectiveTotals, IdlePayoutPlan, KernelAction,
+    KernelResult, PayoutOutcome,
 };
 pub use address_book::AddressBook;
 pub use fee::{Fee, FeeSlot, Fees, FeesSpec};

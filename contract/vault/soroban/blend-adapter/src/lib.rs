@@ -1,10 +1,12 @@
 #![no_std]
 
 use soroban_sdk::{
+    address_payload::AddressPayload,
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
+use stellar_contract_utils::upgradeable::{self, Upgradeable};
 
 use blend_contract_sdk::pool::{Client as PoolClient, Request};
 
@@ -22,8 +24,10 @@ const RESERVE_STALE_WINDOW_SECS: u64 = 300;
 #[derive(Clone, Debug)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Vault,
     Pool,
+    Paused,
 }
 
 #[contracterror]
@@ -43,6 +47,8 @@ pub enum AdapterError {
     ZeroWithdrawal = 7,
     /// Reserve data is stale.
     StaleReserve = 8,
+    /// Emergency pause is active.
+    Paused = 9,
 }
 
 #[contract]
@@ -52,37 +58,37 @@ pub struct BlendAdapterContract;
 impl BlendAdapterContract {
     /// Runs atomically during contract deployment — no separate `initialize`
     /// transaction that could be front-run.
-    pub fn __constructor(env: Env, admin: Address, vault: Address, pool: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        vault: Address,
+        pool: Address,
+    ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_contract_address(&admin, AdapterError::InvalidInput)?;
+        require_contract_address(&vault, AdapterError::InvalidInput)?;
+        require_contract_address(&pool, AdapterError::InvalidInput)?;
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage().instance().set(&DataKey::Pool, &pool);
-    }
-
-    /// Update the Blend pool contract address (admin-only).
-    #[allow(deprecated)]
-    pub fn set_pool(env: Env, caller: Address, pool: Address) -> Result<(), AdapterError> {
-        extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        require_contract_address(&pool, AdapterError::InvalidInput)?;
-        let old_pool = get_pool(&env)?;
-        env.storage().instance().set(&DataKey::Pool, &pool);
-        env.events()
-            .publish((symbol_short!("pool_upd"), old_pool), pool);
         Ok(())
     }
 
-    /// Update the vault contract address (admin-only).
+    /// Pause or unpause adapter state-changing operations (admin or vault).
     #[allow(deprecated)]
-    pub fn set_vault(env: Env, caller: Address, vault: Address) -> Result<(), AdapterError> {
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        require_contract_address(&vault, AdapterError::InvalidInput)?;
-        let old_vault = get_vault(&env)?;
-        env.storage().instance().set(&DataKey::Vault, &vault);
+        require_admin_or_vault(&env, &caller)?;
+        env.storage().instance().set(&DataKey::Paused, &paused);
         env.events()
-            .publish((symbol_short!("vlt_upd"), old_vault), vault);
+            .publish((symbol_short!("paused"), caller), paused);
         Ok(())
+    }
+
+    pub fn paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused(&env)
     }
 
     /// Supply assets from the adapter into the Blend pool (vault-only).
@@ -94,6 +100,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -149,6 +156,7 @@ impl BlendAdapterContract {
         amount: i128,
     ) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -192,6 +200,7 @@ impl BlendAdapterContract {
         receiver: Address,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
+        require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         if amount <= 0 {
             return Err(AdapterError::InvalidInput);
@@ -247,94 +256,38 @@ impl BlendAdapterContract {
         get_pool(&env)
     }
 
-    /// Supply tokens already on the adapter into the Blend pool (admin-only).
-    ///
-    /// Use this after transferring tokens to the adapter address.
-    /// Flow: admin transfers tokens to adapter → admin calls supply_balance → adapter supplies to pool.
+    /// Propose a new admin. The pending admin must accept in a separate call.
     #[allow(deprecated)]
-    pub fn supply_balance(
-        env: Env,
-        caller: Address,
-        asset: Address,
-        amount: i128,
-    ) -> Result<(), AdapterError> {
+    pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
-        if amount <= 0 {
-            return Err(AdapterError::InvalidInput);
-        }
-
-        let pool = get_pool(&env)?;
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_SUPPLY,
-            address: asset.clone(),
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-
-        env.authorize_as_current_contract(Vec::from_array(
-            &env,
-            [InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: asset.clone(),
-                    fn_name: Symbol::new(&env, "transfer"),
-                    args: (adapter.clone(), pool.clone(), amount).into_val(&env),
-                },
-                sub_invocations: Vec::new(&env),
-            })],
-        ));
-
-        client.submit(&adapter, &adapter, &adapter, &requests);
+        require_contract_address(&admin, AdapterError::InvalidInput)?;
+        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
         env.events()
-            .publish((symbol_short!("supply"), asset), amount);
+            .publish((symbol_short!("admin_set"), caller), admin);
         Ok(())
     }
 
-    /// Withdraw tokens from the Blend pool and send to the vault (admin-only).
-    ///
-    /// Use this when the vault's allocate_withdraw has already updated accounting.
+    /// Accept admin role previously proposed with `set_admin`.
     #[allow(deprecated)]
-    pub fn withdraw_to_vault(
-        env: Env,
-        caller: Address,
-        asset: Address,
-        amount: i128,
-    ) -> Result<i128, AdapterError> {
+    pub fn accept_admin(env: Env, caller: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
-        if amount <= 0 {
-            return Err(AdapterError::InvalidInput);
+        caller.require_auth();
+        let pending_admin = get_pending_admin(&env)?;
+        if caller != pending_admin {
+            return Err(AdapterError::Unauthorized);
         }
-        let vault = get_vault(&env)?;
-
-        let pool = get_pool(&env)?;
-        let client = PoolClient::new(&env, &pool);
-        let adapter = env.current_contract_address();
-        let request = Request {
-            request_type: REQUEST_WITHDRAW,
-            address: asset.clone(),
-            amount,
-        };
-        let mut requests = Vec::new(&env);
-        requests.push_back(request);
-        let token = soroban_sdk::token::Client::new(&env, &asset);
-        let balance_before = token.balance(&adapter);
-        client.submit(&adapter, &adapter, &adapter, &requests);
-
-        let balance_after = token.balance(&adapter);
-        let actual_withdrawn = balance_after
-            .checked_sub(balance_before)
-            .ok_or(AdapterError::ArithmeticUnderflow)?;
-        if actual_withdrawn <= 0 {
-            return Err(AdapterError::ZeroWithdrawal);
-        }
-        token.transfer(&adapter, &vault, &actual_withdrawn);
+        let old_admin = get_admin(&env)?;
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
         env.events()
-            .publish((symbol_short!("withdraw"), asset), actual_withdrawn);
-        Ok(actual_withdrawn)
+            .publish((symbol_short!("admin_acc"), old_admin), caller);
+        Ok(())
+    }
+
+    pub fn pending_admin(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
+        get_pending_admin(&env)
     }
 
     /// Extend instance storage TTL (admin-only).
@@ -342,6 +295,18 @@ impl BlendAdapterContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         Ok(())
+    }
+}
+
+#[contractimpl]
+impl Upgradeable for BlendAdapterContract {
+    #[allow(deprecated)]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        extend_instance_ttl(e);
+        require_admin(e, &operator).unwrap_or_else(|err| panic_with_error!(e, err));
+        upgradeable::upgrade(e, &new_wasm_hash);
+        e.events()
+            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
     }
 }
 
@@ -354,6 +319,10 @@ fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
 
 fn get_admin(env: &Env) -> Result<Address, AdapterError> {
     get_address(env, DataKey::Admin)
+}
+
+fn get_pending_admin(env: &Env) -> Result<Address, AdapterError> {
+    get_address(env, DataKey::PendingAdmin)
 }
 
 fn get_vault(env: &Env) -> Result<Address, AdapterError> {
@@ -382,9 +351,35 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     Ok(())
 }
 
+fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+    caller.require_auth();
+    let admin = get_admin(env)?;
+    let vault = get_vault(env)?;
+    if caller != &admin && caller != &vault {
+        return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) -> Result<(), AdapterError> {
+    if is_paused(env) {
+        return Err(AdapterError::Paused);
+    }
+    Ok(())
+}
+
 fn is_contract_address(addr: &Address) -> bool {
-    let bytes = addr.to_string().to_bytes();
-    matches!(bytes.get(0), Some(b'C'))
+    matches!(
+        AddressPayload::from_address(addr),
+        Some(AddressPayload::ContractIdHash(_))
+    )
 }
 
 fn require_contract_address(addr: &Address, err: AdapterError) -> Result<(), AdapterError> {
@@ -408,20 +403,56 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Events as _};
 
-    fn adapter_event_count(env: &Env, adapter: &Address) -> usize {
+    const BLEND_ADAPTER_SOURCE: &str = include_str!("lib.rs");
+
+    #[test]
+    fn admin_accounting_shortcuts_are_not_public_entrypoints() {
+        assert!(!BLEND_ADAPTER_SOURCE.contains(concat!("\n    pub fn ", "supply_balance(")));
+        assert!(!BLEND_ADAPTER_SOURCE.contains(concat!("\n    pub fn ", "withdraw_to_vault(")));
+    }
+
+    #[contract]
+    struct DummyContract;
+
+    #[contractimpl]
+    impl DummyContract {}
+
+    fn register_dummy_contract(env: &Env) -> Address {
+        env.register(DummyContract, ())
+    }
+
+    fn account_address(env: &Env) -> Address {
+        Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
+
+    fn adapter_event_count(env: &Env, contract_id: &Address) -> usize {
         env.events()
             .all()
-            .filter_by_contract(adapter)
+            .filter_by_contract(contract_id)
             .events()
             .len()
+    }
+
+    fn empty_wasm_hash(env: &Env) -> BytesN<32> {
+        BytesN::from_array(
+            env,
+            &[
+                0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+                0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+                0x78, 0x52, 0xb8, 0x55,
+            ],
+        )
     }
 
     #[test]
     fn constructor_sets_config() {
         let env = Env::default();
-        let admin = Address::generate(&env);
-        let vault = Address::generate(&env);
-        let pool = Address::generate(&env);
+        let admin = register_dummy_contract(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = register_dummy_contract(&env);
 
         let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         env.as_contract(&contract_id, || {
@@ -431,11 +462,44 @@ mod tests {
         });
     }
 
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_admin() {
+        let env = Env::default();
+        let admin = account_address(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = register_dummy_contract(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_vault() {
+        let env = Env::default();
+        let admin = register_dummy_contract(&env);
+        let vault = account_address(&env);
+        let pool = register_dummy_contract(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #2)")]
+    fn constructor_rejects_non_contract_pool() {
+        let env = Env::default();
+        let admin = register_dummy_contract(&env);
+        let vault = register_dummy_contract(&env);
+        let pool = account_address(&env);
+
+        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+    }
+
     /// Helper: deploy a contract via constructor and return (contract_id, admin, vault, pool).
     fn setup_adapter(env: &Env) -> (Address, Address, Address, Address) {
-        let admin = Address::generate(env);
-        let vault = Address::generate(env);
-        let pool = Address::generate(env);
+        let admin = register_dummy_contract(env);
+        let vault = register_dummy_contract(env);
+        let pool = register_dummy_contract(env);
         let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
         (contract_id, admin, vault, pool)
     }
@@ -475,6 +539,48 @@ mod tests {
         env.as_contract(&contract_id, || {
             let result =
                 BlendAdapterContract::supply(env.clone(), impostor.clone(), asset.clone(), 100);
+            assert_eq!(result, Err(AdapterError::Unauthorized));
+        });
+    }
+
+    #[test]
+    fn admin_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert!(!BlendAdapterContract::paused(env.clone()));
+            BlendAdapterContract::set_paused(env.clone(), admin, true).unwrap();
+            assert!(BlendAdapterContract::paused(env.clone()));
+
+            let result = BlendAdapterContract::supply(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn vault_can_pause_adapter_operations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _pool) = setup_adapter(&env);
+        let asset = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_paused(env.clone(), vault.clone(), true).unwrap();
+
+            let result = BlendAdapterContract::withdraw(env.clone(), vault, asset, 100);
+            assert_eq!(result, Err(AdapterError::Paused));
+        });
+    }
+
+    #[test]
+    fn non_admin_or_vault_cannot_pause_adapter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_paused(env.clone(), impostor, true);
             assert_eq!(result, Err(AdapterError::Unauthorized));
         });
     }
@@ -599,109 +705,75 @@ mod tests {
     }
 
     #[test]
-    fn set_pool_updates_pool() {
+    fn blend_adapter_does_not_expose_admin_retarget_entrypoints() {
+        let source = include_str!("lib.rs");
+        assert!(!source.contains(concat!("pub fn ", "set_pool")));
+        assert!(!source.contains(concat!("pub fn ", "set_vault")));
+        assert!(!source.contains(concat!("pool", "_upd")));
+        assert!(!source.contains(concat!("vlt", "_upd")));
+    }
+
+    #[test]
+    fn set_admin_requires_pending_admin_acceptance() {
         let env = Env::default();
         env.mock_all_auths();
         let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let new_pool = Address::generate(&env);
+        let new_admin = register_dummy_contract(&env);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_pool(env.clone(), admin.clone(), new_pool.clone()).unwrap();
-            assert_eq!(BlendAdapterContract::pool(env.clone()).unwrap(), new_pool);
+            BlendAdapterContract::set_admin(env.clone(), admin.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()).unwrap(),
+                new_admin
+            );
+            BlendAdapterContract::accept_admin(env.clone(), new_admin.clone()).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), new_admin);
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()),
+                Err(AdapterError::MissingConfig)
+            );
         });
     }
 
     #[test]
-    fn set_vault_updates_vault() {
+    fn set_admin_emits_propose_and_accept_events() {
         let env = Env::default();
         env.mock_all_auths();
         let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let new_vault = Address::generate(&env);
+        let new_admin = register_dummy_contract(&env);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_vault(env.clone(), admin.clone(), new_vault.clone()).unwrap();
-            assert_eq!(BlendAdapterContract::vault(env.clone()).unwrap(), new_vault);
+            BlendAdapterContract::set_admin(env.clone(), admin, new_admin.clone()).unwrap();
+            BlendAdapterContract::accept_admin(env.clone(), new_admin).unwrap();
+        });
+        assert_eq!(adapter_event_count(&env, &contract_id), 2);
+    }
+
+    #[test]
+    fn set_admin_rejects_non_contract_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let account = account_address(&env);
+        env.as_contract(&contract_id, || {
+            let result = BlendAdapterContract::set_admin(env.clone(), admin, account);
+            assert_eq!(result, Err(AdapterError::InvalidInput));
+            assert_eq!(
+                BlendAdapterContract::pending_admin(env.clone()),
+                Err(AdapterError::MissingConfig)
+            );
         });
     }
 
     #[test]
-    fn set_pool_emits_event() {
+    fn upgrade_requires_admin_and_emits_event() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin, _vault, _old_pool) = setup_adapter(&env);
-        let new_pool = Address::generate(&env);
+        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
+        let new_hash = empty_wasm_hash(&env);
         env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_pool(env.clone(), admin, new_pool.clone()).unwrap();
+            BlendAdapterContract::upgrade(&env, new_hash.clone(), admin);
         });
         assert_eq!(adapter_event_count(&env, &contract_id), 1);
-    }
-
-    #[test]
-    fn set_vault_emits_event() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _old_vault, _pool) = setup_adapter(&env);
-        let new_vault = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            BlendAdapterContract::set_vault(env.clone(), admin, new_vault.clone()).unwrap();
-        });
-        assert_eq!(adapter_event_count(&env, &contract_id), 1);
-    }
-
-    #[test]
-    fn set_pool_unauthorized_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
-        let impostor = Address::generate(&env);
-        let new_pool = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            let result =
-                BlendAdapterContract::set_pool(env.clone(), impostor.clone(), new_pool.clone());
-            assert_eq!(result, Err(AdapterError::Unauthorized));
-        });
-    }
-
-    #[test]
-    fn set_pool_rejects_non_contract_address() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        env.as_contract(&contract_id, || {
-            let result = BlendAdapterContract::set_pool(env.clone(), admin, account);
-            assert_eq!(result, Err(AdapterError::InvalidInput));
-        });
-    }
-
-    #[test]
-    fn set_vault_unauthorized_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, _admin, _vault, _pool) = setup_adapter(&env);
-        let impostor = Address::generate(&env);
-        let new_vault = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            let result =
-                BlendAdapterContract::set_vault(env.clone(), impostor.clone(), new_vault.clone());
-            assert_eq!(result, Err(AdapterError::Unauthorized));
-        });
-    }
-
-    #[test]
-    fn set_vault_rejects_non_contract_address() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
-        let account = Address::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        );
-        env.as_contract(&contract_id, || {
-            let result = BlendAdapterContract::set_vault(env.clone(), admin, account);
-            assert_eq!(result, Err(AdapterError::InvalidInput));
-        });
     }
 
     // Note: "query before initialize" test not applicable — __constructor

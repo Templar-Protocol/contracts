@@ -315,6 +315,7 @@ impl App {
         (interacted_contract_ids, market_ids)
     }
 
+    #[allow(clippy::type_complexity)]
     fn grouped_price_updates(
         accounts: &AccountData,
         market_ids: &HashSet<AccountId>,
