@@ -308,6 +308,11 @@ pub const GOVERNANCE_POLICY_KIND_GROUP: u32 = 4;
 pub const GOVERNANCE_POLICY_KIND_PAUSED: u32 = 5;
 pub const GOVERNANCE_POLICY_KIND_FEES: u32 = 6;
 
+const GOVERNANCE_COMMAND_TAG_BASE: u8 = 0x80;
+const GOVERNANCE_COMMAND_TAG_SET_CONFIG: u8 = GOVERNANCE_COMMAND_TAG_BASE;
+const GOVERNANCE_COMMAND_TAG_SET_POLICY: u8 = GOVERNANCE_COMMAND_TAG_BASE + 1;
+const GOVERNANCE_COMMAND_TAG_SKIM: u8 = GOVERNANCE_COMMAND_TAG_BASE + 2;
+
 impl VaultCommand {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -435,7 +440,7 @@ impl GovernanceCommand {
                 value_a,
                 value_b,
             } => {
-                push_u8(&mut out, 0);
+                push_u8(&mut out, GOVERNANCE_COMMAND_TAG_SET_CONFIG);
                 push_u32(&mut out, *kind);
                 push_option_string(&mut out, primary);
                 push_option_string_vec(&mut out, many);
@@ -453,7 +458,7 @@ impl GovernanceCommand {
                 value_b,
                 value_c,
             } => {
-                push_u8(&mut out, 1);
+                push_u8(&mut out, GOVERNANCE_COMMAND_TAG_SET_POLICY);
                 push_u32(&mut out, *kind);
                 push_option_u32_vec(&mut out, target_ids);
                 push_option_u32(&mut out, mode);
@@ -465,7 +470,7 @@ impl GovernanceCommand {
                 push_option_i128(&mut out, value_c);
             }
             Self::Skim { token } => {
-                push_u8(&mut out, 2);
+                push_u8(&mut out, GOVERNANCE_COMMAND_TAG_SKIM);
                 push_string(&mut out, token);
             }
         }
@@ -475,14 +480,14 @@ impl GovernanceCommand {
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
         let mut cursor = 0usize;
         let command = match read_u8(bytes, &mut cursor)? {
-            0 => Ok(Self::SetGovernanceConfig {
+            GOVERNANCE_COMMAND_TAG_SET_CONFIG => Ok(Self::SetGovernanceConfig {
                 kind: read_u32(bytes, &mut cursor)?,
                 primary: read_option_string(bytes, &mut cursor)?,
                 many: read_option_string_vec(bytes, &mut cursor)?,
                 value_a: read_option_i128(bytes, &mut cursor)?,
                 value_b: read_option_i128(bytes, &mut cursor)?,
             }),
-            1 => Ok(Self::SetGovernancePolicy {
+            GOVERNANCE_COMMAND_TAG_SET_POLICY => Ok(Self::SetGovernancePolicy {
                 kind: read_u32(bytes, &mut cursor)?,
                 target_ids: read_option_u32_vec(bytes, &mut cursor)?,
                 mode: read_option_u32(bytes, &mut cursor)?,
@@ -493,7 +498,7 @@ impl GovernanceCommand {
                 value_b: read_option_i128(bytes, &mut cursor)?,
                 value_c: read_option_i128(bytes, &mut cursor)?,
             }),
-            2 => Ok(Self::Skim {
+            GOVERNANCE_COMMAND_TAG_SKIM => Ok(Self::Skim {
                 token: read_string(bytes, &mut cursor)?,
             }),
             _ => Err(CodecError::InvalidTag),
@@ -639,7 +644,7 @@ mod tests {
 
     #[test]
     fn governance_command_decode_rejects_invalid_option_tag() {
-        let bytes = vec![0, 0, 0, 0, 0, 9];
+        let bytes = vec![GOVERNANCE_COMMAND_TAG_SET_CONFIG, 0, 0, 0, 0, 9];
         assert_eq!(
             GovernanceCommand::decode(&bytes),
             Err(CodecError::InvalidTag)
@@ -727,16 +732,40 @@ mod tests {
 
     #[test]
     fn vault_and_governance_tags_do_not_overlap() {
-        let governance = GovernanceCommand::SetGovernanceConfig {
-            kind: GOVERNANCE_CONFIG_KIND_CURATOR,
-            primary: Some(String::from("curator")),
-            many: None,
-            value_a: None,
-            value_b: None,
-        }
-        .encode();
+        let governance_commands = vec![
+            GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_CURATOR,
+                primary: Some(String::from("curator")),
+                many: None,
+                value_a: None,
+                value_b: None,
+            },
+            GovernanceCommand::SetGovernancePolicy {
+                kind: GOVERNANCE_POLICY_KIND_FEES,
+                target_ids: None,
+                mode: None,
+                accounts: Some(vec![
+                    String::from("performance"),
+                    String::from("management"),
+                ]),
+                market_id: None,
+                cap_group_id: None,
+                value: Some(11),
+                value_b: Some(22),
+                value_c: Some(33),
+            },
+            GovernanceCommand::Skim {
+                token: String::from("token"),
+            },
+        ];
 
-        assert!(VaultCommand::decode(&governance).is_err());
+        for governance in governance_commands {
+            let encoded = governance.encode();
+            assert!(
+                VaultCommand::decode(&encoded).is_err(),
+                "{governance:?} must not decode as VaultCommand"
+            );
+        }
     }
 
     #[test]
