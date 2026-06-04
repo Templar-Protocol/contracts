@@ -12,10 +12,10 @@ set -euo pipefail
 #
 # Prerequisites:
 #   - rustup (https://rustup.rs)
-#   - pkg-config + libdbus development headers
-#       Arch/CachyOS:  pacman -S dbus pkg-config
-#       Ubuntu/Debian:  apt install libdbus-1-dev pkg-config
-#       Fedora:         dnf install dbus-devel pkgconf-pkg-config
+#   - pkg-config + libdbus/libudev development headers
+#       Arch/CachyOS:  pacman -S dbus systemd pkg-config
+#       Ubuntu/Debian:  apt install libdbus-1-dev libudev-dev pkg-config
+#       Fedora:         dnf install dbus-devel systemd-devel pkgconf-pkg-config
 #       macOS:          (not needed — dbus is optional)
 # ---------------------------------------------------------------------------
 
@@ -38,13 +38,20 @@ if ! command -v pkg-config >/dev/null 2>&1; then
     exit 1
 fi
 
-# dbus is required by stellar-cli's default additional-libs feature.
+# dbus and libudev are required by stellar-cli's default additional-libs feature.
 if [[ "$(uname -s)" == "Linux" ]]; then
     if ! pkg-config --exists dbus-1 2>/dev/null; then
         err "libdbus development headers not found."
         err "  Arch/CachyOS:  pacman -S dbus"
         err "  Ubuntu/Debian:  apt install libdbus-1-dev"
         err "  Fedora:         dnf install dbus-devel"
+        exit 1
+    fi
+    if ! pkg-config --exists libudev 2>/dev/null; then
+        err "libudev development headers not found."
+        err "  Arch/CachyOS:  pacman -S systemd"
+        err "  Ubuntu/Debian:  apt install libudev-dev"
+        err "  Fedora:         dnf install systemd-devel"
         exit 1
     fi
 fi

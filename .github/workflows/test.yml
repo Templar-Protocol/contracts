@@ -155,7 +155,7 @@ jobs:
         run: cargo nextest run -p templar-proxy-oracle-soroban-sep40-adapter-contract
 
       - name: Install packages
-        run: sudo apt install libdbus-1-dev pkg-config
+        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stellar CLI
         run: contract/vault/soroban/scripts/install-stellar-cli.sh

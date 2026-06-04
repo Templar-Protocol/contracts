@@ -196,9 +196,9 @@ hosts need dbus development headers:
 
 | OS | Packages |
 |----|----------|
-| Arch/CachyOS | `pacman -S dbus pkg-config` |
-| Ubuntu/Debian | `apt install libdbus-1-dev pkg-config` |
-| Fedora | `dnf install dbus-devel pkgconf-pkg-config` |
+| Arch/CachyOS | `pacman -S dbus systemd pkg-config` |
+| Ubuntu/Debian | `apt install libdbus-1-dev libudev-dev pkg-config` |
+| Fedora | `dnf install dbus-devel systemd-devel pkgconf-pkg-config` |
 | macOS | (none — dbus is not needed) |
 
 ### Nix / devenv note
