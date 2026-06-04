@@ -134,12 +134,3 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
     let fee_aware_state = preview_state_with_fee_accrual(env, state, &config)?;
     Ok((fee_aware_state, config))
 }
-
-/// Read the share token balance for an address.
-pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
-    let share_token: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::ShareToken);
-    let Some(share_token) = share_token else {
-        return 0;
-    };
-    token::Client::new(env, &share_token).balance(owner)
-}

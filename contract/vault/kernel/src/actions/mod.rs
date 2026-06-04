@@ -126,6 +126,7 @@ struct WithdrawalRequestPlan {
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "action-sync-external", test))]
 struct ExternalAssetSyncPlan {
     new_external_assets: u128,
     new_total_assets: u128,
@@ -1021,6 +1022,7 @@ fn plan_withdrawal_request(
 }
 
 #[inline]
+#[cfg(any(feature = "action-sync-external", test))]
 fn ensure_sync_external_state_allowed(op_state: &OpState) -> Result<(), KernelError> {
     match op_state {
         OpState::Allocating(_) | OpState::Withdrawing(_) | OpState::Refreshing(_) => Ok(()),
@@ -1031,6 +1033,7 @@ fn ensure_sync_external_state_allowed(op_state: &OpState) -> Result<(), KernelEr
 }
 
 #[inline]
+#[cfg(any(feature = "action-sync-external", test))]
 fn plan_external_asset_sync(
     state: &VaultState,
     new_external_assets: u128,

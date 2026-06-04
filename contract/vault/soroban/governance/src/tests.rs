@@ -2870,6 +2870,7 @@ fn no_change_returns_error_for_duplicate_submission() {
     assert_eq!(duplicate, Err(GovernanceError::NoChange));
 }
 
+#[allow(dead_code)]
 fn submit_initial_fee_config(
     env: &Env,
     governance: &Address,
@@ -2912,6 +2913,7 @@ fn submit_initial_fee_config(
     });
 }
 
+#[allow(dead_code)]
 fn submit_fee_increase(
     env: &Env,
     governance: &Address,

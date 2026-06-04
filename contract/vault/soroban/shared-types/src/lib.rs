@@ -586,8 +586,7 @@ mod tests {
 
     #[test]
     fn vault_command_surface_exposes_fee_refresh() {
-        let mut encoded = Vec::new();
-        encoded.push(5);
+        let encoded = vec![5];
 
         assert!(
             VaultCommand::decode(&encoded).is_ok(),

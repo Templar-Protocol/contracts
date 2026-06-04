@@ -3498,9 +3498,10 @@ mod storage_tests {
                 )
             })
             .collect::<alloc::vec::Vec<_>>();
-        let mut state = VaultState::default();
-        state.withdraw_queue = WithdrawQueue::with_state(pending, 0, u64::from(count));
-        state
+        VaultState {
+            withdraw_queue: WithdrawQueue::with_state(pending, 0, u64::from(count)),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -4212,7 +4213,7 @@ mod storage_tests {
                 .set_market_config(2, MarketConfig::new(true, 100, None))
                 .unwrap();
             Storage::save_policy_state(&mut storage, &policy_state).unwrap();
-            store_allowed_adapters(&env, &[adapter_for_market_one.clone()]);
+            store_allowed_adapters(&env, core::slice::from_ref(&adapter_for_market_one));
             store_test_adapter_bindings(&env, &[(1, adapter_for_market_one.clone())]);
             let payload = Bytes::from_slice(
                 &env,
@@ -4444,7 +4445,7 @@ mod storage_tests {
         let adapter = adapter_contract(&env);
 
         env.as_contract(&contract_id, || {
-            store_allowed_adapters(&env, &[adapter.clone()]);
+            store_allowed_adapters(&env, core::slice::from_ref(&adapter));
             store_test_adapter_bindings(&env, &[(1, adapter.clone())]);
 
             assert_eq!(supply_adapter_for_market(&env, 1).unwrap(), adapter);
