@@ -362,7 +362,8 @@ mod contract_tests {
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
         ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+        GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -568,6 +569,12 @@ mod contract_tests {
                     .get(&VaultDataKey::WithdrawalCooldownNs),
                 Some(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             );
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::IdleResyncCooldownNs),
+                Some(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+            );
             assert_eq!(load_fees_spec(&env).unwrap(), FeesSpec::zero());
             assert_eq!(
                 get_config_address(&env, &VaultDataKey::Curator).unwrap(),
@@ -616,6 +623,51 @@ mod contract_tests {
                     .instance()
                     .get(&VaultDataKey::WithdrawalCooldownNs),
                 Some(123_456u64)
+            );
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::IdleResyncCooldownNs),
+                Some(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+            );
+        });
+    }
+
+    #[test]
+    fn test_initialize_with_full_config_stores_idle_resync_cooldown() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset_token, share_token) =
+            register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance,
+                asset_token,
+                share_token,
+                0,
+                0,
+                123_456,
+                789,
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::WithdrawalCooldownNs),
+                Some(123_456u64)
+            );
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::IdleResyncCooldownNs),
+                Some(789u64)
             );
         });
     }
@@ -1710,6 +1762,147 @@ mod contract_tests {
                     .get(&VaultDataKey::WithdrawalCooldownNs),
                 Some(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             );
+        });
+    }
+
+    #[test]
+    fn test_set_idle_resync_cooldown_updates_contract_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+                    primary: None,
+                    many: None,
+                    value_a: Some(5_000),
+                    value_b: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::IdleResyncCooldownNs),
+                Some(5_000u64)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_idle_resync_cooldown_rejects_negative_value() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+                    primary: None,
+                    many: None,
+                    value_a: Some(-1),
+                    value_b: None,
+                },
+            )
+            .expect_err("negative idle-resync cooldown must be rejected");
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::IdleResyncCooldownNs),
+                Some(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+            );
+        });
+    }
+
+    #[test]
+    fn test_resync_idle_balance_uses_configured_cooldown() {
+        use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set(LedgerInfo {
+            timestamp: 1,
+            protocol_version: 25,
+            ..Default::default()
+        });
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_full_config(
+                env.clone(),
+                curator,
+                governance,
+                asset,
+                share,
+                0,
+                0,
+                SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+                10,
+            )
+            .unwrap();
+
+            execute_command(&env, &VaultCommand::ResyncIdleBalance).unwrap();
+
+            env.ledger().set(LedgerInfo {
+                timestamp: 1,
+                protocol_version: 25,
+                ..Default::default()
+            });
+            let throttled = execute_command(&env, &VaultCommand::ResyncIdleBalance)
+                .expect_err("second resync before configured cooldown must fail");
+            assert_eq!(throttled, crate::error::ContractError::InvalidState);
+
+            env.ledger().set(LedgerInfo {
+                timestamp: 2,
+                protocol_version: 25,
+                ..Default::default()
+            });
+            execute_command(&env, &VaultCommand::ResyncIdleBalance).unwrap();
         });
     }
 

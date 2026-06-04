@@ -28,6 +28,7 @@ pub(crate) enum DataKey {
     KnownCapGroupRelCap(String),
     KnownCapGroupMembership(u32),
     CurrentWithdrawalCooldownNs,
+    CurrentIdleResyncCooldownNs,
 }
 
 #[contracttype]
@@ -76,6 +77,7 @@ pub enum GovernanceActionKind {
     TimelockConfig,
     Other,
     WithdrawalCooldown,
+    IdleResyncCooldown,
 }
 
 #[contracttype]
@@ -235,6 +237,7 @@ pub enum GovernanceAction {
     SetTimelock(TimelockKind, u64),
     Other(Symbol, BytesN<32>),
     SetWithdrawalCooldown(u64),
+    SetIdleResyncCooldown(u64),
 }
 
 #[contracttype]

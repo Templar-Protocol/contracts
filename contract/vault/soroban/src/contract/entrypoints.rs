@@ -10,9 +10,9 @@ use super::helpers::{
     kernel_address_from_sdk, load_virtual_offsets, lock_virtual_offsets, migration_in_progress,
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
-    set_config_address, set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    store_withdrawal_cooldown_ns, supply_adapter_for_market, validate_and_rewrite_storage,
-    virtual_offsets_locked, with_contract_vault_contract_error,
+    set_config_address, set_migration_in_progress, store_fees_spec, store_idle_resync_cooldown_ns,
+    store_virtual_offsets, store_withdrawal_cooldown_ns, supply_adapter_for_market,
+    validate_and_rewrite_storage, virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
 use crate::storage::{SorobanStorage, Storage};
@@ -21,11 +21,12 @@ use templar_soroban_shared_types::{
     ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
-    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
-    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
@@ -191,6 +192,17 @@ fn apply_withdrawal_cooldown_config(
         u64::try_from(withdrawal_cooldown_ns).map_err(|_| ContractError::InvalidInput)?;
     store_withdrawal_cooldown_ns(env, withdrawal_cooldown_ns);
     emit_admin_event(env, symbol_short!("s_wdcool"));
+    Ok(())
+}
+
+fn apply_idle_resync_cooldown_config(
+    env: &Env,
+    idle_resync_cooldown_ns: i128,
+) -> Result<(), ContractError> {
+    let idle_resync_cooldown_ns =
+        u64::try_from(idle_resync_cooldown_ns).map_err(|_| ContractError::InvalidInput)?;
+    store_idle_resync_cooldown_ns(env, idle_resync_cooldown_ns);
+    emit_admin_event(env, symbol_short!("s_irscd"));
     Ok(())
 }
 
@@ -817,6 +829,9 @@ fn set_governance_config_impl(
         GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN => {
             apply_withdrawal_cooldown_config(env, required_i128(value_a)?)?
         }
+        GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN => {
+            apply_idle_resync_cooldown_config(env, required_i128(value_a)?)?
+        }
         _ => return Err(ContractError::InvalidInput),
     }
     Ok(())
@@ -993,7 +1008,7 @@ fn skim_impl(
 
 fn resync_idle_balance_impl(env: &Env) -> Result<(), ContractError> {
     let now_ns = ledger_timestamp_ns(env)?;
-    let cooldown_ns = 120_000_000_000u64;
+    let cooldown_ns = load_idle_resync_cooldown_ns(env);
     let last_key = VaultDataKey::IdleResyncLastNs;
     let last_ns = env.storage().instance().get(&last_key).unwrap_or(0u64);
     if last_ns != 0 && now_ns.saturating_sub(last_ns) < cooldown_ns {
@@ -1202,6 +1217,7 @@ fn initialize_impl(
     virtual_shares: i128,
     virtual_assets: i128,
     withdrawal_cooldown_ns: u64,
+    idle_resync_cooldown_ns: u64,
 ) -> Result<(), ContractError> {
     if env.storage().instance().has(&VaultDataKey::Initialized) {
         return Err(ContractError::AlreadyInitialized);
@@ -1220,6 +1236,7 @@ fn initialize_impl(
     set_config_address(env, &VaultDataKey::SkimRecipient, &governance);
     store_virtual_offsets(env, virtual_shares, virtual_assets);
     store_withdrawal_cooldown_ns(env, withdrawal_cooldown_ns);
+    store_idle_resync_cooldown_ns(env, idle_resync_cooldown_ns);
     env.storage()
         .instance()
         .set(&VaultDataKey::Initialized, &true);
@@ -1251,6 +1268,7 @@ impl SorobanVaultContract {
             virtual_shares,
             virtual_assets,
             SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+            SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
         )
     }
 
@@ -1273,6 +1291,31 @@ impl SorobanVaultContract {
             virtual_shares,
             virtual_assets,
             withdrawal_cooldown_ns,
+            SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
+        )
+    }
+
+    pub fn initialize_with_full_config(
+        env: Env,
+        curator: soroban_sdk::Address,
+        governance: soroban_sdk::Address,
+        asset_token: soroban_sdk::Address,
+        share_token: soroban_sdk::Address,
+        virtual_shares: i128,
+        virtual_assets: i128,
+        withdrawal_cooldown_ns: u64,
+        idle_resync_cooldown_ns: u64,
+    ) -> Result<(), ContractError> {
+        initialize_impl(
+            &env,
+            curator,
+            governance,
+            asset_token,
+            share_token,
+            virtual_shares,
+            virtual_assets,
+            withdrawal_cooldown_ns,
+            idle_resync_cooldown_ns,
         )
     }
 

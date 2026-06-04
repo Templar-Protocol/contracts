@@ -166,6 +166,7 @@ impl VaultDataKey {
     pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");
     pub const VirtualOffsetsLocked: Symbol = soroban_sdk::symbol_short!("vofflock");
     pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
+    pub const IdleResyncCooldownNs: Symbol = soroban_sdk::symbol_short!("irscd");
     pub const WithdrawalCooldownNs: Symbol = soroban_sdk::symbol_short!("wdcooldn");
 }
 

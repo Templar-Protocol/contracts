@@ -255,6 +255,20 @@ pub(crate) fn store_withdrawal_cooldown_ns(env: &Env, withdrawal_cooldown_ns: u6
         .set(&VaultDataKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
 }
 
+pub(crate) fn load_idle_resync_cooldown_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::IdleResyncCooldownNs)
+        .unwrap_or(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+}
+
+pub(crate) fn store_idle_resync_cooldown_ns(env: &Env, idle_resync_cooldown_ns: u64) {
+    env.storage().instance().set(
+        &VaultDataKey::IdleResyncCooldownNs,
+        &idle_resync_cooldown_ns,
+    );
+}
+
 pub(crate) fn virtual_offsets_locked(env: &Env) -> bool {
     env.storage()
         .instance()

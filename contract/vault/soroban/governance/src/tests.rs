@@ -13,11 +13,12 @@ use soroban_sdk::{
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
-    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
-    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
-    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
-    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -34,6 +35,7 @@ enum MockVaultKey {
     AllowedAdapters,
     SkimRecipient,
     WithdrawalCooldownNs,
+    IdleResyncCooldownNs,
     SupplyQueue,
     SupplyQueueAdapters,
     LastFeeAccounts,
@@ -326,6 +328,12 @@ impl MockVault {
             .get(&MockVaultKey::WithdrawalCooldownNs)
     }
 
+    pub fn idle_resync_cooldown_ns(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::IdleResyncCooldownNs)
+    }
+
     pub fn supply_queue(env: Env) -> Vec<u32> {
         env.storage()
             .instance()
@@ -487,6 +495,14 @@ impl MockVault {
                     env.storage()
                         .instance()
                         .set(&MockVaultKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN => {
+                if let Some(idle_resync_cooldown_ns) = value_a {
+                    env.storage().instance().set(
+                        &MockVaultKey::IdleResyncCooldownNs,
+                        &idle_resync_cooldown_ns,
+                    );
                 }
             }
             _ => {}
@@ -823,6 +839,76 @@ fn withdrawal_cooldown_change_is_timelocked_and_forwarded() {
             env.clone(),
             admin.clone(),
             123_456,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+}
+
+#[test]
+fn idle_resync_cooldown_change_is_timelocked_and_forwarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            10_000,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::idle_resync_cooldown_ns(env.clone())),
+        None
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::idle_resync_cooldown_ns(env.clone())),
+        Some(10_000)
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            10_000,
         )
     });
     assert_eq!(no_change, Err(GovernanceError::NoChange));
