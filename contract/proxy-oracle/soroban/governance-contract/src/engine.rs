@@ -177,10 +177,10 @@ pub fn execute_action(
                 ),
             )
         }
-        GovernanceAction::AcceptOwnership(()) => {
+        GovernanceAction::AcceptOwnership => {
             invoke_runtime_call(env, &proxy, "accept_ownership", Vec::new(env))
         }
-        GovernanceAction::RenounceOwnership(()) => {
+        GovernanceAction::RenounceOwnership => {
             invoke_runtime_call(env, &proxy, "renounce_ownership", Vec::new(env))
         }
         GovernanceAction::SetActionTtl(kind, new_ttl_ns) => {

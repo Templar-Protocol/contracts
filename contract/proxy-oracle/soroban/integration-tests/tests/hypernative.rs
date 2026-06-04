@@ -115,8 +115,8 @@ fn hypernative_key_cannot_do_anything_else() {
         GovernanceAction::SetActionTtl(OperationKind::SetManualTrip, 60_000_000_000),
         GovernanceAction::SetRole(hypernative.clone(), Role::Admin, true),
         GovernanceAction::TransferOwnership(Address::generate(&b.env)),
-        GovernanceAction::AcceptOwnership(()),
-        GovernanceAction::RenounceOwnership(()),
+        GovernanceAction::AcceptOwnership,
+        GovernanceAction::RenounceOwnership,
         GovernanceAction::Upgrade(BytesN::<32>::from_array(&b.env, &[1_u8; 32])),
     ];
 

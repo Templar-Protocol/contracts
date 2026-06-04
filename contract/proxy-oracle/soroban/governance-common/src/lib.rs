@@ -47,28 +47,61 @@ pub enum GovernanceError {
     LastAdmin = 11,
 }
 
+// Generates `GovernanceAction` (the on-chain action union), the parallel
+// `OperationKind` tag enum, and the per-kind `TtlConfig` from a single list of
+// `Variant(Fields) => ttl_field` entries. A tt-muncher is used rather than a
+// flat `$(...)+` so that fieldless variants (e.g. `AcceptOwnership`) are allowed
+// alongside tuple variants: each entry is parsed by a dedicated rule (with vs.
+// without a `(Fields)` group), and the field group is captured as a whole `tt`
+// — re-emitting individual `:ty` fragments into `#[contracttype]` is rejected.
 macro_rules! governance_operations {
-    (
-        $(
-            $variant:ident $fields:tt => $ttl_field:ident
-        ),+ $(,)?
+    // A variant that carries fields: `Variant(F, ...) => ttl_field`.
+    (@munch
+        evars { $($ev:tt)* }
+        pairs { $($pair:tt)* }
+        $variant:ident $fields:tt => $ttl_field:ident $(, $($rest:tt)*)?
+    ) => {
+        governance_operations!(@munch
+            evars { $($ev)* $variant $fields, }
+            pairs { $($pair)* ($variant $ttl_field) }
+            $($($rest)*)?
+        );
+    };
+
+    // A fieldless variant: `Variant => ttl_field`.
+    (@munch
+        evars { $($ev:tt)* }
+        pairs { $($pair:tt)* }
+        $variant:ident => $ttl_field:ident $(, $($rest:tt)*)?
+    ) => {
+        governance_operations!(@munch
+            evars { $($ev)* $variant, }
+            pairs { $($pair)* ($variant $ttl_field) }
+            $($($rest)*)?
+        );
+    };
+
+    // All entries consumed — emit the types and impls.
+    (@munch
+        evars { $($ev:tt)* }
+        pairs { $( ($variant:ident $ttl_field:ident) )* }
     ) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[contracttype]
         pub enum OperationKind {
-            $($variant),+
+            $($variant),*
         }
 
         #[derive(Clone, Debug, PartialEq, Eq)]
         #[contracttype]
         pub enum GovernanceAction {
-            $($variant $fields),+
+            $($ev)*
         }
 
         impl GovernanceAction {
             pub fn kind(&self) -> OperationKind {
                 match self {
-                    $(Self::$variant(..) => OperationKind::$variant,)+
+                    $(Self::$variant { .. } => OperationKind::$variant,)*
                 }
             }
         }
@@ -76,14 +109,14 @@ macro_rules! governance_operations {
         #[derive(Clone, Debug, PartialEq, Eq)]
         #[contracttype]
         pub struct TtlConfig {
-            $(pub $ttl_field: u64),+
+            $(pub $ttl_field: u64),*
         }
 
         impl TtlConfig {
             pub fn uniform(ttl: Nanoseconds) -> Self {
                 let ttl_ns = ttl.as_ns();
                 Self {
-                    $($ttl_field: ttl_ns),+
+                    $($ttl_field: ttl_ns),*
                 }
             }
 
@@ -93,7 +126,7 @@ macro_rules! governance_operations {
 
             pub fn get_ns(&self, kind: OperationKind) -> u64 {
                 match kind {
-                    $(OperationKind::$variant => self.$ttl_field,)+
+                    $(OperationKind::$variant => self.$ttl_field,)*
                 }
             }
 
@@ -103,10 +136,15 @@ macro_rules! governance_operations {
 
             pub fn set_ns(&mut self, kind: OperationKind, ttl_ns: u64) {
                 match kind {
-                    $(OperationKind::$variant => self.$ttl_field = ttl_ns,)+
+                    $(OperationKind::$variant => self.$ttl_field = ttl_ns,)*
                 }
             }
         }
+    };
+
+    // Public entry point: start munching with empty accumulators.
+    ( $($input:tt)* ) => {
+        governance_operations!(@munch evars {} pairs {} $($input)*);
     };
 }
 
@@ -130,13 +168,10 @@ governance_operations! {
     SetEnforced(Asset, u32, SetEnforcedConfig) => set_enforced,
     SetManualTrip(Asset, bool, Option<Bytes>) => set_manual_trip,
     TransferOwnership(Address) => transfer_ownership,
-    // `AcceptOwnership` and `RenounceOwnership` carry no semantic payload, but
-    // `#[contracttype]` does not support 0-element tuple variants and mixing
-    // bare unit variants with tuple variants is not allowed either, so each
-    // takes a `()` placeholder field. Callers construct
-    // `GovernanceAction::AcceptOwnership(())`.
-    AcceptOwnership(()) => accept_ownership,
-    RenounceOwnership(()) => renounce_ownership,
+    // `AcceptOwnership` and `RenounceOwnership` carry no data — fieldless void
+    // cases (CLI: `--operation '"AcceptOwnership"'`).
+    AcceptOwnership => accept_ownership,
+    RenounceOwnership => renounce_ownership,
     SetActionTtl(OperationKind, u64) => set_action_ttl,
     SetRole(Address, Role, bool) => set_role,
     Upgrade(BytesN<32>) => upgrade,
@@ -154,8 +189,8 @@ impl GovernanceAction {
             | Self::RemoveBreaker(_, _)
             | Self::SetActionTtl(_, _) => Role::ProxyConfigurationManager,
             Self::TransferOwnership(_)
-            | Self::AcceptOwnership(())
-            | Self::RenounceOwnership(())
+            | Self::AcceptOwnership
+            | Self::RenounceOwnership
             | Self::SetRole(_, _, _)
             | Self::Upgrade(_) => Role::Admin,
         }
@@ -335,9 +370,9 @@ mod tests {
         assert_eq!(action.action_code(), 14);
         let action = GovernanceAction::SetManualTrip(asset.clone(), true, None);
         assert_eq!(action.action_code(), 7);
-        let action = GovernanceAction::RenounceOwnership(());
+        let action = GovernanceAction::RenounceOwnership;
         assert_eq!(action.action_code(), 6);
-        let action = GovernanceAction::AcceptOwnership(());
+        let action = GovernanceAction::AcceptOwnership;
         assert_eq!(action.action_code(), 8);
         let action = GovernanceAction::TransferOwnership(account.clone());
         assert_eq!(action.action_code(), 9);

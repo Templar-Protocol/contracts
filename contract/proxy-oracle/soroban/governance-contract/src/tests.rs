@@ -366,7 +366,7 @@ fn accept_ownership_proposal_finalizes_handoff_to_a_new_governance_contract() {
         &env,
         &next_gov_id,
         &next_admin,
-        GovernanceAction::AcceptOwnership(()),
+        GovernanceAction::AcceptOwnership,
     );
     accept_now(&env, &next_gov_id, &next_admin, claim);
     assert_eq!(proxy.get_owner(), Some(next_gov_id));
@@ -380,7 +380,7 @@ fn renounce_ownership_proposal_permanently_relinquishes_ownership() {
         &env,
         &governance_id,
         &admin,
-        GovernanceAction::RenounceOwnership(()),
+        GovernanceAction::RenounceOwnership,
     );
     accept_now(&env, &governance_id, &admin, renounce);
 

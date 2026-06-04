@@ -41,7 +41,7 @@ fn two_step_ownership_handoff_through_governance() {
 
     // v2 accepts.
     let id = governance_v2.next_proposal_id();
-    governance_v2.create_proposal(&b.admin, &id, &GovernanceAction::AcceptOwnership(()), &0);
+    governance_v2.create_proposal(&b.admin, &id, &GovernanceAction::AcceptOwnership, &0);
     governance_v2.execute_proposal(&b.admin, &id);
 
     assert_eq!(b.runtime.get_owner(), Some(governance_v2_id.clone()));
@@ -76,7 +76,7 @@ fn renounce_ownership_is_permanent() {
     let b = Bootstrap::new();
 
     // Governance renounces ownership of the runtime.
-    b.submit_and_execute(&b.admin, GovernanceAction::RenounceOwnership(()));
+    b.submit_and_execute(&b.admin, GovernanceAction::RenounceOwnership);
 
     assert_eq!(b.runtime.get_owner(), None);
 }
@@ -87,7 +87,7 @@ fn renounced_owner_cannot_mutate() {
     // After RenounceOwnership the `#[only_owner]` macro panics with the
     // out-of-band `OwnableError::OwnerNotSet`, not a typed `ContractError`.
     let b = Bootstrap::new();
-    b.submit_and_execute(&b.admin, GovernanceAction::RenounceOwnership(()));
+    b.submit_and_execute(&b.admin, GovernanceAction::RenounceOwnership);
 
     // Any subsequent mutation panics.
     let eth = Asset::Other(soroban_sdk::Symbol::new(&b.env, "ETH"));

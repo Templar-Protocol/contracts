@@ -65,7 +65,7 @@ inv --id $RT -- transfer_ownership --new_owner $GOV --live_until_ledger <MAX_TTL
 # $GOV is now the pending owner. Finalize through governance — it dispatches
 # accept_ownership on the runtime; every later owner-only call goes the same way.
 inv --id $GOV -- create_proposal --caller <ADMIN> --id <NEXT> --requested_ttl 0 \
-  --operation '{"AcceptOwnership": null}'        # Admin-only; null = the variant's () payload
+  --operation '"AcceptOwnership"'                # Admin-only; void action, no payload
 inv --id $GOV -- execute_proposal --caller <ADMIN> --id <ID>
 inv --id $RT -- get_owner          # verify == $GOV
 inv --id $GOV -- proxy_oracle      # verify == $RT
@@ -108,9 +108,9 @@ inv --id $GOV -- cancel_proposal  --caller <ADDR> --id <ID>   # frees a slot
 | 3 | `ConfigureBreakers(asset, sample_interval_secs, history_len)` | ProxyConfigurationManager |
 | 4 | `AddBreaker(asset, config)` | ProxyConfigurationManager |
 | 5 | `RemoveBreaker(asset, breaker_id)` | ProxyConfigurationManager |
-| 6 | `RenounceOwnership(())` | Admin |
+| 6 | `RenounceOwnership` | Admin |
 | 7 | `SetManualTrip(asset, tripped, metadata)` | ManualTripper |
-| 8 | `AcceptOwnership(())` | Admin |
+| 8 | `AcceptOwnership` | Admin |
 | 9 | `TransferOwnership(new_owner)` | Admin |
 | 10 | `SetActionTtl(kind, new_ttl_ns)` | ProxyConfigurationManager |
 | 11 | `SetRole(account, role, set)` | Admin |
