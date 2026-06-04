@@ -1,5 +1,5 @@
 use crate::{logger, ui::prompt::error::handle_interrupted, CliError, CliResult};
-use templar_common::{number::Decimal, oracle::pyth::Price};
+use templar_common::{oracle::pyth::Price, Decimal};
 
 pub const INTERACTIVE_STEPS: u64 = 7;
 

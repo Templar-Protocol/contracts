@@ -14,7 +14,13 @@ near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
 p256.workspace = true
 rstest.workspace = true
+serde.workspace = true
 templar-common.workspace = true
+templar-primitives.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
+templar-proxy-oracle-near-governance-contract.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }
 tokio.workspace = true
 

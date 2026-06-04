@@ -7,7 +7,6 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     contract::list,
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration, MarketExternalInterface},
-    number::Decimal,
     oracle::pyth::OracleResponse,
     self_ext,
     snapshot::Snapshot,
@@ -16,6 +15,7 @@ use templar_common::{
         WithdrawalQueueExecutionResult, WithdrawalQueueStatus, WithdrawalRequestStatus,
     },
 };
+use templar_primitives::Decimal;
 
 use crate::{Contract, ContractExt};
 

@@ -77,8 +77,14 @@ impl From<inventory::InventoryError> for LiquidatorError {
 pub enum LiquidationOutcome {
     /// Position was successfully liquidated
     Liquidated,
-    /// Position is healthy and not liquidatable
-    NotLiquidatable,
+    /// Position is no longer in a liquidatable state on-chain (became healthy
+    /// or was liquidated by someone else). Distinct from `Skipped` —
+    /// `Healthy` means the chain confirmed the position is OK.
+    Healthy,
+    /// We chose not to liquidate this round (insufficient inventory, below
+    /// contract minimum, strategy returned no target, etc.). The position
+    /// may still be liquidatable.
+    Skipped,
     /// Position is liquidatable but unprofitable
     Unprofitable,
 }
@@ -145,6 +151,69 @@ impl std::fmt::Display for ErrorPhase {
     }
 }
 
+/// Stable, low-cardinality classification of failure kinds. Used as a dedup
+/// bucket for repeat-failure notifications.
+///
+/// A typed enum (rather than a free-form string) prevents accidental
+/// fragmentation of dedup state if a caller mistypes a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotificationKind {
+    ExcessiveLiquidation,
+    OfferTooLow,
+    NotEligible,
+    ValueCalcFailure,
+    TxTimeout,
+    TxFailedOther,
+    TxSubmissionError,
+    SwapError,
+    FetchBorrowStatus,
+    PricePair,
+    PriceFetch,
+    ListPositions,
+    ListDeployments,
+    GetConfiguration,
+    FetchBalance,
+    AccessKey,
+    Serialize,
+    Strategy,
+    InsufficientBalance,
+    OracleUpdate,
+}
+
+impl NotificationKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExcessiveLiquidation => "excessive_liquidation",
+            Self::OfferTooLow => "offer_too_low",
+            Self::NotEligible => "not_eligible",
+            Self::ValueCalcFailure => "value_calc_failure",
+            Self::TxTimeout => "tx_timeout",
+            Self::TxFailedOther => "tx_failed_other",
+            Self::TxSubmissionError => "tx_submission_error",
+            Self::SwapError => "swap_error",
+            Self::FetchBorrowStatus => "fetch_borrow_status",
+            Self::PricePair => "price_pair",
+            Self::PriceFetch => "price_fetch",
+            Self::ListPositions => "list_positions",
+            Self::ListDeployments => "list_deployments",
+            Self::GetConfiguration => "get_configuration",
+            Self::FetchBalance => "fetch_balance",
+            Self::AccessKey => "access_key",
+            Self::Serialize => "serialize",
+            Self::Strategy => "strategy",
+            Self::InsufficientBalance => "insufficient_balance",
+            Self::OracleUpdate => "oracle_update",
+        }
+    }
+}
+
+impl std::fmt::Display for NotificationKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl LiquidatorError {
     /// Classifies the error by pipeline phase.
     ///
@@ -174,6 +243,55 @@ impl LiquidatorError {
             | Self::TransactionFailed(_)
             | Self::SwapProviderError(_) => ErrorPhase::Execution,
         }
+    }
+
+    /// Classifies the error into a stable dedup bucket for failure notifications.
+    ///
+    /// `TransactionFailed` is further classified by the contract panic
+    /// substring so a "wrong amount" failure and an "offer too low" failure
+    /// each fire their own notification once.
+    #[must_use]
+    pub fn notification_kind(&self) -> NotificationKind {
+        match self {
+            Self::TransactionFailed(msg) => classify_transaction_failure(msg),
+            Self::LiquidationTransactionError(rpc::RpcError::TimeoutError(_, _)) => {
+                NotificationKind::TxTimeout
+            }
+            Self::LiquidationTransactionError(_) => NotificationKind::TxSubmissionError,
+            Self::SwapProviderError(_) => NotificationKind::SwapError,
+            Self::FetchBorrowStatus(_) => NotificationKind::FetchBorrowStatus,
+            Self::PricePairError(_) => NotificationKind::PricePair,
+            Self::PriceFetchError(_) => NotificationKind::PriceFetch,
+            Self::ListBorrowPositionsError(_) => NotificationKind::ListPositions,
+            Self::ListDeploymentsError(_) => NotificationKind::ListDeployments,
+            Self::GetConfigurationError(_) => NotificationKind::GetConfiguration,
+            Self::FetchBalanceError(_) => NotificationKind::FetchBalance,
+            Self::AccessKeyDataError(_) => NotificationKind::AccessKey,
+            Self::SerializeError(_) => NotificationKind::Serialize,
+            Self::StrategyError(_) => NotificationKind::Strategy,
+            Self::InsufficientBalance => NotificationKind::InsufficientBalance,
+            Self::OracleUpdateError(_) => NotificationKind::OracleUpdate,
+        }
+    }
+}
+
+/// Maps a contract-level `TransactionFailed` message to a stable kind.
+///
+/// The match is on substrings of the contract panic so the categorization
+/// survives small wording changes and surrounding receipt-id boilerplate.
+fn classify_transaction_failure(msg: &str) -> NotificationKind {
+    if msg.contains("Attempt to liquidate more collateral") {
+        NotificationKind::ExcessiveLiquidation
+    } else if msg.contains("Liquidation offer too low") {
+        NotificationKind::OfferTooLow
+    } else if msg.contains("not eligible for liquidation") {
+        NotificationKind::NotEligible
+    } else if msg.contains("Failed to calculate value of collateral") {
+        NotificationKind::ValueCalcFailure
+    } else if msg.contains("Timeout") || msg.contains("timeout") {
+        NotificationKind::TxTimeout
+    } else {
+        NotificationKind::TxFailedOther
     }
 }
 
@@ -352,6 +470,19 @@ impl Liquidator {
         )
     }
 
+    fn record_price_update_attempt(result: LiquidatorResult<bool>) -> bool {
+        match result {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to update on-chain prices; proceeding and letting the market enforce oracle freshness"
+                );
+                true
+            }
+        }
+    }
+
     /// Performs a single liquidation using inventory-based model and modular architecture.
     ///
     /// # Flow
@@ -403,23 +534,36 @@ impl Liquidator {
                 .await
                 .map_err(LiquidatorError::FetchBorrowStatus)?;
 
-            let Some(BorrowStatus::Liquidation(reason)) = status else {
-                if loop_iteration > 1 {
-                    let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
+            let reason = match status {
+                Some(BorrowStatus::Liquidation(r)) => r,
+                Some(BorrowStatus::MaintenanceRequired) => {
+                    // Position is no longer liquidatable but is still unhealthy
+                    // — don't treat as Healthy (it would clear dedup state).
                     tracing::info!(
                         market = %self.market,
                         borrower = %borrow_account,
-                        iterations = loop_iteration - 1,
-                        total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
-                        total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
-                        "Loop liquidation completed successfully - position now healthy"
+                        "Position no longer liquidatable but still requires maintenance, skipping"
                     );
+                    return Ok(LiquidationOutcome::Skipped);
                 }
-                return Ok(if loop_iteration > 1 {
-                    LiquidationOutcome::Liquidated
-                } else {
-                    LiquidationOutcome::NotLiquidatable
-                });
+                Some(BorrowStatus::Healthy) | None => {
+                    if loop_iteration > 1 {
+                        let (borrow_dec, borrow_asset, coll_dec, coll_asset) = self.asset_info();
+                        tracing::info!(
+                            market = %self.market,
+                            borrower = %borrow_account,
+                            iterations = loop_iteration - 1,
+                            total_sent = %format::format_amount(total_liquidated_amount, borrow_dec, &borrow_asset),
+                            total_received = %format::format_amount(total_collateral_received, coll_dec, &coll_asset),
+                            "Loop liquidation completed successfully - position now healthy"
+                        );
+                    }
+                    return Ok(if loop_iteration > 1 {
+                        LiquidationOutcome::Liquidated
+                    } else {
+                        LiquidationOutcome::Healthy
+                    });
+                }
             };
 
             // Log position is liquidatable with details
@@ -499,7 +643,7 @@ impl Liquidator {
                     contract_minimum = %format::format_amount(contract_minimum, borrow_dec, &borrow_asset),
                     "Insufficient inventory: below contract minimum borrow amount, skipping"
                 );
-                return Ok(LiquidationOutcome::NotLiquidatable);
+                return Ok(LiquidationOutcome::Skipped);
             }
 
             // v1.0.0 markets: use full position (no partial support)
@@ -542,7 +686,7 @@ impl Liquidator {
                     return Ok(LiquidationOutcome::Liquidated);
                 }
                 // Strategy already logged the specific reason (insufficient inventory, below minimum, etc.)
-                return Ok(LiquidationOutcome::NotLiquidatable);
+                return Ok(LiquidationOutcome::Skipped);
             };
 
             // Calculate expected value for profitability
@@ -707,19 +851,11 @@ impl Liquidator {
                         .price_oracle_configuration
                         .collateral_asset_price_id,
                 ];
-                match self
-                    .oracle_fetcher
-                    .update_onchain_prices(oracle_account, price_ids)
-                    .await
-                {
-                    Ok(_) => {
-                        prices_pushed_onchain = true;
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to update on-chain prices, proceeding with existing");
-                        prices_pushed_onchain = true;
-                    }
-                }
+                prices_pushed_onchain = Self::record_price_update_attempt(
+                    self.oracle_fetcher
+                        .update_onchain_prices(oracle_account, price_ids)
+                        .await,
+                );
             }
 
             // Execute liquidation (contract determines optimal collateral amount)
@@ -892,8 +1028,17 @@ impl Liquidator {
                 .liquidate(account.clone(), position, oracle_response.clone())
                 .await
             {
-                Ok(LiquidationOutcome::Liquidated) => liquidated += 1,
-                Ok(LiquidationOutcome::NotLiquidatable) => not_liquidatable += 1,
+                Ok(LiquidationOutcome::Liquidated) => {
+                    self.notifier
+                        .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
+                    liquidated += 1;
+                }
+                Ok(LiquidationOutcome::Healthy) => {
+                    self.notifier
+                        .clear_failure_dedup_for(self.market.as_ref(), account.as_ref());
+                    not_liquidatable += 1;
+                }
+                Ok(LiquidationOutcome::Skipped) => not_liquidatable += 1,
                 Ok(LiquidationOutcome::Unprofitable) => unprofitable += 1,
                 Err(e) => {
                     let phase = e.phase();
@@ -902,6 +1047,7 @@ impl Liquidator {
                         self.notifier.notify_liquidation_failed(
                             self.market.as_ref(),
                             account.as_ref(),
+                            e.notification_kind(),
                             &e.to_string(),
                         );
                     } else {
@@ -955,5 +1101,94 @@ mod tests {
         assert_eq!(ErrorPhase::Scan.to_string(), "scan");
         assert_eq!(ErrorPhase::Preparation.to_string(), "preparation");
         assert_eq!(ErrorPhase::Execution.to_string(), "execution");
+    }
+
+    #[test]
+    fn test_notification_kind_excessive_liquidation() {
+        let msg = r#"Receipt 6wy7eW4sLeVAApXmmsyaseK48yfGpJRVrt5etZrsRByp failed: ExecutionError("Smart contract panicked: Attempt to liquidate more collateral than is currently eligible: 37818981 requested > 34516659 available")"#;
+        let err = LiquidatorError::TransactionFailed(msg.to_string());
+        assert_eq!(
+            err.notification_kind(),
+            NotificationKind::ExcessiveLiquidation
+        );
+    }
+
+    #[test]
+    fn test_notification_kind_offer_too_low() {
+        let err = LiquidatorError::TransactionFailed(
+            "Smart contract panicked: Liquidation offer too low: 99 offered < 100".to_string(),
+        );
+        assert_eq!(err.notification_kind(), NotificationKind::OfferTooLow);
+    }
+
+    #[test]
+    fn test_notification_kind_not_eligible() {
+        let err = LiquidatorError::TransactionFailed(
+            "Borrow position is not eligible for liquidation".to_string(),
+        );
+        assert_eq!(err.notification_kind(), NotificationKind::NotEligible);
+    }
+
+    #[test]
+    fn test_notification_kind_value_calc_failure() {
+        let err = LiquidatorError::TransactionFailed(
+            "Smart contract panicked: Failed to calculate value of collateral".to_string(),
+        );
+        assert_eq!(err.notification_kind(), NotificationKind::ValueCalcFailure);
+    }
+
+    #[test]
+    fn test_notification_kind_tx_failed_other() {
+        let err = LiquidatorError::TransactionFailed("some new failure mode".to_string());
+        assert_eq!(err.notification_kind(), NotificationKind::TxFailedOther);
+    }
+
+    #[test]
+    fn test_notification_kind_tx_submission_timeout() {
+        let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::TimeoutError(30, 30));
+        assert_eq!(err.notification_kind(), NotificationKind::TxTimeout);
+    }
+
+    #[test]
+    fn test_notification_kind_tx_submission_non_timeout() {
+        let err = LiquidatorError::LiquidationTransactionError(rpc::RpcError::WrongResponseKind(
+            "boom".to_string(),
+        ));
+        assert_eq!(err.notification_kind(), NotificationKind::TxSubmissionError);
+    }
+
+    #[test]
+    fn test_notification_kind_non_tx_variants_stable() {
+        assert_eq!(
+            LiquidatorError::InsufficientBalance.notification_kind(),
+            NotificationKind::InsufficientBalance,
+        );
+        assert_eq!(
+            LiquidatorError::FetchBorrowStatus(rpc::RpcError::TimeoutError(30, 30))
+                .notification_kind(),
+            NotificationKind::FetchBorrowStatus,
+        );
+    }
+
+    #[test]
+    fn test_notification_kind_as_str_stable() {
+        // Lock the string representation so dedup state from previous deployments
+        // remains valid across rolling restarts.
+        assert_eq!(
+            NotificationKind::ExcessiveLiquidation.as_str(),
+            "excessive_liquidation"
+        );
+        assert_eq!(NotificationKind::TxTimeout.as_str(), "tx_timeout");
+        assert_eq!(
+            NotificationKind::InsufficientBalance.as_str(),
+            "insufficient_balance"
+        );
+    }
+
+    #[test]
+    fn price_update_failure_is_non_blocking_for_liquidation_attempt() {
+        assert!(Liquidator::record_price_update_attempt(Err(
+            LiquidatorError::OracleUpdateError("transient update failure".to_string())
+        )));
     }
 }

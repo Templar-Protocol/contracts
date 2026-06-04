@@ -1,8 +1,7 @@
 use std::ops::Deref;
 
 use near_sdk::{near, require};
-
-use crate::number::Decimal;
+use templar_primitives::number::Decimal;
 
 pub trait UsageCurve {
     fn at(&self, usage_ratio: Decimal) -> Decimal;
@@ -246,7 +245,7 @@ impl From<Exponential2> for Exponential2Params {
 mod tests {
     use std::ops::Div;
 
-    use crate::dec;
+    use templar_primitives::dec;
 
     use super::*;
 

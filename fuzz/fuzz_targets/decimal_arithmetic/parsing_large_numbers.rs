@@ -2,14 +2,14 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::str::FromStr;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: &[u8]| {
     // Generate additional numeric edge cases from fuzz data
     if data.len() >= 8 {
         let large_whole = u128::from_le_bytes([
-            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0, 0, 0, 0,
-            0, 0, 0, 0,
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7], 0, 0, 0, 0, 0,
+            0, 0, 0,
         ]);
 
         let fuzz_edge_cases = [

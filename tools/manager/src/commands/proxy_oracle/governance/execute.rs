@@ -16,7 +16,7 @@ pub async fn execute_proposal(
 
     ctx.batch(&signer, oracle_id)
         .call(
-            Function::new("gov_execute")
+            Function::new("execute_proposal")
                 .args_json(json!({ "id": id }))?
                 .deposit(NearToken::from_yoctonear(1))
                 .max_gas(),

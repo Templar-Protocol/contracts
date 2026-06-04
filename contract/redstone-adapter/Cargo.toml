@@ -14,6 +14,7 @@ near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
 primitive-types.workspace = true
 templar-common.workspace = true
+templar-primitives = { workspace = true, features = ["near", "redstone"] }
 
 [dev-dependencies]
 hex-literal.workspace = true

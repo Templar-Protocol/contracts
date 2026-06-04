@@ -10,7 +10,7 @@ use near_sdk::{serde_json::json, AccountId, NearToken};
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 use templar_common::{
-    oracle::redstone::{Config, FeedId, SerializableU256},
+    oracle::redstone::{Config, FeedId},
     registry::DeployMode,
 };
 use templar_manager::commands::{
@@ -30,6 +30,7 @@ use templar_manager::commands::{
     },
 };
 use templar_manager::util::{EmptyArgsLoader, OutputArgs};
+use templar_primitives::strnum::SU256;
 use test_utils::{accounts, worker};
 
 /// Stellar test payload containing ETH + BTC prices, timestamp `1_770_985_144_000` ms.
@@ -343,9 +344,9 @@ async fn redstone_adapter_write_prices(#[future(awt)] worker: Worker<Sandbox>) {
     .await
     .unwrap();
 
-    // #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
+    // #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SU256>;
 
-    let read_prices: HashMap<FeedId, SerializableU256> = view_json(
+    let read_prices: HashMap<FeedId, SU256> = view_json(
         &ctx,
         adapter.id(),
         "read_prices",

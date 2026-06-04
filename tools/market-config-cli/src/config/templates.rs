@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 use crate::{CliError, CliResult, ConfigBuilder};
 

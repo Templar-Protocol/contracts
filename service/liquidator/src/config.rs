@@ -178,6 +178,16 @@ pub struct Args {
     #[arg(long, env = "SCAN_FAILURE_NOTIFY_THRESHOLD", default_value_t = 2)]
     pub scan_failure_notify_threshold: u32,
 
+    /// Cooldown in hours for repeated "Liquidation Failed" notifications with
+    /// the same (market, borrower, error class). Successful liquidations
+    /// reset the cooldown for that borrower immediately.
+    #[arg(
+        long,
+        env = "FAILURE_NOTIFICATION_COOLDOWN_HOURS",
+        default_value_t = crate::notifier::DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS
+    )]
+    pub failure_notification_cooldown_hours: u64,
+
     /// Telegram bot token for notifications (leave empty to disable)
     #[arg(long, env = "TELEGRAM_BOT_TOKEN", default_value = "")]
     pub telegram_bot_token: String,
@@ -359,7 +369,9 @@ impl Args {
                 panic!("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must both be set or both be empty");
             }
         };
-        let notifier = Arc::new(Notifier::new(telegram_config));
+        let failure_cooldown =
+            std::time::Duration::from_secs(self.failure_notification_cooldown_hours * 3600);
+        let notifier = Arc::new(Notifier::with_cooldown(telegram_config, failure_cooldown));
 
         ServiceConfig {
             registries: self.registries.clone(),
@@ -448,6 +460,7 @@ mod tests {
             swap_retry_attempts: 3,
             swap_retry_base_delay_ms: 2000,
             scan_failure_notify_threshold: 2,
+            failure_notification_cooldown_hours: crate::notifier::DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS,
             telegram_bot_token: String::new(),
             telegram_chat_id: String::new(),
             telegram_thread_id: String::new(),

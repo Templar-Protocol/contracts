@@ -1,8 +1,8 @@
 use near_sdk::{env, json_types::U64, near};
+use templar_primitives::number::Decimal;
 
 use crate::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    number::Decimal,
     time_chunk::TimeChunk,
 };
 

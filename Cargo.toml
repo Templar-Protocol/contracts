@@ -2,9 +2,20 @@
 resolver = "3"
 members = [
     "common",
-    "contract/lst-oracle",
     "contract/market",
-    "contract/proxy-oracle",
+    "contract/proxy-oracle/governance-kernel",
+    "contract/proxy-oracle/kernel",
+    "contract/proxy-oracle/near/common",
+    "contract/proxy-oracle/near/contract",
+    "contract/proxy-oracle/near/governance-common",
+    "contract/proxy-oracle/near/governance-contract",
+    "contract/proxy-oracle/near/lst-contract",
+    "contract/proxy-oracle/soroban/contract",
+    "contract/proxy-oracle/soroban/governance-common",
+    "contract/proxy-oracle/soroban/governance-contract",
+    "contract/proxy-oracle/soroban/common",
+    "contract/proxy-oracle/soroban/integration-tests",
+    "contract/proxy-oracle/soroban/sep40-adapter-contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -23,7 +34,7 @@ members = [
     "mock/*",
     "service/*",
     "test-utils",
-    "universal-account",
+    "universal-account", "primitives",
 ]
 
 [workspace.package]
@@ -84,6 +95,13 @@ sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-primitives = { path = "./primitives" }
+templar-proxy-oracle-governance-kernel = { path = "./contract/proxy-oracle/governance-kernel" }
+templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel" }
+templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common" }
+templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
+templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common" }
+templar-proxy-oracle-near-governance-contract = { path = "./contract/proxy-oracle/near/governance-contract" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }
@@ -155,6 +173,19 @@ overflow-checks = false
 
 
 [profile.release-soroban.package."*"]
+overflow-checks = false
+
+# Like `release-soroban`, but with overflow-checks enabled on our own crates.
+# The proxy-oracle contracts build via `stellar contract build`, which mandates
+# overflow-checks = true on the contract. Kept as a SEPARATE profile so other
+# Soroban contracts (e.g. the vault) that use `release-soroban` are unaffected —
+# their builds and WASM sizes do not change. External dependencies keep
+# overflow-checks off to limit size.
+[profile.release-soroban-checked]
+inherits = "release-soroban"
+overflow-checks = true
+
+[profile.release-soroban-checked.package."*"]
 overflow-checks = false
 
 # https://github.com/launchbadge/sqlx?tab=readme-ov-file#compile-time-verification

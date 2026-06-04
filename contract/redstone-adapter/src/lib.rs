@@ -12,11 +12,11 @@ use templar_common::{
     contract::list,
     oracle::redstone::{
         Config, FeedData, FeedId, GetPrices, RedStoneAdapter, RedStoneContractInterface,
-        RedStoneEvent, Role, SerializableU256,
+        RedStoneEvent, Role,
     },
-    time::Nanoseconds,
     UnwrapReject,
 };
+use templar_primitives::{strnum::SU256, time::Nanoseconds};
 
 #[derive(Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
@@ -85,12 +85,12 @@ impl RedStoneContractInterface for Contract {
 
     fn get_prices(&self, feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices {
         self.adapter
-            .get_prices(&feed_ids, &payload.0, Nanoseconds::now())
+            .get_prices(&feed_ids, &payload.0, Nanoseconds::near_timestamp())
             .unwrap_or_reject()
     }
 
-    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256> {
-        let now = Nanoseconds::now();
+    fn read_prices(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, SU256> {
+        let now = Nanoseconds::near_timestamp();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -103,7 +103,7 @@ impl RedStoneContractInterface for Contract {
     fn read_timestamp(&self, feed_id: FeedId) -> Option<Nanoseconds> {
         let data = self
             .adapter
-            .feed_data(&feed_id, Nanoseconds::now())?
+            .feed_data(&feed_id, Nanoseconds::near_timestamp())?
             .unwrap_or_reject();
         Some(data.package_timestamp)
     }
@@ -111,13 +111,13 @@ impl RedStoneContractInterface for Contract {
     fn read_price_data_for_feed(&self, feed_id: FeedId) -> Option<FeedData> {
         let data = self
             .adapter
-            .feed_data(&feed_id, Nanoseconds::now())?
+            .feed_data(&feed_id, Nanoseconds::near_timestamp())?
             .unwrap_or_reject();
         Some(data.clone())
     }
 
     fn read_price_data(&self, feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData> {
-        let now = Nanoseconds::now();
+        let now = Nanoseconds::near_timestamp();
         feed_ids
             .into_iter()
             .filter_map(|feed_id| {
@@ -132,7 +132,7 @@ impl RedStoneContractInterface for Contract {
 
         let is_trusted = <Self as Rbac>::has_role(&updater, &Role::TrustedUpdater);
 
-        let now = Nanoseconds::now();
+        let now = Nanoseconds::near_timestamp();
 
         let payload = self
             .adapter

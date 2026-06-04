@@ -6,7 +6,7 @@ use crate::{
 use dialoguer::{theme::ColorfulTheme, Confirm, Input};
 use near_sdk::json_types::U64;
 use std::str::FromStr;
-use templar_common::{market::MarketConfiguration, number::Decimal};
+use templar_common::{market::MarketConfiguration, Decimal};
 
 /// Prompts for risk parameters during interactive mode.
 #[allow(clippy::too_many_lines)]

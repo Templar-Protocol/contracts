@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
 use primitive_types::U256;
+use templar_primitives::number::Decimal;
 
 use crate::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAssetAmount},
-    number::Decimal,
     oracle::pyth,
 };
 
@@ -194,8 +194,7 @@ impl Valuation {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
-
-    use crate::dec;
+    use templar_primitives::dec;
 
     use super::*;
 

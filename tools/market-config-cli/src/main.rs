@@ -12,7 +12,7 @@ use market_config_cli::curve::{CurveInput, ModelArg};
 use market_config_cli::{logger, CliResult};
 use near_sdk::AccountId;
 use std::path::PathBuf;
-use templar_common::{number::Decimal, utils::Network};
+use templar_common::{utils::Network, Decimal};
 
 const LONG_ABOUT: &str = "\
 Market Configuration CLI\n\n\

@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::{atomic::AtomicUsize, Arc},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use near_crypto::{PublicKey, Signer};
@@ -34,18 +33,21 @@ use near_sdk_contract_tools::standard::nep145::{StorageBalance, StorageBalanceBo
 
 use templar_common::{
     market::MarketConfiguration,
-    number::Decimal,
     oracle::{
-        price_transformer::{Call, PriceTransformer},
-        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier},
-        redstone, OracleRequest,
+        redstone,
     },
-    time::Nanoseconds,
+    Decimal, Nanoseconds,
+};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    input::Source,
+    price_transformer::{Call, PriceTransformer},
+    request::OracleRequest,
 };
 use templar_universal_account::{KeyId, KeyParameters, PayloadExecutionParameters};
 
-use crate::{cache::Cache, AssetResolution, MarketData, ViewMarketPrices};
+use crate::{cache::Cache, AssetResolution, MarketData, MarketOracleKind, ViewMarketPrices};
 
 pub const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(5);
 pub const DEPLOY_GAS: Gas = Gas::from_tgas(50);
@@ -600,6 +602,8 @@ impl Near {
             .await?;
 
         let oracle_id = config.price_oracle_configuration.account_id.clone();
+        let oracle_type = self.query_oracle_type(oracle_id.clone()).await?;
+        let oracle_kind = oracle_type.kind();
 
         let borrow_request = self
             .resolve_price_identifier(
@@ -617,6 +621,7 @@ impl Near {
         Ok(MarketData {
             account_id: market_id.clone(),
             oracle_id,
+            oracle_kind,
             price_oracle_configuration: config.price_oracle_configuration.clone(),
             collateral: AssetResolution {
                 asset: config.collateral_asset.clone(),
@@ -638,14 +643,6 @@ impl Near {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    fn system_time() -> Nanoseconds {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        Nanoseconds::from_ns(u64::try_from(now).unwrap_or(u64::MAX))
-    }
-
     async fn get_transformer(
         &self,
         oracle_id: AccountId,
@@ -663,7 +660,7 @@ impl Near {
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
-    ) -> Result<Option<Proxy>, ViewError> {
+    ) -> Result<Option<Proxy<Source>>, ViewError> {
         self.view(oracle_id, "get_proxy", json!({ "id": price_identifier }))
             .await
     }
@@ -782,47 +779,18 @@ impl Near {
         price_identifier: PriceIdentifier,
         max_age: Nanoseconds,
     ) -> Result<Option<pyth::Price>, ViewError> {
-        let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? else {
-            tracing::debug!("No proxy found");
-            return Ok(None);
-        };
-
-        let mut prices = vec![];
-        for entry in &proxy.entries {
-            if let Some(price) = self.resolve_proxy_entry_price(entry, max_age).await? {
-                prices.push((price, entry.weight));
-            }
-        }
-
-        tracing::debug!(?prices, "Prices to aggregate");
-
-        let price = proxy.aggregator.aggregate(&prices, Self::system_time());
-
-        tracing::debug!(?price, "Aggregated price");
-
-        Ok(price.map(Into::into))
-    }
-
-    #[tracing::instrument(skip(self), level = "debug")]
-    async fn resolve_proxy_entry_price(
-        &self,
-        entry: &templar_common::oracle::proxy::Entry,
-        max_age: Nanoseconds,
-    ) -> Result<Option<pyth::Price>, ViewError> {
-        match &entry.source {
-            Source::Request(request) => self.fetch_oracle_request(request.clone(), max_age).await,
-            Source::Transformer(t) => {
-                let Some(price) = self
-                    .fetch_oracle_request(t.request.clone(), max_age)
-                    .await?
-                else {
-                    return Ok(None);
-                };
-
-                let input = self.fetch_transformer_input(t.call.clone()).await?;
-                Ok(t.action.apply(price, input))
-            }
-        }
+        Ok(self
+            .view::<pyth::OracleResponse>(
+                oracle_id,
+                "list_ema_prices_no_older_than",
+                json!({
+                    "price_ids": [price_identifier],
+                    "age": max_age.as_secs(),
+                }),
+            )
+            .await?
+            .remove(&price_identifier)
+            .flatten())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -938,20 +906,12 @@ impl Near {
             OracleType::Proxy => {
                 tracing::debug!("Price ID resolved: Proxy oracle contract");
 
-                if let Some(proxy) = self
-                    .view::<Option<Proxy>>(
-                        oracle_id.clone(),
-                        "get_proxy",
-                        json!({ "id": price_identifier }),
-                    )
-                    .await?
-                {
+                if let Some(proxy) = self.get_proxy(oracle_id.clone(), price_identifier).await? {
                     let requests = proxy
-                        .entries
-                        .into_iter()
-                        .map(|entry| match entry.source {
-                            Source::Transformer(transformer) => transformer.request,
-                            Source::Request(request) => request,
+                        .sources()
+                        .map(|source| match source {
+                            Source::Transformer(transformer) => transformer.request.clone(),
+                            Source::Request(request) => request.clone(),
                         })
                         .collect::<HashSet<_>>();
                     if requests.is_empty() {
@@ -1013,4 +973,14 @@ pub enum OracleType {
     PythDirect,
     PythLst { pyth_id: AccountId },
     Proxy,
+}
+
+impl OracleType {
+    const fn kind(&self) -> MarketOracleKind {
+        match self {
+            Self::PythDirect => MarketOracleKind::PythDirect,
+            Self::PythLst { .. } => MarketOracleKind::PythLst,
+            Self::Proxy => MarketOracleKind::Proxy,
+        }
+    }
 }

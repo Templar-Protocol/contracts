@@ -23,7 +23,7 @@ use sections::{
     prompt_yield_weights,
 };
 use std::cell::RefCell;
-use templar_common::{market::MarketConfiguration, number::Decimal, utils::Network};
+use templar_common::{market::MarketConfiguration, utils::Network, Decimal};
 use types::{PriceHintContext, INTERACTIVE_STEPS};
 
 pub struct MarketPrompter<'a> {

@@ -1,7 +1,7 @@
 use near_workspaces::{network::Sandbox, Worker};
 use rstest::rstest;
 
-use templar_common::{dec, fee::Fee, number::Decimal};
+use templar_common::{dec, fee::Fee, Decimal};
 use test_utils::*;
 
 #[rstest]

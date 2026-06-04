@@ -3,7 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use templar_common::interest_rate_strategy::UsageCurve;
 use templar_common::interest_rate_strategy::{Exponential2, Piecewise};
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 // Helper to convert u64 to a Decimal in [0, 1]
 fn to_decimal01(x: u64) -> Decimal {

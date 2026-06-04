@@ -177,9 +177,9 @@ mod tests {
             fee::{Fee, TimeBasedFee},
             interest_rate_strategy::InterestRateStrategy,
             market::{PriceOracleConfiguration, YieldWeights},
-            number::Decimal,
             oracle::pyth::PriceIdentifier,
             time_chunk::TimeChunkConfiguration,
+            Decimal,
         };
 
         templar_common::market::MarketConfiguration {

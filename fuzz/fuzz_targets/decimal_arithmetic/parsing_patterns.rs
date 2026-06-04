@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::str::FromStr;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: &[u8]| {
     // Test with constructed string patterns using fuzzed inputs

@@ -3,6 +3,7 @@ use std::{num::NonZero, path::Path, str::FromStr};
 use crate::controller::vault::{UnifiedVaultController, VaultController};
 pub use controller::{
     ft::FtController,
+    governance_contract::GovernanceContractController,
     market::{MarketController, UnifiedMarketController},
     mock_oracle::MockOracleController,
     proxy_oracle::{GovernanceController, ProxyOracleController},
@@ -28,13 +29,13 @@ use templar_common::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
-    number::Decimal,
     oracle::pyth::{self, PriceIdentifier, PythTimestamp},
     registry::DeployMode,
     vault::{
         prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
         Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
     },
+    Decimal,
 };
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(

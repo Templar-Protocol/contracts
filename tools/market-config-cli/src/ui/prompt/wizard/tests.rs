@@ -10,7 +10,7 @@ use templar_common::{
     fee::Fee,
     interest_rate_strategy::InterestRateStrategy,
     market::YieldWeights,
-    number::Decimal,
+    Decimal,
 };
 
 fn base_builder() -> ConfigBuilder {

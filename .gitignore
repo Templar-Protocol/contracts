@@ -1,6 +1,11 @@
 # Rust
 /target/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
 # IDEs and Editors
 .helix/
 .idea/
@@ -16,6 +21,9 @@
 .env.local
 .env.smoketest
 
+# Oh My OpenAgent working state
+.omo/
+
 # documentation site
 _site/
 
@@ -27,6 +35,7 @@ _site/
 
 # generated soroban test snapshots
 contract/vault/**/test_snapshots/
+contract/proxy-oracle/**/test_snapshots/
 
 # generated bindings
 client/vault/dist/

@@ -10,9 +10,9 @@ use templar_common::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
-    number::Decimal,
     oracle::pyth::PriceIdentifier,
     time_chunk::TimeChunkConfiguration,
+    Decimal,
 };
 
 pub fn main() {

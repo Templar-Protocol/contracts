@@ -7,6 +7,7 @@ use near_sdk::{
 use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 
 pub mod ft;
+pub mod governance_contract;
 pub mod lst_oracle;
 pub mod market;
 pub mod migration;

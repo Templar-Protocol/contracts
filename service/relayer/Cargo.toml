@@ -8,6 +8,7 @@ license.workspace = true
 axum = "0.8.4"
 clap.workspace = true
 dotenvy = "0.15.7"
+futures.workspace = true
 hex.workspace = true
 near-contract-standards.workspace = true
 near-crypto.workspace = true
@@ -31,6 +32,8 @@ sqlx = { version = "0.8", features = [
     "uuid",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-near-common = { workspace = true }
 templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true

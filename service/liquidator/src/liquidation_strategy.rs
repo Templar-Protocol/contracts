@@ -18,9 +18,9 @@ use templar_common::{
     asset::{CollateralAsset, FungibleAssetAmount},
     borrow::BorrowPosition,
     market::MarketConfiguration,
-    number::Decimal,
     oracle::pyth::OracleResponse,
     price::{Convert, PricePair},
+    Decimal,
 };
 
 use crate::LiquidatorResult;
@@ -29,6 +29,30 @@ use crate::LiquidatorResult;
 /// Added to borrow amount to account for price movements and interest accrual during execution.
 /// Excess is refunded by the contract.
 pub(crate) const SAFETY_BUFFER_BPS: u128 = 50;
+
+/// Headroom subtracted from the on-chain `liquidatable_collateral` cap so
+/// price drift between scan and tx execution doesn't trip `ExcessiveLiquidation`.
+///
+/// This protects against drift up to ~`LIQUIDATABLE_CAP_BUFFER_BPS` between
+/// what the liquidator sees at scan time and what the contract recomputes at
+/// execution time. Larger drifts (e.g. stale oracle prices feeding the bot
+/// while the chain runs `update_price_feeds` with fresh ones) still revert;
+/// notification dedup absorbs those.
+pub(crate) const LIQUIDATABLE_CAP_BUFFER_BPS: u128 = 300;
+
+/// Applies `LIQUIDATABLE_CAP_BUFFER_BPS` to the on-chain eligibility cap.
+pub(crate) fn apply_liquidatable_cap_buffer(liquidatable_collateral: u128) -> u128 {
+    (liquidatable_collateral * (10_000 - LIQUIDATABLE_CAP_BUFFER_BPS)) / 10_000
+}
+
+/// Clamps the strategy's desired collateral request to the buffered eligibility cap.
+///
+/// Returns `min(desired, liquidatable * (1 - LIQUIDATABLE_CAP_BUFFER_BPS/10_000))`.
+/// Used by both liquidation strategies so the cap-buffer behavior is uniform
+/// and exercised by a single unit test.
+pub(crate) fn min_with_cap_buffer(desired: u128, liquidatable: u128) -> u128 {
+    std::cmp::min(desired, apply_liquidatable_cap_buffer(liquidatable))
+}
 
 /// Convert a borrow asset amount to collateral asset amount.
 ///
@@ -256,8 +280,16 @@ impl LiquidationStrategy for PercentageLiquidationStrategy {
         let target_collateral = if market_version == Some((1, 0, 0)) {
             position.collateral_asset_deposit.into()
         } else {
-            std::cmp::min(collateral_amount, liquidatable_collateral.into())
+            min_with_cap_buffer(collateral_amount, liquidatable_collateral.into())
         };
+
+        if target_collateral == 0 {
+            tracing::warn!(
+                liquidatable_collateral = %u128::from(liquidatable_collateral),
+                "Buffered liquidatable cap rounded to zero — position too small to liquidate safely"
+            );
+            return Ok(None);
+        }
 
         let Some(theoretical_amount) = collateral_to_borrow(
             target_collateral,
@@ -424,8 +456,16 @@ impl LiquidationStrategy for FixedAmountLiquidationStrategy {
             position.collateral_asset_deposit.into()
         } else {
             let safe_collateral = (max_collateral * (10_000 - SAFETY_BUFFER_BPS)) / 10_000;
-            std::cmp::min(safe_collateral, liquidatable_u128)
+            min_with_cap_buffer(safe_collateral, liquidatable_u128)
         };
+
+        if target_collateral == 0 {
+            tracing::warn!(
+                liquidatable_collateral = %liquidatable_u128,
+                "Buffered liquidatable cap rounded to zero — position too small to liquidate safely"
+            );
+            return Ok(None);
+        }
 
         let expected_minimum = collateral_to_borrow(
             target_collateral,
@@ -537,6 +577,91 @@ mod tests {
             )
             .unwrap();
         assert!(!is_not_profitable, "Should not be profitable");
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_subtracts_300bps() {
+        assert_eq!(apply_liquidatable_cap_buffer(10_000), 9_700);
+        assert_eq!(apply_liquidatable_cap_buffer(34_516_659), 33_481_159);
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_zero() {
+        assert_eq!(apply_liquidatable_cap_buffer(0), 0);
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_covers_drift_up_to_buffer_size() {
+        // The buffer is applied to the bot's scan-time view of the cap. If the
+        // chain later recomputes the cap and it drops by ≤ LIQUIDATABLE_CAP_BUFFER_BPS,
+        // our request still fits.
+        let scan_time_cap = 1_000_000u128;
+        let request = apply_liquidatable_cap_buffer(scan_time_cap);
+
+        // Drift exactly equal to the buffer: request must not exceed chain cap.
+        let chain_cap_at_drift_3pct = (scan_time_cap * 9_700) / 10_000;
+        assert!(
+            request <= chain_cap_at_drift_3pct,
+            "request {request} must fit under {chain_cap_at_drift_3pct} for ≤3% drift",
+        );
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_returns_desired_when_below_cap() {
+        // Desired is well below the buffered cap → no clipping.
+        let liquidatable = 1_000_000u128;
+        let desired = 500_000u128;
+        assert_eq!(min_with_cap_buffer(desired, liquidatable), desired);
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_clips_to_buffered_cap_when_desired_exceeds() {
+        // Desired exceeds the buffered cap → must clip to buffered cap, never to raw cap.
+        let liquidatable = 1_000_000u128;
+        let desired = 2_000_000u128;
+        let result = min_with_cap_buffer(desired, liquidatable);
+        assert_eq!(result, apply_liquidatable_cap_buffer(liquidatable));
+        assert!(
+            result < liquidatable,
+            "result {result} must be strictly less than raw cap {liquidatable}",
+        );
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_returns_zero_for_dust_cap() {
+        // 33 * 9700 / 10000 = 32_010 / 10_000 = 32 (integer divide) wait no:
+        // 33 * 9700 = 320_100 / 10_000 = 32. Hmm; let me pick a value < 34.
+        // For 33: (33 * 9_700) / 10_000 = 320_100 / 10_000 = 32. Still > 0.
+        // For 1: (1 * 9_700) / 10_000 = 9_700 / 10_000 = 0.
+        assert_eq!(apply_liquidatable_cap_buffer(1), 0);
+        // Strategies must guard against this case (returns Ok(None) instead of
+        // sending borrow with zero collateral request).
+        assert_eq!(min_with_cap_buffer(100, 1), 0);
+    }
+
+    #[test]
+    fn test_min_with_cap_buffer_clips_when_desired_just_above_buffered() {
+        // Edge case: desired just above the buffered cap, still under raw cap.
+        // Without this helper a regression could pass `desired` through unclipped.
+        let liquidatable = 1_000_000u128;
+        let buffered = apply_liquidatable_cap_buffer(liquidatable);
+        let desired = buffered + 1;
+        assert_eq!(min_with_cap_buffer(desired, liquidatable), buffered);
+    }
+
+    #[test]
+    fn test_apply_liquidatable_cap_buffer_insufficient_for_large_drift() {
+        // Honesty check: the buffer does NOT cover drifts larger than itself.
+        // The observed incident (request 37.8M vs available 34.5M, ≈9% drift)
+        // would still revert even with this buffer applied at scan time.
+        // Notification dedup is the safety net for that case.
+        let scan_time_cap = 37_818_981u128;
+        let request = apply_liquidatable_cap_buffer(scan_time_cap);
+        let chain_cap_after_drift = 34_516_659u128; // observed
+        assert!(
+            request > chain_cap_after_drift,
+            "9% drift exceeds 3% buffer — request {request} still > chain {chain_cap_after_drift}",
+        );
     }
 
     // Note: Gas cost check removed - gas costs are negligible on NEAR

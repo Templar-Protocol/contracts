@@ -8,9 +8,9 @@ use templar_common::{
     fee::Fee,
     interest_rate_strategy::InterestRateStrategy,
     market::HarvestYieldMode,
-    number::Decimal,
     oracle::pyth,
     price::{Appraise, Convert},
+    Decimal,
 };
 use test_utils::*;
 use tokio::time::Instant;

@@ -1,0 +1,21 @@
+[package]
+name = "templar-proxy-oracle-near-governance-common"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+templar-common.workspace = true
+templar-proxy-oracle-governance-kernel = { workspace = true, features = ["borsh", "serde", "schemars"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["borsh", "serde", "schemars"] }
+templar-proxy-oracle-near-common.workspace = true
+thiserror.workspace = true
+near-sdk.workspace = true
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
+rstest.workspace = true
+
+[lints]
+workspace = true
