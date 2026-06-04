@@ -582,6 +582,11 @@ deploy-hot-bridge-adapter:
 		admin="$vault_id"; \
 	fi; \
 	hot_locker="${HOT_STELLAR_LOCKER_CONTRACT:?set HOT_STELLAR_LOCKER_CONTRACT}"; \
+	asset_token="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
+	if [ -z "$asset_token" ]; then \
+		echo "Error: No asset token. Run 'just deploy-test-token' first or set SOROBAN_ASSET_TOKEN"; \
+		exit 1; \
+	fi; \
 	hot_receiver_id="${HOT_STELLAR_RECEIVER_HEX:?set HOT_STELLAR_RECEIVER_HEX to the proven HOT receiver bytes}"; \
 	expected_locker="${HOT_STELLAR_LOCKER_EXPECTED_CONTRACT:-{{hot_stellar_locker_expected_contract}}}"; \
 	expected_hash="${HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256:-{{hot_stellar_locker_expected_wasm_sha256}}}"; \
@@ -618,6 +623,7 @@ deploy-hot-bridge-adapter:
 	echo "  Admin:        $admin"; \
 	echo "  Vault:        $vault_id"; \
 	echo "  HOT locker:   $hot_locker"; \
+	echo "  Asset token:  $asset_token"; \
 	echo "  Locker hash:  $actual_hash"; \
 	echo "  HOT receiver: $hot_receiver_id"; \
 	adapter_id=$(stellar contract deploy \
@@ -628,6 +634,7 @@ deploy-hot-bridge-adapter:
 		--admin "$admin" \
 		--vault "$vault_id" \
 		--hot-locker "$hot_locker" \
+		--asset "$asset_token" \
 		--hot-receiver-id "$hot_receiver_id"); \
 	if [ -z "$adapter_id" ]; then \
 		echo "Error: deploy failed — no adapter ID returned"; \

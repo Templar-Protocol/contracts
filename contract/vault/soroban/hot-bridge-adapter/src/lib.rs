@@ -11,18 +11,39 @@ use stellar_contract_utils::upgradeable::{self, Upgradeable};
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
 const HOT_TIMESTAMP_SCALE: u128 = 1_000_000_000_000;
+const STORAGE_VERSION: u32 = 1;
+const ADMIN_TRANSFER_TTL_LEDGERS: u32 = 172_800;
 
 #[contracttype]
 #[derive(Clone, Debug)]
 enum DataKey {
+    StorageVersion,
     Admin,
-    PendingAdmin,
+    PendingAdminTransfer,
     Vault,
     HotLocker,
     HotReceiverId,
-    Paused,
+    Asset,
+    OperationalState,
     LastHotClientTimestamp,
     Principal(Address),
+    Returned(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+struct PendingAdminTransfer {
+    candidate: Address,
+    proposed_by: Address,
+    proposed_at: u32,
+    expires_at: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+enum OperationalState {
+    Active,
+    Paused(Address, u32),
 }
 
 #[contracterror]
@@ -40,6 +61,11 @@ pub enum AdapterError {
     InsufficientAdapterBalance = 9,
     DepositPostconditionFailed = 10,
     HotClientTimestampExhausted = 11,
+    UnsupportedAsset = 12,
+    PendingReturnedBalance = 13,
+    InsufficientRecordedReturn = 14,
+    InsufficientSurplus = 15,
+    PendingAdminExpired = 16,
 }
 
 #[contract]
@@ -52,18 +78,24 @@ impl HotBridgeAdapterContract {
         admin: Address,
         vault: Address,
         hot_locker: Address,
+        asset: Address,
         hot_receiver_id: BytesN<32>,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_contract_address(&admin, AdapterError::InvalidInput)?;
         require_contract_address(&vault, AdapterError::InvalidInput)?;
         require_contract_address(&hot_locker, AdapterError::InvalidInput)?;
+        require_contract_address(&asset, AdapterError::InvalidInput)?;
 
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         env.storage()
             .instance()
             .set(&DataKey::HotLocker, &hot_locker);
+        env.storage().instance().set(&DataKey::Asset, &asset);
         env.storage()
             .instance()
             .set(&DataKey::HotReceiverId, &hot_receiver_id);
@@ -73,7 +105,14 @@ impl HotBridgeAdapterContract {
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin_or_vault(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Paused, &paused);
+        let state = if paused {
+            OperationalState::Paused(caller.clone(), env.ledger().sequence())
+        } else {
+            OperationalState::Active
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::OperationalState, &state);
         env.events()
             .publish((symbol_short!("paused"), caller), paused);
         Ok(())
@@ -94,6 +133,10 @@ impl HotBridgeAdapterContract {
         require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         require_positive_amount(amount)?;
+        require_configured_asset(&env, &asset)?;
+        if returned_of(&env, &asset) > 0 {
+            return Err(AdapterError::PendingReturnedBalance);
+        }
 
         let adapter = env.current_contract_address();
         let hot_locker = get_hot_locker(&env)?;
@@ -101,10 +144,12 @@ impl HotBridgeAdapterContract {
         let client_timestamp = next_hot_locker_timestamp(&env)?;
         let amount_u128 = amount_as_u128(amount)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
-        let balance_before = token.balance(&adapter);
-        if balance_before < amount {
+        if token.balance(&adapter) != 0 {
             return Err(AdapterError::InsufficientAdapterBalance);
         }
+        let vault = get_vault(&env)?;
+        token.transfer(&vault, &adapter, &amount);
+        let balance_before = token.balance(&adapter);
 
         authorize_hot_deposit(&env, &hot_locker, &asset, &adapter, amount);
 
@@ -120,7 +165,13 @@ impl HotBridgeAdapterContract {
             env.invoke_contract::<u128>(&hot_locker, &Symbol::new(&env, "deposit"), args);
 
         let balance_after = token.balance(&adapter);
-        validate_supply_balance_change(balance_before, balance_after, amount)?;
+        if let Err(err) = validate_supply_balance_change(balance_before, balance_after, amount) {
+            let leftover = token.balance(&adapter);
+            if leftover > 0 {
+                token.transfer(&adapter, &vault, &leftover);
+            }
+            return Err(err);
+        }
 
         record_hot_locker_timestamp(&env, client_timestamp);
         increase_principal(&env, &asset, amount)?;
@@ -152,6 +203,7 @@ impl HotBridgeAdapterContract {
         require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         require_positive_amount(amount)?;
+        require_configured_asset(&env, &asset)?;
 
         let principal = principal_of(&env, &asset);
         if principal < amount {
@@ -161,9 +213,15 @@ impl HotBridgeAdapterContract {
         let adapter = env.current_contract_address();
         let vault = get_vault(&env)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
-        validate_withdrawal_resources(principal, token.balance(&adapter), amount)?;
+        validate_withdrawal_resources(
+            principal,
+            returned_of(&env, &asset),
+            token.balance(&adapter),
+            amount,
+        )?;
 
         token.transfer(&adapter, &vault, &amount);
+        decrease_returned(&env, &asset, amount)?;
         decrease_principal(&env, &asset, amount)?;
         env.events()
             .publish((symbol_short!("withdraw"), asset), amount);
@@ -172,12 +230,19 @@ impl HotBridgeAdapterContract {
 
     pub fn total_assets(env: Env, asset: Address) -> Result<i128, AdapterError> {
         extend_instance_ttl(&env);
+        require_configured_asset(&env, &asset)?;
         Ok(principal_of(&env, &asset))
     }
 
     pub fn principal(env: Env, asset: Address) -> i128 {
         extend_instance_ttl(&env);
         principal_of(&env, &asset)
+    }
+
+    pub fn returned_balance(env: Env, asset: Address) -> Result<i128, AdapterError> {
+        extend_instance_ttl(&env);
+        require_configured_asset(&env, &asset)?;
+        Ok(returned_of(&env, &asset))
     }
 
     pub fn hot_receiver_id(env: Env) -> Result<BytesN<32>, AdapterError> {
@@ -200,6 +265,38 @@ impl HotBridgeAdapterContract {
         get_vault(&env)
     }
 
+    pub fn asset(env: Env) -> Result<Address, AdapterError> {
+        extend_instance_ttl(&env);
+        get_configured_asset(&env)
+    }
+
+    pub fn storage_version(env: Env) -> u32 {
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(STORAGE_VERSION)
+    }
+
+    pub fn set_asset(env: Env, caller: Address, asset: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        require_contract_address(&asset, AdapterError::InvalidInput)?;
+        if let Ok(current) = get_configured_asset(&env) {
+            if current != asset {
+                let has_position =
+                    principal_of(&env, &current) > 0 || returned_of(&env, &current) > 0;
+                if has_position {
+                    return Err(AdapterError::InvalidInput);
+                }
+            }
+        }
+        env.storage().instance().set(&DataKey::Asset, &asset);
+        env.events()
+            .publish((symbol_short!("asset"), caller), asset);
+        Ok(())
+    }
+
     pub fn propose_admin(
         env: Env,
         caller: Address,
@@ -208,9 +305,18 @@ impl HotBridgeAdapterContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
         require_contract_address(&new_admin, AdapterError::InvalidInput)?;
+        let transfer = PendingAdminTransfer {
+            candidate: new_admin.clone(),
+            proposed_by: caller.clone(),
+            proposed_at: env.ledger().sequence(),
+            expires_at: env
+                .ledger()
+                .sequence()
+                .saturating_add(ADMIN_TRANSFER_TTL_LEDGERS),
+        };
         env.storage()
             .instance()
-            .set(&DataKey::PendingAdmin, &new_admin);
+            .set(&DataKey::PendingAdminTransfer, &transfer);
         env.events()
             .publish((symbol_short!("adm_prop"), caller), new_admin);
         Ok(())
@@ -219,23 +325,68 @@ impl HotBridgeAdapterContract {
     pub fn accept_admin(env: Env, caller: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         caller.require_auth();
-        let pending: Address = env
+        let pending: PendingAdminTransfer = env
             .storage()
             .instance()
-            .get(&DataKey::PendingAdmin)
+            .get(&DataKey::PendingAdminTransfer)
             .ok_or(AdapterError::MissingConfig)?;
-        if caller != pending {
+        if env.ledger().sequence() > pending.expires_at {
+            return Err(AdapterError::PendingAdminExpired);
+        }
+        if caller != pending.candidate {
             return Err(AdapterError::Unauthorized);
         }
         env.storage().instance().set(&DataKey::Admin, &caller);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminTransfer);
         env.events().publish((symbol_short!("adm_acc"), caller), ());
         Ok(())
     }
 
     pub fn pending_admin(env: Env) -> Option<Address> {
         extend_instance_ttl(&env);
-        env.storage().instance().get(&DataKey::PendingAdmin)
+        env.storage()
+            .instance()
+            .get::<_, PendingAdminTransfer>(&DataKey::PendingAdminTransfer)
+            .map(|transfer| transfer.candidate)
+    }
+
+    pub fn cancel_admin_transfer(env: Env, caller: Address) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller)?;
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminTransfer);
+        env.events().publish((symbol_short!("adm_can"), caller), ());
+        Ok(())
+    }
+
+    pub fn record_returned(
+        env: Env,
+        caller: Address,
+        asset: Address,
+        amount: i128,
+    ) -> Result<(), AdapterError> {
+        extend_instance_ttl(&env);
+        require_not_paused(&env)?;
+        require_hot_locker(&env, &caller)?;
+        require_positive_amount(amount)?;
+        require_configured_asset(&env, &asset)?;
+        let principal = principal_of(&env, &asset);
+        let returned = returned_of(&env, &asset);
+        let updated = returned
+            .checked_add(amount)
+            .ok_or(AdapterError::ArithmeticOverflow)?;
+        if updated > principal {
+            return Err(AdapterError::InsufficientPrincipal);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::Returned(asset.clone()), &updated);
+        env.events()
+            .publish((symbol_short!("returned"), asset), amount);
+        Ok(())
     }
 
     pub fn rescue(
@@ -249,13 +400,23 @@ impl HotBridgeAdapterContract {
         require_not_paused(&env)?;
         require_vault(&env, &caller)?;
         require_positive_amount(amount)?;
+        require_configured_asset(&env, &asset)?;
         require_contract_address(&receiver, AdapterError::InvalidInput)?;
         if receiver == env.current_contract_address() {
             return Err(AdapterError::InvalidInput);
         }
 
         let adapter = env.current_contract_address();
-        soroban_sdk::token::Client::new(&env, &asset).transfer(&adapter, &receiver, &amount);
+        let token = soroban_sdk::token::Client::new(&env, &asset);
+        let balance = token.balance(&adapter);
+        let reserved = returned_of(&env, &asset);
+        let surplus = balance
+            .checked_sub(reserved)
+            .ok_or(AdapterError::InsufficientSurplus)?;
+        if amount > surplus {
+            return Err(AdapterError::InsufficientSurplus);
+        }
+        token.transfer(&adapter, &receiver, &amount);
         env.events()
             .publish((symbol_short!("rescue"), asset, receiver), amount);
         Ok(())
@@ -354,11 +515,15 @@ fn validate_supply_balance_change(
 
 fn validate_withdrawal_resources(
     principal: i128,
+    recorded_returned: i128,
     adapter_balance: i128,
     amount: i128,
 ) -> Result<(), AdapterError> {
     if principal < amount {
         return Err(AdapterError::InsufficientPrincipal);
+    }
+    if recorded_returned < amount {
+        return Err(AdapterError::InsufficientRecordedReturn);
     }
     if adapter_balance < amount {
         return Err(AdapterError::InsufficientReturnedBalance);
@@ -408,6 +573,30 @@ fn decrease_principal(env: &Env, asset: &Address, amount: i128) -> Result<(), Ad
     Ok(())
 }
 
+fn returned_of(env: &Env, asset: &Address) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::Returned(asset.clone()))
+        .unwrap_or(0)
+}
+
+fn decrease_returned(env: &Env, asset: &Address, amount: i128) -> Result<(), AdapterError> {
+    let current = returned_of(env, asset);
+    if current < amount {
+        return Err(AdapterError::InsufficientRecordedReturn);
+    }
+    let updated = current
+        .checked_sub(amount)
+        .ok_or(AdapterError::ArithmeticUnderflow)?;
+    let key = DataKey::Returned(asset.clone());
+    if updated == 0 {
+        env.storage().instance().remove(&key);
+    } else {
+        env.storage().instance().set(&key, &updated);
+    }
+    Ok(())
+}
+
 fn get_admin(env: &Env) -> Result<Address, AdapterError> {
     env.storage()
         .instance()
@@ -436,6 +625,21 @@ fn get_hot_receiver_id(env: &Env) -> Result<BytesN<32>, AdapterError> {
         .ok_or(AdapterError::MissingConfig)
 }
 
+fn get_configured_asset(env: &Env) -> Result<Address, AdapterError> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Asset)
+        .ok_or(AdapterError::MissingConfig)
+}
+
+fn require_configured_asset(env: &Env, asset: &Address) -> Result<(), AdapterError> {
+    if asset == &get_configured_asset(env)? {
+        Ok(())
+    } else {
+        Err(AdapterError::UnsupportedAsset)
+    }
+}
+
 fn require_admin(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     caller.require_auth();
     if caller != &get_admin(env)? {
@@ -452,6 +656,14 @@ fn require_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     Ok(())
 }
 
+fn require_hot_locker(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+    caller.require_auth();
+    if caller != &get_hot_locker(env)? {
+        return Err(AdapterError::Unauthorized);
+    }
+    Ok(())
+}
+
 fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     caller.require_auth();
     let admin = get_admin(env)?;
@@ -463,10 +675,13 @@ fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterErro
 }
 
 fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
+    matches!(
+        env.storage()
+            .instance()
+            .get(&DataKey::OperationalState)
+            .unwrap_or(OperationalState::Active),
+        OperationalState::Paused(_, _)
+    )
 }
 
 fn require_not_paused(env: &Env) -> Result<(), AdapterError> {
@@ -533,7 +748,7 @@ mod kani_proofs {
                 assert_eq!(selected, Err(AdapterError::HotClientTimestampExhausted));
             }
             Some(last) => {
-                let selected = selected.expect("last > 0 can always step down");
+                let selected = selected.expect("last > 0 can step down");
                 assert_eq!(selected, last - 1);
                 assert!(selected < last);
                 assert_ne!(selected, last);
@@ -650,10 +865,16 @@ mod kani_proofs {
         kani::assume(adapter_balance >= 0);
         kani::assume(amount > 0);
 
-        let result = validate_withdrawal_resources(principal, adapter_balance, amount);
+        let recorded_returned: i128 = kani::any();
+        kani::assume(recorded_returned >= 0);
+
+        let result =
+            validate_withdrawal_resources(principal, recorded_returned, adapter_balance, amount);
 
         if principal < amount {
             assert_eq!(result, Err(AdapterError::InsufficientPrincipal));
+        } else if recorded_returned < amount {
+            assert_eq!(result, Err(AdapterError::InsufficientRecordedReturn));
         } else if adapter_balance < amount {
             assert_eq!(result, Err(AdapterError::InsufficientReturnedBalance));
         } else {
@@ -778,7 +999,7 @@ mod tests {
         );
         let adapter = env.register(
             HotBridgeAdapterContract,
-            (&admin, &vault, &hot_locker, &receiver),
+            (&admin, &vault, &hot_locker, &asset, &receiver),
         );
         (adapter, admin, vault, hot_locker, asset, receiver)
     }
@@ -892,7 +1113,7 @@ mod tests {
                             &mut last_hot_timestamp,
                         );
 
-                        asset_admin.mint(&adapter, &amount);
+                        asset_admin.mint(&vault, &amount);
                         client.supply(&vault, &asset, &amount);
                         model_principal += amount;
                         model_locker_balance += amount;
@@ -905,9 +1126,10 @@ mod tests {
                         if amount > model_principal {
                             prop_assert_eq!(result, Err(Ok(AdapterError::InsufficientPrincipal)));
                         } else {
-                            prop_assert_eq!(result, Err(Ok(AdapterError::InsufficientReturnedBalance)));
+                            prop_assert_eq!(result, Err(Ok(AdapterError::InsufficientRecordedReturn)));
 
                             asset_admin.mint(&adapter, &amount);
+                            client.record_returned(&hot_locker, &asset, &amount);
                             prop_assert_eq!(client.progress_withdrawal(&vault, &asset, &amount), amount);
                             model_principal -= amount;
                             model_vault_balance += amount;
@@ -934,15 +1156,16 @@ mod tests {
             let receiver = BytesN::from_array(&env, &[7; 32]);
             let adapter = env.register(
                 HotBridgeAdapterContract,
-                (&admin, &vault, &hot_locker, &receiver),
+                (&admin, &vault, &hot_locker, &asset, &receiver),
             );
             let client = HotBridgeAdapterContractClient::new(&env, &adapter);
             let token = soroban_sdk::token::Client::new(&env, &asset);
-            StellarAssetClient::new(&env, &asset).mint(&adapter, &amount);
+            StellarAssetClient::new(&env, &asset).mint(&vault, &amount);
 
             prop_assert_eq!(client.try_supply(&vault, &asset, &amount), Err(Ok(AdapterError::DepositPostconditionFailed)));
             prop_assert_eq!(client.total_assets(&asset), 0);
-            prop_assert_eq!(token.balance(&adapter), amount);
+            prop_assert_eq!(token.balance(&adapter), 0);
+            prop_assert_eq!(token.balance(&vault), amount);
             prop_assert_eq!(token.balance(&hot_locker), 0);
         }
     }
@@ -953,7 +1176,7 @@ mod tests {
         let (adapter, _admin, vault, hot_locker, asset, receiver) = setup(&env);
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
         let asset_admin = StellarAssetClient::new(&env, &asset);
-        asset_admin.mint(&adapter, &100);
+        asset_admin.mint(&vault, &100);
 
         client.supply(&vault, &asset, &100);
         assert_hot_deposit_event(
@@ -989,7 +1212,7 @@ mod tests {
         let asset_admin = StellarAssetClient::new(&env, &asset);
         let base_nonce = 1_777_000_000_000_000_000_000;
 
-        asset_admin.mint(&adapter, &100);
+        asset_admin.mint(&vault, &100);
         client.supply(&vault, &asset, &100);
         assert_hot_deposit_event(
             &env,
@@ -1001,7 +1224,7 @@ mod tests {
             base_nonce,
         );
 
-        asset_admin.mint(&adapter, &60);
+        asset_admin.mint(&vault, &60);
         client.supply(&vault, &asset, &60);
         assert_hot_deposit_event(
             &env,
@@ -1015,7 +1238,7 @@ mod tests {
         assert_eq!(client.total_assets(&asset), 160);
 
         env.ledger().set_timestamp(1_777_000_001);
-        asset_admin.mint(&adapter, &25);
+        asset_admin.mint(&vault, &25);
         client.supply(&vault, &asset, &25);
 
         assert_hot_deposit_event(
@@ -1036,10 +1259,11 @@ mod tests {
         let (adapter, _admin, vault, _hot_locker, asset, _receiver) = setup(&env);
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
         let asset_admin = StellarAssetClient::new(&env, &asset);
-        asset_admin.mint(&adapter, &100);
+        asset_admin.mint(&vault, &100);
         client.supply(&vault, &asset, &100);
 
         asset_admin.mint(&adapter, &40);
+        client.record_returned(&_hot_locker, &asset, &40);
 
         assert_eq!(client.progress_withdrawal(&vault, &asset, &40), 40);
         assert_eq!(client.total_assets(&asset), 60);
@@ -1055,11 +1279,107 @@ mod tests {
         let (adapter, _admin, vault, _hot_locker, asset, _receiver) = setup(&env);
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
         let asset_admin = StellarAssetClient::new(&env, &asset);
-        asset_admin.mint(&adapter, &100);
+        asset_admin.mint(&vault, &100);
         client.supply(&vault, &asset, &100);
 
         let error = client.try_progress_withdrawal(&vault, &asset, &1);
-        assert_eq!(error, Err(Ok(AdapterError::InsufficientReturnedBalance)));
+        assert_eq!(error, Err(Ok(AdapterError::InsufficientRecordedReturn)));
+    }
+
+    #[test]
+    fn supply_rejects_redeploying_returned_balance() {
+        let env = Env::default();
+        let (adapter, _admin, vault, hot_locker, asset, _receiver) = setup(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let asset_admin = StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&vault, &100);
+        client.supply(&vault, &asset, &100);
+
+        asset_admin.mint(&adapter, &40);
+        client.record_returned(&hot_locker, &asset, &40);
+        asset_admin.mint(&vault, &40);
+
+        let error = client.try_supply(&vault, &asset, &40);
+
+        assert_eq!(error, Err(Ok(AdapterError::PendingReturnedBalance)));
+        assert_eq!(client.total_assets(&asset), 100);
+        assert_eq!(client.returned_balance(&asset), 40);
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &asset).balance(&adapter),
+            40
+        );
+    }
+
+    #[test]
+    fn supply_rejects_unsolicited_adapter_balance() {
+        let env = Env::default();
+        let (adapter, _admin, vault, _hot_locker, asset, _receiver) = setup(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let asset_admin = StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&vault, &100);
+        client.supply(&vault, &asset, &100);
+
+        asset_admin.mint(&adapter, &40);
+        asset_admin.mint(&vault, &40);
+
+        let error = client.try_supply(&vault, &asset, &40);
+
+        assert_eq!(error, Err(Ok(AdapterError::InsufficientAdapterBalance)));
+        assert_eq!(client.total_assets(&asset), 100);
+    }
+
+    #[test]
+    fn progress_withdrawal_rejects_unsolicited_balance_without_return_record() {
+        let env = Env::default();
+        let (adapter, _admin, vault, _hot_locker, asset, _receiver) = setup(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let asset_admin = StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&vault, &100);
+        client.supply(&vault, &asset, &100);
+
+        asset_admin.mint(&adapter, &50);
+
+        let error = client.try_progress_withdrawal(&vault, &asset, &50);
+
+        assert_eq!(error, Err(Ok(AdapterError::InsufficientRecordedReturn)));
+        assert_eq!(client.total_assets(&asset), 100);
+    }
+
+    #[test]
+    fn rescue_cannot_transfer_principal_backing_returned_balance() {
+        let env = Env::default();
+        let (adapter, _admin, vault, hot_locker, asset, _receiver) = setup(&env);
+        let receiver = register_dummy_contract(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let asset_admin = StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&vault, &100);
+        client.supply(&vault, &asset, &100);
+        asset_admin.mint(&adapter, &40);
+        client.record_returned(&hot_locker, &asset, &40);
+
+        let error = client.try_rescue(&vault, &asset, &40, &receiver);
+
+        assert_eq!(error, Err(Ok(AdapterError::InsufficientSurplus)));
+        assert_eq!(client.total_assets(&asset), 100);
+        assert_eq!(client.returned_balance(&asset), 40);
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &asset).balance(&adapter),
+            40
+        );
+    }
+
+    #[test]
+    fn supply_rejects_unsupported_asset() {
+        let env = Env::default();
+        let (adapter, _admin, vault, _hot_locker, _configured_asset, _receiver) = setup(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let unsupported_sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+        let unsupported_asset = unsupported_sac.address();
+        StellarAssetClient::new(&env, &unsupported_asset).mint(&vault, &1);
+
+        let error = client.try_supply(&vault, &unsupported_asset, &1);
+
+        assert_eq!(error, Err(Ok(AdapterError::UnsupportedAsset)));
     }
 
     #[test]
@@ -1074,15 +1394,23 @@ mod tests {
         let receiver = BytesN::from_array(&env, &[7; 32]);
         let adapter = env.register(
             HotBridgeAdapterContract,
-            (&admin, &vault, &hot_locker, &receiver),
+            (&admin, &vault, &hot_locker, &asset, &receiver),
         );
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
-        StellarAssetClient::new(&env, &asset).mint(&adapter, &100);
+        StellarAssetClient::new(&env, &asset).mint(&vault, &100);
 
         let error = client.try_supply(&vault, &asset, &100);
 
         assert_eq!(error, Err(Ok(AdapterError::DepositPostconditionFailed)));
         assert_eq!(client.total_assets(&asset), 0);
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &asset).balance(&adapter),
+            0
+        );
+        assert_eq!(
+            soroban_sdk::token::Client::new(&env, &asset).balance(&vault),
+            100
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use near_sdk::{
     json_types::U128,
     near, require,
     serde_json::{self, json},
-    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue,
+    AccountId, Gas, NearToken, PanicOnDefault, Promise, PromiseOrValue, PromiseResult,
 };
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -19,6 +19,7 @@ const GAS_MARKET_WITHDRAWAL_EXECUTE: Gas = Gas::from_tgas(100);
 const GAS_INTENTS_MT_TRANSFER: Gas = Gas::from_tgas(50);
 const GAS_WITHDRAW_TARGET: Gas = Gas::from_tgas(250);
 const GAS_WITHDRAW_BUFFER: Gas = Gas::from_tgas(20);
+const GAS_OPERATION_CALLBACK: Gas = Gas::from_tgas(10);
 const INTENTS_CONTRACT: &str = "intents.near";
 const BRIDGE_REFUEL_ACCOUNT: &str = "bridge-refuel.hot.tg";
 const MARKET_SUPPLY_MSG: &str = "\"Supply\"";
@@ -26,10 +27,12 @@ const MAX_STELLAR_RECEIVER_LEN: usize = 256;
 const MAX_TOKEN_ID_LEN: usize = 256;
 const HOT_DEPOSIT_RECEIVER_HEX_LEN: usize = 64;
 const HOT_STELLAR_CHAIN_PREFIX: &str = "1100_";
+const STORAGE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 #[near(serializers = [json])]
 pub struct Config {
+    pub schema_version: u32,
     pub stellar_receiver: String,
     pub near_market: AccountId,
     pub omni_token_id: String,
@@ -38,13 +41,17 @@ pub struct Config {
     pub pending_owner: Option<AccountId>,
     pub omni_contract: AccountId,
     pub hot_deposit_receiver_hex: String,
+    pub intents_contract: AccountId,
+    pub bridge_refuel_account: AccountId,
+    pub pending_intents_integration: Option<IntentsIntegration>,
+    pub paused: bool,
+    pub pending_config_update: Option<ConfigUpdate>,
 }
 
 #[derive(Debug, Clone)]
 #[near(serializers = [borsh])]
 struct StellarReceiver {
     raw: String,
-    encoded: String,
 }
 
 impl StellarReceiver {
@@ -63,19 +70,18 @@ impl StellarReceiver {
 
         let sc_address = ScAddress::from_str(&receiver)
             .unwrap_or_else(|_| env::panic_str("invalid stellar receiver"));
-        let encoded = Contract::encode_stellar_sc_address(&sc_address);
-        Self {
-            raw: receiver,
-            encoded,
-        }
+        let canonical = sc_address.to_string();
+        Self { raw: canonical }
     }
 
     fn as_str(&self) -> &str {
         &self.raw
     }
 
-    fn encoded(&self) -> &str {
-        &self.encoded
+    fn encoded(&self) -> String {
+        let sc_address = ScAddress::from_str(&self.raw)
+            .unwrap_or_else(|_| env::panic_str("stored stellar receiver is invalid"));
+        Contract::encode_stellar_sc_address(&sc_address)
     }
 }
 
@@ -139,9 +145,52 @@ impl HotDepositReceiver {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct ConfigUpdate {
+    pub stellar_receiver: String,
+    pub near_market: AccountId,
+    pub omni_token_id: String,
+    pub omni_contract: AccountId,
+    pub hot_deposit_receiver_hex: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub struct IntentsIntegration {
+    pub contract: AccountId,
+    pub bridge_refuel_account: AccountId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum OperationKind {
+    ForwardToMarket,
+    WithdrawToStellar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [borsh, json])]
+pub enum OperationStatus {
+    Pending,
+    Succeeded,
+    Failed,
+    Retrying { attempts: u8 },
+}
+
+#[derive(Debug, Clone)]
+#[near(serializers = [borsh, json])]
+pub struct Operation {
+    pub id: u64,
+    pub kind: OperationKind,
+    pub amount: U128,
+    pub status: OperationStatus,
+}
+
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
+    schema_version: u32,
     stellar_receiver: StellarReceiver,
     near_market: AccountId,
     omni_token_id: OmniTokenId,
@@ -150,6 +199,12 @@ pub struct Contract {
     pending_owner: Option<AccountId>,
     omni_contract: AccountId,
     hot_deposit_receiver: HotDepositReceiver,
+    intents_integration: IntentsIntegration,
+    paused: bool,
+    pending_config_update: Option<ConfigUpdate>,
+    pending_intents_integration: Option<IntentsIntegration>,
+    operations: BTreeMap<u64, Operation>,
+    next_operation_id: u64,
     supply_positions: BTreeMap<AccountId, u128>,
     withdrawal_requests: BTreeMap<AccountId, u128>,
 }
@@ -171,6 +226,7 @@ impl Contract {
         let hot_deposit_receiver = HotDepositReceiver::new(hot_deposit_receiver_hex);
 
         Self {
+            schema_version: STORAGE_VERSION,
             stellar_receiver,
             near_market,
             omni_token_id,
@@ -179,14 +235,25 @@ impl Contract {
             pending_owner: None,
             omni_contract,
             hot_deposit_receiver,
+            intents_integration: IntentsIntegration {
+                contract: account_id(INTENTS_CONTRACT),
+                bridge_refuel_account: account_id(BRIDGE_REFUEL_ACCOUNT),
+            },
+            paused: false,
+            pending_config_update: None,
+            pending_intents_integration: None,
+            operations: BTreeMap::new(),
+            next_operation_id: 1,
             supply_positions: BTreeMap::new(),
             withdrawal_requests: BTreeMap::new(),
         }
     }
 
-    pub fn forward_to_market(&self, amount: U128) -> Promise {
+    pub fn forward_to_market(&mut self, amount: U128) -> Promise {
+        self.assert_not_paused();
         self.assert_curator();
         Self::assert_amount(amount);
+        let operation_id = self.start_operation(OperationKind::ForwardToMarket, amount.0);
 
         self.call_omni(
             "mt_transfer_call",
@@ -198,9 +265,15 @@ impl Contract {
             }),
             GAS_MT_TRANSFER_CALL,
         )
+        .then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_OPERATION_CALLBACK)
+                .on_operation_complete(operation_id),
+        )
     }
 
     pub fn request_market_withdrawal(&self, amount: U128) -> Promise {
+        self.assert_not_paused();
         self.assert_curator();
         Self::assert_amount(amount);
 
@@ -214,6 +287,7 @@ impl Contract {
     }
 
     pub fn cancel_market_withdrawal(&self) -> Promise {
+        self.assert_not_paused();
         self.assert_curator();
 
         self.call_market(
@@ -224,6 +298,7 @@ impl Contract {
     }
 
     pub fn execute_market_withdrawal(&self, batch_limit: Option<u32>) -> Promise {
+        self.assert_not_paused();
         self.assert_curator();
 
         self.call_market(
@@ -294,11 +369,18 @@ impl Contract {
         PromiseOrValue::Promise(self.intents_transfer_promise(account_id, U128(amount)))
     }
 
-    pub fn withdraw_to_stellar(&self, amount: U128) -> Promise {
+    pub fn withdraw_to_stellar(&mut self, amount: U128) -> Promise {
+        self.assert_not_paused();
         self.assert_curator();
         Self::assert_amount(amount);
+        self.assert_withdraw_gas_budget();
 
-        self.hot_withdraw_promise(amount)
+        let operation_id = self.start_operation(OperationKind::WithdrawToStellar, amount.0);
+        self.hot_withdraw_promise(amount, operation_id).then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_OPERATION_CALLBACK)
+                .on_operation_complete(operation_id),
+        )
     }
 
     pub fn mt_on_transfer(
@@ -312,7 +394,7 @@ impl Contract {
         let _authorized_sender = sender_id;
 
         require!(
-            env::predecessor_account_id() == account_id(INTENTS_CONTRACT),
+            env::predecessor_account_id() == self.intents_integration.contract,
             "Only Intents can transfer-call this adapter"
         );
         require!(
@@ -330,12 +412,21 @@ impl Contract {
 
         let supplier = previous_owner_ids[0].clone();
         self.increase_supply_position(supplier, amount.0);
-        self.hot_withdraw_promise(amount).detach();
+        self.assert_not_paused();
+        self.assert_withdraw_gas_budget();
+        let operation_id = self.start_operation(OperationKind::WithdrawToStellar, amount.0);
+        self.hot_withdraw_promise(amount, operation_id)
+            .then(
+                Self::ext(env::current_account_id())
+                    .with_static_gas(GAS_OPERATION_CALLBACK)
+                    .on_operation_complete(operation_id),
+            )
+            .detach();
 
         PromiseOrValue::Value(vec![U128(0)])
     }
 
-    fn hot_withdraw_promise(&self, amount: U128) -> Promise {
+    fn hot_withdraw_promise(&self, amount: U128, operation_id: u64) -> Promise {
         let remaining_gas = Gas::from_gas(
             env::prepaid_gas()
                 .as_gas()
@@ -344,15 +435,15 @@ impl Contract {
         );
         let forwarded_gas = Gas::from_gas(remaining_gas.as_gas().min(GAS_WITHDRAW_TARGET.as_gas()));
 
-        Promise::new(account_id(INTENTS_CONTRACT)).function_call(
+        Promise::new(self.intents_integration.contract.clone()).function_call(
             "mt_withdraw".to_string(),
             serde_json::to_vec(&json!({
                 "token": self.intents_token_contract(),
-                "receiver_id": BRIDGE_REFUEL_ACCOUNT,
+                "receiver_id": self.intents_integration.bridge_refuel_account,
                 "token_ids": [self.intents_multi_token_id()],
                 "amounts": [amount.0.to_string()],
                 "memo": serde_json::Value::Null,
-                "msg": self.withdraw_msg_json(),
+                "msg": self.withdraw_msg_json(operation_id),
             }))
             .unwrap_or_else(|_| env::panic_str("failed to serialize withdrawal args")),
             ONE_YOCTO,
@@ -360,11 +451,12 @@ impl Contract {
         )
     }
 
-    fn withdraw_msg_json(&self) -> String {
+    fn withdraw_msg_json(&self, operation_id: u64) -> String {
         json!({
             "receiver_id": self.stellar_receiver.encoded(),
             "amount_native": "0",
             "block_number": 0,
+            "request_id": operation_id.to_string(),
         })
         .to_string()
     }
@@ -406,7 +498,7 @@ impl Contract {
     }
 
     fn intents_transfer_promise(&self, receiver_id: AccountId, amount: U128) -> Promise {
-        Promise::new(account_id(INTENTS_CONTRACT)).function_call(
+        Promise::new(self.intents_integration.contract.clone()).function_call(
             "mt_transfer".to_string(),
             serde_json::to_vec(&json!({
                 "receiver_id": receiver_id,
@@ -429,6 +521,87 @@ impl Contract {
             .checked_add(amount)
             .unwrap_or_else(|| env::panic_str("supply position overflow"));
         self.supply_positions.insert(account_id, updated);
+    }
+
+    fn start_operation(&mut self, kind: OperationKind, amount: u128) -> u64 {
+        let id = self.next_operation_id;
+        self.next_operation_id = self
+            .next_operation_id
+            .checked_add(1)
+            .unwrap_or_else(|| env::panic_str("operation id overflow"));
+        let operation = Operation {
+            id,
+            kind,
+            amount: U128(amount),
+            status: OperationStatus::Pending,
+        };
+        self.operations.insert(id, operation);
+        env::log_str(&format!("operation_pending:{id}"));
+        id
+    }
+
+    fn mark_operation_result(&mut self, operation_id: u64, succeeded: bool) {
+        let Some(operation) = self.operations.get_mut(&operation_id) else {
+            env::panic_str("unknown operation id");
+        };
+        operation.status = if succeeded {
+            OperationStatus::Succeeded
+        } else {
+            OperationStatus::Failed
+        };
+        env::log_str(if succeeded {
+            "operation_succeeded"
+        } else {
+            "operation_failed"
+        });
+    }
+
+    fn retry_tracked_operation(&mut self, operation_id: u64) -> Promise {
+        self.assert_not_paused();
+        self.assert_curator();
+        let operation = self
+            .operations
+            .get(&operation_id)
+            .unwrap_or_else(|| env::panic_str("unknown operation id"));
+        require!(
+            operation.status == OperationStatus::Failed,
+            "operation can only be retried from failed status"
+        );
+        let kind = operation.kind;
+        let amount = operation.amount;
+        if kind == OperationKind::WithdrawToStellar {
+            self.assert_withdraw_gas_budget();
+        }
+
+        let operation = self
+            .operations
+            .get_mut(&operation_id)
+            .unwrap_or_else(|| env::panic_str("unknown operation id"));
+        operation.status = match operation.status {
+            OperationStatus::Retrying { attempts } => OperationStatus::Retrying {
+                attempts: attempts.saturating_add(1),
+            },
+            _ => OperationStatus::Retrying { attempts: 1 },
+        };
+
+        match kind {
+            OperationKind::ForwardToMarket => self.call_omni(
+                "mt_transfer_call",
+                json!({
+                    "receiver_id": self.near_market,
+                    "token_id": self.omni_token_id_for_contract(),
+                    "amount": amount,
+                    "msg": MARKET_SUPPLY_MSG,
+                }),
+                GAS_MT_TRANSFER_CALL,
+            ),
+            OperationKind::WithdrawToStellar => self.hot_withdraw_promise(amount, operation_id),
+        }
+        .then(
+            Self::ext(env::current_account_id())
+                .with_static_gas(GAS_OPERATION_CALLBACK)
+                .on_operation_complete(operation_id),
+        )
     }
 
     fn decrease_supply_position(&mut self, account_id: &AccountId, amount: u128) {
@@ -488,20 +661,41 @@ fn account_id(value: &str) -> AccountId {
 
 #[near]
 impl Contract {
+    #[private]
+    pub fn on_operation_complete(&mut self, operation_id: u64) {
+        #[allow(deprecated)]
+        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        self.mark_operation_result(operation_id, succeeded);
+    }
+
+    pub fn get_operation(&self, operation_id: u64) -> Option<Operation> {
+        self.operations.get(&operation_id).cloned()
+    }
+
+    pub fn retry_operation(&mut self, operation_id: u64) -> Promise {
+        self.retry_tracked_operation(operation_id)
+    }
+
+    #[payable]
     pub fn set_curator(&mut self, curator: AccountId) {
+        assert_one_yocto();
         self.assert_owner();
         self.curator = curator;
         env::log_str("curator_updated");
     }
 
+    #[payable]
     pub fn propose_owner(&mut self, pending_owner: AccountId) {
+        assert_one_yocto();
         self.assert_owner();
         require!(pending_owner != self.owner, "new owner must differ");
         self.pending_owner = Some(pending_owner);
         env::log_str("owner_proposed");
     }
 
+    #[payable]
     pub fn accept_owner(&mut self) {
+        assert_one_yocto();
         let predecessor = env::predecessor_account_id();
         require!(
             self.pending_owner
@@ -514,8 +708,75 @@ impl Contract {
         env::log_str("owner_accepted");
     }
 
+    #[payable]
+    pub fn pause(&mut self) {
+        assert_one_yocto();
+        self.assert_owner();
+        require!(!self.paused, "already paused");
+        self.paused = true;
+        env::log_str("paused");
+    }
+
+    #[payable]
+    pub fn unpause(&mut self) {
+        assert_one_yocto();
+        self.assert_owner();
+        require!(self.paused, "not paused");
+        self.paused = false;
+        env::log_str("unpaused");
+    }
+
+    #[payable]
+    pub fn propose_config_update(&mut self, update: ConfigUpdate) {
+        assert_one_yocto();
+        self.assert_owner();
+        self.validate_config_update(&update);
+        self.pending_config_update = Some(update);
+        env::log_str("config_update_proposed");
+    }
+
+    #[payable]
+    pub fn accept_config_update(&mut self) {
+        assert_one_yocto();
+        self.assert_owner();
+        let update = self
+            .pending_config_update
+            .take()
+            .unwrap_or_else(|| env::panic_str("no pending config update"));
+        self.validate_config_update(&update);
+        self.stellar_receiver = StellarReceiver::new(update.stellar_receiver);
+        self.near_market = update.near_market;
+        self.omni_token_id = OmniTokenId::new(update.omni_token_id, &update.omni_contract);
+        self.omni_contract = update.omni_contract;
+        self.hot_deposit_receiver = HotDepositReceiver::new(update.hot_deposit_receiver_hex);
+        env::log_str("config_update_accepted");
+    }
+
+    #[payable]
+    pub fn propose_intents_integration(&mut self, integration: IntentsIntegration) {
+        assert_one_yocto();
+        self.assert_owner();
+        self.validate_intents_integration(&integration);
+        self.pending_intents_integration = Some(integration);
+        env::log_str("intents_integration_proposed");
+    }
+
+    #[payable]
+    pub fn accept_intents_integration(&mut self) {
+        assert_one_yocto();
+        self.assert_owner();
+        let integration = self
+            .pending_intents_integration
+            .take()
+            .unwrap_or_else(|| env::panic_str("no pending intents integration"));
+        self.validate_intents_integration(&integration);
+        self.intents_integration = integration;
+        env::log_str("intents_integration_accepted");
+    }
+
     pub fn get_config(&self) -> Config {
         Config {
+            schema_version: self.schema_version,
             stellar_receiver: self.stellar_receiver.as_str().to_string(),
             near_market: self.near_market.clone(),
             omni_token_id: self.omni_token_id.as_str().to_string(),
@@ -524,6 +785,11 @@ impl Contract {
             pending_owner: self.pending_owner.clone(),
             omni_contract: self.omni_contract.clone(),
             hot_deposit_receiver_hex: self.hot_deposit_receiver.as_str().to_string(),
+            intents_contract: self.intents_integration.contract.clone(),
+            bridge_refuel_account: self.intents_integration.bridge_refuel_account.clone(),
+            pending_intents_integration: self.pending_intents_integration.clone(),
+            paused: self.paused,
+            pending_config_update: self.pending_config_update.clone(),
         }
     }
 
@@ -541,9 +807,50 @@ impl Contract {
         );
     }
 
+    fn assert_not_paused(&self) {
+        require!(!self.paused, "contract is paused");
+    }
+
+    fn assert_withdraw_gas_budget(&self) {
+        let available = env::prepaid_gas()
+            .as_gas()
+            .saturating_sub(env::used_gas().as_gas());
+        let required = GAS_WITHDRAW_TARGET
+            .as_gas()
+            .saturating_add(GAS_WITHDRAW_BUFFER.as_gas())
+            .saturating_add(GAS_OPERATION_CALLBACK.as_gas());
+        require!(available >= required, "insufficient prepaid gas");
+    }
+
     fn assert_amount(amount: U128) {
         require!(amount.0 > 0, "amount must be > 0");
     }
+
+    fn validate_config_update(&self, update: &ConfigUpdate) {
+        let _stellar_receiver = StellarReceiver::new(update.stellar_receiver.clone());
+        let _omni_token_id = OmniTokenId::new(update.omni_token_id.clone(), &update.omni_contract);
+        let _hot_deposit_receiver =
+            HotDepositReceiver::new(update.hot_deposit_receiver_hex.clone());
+        require!(
+            update.near_market != env::current_account_id(),
+            "near market cannot be this contract"
+        );
+    }
+
+    fn validate_intents_integration(&self, integration: &IntentsIntegration) {
+        require!(
+            integration.contract != env::current_account_id(),
+            "intents contract cannot be this contract"
+        );
+        require!(
+            integration.bridge_refuel_account != env::current_account_id(),
+            "bridge refuel account cannot be this contract"
+        );
+    }
+}
+
+fn assert_one_yocto() {
+    require!(env::attached_deposit() == ONE_YOCTO, "requires one yocto");
 }
 
 #[cfg(test)]
@@ -552,9 +859,10 @@ mod tests {
         mock::MockAction,
         serde_json::Value,
         test_utils::{get_created_receipts, VMContextBuilder},
-        testing_env, AccountId,
+        test_vm_config, testing_env, AccountId, PromiseResult, RuntimeFeesConfig,
     };
     use proptest::prelude::*;
+    use std::collections::HashMap;
 
     use super::*;
 
@@ -568,12 +876,41 @@ mod tests {
     }
 
     fn context(predecessor: &AccountId) {
+        context_with_deposit(predecessor, NO_DEPOSIT);
+    }
+
+    fn context_with_deposit(predecessor: &AccountId, attached_deposit: NearToken) {
         let mut builder = VMContextBuilder::new();
         builder.current_account_id(account("counterparty.near"));
         builder.predecessor_account_id(predecessor.clone());
         builder.signer_account_id(predecessor.clone());
         builder.prepaid_gas(Gas::from_tgas(400));
+        builder.attached_deposit(attached_deposit);
         testing_env!(builder.build());
+    }
+
+    fn context_with_gas(predecessor: &AccountId, prepaid_gas: Gas) {
+        let mut builder = VMContextBuilder::new();
+        builder.current_account_id(account("counterparty.near"));
+        builder.predecessor_account_id(predecessor.clone());
+        builder.signer_account_id(predecessor.clone());
+        builder.prepaid_gas(prepaid_gas);
+        testing_env!(builder.build());
+    }
+
+    fn context_with_promise_results(predecessor: &AccountId, promise_results: Vec<PromiseResult>) {
+        let mut builder = VMContextBuilder::new();
+        builder.current_account_id(account("counterparty.near"));
+        builder.predecessor_account_id(predecessor.clone());
+        builder.signer_account_id(predecessor.clone());
+        builder.prepaid_gas(Gas::from_tgas(400));
+        testing_env!(
+            builder.build(),
+            test_vm_config(),
+            RuntimeFeesConfig::test(),
+            HashMap::default(),
+            promise_results
+        );
     }
 
     fn test_contract() -> Contract {
@@ -590,7 +927,10 @@ mod tests {
 
     fn first_function_call() -> (AccountId, String, Value, NearToken, Gas) {
         let receipts = get_created_receipts();
-        assert_eq!(receipts.len(), 1, "expected exactly one outgoing receipt");
+        assert!(
+            !receipts.is_empty(),
+            "expected at least one outgoing receipt"
+        );
 
         let receipt = &receipts[0];
         assert_eq!(receipt.actions.len(), 1, "expected exactly one action");
@@ -943,7 +1283,7 @@ mod tests {
 
     #[test]
     fn forward_to_market_builds_expected_mt_transfer_call_supply() {
-        let contract = test_contract();
+        let mut contract = test_contract();
         context(&account("curator.near"));
 
         let _ = contract.forward_to_market(U128(42));
@@ -1103,7 +1443,7 @@ mod tests {
 
     #[test]
     fn wrapped_token_id_is_normalized_for_omni_calls() {
-        let contract = Contract::new(
+        let mut contract = Contract::new(
             "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             account("templar-market.near"),
             "nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
@@ -1126,7 +1466,7 @@ mod tests {
 
     #[test]
     fn withdraw_to_stellar_uses_hardcoded_receiver_and_token() {
-        let contract = test_contract();
+        let mut contract = test_contract();
         context(&account("curator.near"));
 
         let _ = contract.withdraw_to_stellar(U128(999));
@@ -1155,12 +1495,67 @@ mod tests {
         );
         assert_eq!(msg["amount_native"], "0");
         assert_eq!(msg["block_number"], 0);
+        assert_eq!(msg["request_id"], "1");
+        assert_eq!(
+            contract
+                .get_operation(1)
+                .expect("operation should be recorded")
+                .status,
+            OperationStatus::Pending
+        );
+    }
+
+    #[test]
+    fn operation_callback_marks_failed_and_retry_is_idempotent() {
+        let mut contract = test_contract();
+        context(&account("curator.near"));
+        let _ = contract.withdraw_to_stellar(U128(5));
+
+        context_with_promise_results(&account("counterparty.near"), vec![PromiseResult::Failed]);
+        contract.on_operation_complete(1);
+        assert_eq!(
+            contract
+                .get_operation(1)
+                .expect("operation should exist")
+                .status,
+            OperationStatus::Failed
+        );
+
+        context(&account("curator.near"));
+        let _ = contract.retry_operation(1);
+        assert_eq!(
+            contract
+                .get_operation(1)
+                .expect("operation should exist")
+                .status,
+            OperationStatus::Retrying { attempts: 1 }
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "operation can only be retried from failed status")]
+    fn retry_rejects_pending_operation() {
+        let mut contract = test_contract();
+        context(&account("curator.near"));
+        let _ = contract.forward_to_market(U128(5));
+
+        context(&account("curator.near"));
+        let _ = contract.retry_operation(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient prepaid gas")]
+    fn withdraw_rejects_insufficient_forwarded_gas() {
+        let mut contract = test_contract();
+        context_with_gas(&account("curator.near"), Gas::from_tgas(30));
+
+        let _ = contract.withdraw_to_stellar(U128(1));
     }
 
     #[test]
     #[should_panic(expected = "Only curator can call this method")]
     fn non_curator_cannot_withdraw_to_stellar() {
-        let contract = test_contract();
+        let mut contract = test_contract();
         context(&account("not-curator.near"));
 
         let _ = contract.withdraw_to_stellar(U128(1));
@@ -1176,10 +1571,19 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "Only curator can call this method")]
+    fn non_curator_cannot_forward_to_market() {
+        let mut contract = test_contract();
+        context(&account("not-curator.near"));
+
+        let _ = contract.forward_to_market(U128(1));
+    }
+
+    #[test]
     fn owner_can_rotate_curator() {
         let mut contract = test_contract();
 
-        context(&account("owner.near"));
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
         contract.set_curator(account("new-curator.near"));
 
         context(&account("new-curator.near"));
@@ -1190,8 +1594,68 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "requires one yocto")]
+    fn owner_methods_require_one_yocto() {
+        let mut contract = test_contract();
+        context(&account("owner.near"));
+
+        contract.set_curator(account("new-curator.near"));
+    }
+
+    #[test]
+    fn pause_blocks_forward_and_withdraw() {
+        let mut contract = test_contract();
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
+        contract.pause();
+
+        context(&account("curator.near"));
+        assert!(catch_contract_panic(|| {
+            let _ = contract.forward_to_market(U128(1));
+        }));
+        assert!(catch_contract_panic(|| {
+            let _ = contract.withdraw_to_stellar(U128(1));
+        }));
+
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
+        contract.unpause();
+        assert!(!contract.get_config().paused);
+    }
+
+    #[test]
+    fn config_rotation_is_two_step_and_validated() {
+        let mut contract = test_contract();
+        let update = ConfigUpdate {
+            stellar_receiver: "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV"
+                .to_string(),
+            near_market: account("new-market.near"),
+            omni_token_id: "1100_new_usdc".to_string(),
+            omni_contract: account("new-omni.hot.tg"),
+            hot_deposit_receiver_hex: HOT_DEPOSIT_RECEIVER_HEX.to_string(),
+        };
+
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
+        contract.propose_config_update(update.clone());
+        assert_eq!(
+            contract
+                .get_config()
+                .pending_config_update
+                .expect("pending update")
+                .near_market,
+            account("new-market.near")
+        );
+
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
+        contract.accept_config_update();
+        let config = contract.get_config();
+        assert_eq!(config.near_market, account("new-market.near"));
+        assert_eq!(config.omni_token_id, "1100_new_usdc");
+        assert_eq!(config.omni_contract, account("new-omni.hot.tg"));
+        assert_eq!(config.pending_config_update, None);
+    }
+
+    #[test]
     fn token_id_is_fixed_from_configuration() {
-        let contract = test_contract();
+        let mut contract = test_contract();
         context(&account("curator.near"));
         let _ = contract.forward_to_market(U128(7));
         let (_, _, args, _, _) = first_function_call();
@@ -1201,7 +1665,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "amount must be > 0")]
     fn rejects_zero_amount() {
-        let contract = test_contract();
+        let mut contract = test_contract();
         context(&account("curator.near"));
         let _ = contract.withdraw_to_stellar(U128(0));
     }
@@ -1218,17 +1682,17 @@ mod tests {
     #[should_panic(expected = "Only owner can call this method")]
     fn non_owner_cannot_rotate_curator() {
         let mut contract = test_contract();
-        context(&account("curator.near"));
+        context_with_deposit(&account("curator.near"), ONE_YOCTO);
         contract.set_curator(account("attacker.near"));
     }
 
     #[test]
     fn ownership_transfer_is_two_step() {
         let mut contract = test_contract();
-        context(&account("owner.near"));
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
         contract.propose_owner(account("new-owner.near"));
 
-        context(&account("new-owner.near"));
+        context_with_deposit(&account("new-owner.near"), ONE_YOCTO);
         contract.accept_owner();
 
         let config = contract.get_config();
@@ -1244,10 +1708,10 @@ mod tests {
     #[should_panic(expected = "Only pending owner can accept ownership")]
     fn non_pending_owner_cannot_accept_ownership() {
         let mut contract = test_contract();
-        context(&account("owner.near"));
+        context_with_deposit(&account("owner.near"), ONE_YOCTO);
         contract.propose_owner(account("new-owner.near"));
 
-        context(&account("someone-else.near"));
+        context_with_deposit(&account("someone-else.near"), ONE_YOCTO);
         contract.accept_owner();
     }
 

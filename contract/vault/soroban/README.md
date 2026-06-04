@@ -358,19 +358,26 @@ routing supplied assets into the HOT Stellar locker.
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-hot-bridge-adapter`
-- `HOT_STELLAR_LOCKER_CONTRACT=<contract> HOT_STELLAR_RECEIVER_HEX=<64 hex chars> just deploy-hot-bridge-adapter`
+- `SOROBAN_ASSET_TOKEN=<token> HOT_STELLAR_LOCKER_CONTRACT=<contract> HOT_STELLAR_RECEIVER_HEX=<64 hex chars> just deploy-hot-bridge-adapter`
 - `just hot-bridge-adapter-status`
 
 `HOT_STELLAR_RECEIVER_HEX` is intentionally explicit. It should be copied from a proven HOT receiver
 for the NEAR counterparty, not recomputed locally during deployment.
+`SOROBAN_ASSET_TOKEN` pins the single token this adapter will accept; if unset, the deploy recipe
+uses `state/asset_token_id` from `deploy-test-token`.
 
 `deploy-hot-bridge-adapter` pins the production HOT Stellar locker by contract ID and fetched WASM
 SHA-256 before deploying. For non-production testing only, set `HOT_STELLAR_LOCKER_ALLOW_UNPINNED=1`
 and override `HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256` for the test locker.
 
-Withdrawal settlement is observable on Soroban only when returned Stellar-side token balance reaches
-the adapter. Without a NEAR/HOT proof verifier, operators must treat the HOT bridge/relayer path as a
-trusted settlement dependency before calling `progress_withdrawal`.
+Supply now pulls freshly authorized funds from the configured vault during the adapter call and
+rejects pre-existing adapter balances. Returned HOT funds must be recorded by the configured HOT
+locker with `record_returned` before the vault can call `progress_withdrawal`; raw adapter token
+balance alone is not treated as settlement proof.
+
+The HOT locker deposit field named `client_timestamp` is treated by the adapter as a client nonce.
+The pinned locker rejects duplicate values and also rejects same-ledger values above the ledger-base
+timestamp, so same-ledger deposits use the next lower unused nonce for locker compatibility.
 
 ## Deployment Artifact
 

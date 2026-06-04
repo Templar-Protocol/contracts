@@ -202,10 +202,10 @@ fn adapter_supply_works_against_mainnet_locker_wasm() {
     let receiver = proven_receiver(&env);
     let adapter = env.register(
         HotBridgeAdapterContract,
-        (&admin, &vault, &locker, &receiver),
+        (&admin, &vault, &locker, &token, &receiver),
     );
     let adapter_client = HotBridgeAdapterContractClient::new(&env, &adapter);
-    StellarAssetClient::new(&env, &token).mint(&adapter, &100);
+    StellarAssetClient::new(&env, &token).mint(&vault, &100);
 
     adapter_client.supply(&vault, &token, &100);
     assert_hot_deposit_event(
@@ -243,17 +243,17 @@ fn adapter_supply_supports_two_deposits_in_same_ledger_against_mainnet_locker_wa
     let receiver = proven_receiver(&env);
     let adapter = env.register(
         HotBridgeAdapterContract,
-        (&admin, &vault, &locker, &receiver),
+        (&admin, &vault, &locker, &token, &receiver),
     );
     let adapter_client = HotBridgeAdapterContractClient::new(&env, &adapter);
-    StellarAssetClient::new(&env, &token).mint(&adapter, &100);
+    StellarAssetClient::new(&env, &token).mint(&vault, &100);
     adapter_client.supply(&vault, &token, &100);
 
     let first_nonce = 1_777_000_000_000_000_000_000;
     let second_nonce = first_nonce - 1;
     assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 100, first_nonce);
 
-    StellarAssetClient::new(&env, &token).mint(&adapter, &60);
+    StellarAssetClient::new(&env, &token).mint(&vault, &60);
     adapter_client.supply(&vault, &token, &60);
     assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 60, second_nonce);
     assert!(!get_locker_deposit(&env, &locker, first_nonce).is_empty());

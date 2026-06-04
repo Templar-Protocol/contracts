@@ -7,6 +7,8 @@ This crate is a spike for the HOT Bridge counterparty described in the Stellar <
 - Curator-only methods build the expected outbound calls to the configured `omni_contract`:
   - `mt_transfer_call(receiver_id, token_id, amount, msg)` with `msg = "\"Supply\""` for market deposits
   - `intents.near mt_withdraw(token, receiver_id, token_ids, amounts, msg)` for HOT withdrawals
+- External Intents operations are recorded with an operation id, `Pending` status, and a private
+  callback that marks them `Succeeded` or `Failed`; retries are allowed only from `Failed`.
 - The market-like adapter entrypoint accepts vault supply through `intents.near mt_transfer_call`
   with token id `nep245:<omni_contract>:<raw_hot_token_id>` and `msg = "\"Supply\""`.
 - HOT asset transfer calls attach exactly `1 yoctoNEAR`; market queue calls attach no deposit.
@@ -16,8 +18,10 @@ This crate is a spike for the HOT Bridge counterparty described in the Stellar <
   market supply withdrawal queue before returned assets are withdrawn to Stellar.
 - `withdraw_to_stellar` always uses the contract's configured `stellar_receiver` and only spends
   the counterparty's current Intents balance.
-- `token_id` is immutable (`omni_token_id`) from init; runtime methods do not accept token overrides.
-- omni contract is configurable at init (`omni_contract`) to allow bridge transport swaps.
+- `token_id` is configured (`omni_token_id`) and runtime methods do not accept token overrides.
+- Critical routing config is changed through owner-only two-step updates.
+- The Intents contract and bridge refuel account are versioned state, initialized to the production
+  defaults and changed through owner-only two-step updates.
 - `hot_deposit_receiver_hex` is explicit init config. It must come from the verified HOT receiver
   bytes instead of local recomputation.
 - No runtime callback `msg` input is exposed in this spike (no arbitrary action payloads).
@@ -26,6 +30,9 @@ This crate is a spike for the HOT Bridge counterparty described in the Stellar <
   - Reject empty `token_id` at initialization
   - Cap `token_id` and `stellar_receiver` length
   - Two-step owner transfer (`propose_owner` -> `accept_owner`)
+  - One-yocto deposit required for owner role/config operations
+  - Owner pause blocks forward and HOT withdrawal operations
+  - Minimum gas budget required before creating HOT withdrawal promises
 
 The tests inspect emitted mock receipts directly, so method names, JSON arg shapes, gas, and deposit are all checked.
 
@@ -56,7 +63,9 @@ When the vault uses this contract as the Stellar market adapter, the flow is:
 - A real Soroban adapter address (for example from `upstream/feat/soroban-curator-kernel`)
 - A mock placeholder receiver during local testing
 
-`near_market` and `omni_token_id` are set at init and immutable in this spike, so curator cannot route to arbitrary receivers or switch bridged assets at call time. `omni_contract` is also set at init so the same contract can target a non-HOT multitoken contract in the future.
+`near_market`, `omni_token_id`, `omni_contract`, and HOT receiver config are set at init and can be
+rotated only through owner-controlled two-step config updates, so curator cannot route to arbitrary
+receivers or switch bridged assets at call time.
 
 ## Run
 
