@@ -158,7 +158,7 @@ jobs:
         run: sudo apt install libdbus-1-dev pkg-config
 
       - name: Install stellar CLI
-        run: curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | sh
+        run: contract/vault/soroban/scripts/install-stellar-cli.sh
 
       - name: Build and optimize proxy-oracle Soroban WASMs
         run: just -f contract/proxy-oracle/soroban/justfile optimize
