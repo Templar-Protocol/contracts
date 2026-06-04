@@ -1061,7 +1061,11 @@ fn soroban_contract_refresh_fees_command_updates_anchor() {
     env.mock_all_auths();
     let proxy = VaultProxy::new(&env);
     let contract_id = env.register(SorobanVaultContract, ());
-    let governance = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
     let asset_admin = soroban_sdk::Address::generate(&env);
     let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
     let asset_token = asset_sac.address();
@@ -1078,7 +1082,7 @@ fn soroban_contract_refresh_fees_command_updates_anchor() {
     env.as_contract(&contract_id, || {
         SorobanVaultContract::initialize(
             env.clone(),
-            governance.clone(),
+            curator.clone(),
             governance.clone(),
             asset_token.clone(),
             share_token.clone(),
@@ -2274,7 +2278,11 @@ fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let governance = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
     let asset_admin = soroban_sdk::Address::generate(&env);
     let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
     let asset_token = asset_sac.address();
@@ -2286,7 +2294,7 @@ fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
     env.as_contract(&contract_id, || {
         SorobanVaultContract::initialize(
             env.clone(),
-            governance.clone(),
+            curator.clone(),
             governance.clone(),
             asset_token.clone(),
             share_token.clone(),
@@ -2452,7 +2460,11 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
     });
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let governance = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
     let management_recipient = soroban_sdk::Address::generate(&env);
     let performance_recipient = soroban_sdk::Address::generate(&env);
     let asset_admin = soroban_sdk::Address::generate(&env);
@@ -2474,7 +2486,7 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
     env.as_contract(&contract_id, || {
         SorobanVaultContract::initialize(
             env.clone(),
-            governance.clone(),
+            curator.clone(),
             governance.clone(),
             asset_token.clone(),
             share_token.clone(),
