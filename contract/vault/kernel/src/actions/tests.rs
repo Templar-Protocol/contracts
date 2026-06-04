@@ -3235,6 +3235,66 @@ fn deposit_advances_fee_anchor_to_post_deposit_assets() {
 }
 
 #[test]
+fn deposit_refreshes_accrued_fees_before_advancing_anchor() {
+    let management_recipient = addr(0xBB);
+    let mut config = base_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::zero(),
+        FeeSlot::new(Wad::one() / 10, management_recipient),
+        None,
+    );
+
+    let mut state = base_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::Deposit {
+            owner: addr(1),
+            receiver: addr(2),
+            assets_in: 100,
+            min_shares_out: 0,
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .expect("deposit succeeds");
+
+    let minted: Vec<_> = result
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(minted.len(), 2);
+    assert_eq!(minted[0].0, management_recipient);
+    assert!(minted[0].1 > 0, "management fees must mint before deposit");
+    assert_eq!(minted[1].0, addr(2));
+
+    let expected_fee_shares = compute_management_fee_shares(
+        1_000,
+        1_000,
+        1_000,
+        config.fees.management.fee_wad,
+        0,
+        YEAR_NS,
+    )
+    .as_u128_trunc();
+    assert_eq!(minted[0].1, expected_fee_shares);
+    assert_eq!(result.state.total_assets, 1_100);
+    assert_eq!(
+        result.state.total_shares,
+        1_000 + expected_fee_shares + minted[1].1
+    );
+    assert_eq!(result.state.fee_anchor.total_assets, 1_100);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+}
+
+#[test]
 fn convert_to_shares_ceil_matches_floor_on_exact_multiple() {
     let config = base_config();
     let state = base_state(100, 100);
@@ -3303,7 +3363,7 @@ fn convert_to_assets_ceil_is_floor_or_floor_plus_one() {
 #[test]
 fn deposit_overflow_total_assets_rejected() {
     let config = base_config();
-    let mut state = base_state(u128::MAX - 5, 1);
+    let mut state = base_state(u128::MAX - 5, u128::MAX / 2);
     state.idle_assets = state.total_assets;
     let result = apply_action(
         state,

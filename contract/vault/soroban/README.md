@@ -81,6 +81,8 @@ the live asset token balance, update `idle_assets`, recompute `total_assets`, an
 `fee_anchor` to the reconciled total at the current ledger timestamp. This keeps direct transfers,
 fee refreshes, and later deposits on one accounting baseline without requiring a separate keeper
 transaction before every user deposit.
+When fees are active, deposits first crystallize any elapsed management/performance fees before
+the post-deposit anchor is written, so deposit principal cannot erase already accrued fees.
 
 ### Governance Control-Plane Boundary
 

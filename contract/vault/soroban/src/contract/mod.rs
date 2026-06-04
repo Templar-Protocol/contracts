@@ -50,8 +50,8 @@ use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
     convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
-    withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, OpState,
-    PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
+    withdrawal_settled, Address, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, KernelResult,
+    OpState, PayoutOutcome, Restrictions, TargetId, TimestampNs, VaultConfig, VaultState, Wad,
     MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD, MIN_WITHDRAWAL_ASSETS,
 };
 

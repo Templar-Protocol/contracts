@@ -365,9 +365,11 @@ mod contract_tests {
         GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
     };
     use templar_vault_kernel::effects::KernelEffect;
+    use templar_vault_kernel::fee::FeeSlot;
+    use templar_vault_kernel::math::wad::{Wad, YEAR_NS};
     use templar_vault_kernel::{
-        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, VaultState, WithdrawingState,
-        MIN_WITHDRAWAL_ASSETS,
+        FeeAccrualAnchor, FeesSpec, OpState, Restrictions, TimestampNs, VaultState,
+        WithdrawingState, MIN_WITHDRAWAL_ASSETS,
     };
 
     #[derive(Clone, Copy, Default)]
@@ -659,6 +661,50 @@ mod contract_tests {
         assert_eq!(result.shares_minted, 500);
         assert_eq!(result.total_shares, 1500);
         assert_eq!(result.total_assets, 1500);
+    }
+
+    #[test]
+    fn test_deposit_result_excludes_predeposit_fee_mints() {
+        let caller = templar_vault_kernel::Address([1u8; 32]);
+        let receiver = templar_vault_kernel::Address([10u8; 32]);
+        let management_recipient = templar_vault_kernel::Address([11u8; 32]);
+        let config = test_config().with_fees(FeesSpec::new(
+            FeeSlot::zero(),
+            FeeSlot::new(Wad::one() / 10, management_recipient),
+            None,
+        ));
+        let storage = MemoryStorage::with_state(VaultState {
+            total_assets: 1_000,
+            total_shares: 1_000,
+            idle_assets: 1_000,
+            fee_anchor: FeeAccrualAnchor::new(1_000, TimestampNs(0)),
+            ..Default::default()
+        });
+        let mut vault =
+            CuratorVault::new(config, storage, TestPermissiveAuth, MockInterpreter::new());
+        vault.load_state().unwrap();
+
+        let result = vault
+            .deposit(caller, receiver, 100, 0, YEAR_NS)
+            .expect("deposit succeeds");
+
+        let minted_effects: Vec<_> = vault
+            .interpreter
+            .effects
+            .iter()
+            .filter_map(|effect| match effect {
+                KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(minted_effects.len(), 2);
+        assert_eq!(minted_effects[0].0, management_recipient);
+        assert_eq!(minted_effects[1].0, receiver);
+        assert_eq!(result.shares_minted, minted_effects[1].1);
+        assert_ne!(
+            result.shares_minted,
+            minted_effects[0].1 + minted_effects[1].1
+        );
     }
 
     #[test]

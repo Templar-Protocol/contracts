@@ -179,6 +179,16 @@ where
         action: KernelAction,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
+        let (_, summary) = self.apply_kernel_action_result(action, now_ns)?;
+        Ok(summary)
+    }
+
+    #[inline(never)]
+    fn apply_kernel_action_result(
+        &mut self,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<(KernelResult, EffectSummary), RuntimeError> {
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
         let state = self
@@ -202,9 +212,9 @@ where
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
         let summary = self.interpreter.execute_effects(&result.effects, &ctx)?;
-        self.state = Some(result.state);
+        self.state = Some(result.state.clone());
         self.save_state()?;
-        Ok(summary)
+        Ok((result, summary))
     }
 
     #[inline(never)]
@@ -265,7 +275,7 @@ where
             return Err(contract_error("paused"));
         }
 
-        let summary = self.apply_kernel_action(
+        let (kernel_result, _) = self.apply_kernel_action_result(
             KernelAction::Deposit {
                 owner: caller,
                 receiver,
@@ -275,10 +285,23 @@ where
             },
             now_ns,
         )?;
+        let shares_minted = kernel_result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::EmitEvent {
+                    event:
+                        templar_vault_kernel::effects::KernelEvent::DepositProcessed {
+                            shares_out, ..
+                        },
+                } => Some(*shares_out),
+                _ => None,
+            })
+            .unwrap_or(0);
 
         let state = self.state()?;
         Ok(DepositResult {
-            shares_minted: summary.shares_minted,
+            shares_minted,
             total_shares: state.total_shares,
             total_assets: state.total_assets,
         })

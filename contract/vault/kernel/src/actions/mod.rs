@@ -734,6 +734,14 @@ fn handle_deposit(
         return Err(KernelError::ZeroAmount);
     }
 
+    let mut effects = Vec::new();
+    #[cfg(any(feature = "action-refresh-fees", test))]
+    if should_refresh_fees_before_deposit(&state, config, now_ns) {
+        let mut refresh = handle_refresh_fees(state, config, now_ns)?;
+        state = refresh.state;
+        effects.append(&mut refresh.effects);
+    }
+
     let shares_out = convert_to_shares_bounded(
         &state,
         config,
@@ -765,7 +773,7 @@ fn handle_deposit(
         .ok_or_else(|| KernelError::from(InvalidStateCode::MintOverflowTotalShares))?;
     state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, now_ns);
 
-    let effects = vec![
+    effects.extend([
         KernelEffect::TransferAssetsFrom {
             from: owner,
             to: *self_id,
@@ -783,9 +791,21 @@ fn handle_deposit(
                 shares_out,
             },
         },
-    ];
+    ]);
 
     Ok(KernelResult::new(state, effects))
+}
+
+#[cfg(any(feature = "action-refresh-fees", test))]
+#[inline]
+fn should_refresh_fees_before_deposit(
+    state: &VaultState,
+    config: &VaultConfig,
+    now_ns: TimestampNs,
+) -> bool {
+    state.total_shares > 0
+        && config.fees.has_active_slot_fees()
+        && now_ns > state.fee_anchor.timestamp_ns
 }
 
 #[inline]
