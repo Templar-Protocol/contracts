@@ -120,8 +120,10 @@ fn hypernative_key_cannot_do_anything_else() {
         GovernanceAction::Upgrade(BytesN::<32>::from_array(&b.env, &[1_u8; 32])),
     ];
 
-    let next_id = b.governance.next_proposal_id();
     for action in denied.iter() {
+        // Fresh id per attempt so a regression that lets one through can't be
+        // masked by a later duplicate-id error.
+        let next_id = b.governance.next_proposal_id();
         let result = b
             .governance
             .try_create_proposal(&hypernative, &next_id, action, &0);

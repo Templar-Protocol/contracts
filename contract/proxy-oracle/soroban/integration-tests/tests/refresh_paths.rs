@@ -112,8 +112,14 @@ fn two_independent_assets_have_isolated_state() {
     );
 
     let results = b.runtime.refresh(&assets);
-    let btc_status = results.get(0).unwrap().1;
-    let eth_status = results.get(1).unwrap().1;
+    // Match by asset rather than position — refresh result ordering is an
+    // implementation detail (and inputs are deduplicated).
+    let btc_status = results
+        .iter()
+        .find(|(asset, _)| asset == &b.asset_btc)
+        .unwrap()
+        .1;
+    let eth_status = results.iter().find(|(asset, _)| asset == &eth).unwrap().1;
     assert!(matches!(btc_status, RefreshStatus::Blocked(_)));
     assert!(matches!(eth_status, RefreshStatus::Accepted(_)));
 }

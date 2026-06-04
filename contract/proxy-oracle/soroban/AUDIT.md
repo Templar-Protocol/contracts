@@ -105,5 +105,6 @@ cargo test -p templar-proxy-oracle-kernel --features serde --lib
 cargo test -p templar-proxy-oracle-soroban-contract --features testutils
 cargo test -p templar-proxy-oracle-soroban-governance-contract --features testutils
 cargo test -p templar-proxy-oracle-soroban-sep40-adapter-contract --features testutils
+cargo test -p templar-proxy-oracle-soroban-integration-tests
 just -f contract/proxy-oracle/soroban/justfile audit-ready   # full gate
 ```

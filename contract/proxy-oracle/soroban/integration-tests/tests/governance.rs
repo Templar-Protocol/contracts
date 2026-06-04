@@ -141,8 +141,9 @@ fn effective_and_operation_ttl_views_reflect_set_action_ttl() {
     let effective = b
         .governance
         .get_effective_proposal_ttl(&probe, &10_000_000_000);
-    // SetActionTtl's effective TTL is the max of (its own TTL, the target's).
-    assert!(effective >= 30_000_000_000);
+    // SetActionTtl's effective TTL is the max of (its own TTL, the target's):
+    // max(SetActionTtl=0, AddBreaker=30s) wins over the 10s requested.
+    assert_eq!(effective, 30_000_000_000);
 }
 
 #[test]

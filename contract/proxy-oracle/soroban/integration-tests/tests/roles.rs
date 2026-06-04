@@ -107,8 +107,10 @@ fn cross_role_actions_are_denied() {
         .try_create_proposal(&tripper, &next_id, &sample_setproxy(&b, "ETH"), &0)
         .is_err());
 
-    // Manager attempting tripper action.
+    // Manager attempting tripper action. Fresh id so this fails on the role
+    // check, not a duplicate-id error from the previous attempt.
     let manual_trip = GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None);
+    let next_id = b.governance.next_proposal_id();
     assert!(b
         .governance
         .try_create_proposal(&manager, &next_id, &manual_trip, &0)

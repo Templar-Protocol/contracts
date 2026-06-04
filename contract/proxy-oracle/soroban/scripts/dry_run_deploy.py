@@ -119,6 +119,7 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     for cmd_key in (
         "install_runtime",
         "install_governance",
+        "install_sep40_adapter",
         "initialize_runtime",
         "initialize_governance",
     ):

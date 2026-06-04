@@ -40,6 +40,9 @@ fn manual_trip_via_governance_blocks_refresh() {
         GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, Some(metadata)),
     );
 
+    // A manual trip clears the cache immediately on execution, before any refresh.
+    assert!(b.adapter.lastprice(&b.asset_btc).is_none());
+
     assert!(matches!(
         b.refresh_one(&b.asset_btc),
         RefreshStatus::Blocked(_)

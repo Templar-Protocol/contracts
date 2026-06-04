@@ -14,7 +14,7 @@ use templar_proxy_oracle_soroban_common::Asset;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 
 #[test]
-fn owner_can_update_metadata_and_event_payload_is_correct() {
+fn owner_can_update_metadata_and_persist_state() {
     let b = Bootstrap::new();
     let new_base = Asset::Other(Symbol::new(&b.env, "EUR"));
     b.adapter.set_metadata(&4_u32, &2_u32, &new_base);

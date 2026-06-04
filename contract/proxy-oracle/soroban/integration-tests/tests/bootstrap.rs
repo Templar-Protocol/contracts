@@ -10,7 +10,7 @@
 //!
 //! Verifies the harness constructs a self-consistent three-contract +
 //! upstream system: runtime owner = governance, governance admin = `admin`,
-//! adapter owner = governance, runtime knows its base asset.
+//! adapter owner = `admin`, runtime knows its base asset.
 
 use templar_proxy_oracle_soroban_governance_common::Role;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;

@@ -62,7 +62,9 @@ Hand the runtime's owner to governance via the two-step `Ownable` transfer:
 
 ```bash
 inv --id $RT -- transfer_ownership --new_owner $GOV --live_until_ledger <MAX_TTL_LEDGER>
-# new owner finalizes: accept_ownership directly (EOA) or an AcceptOwnership proposal (governance)
+# $GOV is now the pending owner; finalize by executing an AcceptOwnership proposal
+# on $GOV (governance dispatches accept_ownership on the runtime). Every later
+# owner-only runtime call likewise goes through governance, not a direct call.
 inv --id $RT -- get_owner          # verify == $GOV
 inv --id $GOV -- proxy_oracle      # verify == $RT
 ```

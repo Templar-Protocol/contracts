@@ -66,7 +66,9 @@ fn get_proposal_returns_action_and_maturity() {
 
     let proposal = b.governance.get_proposal(&id).unwrap();
     assert_eq!(proposal.operation, action);
-    assert!(proposal.created_at_ns + proposal.ttl_ns > 0);
+    // SetProxy's per-kind TTL was raised to 60s above, and requested_ttl is 0,
+    // so the captured maturity is exactly that minimum.
+    assert_eq!(proposal.ttl_ns, 60_000_000_000);
 }
 
 #[test]
