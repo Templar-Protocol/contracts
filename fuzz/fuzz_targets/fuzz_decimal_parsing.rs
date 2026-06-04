@@ -41,11 +41,13 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(decimal, Decimal::ZERO);
             }
 
-            // Basic operations on parsed value, guarded against overflow:
-            // skip if `decimal` is close to MAX so `+ ONE` / `* TWO` won't
-            // panic on intentional overflow checks.
-            if decimal <= Decimal::MAX / Decimal::TWO {
+            // Basic operations on parsed value, guarded against overflow with
+            // separate gates so `+ ONE` still exercises the upper half of the
+            // domain that the stricter `* TWO` gate would otherwise suppress.
+            if decimal <= Decimal::MAX - Decimal::ONE {
                 let _ = decimal + Decimal::ONE;
+            }
+            if decimal <= Decimal::MAX / Decimal::TWO {
                 let _ = decimal * Decimal::TWO;
             }
             if !decimal.is_zero() {

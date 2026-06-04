@@ -19,16 +19,15 @@ use templar_common::{
 // (borrow.rs:92), drop the `+ self.borrow_asset_in_flight` term. Then the
 // `getter_principal == principal + in_flight` assertion below must fire.
 
-fuzz_target!(|data: (u32, u64, u64, u64, u64)| {
-    let (snapshot_index, collateral_amount, principal_amount, in_flight_amount, timestamp_ms) =
-        data;
+fuzz_target!(|data: (u64, u64, u64)| {
+    let (collateral_amount, principal_amount, in_flight_amount) = data;
     let (collateral_amount, principal_amount, in_flight_amount) = (
         u128::from(collateral_amount),
         u128::from(principal_amount),
         u128::from(in_flight_amount),
     );
 
-    let mut position = BorrowPosition::new(snapshot_index);
+    let mut position = BorrowPosition::new(0);
     position.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
     position.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
     position.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
@@ -58,19 +57,6 @@ fuzz_target!(|data: (u32, u64, u64, u64, u64)| {
         || !liability.is_zero()
         || !position.collateral_asset_in_flight.is_zero();
     assert_eq!(position.exists(), expected_exists);
-
-    if timestamp_ms > 0 {
-        position.started_at_block_timestamp_ms = Some(near_sdk::json_types::U64(timestamp_ms));
-    }
-
-    // Property: max snapshot index doesn't change behavior (no off-by-one in the
-    // snapshot field; the fuzzer mostly explores small indices).
-    let max_pos = BorrowPosition::new(u32::MAX);
-    assert!(!max_pos.exists());
-    assert_eq!(
-        max_pos.get_total_borrow_asset_liability(),
-        BorrowAssetAmount::zero(),
-    );
 
     // Clone equality.
     let cloned = position.clone();

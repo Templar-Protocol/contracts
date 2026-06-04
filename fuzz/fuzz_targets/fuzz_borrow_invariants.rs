@@ -20,8 +20,8 @@ use templar_common::{
 // (borrow.rs:95), drop the `+ self.borrow_asset_in_flight` term. Then the
 // `liability == principal + in_flight` exact-equality assertion must fire.
 
-fuzz_target!(|data: (u32, u64, u64, u64, u64, u64, bool)| {
-    let (snapshot_index, c1, c2, b1, _b2, in_flight, has_timestamp) = data;
+fuzz_target!(|data: (u32, u64, u64, u64, u64)| {
+    let (snapshot_index, c1, c2, b1, in_flight) = data;
     let (c1, c2, b1, in_flight) = (
         u128::from(c1),
         u128::from(c2),
@@ -49,10 +49,6 @@ fuzz_target!(|data: (u32, u64, u64, u64, u64, u64, bool)| {
     // disjunction here is exact.
     let expected_exists = !position.collateral_asset_deposit.is_zero() || !liability.is_zero();
     assert_eq!(position.exists(), expected_exists);
-
-    if has_timestamp {
-        position.started_at_block_timestamp_ms = Some(near_sdk::json_types::U64(1_000_000));
-    }
 
     // Property: monotonicity — adding in_flight to a position never decreases
     // the total liability. (Buggy code could e.g. mis-account in_flight as a

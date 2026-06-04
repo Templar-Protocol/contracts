@@ -41,14 +41,27 @@ jobs:
       - id: list
         name: Build target matrix
         working-directory: fuzz
+        env:
+          # Pass the dispatch input through the environment instead of
+          # interpolating it into the script, so shell-significant characters
+          # can't break parsing or inject commands.
+          REQUESTED_TARGETS: ${{ github.event.inputs.targets }}
         run: |
           # Default to every registered target; a manual run can restrict to a
-          # space-separated subset.
-          requested="${{ github.event.inputs.targets }}"
+          # space-separated subset. Validate each requested token against the
+          # real target list so an unknown/crafted token can't reach the matrix.
+          requested="${REQUESTED_TARGETS:-}"
+          available="$(cargo +nightly fuzz list)"
           if [[ -n "$requested" ]]; then
+            for target in $requested; do
+              grep -Fxq -- "$target" <<<"$available" || {
+                echo "Unknown fuzz target: $target" >&2
+                exit 1
+              }
+            done
             targets="$requested"
           else
-            targets=$(cargo +nightly fuzz list)
+            targets="$available"
           fi
           json=$(printf '%s\n' $targets | jq -R . | jq -sc .)
           echo "matrix=${json}" >> "$GITHUB_OUTPUT"

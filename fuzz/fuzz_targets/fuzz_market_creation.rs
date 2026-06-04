@@ -210,4 +210,19 @@ fuzz_target!(|data: (
     // `validate()` must return a well-formed `Result` (it already does, by
     // type), and must not panic on any input the harness can construct.
     let _ = validation_result;
+
+    // Positive control: a deterministic, known-valid configuration must always
+    // pass `validate()`. Without this, the negative-only oracle above would
+    // silently keep passing if `validate()` regressed to always returning
+    // `Err` (over-rejection). Params chosen to satisfy every `validate()` rule:
+    // mcr_maintenance(2) >= mcr_liquidation(2) > 1, usage_ratio = 1 ∈ (0, 1],
+    // spread = 0 (< 1 and mcr_liq·(1 − 0) > 1), withdrawal.min <= supply.min,
+    // distinct borrow/collateral assets.
+    #[allow(clippy::expect_used, reason = "control config is constructed from valid literals")]
+    let control = try_create_market_config(2, 2, 1, 0, 1, Some(2), 1, Some(2), 1, Some(2), false)
+        .expect("control config must construct");
+    assert!(
+        control.validate().is_ok(),
+        "known-valid control configuration was unexpectedly rejected",
+    );
 });

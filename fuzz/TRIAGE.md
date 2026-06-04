@@ -79,6 +79,7 @@ that input, the abort is a real bug (#1).
 ## 4. Act on the classification
 
 ### Outcome 1 — Real bug
+
 1. **File it** (Linear). Capture the minimized input, the panic, and the
    production location in the issue.
 2. **Preserve the input as a regression seed** (step 5a) — named after the
@@ -90,6 +91,7 @@ that input, the abort is a real bug (#1).
    currently handled — see the "Targeted input bounds" table.)
 
 ### Outcome 2 — Intentional abort
+
 The fuzzer is rediscovering a deliberate safety check. **Don't** make the
 boundary unreachable. Instead:
 1. Add/extend a **boundary backstop**: a target that drives the operand *to* the
@@ -101,6 +103,7 @@ boundary unreachable. Instead:
    comment naming the check and a `README.md` row.
 
 ### Outcome 3 — Harness bug
+
 Fix the **target**, not the production code:
 - Constructing a type directly? Use its real constructor so invariants hold.
 - Asserting too much? Tighten the oracle to what the function actually promises
@@ -114,6 +117,7 @@ filter was hiding real behavior — narrow the filter, don't widen it.
 ## 5. Make it durable
 
 ### 5a. Promote the input to a committed regression seed
+
 For outcomes 1 and 2, the crashing input becomes a permanent regression test:
 
 ```bash
@@ -127,6 +131,7 @@ again if the guard is removed or a fix regresses. See
 [`seeds/README.md`](./seeds/README.md).
 
 ### 5b. Record any coverage reduction
+
 If you guarded a region, skipped an input class, or (last resort) disabled a
 target, add a row to the relevant table in `README.md` in the **same change**. A
 buried reduction reads as "this is fine" to the next person; an explicit one
@@ -162,7 +167,7 @@ If it survives, commit the fix, the new seed, and any `README.md` row together.
 
 ### Quick reference
 
-```
+```text
 crash → reproduce (step 1) → minimize (2) → classify (3)
   ├─ real bug (1)        → file + seed + fix/guard + should_panic test
   ├─ intentional abort(2)→ boundary backstop + predict-and-skip + seed

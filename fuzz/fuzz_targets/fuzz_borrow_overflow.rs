@@ -25,18 +25,15 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use libfuzzer_sys::fuzz_target;
-use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
-    borrow::BorrowPosition,
-};
+use templar_common::{asset::BorrowAssetAmount, borrow::BorrowPosition};
 
 // MUTATION-CHECK (P5): change `get_total_borrow_asset_liability` /
 // `get_borrow_asset_principal` to add `+ 1` (or use `wrapping_add`). On
 // non-overflowing inputs the differential assertion (`== principal + in_flight`)
 // must fire — including near-u128::MAX operands that `fuzz_borrow` can't reach.
 
-fuzz_target!(|data: (u128, u128, u128)| {
-    let (principal, in_flight, collateral) = data;
+fuzz_target!(|data: (u128, u128)| {
+    let (principal, in_flight) = data;
 
     // If the sum would overflow, calling the real function aborts. Inside
     // libfuzzer-sys that abort is indistinguishable from a real bug crash, so
@@ -50,7 +47,6 @@ fuzz_target!(|data: (u128, u128, u128)| {
     };
 
     let mut position = BorrowPosition::new(0);
-    position.collateral_asset_deposit = CollateralAssetAmount::new(collateral);
     position.borrow_asset_principal = BorrowAssetAmount::new(principal);
     position.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight);
 

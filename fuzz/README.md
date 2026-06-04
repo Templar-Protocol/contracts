@@ -65,6 +65,12 @@ None. All targets are enabled in `Cargo.toml`. (If you must disable one, it is
 coverage debt — give it a tracked issue and a row here per P4/P6, don't leave
 a bare `TODO`.)
 
+## Removed targets
+
+| Target | Reason | Tracking |
+| --- | --- | --- |
+| `fuzz_liquidator_logic` | Was a toy reimplementation testing only harness arithmetic (P1), not contract code. Its real counterpart is the off-chain `ProfitabilityCalculator` in `templar-liquidator`, which pulls a full async stack not worth dragging into a libFuzzer binary. On-chain liquidation amounts remain covered by `fuzz_liquidations`. | [ENG-344](https://linear.app/templar-protocol/issue/ENG-344) |
+
 ## Bugs found by fuzzing
 
 Bugs are tracked in **Linear**, not here — this file only records what each

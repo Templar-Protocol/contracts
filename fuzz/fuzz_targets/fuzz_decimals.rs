@@ -54,11 +54,14 @@ fuzz_target!(|data: (u64, u64, u64, u64, u64, u64, u64)| {
         if base_p <= cross_term {
             if let Some(piecewise) = Piecewise::new(base_p, optimal, rate_1, rate_2) {
                 // Real `at()` on real curve; `at` requires `usage <= 1`.
-                let y = piecewise.at(usage.min(Decimal::ONE));
+                let _ = piecewise.at(usage.min(Decimal::ONE));
                 // Non-trivial property: the rate at usage=0 equals `base`.
-                if data.4 == 0 {
-                    assert_eq!(y, base_p, "Piecewise::at(0) must equal base");
-                }
+                // Asserted unconditionally (the constructor already succeeded).
+                assert_eq!(
+                    piecewise.at(Decimal::ZERO),
+                    base_p,
+                    "Piecewise::at(0) must equal base",
+                );
             }
         }
     }
@@ -86,8 +89,11 @@ fuzz_target!(|data: (u64, u64, u64, u64, u64, u64, u64)| {
             "Exponential2::at({clamped:?}) = {y:?} > top {top:?}",
         );
         // Exact at the lower endpoint (multiplication by zero is exact).
-        if data.4 == 0 {
-            assert_eq!(y, base_e, "Exponential2::at(0) must equal base");
-        }
+        // Asserted unconditionally (the constructor already succeeded).
+        assert_eq!(
+            exp2.at(Decimal::ZERO),
+            base_e,
+            "Exponential2::at(0) must equal base",
+        );
     }
 });

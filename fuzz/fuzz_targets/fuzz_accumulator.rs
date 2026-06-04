@@ -33,11 +33,13 @@ fuzz_target!(|data: (u32, u32, u64, u64)| {
     // contract: amount removed ≤ current total. Cap the fuzz input here.
     let removable = remove_b.min(add_a);
     accumulator.remove(removable);
-    assert!(accumulator.get_total() <= add_a);
+    let expected_after_remove = add_a - removable;
+    assert_eq!(accumulator.get_total(), expected_after_remove);
 
     accumulator.add_once(add_a);
-    // After re-adding, total must be at least the new addend.
-    assert!(accumulator.get_total() >= add_a);
+    // After re-adding, total must be exactly the post-remove total plus the
+    // new addend.
+    assert_eq!(accumulator.get_total(), expected_after_remove + add_a);
 
     accumulator.clear(next_snapshot);
     assert_eq!(accumulator.get_next_snapshot_index(), next_snapshot);
