@@ -1,0 +1,26 @@
+[package]
+name = "templar-proxy-oracle-soroban-integration-tests"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version = "0.1.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-proxy-oracle-soroban-common = { path = "../common" }
+templar-proxy-oracle-soroban-governance-common = { path = "../governance-common" }
+templar-proxy-oracle-soroban-contract = { path = "../contract", features = ["testutils"] }
+templar-proxy-oracle-soroban-governance-contract = { path = "../governance-contract", features = ["testutils"] }
+templar-proxy-oracle-soroban-sep40-adapter-contract = { path = "../sep40-adapter-contract", features = ["testutils"] }
+
+[dev-dependencies]
+blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+rstest.workspace = true
+
+[lints]
+workspace = true

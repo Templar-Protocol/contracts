@@ -216,6 +216,11 @@ impl<R> From<CircuitBreakerSet<R>> for UncheckedCircuitBreakerSet<R> {
     }
 }
 
+// Keep policy, runtime status, and histories serialized as one set. A split
+// policy/runtime storage layout was benchmarked for NEAR and Soroban, but the
+// accepted-update path got more expensive because the extra storage keys
+// outweighed the smaller runtime write. Revisit only with new storage-cost
+// assumptions or a benchmark showing the common update path improves.
 impl<R> CircuitBreakerSet<R> {
     #[must_use]
     /// Returns an empty, no-op set with zero retained history.

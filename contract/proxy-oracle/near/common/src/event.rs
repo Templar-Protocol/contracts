@@ -58,6 +58,9 @@ pub enum Event {
 }
 
 impl Event {
+    // Return type is Self; Option cannot be propagated. The kernel only stores
+    // valid NEAR account IDs, so None here is an invariant violation.
+    #[allow(clippy::expect_used)]
     pub fn from_kernel(price_id: PriceIdentifier, event: KernelEvent) -> Self {
         match event {
             KernelEvent::ManualTripSet {

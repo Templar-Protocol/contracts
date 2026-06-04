@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 templar-common.workspace = true
+templar-proxy-oracle-governance-kernel = { workspace = true, features = ["borsh", "serde", "schemars"] }
 templar-proxy-oracle-kernel = { workspace = true, features = ["borsh", "serde", "schemars"] }
 templar-proxy-oracle-near-common.workspace = true
 thiserror.workspace = true

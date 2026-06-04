@@ -4,10 +4,20 @@ The proxy oracle stores per-price proxy definitions on NEAR, resolves underlying
 
 ## Directory Structure
 
+Two no-std kernels hold the runtime-agnostic logic; each chain (`near/`, `soroban/`) wires them up with its own DTOs, storage, RBAC, and deployable contracts.
+
 - `kernel`: shared no-std proxy, aggregation, freshness, and circuit-breaker logic.
-- `near/common`: NEAR DTOs, governance operations, source/request types, and versioned state.
-- `near/contract`: deployable proxy oracle contract and callback/governance implementation.
+- `governance-kernel`: shared no-std proposal-lifecycle ledger (create/cancel/execute, per-operation TTLs, pending cap). Storage- and authorization-agnostic; each runtime supplies its own RBAC and proposal-body storage.
+- `near/common`: NEAR DTOs, source/request types, and versioned state.
+- `near/governance-common`: NEAR governance operation/role/TTL types, events, and the contract-interface macro, built on `governance-kernel`.
+- `near/contract`: deployable proxy oracle contract and callback implementation.
+- `near/governance-contract`: deployable NEAR governance contract (RBAC + proposal dispatch).
 - `near/lst-contract`: (legacy) LST adapter contract for transformed price feeds.
+- `soroban/common`: Soroban DTOs and shared helpers (no governance types).
+- `soroban/governance-common`: Soroban governance operation/role/TTL types and validation, built on `governance-kernel`.
+- `soroban/contract`: deployable Soroban proxy oracle contract.
+- `soroban/governance-contract`: deployable Soroban governance contract (stellar-access RBAC + dispatch engine).
+- `soroban/sep40-adapter-contract`: per-feed SEP-40 adapter that re-exposes the proxy oracle's normalized prices.
 
 ## Configuration
 

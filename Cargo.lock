@@ -12324,6 +12324,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stellar-access"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec08d321dff797b611228fea28527311f2f03721cb264433490f711d5afd1d6"
+dependencies = [
+ "soroban-sdk 25.3.0",
+]
+
+[[package]]
 name = "stellar-base"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12376,6 +12385,17 @@ version = "0.5.0"
 source = "git+https://github.com/Templar-Protocol/stellar-contracts.git?branch=templar%2Frust-1.86-compat#e399727e5c68fd356c5b399c644b8f451b76ecf7"
 dependencies = [
  "soroban-sdk 23.5.3",
+]
+
+[[package]]
+name = "stellar-macros"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad14d3698274547aa5a61874c986855c549231f95b39c0de03b0bd96b6bcac9f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -12992,6 +13012,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-proxy-oracle-governance-kernel"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.6.1",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "templar-primitives",
+]
+
+[[package]]
 name = "templar-proxy-oracle-kernel"
 version = "0.1.0"
 dependencies = [
@@ -13044,6 +13075,7 @@ dependencies = [
  "near-sdk",
  "rstest",
  "templar-common",
+ "templar-proxy-oracle-governance-kernel",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "thiserror 2.0.18",
@@ -13059,6 +13091,79 @@ dependencies = [
  "templar-common",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-common"
+version = "0.1.0"
+dependencies = [
+ "rstest",
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-contract"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "soroban-sdk 25.3.0",
+ "stellar-access",
+ "stellar-macros",
+ "templar-primitives",
+ "templar-proxy-oracle-kernel",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-governance-common"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+ "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-soroban-common",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-governance-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+ "stellar-access",
+ "templar-primitives",
+ "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-common",
+ "templar-proxy-oracle-soroban-governance-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-integration-tests"
+version = "0.1.0"
+dependencies = [
+ "blend-contract-sdk",
+ "rstest",
+ "soroban-sdk 25.3.0",
+ "templar-primitives",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-governance-common",
+ "templar-proxy-oracle-soroban-governance-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
+]
+
+[[package]]
+name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk 25.3.0",
+ "stellar-access",
+ "stellar-macros",
+ "templar-proxy-oracle-soroban-common",
+ "templar-proxy-oracle-soroban-contract",
+ "templar-proxy-oracle-soroban-sep40-adapter-contract",
 ]
 
 [[package]]
