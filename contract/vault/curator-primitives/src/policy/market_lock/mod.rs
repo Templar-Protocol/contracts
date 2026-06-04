@@ -134,9 +134,14 @@ impl MarketLeaseRegistry {
         leases_by_target: OrderedMap<TargetId, MarketLease>,
         next_fencing_token: u64,
     ) -> Self {
+        let max_lease_token = leases_by_target
+            .values()
+            .map(|lease| lease.fencing_token.0)
+            .max()
+            .unwrap_or(0);
         Self {
             leases_by_target,
-            next_fencing_token,
+            next_fencing_token: next_fencing_token.max(max_lease_token),
         }
     }
 

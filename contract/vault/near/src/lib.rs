@@ -703,21 +703,6 @@ impl Contract {
 
         if plan.is_empty() {
             let report = idle.build_real_assets_report();
-            idle.last_refresh_ns = u64::from(report.refreshed_at);
-            Event::RefreshStarted {
-                op_id: idle.next_op_id.into(),
-                markets: Vec::new(),
-                caller: env::predecessor_account_id(),
-            }
-            .emit();
-            Event::RefreshCompleted {
-                op_id: idle.next_op_id.into(),
-                markets: Vec::new(),
-                total_assets: report.total_assets,
-                refreshed_at: report.refreshed_at,
-            }
-            .emit();
-            idle.next_op_id = idle.next_op_id.saturating_add(1);
             return PromiseOrValue::Value(report);
         }
 
@@ -866,7 +851,7 @@ impl Contract {
         };
         let Some(action) =
             determine_recovery_action(&kernel_state, &context, &progress, payout_evidence)
-                .unwrap_or(None)
+                .unwrap_or_else(|_| panic_with_message("Recovery planning failed"))
         else {
             return PromiseOrValue::Value(());
         };

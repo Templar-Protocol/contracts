@@ -2701,6 +2701,7 @@ mod policy_lock_filter_tests {
 mod policy_market_lease_tests {
     pub use crate::policy::market_lock::*;
 
+    use crate::policy::state::OrderedMap;
     use templar_vault_kernel::TimestampNs;
 
     #[rstest::fixture]
@@ -2731,6 +2732,33 @@ mod policy_market_lease_tests {
         assert_eq!(registry.stored_len(), 1);
         assert!(registry.is_leased(1, TimestampNs(1_200)));
         assert_eq!(lease.fencing_token, FencingToken(1));
+    }
+
+    #[test]
+    fn from_parts_preserves_fencing_token_monotonicity() {
+        let lease = MarketLease::from_parts(
+            1,
+            LeaseOwner(10),
+            Some(10),
+            TimestampNs(1_000),
+            TimestampNs(2_000),
+            FencingToken(9),
+        );
+        let mut leases = OrderedMap::new();
+        leases.insert(1, lease);
+
+        let registry = MarketLeaseRegistry::from_parts(leases, 1);
+        let (_registry, lease) = registry
+            .try_acquire(
+                2,
+                LeaseOwner(20),
+                Some(20),
+                TimestampNs(1_100),
+                LeaseDurationNs(500),
+            )
+            .unwrap();
+
+        assert_eq!(lease.fencing_token, FencingToken(10));
     }
 
     #[rstest::rstest]

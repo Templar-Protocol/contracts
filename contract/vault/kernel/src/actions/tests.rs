@@ -4,7 +4,7 @@ use crate::error::InvalidStateCode;
 use crate::fee::{FeeSlot, FeesSpec};
 use crate::math::wad::{compute_management_fee_shares, Wad, YEAR_NS};
 use crate::state::op_state::{AllocatingState, AllocationPlanEntry, WithdrawingState};
-use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING};
+use crate::state::queue::{DEFAULT_COOLDOWN_NS, MAX_PENDING, MIN_WITHDRAWAL_ASSETS};
 use crate::state::vault::{FeeAccrualAnchor, VaultConfig, VaultState};
 use crate::Number;
 
@@ -336,6 +336,28 @@ fn deposit_zero_assets_fails_slippage() {
             receiver: addr(2),
             assets_in: 0,
             min_shares_out: 1,
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(result, Err(KernelError::ZeroAmount)));
+}
+
+#[test]
+fn deposit_that_would_mint_zero_shares_fails_before_mutation() {
+    let state = idle_state(u128::MAX, 1);
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::Deposit {
+            owner: addr(1),
+            receiver: addr(2),
+            assets_in: 1,
+            min_shares_out: 0,
             now_ns: TimestampNs(0),
         },
     );
@@ -1100,6 +1122,168 @@ fn finish_allocating_with_pending_withdrawal_not_past_cooldown() {
 }
 
 #[test]
+fn execute_withdraw_low_liquidity_below_minimum_fails_before_withdrawing() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    );
+
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalLiquidityBelowMinimum
+        ))
+    ));
+}
+
+#[test]
+fn execute_withdraw_low_liquidity_at_minimum_still_starts_partial_payout() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
+    assert_eq!(withdrawing.owner, owner);
+    assert_eq!(withdrawing.receiver, receiver);
+    assert_eq!(withdrawing.remaining, total_assets);
+}
+
+#[test]
+fn finish_allocating_with_low_liquidity_pending_withdrawal_finishes_idle() {
+    let mut config = test_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+    config.withdrawal_cooldown_ns = 0;
+
+    let owner = addr(10);
+    let receiver = addr(11);
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    state
+        .withdraw_queue
+        .enqueue(
+            owner,
+            receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .unwrap();
+    state.op_state = OpState::Allocating(AllocatingState {
+        op_id: 6,
+        index: 1,
+        remaining: 0,
+        plan: vec![alloc_step(1, 500)],
+    });
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::FinishAllocating {
+            op_id: 6,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(0)
+    );
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::AllocationCompleted {
+                    op_id: 6,
+                    has_withdrawal: false
+                },
+            }
+        )
+    }));
+}
+
+#[test]
 fn execute_withdraw_withdrawing_empty_queue() {
     let mut state = balanced_state();
     let config = test_config();
@@ -1239,15 +1423,15 @@ fn sync_external_assets_withdrawing() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 400,
+            new_external_assets: 500,
             op_id: 4,
             now_ns: TimestampNs(0),
         },
     )
     .unwrap();
 
-    assert_eq!(result.state.external_assets, 400);
-    assert_eq!(result.state.total_assets, 900);
+    assert_eq!(result.state.external_assets, 500);
+    assert_eq!(result.state.total_assets, 1_000);
 }
 
 #[test]
@@ -1268,14 +1452,14 @@ fn sync_external_assets_refreshing() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 600,
+            new_external_assets: 500,
             op_id: 5,
             now_ns: TimestampNs(0),
         },
     )
     .unwrap();
 
-    assert_eq!(result.state.external_assets, 600);
+    assert_eq!(result.state.external_assets, 500);
 }
 
 #[test]
@@ -1374,9 +1558,9 @@ fn sync_external_assets_payout_fails() {
 }
 
 #[test]
-fn sync_external_assets_rejects_doubling() {
+fn sync_external_assets_no_longer_applies_in_flight_allocation_bound() {
     use crate::state::op_state::AllocatingState;
-    // total_assets = 1000; trying to set external to 2001 would make new total > 2x
+
     let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
@@ -1392,24 +1576,21 @@ fn sync_external_assets_rejects_doubling() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 2_001,
+            new_external_assets: 501,
             op_id: 1,
             now_ns: TimestampNs(0),
         },
-    );
+    )
+    .unwrap();
 
-    assert!(matches!(
-        result,
-        Err(KernelError::InvalidState(
-            InvalidStateCode::SyncExternalWouldMoreThanDoubleTotalAssets
-        ))
-    ));
+    assert_eq!(result.state.external_assets, 501);
+    assert_eq!(result.state.total_assets, 1_501);
 }
 
 #[test]
-fn sync_external_assets_allows_up_to_double() {
+fn sync_external_assets_allows_up_to_in_flight_allocation() {
     use crate::state::op_state::AllocatingState;
-    // total_assets = 1000; setting external to 1000 with idle=1000 => new total=2000 = 2x, OK
+
     let mut state = idle_state(1_000, 1_000);
     state.op_state = OpState::Allocating(AllocatingState {
         op_id: 1,
@@ -1425,7 +1606,7 @@ fn sync_external_assets_allows_up_to_double() {
         None,
         &addr(0xFF),
         KernelAction::SyncExternalAssets {
-            new_external_assets: 1_000,
+            new_external_assets: 500,
             op_id: 1,
             now_ns: TimestampNs(0),
         },
@@ -1433,7 +1614,66 @@ fn sync_external_assets_allows_up_to_double() {
 
     assert!(result.is_ok());
     let result = result.unwrap();
-    assert_eq!(result.state.total_assets, 2_000);
+    assert_eq!(result.state.external_assets, 500);
+    assert_eq!(result.state.total_assets, 1_500);
+}
+
+#[test]
+fn sync_external_assets_accepts_runtime_validated_refresh_total() {
+    use crate::state::op_state::RefreshingState;
+
+    let mut state = VaultState::with_initial(1_999, 1_000, 1_000, 999, TimestampNs(0));
+    state.op_state = OpState::Refreshing(RefreshingState {
+        op_id: 8,
+        index: 0,
+        plan: vec![0],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 2_997,
+            op_id: 8,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.external_assets, 2_997);
+    assert_eq!(result.state.total_assets, 3_997);
+}
+
+#[test]
+fn sync_external_assets_allows_decrease() {
+    use crate::state::op_state::RefreshingState;
+
+    let mut state = VaultState::with_initial(11_000, 1_000, 1_000, 10_000, TimestampNs(0));
+    state.op_state = OpState::Refreshing(RefreshingState {
+        op_id: 9,
+        index: 0,
+        plan: vec![0],
+    });
+    let config = test_config();
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::SyncExternalAssets {
+            new_external_assets: 0,
+            op_id: 9,
+            now_ns: TimestampNs(0),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(result.state.external_assets, 0);
+    assert_eq!(result.state.total_assets, 1_000);
 }
 
 #[test]
@@ -2585,6 +2825,42 @@ fn refresh_fees_no_profit_skips_performance() {
 }
 
 #[test]
+fn refresh_fees_zero_anchor_excludes_uncapped_donation_growth() {
+    use crate::math::wad::YEAR_NS;
+    let mut state = VaultState::with_initial(2_000, 1_000, 2_000, 0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+
+    let perf_recipient = addr(0xAA);
+    let mut config = test_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, perf_recipient),
+        FeeSlot::zero(),
+        Some(Wad::one() / 5),
+    );
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::RefreshFees {
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .unwrap();
+
+    let minted: Vec<_> = result
+        .effects
+        .iter()
+        .filter(|effect| matches!(effect, KernelEffect::MintShares { .. }))
+        .collect();
+    assert!(minted.is_empty());
+    assert_eq!(result.state.total_shares, 1_000);
+    assert_eq!(result.state.fee_anchor.total_assets, 2_000);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+}
+
+#[test]
 fn refresh_fees_max_rate_caps_fee_accrual() {
     use crate::math::wad::YEAR_NS;
     // 1000 -> 2000 (100% profit), but max_rate = 20% per year
@@ -2933,6 +3209,92 @@ fn base_state(total_assets: u128, total_shares: u128) -> VaultState {
 }
 
 #[test]
+fn deposit_advances_fee_anchor_to_post_deposit_assets() {
+    let config = base_config();
+    let mut state = base_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(10));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &Address([0u8; 32]),
+        KernelAction::Deposit {
+            owner: Address([1u8; 32]),
+            receiver: Address([2u8; 32]),
+            assets_in: 250,
+            min_shares_out: 0,
+            now_ns: TimestampNs(20),
+        },
+    )
+    .expect("deposit succeeds");
+
+    assert_eq!(result.state.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.total_assets, 1_250);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(20));
+}
+
+#[test]
+fn deposit_refreshes_accrued_fees_before_advancing_anchor() {
+    let management_recipient = addr(0xBB);
+    let mut config = base_config();
+    config.fees = FeesSpec::new(
+        FeeSlot::zero(),
+        FeeSlot::new(Wad::one() / 10, management_recipient),
+        None,
+    );
+
+    let mut state = base_state(1_000, 1_000);
+    state.fee_anchor = FeeAccrualAnchor::new(1_000, TimestampNs(0));
+
+    let result = apply_action(
+        state,
+        &config,
+        None,
+        &addr(0xFF),
+        KernelAction::Deposit {
+            owner: addr(1),
+            receiver: addr(2),
+            assets_in: 100,
+            min_shares_out: 0,
+            now_ns: TimestampNs(YEAR_NS),
+        },
+    )
+    .expect("deposit succeeds");
+
+    let minted: Vec<_> = result
+        .effects
+        .iter()
+        .filter_map(|effect| match effect {
+            KernelEffect::MintShares { owner, shares } => Some((*owner, *shares)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(minted.len(), 2);
+    assert_eq!(minted[0].0, management_recipient);
+    assert!(minted[0].1 > 0, "management fees must mint before deposit");
+    assert_eq!(minted[1].0, addr(2));
+
+    let expected_fee_shares = compute_management_fee_shares(
+        1_000,
+        1_000,
+        1_000,
+        config.fees.management.fee_wad,
+        0,
+        YEAR_NS,
+    )
+    .as_u128_trunc();
+    assert_eq!(minted[0].1, expected_fee_shares);
+    assert_eq!(result.state.total_assets, 1_100);
+    assert_eq!(
+        result.state.total_shares,
+        1_000 + expected_fee_shares + minted[1].1
+    );
+    assert_eq!(result.state.fee_anchor.total_assets, 1_100);
+    assert_eq!(result.state.fee_anchor.timestamp_ns, TimestampNs(YEAR_NS));
+}
+
+#[test]
 fn convert_to_shares_ceil_matches_floor_on_exact_multiple() {
     let config = base_config();
     let state = base_state(100, 100);
@@ -3001,7 +3363,7 @@ fn convert_to_assets_ceil_is_floor_or_floor_plus_one() {
 #[test]
 fn deposit_overflow_total_assets_rejected() {
     let config = base_config();
-    let mut state = base_state(u128::MAX - 5, 1);
+    let mut state = base_state(u128::MAX - 5, u128::MAX / 2);
     state.idle_assets = state.total_assets;
     let result = apply_action(
         state,
@@ -3059,7 +3421,7 @@ fn refresh_fees_overflow_total_supply_rejected() {
         None,
     );
     let mut state = base_state(1_000, u128::MAX - 1);
-    state.fee_anchor = FeeAccrualAnchor::new(0, TimestampNs(0));
+    state.fee_anchor = FeeAccrualAnchor::new(1, TimestampNs(0));
 
     let result = apply_action(
         state,
@@ -3261,6 +3623,83 @@ fn execute_withdraw_skips_zero_expected_head_then_waits_for_cooldown() {
                     receiver,
                     expected_assets: 0,
                     reason: WithdrawalSkipReason::ZeroExpectedAssets,
+                    ..
+                },
+            } if *owner == skipped_owner && *receiver == skipped_receiver
+        )
+    }));
+}
+
+#[test]
+fn execute_withdraw_persists_skips_before_low_liquidity_head() {
+    let mut config = base_config();
+    config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
+
+    let total_assets = MIN_WITHDRAWAL_ASSETS * 2;
+    let idle_assets = MIN_WITHDRAWAL_ASSETS - 1;
+    let external_assets = total_assets - idle_assets;
+    let mut state = VaultState::with_initial(
+        total_assets,
+        total_assets,
+        idle_assets,
+        external_assets,
+        TimestampNs(0),
+    );
+    let skipped_owner = Address([3u8; 32]);
+    let skipped_receiver = Address([4u8; 32]);
+    let waiting_owner = Address([5u8; 32]);
+    let waiting_receiver = Address([6u8; 32]);
+    let self_id = Address([9u8; 32]);
+
+    state
+        .withdraw_queue
+        .enqueue(
+            skipped_owner,
+            skipped_receiver,
+            500,
+            500,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue skipped head");
+    state
+        .withdraw_queue
+        .enqueue(
+            waiting_owner,
+            waiting_receiver,
+            total_assets,
+            total_assets,
+            TimestampNs(0),
+            config.max_pending_withdrawals,
+        )
+        .expect("enqueue low-liquidity head");
+
+    let restrictions = Restrictions::blacklist(vec![skipped_owner]);
+    let result = apply_action(
+        state,
+        &config,
+        Some(&restrictions),
+        &self_id,
+        KernelAction::ExecuteWithdraw {
+            now_ns: TimestampNs(0),
+        },
+    )
+    .expect("skip effects should be persisted before low-liquidity stop");
+
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(
+        result.state.withdraw_queue.head().map(|(id, _)| id),
+        Some(1)
+    );
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalSkipped {
+                    owner,
+                    receiver,
+                    reason: WithdrawalSkipReason::Restricted,
                     ..
                 },
             } if *owner == skipped_owner && *receiver == skipped_receiver

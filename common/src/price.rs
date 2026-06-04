@@ -9,6 +9,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_field_names)]
 pub struct Price<T: AssetClass> {
     _asset: PhantomData<T>,
     price: u128,

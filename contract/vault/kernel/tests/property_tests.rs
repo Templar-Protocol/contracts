@@ -950,18 +950,21 @@ proptest! {
         prop_assert!(result1.0 <= result2.0);
     }
 
-    /// Property 45a: fee minting near u128::MAX either succeeds or errors, never truncates
+    /// Property 45a / A-031: fee minting near u128::MAX either succeeds or errors, never truncates.
+    ///
+    /// Fee minting now checks the full-width quotient against remaining supply before
+    /// converting to `u128`.
     #[test]
-    fn prop_fee_mint_overflow_handled(
+    fn prop_a031_fee_mint_overflow_handled(
         total_supply in (u128::MAX - 1_000_000u128)..=u128::MAX,
-        cur_total_assets in 1u128..=1_000_000u128,
+        cur_total_assets in 2u128..=1_000_000u128,
         fee_wad in (Wad::SCALE / 10)..=Wad::SCALE,
     ) {
         let state = VaultState {
             total_assets: cur_total_assets,
             total_shares: total_supply,
             idle_assets: cur_total_assets,
-            fee_anchor: FeeAccrualAnchor::new(0, TimestampNs(0)),
+            fee_anchor: FeeAccrualAnchor::new(1, TimestampNs(0)),
             ..VaultState::default()
         };
 
@@ -981,7 +984,7 @@ proptest! {
         );
 
         let fee_assets =
-            Wad::from(fee_wad).apply_floored(Number::from(cur_total_assets));
+            Wad::from(fee_wad).apply_floored(Number::from(cur_total_assets - 1));
         let fee_shares = compute_fee_shares_from_assets(
             fee_assets,
             Number::from(cur_total_assets),
@@ -1012,6 +1015,57 @@ proptest! {
             }
             Err(_) => {
                 prop_assert!(would_overflow);
+            }
+        }
+    }
+
+    /// Property 45b / A-031: nonzero deposits must not wrap to zero shares.
+    ///
+    /// At the Soroban `i128::MAX` share boundary with one effective asset, a two-asset
+    /// deposit has a raw share quotient of exactly `2^128`; the deposit must reject
+    /// before recording the transferred assets or minting truncated shares.
+    #[test]
+    fn prop_a031_deposit_payment_does_not_wrap_to_zero_shares(
+        total_shares in Just(i128::MAX as u128),
+        assets_in in Just(2u128),
+    ) {
+        let state = VaultState {
+            total_assets: 0,
+            total_shares,
+            idle_assets: 0,
+            ..VaultState::default()
+        };
+        let mut config = default_config();
+        config.virtual_shares = 0;
+        config.virtual_assets = 0;
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::Deposit {
+                owner: owner_addr(1),
+                receiver: receiver_addr(1),
+                assets_in,
+                min_shares_out: 0,
+                now_ns: TimestampNs(1),
+            },
+        );
+
+        match result {
+            Ok(result) => {
+                let minted = result.effects.iter().find_map(|effect| match effect {
+                    KernelEffect::MintShares { shares, .. } => Some(*shares),
+                    _ => None,
+                });
+                prop_assert!(
+                    minted.unwrap_or_default() > 0,
+                    "nonzero asset payment minted zero shares after quotient truncation"
+                );
+            }
+            Err(_) => {
+                prop_assert!(true);
             }
         }
     }
@@ -1848,7 +1902,7 @@ fn deposit_near_max_rejected() {
     let mut state = default_state();
     state.total_assets = u128::MAX - 10;
     state.idle_assets = u128::MAX - 10;
-    state.total_shares = 1_000_000;
+    state.total_shares = u128::MAX / 2;
     let config = default_config();
 
     let result = apply_action(
@@ -3815,18 +3869,20 @@ proptest! {
     #[test]
     fn prop_spec_sync_external_assets_updates_total(
         idle in 0u64..1_000_000,
-        external in 0u64..1_000_000,
+        existing_external in 0u64..1_000_000,
+        in_flight in 0u64..1_000_000,
+        delta in 0u64..1_000_000,
     ) {
-        prop_assume!(external <= idle);
+        let external = existing_external + delta;
         let mut state = VaultState::new();
         state.idle_assets = idle as u128;
-        state.external_assets = 0;
-        state.total_assets = idle as u128;
+        state.external_assets = existing_external as u128;
+        state.total_assets = idle as u128 + existing_external as u128;
         state.op_state = OpState::Allocating(AllocatingState {
             op_id: 7,
             index: 0,
-            remaining: 0,
-            plan: vec![alloc_step(0, 0)],
+            remaining: in_flight as u128,
+            plan: vec![alloc_step(0, in_flight as u128)],
         });
 
         let config = default_config();

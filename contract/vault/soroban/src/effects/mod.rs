@@ -7,6 +7,8 @@ use templar_vault_kernel::{AddressBook, TimestampNs};
 use crate::convert::u128_to_i128_effect;
 use crate::error::RuntimeError;
 
+pub(crate) const KERNEL_EVENT_CODEC_VERSION: u8 = 1;
+
 /// Short helper to convert u128 to i128 for event / effect amounts.
 #[inline]
 pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
@@ -44,8 +46,9 @@ fn event_push_address(out: &mut alloc::vec::Vec<u8>, value: &templar_vault_kerne
 }
 
 #[inline(never)]
-fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
+pub(crate) fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
     let mut payload = alloc::vec::Vec::new();
+    event_push_u8(&mut payload, KERNEL_EVENT_CODEC_VERSION);
     match event {
         KernelEvent::AllocationStarted {
             op_id,
@@ -223,11 +226,12 @@ fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
     payload
 }
 
-/// Publish a KernelEvent via postcard serialization as a raw Soroban event.
+/// Publish a KernelEvent via compact custom serialization as a raw Soroban event.
 ///
-/// Uses a single `symbol_short!("kernel")` topic with a postcard-encoded
-/// `Bytes` payload. This avoids `#[contractevent]` spec bloat while keeping
-/// the same event data available to indexers.
+/// Uses a single `symbol_short!("kernel")` topic with a versioned `Bytes`
+/// payload. Byte 0 is the codec version; byte 1 is the event tag. This avoids
+/// `#[contractevent]` spec bloat while keeping the same event data available to
+/// indexers.
 #[inline(never)]
 #[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
 pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
@@ -580,7 +584,7 @@ impl AddressMap {
     /// Create a new address map.
     #[inline]
     #[must_use]
-    pub fn new(_env: &Env) -> Self {
+    pub fn new() -> Self {
         Self {
             addresses: AddressBook::new(),
         }
@@ -599,6 +603,12 @@ impl AddressMap {
     #[must_use]
     pub fn resolve(&self, kernel_addr: &templar_vault_kernel::Address) -> Option<&Address> {
         self.addresses.resolve(kernel_addr)
+    }
+}
+
+impl Default for AddressMap {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -638,7 +648,7 @@ where
             env,
             share_token,
             asset_token,
-            address_map: AddressMap::new(env),
+            address_map: AddressMap::new(),
         }
     }
 

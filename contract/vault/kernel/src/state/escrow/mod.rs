@@ -108,6 +108,10 @@ pub fn settle_proportional_raw(
         return EscrowSettlement::refund_all(shares);
     }
 
+    if expected_assets == 0 {
+        return EscrowSettlement::refund_all(shares);
+    }
+
     if actual_assets >= expected_assets {
         return EscrowSettlement::burn_all(shares);
     }

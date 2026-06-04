@@ -4,13 +4,21 @@
 )]
 
 use super::*;
+
 use soroban_sdk::{
     contracttype,
     testutils::{Address as _, Ledger, LedgerInfo},
+    Bytes, BytesN, String as SdkString,
 };
 use templar_soroban_shared_types::{
-    VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_GUARDIANS,
-    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+    GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -20,39 +28,202 @@ struct MockVault;
 #[derive(Clone, Eq, PartialEq)]
 enum MockVaultKey {
     Paused,
-    Guardian,
     Sentinel,
+    Curator,
+    Governance,
+    Allocators,
+    AllowedAdapters,
+    SkimRecipient,
+    WithdrawalCooldownNs,
+    IdleResyncCooldownNs,
+    SupplyQueue,
+    SupplyQueueAdapters,
+    LastFeeAccounts,
+    RestrictionMode,
+    RestrictionAccounts,
+    LastCapMarketId,
+    LastCapValue,
+    LastRemoveMarketId,
+    LastGroupCapGroupId,
+    LastGroupCapValue,
+    LastGroupRelCapGroupId,
+    LastGroupRelCapValue,
+    LastGroupMemberMarketId,
+    LastGroupMemberGroupId,
+    LastSkimToken,
+    LastUpgradeHash,
+    Migrated,
+    LastCancelMigrationCaller,
 }
 
 #[contractimpl]
+#[allow(
+    dead_code,
+    reason = "mock entrypoints mirror older governance ABI helpers"
+)]
 impl MockVault {
-    pub fn execute(env: Env, payload: Bytes) -> Bytes {
-        let command = match VaultCommand::decode(&payload.to_alloc_vec()) {
+    fn set_curator(env: Env, caller: Address, new_curator: Address) {
+        Self::set_governance_config(
+            env,
+            caller,
+            GOVERNANCE_CONFIG_KIND_CURATOR,
+            Some(new_curator),
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn set_governance(env: Env, caller: Address, governance: Address) {
+        Self::set_governance_config(
+            env,
+            caller,
+            GOVERNANCE_CONFIG_KIND_GOVERNANCE,
+            Some(governance),
+            None,
+            None,
+            None,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Mirrors runtime governance policy ABI"
+    )]
+    fn set_governance_policy(
+        env: Env,
+        caller: Address,
+        kind: u32,
+        target_ids: Option<Vec<u32>>,
+        mode: Option<u32>,
+        accounts: Option<Vec<Address>>,
+        market_id: Option<u32>,
+        cap_group_id: Option<SdkString>,
+        value: Option<i128>,
+        value_b: Option<i128>,
+        value_c: Option<i128>,
+    ) {
+        Self::set_governance_policy_impl(
+            env,
+            caller,
+            kind,
+            target_ids,
+            mode,
+            accounts,
+            market_id,
+            cap_group_id,
+            value,
+            value_b,
+            value_c,
+        );
+    }
+
+    fn submit_sentinel(env: Env, caller: Address, sentinel: Address) {
+        Self::set_governance_config(
+            env,
+            caller,
+            GOVERNANCE_CONFIG_KIND_SENTINEL,
+            Some(sentinel),
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn submit_cap(env: Env, caller: Address, market_id: u32, value: i128) {
+        Self::set_governance_policy_impl(
+            env,
+            caller,
+            GOVERNANCE_POLICY_KIND_CAP,
+            None,
+            None,
+            None,
+            Some(market_id),
+            None,
+            Some(value),
+            None,
+            None,
+        );
+    }
+
+    fn submit_market_removal(env: Env, caller: Address, market_id: u32) {
+        Self::set_governance_policy_impl(
+            env,
+            caller,
+            GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+            None,
+            None,
+            None,
+            Some(market_id),
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    fn submit_cap_group_update(
+        env: Env,
+        caller: Address,
+        mode: u32,
+        market_id: Option<u32>,
+        cap_group_id: Option<SdkString>,
+        value: Option<i128>,
+    ) {
+        Self::set_governance_policy_impl(
+            env,
+            caller,
+            GOVERNANCE_POLICY_KIND_GROUP,
+            None,
+            Some(mode),
+            None,
+            market_id,
+            cap_group_id,
+            value,
+            None,
+            None,
+        );
+    }
+
+    fn set_skim_recipient(env: Env, caller: Address, recipient: Address) {
+        Self::set_governance_config(
+            env,
+            caller,
+            GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
+            Some(recipient),
+            None,
+            None,
+            None,
+        );
+    }
+
+    pub fn execute_governance(env: Env, caller: Address, payload: Bytes) {
+        let command = match GovernanceCommand::decode(&payload.to_alloc_vec()) {
             Ok(command) => command,
-            Err(_) => panic!("decode command failed"),
+            Err(_) => panic!("decode governance command failed"),
         };
 
         match command {
-            VaultCommand::SetGovernanceConfig {
-                caller,
+            GovernanceCommand::SetGovernanceConfig {
                 kind,
                 primary,
                 many,
                 value_a,
                 value_b,
             } => {
+                let primary = primary.map(|value| sdk_address(&env, &value));
+                let many = many.map(|values| sdk_address_vec(&env, &values));
                 Self::set_governance_config(
                     env.clone(),
-                    sdk_address(&env, &caller),
+                    caller,
                     kind,
-                    primary.as_ref().map(|value| sdk_address(&env, value)),
-                    many.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    primary,
+                    many,
                     value_a,
                     value_b,
                 );
             }
-            VaultCommand::SetGovernancePolicy {
-                caller,
+            GovernanceCommand::SetGovernancePolicy {
                 kind,
                 target_ids,
                 mode,
@@ -63,35 +234,55 @@ impl MockVault {
                 value_b,
                 value_c,
             } => {
+                let target_ids = target_ids.map(|values| sdk_u32_vec(&env, &values));
+                let accounts = accounts.map(|values| sdk_address_vec(&env, &values));
+                let cap_group_id = cap_group_id.map(|value| SdkString::from_str(&env, &value));
                 Self::set_governance_policy(
                     env.clone(),
-                    sdk_address(&env, &caller),
+                    caller,
                     kind,
-                    target_ids.as_ref().map(|items| sdk_u32_vec(&env, items)),
+                    target_ids,
                     mode,
-                    accounts.as_ref().map(|items| sdk_address_vec(&env, items)),
+                    accounts,
                     market_id,
-                    cap_group_id
-                        .as_ref()
-                        .map(|value| SdkString::from_str(&env, value)),
+                    cap_group_id,
                     value,
                     value_b,
                     value_c,
                 );
             }
-            VaultCommand::Skim { caller, token } => Self::skim(
-                env.clone(),
-                sdk_address(&env, &caller),
-                sdk_address(&env, &token),
-            ),
-            other => panic!("unexpected command: {:?}", other.encode()),
+            GovernanceCommand::Skim { token } => {
+                Self::skim(env.clone(), caller, sdk_address(&env, &token))
+            }
         }
-
-        Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
     }
 
-    pub fn set_paused(env: Env, _caller: Address, paused: bool) {
-        env.storage().instance().set(&MockVaultKey::Paused, &paused);
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, _operator: Address) {
+        env.storage()
+            .instance()
+            .set(&MockVaultKey::LastUpgradeHash, &new_wasm_hash);
+    }
+
+    pub fn migrate(env: Env, _operator: Address) {
+        env.storage().instance().set(&MockVaultKey::Migrated, &true);
+    }
+
+    pub fn execute(env: Env, payload: Bytes) -> Bytes {
+        let command = match VaultCommand::decode(&payload.to_alloc_vec()) {
+            Ok(command) => command,
+            Err(_) => panic!("decode vault command failed"),
+        };
+
+        match command {
+            VaultCommand::CancelMigration { caller } => {
+                env.storage().instance().set(
+                    &MockVaultKey::LastCancelMigrationCaller,
+                    &sdk_address(&env, &caller),
+                );
+                Bytes::from_slice(&env, &VaultCommandResult::Unit.encode())
+            }
+            _ => panic!("unexpected vault command"),
+        }
     }
 
     pub fn is_paused(env: Env) -> bool {
@@ -101,21 +292,158 @@ impl MockVault {
             .unwrap_or(false)
     }
 
-    pub fn guardian(env: Env) -> Option<Address> {
-        env.storage().instance().get(&MockVaultKey::Guardian)
-    }
-
     pub fn sentinel(env: Env) -> Option<Address> {
         env.storage().instance().get(&MockVaultKey::Sentinel)
     }
 
-    pub fn set_governance_config(
+    pub fn curator(env: Env) -> Option<Address> {
+        env.storage().instance().get(&MockVaultKey::Curator)
+    }
+
+    pub fn governance(env: Env) -> Option<Address> {
+        env.storage().instance().get(&MockVaultKey::Governance)
+    }
+
+    pub fn allocators(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::Allocators)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn allowed_adapters(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::AllowedAdapters)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn skim_recipient(env: Env) -> Option<Address> {
+        env.storage().instance().get(&MockVaultKey::SkimRecipient)
+    }
+
+    pub fn withdrawal_cooldown_ns(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::WithdrawalCooldownNs)
+    }
+
+    pub fn idle_resync_cooldown_ns(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::IdleResyncCooldownNs)
+    }
+
+    pub fn supply_queue(env: Env) -> Vec<u32> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::SupplyQueue)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn supply_queue_adapters(env: Env) -> Option<Vec<Address>> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::SupplyQueueAdapters)
+            .unwrap_or(None)
+    }
+
+    pub fn last_fee_accounts(env: Env) -> Option<Vec<Address>> {
+        env.storage().instance().get(&MockVaultKey::LastFeeAccounts)
+    }
+
+    pub fn restriction_mode(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::RestrictionMode)
+            .unwrap_or(0)
+    }
+
+    pub fn restriction_accounts(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::RestrictionAccounts)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn last_cap_market_id(env: Env) -> Option<u32> {
+        env.storage().instance().get(&MockVaultKey::LastCapMarketId)
+    }
+
+    pub fn last_cap_value(env: Env) -> Option<i128> {
+        env.storage().instance().get(&MockVaultKey::LastCapValue)
+    }
+
+    pub fn last_remove_market_id(env: Env) -> Option<u32> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastRemoveMarketId)
+    }
+
+    pub fn last_group_cap_group_id(env: Env) -> Option<SdkString> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupCapGroupId)
+    }
+
+    pub fn last_group_cap_value(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupCapValue)
+    }
+
+    pub fn last_group_rel_cap_group_id(env: Env) -> Option<SdkString> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupRelCapGroupId)
+    }
+
+    pub fn last_group_rel_cap_value(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupRelCapValue)
+    }
+
+    pub fn last_group_member_market_id(env: Env) -> Option<u32> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupMemberMarketId)
+    }
+
+    pub fn last_group_member_group_id(env: Env) -> Option<SdkString> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastGroupMemberGroupId)
+    }
+
+    pub fn last_skim_token(env: Env) -> Option<Address> {
+        env.storage().instance().get(&MockVaultKey::LastSkimToken)
+    }
+
+    pub fn last_upgrade_hash(env: Env) -> Option<BytesN<32>> {
+        env.storage().instance().get(&MockVaultKey::LastUpgradeHash)
+    }
+
+    pub fn migrated(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::Migrated)
+            .unwrap_or(false)
+    }
+
+    pub fn last_cancel_migration_caller(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::LastCancelMigrationCaller)
+    }
+
+    fn set_governance_config(
         env: Env,
         _caller: Address,
         kind: u32,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
-        _value_a: Option<i128>,
+        value_a: Option<i128>,
         _value_b: Option<i128>,
     ) {
         match kind {
@@ -127,33 +455,70 @@ impl MockVault {
                     .instance()
                     .set(&MockVaultKey::Sentinel, &sentinel);
             }
-            GOVERNANCE_CONFIG_KIND_GUARDIANS => {
-                let Some(guardians) = many else {
-                    return;
-                };
-                let guardian = if guardians.is_empty() {
-                    None
-                } else {
-                    Some(guardians.get_unchecked(0))
-                };
-                env.storage()
-                    .instance()
-                    .set(&MockVaultKey::Guardian, &guardian);
+            GOVERNANCE_CONFIG_KIND_CURATOR => {
+                if let Some(curator) = primary {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::Curator, &curator);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_GOVERNANCE => {
+                if let Some(governance) = primary {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::Governance, &governance);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT => {
+                if let Some(recipient) = primary {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::SkimRecipient, &recipient);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_ALLOCATORS => {
+                if let Some(allocators) = many {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::Allocators, &allocators);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS => {
+                if let Some(adapters) = many {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::AllowedAdapters, &adapters);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN => {
+                if let Some(withdrawal_cooldown_ns) = value_a {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN => {
+                if let Some(idle_resync_cooldown_ns) = value_a {
+                    env.storage().instance().set(
+                        &MockVaultKey::IdleResyncCooldownNs,
+                        &idle_resync_cooldown_ns,
+                    );
+                }
             }
             _ => {}
         }
     }
 
-    pub fn set_governance_policy(
+    fn set_governance_policy_impl(
         env: Env,
         _caller: Address,
         kind: u32,
-        _target_ids: Option<Vec<u32>>,
+        target_ids: Option<Vec<u32>>,
         mode: Option<u32>,
         accounts: Option<Vec<Address>>,
-        _market_id: Option<u32>,
-        _cap_group_id: Option<SdkString>,
-        _value: Option<i128>,
+        market_id: Option<u32>,
+        cap_group_id: Option<SdkString>,
+        value: Option<i128>,
         _value_b: Option<i128>,
         _value_c: Option<i128>,
     ) {
@@ -162,18 +527,105 @@ impl MockVault {
             env.storage().instance().set(&MockVaultKey::Paused, &paused);
         }
         if kind == GOVERNANCE_POLICY_KIND_FEES {
-            let _ = accounts;
+            env.storage()
+                .instance()
+                .set(&MockVaultKey::LastFeeAccounts, &accounts);
+        }
+        if kind == GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE {
+            if let Some(ids) = target_ids {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::SupplyQueue, &ids);
+            }
+            env.storage()
+                .instance()
+                .set(&MockVaultKey::SupplyQueueAdapters, &accounts);
+        }
+        if kind == GOVERNANCE_POLICY_KIND_RESTRICTIONS {
+            if let Some(m) = mode {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::RestrictionMode, &m);
+            }
+            if let Some(accs) = accounts {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::RestrictionAccounts, &accs);
+            }
+        }
+        if kind == GOVERNANCE_POLICY_KIND_CAP {
+            if let Some(mid) = market_id {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::LastCapMarketId, &mid);
+            }
+            if let Some(v) = value {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::LastCapValue, &v);
+            }
+        }
+        if kind == GOVERNANCE_POLICY_KIND_REMOVE_MARKET {
+            if let Some(mid) = market_id {
+                env.storage()
+                    .instance()
+                    .set(&MockVaultKey::LastRemoveMarketId, &mid);
+            }
+        }
+        if kind == GOVERNANCE_POLICY_KIND_GROUP {
+            let mode_val = mode.unwrap_or(0);
+            if mode_val == 0 {
+                // SetGroupCap
+                if let Some(group_id) = cap_group_id.clone() {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupCapGroupId, &group_id);
+                }
+                if let Some(v) = value {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupCapValue, &v);
+                }
+            } else if mode_val == 1 {
+                // SetGroupRelCap
+                if let Some(group_id) = cap_group_id.clone() {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupRelCapGroupId, &group_id);
+                }
+                if let Some(v) = value {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupRelCapValue, &v);
+                }
+            } else if mode_val == 2 {
+                // SetGroupMember
+                if let Some(mid) = market_id {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupMemberMarketId, &mid);
+                }
+                if let Some(group_id) = cap_group_id.clone() {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::LastGroupMemberGroupId, &group_id);
+                }
+            }
         }
     }
 
-    pub fn skim(_env: Env, _caller: Address, _token: Address) {}
+    fn skim(env: Env, _caller: Address, token: Address) {
+        env.storage()
+            .instance()
+            .set(&MockVaultKey::LastSkimToken, &token);
+    }
 }
 
-fn sdk_address(env: &Env, value: &str) -> Address {
-    Address::from_string(&SdkString::from_str(env, value))
+fn sdk_address(env: &Env, value: &AllocString) -> Address {
+    Address::from_str(env, value)
 }
 
-fn sdk_address_vec(env: &Env, values: &[String]) -> Vec<Address> {
+fn sdk_address_vec(env: &Env, values: &[AllocString]) -> Vec<Address> {
     let mut addresses = Vec::new(env);
     for value in values {
         addresses.push_back(sdk_address(env, value));
@@ -185,6 +637,17 @@ fn sdk_u32_vec(env: &Env, values: &[u32]) -> Vec<u32> {
     let mut entries = Vec::new(env);
     for value in values {
         entries.push_back(*value);
+    }
+    entries
+}
+
+fn sdk_supply_queue_entries(env: &Env, values: &[(u32, Address)]) -> Vec<SupplyQueueProposalEntry> {
+    let mut entries = Vec::new(env);
+    for (target_id, adapter) in values {
+        entries.push_back(SupplyQueueProposalEntry {
+            target_id: *target_id,
+            adapter: adapter.clone(),
+        });
     }
     entries
 }
@@ -253,7 +716,7 @@ fn sentinel_first_change_immediate_second_timelocked() {
 }
 
 #[test]
-fn pause_immediate_unpause_timelocked() {
+fn sentinel_pause_immediate_governance_unpause_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -269,17 +732,34 @@ fn pause_immediate_unpause_timelocked() {
         SorobanVaultGovernanceContract,
         (&admin, &vault, &(5_000_000_000u64)),
     );
+    let sentinel = Address::generate(&env);
 
-    let pause_id = env.as_contract(&governance, || {
-        SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), true).unwrap()
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
     });
-    assert_eq!(pause_id, 1);
+
+    let governance_pause = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), true)
+    });
+    assert_eq!(governance_pause, Err(GovernanceError::InvalidInput));
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_paused(env.clone(), sentinel.clone(), true).unwrap()
+    });
     let paused = env.as_contract(&vault, || MockVault::is_paused(env.clone()));
     assert!(paused);
     let pending = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
     });
     assert_eq!(pending.len(), 0);
+    env.as_contract(&governance, || {
+        assert!(!env.storage().persistent().has(&DataKey::PendingPageIndex));
+    });
 
     let unpause_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), false)
@@ -303,6 +783,146 @@ fn pause_immediate_unpause_timelocked() {
     });
     let paused = env.as_contract(&vault, || MockVault::is_paused(env.clone()));
     assert!(!paused);
+}
+
+#[test]
+fn withdrawal_cooldown_change_is_timelocked_and_forwarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            123_456,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::withdrawal_cooldown_ns(env.clone())),
+        None
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::withdrawal_cooldown_ns(env.clone())),
+        Some(123_456)
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            123_456,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+}
+
+#[test]
+fn idle_resync_cooldown_change_is_timelocked_and_forwarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            DEFAULT_IDLE_RESYNC_COOLDOWN_NS,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            10_000,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::idle_resync_cooldown_ns(env.clone())),
+        None
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::idle_resync_cooldown_ns(env.clone())),
+        Some(10_000)
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_idle_resync_cooldown(
+            env.clone(),
+            admin.clone(),
+            10_000,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
 }
 
 #[test]
@@ -356,6 +976,214 @@ fn revoke_kind_removes_all_matching() {
 }
 
 #[test]
+fn accept_kind_rejects_ambiguous_broad_kind() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            1,
+            SdkString::from_str(&env, "group-a"),
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            2,
+            SdkString::from_str(&env, "group-b"),
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let accepted = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::CapGroup,
+        )
+    });
+    assert_eq!(accepted, Err(GovernanceError::DuplicatePending));
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 2);
+}
+
+#[test]
+fn revoke_kind_rejects_ambiguous_broad_kind() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Curator,
+            4_000_000_000,
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Fees,
+            4_000_000_000,
+        )
+        .unwrap();
+    });
+
+    let removed = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::TimelockConfig,
+        )
+    });
+    assert_eq!(removed, Err(GovernanceError::DuplicatePending));
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 2);
+}
+
+#[test]
+fn in_flight_proposal_keeps_submit_time_timelock_after_timelock_raise() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let next_curator = Address::generate(&env);
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_curator(
+            env.clone(),
+            admin.clone(),
+            next_curator.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 101,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::Curator,
+            10_000_000_000,
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let curator = env.as_contract(&vault, || MockVault::curator(env.clone()));
+    assert_eq!(curator, Some(next_curator));
+}
+
+#[test]
+fn timelock_getters_do_not_materialize_missing_timelocks_storage() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let default_ns = 5_000_000_000u64;
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &default_ns),
+    );
+
+    env.as_contract(&governance, || {
+        // Simulate a legacy/pre-migration state that has the scalar default
+        // timelock but not the per-kind map. Getter-style APIs must read the
+        // fallback value without materializing storage.
+        env.storage().instance().remove(&DataKey::Timelocks);
+
+        let before: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(before.is_none());
+
+        assert_eq!(
+            SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::Cap),
+            default_ns
+        );
+
+        let after_timelock_ns: Option<Timelocks> =
+            env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelock_ns.is_none(),
+            "timelock_ns getter must not write Timelocks storage"
+        );
+
+        let observed = SorobanVaultGovernanceContract::timelocks(env.clone());
+        assert!(observed == Timelocks::from_default(default_ns));
+
+        let after_timelocks: Option<Timelocks> = env.storage().instance().get(&DataKey::Timelocks);
+        assert!(
+            after_timelocks.is_none(),
+            "timelocks getter must not write Timelocks storage"
+        );
+    });
+}
+
+#[test]
 fn timelock_config_increase_immediate_decrease_timelocked() {
     let env = Env::default();
     env.mock_all_auths();
@@ -401,6 +1229,44 @@ fn timelock_config_increase_immediate_decrease_timelocked() {
         SorobanVaultGovernanceContract::pending_ids(env.clone())
     });
     assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn timelock_config_rejects_u64_max_without_mutating_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_timelock(
+            env.clone(),
+            admin.clone(),
+            TimelockKind::TimelockConfig,
+            u64::MAX,
+        )
+    });
+    assert_eq!(result, Err(GovernanceError::TimelockOutOfBounds));
+
+    let current = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::timelock_ns(env.clone(), TimelockKind::TimelockConfig)
+    });
+    assert_eq!(current, 5_000_000_000);
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 0);
 }
 
 #[test]
@@ -474,6 +1340,186 @@ fn other_action_approval_and_consume() {
     assert!(!approved_after);
 }
 
+const TEST_MAX_PENDING_PROPOSALS: u32 = 64;
+
+fn fill_pending_other_queue(
+    env: &Env,
+    governance: &Address,
+    admin: &Address,
+) -> (Symbol, BytesN<32>) {
+    let mut first_key = None;
+    let mut first_hash = None;
+
+    for index in 0..TEST_MAX_PENDING_PROPOSALS {
+        let key = Symbol::new(env, "queue_cap");
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes[0..4].copy_from_slice(&index.to_be_bytes());
+        let payload_hash = BytesN::from_array(env, &hash_bytes);
+
+        if index == 0 {
+            first_key = Some(key.clone());
+            first_hash = Some(payload_hash.clone());
+        }
+
+        env.as_contract(governance, || {
+            SorobanVaultGovernanceContract::submit_other(
+                env.clone(),
+                admin.clone(),
+                key,
+                payload_hash,
+            )
+            .unwrap();
+        });
+    }
+
+    (first_key.unwrap(), first_hash.unwrap())
+}
+
+#[test]
+fn pending_queue_cap_rejects_distinct_timelocked_proposals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    fill_pending_other_queue(&env, &governance, &admin);
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), TEST_MAX_PENDING_PROPOSALS);
+    env.as_contract(&governance, || {
+        let pages: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingPageIndex)
+            .expect("pending page index should be stored");
+        let mut seen = 0u32;
+        for page in pages.iter() {
+            let entries: Vec<StoredPending> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PendingPage(page))
+                .expect("pending page should be stored");
+            assert!(
+                !entries.is_empty(),
+                "indexed pending page must not be empty"
+            );
+            assert!(entries.len() <= 16, "pending page exceeds page size");
+            for entry in entries.iter() {
+                assert_eq!(entry.id / 16, page);
+                seen += 1;
+            }
+        }
+        assert_eq!(seen, TEST_MAX_PENDING_PROPOSALS);
+    });
+
+    let overflow_hash = BytesN::from_array(&env, &[0xff; 32]);
+    let overflow = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(
+            env.clone(),
+            admin.clone(),
+            Symbol::new(&env, "overflow"),
+            overflow_hash,
+        )
+    });
+    assert_eq!(overflow, Err(GovernanceError::InvalidInput));
+
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), TEST_MAX_PENDING_PROPOSALS);
+}
+
+#[test]
+fn pending_queue_cap_allows_replacement_at_capacity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let (existing_key, existing_hash) = fill_pending_other_queue(&env, &governance, &admin);
+    let replacement = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(
+            env.clone(),
+            admin.clone(),
+            existing_key,
+            existing_hash,
+        )
+    });
+    assert!(replacement.is_ok());
+
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), TEST_MAX_PENDING_PROPOSALS);
+}
+
+#[test]
+fn pending_queue_cap_does_not_block_immediate_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+
+    fill_pending_other_queue(&env, &governance, &admin);
+
+    let admin_pause = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_paused(env.clone(), admin.clone(), true)
+    });
+    assert_eq!(admin_pause, Err(GovernanceError::InvalidInput));
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_paused(env.clone(), sentinel.clone(), true).unwrap();
+    });
+    let paused = env.as_contract(&vault, || MockVault::is_paused(env.clone()));
+    assert!(paused);
+
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), TEST_MAX_PENDING_PROPOSALS);
+}
+
 #[test]
 fn abdicated_action_is_rejected() {
     let env = Env::default();
@@ -491,16 +1537,153 @@ fn abdicated_action_is_rejected() {
         (&admin, &vault, &(5_000_000_000u64)),
     );
 
-    let abdicated = Symbol::new(&env, "submit_cap");
     env.as_contract(&governance, || {
-        SorobanVaultGovernanceContract::abdicate(env.clone(), admin.clone(), abdicated.clone())
-            .unwrap();
+        SorobanVaultGovernanceContract::abdicate(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Cap,
+        )
+        .unwrap();
     });
 
     let submit_result = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 7, 10)
     });
     assert_eq!(submit_result, Err(GovernanceError::Abdicated));
+}
+
+#[test]
+fn direct_sentinel_pause_respects_abdication() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::abdicate(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Pause,
+        )
+        .unwrap();
+    });
+
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_paused(env.clone(), sentinel.clone(), true)
+    });
+    assert_eq!(result, Err(GovernanceError::Abdicated));
+}
+
+#[test]
+fn direct_sentinel_restrictions_respect_abdication() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::abdicate(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Restrictions,
+        )
+        .unwrap();
+    });
+
+    let result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_restrictions(
+            env.clone(),
+            sentinel.clone(),
+            1,
+            Vec::new(&env),
+        )
+    });
+    assert_eq!(result, Err(GovernanceError::Abdicated));
+}
+
+#[test]
+fn submit_set_supply_queue_rejects_duplicate_targets() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let adapter = env.register(MockVault, ());
+
+    let err = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_supply_queue(
+            env.clone(),
+            admin.clone(),
+            sdk_supply_queue_entries(&env, &[(7u32, adapter.clone()), (7u32, adapter.clone())]),
+        )
+    });
+
+    assert_eq!(err, Err(GovernanceError::InvalidInput));
+}
+
+#[test]
+fn submit_set_supply_queue_allows_empty_clear_policy() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_supply_queue(
+            env.clone(),
+            admin.clone(),
+            Vec::new(&env),
+        )
+    });
+
+    assert_eq!(proposal_id, Ok(1));
 }
 
 #[test]
@@ -541,6 +1724,57 @@ fn cap_action_is_timelocked_and_accepts_after_maturity() {
 }
 
 #[test]
+fn accepted_cap_updates_mirror_for_future_decisions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 10).unwrap()
+    });
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let duplicate = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 10)
+    });
+    assert_eq!(duplicate, Err(GovernanceError::NoChange));
+
+    let _immediate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 5).unwrap()
+    });
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 0);
+
+    let increase_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(env.clone(), admin.clone(), 3, 20).unwrap()
+    });
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), increase_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+}
+
+#[test]
 fn relative_cap_addition_is_immediate_and_removal_is_timelocked() {
     assert_eq!(
         TimelockDecision::from_relative_cap_change(None, Some(templar_vault_kernel::Wad::from(1))),
@@ -561,4 +1795,1736 @@ fn empty_group_member_string_is_treated_as_membership_removal() {
         TimelockDecision::from_membership_assignment_change::<SdkString>(Some(&empty), proposed),
         Ok(TimelockDecision::Timelocked)
     );
+}
+
+#[test]
+fn cap_group_membership_clear_uses_mirrored_current_membership() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let group = SdkString::from_str(&env, "senior");
+    let empty = SdkString::from_str(&env, "");
+
+    let assign_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            7,
+            group,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), assign_id).unwrap()
+    });
+
+    let clear_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            7,
+            empty.clone(),
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 112,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), clear_id).unwrap()
+    });
+
+    let duplicate_clear = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(env.clone(), admin, 7, empty)
+    });
+    assert_eq!(duplicate_clear, Err(GovernanceError::NoChange));
+}
+
+#[test]
+fn governance_constructor_rejects_self_referential_or_colliding_roles() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+
+    let admin_is_vault = Address::generate(&env);
+    let self_as_admin = Address::generate(&env);
+    let self_as_vault = Address::generate(&env);
+
+    let admin_is_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &admin_is_vault,
+            SorobanVaultGovernanceContract,
+            (&vault, &vault, &(0u64)),
+        );
+    }));
+    assert!(admin_is_vault_result.is_err());
+
+    let self_admin_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_admin,
+            SorobanVaultGovernanceContract,
+            (&self_as_admin, &vault, &(0u64)),
+        );
+    }));
+    assert!(self_admin_result.is_err());
+
+    let self_vault_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        env.register_at(
+            &self_as_vault,
+            SorobanVaultGovernanceContract,
+            (&admin, &self_as_vault, &(0u64)),
+        );
+    }));
+    assert!(self_vault_result.is_err());
+}
+
+#[test]
+fn set_governance_rejects_obvious_invalid_contract_targets() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
+    let asset_contract = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    for target in [vault.clone(), governance.clone(), asset_contract] {
+        let result = env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::submit_set_governance(
+                env.clone(),
+                admin.clone(),
+                target.clone(),
+            )
+        });
+        assert_eq!(result, Err(GovernanceError::InvalidInput));
+    }
+}
+
+#[test]
+fn governance_change_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let new_governance = env.register(SorobanVaultGovernanceContract, (&admin, &vault, &(0u64)));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_governance(
+            env.clone(),
+            admin.clone(),
+            new_governance.clone(),
+        )
+        .unwrap()
+    });
+
+    let on_vault_before = env.as_contract(&vault, || MockVault::governance(env.clone()));
+    assert_eq!(on_vault_before, None);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_after = env.as_contract(&vault, || MockVault::governance(env.clone()));
+    assert_eq!(on_vault_after, Some(new_governance));
+}
+
+#[test]
+fn supply_queue_submission_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let target_ids = sdk_u32_vec(&env, &[1u32, 2u32, 3u32]);
+    let adapters = Vec::from_array(
+        &env,
+        [
+            env.register(MockVault, ()),
+            env.register(MockVault, ()),
+            env.register(MockVault, ()),
+        ],
+    );
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_supply_queue(
+            env.clone(),
+            admin.clone(),
+            sdk_supply_queue_entries(
+                &env,
+                &[
+                    (1u32, adapters.get_unchecked(0)),
+                    (2u32, adapters.get_unchecked(1)),
+                    (3u32, adapters.get_unchecked(2)),
+                ],
+            ),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault = env.as_contract(&vault, || MockVault::supply_queue(env.clone()));
+    assert_eq!(on_vault, target_ids);
+    let adapters_on_vault =
+        env.as_contract(&vault, || MockVault::supply_queue_adapters(env.clone()));
+    assert_eq!(adapters_on_vault, Some(adapters));
+}
+
+#[test]
+fn allocator_submission_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let allocators = Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_allocators(
+            env.clone(),
+            admin.clone(),
+            allocators.clone(),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault = env.as_contract(&vault, || MockVault::allocators(env.clone()));
+    assert_eq!(on_vault, allocators);
+}
+
+#[test]
+fn allowed_adapter_submission_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let adapters = Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_allowed_adapters(
+            env.clone(),
+            admin.clone(),
+            adapters.clone(),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault = env.as_contract(&vault, || MockVault::allowed_adapters(env.clone()));
+    assert_eq!(on_vault, adapters);
+}
+
+#[test]
+fn fee_decrease_applies_immediately_when_recipients_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let performance_recipient = Address::generate(&env);
+    let management_recipient = Address::generate(&env);
+
+    // First set initial fees with recipients
+    let _ = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            100_000_000_000_000_000i128, // 10% performance fee
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128, // 5% management fee
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Fees,
+        )
+        .unwrap()
+    });
+
+    // Now decrease performance fee with same recipients - should be immediate
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let _decrease_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            50_000_000_000_000_000i128, // 5% performance fee (decreased)
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128, // same management fee
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+
+    // Fee decrease should apply immediately without pending
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 0);
+
+    // Verify the fee accounts were routed to vault
+    let fee_accounts = env.as_contract(&vault, || MockVault::last_fee_accounts(env.clone()));
+    assert!(fee_accounts.is_some());
+    let accounts = fee_accounts.unwrap();
+    assert_eq!(accounts.len(), 2);
+}
+
+#[test]
+fn fee_increase_uses_fee_specific_pending_accept_and_revoke() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let performance_recipient = Address::generate(&env);
+    let management_recipient = Address::generate(&env);
+
+    // Set initial fees
+    let _ = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            50_000_000_000_000_000i128, // 5% performance fee
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128, // 5% management fee
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Fees,
+        )
+        .unwrap()
+    });
+
+    // Now increase performance fee - should be timelocked
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let increase_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            100_000_000_000_000_000i128, // 10% performance fee (increased)
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128, // same management fee
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    });
+
+    // Fee increase should create pending proposal
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+
+    // Accept using accept_kind for Fees
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let accepted_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Fees,
+        )
+        .unwrap()
+    });
+    assert_eq!(accepted_id, increase_id);
+
+    // Verify pending is cleared
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), 0);
+}
+
+#[test]
+fn sentinel_tightens_restrictions_governance_relaxes_after_timelock() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+
+    let account1 = Address::generate(&env);
+    let account2 = Address::generate(&env);
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+
+    let mut accounts = Vec::new(&env);
+    accounts.push_back(account1.clone());
+    accounts.push_back(account2.clone());
+
+    let governance_tightening_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_restrictions(
+            env.clone(),
+            admin.clone(),
+            1, // Blacklist mode
+            accounts.clone(),
+        )
+        .unwrap()
+    });
+    assert_eq!(governance_tightening_id, 2);
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke(
+            env.clone(),
+            admin.clone(),
+            governance_tightening_id,
+        )
+        .unwrap();
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_restrictions(
+            env.clone(),
+            sentinel.clone(),
+            1, // Blacklist mode
+            accounts.clone(),
+        )
+        .unwrap()
+    });
+
+    let mode_on_vault = env.as_contract(&vault, || MockVault::restriction_mode(env.clone()));
+    assert_eq!(mode_on_vault, 1);
+    let accounts_on_vault =
+        env.as_contract(&vault, || MockVault::restriction_accounts(env.clone()));
+    assert_eq!(accounts_on_vault.len(), 2);
+
+    let direct_sentinel_relaxation = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::set_restrictions(
+            env.clone(),
+            sentinel.clone(),
+            0, // None mode (relaxation)
+            Vec::new(&env),
+        )
+    });
+    assert_eq!(
+        direct_sentinel_relaxation,
+        Err(GovernanceError::InvalidInput)
+    );
+    let mode_after_rejected_direct_relax =
+        env.as_contract(&vault, || MockVault::restriction_mode(env.clone()));
+    assert_eq!(mode_after_rejected_direct_relax, 1);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let relax_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_restrictions(
+            env.clone(),
+            admin.clone(),
+            0, // None mode (relaxation)
+            Vec::new(&env),
+        )
+        .unwrap()
+    });
+
+    // Should be pending
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), 1);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), relax_id).unwrap()
+    });
+
+    let mode_after = env.as_contract(&vault, || MockVault::restriction_mode(env.clone()));
+    assert_eq!(mode_after, 0);
+}
+
+#[test]
+fn skim_recipient_change_is_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let recipient = Address::generate(&env);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_skim_recipient(
+            env.clone(),
+            admin.clone(),
+            recipient.clone(),
+        )
+        .unwrap()
+    });
+
+    // Should be timelocked
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault = env.as_contract(&vault, || MockVault::skim_recipient(env.clone()));
+    assert_eq!(on_vault, Some(recipient));
+}
+
+#[test]
+fn skim_action_is_timelocked_and_routes_token_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let token = Address::generate(&env);
+
+    let skim_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_skim(env.clone(), admin.clone(), token.clone())
+            .unwrap()
+    });
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), skim_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    let before = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
+    assert_eq!(before, None);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), skim_id).unwrap()
+    });
+
+    let after = env.as_contract(&vault, || MockVault::last_skim_token(env.clone()));
+    assert_eq!(after, Some(token));
+}
+
+#[test]
+fn upgrade_migrate_and_cancel_migration_are_timelocked_and_route_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    let upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id).unwrap()
+    });
+    let routed_hash = env.as_contract(&vault, || MockVault::last_upgrade_hash(env.clone()));
+    assert_eq!(routed_hash, Some(wasm_hash));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let migrate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_migrate(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id).unwrap()
+    });
+    assert!(env.as_contract(&vault, || MockVault::migrated(env.clone())));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 300,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let cancel_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_cancel_migration(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 306,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id).unwrap()
+    });
+    let cancel_caller = env.as_contract(&vault, || {
+        MockVault::last_cancel_migration_caller(env.clone())
+    });
+    assert_eq!(cancel_caller, Some(governance));
+}
+
+#[test]
+fn remove_market_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let market_id = 7u32;
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_remove_market(env.clone(), admin.clone(), market_id)
+            .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault = env.as_contract(&vault, || MockVault::last_remove_market_id(env.clone()));
+    assert_eq!(on_vault, Some(market_id));
+}
+
+#[test]
+fn group_cap_unknown_state_is_timelocked_and_routes_after_maturity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let group_id = SdkString::from_str(&env, "group-a");
+    let new_cap = 1_000_000i128;
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            new_cap,
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_id = env.as_contract(&vault, || MockVault::last_group_cap_group_id(env.clone()));
+    assert_eq!(on_vault_id, Some(group_id));
+    let on_vault_value = env.as_contract(&vault, || MockVault::last_group_cap_value(env.clone()));
+    assert_eq!(on_vault_value, Some(new_cap));
+}
+
+#[test]
+fn group_cap_raise_uses_mirrored_current_cap_and_is_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let group_id = SdkString::from_str(&env, "group-a");
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            1_000,
+        )
+        .unwrap()
+    });
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            2_000,
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_value = env.as_contract(&vault, || MockVault::last_group_cap_value(env.clone()));
+    assert_eq!(on_vault_value, Some(2_000));
+}
+
+#[test]
+fn group_rel_cap_unknown_state_is_timelocked_and_routes_after_maturity() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let group_id = SdkString::from_str(&env, "group-b");
+    let rel_cap_wad = 500_000_000_000_000_000i128; // 0.5 wad
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_rel_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            rel_cap_wad,
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_id = env.as_contract(&vault, || {
+        MockVault::last_group_rel_cap_group_id(env.clone())
+    });
+    assert_eq!(on_vault_id, Some(group_id));
+    let on_vault_value =
+        env.as_contract(&vault, || MockVault::last_group_rel_cap_value(env.clone()));
+    assert_eq!(on_vault_value, Some(rel_cap_wad));
+}
+
+#[test]
+fn group_relative_cap_raise_uses_mirrored_current_cap_and_is_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let group_id = SdkString::from_str(&env, "group-b");
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_rel_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            500_000_000_000_000_000,
+        )
+        .unwrap()
+    });
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_rel_cap(
+            env.clone(),
+            admin.clone(),
+            group_id.clone(),
+            750_000_000_000_000_000,
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_value =
+        env.as_contract(&vault, || MockVault::last_group_rel_cap_value(env.clone()));
+    assert_eq!(on_vault_value, Some(750_000_000_000_000_000));
+}
+
+#[test]
+fn group_member_assignment_is_timelocked_and_routes_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let market_id = 5u32;
+    let group_id = SdkString::from_str(&env, "group-c");
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            market_id,
+            group_id.clone(),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_market = env.as_contract(&vault, || {
+        MockVault::last_group_member_market_id(env.clone())
+    });
+    assert_eq!(on_vault_market, Some(market_id));
+    let on_vault_group = env.as_contract(&vault, || {
+        MockVault::last_group_member_group_id(env.clone())
+    });
+    assert_eq!(on_vault_group, Some(group_id));
+}
+
+#[test]
+fn group_member_removal_without_known_membership_is_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let market_id = 5u32;
+    let empty_group = SdkString::from_str(&env, "");
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            market_id,
+            empty_group.clone(),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    let pending = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending.len(), 1);
+}
+
+#[test]
+fn cap_routes_market_id_and_value_to_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let market_id = 3u32;
+    let cap_value = 10i128;
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_cap(
+            env.clone(),
+            admin.clone(),
+            market_id,
+            cap_value,
+        )
+        .unwrap()
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let on_vault_market = env.as_contract(&vault, || MockVault::last_cap_market_id(env.clone()));
+    assert_eq!(on_vault_market, Some(market_id));
+    let on_vault_value = env.as_contract(&vault, || MockVault::last_cap_value(env.clone()));
+    assert_eq!(on_vault_value, Some(cap_value));
+}
+
+#[test]
+fn no_change_returns_error_for_duplicate_submission() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let sentinel = Address::generate(&env);
+
+    // Set sentinel first
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap()
+    });
+
+    // Submitting the same sentinel again should return NoChange
+    let duplicate = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+    });
+    assert_eq!(duplicate, Err(GovernanceError::NoChange));
+}
+
+#[allow(dead_code)]
+fn submit_initial_fee_config(
+    env: &Env,
+    governance: &Address,
+    admin: &Address,
+    performance_recipient: &Address,
+    management_recipient: &Address,
+) {
+    env.as_contract(governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            50_000_000_000_000_000i128,
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128,
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Fees,
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+}
+
+#[allow(dead_code)]
+fn submit_fee_increase(
+    env: &Env,
+    governance: &Address,
+    admin: &Address,
+    performance_recipient: &Address,
+    management_recipient: &Address,
+) -> u64 {
+    env.as_contract(governance, || {
+        SorobanVaultGovernanceContract::submit_set_fees(
+            env.clone(),
+            admin.clone(),
+            100_000_000_000_000_000i128,
+            performance_recipient.clone(),
+            50_000_000_000_000_000i128,
+            management_recipient.clone(),
+            None,
+        )
+        .unwrap()
+    })
+}
+
+#[test]
+fn revoker_policy_matrix_is_explicit() {
+    let cases = [
+        (GovernanceActionKind::Pause, true),
+        (GovernanceActionKind::Curator, false),
+        (GovernanceActionKind::Governance, false),
+        (GovernanceActionKind::SupplyQueue, true),
+        (GovernanceActionKind::Fees, true),
+        (GovernanceActionKind::Restrictions, true),
+        (GovernanceActionKind::Sentinel, true),
+        (GovernanceActionKind::Cap, true),
+        (GovernanceActionKind::MarketRemoval, true),
+        (GovernanceActionKind::CapGroup, true),
+        (GovernanceActionKind::Skim, false),
+        (GovernanceActionKind::TimelockConfig, true),
+        (GovernanceActionKind::Other, false),
+    ];
+
+    for (kind, sentinel_allowed) in cases {
+        assert!(can_revoke_kind(RevokerRole::Admin, kind));
+        assert_eq!(
+            can_revoke_kind(RevokerRole::Sentinel, kind),
+            sentinel_allowed,
+            "sentinel revocation policy drift for {:?}",
+            kind as u32
+        );
+    }
+}
+
+#[test]
+fn sentinel_cannot_revoke_other_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+
+    let key = Symbol::new(&env, "other_key");
+    let payload_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_other(
+            env.clone(),
+            admin.clone(),
+            key.clone(),
+            payload_hash.clone(),
+        )
+        .unwrap()
+    });
+
+    let unauthorized = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_other_pending(
+            env.clone(),
+            sentinel.clone(),
+            key,
+            payload_hash,
+        )
+    });
+    assert_eq!(unauthorized, Err(GovernanceError::Unauthorized));
+    assert!(env
+        .as_contract(&governance, || {
+            SorobanVaultGovernanceContract::pending(env.clone(), proposal_id)
+        })
+        .is_ok());
+}
+
+#[test]
+fn sentinel_cannot_revoke_governance_proposal_by_id_or_kind() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let sentinel = Address::generate(&env);
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            sentinel.clone(),
+        )
+        .unwrap();
+    });
+
+    let new_governance = env.register(MockVault, ());
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_governance(
+            env.clone(),
+            admin.clone(),
+            new_governance,
+        )
+        .unwrap()
+    });
+
+    let unauthorized_by_kind = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_kind(
+            env.clone(),
+            sentinel.clone(),
+            GovernanceActionKind::Governance,
+        )
+    });
+    assert_eq!(unauthorized_by_kind, Err(GovernanceError::Unauthorized));
+
+    let unauthorized_by_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke(env.clone(), sentinel.clone(), proposal_id)
+    });
+    assert_eq!(unauthorized_by_id, Err(GovernanceError::Unauthorized));
+    assert!(env
+        .as_contract(&governance, || {
+            SorobanVaultGovernanceContract::pending(env.clone(), proposal_id)
+        })
+        .is_ok());
+}
+
+#[test]
+fn sentinel_revoke_kind_clears_pending() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    // Set first sentinel (immediate)
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            first.clone(),
+        )
+        .unwrap()
+    });
+
+    // Second sentinel change (timelocked)
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_sentinel(
+            env.clone(),
+            admin.clone(),
+            second.clone(),
+        )
+        .unwrap()
+    });
+
+    let pending_before = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_before.len(), 1);
+
+    // Revoke by kind should clear the pending sentinel change
+    let removed = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::revoke_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::Sentinel,
+        )
+        .unwrap()
+    });
+    assert_eq!(removed, 1);
+
+    let pending_after = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::pending_ids(env.clone())
+    });
+    assert_eq!(pending_after.len(), 0);
+}
+
+#[test]
+fn admin_rotation_is_timelocked_and_updates_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let next_admin = Address::generate(&env);
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_admin(
+            env.clone(),
+            admin.clone(),
+            next_admin.clone(),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+
+    let stored_admin = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::admin(env.clone()).unwrap()
+    });
+    assert_eq!(stored_admin, next_admin);
+
+    let old_admin_result = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_curator(
+            env.clone(),
+            admin.clone(),
+            Address::generate(&env),
+        )
+    });
+    assert_eq!(old_admin_result, Err(GovernanceError::Unauthorized));
+}
+
+#[test]
+fn unknown_group_membership_state_is_conservatively_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let clear_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            9,
+            SdkString::from_str(&env, ""),
+        )
+        .unwrap()
+    });
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), clear_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+}
+
+#[test]
+fn unknown_cap_group_state_is_conservatively_timelocked() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let cap_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            SdkString::from_str(&env, "legacy-group"),
+            20,
+        )
+        .unwrap()
+    });
+    let early_cap = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cap_id)
+    });
+    assert_eq!(early_cap, Err(GovernanceError::ProposalNotMature));
+
+    let rel_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_rel_cap(
+            env.clone(),
+            admin.clone(),
+            SdkString::from_str(&env, "legacy-relative-group"),
+            20,
+        )
+        .unwrap()
+    });
+    let early_rel = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), rel_id)
+    });
+    assert_eq!(early_rel, Err(GovernanceError::ProposalNotMature));
+}
+
+#[test]
+fn classifier_counts_distinct_cap_group_subtypes_as_ambiguous_broad_kind() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            SdkString::from_str(&env, "group-a"),
+            5,
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_member(
+            env.clone(),
+            admin.clone(),
+            1,
+            SdkString::from_str(&env, "group-a"),
+        )
+        .unwrap();
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_group_cap(
+            env.clone(),
+            admin.clone(),
+            SdkString::from_str(&env, "group-a"),
+            10,
+        )
+        .unwrap();
+    });
+
+    let accepted = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept_kind(
+            env.clone(),
+            admin.clone(),
+            GovernanceActionKind::CapGroup,
+        )
+    });
+    assert_eq!(accepted, Err(GovernanceError::DuplicatePending));
 }

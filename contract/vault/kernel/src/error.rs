@@ -27,7 +27,6 @@ pub enum InvalidStateCode {
     SyncExternalRequiresActiveOp = 16,
     SyncExternalRequiresAllowedStates = 17,
     SyncExternalOverflowIdlePlusExternal = 18,
-    SyncExternalWouldMoreThanDoubleTotalAssets = 19,
     AbortRefreshingRequiresActiveOp = 20,
     AbortRefreshingRequiresRefreshing = 21,
     AbortAllocatingRequiresAllocating = 22,
@@ -49,6 +48,8 @@ pub enum InvalidStateCode {
     RebalanceWithdrawRequiresIdle = 38,
     RebalanceWithdrawExceedsExternalAssets = 39,
     RebalanceWithdrawOverflowsIdleAssets = 40,
+    WithdrawalLiquidityBelowMinimum = 41,
+    RequestWithdrawExpectedAssetsExceedTotalAssets = 42,
 }
 
 impl InvalidStateCode {
@@ -87,9 +88,6 @@ impl InvalidStateCode {
             Self::SyncExternalOverflowIdlePlusExternal => {
                 "sync_external_assets overflow: idle + external exceeds u128"
             }
-            Self::SyncExternalWouldMoreThanDoubleTotalAssets => {
-                "sync_external_assets would more than double total_assets"
-            }
             Self::AbortRefreshingRequiresActiveOp => "abort_refreshing requires active op",
             Self::AbortRefreshingRequiresRefreshing => "abort_refreshing requires Refreshing",
             Self::AbortAllocatingRequiresAllocating => "abort_allocating requires Allocating",
@@ -120,6 +118,12 @@ impl InvalidStateCode {
             }
             Self::RebalanceWithdrawOverflowsIdleAssets => {
                 "rebalance_withdraw would overflow idle_assets"
+            }
+            Self::WithdrawalLiquidityBelowMinimum => {
+                "withdrawal liquidity below minimum payout amount"
+            }
+            Self::RequestWithdrawExpectedAssetsExceedTotalAssets => {
+                "request_withdraw expected assets exceed total_assets"
             }
         }
     }

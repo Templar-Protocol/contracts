@@ -3,7 +3,7 @@ use super::*;
 /// Vault operation errors.
 #[near(serializers = [json])]
 pub enum Error {
-    /// Index drift or stale op_id.
+    /// Index drift or stale `op_id`.
     IndexDrifted(ExpectedIdx, ActualIdx),
     /// Callback resolved different market.
     MarketDrifted {

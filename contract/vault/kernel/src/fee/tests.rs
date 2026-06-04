@@ -91,6 +91,25 @@ fn postcard_roundtrip_fees_spec() {
     assert_eq!(decoded, fees);
 }
 
+#[cfg(feature = "postcard")]
+#[test]
+fn postcard_feature_preserves_human_readable_fees_spec_shape() {
+    let fees = FeesSpec::new(
+        FeeSlot::new(Wad::one() / 10, Address([1u8; 32])),
+        FeeSlot::new(Wad::one() / 20, Address([2u8; 32])),
+        Some(Wad::one() / 5),
+    );
+
+    let json = serde_json::to_value(fees).expect("serialize fees spec as json");
+    assert!(json.get("performance").is_some());
+    assert!(json["performance"].get("fee_wad").is_some());
+    assert!(json["performance"].get("recipient").is_some());
+    assert!(json.get("management").is_some());
+    assert!(json["management"].get("fee_wad").is_some());
+    assert!(json["management"].get("recipient").is_some());
+    assert!(json.get("max_total_assets_growth_rate").is_some());
+}
+
 #[cfg(all(feature = "postcard", feature = "soroban"))]
 #[test]
 fn soroban_postcard_fee_slot_is_compact() {

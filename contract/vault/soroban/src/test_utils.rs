@@ -4,10 +4,10 @@ use crate::contract::CuratorVault;
 use crate::effects::{AddressRegistrar, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
 use crate::storage::{
-    compose_policy_state, decode_markets, decode_policy_locks, decode_principals,
-    decode_restrictions, decode_state_blob, decode_supply_queue, encode_markets,
-    encode_policy_locks, encode_principals, encode_restrictions, encode_state_blob,
-    encode_supply_queue, Storage,
+    compose_policy_state, decode_cap_groups, decode_markets, decode_policy_locks,
+    decode_principals, decode_restrictions, decode_state_blob, decode_supply_queue,
+    encode_cap_groups, encode_markets, encode_policy_locks, encode_principals, encode_restrictions,
+    encode_state_blob, encode_supply_queue, Storage,
 };
 use alloc::vec::Vec;
 use core::mem;
@@ -52,6 +52,16 @@ pub mod fuzz_api {
         bytes: &[u8],
     ) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
         decode_markets(bytes)
+    }
+
+    pub fn encode_cap_groups_bytes(value: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
+        encode_cap_groups(value)
+    }
+
+    pub fn decode_cap_groups_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
+        decode_cap_groups(bytes)
     }
 
     pub fn encode_principals_bytes(value: &OrderedMap<TargetId, u128>) -> Vec<u8> {
