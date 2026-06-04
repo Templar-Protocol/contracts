@@ -148,6 +148,47 @@ fn mainnet_locker_wasm_accepts_verified_deposit_shape() {
 }
 
 #[test]
+#[should_panic(expected = "HostError: Error(WasmVm, InvalidAction)")]
+fn mainnet_locker_wasm_rejects_duplicate_client_timestamp_in_same_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_777_000_000);
+
+    let locker = register_mainnet_locker_wasm(&env);
+    let token_sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = token_sac.address();
+    let token_admin = StellarAssetClient::new(&env, &token);
+    let first_sender = dummy_contract(&env);
+    let second_sender = dummy_contract(&env);
+    let receiver = proven_receiver(&env);
+    let client_timestamp = 1_777_000_000_000_000_000_000;
+    token_admin.mint(&first_sender, &100);
+    token_admin.mint(&second_sender, &60);
+
+    let first_nonce = invoke_locker_deposit(
+        &env,
+        &locker,
+        &first_sender,
+        100,
+        &token,
+        &receiver,
+        client_timestamp,
+    );
+    assert_eq!(first_nonce, client_timestamp);
+    assert!(!get_locker_deposit(&env, &locker, first_nonce).is_empty());
+
+    let _second_nonce = invoke_locker_deposit(
+        &env,
+        &locker,
+        &second_sender,
+        60,
+        &token,
+        &receiver,
+        client_timestamp,
+    );
+}
+
+#[test]
 fn adapter_supply_works_against_mainnet_locker_wasm() {
     let env = Env::default();
     env.mock_all_auths();
@@ -185,5 +226,41 @@ fn adapter_supply_works_against_mainnet_locker_wasm() {
     assert_eq!(
         soroban_sdk::token::Client::new(&env, &token).balance(&locker),
         100
+    );
+}
+
+#[test]
+fn adapter_supply_supports_two_deposits_in_same_ledger_against_mainnet_locker_wasm() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_777_000_000);
+
+    let admin = dummy_contract(&env);
+    let vault = dummy_contract(&env);
+    let locker = register_mainnet_locker_wasm(&env);
+    let token_sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = token_sac.address();
+    let receiver = proven_receiver(&env);
+    let adapter = env.register(
+        HotBridgeAdapterContract,
+        (&admin, &vault, &locker, &receiver),
+    );
+    let adapter_client = HotBridgeAdapterContractClient::new(&env, &adapter);
+    StellarAssetClient::new(&env, &token).mint(&adapter, &100);
+    adapter_client.supply(&vault, &token, &100);
+
+    let first_nonce = 1_777_000_000_000_000_000_000;
+    let second_nonce = first_nonce - 1;
+    assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 100, first_nonce);
+
+    StellarAssetClient::new(&env, &token).mint(&adapter, &60);
+    adapter_client.supply(&vault, &token, &60);
+    assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 60, second_nonce);
+    assert!(!get_locker_deposit(&env, &locker, first_nonce).is_empty());
+    assert!(!get_locker_deposit(&env, &locker, second_nonce).is_empty());
+    assert_eq!(adapter_client.total_assets(&token), 160);
+    assert_eq!(
+        soroban_sdk::token::Client::new(&env, &token).balance(&locker),
+        160
     );
 }

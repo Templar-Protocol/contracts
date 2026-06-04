@@ -10,6 +10,7 @@ use stellar_contract_utils::upgradeable::{self, Upgradeable};
 
 const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
 const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
+const HOT_TIMESTAMP_SCALE: u128 = 1_000_000_000_000;
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -20,6 +21,7 @@ enum DataKey {
     HotLocker,
     HotReceiverId,
     Paused,
+    LastHotClientTimestamp,
     Principal(Address),
 }
 
@@ -37,6 +39,7 @@ pub enum AdapterError {
     Paused = 8,
     InsufficientAdapterBalance = 9,
     DepositPostconditionFailed = 10,
+    HotClientTimestampExhausted = 11,
 }
 
 #[contract]
@@ -95,7 +98,7 @@ impl HotBridgeAdapterContract {
         let adapter = env.current_contract_address();
         let hot_locker = get_hot_locker(&env)?;
         let hot_receiver_id = get_hot_receiver_id(&env)?;
-        let client_timestamp = hot_locker_timestamp(&env)?;
+        let client_timestamp = next_hot_locker_timestamp(&env)?;
         let amount_u128 = amount_as_u128(amount)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
         let balance_before = token.balance(&adapter);
@@ -124,6 +127,7 @@ impl HotBridgeAdapterContract {
             return Err(AdapterError::DepositPostconditionFailed);
         }
 
+        record_hot_locker_timestamp(&env, client_timestamp);
         increase_principal(&env, &asset, amount)?;
         env.events().publish(
             (symbol_short!("hot_dep"), asset.clone()),
@@ -296,10 +300,37 @@ fn amount_as_u128(amount: i128) -> Result<u128, AdapterError> {
     u128::try_from(amount).map_err(|_| AdapterError::InvalidInput)
 }
 
-fn hot_locker_timestamp(env: &Env) -> Result<u128, AdapterError> {
-    u128::from(env.ledger().timestamp())
-        .checked_mul(1_000_000_000_000)
+fn hot_locker_timestamp(ledger_timestamp: u64) -> Result<u128, AdapterError> {
+    u128::from(ledger_timestamp)
+        .checked_mul(HOT_TIMESTAMP_SCALE)
         .ok_or(AdapterError::ArithmeticOverflow)
+}
+
+fn next_hot_locker_timestamp(env: &Env) -> Result<u128, AdapterError> {
+    let base_timestamp = hot_locker_timestamp(env.ledger().timestamp())?;
+    let last_timestamp = env
+        .storage()
+        .instance()
+        .get::<_, u128>(&DataKey::LastHotClientTimestamp);
+    let client_timestamp = if let Some(last_timestamp) = last_timestamp {
+        if base_timestamp <= last_timestamp {
+            last_timestamp
+                .checked_sub(1)
+                .ok_or(AdapterError::HotClientTimestampExhausted)?
+        } else {
+            base_timestamp
+        }
+    } else {
+        base_timestamp
+    };
+
+    Ok(client_timestamp)
+}
+
+fn record_hot_locker_timestamp(env: &Env, client_timestamp: u128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::LastHotClientTimestamp, &client_timestamp);
 }
 
 fn principal_of(env: &Env, asset: &Address) -> i128 {
@@ -614,6 +645,55 @@ mod tests {
             soroban_sdk::token::Client::new(&env, &asset).balance(&hot_locker),
             100
         );
+    }
+
+    #[test]
+    fn supply_uses_unique_hot_nonce_for_same_ledger_allocations() {
+        let env = Env::default();
+        let (adapter, _admin, vault, hot_locker, asset, receiver) = setup(&env);
+        let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+        let asset_admin = StellarAssetClient::new(&env, &asset);
+        let base_nonce = 1_777_000_000_000_000_000_000;
+
+        asset_admin.mint(&adapter, &100);
+        client.supply(&vault, &asset, &100);
+        assert_hot_deposit_event(
+            &env,
+            &adapter,
+            &asset,
+            &hot_locker,
+            &receiver,
+            100,
+            base_nonce,
+        );
+
+        asset_admin.mint(&adapter, &60);
+        client.supply(&vault, &asset, &60);
+        assert_hot_deposit_event(
+            &env,
+            &adapter,
+            &asset,
+            &hot_locker,
+            &receiver,
+            60,
+            base_nonce - 1,
+        );
+        assert_eq!(client.total_assets(&asset), 160);
+
+        env.ledger().set_timestamp(1_777_000_001);
+        asset_admin.mint(&adapter, &25);
+        client.supply(&vault, &asset, &25);
+
+        assert_hot_deposit_event(
+            &env,
+            &adapter,
+            &asset,
+            &hot_locker,
+            &receiver,
+            25,
+            1_777_000_001_000_000_000_000,
+        );
+        assert_eq!(client.total_assets(&asset), 185);
     }
 
     #[test]

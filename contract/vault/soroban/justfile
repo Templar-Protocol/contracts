@@ -37,6 +37,9 @@ set dotenv-load := false
 #   HOT_BRIDGE_ADAPTER_ID    Deployed HOT bridge adapter contract ID
 #   HOT_STELLAR_LOCKER_CONTRACT HOT Stellar locker contract ID
 #   HOT_STELLAR_RECEIVER_HEX Proven HOT receiver bytes for the NEAR counterparty
+#   HOT_STELLAR_LOCKER_EXPECTED_CONTRACT Expected pinned HOT locker contract ID
+#   HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256 Expected pinned HOT locker WASM SHA-256
+#   HOT_STELLAR_LOCKER_ALLOW_UNPINNED=1 Skip pinned locker contract-ID check
 #   SOROBAN_ADAPTER_ADMIN    Blend adapter admin contract (default: governance, then vault)
 #
 # =============================================================================
@@ -59,6 +62,8 @@ default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
 default_identity := "templar"
+hot_stellar_locker_expected_contract := "CCLWL5NYSV2WJQ3VBU44AMDHEVKEPA45N2QP2LL62O3JVKPGWWAQUVAG"
+hot_stellar_locker_expected_wasm_sha256 := "cc74acb56fd01ef560b5d443cd58fe11d5acbece0e4001612ebb31020fc92f97"
 
 # Path for storing deployment state
 state_dir := justfile_directory() + "/.deploy-state"
@@ -578,16 +583,42 @@ deploy-hot-bridge-adapter:
 	fi; \
 	hot_locker="${HOT_STELLAR_LOCKER_CONTRACT:?set HOT_STELLAR_LOCKER_CONTRACT}"; \
 	hot_receiver_id="${HOT_STELLAR_RECEIVER_HEX:?set HOT_STELLAR_RECEIVER_HEX to the proven HOT receiver bytes}"; \
+	expected_locker="${HOT_STELLAR_LOCKER_EXPECTED_CONTRACT:-{{hot_stellar_locker_expected_contract}}}"; \
+	expected_hash="${HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256:-{{hot_stellar_locker_expected_wasm_sha256}}}"; \
+	if [ "${HOT_STELLAR_LOCKER_ALLOW_UNPINNED:-0}" != "1" ] && [ "$hot_locker" != "$expected_locker" ]; then \
+		echo "Error: HOT_STELLAR_LOCKER_CONTRACT does not match pinned mainnet locker"; \
+		echo "  expected: $expected_locker"; \
+		echo "  actual:   $hot_locker"; \
+		echo "Set HOT_STELLAR_LOCKER_ALLOW_UNPINNED=1 only for non-production testing."; \
+		exit 1; \
+	fi; \
 	if ! printf '%s' "$hot_receiver_id" | grep -Eq '^[0-9A-Fa-f]{64}$'; then \
 		echo "Error: HOT_STELLAR_RECEIVER_HEX must be exactly 64 hex characters"; \
 		exit 1; \
 	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	tmp_wasm="$(mktemp "${TMPDIR:-/data/tmp}/hot-stellar-locker.XXXXXX.wasm")"; \
+	trap 'rm -f "$tmp_wasm"' EXIT; \
+	echo "Verifying pinned HOT locker WASM..."; \
+	if [ -n "${SOROBAN_RPC_URL:-}" ]; then \
+		passphrase="${SOROBAN_NETWORK_PASSPHRASE:?set SOROBAN_NETWORK_PASSPHRASE when SOROBAN_RPC_URL is set}"; \
+		stellar contract fetch --id "$hot_locker" --rpc-url "$SOROBAN_RPC_URL" --network-passphrase "$passphrase" --out-file "$tmp_wasm"; \
+	else \
+		stellar contract fetch --id "$hot_locker" --network "$network" --out-file "$tmp_wasm"; \
+	fi; \
+	actual_hash="$(sha256sum "$tmp_wasm" | awk '{print $1}')"; \
+	if [ "$actual_hash" != "$expected_hash" ]; then \
+		echo "Error: HOT locker WASM hash mismatch"; \
+		echo "  expected: $expected_hash"; \
+		echo "  actual:   $actual_hash"; \
+		exit 1; \
+	fi; \
 	echo "Deploying HOT bridge adapter..."; \
 	echo "  Admin:        $admin"; \
 	echo "  Vault:        $vault_id"; \
 	echo "  HOT locker:   $hot_locker"; \
+	echo "  Locker hash:  $actual_hash"; \
 	echo "  HOT receiver: $hot_receiver_id"; \
 	adapter_id=$(stellar contract deploy \
 		--wasm "$wasm" \
