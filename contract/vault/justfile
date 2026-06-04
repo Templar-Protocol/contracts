@@ -93,7 +93,7 @@ soroban-extend-ttl:
 # Share-token metadata is immutable after deployment in the current Soroban contract.
 soroban-share-metadata:
 	@echo "Share-token metadata is set in the constructor and is immutable after deployment."
-	@echo "Use contract/vault/soroban: just deploy-share-token with SOROBAN_SHARE_NAME/SYMBOL/DECIMALS."
+	@echo "Use contract/vault/soroban: just deploy-share-token with SHARE_TOKEN_NAME/SHARE_TOKEN_SYMBOL/SHARE_TOKEN_DECIMALS."
 	@exit 1
 
 # --------------------------------------------------------------------
