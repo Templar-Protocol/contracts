@@ -231,6 +231,72 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 After deployment, register the adapter as a vault market before allocation.
 
+## Market Adapter Approaches
+
+Vault allocations into Templar-specific markets can use either a custodial forwarding adapter or the
+onchain HOT bridge adapter.
+
+### Custodial / Multisig Adapter
+
+A forwarding adapter sends allocated assets to a multisig or address controlled by the operator. The
+operator then handles the HOT/Intents bridge and Templar market deposit offchain.
+
+Supply flow:
+
+```text
+allocate
+-> market adapter
+-> operator multisig/address
+-> operator infra bridges/deposits via HOT / Intents
+-> Templar market
+```
+
+Withdrawal flow:
+
+```text
+operator infra exits/unwinds the Templar market position offchain
+-> operator bridges/returns funds back to the adapter
+-> funds sit as idle liquidity in the adapter
+-> vault withdraws idle liquidity from the adapter
+```
+
+In this model, a vault withdrawal only withdraws idle liquidity already present in the adapter. The
+operator is responsible for making that liquidity available first by unwinding the market position and
+returning funds. There is no automatic onchain market-exit step in the adapter.
+
+### Onchain HOT Bridge Adapter
+
+The HOT bridge adapter automatically routes the vault allocation through HOT. The bridged assets land
+in the Templar counterparty contract, and the counterparty forwards into the configured Templar
+market.
+
+Supply flow:
+
+```text
+allocate
+-> HOT bridge adapter
+-> HOT / Intents bridge
+-> Templar counterparty
+-> Templar market
+```
+
+Withdrawal flow:
+
+```text
+vault requests withdrawal from HOT bridge adapter
+-> Templar counterparty exits/advances the market withdrawal flow
+-> counterparty receives the withdrawn Intents/HOT asset
+-> counterparty initiates HOT withdrawal back to Stellar
+-> HOT bridge returns funds to the Stellar-side adapter
+-> adapter releases returned funds back to the vault
+```
+
+This is more automated, but the withdrawal path has more moving parts. The Soroban adapter can
+observe funds once they return on Stellar, but it cannot cryptographically prove the NEAR-side
+settlement caused that return. This uses the same broad HOT/Intents bridge trust model already used
+for Stellar deposits into Templar markets; the difference is whether operator infra or the onchain
+adapter/counterparty owns routing and market-forwarding/withdrawal steps.
+
 ## HOT Bridge Adapter
 
 HOT bridge integration lives in `contract/vault/soroban/hot-bridge-adapter`. It exposes the same
