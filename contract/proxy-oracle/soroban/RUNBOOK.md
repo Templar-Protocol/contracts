@@ -62,9 +62,11 @@ Hand the runtime's owner to governance via the two-step `Ownable` transfer:
 
 ```bash
 inv --id $RT -- transfer_ownership --new_owner $GOV --live_until_ledger <MAX_TTL_LEDGER>
-# $GOV is now the pending owner; finalize by executing an AcceptOwnership proposal
-# on $GOV (governance dispatches accept_ownership on the runtime). Every later
-# owner-only runtime call likewise goes through governance, not a direct call.
+# $GOV is now the pending owner. Finalize through governance — it dispatches
+# accept_ownership on the runtime; every later owner-only call goes the same way.
+inv --id $GOV -- create_proposal --caller <ADMIN> --id <NEXT> --requested_ttl 0 \
+  --operation '{"AcceptOwnership": null}'        # Admin-only; null = the variant's () payload
+inv --id $GOV -- execute_proposal --caller <ADMIN> --id <ID>
 inv --id $RT -- get_owner          # verify == $GOV
 inv --id $GOV -- proxy_oracle      # verify == $RT
 ```
