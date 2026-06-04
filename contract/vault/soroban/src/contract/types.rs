@@ -68,6 +68,8 @@ pub struct ContractConfig {
     pub virtual_shares: u128,
     /// Virtual asset offset passed through to kernel conversion math.
     pub virtual_assets: u128,
+    /// Cooldown between withdrawal request and execution, in nanoseconds.
+    pub withdrawal_cooldown_ns: u64,
 }
 
 impl ContractConfig {
@@ -90,6 +92,7 @@ impl ContractConfig {
             fees: FeesSpec::zero(),
             virtual_shares: 0,
             virtual_assets: 0,
+            withdrawal_cooldown_ns: super::SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
         }
     }
 
@@ -107,6 +110,14 @@ impl ContractConfig {
     pub fn with_virtual_offsets(mut self, virtual_shares: u128, virtual_assets: u128) -> Self {
         self.virtual_shares = virtual_shares;
         self.virtual_assets = virtual_assets;
+        self
+    }
+
+    /// Attach withdrawal cooldown configuration.
+    #[inline]
+    #[must_use]
+    pub fn with_withdrawal_cooldown_ns(mut self, withdrawal_cooldown_ns: u64) -> Self {
+        self.withdrawal_cooldown_ns = withdrawal_cooldown_ns;
         self
     }
 
@@ -155,6 +166,7 @@ impl VaultDataKey {
     pub const VirtualAssets: Symbol = soroban_sdk::symbol_short!("vassets");
     pub const VirtualOffsetsLocked: Symbol = soroban_sdk::symbol_short!("vofflock");
     pub const IdleResyncLastNs: Symbol = soroban_sdk::symbol_short!("idlrsync");
+    pub const WithdrawalCooldownNs: Symbol = soroban_sdk::symbol_short!("wdcooldn");
 }
 
 pub struct VaultBootstrap<'a> {

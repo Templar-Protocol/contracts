@@ -46,7 +46,6 @@ use templar_curator_primitives::PolicyState;
 use templar_soroban_shared_types::{VaultCommand, VaultCommandResult};
 use templar_vault_kernel::effects::KernelEffect;
 use templar_vault_kernel::error::InvalidStateCode;
-use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, convert_to_assets_bounded, convert_to_assets_ceil_bounded,
     convert_to_shares_bounded, convert_to_shares_ceil_bounded, plan_idle_payout,
@@ -58,6 +57,7 @@ use templar_vault_kernel::{
 use crate::storage::SOROBAN_MAX_PENDING_WITHDRAWALS;
 
 pub(crate) const KERNEL_ADDRESS_DOMAIN: &[u8] = b"templar:soroban:address";
+pub const SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = 10 * 60 * 1_000_000_000;
 const MIGRATION_FLAG_KEY: soroban_sdk::Symbol = symbol_short!("migrate");
 
 pub(crate) fn decode_command(payload: &Bytes) -> Result<VaultCommand, ContractError> {

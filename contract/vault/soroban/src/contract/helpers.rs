@@ -242,6 +242,19 @@ pub(crate) fn store_virtual_offsets(env: &Env, virtual_shares: u128, virtual_ass
         .set(&VaultDataKey::VirtualAssets, &virtual_assets);
 }
 
+pub(crate) fn load_withdrawal_cooldown_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::WithdrawalCooldownNs)
+        .unwrap_or(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+}
+
+pub(crate) fn store_withdrawal_cooldown_ns(env: &Env, withdrawal_cooldown_ns: u64) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
+}
+
 pub(crate) fn virtual_offsets_locked(env: &Env) -> bool {
     env.storage()
         .instance()
@@ -454,7 +467,8 @@ pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, Runt
     let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
     config = config
         .with_fees(load_fees_spec(env)?)
-        .with_virtual_offsets(virtual_shares, virtual_assets);
+        .with_virtual_offsets(virtual_shares, virtual_assets)
+        .with_withdrawal_cooldown_ns(load_withdrawal_cooldown_ns(env));
 
     let storage = SorobanStorage::new(env);
     let paused = storage.is_paused();

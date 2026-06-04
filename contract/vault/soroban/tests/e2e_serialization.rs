@@ -1,11 +1,13 @@
 use soroban_sdk::{contract, contractimpl, Env};
 use templar_curator_primitives::MarketConfig;
 use templar_soroban_runtime::{
-    contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
+    contract::{
+        AllocationDelta, ContractConfig, CuratorVault, Delta,
+        SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+    },
     storage::SorobanStorage,
     Storage,
 };
-use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::Address;
 
 mod common;
@@ -177,7 +179,7 @@ fn e2e_soroban_storage_postcard_roundtrip_lifecycle() {
         assert_eq!(head_id, request.request_id);
 
         vault
-            .execute_withdraw(user, 400 + DEFAULT_COOLDOWN_NS + 1)
+            .execute_withdraw(user, 400 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
             .unwrap();
         drop(vault);
 

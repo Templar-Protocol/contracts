@@ -11,8 +11,8 @@ use super::helpers::{
     require_contract_address, require_governance, require_governance_control_plane,
     require_sentinel, require_signed, require_wasm_or_account_address, sdk_string_to_alloc,
     set_config_address, set_migration_in_progress, store_fees_spec, store_virtual_offsets,
-    supply_adapter_for_market, validate_and_rewrite_storage, virtual_offsets_locked,
-    with_contract_vault_contract_error,
+    store_withdrawal_cooldown_ns, supply_adapter_for_market, validate_and_rewrite_storage,
+    virtual_offsets_locked, with_contract_vault_contract_error,
 };
 use super::*;
 use crate::storage::{SorobanStorage, Storage};
@@ -22,10 +22,10 @@ use templar_soroban_shared_types::{
     GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS,
     GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_GOVERNANCE,
     GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{FeeAccrualAnchor, TimestampNs};
@@ -180,6 +180,17 @@ fn apply_virtual_offsets_config(
     let virtual_assets = to_u128(virtual_assets)?;
     store_virtual_offsets(env, virtual_shares, virtual_assets);
     emit_admin_event(env, symbol_short!("s_voffs"));
+    Ok(())
+}
+
+fn apply_withdrawal_cooldown_config(
+    env: &Env,
+    withdrawal_cooldown_ns: i128,
+) -> Result<(), ContractError> {
+    let withdrawal_cooldown_ns =
+        u64::try_from(withdrawal_cooldown_ns).map_err(|_| ContractError::InvalidInput)?;
+    store_withdrawal_cooldown_ns(env, withdrawal_cooldown_ns);
+    emit_admin_event(env, symbol_short!("s_wdcool"));
     Ok(())
 }
 
@@ -803,6 +814,9 @@ fn set_governance_config_impl(
         GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS => {
             apply_virtual_offsets_config(env, required_i128(value_a)?, required_i128(value_b)?)?
         }
+        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN => {
+            apply_withdrawal_cooldown_config(env, required_i128(value_a)?)?
+        }
         _ => return Err(ContractError::InvalidInput),
     }
     Ok(())
@@ -1179,6 +1193,44 @@ fn execute_governance_command(
 #[contract]
 pub struct SorobanVaultContract;
 
+fn initialize_impl(
+    env: &Env,
+    curator: soroban_sdk::Address,
+    governance: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
+    virtual_shares: i128,
+    virtual_assets: i128,
+    withdrawal_cooldown_ns: u64,
+) -> Result<(), ContractError> {
+    if env.storage().instance().has(&VaultDataKey::Initialized) {
+        return Err(ContractError::AlreadyInitialized);
+    }
+
+    let virtual_shares = to_u128(virtual_shares)?;
+    let virtual_assets = to_u128(virtual_assets)?;
+
+    require_wasm_or_account_address(&curator)?;
+    require_contract_address(&governance)?;
+
+    set_config_address(env, &VaultDataKey::Curator, &curator);
+    set_config_address(env, &VaultDataKey::Governance, &governance);
+    set_config_address(env, &VaultDataKey::AssetToken, &asset_token);
+    set_config_address(env, &VaultDataKey::ShareToken, &share_token);
+    set_config_address(env, &VaultDataKey::SkimRecipient, &governance);
+    store_virtual_offsets(env, virtual_shares, virtual_assets);
+    store_withdrawal_cooldown_ns(env, withdrawal_cooldown_ns);
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::Initialized, &true);
+    runtime_to_contract(store_fees_spec(env, &FeesSpec::zero()))?;
+
+    let mut storage = SorobanStorage::new(env);
+    runtime_to_contract(storage.save_state(&VaultState::default()))?;
+    runtime_to_contract(storage.save_paused(false))?;
+    Ok(())
+}
+
 #[contractimpl]
 impl SorobanVaultContract {
     pub fn initialize(
@@ -1190,31 +1242,38 @@ impl SorobanVaultContract {
         virtual_shares: i128,
         virtual_assets: i128,
     ) -> Result<(), ContractError> {
-        if env.storage().instance().has(&VaultDataKey::Initialized) {
-            return Err(ContractError::AlreadyInitialized);
-        }
+        initialize_impl(
+            &env,
+            curator,
+            governance,
+            asset_token,
+            share_token,
+            virtual_shares,
+            virtual_assets,
+            SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        )
+    }
 
-        let virtual_shares = to_u128(virtual_shares)?;
-        let virtual_assets = to_u128(virtual_assets)?;
-
-        require_wasm_or_account_address(&curator)?;
-        require_contract_address(&governance)?;
-
-        set_config_address(&env, &VaultDataKey::Curator, &curator);
-        set_config_address(&env, &VaultDataKey::Governance, &governance);
-        set_config_address(&env, &VaultDataKey::AssetToken, &asset_token);
-        set_config_address(&env, &VaultDataKey::ShareToken, &share_token);
-        set_config_address(&env, &VaultDataKey::SkimRecipient, &governance);
-        store_virtual_offsets(&env, virtual_shares, virtual_assets);
-        env.storage()
-            .instance()
-            .set(&VaultDataKey::Initialized, &true);
-        runtime_to_contract(store_fees_spec(&env, &FeesSpec::zero()))?;
-
-        let mut storage = SorobanStorage::new(&env);
-        runtime_to_contract(storage.save_state(&VaultState::default()))?;
-        runtime_to_contract(storage.save_paused(false))?;
-        Ok(())
+    pub fn initialize_with_config(
+        env: Env,
+        curator: soroban_sdk::Address,
+        governance: soroban_sdk::Address,
+        asset_token: soroban_sdk::Address,
+        share_token: soroban_sdk::Address,
+        virtual_shares: i128,
+        virtual_assets: i128,
+        withdrawal_cooldown_ns: u64,
+    ) -> Result<(), ContractError> {
+        initialize_impl(
+            &env,
+            curator,
+            governance,
+            asset_token,
+            share_token,
+            virtual_shares,
+            virtual_assets,
+            withdrawal_cooldown_ns,
+        )
     }
 
     pub fn execute(env: Env, payload: Bytes) -> Result<Bytes, ContractError> {

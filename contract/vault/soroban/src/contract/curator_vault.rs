@@ -165,7 +165,7 @@ where
         VaultConfig {
             fees: self.config.fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+            withdrawal_cooldown_ns: self.config.withdrawal_cooldown_ns,
             max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
             paused: self.paused,
             virtual_shares: self.config.virtual_shares,

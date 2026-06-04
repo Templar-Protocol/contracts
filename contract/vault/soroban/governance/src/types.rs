@@ -27,6 +27,7 @@ pub(crate) enum DataKey {
     KnownCapGroupCap(String),
     KnownCapGroupRelCap(String),
     KnownCapGroupMembership(u32),
+    CurrentWithdrawalCooldownNs,
 }
 
 #[contracttype]
@@ -74,6 +75,7 @@ pub enum GovernanceActionKind {
     CancelMigration,
     TimelockConfig,
     Other,
+    WithdrawalCooldown,
 }
 
 #[contracttype]
@@ -232,6 +234,7 @@ pub enum GovernanceAction {
     CancelMigration,
     SetTimelock(TimelockKind, u64),
     Other(Symbol, BytesN<32>),
+    SetWithdrawalCooldown(u64),
 }
 
 #[contracttype]

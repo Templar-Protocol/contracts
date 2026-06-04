@@ -14,13 +14,14 @@
 //!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
-use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     compute_fee_shares_from_assets, compute_management_fee_shares, total_assets_for_fee_accrual,
     FeeAccrualAnchor, Number, TimestampNs, VaultConfig, VaultState, MIN_WITHDRAWAL_ASSETS,
 };
 
-use crate::contract::{load_fees_spec, load_virtual_offsets, VaultDataKey};
+use crate::contract::{
+    load_fees_spec, load_virtual_offsets, load_withdrawal_cooldown_ns, VaultDataKey,
+};
 use crate::convert::{ledger_timestamp_ns, runtime_to_contract, to_u128};
 use crate::error::ContractError;
 use crate::storage::{SorobanStorage, Storage, SOROBAN_MAX_PENDING_WITHDRAWALS};
@@ -125,7 +126,7 @@ pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfi
     let config = VaultConfig {
         fees: runtime_to_contract(load_fees_spec(env))?,
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-        withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+        withdrawal_cooldown_ns: load_withdrawal_cooldown_ns(env),
         max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
         paused: storage.is_paused(),
         virtual_shares,

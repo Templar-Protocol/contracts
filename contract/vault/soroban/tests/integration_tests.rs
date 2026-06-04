@@ -12,7 +12,9 @@ use std::string::String as AllocString;
 use templar_curator_primitives::policy::state::MarketConfig;
 use templar_soroban_governance::{GovernanceError, SorobanVaultGovernanceContract};
 use templar_soroban_runtime::{
-    contract::{ContractConfig, CuratorVault, SorobanVaultContract},
+    contract::{
+        ContractConfig, CuratorVault, SorobanVaultContract, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+    },
     rbac::{RbacAuth, RbacConfig, Role},
     storage::SorobanStorage,
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
@@ -27,7 +29,6 @@ use templar_soroban_shared_types::{
     GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
-use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
     effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
@@ -416,7 +417,7 @@ fn preview_kernel_config(paused: bool, virtual_shares: u128, virtual_assets: u12
     VaultConfig {
         fees: FeesSpec::zero(),
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-        withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+        withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
         max_pending_withdrawals: MAX_PENDING as u32,
         paused,
         virtual_shares,
@@ -793,7 +794,7 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
         let config = VaultConfig {
             fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+            withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: false,
             virtual_shares: 0,
@@ -1729,7 +1730,7 @@ fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
 
     // Execute withdraw in idle state
-    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let result = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(result.is_ok());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1742,12 +1743,12 @@ fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
 
-    let early = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS - 1);
+    let early = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS - 1);
     assert!(early.is_err());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(!vault.state().unwrap().withdraw_queue.is_empty());
 
-    let ok = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let ok = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(ok.is_ok());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
@@ -1810,7 +1811,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let result = vault.request_withdraw(user, user, 4000, 0, 0).unwrap();
     assert!(result.shares_escrowed > 0);
 
-    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let result = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(result.is_ok());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1832,7 +1833,7 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     vault.request_withdraw(user, user, 2_000, 0, 101).unwrap();
     vault
-        .execute_withdraw(user, 101 + DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, 101 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1863,7 +1864,7 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     vault.request_withdraw(user, user, 3_000, 0, 400).unwrap();
     vault
-        .execute_withdraw(user, 400 + DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, 400 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1893,7 +1894,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     assert_eq!(pending.escrow_shares, 1000);
 
     vault
-        .execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     let (next_id, next_pending) = vault

@@ -22,10 +22,10 @@ use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::math::wad::Wad;
 use templar_vault_kernel::{DurationNs, TimestampNs};
@@ -37,6 +37,7 @@ const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_TIMELOCK_NS: u64 = 30 * DAY_NS;
 const MAX_PENDING_PROPOSALS: usize = 64;
 const PENDING_PAGE_SIZE: u64 = 16;
+const DEFAULT_WITHDRAWAL_COOLDOWN_NS: u64 = 10 * 60 * 1_000_000_000;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum RevokerRole {
@@ -59,6 +60,7 @@ enum GovernanceActionKey {
     Governance,
     SupplyQueue,
     Fees,
+    WithdrawalCooldown,
     Restrictions,
     Sentinel,
     Allocators,
@@ -86,6 +88,7 @@ impl GovernanceAction {
             Self::SetGovernance(_) => GovernanceActionKey::Governance,
             Self::SetSupplyQueue(_, _) => GovernanceActionKey::SupplyQueue,
             Self::SetFees(_) => GovernanceActionKey::Fees,
+            Self::SetWithdrawalCooldown(_) => GovernanceActionKey::WithdrawalCooldown,
             Self::SetRestrictions(_, _) => GovernanceActionKey::Restrictions,
             Self::SetSentinel(_) => GovernanceActionKey::Sentinel,
             Self::SetAllocators(_) => GovernanceActionKey::Allocators,
@@ -157,6 +160,10 @@ impl SorobanVaultGovernanceContract {
                 management_recipient: admin,
                 max_growth_rate_wad: None,
             },
+        );
+        env.storage().instance().set(
+            &DataKey::CurrentWithdrawalCooldownNs,
+            &DEFAULT_WITHDRAWAL_COOLDOWN_NS,
         );
         env.storage()
             .instance()
@@ -231,6 +238,18 @@ impl SorobanVaultGovernanceContract {
             max_growth_rate_wad,
         };
         Self::submit(env, caller, GovernanceAction::SetFees(params))
+    }
+
+    pub fn submit_set_withdrawal_cooldown(
+        env: Env,
+        caller: Address,
+        withdrawal_cooldown_ns: u64,
+    ) -> Result<u64, GovernanceError> {
+        Self::submit(
+            env,
+            caller,
+            GovernanceAction::SetWithdrawalCooldown(withdrawal_cooldown_ns),
+        )
     }
 
     pub fn submit_set_restrictions(
@@ -720,6 +739,7 @@ fn action_kind(action: &GovernanceAction) -> GovernanceActionKind {
         GovernanceAction::SetGovernance(_) => GovernanceActionKind::Governance,
         GovernanceAction::SetSupplyQueue(_, _) => GovernanceActionKind::SupplyQueue,
         GovernanceAction::SetFees(_) => GovernanceActionKind::Fees,
+        GovernanceAction::SetWithdrawalCooldown(_) => GovernanceActionKind::WithdrawalCooldown,
         GovernanceAction::SetRestrictions(_, _) => GovernanceActionKind::Restrictions,
         GovernanceAction::SetSentinel(_) => GovernanceActionKind::Sentinel,
         GovernanceAction::SetAllocators(_) => GovernanceActionKind::Allocators,
@@ -747,7 +767,9 @@ fn timelock_kind_for_action(action: &GovernanceAction) -> TimelockKind {
         GovernanceAction::SetCurator(_) => TimelockKind::Curator,
         GovernanceAction::SetGovernance(_) => TimelockKind::Governance,
         GovernanceAction::SetSupplyQueue(_, _) => TimelockKind::SupplyQueue,
-        GovernanceAction::SetFees(_) => TimelockKind::Fees,
+        GovernanceAction::SetFees(_) | GovernanceAction::SetWithdrawalCooldown(_) => {
+            TimelockKind::Fees
+        }
         GovernanceAction::SetRestrictions(_, _) => TimelockKind::Restrictions,
         GovernanceAction::SetSentinel(_) => TimelockKind::Sentinel,
         GovernanceAction::SetAllocators(_) => TimelockKind::Allocators,
@@ -902,6 +924,17 @@ fn decide_submission(
             } else {
                 Ok(TimelockDecision::Immediate)
             }
+        }
+        GovernanceAction::SetWithdrawalCooldown(proposed) => {
+            let current = env
+                .storage()
+                .instance()
+                .get(&DataKey::CurrentWithdrawalCooldownNs)
+                .unwrap_or(DEFAULT_WITHDRAWAL_COOLDOWN_NS);
+            if current == *proposed {
+                return Err(GovernanceError::NoChange);
+            }
+            Ok(TimelockDecision::Timelocked)
         }
         GovernanceAction::SetRestrictions(mode, accounts) => {
             let current_mode: RestrictionMode = env
@@ -1277,6 +1310,13 @@ fn execute_action(env: &Env, action: &GovernanceAction) -> Result<(), Governance
             execute_vault_governance_action(env, &vault, action)?;
             env.storage().instance().set(&DataKey::CurrentFees, params);
         }
+        GovernanceAction::SetWithdrawalCooldown(withdrawal_cooldown_ns) => {
+            execute_vault_governance_action(env, &vault, action)?;
+            env.storage().instance().set(
+                &DataKey::CurrentWithdrawalCooldownNs,
+                withdrawal_cooldown_ns,
+            );
+        }
         GovernanceAction::SetRestrictions(mode, accounts) => {
             execute_vault_governance_action(env, &vault, action)?;
             env.storage()
@@ -1481,6 +1521,15 @@ fn governance_payload_for_action(
                 primary: Some(sdk_address_to_alloc_string(recipient)?),
                 many: None,
                 value_a: None,
+                value_b: None,
+            })
+        }
+        GovernanceAction::SetWithdrawalCooldown(withdrawal_cooldown_ns) => {
+            Some(GovernanceCommand::SetGovernanceConfig {
+                kind: GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+                primary: None,
+                many: None,
+                value_a: Some(i128::from(*withdrawal_cooldown_ns)),
                 value_b: None,
             })
         }
@@ -1757,6 +1806,7 @@ fn can_revoke_kind(role: RevokerRole, kind: GovernanceActionKind) -> bool {
                 | GovernanceActionKind::Allocators
                 | GovernanceActionKind::AllowedAdapters
                 | GovernanceActionKind::Fees
+                | GovernanceActionKind::WithdrawalCooldown
                 | GovernanceActionKind::Restrictions
                 | GovernanceActionKind::TimelockConfig
                 | GovernanceActionKind::Cap

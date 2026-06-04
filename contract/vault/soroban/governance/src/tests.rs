@@ -14,10 +14,10 @@ use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
     GOVERNANCE_CONFIG_KIND_GOVERNANCE, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES,
-    GOVERNANCE_POLICY_KIND_GROUP, GOVERNANCE_POLICY_KIND_PAUSED,
-    GOVERNANCE_POLICY_KIND_REMOVE_MARKET, GOVERNANCE_POLICY_KIND_RESTRICTIONS,
-    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+    GOVERNANCE_CONFIG_KIND_SKIM_RECIPIENT, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_GROUP,
+    GOVERNANCE_POLICY_KIND_PAUSED, GOVERNANCE_POLICY_KIND_REMOVE_MARKET,
+    GOVERNANCE_POLICY_KIND_RESTRICTIONS, GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 
 #[contract]
@@ -33,6 +33,7 @@ enum MockVaultKey {
     Allocators,
     AllowedAdapters,
     SkimRecipient,
+    WithdrawalCooldownNs,
     SupplyQueue,
     SupplyQueueAdapters,
     LastFeeAccounts,
@@ -319,6 +320,12 @@ impl MockVault {
         env.storage().instance().get(&MockVaultKey::SkimRecipient)
     }
 
+    pub fn withdrawal_cooldown_ns(env: Env) -> Option<i128> {
+        env.storage()
+            .instance()
+            .get(&MockVaultKey::WithdrawalCooldownNs)
+    }
+
     pub fn supply_queue(env: Env) -> Vec<u32> {
         env.storage()
             .instance()
@@ -428,7 +435,7 @@ impl MockVault {
         kind: u32,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
-        _value_a: Option<i128>,
+        value_a: Option<i128>,
         _value_b: Option<i128>,
     ) {
         match kind {
@@ -473,6 +480,13 @@ impl MockVault {
                     env.storage()
                         .instance()
                         .set(&MockVaultKey::AllowedAdapters, &adapters);
+                }
+            }
+            GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN => {
+                if let Some(withdrawal_cooldown_ns) = value_a {
+                    env.storage()
+                        .instance()
+                        .set(&MockVaultKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
                 }
             }
             _ => {}
@@ -742,6 +756,76 @@ fn sentinel_pause_immediate_governance_unpause_timelocked() {
     });
     let paused = env.as_contract(&vault, || MockVault::is_paused(env.clone()));
     assert!(!paused);
+}
+
+#[test]
+fn withdrawal_cooldown_change_is_timelocked_and_forwarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let admin = Address::generate(&env);
+    let vault = env.register(MockVault, ());
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
+
+    let proposal_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            123_456,
+        )
+        .unwrap()
+    });
+    assert_eq!(proposal_id, 1);
+
+    let early = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id)
+    });
+    assert_eq!(early, Err(GovernanceError::ProposalNotMature));
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::withdrawal_cooldown_ns(env.clone())),
+        None
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), proposal_id).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&vault, || MockVault::withdrawal_cooldown_ns(env.clone())),
+        Some(123_456)
+    );
+
+    let no_change = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_set_withdrawal_cooldown(
+            env.clone(),
+            admin.clone(),
+            123_456,
+        )
+    });
+    assert_eq!(no_change, Err(GovernanceError::NoChange));
 }
 
 #[test]

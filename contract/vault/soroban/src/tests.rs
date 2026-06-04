@@ -362,7 +362,7 @@ mod contract_tests {
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
         ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
-        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -562,6 +562,12 @@ mod contract_tests {
             assert_eq!(storage.load_state().unwrap(), Some(VaultState::default()));
             assert!(!storage.is_paused());
             assert_eq!(load_virtual_offsets(&env), (123, 456));
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::WithdrawalCooldownNs),
+                Some(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+            );
             assert_eq!(load_fees_spec(&env).unwrap(), FeesSpec::zero());
             assert_eq!(
                 get_config_address(&env, &VaultDataKey::Curator).unwrap(),
@@ -578,6 +584,38 @@ mod contract_tests {
             assert_eq!(
                 get_config_address(&env, &VaultDataKey::ShareToken).unwrap(),
                 share_token
+            );
+        });
+    }
+
+    #[test]
+    fn test_initialize_with_config_stores_withdrawal_cooldown() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = SdkAddress::generate(&env);
+        let (governance, asset_token, share_token) =
+            register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize_with_config(
+                env.clone(),
+                curator,
+                governance,
+                asset_token,
+                share_token,
+                0,
+                0,
+                123_456,
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::WithdrawalCooldownNs),
+                Some(123_456u64)
             );
         });
     }
@@ -1062,7 +1100,7 @@ mod contract_tests {
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
         let request_time: u64 = 200;
         let exec_time = request_time
-            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             .saturating_add(1);
 
         vault
@@ -1123,7 +1161,7 @@ mod contract_tests {
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(2);
         let request_time: u64 = 200;
         let exec_time = request_time
-            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             .saturating_add(1);
 
         vault
@@ -1198,7 +1236,7 @@ mod contract_tests {
                 .saturating_add(extra_assets);
             let request_time: u64 = 200;
             let exec_time = request_time
-                .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+                .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
                 .saturating_add(1);
 
             vault
@@ -1291,7 +1329,7 @@ mod contract_tests {
         let deposit_amount = MIN_WITHDRAWAL_ASSETS.saturating_mul(3);
         let request_time: u64 = 200;
         let exec_time = request_time
-            .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+            .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             .saturating_add(1);
 
         vault
@@ -1409,7 +1447,7 @@ mod contract_tests {
             assert!(!next_vault.interpreter.has_address(&receiver_kernel));
 
             let exec_time = now_ns
-                .saturating_add(templar_vault_kernel::DEFAULT_COOLDOWN_NS)
+                .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
                 .saturating_add(1);
             let executor_kernel = next_vault.map_caller(&env, &executor).unwrap();
             let summary = next_vault
@@ -1580,6 +1618,97 @@ mod contract_tests {
             assert_eq!(
                 env.storage().instance().get(&VaultDataKey::VirtualAssets),
                 Some(202u128)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_withdrawal_cooldown_updates_contract_storage() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+                    primary: None,
+                    many: None,
+                    value_a: Some(321_000),
+                    value_b: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::WithdrawalCooldownNs),
+                Some(321_000u64)
+            );
+        });
+    }
+
+    #[test]
+    fn test_set_withdrawal_cooldown_rejects_negative_value() {
+        use soroban_sdk::testutils::Address as _;
+
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let (governance, asset, share) = register_runtime_contracts(&env, &contract_id, &curator);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator,
+                governance.clone(),
+                asset,
+                share,
+                0,
+                0,
+            )
+            .unwrap();
+
+            let err = execute_governance_command(
+                &env,
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+                    primary: None,
+                    many: None,
+                    value_a: Some(-1),
+                    value_b: None,
+                },
+            )
+            .expect_err("negative withdrawal cooldown must be rejected");
+
+            assert_eq!(err, crate::error::ContractError::InvalidInput);
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get(&VaultDataKey::WithdrawalCooldownNs),
+                Some(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
             );
         });
     }
@@ -1943,7 +2072,7 @@ mod contract_tests {
             let config = VaultConfig {
                 fees,
                 min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-                withdrawal_cooldown_ns: templar_vault_kernel::DEFAULT_COOLDOWN_NS,
+                withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
                 max_pending_withdrawals: templar_vault_kernel::MAX_PENDING as u32,
                 paused: false,
                 virtual_shares: 0,
@@ -2273,7 +2402,7 @@ mod contract_tests {
         });
 
         env.ledger().set(LedgerInfo {
-            timestamp: templar_vault_kernel::DEFAULT_COOLDOWN_NS / 1_000_000_000 + 3,
+            timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
             protocol_version: 25,
             ..Default::default()
         });
@@ -2421,7 +2550,7 @@ mod contract_tests {
         });
 
         env.ledger().set(LedgerInfo {
-            timestamp: templar_vault_kernel::DEFAULT_COOLDOWN_NS / 1_000_000_000 + 3,
+            timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
             protocol_version: 25,
             ..Default::default()
         });
