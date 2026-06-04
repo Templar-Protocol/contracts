@@ -218,7 +218,10 @@ fuzz_target!(|data: (
     // mcr_maintenance(2) >= mcr_liquidation(2) > 1, usage_ratio = 1 ∈ (0, 1],
     // spread = 0 (< 1 and mcr_liq·(1 − 0) > 1), withdrawal.min <= supply.min,
     // distinct borrow/collateral assets.
-    #[allow(clippy::expect_used, reason = "control config is constructed from valid literals")]
+    #[allow(
+        clippy::expect_used,
+        reason = "control config is constructed from valid literals"
+    )]
     let control = try_create_market_config(2, 2, 1, 0, 1, Some(2), 1, Some(2), 1, Some(2), false)
         .expect("control config must construct");
     assert!(
