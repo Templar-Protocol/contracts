@@ -160,9 +160,9 @@ jobs:
             fuzz/artifacts/${{ matrix.target }}/
             fuzz/fuzz-output.log
           if-no-files-found: warn
-          # Fallback copy of the crash + full log. Small inputs are also
-          # embedded directly in the issue below; this artifact is the only
-          # copy for inputs too large to embed, so keep a long retention.
+          # The crash input + full log. This artifact is the only copy of the
+          # reproducer (it is intentionally not embedded in the public issue),
+          # so keep a long retention for triage.
           retention-days: 90
 
       - name: Collect crash input
@@ -180,12 +180,8 @@ jobs:
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "name=$(basename "$crash")" >> "$GITHUB_OUTPUT"
           echo "size=$size" >> "$GITHUB_OUTPUT"
-          # Embed inputs up to 4 KiB as single-line base64 so the issue is
-          # self-reproducing without the (expiring) artifact. Larger inputs stay
-          # artifact-only.
-          if [[ "$size" -le 4096 ]]; then
-            echo "b64=$(base64 -w0 "$crash")" >> "$GITHUB_OUTPUT"
-          fi
+          # Deliberately not embedded here; leave the reproducer to the
+          # artifact. Handle fuzz findings with care.
 
       - name: Open issue on crash
         if: failure() && github.event_name == 'schedule'
@@ -196,10 +192,9 @@ jobs:
           SHA: ${{ github.sha }}
           CRASH_NAME: ${{ steps.crash.outputs.name }}
           CRASH_SIZE: ${{ steps.crash.outputs.size }}
-          CRASH_B64: ${{ steps.crash.outputs.b64 }}
         with:
           script: |
-            const { TARGET, RUN_URL, SHA, CRASH_NAME, CRASH_SIZE, CRASH_B64 } = process.env;
+            const { TARGET, RUN_URL, SHA, CRASH_NAME, CRASH_SIZE } = process.env;
             const title = `Fuzz crash: ${TARGET}`;
 
             // Dedupe: skip if an open fuzz-crash issue with this title exists.
@@ -224,28 +219,15 @@ jobs:
               ``,
             ];
 
-            if (CRASH_B64) {
-              // Self-contained repro: the input is embedded, no artifact needed.
-              lines.push(
-                `Reproduce (input embedded below):`,
-                ``,
-                '```bash',
-                `echo '${CRASH_B64}' | base64 -d > /tmp/${TARGET}-crash`,
-                `cargo +nightly fuzz run ${TARGET} /tmp/${TARGET}-crash`,
-                '```',
-              );
-            } else {
-              lines.push(
-                `Input too large to embed — download the \`fuzz-crash-${TARGET}\``,
-                `artifact (90-day retention) from the run, then:`,
-                ``,
-                '```bash',
-                `cargo +nightly fuzz run ${TARGET} <path-to-crash-input>`,
-                '```',
-              );
-            }
-
             lines.push(
+              `Handle fuzz findings with care until triaged.`,
+              ``,
+              `Download the \`fuzz-crash-${TARGET}\` artifact (90-day retention)`,
+              `from the run above, then reproduce:`,
+              ``,
+              '```bash',
+              `cargo +nightly fuzz run ${TARGET} <path-to-crash-input>`,
+              '```',
               ``,
               `When fixing, commit the (minimized) input as a regression seed in`,
               `\`fuzz/seeds/${TARGET}/\` as part of the fix — see \`fuzz/seeds/README.md\`.`,

@@ -143,6 +143,47 @@ fn truncate_plan(plan: &[(u32, u128)]) -> Vec<AllocationPlanEntry> {
         .collect()
 }
 
+/// The `OpState` kind each action requires as its precondition. Every
+/// production transition checks this kind *first* (via `require_state!` /
+/// `require_idle!`), before `op_id` or any other validation and before any `Ok`
+/// path — so an action whose current state does not match must return
+/// `Err(WrongState)`.
+fn action_precondition_kind_ok(action: &Action, state: &OpState) -> bool {
+    match action {
+        Action::StartAllocation { .. }
+        | Action::StartWithdrawal { .. }
+        | Action::StartRefresh { .. } => matches!(state, OpState::Idle),
+        Action::AllocationStepCallback { .. } | Action::CompleteAllocation { .. } => {
+            matches!(state, OpState::Allocating(_))
+        }
+        Action::WithdrawalStepCallback { .. }
+        | Action::WithdrawalCollected { .. }
+        | Action::WithdrawalSettled { .. }
+        | Action::StopWithdrawal { .. } => matches!(state, OpState::Withdrawing(_)),
+        Action::RefreshStepCallback { .. } => matches!(state, OpState::Refreshing(_)),
+        Action::PayoutComplete { .. } => matches!(state, OpState::Payout(_)),
+    }
+}
+
+/// The operation id an action correlates against the active op. Each transition
+/// rejects with `OpIdMismatch` when this differs from the current op's id,
+/// immediately after the state-kind check and before any `Ok` path.
+fn action_op_id(action: &Action) -> u64 {
+    match action {
+        Action::StartAllocation { op_id, .. }
+        | Action::AllocationStepCallback { op_id, .. }
+        | Action::CompleteAllocation { op_id, .. }
+        | Action::StartWithdrawal { op_id, .. }
+        | Action::WithdrawalStepCallback { op_id, .. }
+        | Action::WithdrawalCollected { op_id, .. }
+        | Action::WithdrawalSettled { op_id, .. }
+        | Action::StopWithdrawal { op_id, .. }
+        | Action::StartRefresh { op_id, .. }
+        | Action::RefreshStepCallback { op_id, .. }
+        | Action::PayoutComplete { op_id, .. } => *op_id,
+    }
+}
+
 fuzz_target!(|scenario: Scenario| {
     let mut state = OpState::Idle;
     check_state_well_formed(&state);
@@ -150,6 +191,12 @@ fuzz_target!(|scenario: Scenario| {
     for action in scenario.actions.into_iter().take(MAX_ACTIONS) {
         let kind_before = state.kind_code();
         let op_id_before = state.op_id();
+
+        // Capture the action's preconditions before the match consumes it, so
+        // we can assert the transition actually *rejected* invalid actions
+        // (not just that it left state unchanged on error).
+        let kind_precondition_ok = action_precondition_kind_ok(&action, &state);
+        let action_op_id = action_op_id(&action);
 
         let result = match action {
             Action::StartAllocation { op_id, plan } => {
@@ -224,6 +271,32 @@ fuzz_target!(|scenario: Scenario| {
                 escrow,
             } => payout_complete(state.clone(), success, op_id, Address(escrow)),
         };
+
+        // A transition from the wrong current state kind must be rejected
+        // (`WrongState`) — e.g. any callback from `Idle`, or `complete_allocation`
+        // from a non-`Allocating` state. A buggy transition that returned `Ok`
+        // here (with a still-well-formed state) would otherwise slip through.
+        if !kind_precondition_ok {
+            assert!(
+                result.is_err(),
+                "action accepted from wrong state kind (kind_code={kind_before})",
+            );
+        }
+
+        // A transition that targets the correct op kind but with a mismatched
+        // op_id must be rejected (`OpIdMismatch`). Only the non-Idle ops carry an
+        // op_id to mismatch against (start_* run from Idle, op_id_before == None).
+        if kind_precondition_ok {
+            if let Some(current_op_id) = op_id_before {
+                if action_op_id != current_op_id {
+                    assert!(
+                        result.is_err(),
+                        "action accepted with mismatched op_id \
+                         (state op_id={current_op_id}, action op_id={action_op_id})",
+                    );
+                }
+            }
+        }
 
         if let Ok(transition) = result {
             state = transition.new_state;

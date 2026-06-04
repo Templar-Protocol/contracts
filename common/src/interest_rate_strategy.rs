@@ -270,7 +270,9 @@ mod tests {
     // suppressed region stays pinned. (U512 underflow panics with "arithmetic
     // operation overflow".)
     #[test]
-    #[should_panic(expected = "arithmetic operation overflow")]
+    // Match only the stable "overflow" substring, not the full toolchain- /
+    // backend-specific panic text (U512 emits "arithmetic operation overflow").
+    #[should_panic(expected = "overflow")]
     fn piecewise_new_underflows_when_base_exceeds_cross_term() {
         // optimal*(rate_2 - rate_1) = 0.9*(0.1 - 0.0) = 0.09; base = 0.5 > 0.09.
         let _ = Piecewise::new(dec!("0.5"), dec!("0.9"), dec!("0.0"), dec!("0.1"));

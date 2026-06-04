@@ -504,7 +504,9 @@ mod tests {
     // aborts on panic before catch_unwind sees it). The contract's safety
     // property — `Deposit::total` overflow aborts — is asserted here.
     #[test]
-    #[should_panic(expected = "attempt to add with overflow")]
+    // Match only the stable "overflow" substring, not the full toolchain-
+    // specific panic text ("attempt to add with overflow").
+    #[should_panic(expected = "overflow")]
     fn deposit_total_overflow_aborts() {
         let deposit = Deposit {
             active: BorrowAssetAmount::new(u128::MAX),
