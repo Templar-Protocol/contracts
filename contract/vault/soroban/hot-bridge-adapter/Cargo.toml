@@ -19,4 +19,8 @@ soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", 
 stellar-contract-utils.workspace = true
 
 [dev-dependencies]
+proptest = "1.4"
 soroban-sdk = { version = "25.3.0", features = ["testutils", "experimental_spec_shaking_v2"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

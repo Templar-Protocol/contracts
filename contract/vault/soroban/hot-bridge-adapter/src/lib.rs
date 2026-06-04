@@ -120,12 +120,7 @@ impl HotBridgeAdapterContract {
             env.invoke_contract::<u128>(&hot_locker, &Symbol::new(&env, "deposit"), args);
 
         let balance_after = token.balance(&adapter);
-        let spent = balance_before
-            .checked_sub(balance_after)
-            .ok_or(AdapterError::DepositPostconditionFailed)?;
-        if spent != amount {
-            return Err(AdapterError::DepositPostconditionFailed);
-        }
+        validate_supply_balance_change(balance_before, balance_after, amount)?;
 
         record_hot_locker_timestamp(&env, client_timestamp);
         increase_principal(&env, &asset, amount)?;
@@ -166,9 +161,7 @@ impl HotBridgeAdapterContract {
         let adapter = env.current_contract_address();
         let vault = get_vault(&env)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
-        if token.balance(&adapter) < amount {
-            return Err(AdapterError::InsufficientReturnedBalance);
-        }
+        validate_withdrawal_resources(principal, token.balance(&adapter), amount)?;
 
         token.transfer(&adapter, &vault, &amount);
         decrease_principal(&env, &asset, amount)?;
@@ -312,6 +305,13 @@ fn next_hot_locker_timestamp(env: &Env) -> Result<u128, AdapterError> {
         .storage()
         .instance()
         .get::<_, u128>(&DataKey::LastHotClientTimestamp);
+    choose_hot_client_timestamp(base_timestamp, last_timestamp)
+}
+
+fn choose_hot_client_timestamp(
+    base_timestamp: u128,
+    last_timestamp: Option<u128>,
+) -> Result<u128, AdapterError> {
     let client_timestamp = if let Some(last_timestamp) = last_timestamp {
         if base_timestamp <= last_timestamp {
             last_timestamp
@@ -333,6 +333,40 @@ fn record_hot_locker_timestamp(env: &Env, client_timestamp: u128) {
         .set(&DataKey::LastHotClientTimestamp, &client_timestamp);
 }
 
+fn validate_supply_balance_change(
+    balance_before: i128,
+    balance_after: i128,
+    amount: i128,
+) -> Result<(), AdapterError> {
+    if balance_before < amount {
+        return Err(AdapterError::InsufficientAdapterBalance);
+    }
+
+    let spent = balance_before
+        .checked_sub(balance_after)
+        .ok_or(AdapterError::DepositPostconditionFailed)?;
+    if spent != amount {
+        return Err(AdapterError::DepositPostconditionFailed);
+    }
+
+    Ok(())
+}
+
+fn validate_withdrawal_resources(
+    principal: i128,
+    adapter_balance: i128,
+    amount: i128,
+) -> Result<(), AdapterError> {
+    if principal < amount {
+        return Err(AdapterError::InsufficientPrincipal);
+    }
+    if adapter_balance < amount {
+        return Err(AdapterError::InsufficientReturnedBalance);
+    }
+
+    Ok(())
+}
+
 fn principal_of(env: &Env, asset: &Address) -> i128 {
     env.storage()
         .instance()
@@ -340,10 +374,23 @@ fn principal_of(env: &Env, asset: &Address) -> i128 {
         .unwrap_or(0)
 }
 
-fn increase_principal(env: &Env, asset: &Address, amount: i128) -> Result<(), AdapterError> {
-    let updated = principal_of(env, asset)
+fn principal_after_increase(current: i128, amount: i128) -> Result<i128, AdapterError> {
+    current
         .checked_add(amount)
-        .ok_or(AdapterError::ArithmeticOverflow)?;
+        .ok_or(AdapterError::ArithmeticOverflow)
+}
+
+fn principal_after_decrease(current: i128, amount: i128) -> Result<i128, AdapterError> {
+    if current < amount {
+        return Err(AdapterError::InsufficientPrincipal);
+    }
+    current
+        .checked_sub(amount)
+        .ok_or(AdapterError::ArithmeticUnderflow)
+}
+
+fn increase_principal(env: &Env, asset: &Address, amount: i128) -> Result<(), AdapterError> {
+    let updated = principal_after_increase(principal_of(env, asset), amount)?;
     env.storage()
         .instance()
         .set(&DataKey::Principal(asset.clone()), &updated);
@@ -351,13 +398,7 @@ fn increase_principal(env: &Env, asset: &Address, amount: i128) -> Result<(), Ad
 }
 
 fn decrease_principal(env: &Env, asset: &Address, amount: i128) -> Result<(), AdapterError> {
-    let principal = principal_of(env, asset);
-    if principal < amount {
-        return Err(AdapterError::InsufficientPrincipal);
-    }
-    let updated = principal
-        .checked_sub(amount)
-        .ok_or(AdapterError::ArithmeticUnderflow)?;
+    let updated = principal_after_decrease(principal_of(env, asset), amount)?;
     let key = DataKey::Principal(asset.clone());
     if updated == 0 {
         env.storage().instance().remove(&key);
@@ -467,12 +508,167 @@ fn extend_instance_ttl(env: &Env) {
         .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
+#[allow(unexpected_cfgs)]
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn choose_hot_client_timestamp_matches_nonce_policy() {
+        let base_timestamp: u128 = kani::any();
+        let has_last: bool = kani::any();
+        let raw_last_timestamp: u128 = kani::any();
+        let last_timestamp = has_last.then_some(raw_last_timestamp);
+
+        let selected = choose_hot_client_timestamp(base_timestamp, last_timestamp);
+
+        match last_timestamp {
+            None => {
+                assert_eq!(selected, Ok(base_timestamp));
+            }
+            Some(last) if base_timestamp > last => {
+                assert_eq!(selected, Ok(base_timestamp));
+            }
+            Some(0) => {
+                assert_eq!(selected, Err(AdapterError::HotClientTimestampExhausted));
+            }
+            Some(last) => {
+                let selected = selected.expect("last > 0 can always step down");
+                assert_eq!(selected, last - 1);
+                assert!(selected < last);
+                assert_ne!(selected, last);
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn hot_locker_timestamp_handles_boundary_ledger_timestamps() {
+        let zero = hot_locker_timestamp(0).expect("zero timestamp scales");
+        assert_eq!(zero, 0);
+
+        let one = hot_locker_timestamp(1).expect("one timestamp scales");
+        assert_eq!(one, HOT_TIMESTAMP_SCALE);
+
+        let max = hot_locker_timestamp(u64::MAX).expect("max u64 timestamp scales");
+        assert_eq!(max, u128::from(u64::MAX) * HOT_TIMESTAMP_SCALE);
+
+        let next_after_max = choose_hot_client_timestamp(max, Some(max))
+            .expect("max scaled timestamp can step down");
+        assert_eq!(next_after_max, max - 1);
+    }
+
+    #[kani::proof]
+    fn positive_i128_amounts_convert_losslessly_to_u128() {
+        let amount: i128 = kani::any();
+
+        if amount > 0 {
+            assert_eq!(require_positive_amount(amount), Ok(()));
+            assert_eq!(
+                amount_as_u128(amount),
+                Ok(u128::try_from(amount).expect("positive i128 always fits u128"))
+            );
+        } else {
+            assert_eq!(
+                require_positive_amount(amount),
+                Err(AdapterError::InvalidInput)
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn principal_increase_is_checked_and_monotonic_for_valid_state() {
+        let current: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(current >= 0);
+        kani::assume(amount > 0);
+
+        let updated = principal_after_increase(current, amount);
+
+        match current.checked_add(amount) {
+            Some(expected) => {
+                assert_eq!(updated, Ok(expected));
+                let updated = updated.expect("checked add succeeded");
+                assert!(updated >= current);
+                assert!(updated >= amount);
+            }
+            None => {
+                assert_eq!(updated, Err(AdapterError::ArithmeticOverflow));
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn principal_decrease_is_checked_and_never_negative_for_valid_state() {
+        let current: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(current >= 0);
+        kani::assume(amount > 0);
+
+        let updated = principal_after_decrease(current, amount);
+
+        if amount > current {
+            assert_eq!(updated, Err(AdapterError::InsufficientPrincipal));
+        } else {
+            let updated = updated.expect("sufficient principal should decrease");
+            assert_eq!(updated, current - amount);
+            assert!(updated >= 0);
+            assert!(updated < current);
+        }
+    }
+
+    #[kani::proof]
+    fn supply_balance_postcondition_accepts_only_exact_spend() {
+        let balance_before: i128 = kani::any();
+        let balance_after: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(balance_before >= 0);
+        kani::assume(balance_after >= 0);
+        kani::assume(amount > 0);
+
+        let result = validate_supply_balance_change(balance_before, balance_after, amount);
+
+        if balance_before < amount {
+            assert_eq!(result, Err(AdapterError::InsufficientAdapterBalance));
+        } else if balance_after > balance_before {
+            assert_eq!(result, Err(AdapterError::DepositPostconditionFailed));
+        } else {
+            let spent = balance_before - balance_after;
+            if spent == amount {
+                assert_eq!(result, Ok(()));
+            } else {
+                assert_eq!(result, Err(AdapterError::DepositPostconditionFailed));
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn withdrawal_resources_require_principal_and_returned_balance() {
+        let principal: i128 = kani::any();
+        let adapter_balance: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(principal >= 0);
+        kani::assume(adapter_balance >= 0);
+        kani::assume(amount > 0);
+
+        let result = validate_withdrawal_resources(principal, adapter_balance, amount);
+
+        if principal < amount {
+            assert_eq!(result, Err(AdapterError::InsufficientPrincipal));
+        } else if adapter_balance < amount {
+            assert_eq!(result, Err(AdapterError::InsufficientReturnedBalance));
+        } else {
+            assert_eq!(result, Ok(()));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use soroban_sdk::{
         contract, contractimpl,
-        testutils::{Address as _, Events as _, Ledger as _},
+        testutils::{Address as _, EnvTestConfig, Events as _, Ledger as _},
         token::StellarAssetClient,
         xdr::{ContractEventBody, ScVal},
         TryFromVal,
@@ -587,6 +783,12 @@ mod tests {
         (adapter, admin, vault, hot_locker, asset, receiver)
     }
 
+    fn fuzz_env() -> Env {
+        Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        })
+    }
+
     fn assert_hot_deposit_event(
         env: &Env,
         adapter: &Address,
@@ -611,6 +813,138 @@ mod tests {
                 && body.topics[1] == asset_scval
                 && body.data == data_scval
         }));
+    }
+
+    fn choose_expected_timestamp(base_timestamp: u128, last_timestamp: &mut Option<u128>) -> u128 {
+        let selected = choose_hot_client_timestamp(base_timestamp, *last_timestamp)
+            .expect("test timestamps should not exhaust");
+        *last_timestamp = Some(selected);
+        selected
+    }
+
+    #[derive(Clone, Debug)]
+    enum AdapterOp {
+        Supply { amount: i128, ledger_delta: u64 },
+        Withdraw { amount: i128 },
+    }
+
+    fn adapter_op_strategy() -> impl Strategy<Value = AdapterOp> {
+        prop_oneof![
+            (1i128..=50_000i128, 0u64..=2u64).prop_map(|(amount, ledger_delta)| {
+                AdapterOp::Supply {
+                    amount,
+                    ledger_delta,
+                }
+            }),
+            (1i128..=50_000i128).prop_map(|amount| AdapterOp::Withdraw { amount }),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn prop_hot_timestamp_selection_never_reuses_last(
+            base_timestamp in any::<u128>(),
+            last_timestamp in prop::option::of(any::<u128>()),
+        ) {
+            let selected = choose_hot_client_timestamp(base_timestamp, last_timestamp);
+
+            match last_timestamp {
+                None => {
+                    prop_assert_eq!(selected, Ok(base_timestamp));
+                }
+                Some(last) if base_timestamp > last => {
+                    prop_assert_eq!(selected, Ok(base_timestamp));
+                }
+                Some(0) => {
+                    prop_assert_eq!(selected, Err(AdapterError::HotClientTimestampExhausted));
+                }
+                Some(last) => {
+                    let selected = selected.expect("last > 0 should step down");
+                    prop_assert_eq!(selected, last - 1);
+                    prop_assert!(selected < last);
+                }
+            }
+        }
+
+        #[test]
+        fn prop_supply_and_withdraw_sequences_preserve_principal_and_balances(
+            ops in prop::collection::vec(adapter_op_strategy(), 1..25),
+        ) {
+            let env = fuzz_env();
+            let (adapter, _admin, vault, hot_locker, asset, _receiver) = setup(&env);
+            let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+            let asset_admin = StellarAssetClient::new(&env, &asset);
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            let locker_client = MockHotLockerClient::new(&env, &hot_locker);
+            let mut model_principal = 0i128;
+            let mut model_vault_balance = 0i128;
+            let mut model_locker_balance = 0i128;
+            let mut ledger_timestamp = 1_777_000_000u64;
+            let mut last_hot_timestamp = None;
+
+            for op in ops {
+                match op {
+                    AdapterOp::Supply { amount, ledger_delta } => {
+                        ledger_timestamp = ledger_timestamp.saturating_add(ledger_delta);
+                        env.ledger().set_timestamp(ledger_timestamp);
+                        let expected_nonce = choose_expected_timestamp(
+                            hot_locker_timestamp(ledger_timestamp).expect("bounded ledger timestamp"),
+                            &mut last_hot_timestamp,
+                        );
+
+                        asset_admin.mint(&adapter, &amount);
+                        client.supply(&vault, &asset, &amount);
+                        model_principal += amount;
+                        model_locker_balance += amount;
+
+                        prop_assert_eq!(locker_client.timestamp(), expected_nonce);
+                        prop_assert_eq!(locker_client.amount(), amount);
+                    }
+                    AdapterOp::Withdraw { amount } => {
+                        let result = client.try_progress_withdrawal(&vault, &asset, &amount);
+                        if amount > model_principal {
+                            prop_assert_eq!(result, Err(Ok(AdapterError::InsufficientPrincipal)));
+                        } else {
+                            prop_assert_eq!(result, Err(Ok(AdapterError::InsufficientReturnedBalance)));
+
+                            asset_admin.mint(&adapter, &amount);
+                            prop_assert_eq!(client.progress_withdrawal(&vault, &asset, &amount), amount);
+                            model_principal -= amount;
+                            model_vault_balance += amount;
+                        }
+                    }
+                }
+
+                prop_assert_eq!(client.total_assets(&asset), model_principal);
+                prop_assert_eq!(token.balance(&vault), model_vault_balance);
+                prop_assert_eq!(token.balance(&hot_locker), model_locker_balance);
+                prop_assert_eq!(token.balance(&adapter), 0);
+            }
+        }
+
+        #[test]
+        fn prop_failed_no_transfer_supply_preserves_principal_and_balance(amount in 1i128..=1_000_000i128) {
+            let env = fuzz_env();
+            env.mock_all_auths();
+            let admin = register_dummy_contract(&env);
+            let vault = register_dummy_contract(&env);
+            let hot_locker = env.register(MockNoTransferHotLocker, ());
+            let asset_sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+            let asset = asset_sac.address();
+            let receiver = BytesN::from_array(&env, &[7; 32]);
+            let adapter = env.register(
+                HotBridgeAdapterContract,
+                (&admin, &vault, &hot_locker, &receiver),
+            );
+            let client = HotBridgeAdapterContractClient::new(&env, &adapter);
+            let token = soroban_sdk::token::Client::new(&env, &asset);
+            StellarAssetClient::new(&env, &asset).mint(&adapter, &amount);
+
+            prop_assert_eq!(client.try_supply(&vault, &asset, &amount), Err(Ok(AdapterError::DepositPostconditionFailed)));
+            prop_assert_eq!(client.total_assets(&asset), 0);
+            prop_assert_eq!(token.balance(&adapter), amount);
+            prop_assert_eq!(token.balance(&hot_locker), 0);
+        }
     }
 
     #[test]

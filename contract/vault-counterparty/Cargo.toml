@@ -15,6 +15,7 @@ stellar-xdr = { version = "24.0", default-features = false, features = ["curr", 
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }
+proptest = "1.4"
 
 [lints]
 workspace = true
