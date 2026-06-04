@@ -13155,13 +13155,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-proxy-oracle-soroban-mock"
-version = "0.1.0"
-dependencies = [
- "soroban-sdk 25.3.0",
-]
-
-[[package]]
 name = "templar-proxy-oracle-soroban-sep40-adapter-contract"
 version = "0.1.0"
 dependencies = [

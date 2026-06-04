@@ -268,7 +268,6 @@ impl SorobanProxyOracle {
     #[only_owner]
     pub fn set_manual_trip(
         env: Env,
-        actor: Address,
         asset: Asset,
         is_manually_tripped: bool,
         metadata: Option<Bytes>,
@@ -280,7 +279,6 @@ impl SorobanProxyOracle {
             return Err(ContractError::InvalidInput);
         }
         let kernel_metadata = metadata.as_ref().map(Bytes::to_alloc_vec);
-        let metadata_for_event = metadata.clone();
         with_breakers(&env, &asset, |breakers| {
             use templar_proxy_oracle_kernel::primitive::AccountId as KernelAccountId;
             let outcome = breakers.set_manual_trip(
@@ -292,9 +290,8 @@ impl SorobanProxyOracle {
         })?;
         ManualTripSet {
             asset,
-            actor,
             is_manually_tripped,
-            metadata: metadata_for_event,
+            metadata,
         }
         .publish(&env);
         Ok(())

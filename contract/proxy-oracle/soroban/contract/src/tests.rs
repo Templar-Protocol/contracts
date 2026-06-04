@@ -10,6 +10,7 @@ use alloc::vec::Vec as StdVec;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
 use soroban_sdk::{contract, contractimpl, Bytes, Env, Event, Symbol};
 use templar_primitives::Decimal;
+use templar_proxy_oracle_soroban_common::normalized_to_sep40;
 
 #[derive(Clone)]
 #[contracttype]
@@ -153,9 +154,9 @@ fn setup() -> (
 const TEST_LEGACY_DECIMALS: u32 = 8;
 
 fn legacy_lastprice(proxy: &SorobanProxyOracleClient, asset: &Asset) -> Option<PriceData> {
-    proxy.aggregated_latest(asset).and_then(|p| {
-        templar_proxy_oracle_soroban_common::normalized_to_sep40(&p, TEST_LEGACY_DECIMALS).ok()
-    })
+    proxy
+        .aggregated_latest(asset)
+        .and_then(|p| normalized_to_sep40(&p, TEST_LEGACY_DECIMALS).ok())
 }
 
 fn legacy_prices(
@@ -167,10 +168,7 @@ fn legacy_prices(
     let history = proxy.aggregated_history(asset, &records)?;
     let mut out = Vec::new(env);
     for entry in history.iter() {
-        out.push_back(
-            templar_proxy_oracle_soroban_common::normalized_to_sep40(&entry, TEST_LEGACY_DECIMALS)
-                .ok()?,
-        );
+        out.push_back(normalized_to_sep40(&entry, TEST_LEGACY_DECIMALS).ok()?);
     }
     Some(out)
 }
@@ -183,11 +181,7 @@ fn legacy_price(
     let history = proxy.aggregated_history(asset, &MAX_HISTORY_RECORDS)?;
     for entry in history.iter().rev() {
         if entry.timestamp == timestamp {
-            return templar_proxy_oracle_soroban_common::normalized_to_sep40(
-                &entry,
-                TEST_LEGACY_DECIMALS,
-            )
-            .ok();
+            return normalized_to_sep40(&entry, TEST_LEGACY_DECIMALS).ok();
         }
     }
     None
@@ -339,19 +333,17 @@ fn parity_refresh_resolution_matrix_matches_near_baseline_semantics() {
 #[test]
 fn parity_manual_trip_blocks_reads_refresh_and_maps_event_fields() {
     let (env, proxy, source, asset) = setup();
-    let tripper = Address::generate(&env);
     let metadata = Bytes::from_array(&env, &[1_u8, 2, 3]);
 
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
     proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
     assert!(legacy_lastprice(&proxy, &asset).is_some());
 
-    proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata.clone()));
+    proxy.set_manual_trip(&asset, &true, &Some(metadata.clone()));
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![ManualTripSet {
             asset: asset.clone(),
-            actor: tripper,
             is_manually_tripped: true,
             metadata: Some(metadata),
         }
@@ -539,13 +531,11 @@ fn event_refresh_success_failure_and_cache_blocked_topics_payloads_are_exact() {
         .to_xdr(&env, &proxy.address)]
     );
 
-    let tripper = Address::generate(&env);
-    proxy.set_manual_trip(&tripper, &asset, &true, &None);
+    proxy.set_manual_trip(&asset, &true, &None);
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![ManualTripSet {
             asset: asset.clone(),
-            actor: tripper,
             is_manually_tripped: true,
             metadata: None,
         }
@@ -794,9 +784,8 @@ fn lastprice_fails_closed_when_cache_is_stale() {
 #[test]
 fn manual_trip_blocks_refresh_and_cached_read() {
     let (env, proxy, source, asset) = setup();
-    let tripper = Address::generate(&env);
     source.set_price(&asset, &5_000_000_000_i128, &100_u64);
-    proxy.set_manual_trip(&tripper, &asset, &true, &None);
+    proxy.set_manual_trip(&asset, &true, &None);
 
     let result = proxy.refresh(&Vec::from_array(&env, [asset.clone()]));
     assert!(matches!(
@@ -809,10 +798,8 @@ fn manual_trip_blocks_refresh_and_cached_read() {
 #[test]
 fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
     let (_env, proxy, _source, asset) = setup();
-    let tripper = Address::generate(&proxy.env);
-    let untripper = Address::generate(&proxy.env);
 
-    proxy.set_manual_trip(&tripper, &asset, &true, &None);
+    proxy.set_manual_trip(&asset, &true, &None);
     assert!(
         proxy
             .get_breaker_set_view(&asset)
@@ -820,7 +807,7 @@ fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
             .is_manually_tripped
     );
 
-    proxy.set_manual_trip(&untripper, &asset, &false, &None);
+    proxy.set_manual_trip(&asset, &false, &None);
     assert!(
         !proxy
             .get_breaker_set_view(&asset)
@@ -832,11 +819,9 @@ fn manual_trip_role_authorized_trip_and_untrip_are_separate() {
 #[test]
 fn manual_trip_metadata_accepts_1024_and_rejects_1025_bytes() {
     let (env, proxy, _source, asset) = setup();
-    let tripper = Address::generate(&env);
-    let untripper = Address::generate(&env);
 
     let metadata_1024 = Bytes::from_array(&env, &[7_u8; MAX_MANUAL_TRIP_METADATA_LEN]);
-    proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata_1024));
+    proxy.set_manual_trip(&asset, &true, &Some(metadata_1024));
     assert!(
         proxy
             .get_breaker_set_view(&asset)
@@ -846,7 +831,7 @@ fn manual_trip_metadata_accepts_1024_and_rejects_1025_bytes() {
 
     let metadata_1025 = Bytes::from_array(&env, &[8_u8; MAX_MANUAL_TRIP_METADATA_LEN + 1]);
     assert_eq!(
-        proxy.try_set_manual_trip(&untripper, &asset, &false, &Some(metadata_1025)),
+        proxy.try_set_manual_trip(&asset, &false, &Some(metadata_1025)),
         Err(Ok(ContractError::InvalidInput))
     );
     assert!(
@@ -860,16 +845,14 @@ fn manual_trip_metadata_accepts_1024_and_rejects_1025_bytes() {
 #[test]
 fn manual_trip_role_metadata_event_payload_is_bounded_and_not_stored() {
     let (env, proxy, _source, asset) = setup();
-    let tripper = Address::generate(&env);
     let metadata = Bytes::from_array(&env, &[1_u8, 2, 3]);
 
-    proxy.set_manual_trip(&tripper, &asset, &true, &Some(metadata.clone()));
+    proxy.set_manual_trip(&asset, &true, &Some(metadata.clone()));
 
     assert_eq!(
         contract_events(&env, &proxy.address),
         vec![ManualTripSet {
             asset,
-            actor: tripper,
             is_manually_tripped: true,
             metadata: Some(metadata),
         }
@@ -1116,118 +1099,54 @@ fn invalid_config_same_oracle_different_asset_is_not_a_duplicate() {
     );
 }
 
-#[test]
-fn invalid_config_zero_sources() {
+/// Register a bare proxy and assert `set_proxy` with `num_sources` sources and
+/// `min_sources` quorum is rejected with `expected`.
+fn assert_set_proxy_rejected(num_sources: u32, min_sources: u32, expected: ContractError) {
     let env = Env::default();
     env.mock_all_auths();
-    let governance = Address::generate(&env);
     let base = Asset::Other(Symbol::new(&env, "USD"));
     let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
-    let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let sources = Vec::new(&env);
-
-    assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 1,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
-            },
-        ),
-        Err(Ok(ContractError::TooManySources))
-    );
-}
-
-#[test]
-fn invalid_config_quorum_zero() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let governance = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
+    let proxy_id = env.register(SorobanProxyOracle, (&Address::generate(&env), &base));
     let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
     let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: Address::generate(&env),
-        asset: asset.clone(),
-    });
-
-    assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 0,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
-            },
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
-}
-
-#[test]
-fn invalid_config_quorum_above_source_count() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let governance = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
-    let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let mut sources = Vec::new(&env);
-    sources.push_back(SourceConfig {
-        oracle: Address::generate(&env),
-        asset: asset.clone(),
-    });
-
-    assert_eq!(
-        proxy.try_set_proxy(
-            &asset,
-            &ProxyConfig {
-                sources,
-                min_sources: 2,
-                max_age_secs: None,
-                max_clock_drift_secs: None,
-            },
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
-}
-
-#[test]
-fn invalid_config_too_many_sources() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let governance = Address::generate(&env);
-    let base = Asset::Other(Symbol::new(&env, "USD"));
-    let asset = Asset::Other(Symbol::new(&env, "BTC"));
-    let proxy_id = env.register(SorobanProxyOracle, (&governance, &base));
-    let proxy = SorobanProxyOracleClient::new(&env, &proxy_id);
-    let mut sources = Vec::new(&env);
-    for _ in 0..17_u32 {
+    for _ in 0..num_sources {
         sources.push_back(SourceConfig {
             oracle: Address::generate(&env),
             asset: asset.clone(),
         });
     }
-
     assert_eq!(
         proxy.try_set_proxy(
             &asset,
             &ProxyConfig {
                 sources,
-                min_sources: 1,
+                min_sources,
                 max_age_secs: None,
                 max_clock_drift_secs: None,
             },
         ),
-        Err(Ok(ContractError::TooManySources))
+        Err(Ok(expected))
     );
+}
+
+#[test]
+fn invalid_config_zero_sources() {
+    assert_set_proxy_rejected(0, 1, ContractError::TooManySources);
+}
+
+#[test]
+fn invalid_config_quorum_zero() {
+    assert_set_proxy_rejected(1, 0, ContractError::InvalidInput);
+}
+
+#[test]
+fn invalid_config_quorum_above_source_count() {
+    assert_set_proxy_rejected(1, 2, ContractError::InvalidInput);
+}
+
+#[test]
+fn invalid_config_too_many_sources() {
+    assert_set_proxy_rejected(17, 1, ContractError::TooManySources);
 }
 
 #[test]
@@ -1263,105 +1182,76 @@ fn invalid_config_invalid_accepted_history_source_code() {
     );
 }
 
-#[test]
-fn inert_breaker_stepwise_max_change_zero() {
+/// Assert `add_breaker` rejects an inert breaker config with `InvalidInput`.
+fn assert_breaker_inert(build: impl FnOnce(&Env) -> CircuitBreakerConfig) {
     let (env, proxy, _source, asset) = setup();
-    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
-
+    let breaker = build(&env);
     assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
-                max_relative_change: zero,
-            }),
-        ),
+        proxy.try_add_breaker(&asset, &breaker),
         Err(Ok(ContractError::InvalidInput))
     );
+}
+
+#[test]
+fn inert_breaker_stepwise_max_change_zero() {
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::StepwiseChange(SorobanStepwiseChangeConfig {
+            max_relative_change: SorobanDecimal::from_decimal(env, Decimal::ZERO),
+        })
+    });
 }
 
 #[test]
 fn inert_breaker_monotonic_max_streak_zero() {
-    let (env, proxy, _source, asset) = setup();
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
-                max_streak: 0,
-                min_relative_step_change: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
+            max_streak: 0,
+            min_relative_step_change: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
+        })
+    });
 }
 
 #[test]
 fn inert_breaker_monotonic_min_step_zero() {
-    let (env, proxy, _source, asset) = setup();
-    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
-                max_streak: 3,
-                min_relative_step_change: zero,
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::MonotonicRun(SorobanMonotonicRunConfig {
+            max_streak: 3,
+            min_relative_step_change: SorobanDecimal::from_decimal(env, Decimal::ZERO),
+        })
+    });
 }
 
 #[test]
 fn inert_breaker_windowed_window_len_below_2() {
-    let (env, proxy, _source, asset) = setup();
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
-                window_len: 1,
-                lookback_windows: 1,
-                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
+            window_len: 1,
+            lookback_windows: 1,
+            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
+        })
+    });
 }
 
 #[test]
 fn inert_breaker_windowed_lookback_zero() {
-    let (env, proxy, _source, asset) = setup();
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
-                window_len: 2,
-                lookback_windows: 0,
-                max_relative_change_delta: SorobanDecimal::from_decimal(&env, Decimal::ONE_HALF),
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
+            window_len: 2,
+            lookback_windows: 0,
+            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ONE_HALF),
+        })
+    });
 }
 
 #[test]
 fn inert_breaker_windowed_max_delta_zero() {
-    let (env, proxy, _source, asset) = setup();
-    let zero = SorobanDecimal::from_decimal(&env, Decimal::ZERO);
-
-    assert_eq!(
-        proxy.try_add_breaker(
-            &asset,
-            &CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
-                window_len: 2,
-                lookback_windows: 1,
-                max_relative_change_delta: zero,
-            }),
-        ),
-        Err(Ok(ContractError::InvalidInput))
-    );
+    assert_breaker_inert(|env| {
+        CircuitBreakerConfig::WindowedChangeDelta(SorobanWindowedChangeDeltaConfig {
+            window_len: 2,
+            lookback_windows: 1,
+            max_relative_change_delta: SorobanDecimal::from_decimal(env, Decimal::ZERO),
+        })
+    });
 }
 
 #[test]

@@ -29,11 +29,12 @@ use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
 fn upgrade_proposal_with_zero_hash_is_rejected_at_create_time() {
     let b = Bootstrap::new();
     let zero = BytesN::<32>::from_array(&b.env, &[0_u8; 32]);
-    // `validate_action` runs in `create_proposal`, so submit itself is the
+    // `validate_action` runs in `create_proposal`, so the create call is the
     // error site — the proposal never makes it to the pending set.
-    let result = b
-        .governance
-        .try_submit(&b.admin, &GovernanceAction::Upgrade(zero));
+    let next_id = b.governance.next_proposal_id();
+    let result =
+        b.governance
+            .try_create_proposal(&b.admin, &next_id, &GovernanceAction::Upgrade(zero), &0);
     assert!(result.is_err(), "zero wasm hash must be rejected");
 }
 

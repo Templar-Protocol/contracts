@@ -31,15 +31,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-SCENARIOS = {
-    "accepted_refresh": "refresh_updates_sep40_lastprice",
-    "blocked_refresh": "manual_trip_blocks_refresh_and_cached_read",
-    "manual_trip": "manual_trip_blocks_refresh_and_cached_read",
-    "config_update": "set_proxy_config",
-    "governance_accept": "governance",
-}
-
-
 def run_cargo_test(manifest_root: Path, package: str) -> tuple[bool, str]:
     """Run `cargo test -p <package> -- --nocapture` and return (ok, output)."""
     result = subprocess.run(

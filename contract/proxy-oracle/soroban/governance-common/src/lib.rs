@@ -128,7 +128,7 @@ governance_operations! {
     RemoveBreaker(Asset, u32) => remove_breaker,
     Rearm(Asset, u32, RearmConfig) => rearm,
     SetEnforced(Asset, u32, SetEnforcedConfig) => set_enforced,
-    SetManualTrip(Address, Asset, bool, Option<Bytes>) => set_manual_trip,
+    SetManualTrip(Asset, bool, Option<Bytes>) => set_manual_trip,
     TransferOwnership(Address) => transfer_ownership,
     // `AcceptOwnership` and `RenounceOwnership` carry no semantic payload, but
     // `#[contracttype]` does not support 0-element tuple variants and mixing
@@ -145,7 +145,7 @@ governance_operations! {
 impl GovernanceAction {
     pub fn required_role(&self) -> Role {
         match self {
-            Self::SetManualTrip(_, _, _, _) => Role::ManualTripper,
+            Self::SetManualTrip(_, _, _) => Role::ManualTripper,
             Self::Rearm(_, _, _) | Self::SetEnforced(_, _, _) => Role::CircuitBreakerOperator,
             Self::SetProxy(_, _)
             | Self::RemoveProxy(_)
@@ -213,7 +213,7 @@ pub fn validate_action(
         GovernanceAction::SetProxy(_, config) if config.sources.is_empty() => {
             Err(GovernanceError::InvalidInput)
         }
-        GovernanceAction::SetManualTrip(_, _, _, metadata)
+        GovernanceAction::SetManualTrip(_, _, metadata)
             if metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.len() as usize > max_manual_trip_metadata_len) =>
@@ -237,14 +237,6 @@ pub struct Proposal {
     pub created_at_ns: u64,
     pub ttl_ns: u64,
     pub created_by: Address,
-}
-
-#[derive(Clone)]
-#[contracttype]
-pub struct PendingProposal {
-    pub id: u64,
-    pub action: GovernanceAction,
-    pub valid_after_ns: u64,
 }
 
 #[cfg(test)]
@@ -276,11 +268,6 @@ mod tests {
 
     #[test]
     fn action_kind_and_required_role_follow_soroban_policy() {
-        let account = Address::from_string(&soroban_sdk::String::from_str(
-            &soroban_sdk::Env::default(),
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        ));
-
         let admin_ttl = GovernanceAction::SetActionTtl(OperationKind::Upgrade, 1);
         assert_eq!(admin_ttl.kind(), OperationKind::SetActionTtl);
         assert_eq!(admin_ttl.required_role(), Role::ProxyConfigurationManager);
@@ -289,7 +276,6 @@ mod tests {
         assert_eq!(manager_ttl.required_role(), Role::ProxyConfigurationManager);
 
         let manual_trip = GovernanceAction::SetManualTrip(
-            account.clone(),
             Asset::Other(soroban_sdk::Symbol::new(
                 &soroban_sdk::Env::default(),
                 "BTC",
@@ -347,7 +333,7 @@ mod tests {
         assert_eq!(action.action_code(), 13);
         let action = GovernanceAction::SetEnforced(asset.clone(), 0, enforced);
         assert_eq!(action.action_code(), 14);
-        let action = GovernanceAction::SetManualTrip(account.clone(), asset.clone(), true, None);
+        let action = GovernanceAction::SetManualTrip(asset.clone(), true, None);
         assert_eq!(action.action_code(), 7);
         let action = GovernanceAction::RenounceOwnership(());
         assert_eq!(action.action_code(), 6);
@@ -367,10 +353,6 @@ mod tests {
     fn validate_action_rejects_empty_proxy_and_large_metadata() {
         let env = soroban_sdk::Env::default();
         let asset = Asset::Other(soroban_sdk::Symbol::new(&env, "BTC"));
-        let account = Address::from_string(&soroban_sdk::String::from_str(
-            &env,
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-        ));
 
         assert_eq!(
             validate_action(
@@ -391,7 +373,6 @@ mod tests {
         assert_eq!(
             validate_action(
                 &GovernanceAction::SetManualTrip(
-                    account,
                     asset,
                     true,
                     Some(Bytes::from_array(&env, &[7_u8; 1025])),

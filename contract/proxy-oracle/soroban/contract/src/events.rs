@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::vec::Vec as AllocVec;
 
-use soroban_sdk::{contractevent, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contractevent, Bytes, BytesN, Env};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     CircuitBreakerEvent as KernelCircuitBreakerEvent, Observation,
 };
@@ -109,8 +109,6 @@ pub struct CircuitBreakerTripped {
 pub struct ManualTripSet {
     #[topic]
     pub asset: Asset,
-    #[topic]
-    pub actor: Address,
     pub is_manually_tripped: bool,
     pub metadata: Option<Bytes>,
 }
@@ -187,8 +185,8 @@ pub fn publish_breaker_events(
 
 fn publish_breaker_event(env: &Env, asset: &Asset, event: KernelCircuitBreakerEvent) {
     match event {
-        // `ManualTripSet` is published from the runtime layer with the actor
-        // address, not from the kernel event.
+        // `ManualTripSet` is published from the runtime layer, not from the
+        // kernel event.
         KernelCircuitBreakerEvent::ManualTripSet { .. } => {}
         KernelCircuitBreakerEvent::ConfigSet { config } => CircuitBreakerConfigSet {
             asset: asset.clone(),

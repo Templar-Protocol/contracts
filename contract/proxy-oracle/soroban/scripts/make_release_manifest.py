@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Build and write a deterministic release manifest for the Soroban proxy-oracle.
 
-Reads both optimized WASM artifacts, computes SHA-256 checksums, collects
-package version, git commit, stellar CLI version, rust toolchain, and optimized
-sizes, then writes a JSON manifest to:
+Reads the optimized runtime, governance, and SEP-40 adapter WASM artifacts,
+computes SHA-256 checksums, collects package version, git commit, stellar CLI
+version, rust toolchain, and optimized sizes, then writes a JSON manifest to:
 
     target/proxy-oracle-soroban/release-manifest.json
 
@@ -12,8 +12,10 @@ Usage:
         --root <workspace_root> \\
         --runtime-wasm <path/to/runtime.optimized.wasm> \\
         --governance-wasm <path/to/governance.optimized.wasm> \\
+        --adapter-wasm <path/to/sep40_adapter.optimized.wasm> \\
         --runtime-pkg templar-proxy-oracle-soroban-contract \\
         --governance-pkg templar-proxy-oracle-soroban-governance-contract \\
+        --adapter-pkg templar-proxy-oracle-soroban-sep40-adapter-contract \\
         --out <target/proxy-oracle-soroban/release-manifest.json>
 """
 
@@ -283,8 +285,9 @@ def main() -> None:
     print(f"  git_commit:      {git_commit}")
     print(f"  stellar_cli:     {stellar_cli}")
     print(f"  rust_toolchain:  {rust_toolchain}")
-    print(f"  runtime  sha256: {runtime_sha256}  ({runtime_size} bytes)")
+    print(f"  runtime    sha256: {runtime_sha256}  ({runtime_size} bytes)")
     print(f"  governance sha256: {governance_sha256}  ({governance_size} bytes)")
+    print(f"  adapter    sha256: {adapter_sha256}  ({adapter_size} bytes)")
 
 
 if __name__ == "__main__":

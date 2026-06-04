@@ -110,8 +110,10 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
         oracle: upstream_id,
         asset: btc_asset.clone(),
     });
-    let create_id = governance.submit(
+    let create_id = governance.next_proposal_id();
+    governance.create_proposal(
         &admin,
+        &create_id,
         &GovernanceAction::SetProxy(
             btc_asset.clone(),
             ProxyConfig {
@@ -121,8 +123,9 @@ fn setup_blend_bootstrap() -> BlendBootstrap {
                 max_clock_drift_secs: Some(60),
             },
         ),
+        &0,
     );
-    governance.accept(&admin, &create_id);
+    governance.execute_proposal(&admin, &create_id);
 
     // Blend stack + pool pointing at our adapter as oracle.
     let blnd = env
@@ -204,23 +207,27 @@ fn blend_oracle_sees_accepted_price_with_correct_decimals() {
 fn blend_oracle_sees_none_when_circuit_breaker_trips() {
     let b = setup_blend_bootstrap();
     // Install a tight stepwise breaker and force a trip on the second refresh.
-    b.governance.submit(
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
         &b.admin,
+        &id,
         &GovernanceAction::ConfigureBreakers(b.btc_asset.clone(), 0, 8),
+        &0,
     );
-    let id = b.governance.next_proposal_id() - 1;
-    b.governance.accept(&b.admin, &id);
-    b.governance.submit(
+    b.governance.execute_proposal(&b.admin, &id);
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
         &b.admin,
+        &id,
         &GovernanceAction::AddBreaker(
             b.btc_asset.clone(),
             CircuitBreakerConfig::StepwiseChange(StepwiseChangeConfig {
                 max_relative_change: SorobanDecimal::from_decimal(&b.env, Decimal::ONE_HALF),
             }),
         ),
+        &0,
     );
-    let id = b.governance.next_proposal_id() - 1;
-    b.governance.accept(&b.admin, &id);
+    b.governance.execute_proposal(&b.admin, &id);
 
     let assets = SVec::from_array(&b.env, [b.btc_asset.clone()]);
     b.upstream

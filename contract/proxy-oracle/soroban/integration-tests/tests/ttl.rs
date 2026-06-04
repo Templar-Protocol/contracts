@@ -37,16 +37,19 @@ fn lengthening_manual_trip_ttl_blocks_single_tx_response() {
         GovernanceAction::SetActionTtl(OperationKind::SetManualTrip, 60_000_000_000),
     );
 
-    // Single-tx submit+accept fails because the proposal isn't yet mature.
-    let id = b.governance.submit(
+    // Submitting then executing in one shot fails — the proposal isn't yet mature.
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
         &tripper,
-        &GovernanceAction::SetManualTrip(tripper.clone(), b.asset_btc.clone(), true, None),
+        &id,
+        &GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
+        &0,
     );
-    assert!(b.governance.try_accept(&tripper, &id).is_err());
+    assert!(b.governance.try_execute_proposal(&tripper, &id).is_err());
 
     // After the maturity window the trip executes and refresh blocks.
     ledger::advance_secs(&b.env, 65);
-    b.governance.accept(&tripper, &id);
+    b.governance.execute_proposal(&tripper, &id);
     assert!(matches!(
         b.refresh_one(&b.asset_btc),
         RefreshStatus::Blocked(_)
@@ -73,7 +76,9 @@ fn proposal_captures_ttl_at_create_time() {
             max_clock_drift_secs: Some(60),
         },
     );
-    let id_first = b.governance.submit(&b.admin, &action);
+    let id_first = b.governance.next_proposal_id();
+    b.governance
+        .create_proposal(&b.admin, &id_first, &action, &0);
 
     // Now lengthen SetProxy's TTL for future proposals.
     b.submit_and_execute(
@@ -82,6 +87,6 @@ fn proposal_captures_ttl_at_create_time() {
     );
 
     // The earlier proposal still has TTL=0 captured — executes immediately.
-    b.governance.accept(&b.admin, &id_first);
+    b.governance.execute_proposal(&b.admin, &id_first);
     assert_eq!(b.governance.active_ids().len(), 0);
 }

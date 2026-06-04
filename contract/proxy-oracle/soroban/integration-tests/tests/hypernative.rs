@@ -53,18 +53,11 @@ fn hypernative_key_can_trip_in_single_tx() {
     let hypernative = setup_with_hypernative(&b);
 
     let metadata = Bytes::from_slice(&b.env, b"hypernative incident #1234");
-    // The two calls happen sequentially within the same logical transaction:
-    // submit immediately followed by accept, no maturity wait.
-    let id = b.governance.submit(
+    // submit_and_execute: create + execute in one shot (TTL=0, no maturity wait).
+    b.submit_and_execute(
         &hypernative,
-        &GovernanceAction::SetManualTrip(
-            hypernative.clone(),
-            b.asset_btc.clone(),
-            true,
-            Some(metadata),
-        ),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, Some(metadata)),
     );
-    b.governance.accept(&hypernative, &id);
 
     assert!(matches!(
         b.refresh_one(&b.asset_btc),
@@ -127,8 +120,11 @@ fn hypernative_key_cannot_do_anything_else() {
         GovernanceAction::Upgrade(BytesN::<32>::from_array(&b.env, &[1_u8; 32])),
     ];
 
+    let next_id = b.governance.next_proposal_id();
     for action in denied.iter() {
-        let result = b.governance.try_submit(&hypernative, action);
+        let result = b
+            .governance
+            .try_create_proposal(&hypernative, &next_id, action, &0);
         assert!(
             result.is_err(),
             "Hypernative key should not be able to submit {:?}",
@@ -143,26 +139,23 @@ fn separate_operator_untrips_after_hypernative_trip() {
     let hypernative = setup_with_hypernative(&b);
 
     // Hypernative trips.
-    let trip_id = b.governance.submit(
+    b.submit_and_execute(
         &hypernative,
-        &GovernanceAction::SetManualTrip(hypernative.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
-    b.governance.accept(&hypernative, &trip_id);
 
     // A separate manual operator (with the same role) untrips after review.
     let operator = Address::generate(&b.env);
     b.grant_role(&operator, Role::ManualTripper);
 
-    let untrip_id = b.governance.submit(
+    b.submit_and_execute(
         &operator,
-        &GovernanceAction::SetManualTrip(
-            operator.clone(),
+        GovernanceAction::SetManualTrip(
             b.asset_btc.clone(),
             false,
             Some(Bytes::from_slice(&b.env, b"manual review approved")),
         ),
     );
-    b.governance.accept(&operator, &untrip_id);
 
     let view = b.runtime.get_breaker_set_view(&b.asset_btc).unwrap();
     assert!(!view.is_manually_tripped);
@@ -177,11 +170,10 @@ fn trip_persists_across_repeated_refreshes() {
     let b = Bootstrap::new();
     let hypernative = setup_with_hypernative(&b);
 
-    let id = b.governance.submit(
+    b.submit_and_execute(
         &hypernative,
-        &GovernanceAction::SetManualTrip(hypernative.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
-    b.governance.accept(&hypernative, &id);
 
     for i in 0..5 {
         ledger::advance_secs(&b.env, 1);

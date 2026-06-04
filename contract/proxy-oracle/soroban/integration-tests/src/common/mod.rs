@@ -126,12 +126,11 @@ impl Bootstrap {
         }
     }
 
-    /// Submit + execute a proposal as the given caller. Returns the proposal
-    /// id. Uses `governance.submit` + `governance.accept` (the aliases for
-    /// `create_proposal` with auto-id and `execute_proposal`).
+    /// Submit + execute a proposal as the given caller. Returns the proposal id.
     pub fn submit_and_execute(&self, caller: &Address, action: GovernanceAction) -> u64 {
-        let id = self.governance.submit(caller, &action);
-        self.governance.accept(caller, &id);
+        let id = self.governance.next_proposal_id();
+        self.governance.create_proposal(caller, &id, &action, &0);
+        self.governance.execute_proposal(caller, &id);
         id
     }
 

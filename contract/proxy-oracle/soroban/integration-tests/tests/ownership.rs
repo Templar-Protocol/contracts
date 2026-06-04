@@ -40,8 +40,9 @@ fn two_step_ownership_handoff_through_governance() {
     );
 
     // v2 accepts.
-    let id = governance_v2.submit(&b.admin, &GovernanceAction::AcceptOwnership(()));
-    governance_v2.accept(&b.admin, &id);
+    let id = governance_v2.next_proposal_id();
+    governance_v2.create_proposal(&b.admin, &id, &GovernanceAction::AcceptOwnership(()), &0);
+    governance_v2.execute_proposal(&b.admin, &id);
 
     assert_eq!(b.runtime.get_owner(), Some(governance_v2_id.clone()));
 
@@ -61,8 +62,9 @@ fn two_step_ownership_handoff_through_governance() {
             max_clock_drift_secs: Some(60),
         },
     );
-    let id_old = b.governance.submit(&b.admin, &action);
-    let result = b.governance.try_accept(&b.admin, &id_old);
+    let id_old = b.governance.next_proposal_id();
+    b.governance.create_proposal(&b.admin, &id_old, &action, &0);
+    let result = b.governance.try_execute_proposal(&b.admin, &id_old);
     assert!(
         result.is_err(),
         "old governance can no longer mutate runtime"

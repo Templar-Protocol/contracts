@@ -13,7 +13,7 @@ use templar_proxy_oracle_governance_kernel::{
 };
 use templar_proxy_oracle_soroban_common::extend_instance_ttl;
 use templar_proxy_oracle_soroban_governance_common::{
-    GovernanceAction, GovernanceError, OperationKind, PendingProposal, Proposal, Role, TtlConfig,
+    GovernanceAction, GovernanceError, OperationKind, Proposal, Role, TtlConfig,
     MAX_PROPOSAL_TTL_NS,
 };
 
@@ -27,7 +27,7 @@ pub use events::{
     TtlExtended,
 };
 
-use engine::{effective_ttl, execute_action, now, require_authorized, validate_for_creator};
+use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
     load_header, load_proposal, proposal_from_kernel, proposal_to_kernel, remove_proposal,
     save_header, save_proposal, DataKey, KernelGovernance,
@@ -100,7 +100,6 @@ impl ProxyOracleGovernance {
     ) -> Result<Proposal, GovernanceError> {
         extend_instance_ttl(&env);
         require_authorized(&env, &caller, &operation)?;
-        validate_for_creator(&caller, &operation)?;
         let mut header = load_header(&env)?;
         let ttl_ns = effective_ttl(&header, &operation, requested_ttl)?;
         let kernel_proposal = header
@@ -175,37 +174,6 @@ impl ProxyOracleGovernance {
     pub fn get_roles(env: Env, account: Address) -> Vec<Role> {
         extend_instance_ttl(&env);
         roles::roles_of(&env, &account)
-    }
-
-    pub fn submit(
-        env: Env,
-        caller: Address,
-        action: GovernanceAction,
-    ) -> Result<u64, GovernanceError> {
-        let id = Self::next_proposal_id(env.clone())?;
-        Self::create_proposal(env, caller, id, action, 0).map(|_| id)
-    }
-
-    pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
-        Self::execute_proposal(env, caller, proposal_id)
-    }
-
-    pub fn revoke(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
-        Self::cancel_proposal(env, caller, proposal_id)
-    }
-
-    pub fn pending(env: Env, proposal_id: u64) -> Result<PendingProposal, GovernanceError> {
-        extend_instance_ttl(&env);
-        let proposal = Self::get_proposal(env.clone(), proposal_id)
-            .ok_or(GovernanceError::ProposalNotFound)?;
-        Ok(PendingProposal {
-            id: proposal_id,
-            action: proposal.operation,
-            valid_after_ns: proposal
-                .created_at_ns
-                .checked_add(proposal.ttl_ns)
-                .ok_or(GovernanceError::ArithmeticOverflow)?,
-        })
     }
 
     pub fn active_ids(env: Env) -> Vec<u64> {

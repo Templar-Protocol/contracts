@@ -108,7 +108,7 @@ fn two_independent_assets_have_isolated_state() {
     );
     b.submit_and_execute(
         &tripper,
-        GovernanceAction::SetManualTrip(tripper.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
 
     let results = b.runtime.refresh(&assets);

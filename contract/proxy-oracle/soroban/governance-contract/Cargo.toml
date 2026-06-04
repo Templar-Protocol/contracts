@@ -24,7 +24,6 @@ templar-proxy-oracle-soroban-governance-common = { path = "../governance-common"
 [dev-dependencies]
 soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
 templar-proxy-oracle-soroban-governance-contract = { path = ".", features = ["testutils"] }
-templar-primitives = { path = "../../../../primitives", default-features = false }
 templar-proxy-oracle-soroban-contract = { path = "../contract", features = ["testutils"] }
 
 [lints]

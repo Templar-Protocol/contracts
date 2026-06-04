@@ -9,9 +9,8 @@
 //! Gap fillers identified during the coverage-matrix review.
 //!
 //! R1 — RemoveProxy round-trip
-//! R2 — `pending(id)` view returns the current action + maturity ledger
+//! R2 — `get_proposal(id)` returns the current action + maturity ledger
 //! R3 — `list_role(Admin)` reflects post-grant/post-revoke membership
-//! R4 — `revoke` alias parity with `cancel_proposal`
 
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Symbol, Vec as SVec};
@@ -40,7 +39,7 @@ fn remove_proxy_clears_proxy_cache_history_and_breakers() {
 }
 
 #[test]
-fn pending_view_returns_action_and_maturity_ledger() {
+fn get_proposal_returns_action_and_maturity() {
     let b = Bootstrap::new();
     b.submit_and_execute(
         &b.admin,
@@ -62,11 +61,12 @@ fn pending_view_returns_action_and_maturity_ledger() {
             max_clock_drift_secs: Some(60),
         },
     );
-    let id = b.governance.submit(&b.admin, &action);
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(&b.admin, &id, &action, &0);
 
-    let pending = b.governance.pending(&id);
-    assert_eq!(pending.id, id);
-    assert!(pending.valid_after_ns > 0);
+    let proposal = b.governance.get_proposal(&id).unwrap();
+    assert_eq!(proposal.operation, action);
+    assert!(proposal.created_at_ns + proposal.ttl_ns > 0);
 }
 
 #[test]
@@ -83,38 +83,4 @@ fn list_role_reflects_grants_and_revokes() {
         GovernanceAction::SetRole(new_admin.clone(), Role::Admin, false),
     );
     assert_eq!(b.governance.list_role(&Role::Admin).len(), 1);
-}
-
-#[test]
-fn revoke_alias_matches_cancel_proposal_behavior() {
-    let b = Bootstrap::new();
-    b.submit_and_execute(
-        &b.admin,
-        GovernanceAction::SetActionTtl(OperationKind::SetProxy, 60_000_000_000),
-    );
-
-    let asset = Asset::Other(Symbol::new(&b.env, "ETH"));
-    let mut sources = SVec::new(&b.env);
-    sources.push_back(SourceConfig {
-        oracle: b.upstream_id.clone(),
-        asset: asset.clone(),
-    });
-    let action = GovernanceAction::SetProxy(
-        asset,
-        ProxyConfig {
-            sources,
-            min_sources: 1,
-            max_age_secs: Some(300),
-            max_clock_drift_secs: Some(60),
-        },
-    );
-
-    let id = b.governance.submit(&b.admin, &action);
-    assert_eq!(b.governance.active_ids().len(), 1);
-
-    // `revoke` is the convenience alias for `cancel_proposal`; both must
-    // produce the same observable effect.
-    b.governance.revoke(&b.admin, &id);
-    assert_eq!(b.governance.active_ids().len(), 0);
-    assert!(b.governance.get_proposal(&id).is_none());
 }

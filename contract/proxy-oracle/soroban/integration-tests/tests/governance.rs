@@ -50,13 +50,15 @@ fn proposal_matures_then_executes() {
         GovernanceAction::SetActionTtl(OperationKind::SetProxy, 60_000_000_000),
     );
 
-    let id = b.governance.submit(&b.admin, &dummy_setproxy(&b, "BTC"));
+    let id = b.governance.next_proposal_id();
+    b.governance
+        .create_proposal(&b.admin, &id, &dummy_setproxy(&b, "BTC"), &0);
 
-    let early = b.governance.try_accept(&b.admin, &id);
+    let early = b.governance.try_execute_proposal(&b.admin, &id);
     assert!(early.is_err(), "execute should fail before maturity");
 
     ledger::advance_secs(&b.env, 65);
-    b.governance.accept(&b.admin, &id);
+    b.governance.execute_proposal(&b.admin, &id);
 
     // active_ids cleared after successful execute.
     assert_eq!(b.governance.active_ids().len(), 0);
@@ -70,10 +72,12 @@ fn cancel_before_maturity_frees_slot() {
         GovernanceAction::SetActionTtl(OperationKind::SetProxy, 60_000_000_000),
     );
 
-    let id = b.governance.submit(&b.admin, &dummy_setproxy(&b, "BTC"));
+    let id = b.governance.next_proposal_id();
+    b.governance
+        .create_proposal(&b.admin, &id, &dummy_setproxy(&b, "BTC"), &0);
     assert_eq!(b.governance.active_ids().len(), 1);
 
-    b.governance.revoke(&b.admin, &id);
+    b.governance.cancel_proposal(&b.admin, &id);
 
     assert_eq!(b.governance.active_ids().len(), 0);
     assert!(b.governance.get_proposal(&id).is_none());
@@ -90,14 +94,17 @@ fn pending_proposal_cap_blocks_the_65th_submission() {
     // 64 pending proposals (MAX_PENDING_PROPOSALS).
     for i in 0..64 {
         let label = std::format!("A{i}");
-        b.governance.submit(&b.admin, &dummy_setproxy(&b, &label));
+        let id = b.governance.next_proposal_id();
+        b.governance
+            .create_proposal(&b.admin, &id, &dummy_setproxy(&b, &label), &0);
     }
     assert_eq!(b.governance.active_ids().len(), 64);
 
     // 65th rejected.
-    let result = b
-        .governance
-        .try_submit(&b.admin, &dummy_setproxy(&b, "Z65"));
+    let next_id = b.governance.next_proposal_id();
+    let result =
+        b.governance
+            .try_create_proposal(&b.admin, &next_id, &dummy_setproxy(&b, "Z65"), &0);
     assert!(result.is_err());
 }
 

@@ -50,7 +50,7 @@ def validate_artifacts(manifest: dict, root: Path) -> list[str]:
     """Return a list of error strings; empty list means all checks passed."""
     errors: list[str] = []
 
-    for key in ("runtime_wasm", "governance_wasm"):
+    for key in ("runtime_wasm", "governance_wasm", "sep40_adapter_wasm"):
         entry = manifest.get(key, {})
         rel_path = entry.get("path", "")
         expected_sha = entry.get("sha256", "")
@@ -98,7 +98,7 @@ def format_report(manifest: dict, _root: Path, errors: list[str]) -> str:
     lines.append(f"  rust_toolchain: {manifest.get('rust_toolchain', 'unknown')}")
     lines.append("")
 
-    for key in ("runtime_wasm", "governance_wasm"):
+    for key in ("runtime_wasm", "governance_wasm", "sep40_adapter_wasm"):
         entry = manifest.get(key, {})
         lines.append(f"## {key}")
         lines.append(f"  package:        {entry.get('package', '?')}")

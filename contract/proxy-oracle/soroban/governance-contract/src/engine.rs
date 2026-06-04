@@ -7,9 +7,9 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Val, Vec,
 };
 use templar_primitives::Nanoseconds;
-use templar_proxy_oracle_soroban_common::{ContractError, MAX_MANUAL_TRIP_METADATA_LEN};
+use templar_proxy_oracle_soroban_common::ContractError;
 use templar_proxy_oracle_soroban_governance_common::{
-    validate_action, GovernanceAction, GovernanceError, Role, MAX_PROPOSAL_TTL_NS,
+    GovernanceAction, GovernanceError, Role, MAX_PROPOSAL_TTL_NS,
 };
 
 use crate::{
@@ -38,19 +38,6 @@ pub fn require_authorized(
     } else {
         Err(GovernanceError::Unauthorized)
     }
-}
-
-pub fn validate_for_creator(
-    caller: &Address,
-    action: &GovernanceAction,
-) -> Result<(), GovernanceError> {
-    validate_action(action, MAX_MANUAL_TRIP_METADATA_LEN)?;
-    if let GovernanceAction::SetManualTrip(actor, _, _, _) = action {
-        if actor != caller {
-            return Err(GovernanceError::InvalidInput);
-        }
-    }
-    Ok(())
 }
 
 pub fn effective_ttl(
@@ -153,7 +140,7 @@ pub fn execute_action(
                 ],
             ),
         ),
-        GovernanceAction::SetManualTrip(actor, asset, is_manually_tripped, metadata) => {
+        GovernanceAction::SetManualTrip(asset, is_manually_tripped, metadata) => {
             invoke_runtime_call(
                 env,
                 &proxy,
@@ -161,7 +148,6 @@ pub fn execute_action(
                 Vec::from_array(
                     env,
                     [
-                        actor.clone().into_val(env),
                         asset.clone().into_val(env),
                         is_manually_tripped.into_val(env),
                         metadata.clone().into_val(env),

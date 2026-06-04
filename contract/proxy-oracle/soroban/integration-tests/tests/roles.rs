@@ -87,7 +87,7 @@ fn role_holders_can_execute_their_role_specific_actions() {
     // Tripper: SetManualTrip
     b.submit_and_execute(
         &tripper,
-        GovernanceAction::SetManualTrip(tripper.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
 }
 
@@ -101,15 +101,18 @@ fn cross_role_actions_are_denied() {
     b.grant_role(&tripper, Role::ManualTripper);
 
     // Tripper attempting PCM action.
+    let next_id = b.governance.next_proposal_id();
     assert!(b
         .governance
-        .try_submit(&tripper, &sample_setproxy(&b, "ETH"))
+        .try_create_proposal(&tripper, &next_id, &sample_setproxy(&b, "ETH"), &0)
         .is_err());
 
     // Manager attempting tripper action.
-    let manual_trip =
-        GovernanceAction::SetManualTrip(manager.clone(), b.asset_btc.clone(), true, None);
-    assert!(b.governance.try_submit(&manager, &manual_trip).is_err());
+    let manual_trip = GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None);
+    assert!(b
+        .governance
+        .try_create_proposal(&manager, &next_id, &manual_trip, &0)
+        .is_err());
 }
 
 #[test]
@@ -133,7 +136,7 @@ fn admin_can_execute_any_action() {
     );
     b.submit_and_execute(
         &b.admin,
-        GovernanceAction::SetManualTrip(b.admin.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
 }
 
@@ -149,7 +152,7 @@ fn multi_role_membership_grants_both_powers() {
     b.submit_and_execute(&dual, sample_setproxy(&b, "ETH"));
     b.submit_and_execute(
         &dual,
-        GovernanceAction::SetManualTrip(dual.clone(), b.asset_btc.clone(), true, None),
+        GovernanceAction::SetManualTrip(b.asset_btc.clone(), true, None),
     );
 
     let roles = b.governance.get_roles(&dual);
@@ -181,13 +184,16 @@ fn revoking_one_role_does_not_touch_the_others() {
 #[test]
 fn revoking_the_last_admin_is_rejected() {
     // The last-admin guard fires at execute time (inside roles::revoke), not
-    // at proposal-create time — so submit succeeds but accept must reject.
+    // at proposal-create time — so create_proposal succeeds but execute must reject.
     let b = Bootstrap::new();
-    let id = b.governance.submit(
+    let id = b.governance.next_proposal_id();
+    b.governance.create_proposal(
         &b.admin,
+        &id,
         &GovernanceAction::SetRole(b.admin.clone(), Role::Admin, false),
+        &0,
     );
-    let result = b.governance.try_accept(&b.admin, &id);
+    let result = b.governance.try_execute_proposal(&b.admin, &id);
     assert!(result.is_err(), "last-admin revoke must fail at execute");
     assert!(b.governance.has_role(&b.admin, &Role::Admin));
 }

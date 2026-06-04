@@ -17,7 +17,7 @@ Two no-std kernels hold the runtime-agnostic logic; each chain (`near/`, `soroba
 - `soroban/governance-common`: Soroban governance operation/role/TTL types and validation, built on `governance-kernel`.
 - `soroban/contract`: deployable Soroban proxy oracle contract.
 - `soroban/governance-contract`: deployable Soroban governance contract (stellar-access RBAC + dispatch engine).
-- `soroban/mock`: test-only mock oracle used by the Soroban test suite.
+- `soroban/sep40-adapter-contract`: per-feed SEP-40 adapter that re-exposes the proxy oracle's normalized prices.
 
 ## Configuration
 

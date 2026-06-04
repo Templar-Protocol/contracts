@@ -9,10 +9,6 @@ version = "0.1.0"
 crate-type = ["rlib"]
 path = "src/lib.rs"
 
-[features]
-default = []
-testutils = ["soroban-sdk/testutils"]
-
 [dependencies]
 soroban-sdk = { version = "25.0.1", features = ["alloc"] }
 templar-primitives = { path = "../../../../primitives", default-features = false }
