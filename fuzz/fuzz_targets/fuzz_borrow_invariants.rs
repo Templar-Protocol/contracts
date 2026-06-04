@@ -80,6 +80,9 @@ fuzz_target!(|data: (u32, u64, u64, u64, u64, u64, bool)| {
     let mut modified = position.clone();
     modified.collateral_asset_deposit = CollateralAssetAmount::new(c2);
     if c1 != c2 {
-        assert_ne!(position, modified, "mutated position must not equal original");
+        assert_ne!(
+            position, modified,
+            "mutated position must not equal original"
+        );
     }
 });

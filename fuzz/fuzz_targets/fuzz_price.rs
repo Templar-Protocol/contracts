@@ -25,7 +25,9 @@
 
 use libfuzzer_sys::fuzz_target;
 use near_sdk::json_types::{I64, U64};
-use templar_common::asset::{BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount};
+use templar_common::asset::{
+    BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount,
+};
 use templar_common::oracle::pyth::{self, PythTimestamp};
 use templar_common::price::{Appraise, Convert, PricePair};
 use templar_common::Decimal;
@@ -111,5 +113,6 @@ fuzz_target!(|data: (i64, u64, i64, u64, i32, i32, u128, u128)| {
     //    decimals bound above, the pow2_int(384) path is unreachable, so any
     //    panic here would be a NEW finding, not the tracked one.)
     let _ = <PricePair as Convert<BorrowAsset, CollateralAsset>>::convert(&price_pair, borrow_amt);
-    let _ = <PricePair as Convert<CollateralAsset, BorrowAsset>>::convert(&price_pair, collateral_amt);
+    let _ =
+        <PricePair as Convert<CollateralAsset, BorrowAsset>>::convert(&price_pair, collateral_amt);
 });

@@ -1,6 +1,6 @@
-//! Fuzz `Accumulator::<BorrowAsset>` — add_once, remove, clear must preserve
-//! the invariant `get_total() == sum_of_added - sum_of_removed_capped` and
-//! never panic.
+//! Fuzz `Accumulator::<BorrowAsset>` — `add_once`, `remove`, `clear` must
+//! preserve the invariant
+//! `get_total() == sum_of_added - sum_of_removed_capped` and never panic.
 
 #![no_main]
 #![cfg(not(target_arch = "wasm32"))]

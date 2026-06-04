@@ -12,7 +12,7 @@
 //! and asserted properties of that hand-rolled math, testing no contract code
 //! (P1 violation).
 //!
-//! MUTATION-CHECK (P5): in `Linear::at` (interest_rate_strategy.rs:82), change
+//! MUTATION-CHECK (P5): in `Linear::at` (`interest_rate_strategy.rs:82`), change
 //! `usage_ratio * (self.top - self.base) + self.base` to `... - self.base`.
 //! Then `at(0) == base` and the `at(usage) >= base` lower-bound assertions
 //! below must fire.

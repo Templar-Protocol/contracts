@@ -23,6 +23,10 @@
 
 #![no_main]
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
 
 use std::str::FromStr;
 
@@ -87,8 +91,5 @@ fuzz_target!(|input: Input| {
     let parsed: DepositMsg =
         serde_json::from_str(&json1).expect("DepositMsg must re-parse its own JSON");
     let json2 = serde_json::to_string(&parsed).expect("re-parsed DepositMsg must serialize");
-    assert_eq!(
-        json1, json2,
-        "DepositMsg JSON round-trip is not idempotent",
-    );
+    assert_eq!(json1, json2, "DepositMsg JSON round-trip is not idempotent",);
 });

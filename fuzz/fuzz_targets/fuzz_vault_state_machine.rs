@@ -170,7 +170,7 @@ fuzz_target!(|scenario: Scenario| {
                 receiver,
                 owner,
             } => {
-                let req = with_withdrawal.then(|| WithdrawalRequest {
+                let req = with_withdrawal.then_some(WithdrawalRequest {
                     op_id: request_op_id,
                     request_id,
                     amount,
@@ -225,25 +225,22 @@ fuzz_target!(|scenario: Scenario| {
             } => payout_complete(state.clone(), success, op_id, Address(escrow)),
         };
 
-        match result {
-            Ok(transition) => {
-                state = transition.new_state;
-                check_state_well_formed(&state);
-            }
-            Err(_) => {
-                // On error the state must not have moved. (The transition
-                // functions take `state` by value; we cloned before calling.)
-                assert_eq!(
-                    state.kind_code(),
-                    kind_before,
-                    "Errored transition mutated state kind",
-                );
-                assert_eq!(
-                    state.op_id(),
-                    op_id_before,
-                    "Errored transition mutated op_id",
-                );
-            }
+        if let Ok(transition) = result {
+            state = transition.new_state;
+            check_state_well_formed(&state);
+        } else {
+            // On error the state must not have moved. (The transition
+            // functions take `state` by value; we cloned before calling.)
+            assert_eq!(
+                state.kind_code(),
+                kind_before,
+                "Errored transition mutated state kind",
+            );
+            assert_eq!(
+                state.op_id(),
+                op_id_before,
+                "Errored transition mutated op_id",
+            );
         }
     }
 });

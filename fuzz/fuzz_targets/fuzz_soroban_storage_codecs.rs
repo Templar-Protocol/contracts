@@ -1,4 +1,8 @@
 #![no_main]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
 
 // MUTATION-CHECK (P5): in `contract/vault/soroban/src/storage/mod.rs`, change
 // one encoder to drop a field (e.g. omit `push_u128(amount)` in
@@ -24,6 +28,9 @@ use templar_vault_kernel::{
 // separately (untrusted-input DoS).
 const MAX_COLLECTION_LEN: usize = 64;
 
+// (id, owner, receiver, escrow_shares, expected_assets, requested_at_ns)
+type WithdrawEntry = (u64, [u8; 32], [u8; 32], u128, u128, u64);
+
 #[derive(Arbitrary, Debug)]
 struct StorageCodecInput {
     addresses: Vec<[u8; 32]>,
@@ -33,7 +40,7 @@ struct StorageCodecInput {
     market_entries: Vec<(u32, bool, u128, Option<Vec<u8>>)>,
     principal_entries: Vec<(u32, u128)>,
     lease_entries: Vec<(u32, u64, Option<u64>, u64, u64, u64)>,
-    withdraw_entries: Vec<(u64, [u8; 32], [u8; 32], u128, u128, u64)>,
+    withdraw_entries: Vec<WithdrawEntry>,
     op_tag: u8,
     next_op_id: u64,
     total_assets: u128,
@@ -75,7 +82,9 @@ fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
 
 fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig> {
     let mut out = OrderedMap::new();
-    for (target_id, enabled, cap, cap_group_bytes) in truncate(&input.market_entries, MAX_COLLECTION_LEN) {
+    for (target_id, enabled, cap, cap_group_bytes) in
+        truncate(&input.market_entries, MAX_COLLECTION_LEN)
+    {
         let cap_group_id = cap_group_bytes
             .as_ref()
             .and_then(|raw| core::str::from_utf8(raw).ok())

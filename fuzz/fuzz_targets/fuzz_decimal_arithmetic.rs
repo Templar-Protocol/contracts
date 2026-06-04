@@ -1,4 +1,8 @@
 #![no_main]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
@@ -70,8 +74,7 @@ fuzz_target!(|input: Input| {
 
     // Pow: keep base × exponent well inside U512's 384-bit whole part. We
     // pick base ≤ 2^16 and exponent ≤ 12, giving 2^192 max.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let small_pow = (pow_exp % 13) as i32;
+    let small_pow = i32::from(pow_exp % 13);
     let pow_base = Decimal::from(u16::try_from(a & 0xFFFF).unwrap_or(0));
     let _ = pow_base.pow(small_pow);
     let _ = Decimal::ONE.pow(small_pow);
@@ -123,7 +126,10 @@ fuzz_target!(|input: Input| {
     // to_fixed roundtrip — important: serialization must be invertible.
     let fixed_full = dec_a.to_fixed(38);
     let parsed = Decimal::from_str(&fixed_full).expect("to_fixed(38) must roundtrip");
-    assert_eq!(dec_a, parsed, "Decimal::to_fixed(38) is not a full roundtrip");
+    assert_eq!(
+        dec_a, parsed,
+        "Decimal::to_fixed(38) is not a full roundtrip"
+    );
 
     // Shorter fixed representations should not panic.
     let _ = dec_a.to_fixed(10);

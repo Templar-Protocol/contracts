@@ -18,6 +18,10 @@
 
 #![no_main]
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
@@ -79,7 +83,10 @@ fuzz_target!(|scenario: SnapshotScenario| {
     // rounding.
     let json = serde_json::to_string(&snapshot).expect("Snapshot must JSON-serialize");
     let d: Snapshot = serde_json::from_str(&json).expect("Snapshot must JSON-deserialize");
-    assert_eq!(d.time_chunk, snapshot.time_chunk, "JSON: time_chunk changed");
+    assert_eq!(
+        d.time_chunk, snapshot.time_chunk,
+        "JSON: time_chunk changed"
+    );
     assert_eq!(
         d.end_timestamp_ms.0, snapshot.end_timestamp_ms.0,
         "JSON: end_timestamp_ms changed",

@@ -17,7 +17,7 @@
 //! libfuzzer-sys installs a `panic::set_hook` that calls `process::abort()`
 //! *before* the Rust unwinder runs (see `libfuzzer-sys-0.4.12/src/lib.rs:84`),
 //! so `catch_unwind` cannot observe a panicking call from inside the
-//! fuzz_target. Thus this target can't directly assert "calling with an
+//! `fuzz_target`. Thus this target can't directly assert "calling with an
 //! overflowing sum aborts." That direction is verified by the unit test
 //! `tests::overflow_aborts` in `common/src/borrow.rs`.
 

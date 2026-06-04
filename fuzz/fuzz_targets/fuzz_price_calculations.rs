@@ -21,6 +21,10 @@
 
 #![no_main]
 #![cfg(not(target_arch = "wasm32"))]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
 
 use libfuzzer_sys::fuzz_target;
 use near_sdk::json_types::{I64, U64};
@@ -54,12 +58,20 @@ fuzz_target!(|data: (i64, u64, i64, u64, u64, u64, i32, i32, i32, i32)| {
     let c_expo = -4 - c_expo_raw.rem_euclid(9); // [-12, -4]
     let b_expo = -4 - b_expo_raw.rem_euclid(9); // [-12, -4]
 
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "price bounded to ~1e9, far inside i64 range"
+    )]
     let c_pyth = pyth::Price {
         price: I64(c_price as i64),
         conf: U64(c_conf_b),
         expo: c_expo,
         publish_time: PythTimestamp::from_secs(0),
     };
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "price bounded to ~1e9, far inside i64 range"
+    )]
     let b_pyth = pyth::Price {
         price: I64(b_price as i64),
         conf: U64(b_conf_b),

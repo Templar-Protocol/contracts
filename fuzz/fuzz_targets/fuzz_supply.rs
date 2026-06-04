@@ -45,7 +45,10 @@ fuzz_target!(|data: (u32, u64, u64, u64, u32, u32, u64)| {
     );
     // A fresh position is empty.
     assert!(!fresh.exists(), "fresh SupplyPosition must not exist");
-    assert!(fresh.can_be_removed(), "fresh SupplyPosition must be removable");
+    assert!(
+        fresh.can_be_removed(),
+        "fresh SupplyPosition must be removable"
+    );
 
     // ---- Deposit::total / total_incoming (P2) ----
     let mut incoming = Vec::new();

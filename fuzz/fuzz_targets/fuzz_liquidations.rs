@@ -87,12 +87,20 @@ fuzz_target!(|data: (
     let c_conf_bounded = c_conf % c_price_pos;
     let b_conf_bounded = b_conf % b_price_pos;
 
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "price bounded to ~1e9, far inside i64 range"
+    )]
     let c_pyth = pyth::Price {
         price: I64(c_price_pos as i64),
         conf: U64(c_conf_bounded),
         expo: -8,
         publish_time: PythTimestamp::from_secs(0),
     };
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "price bounded to ~1e9, far inside i64 range"
+    )]
     let b_pyth = pyth::Price {
         price: I64(b_price_pos as i64),
         conf: U64(b_conf_bounded),
