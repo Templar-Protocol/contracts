@@ -5631,7 +5631,7 @@ mod storage_tests {
     }
 
     #[test]
-    fn test_execute_governance_remove_market_with_principal_after_timelock() {
+    fn test_execute_governance_remove_market_rejects_non_zero_principal() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
         let contract_id = env.register(SorobanVaultContract, ());
@@ -5673,14 +5673,15 @@ mod storage_tests {
                 }
                 .encode(),
             );
-            SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload)
-                .unwrap();
+            let result =
+                SorobanVaultContract::execute_governance(env.clone(), governance.clone(), payload);
+            assert_eq!(result, Err(crate::error::ContractError::InvalidInput));
 
             let reloaded = Storage::load_policy_state(&storage)
                 .unwrap()
                 .unwrap_or_default();
-            assert!(reloaded.market_config(7).is_none());
-            assert_eq!(reloaded.principal_entry(7), None);
+            assert!(reloaded.market_config(7).is_some());
+            assert_eq!(reloaded.principal_entry(7), Some(50));
         });
     }
 

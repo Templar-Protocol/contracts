@@ -1266,9 +1266,15 @@ where
         let Some(config) = self.policy_state.market_config(market_id) else {
             return Err(RuntimeError::invalid_input(""));
         };
+        let principal = self.policy_state.principal_for(market_id).unwrap_or(0);
         if config.cap > 0 {
             return Err(RuntimeError::invalid_input(
                 "cannot remove market with non-zero cap",
+            ));
+        }
+        if principal > 0 {
+            return Err(RuntimeError::invalid_input(
+                "cannot remove market with non-zero principal",
             ));
         }
 
