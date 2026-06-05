@@ -465,6 +465,13 @@ impl SorobanVaultGovernanceContract {
             .unwrap_or(false)
     }
 
+    /// Submit an opaque governance action when typed governance APIs are insufficient.
+    ///
+    /// Prefer typed submission methods whenever the action has a typed form.
+    /// Use a stable, documented `key` namespace for the action schema, and set
+    /// `payload_hash` to the hash of the exact canonical payload bytes the
+    /// downstream consumer will verify. Reusing keys across schemas or hashing
+    /// non-canonical bytes can create unsafe or unverifiable governance state.
     pub fn submit_other(
         env: Env,
         caller: Address,
@@ -474,6 +481,12 @@ impl SorobanVaultGovernanceContract {
         Self::submit(env, caller, GovernanceAction::Other(key, payload_hash))
     }
 
+    /// Check whether an opaque key/hash governance action is approved.
+    ///
+    /// Typed state should use typed query/accept paths instead. For opaque
+    /// actions, `key` names the documented action schema and `payload_hash`
+    /// must be the hash of the exact canonical payload bytes that will be
+    /// consumed. Misuse can make approvals unverifiable or unsafe to execute.
     pub fn check_other(env: Env, key: Symbol, payload_hash: BytesN<32>) -> bool {
         extend_instance_ttl(&env);
         env.storage()
@@ -506,6 +519,13 @@ impl SorobanVaultGovernanceContract {
         Ok(())
     }
 
+    /// Revoke pending opaque governance actions by their exact key/hash pair.
+    ///
+    /// This is only for actions submitted through `submit_other`; prefer typed
+    /// revoke helpers for typed proposals. The `key` namespace and
+    /// `payload_hash` must match the original canonical payload identifier.
+    /// Mismatched or ambiguous values can leave unsafe or unverifiable
+    /// governance state pending.
     pub fn revoke_other_pending(
         env: Env,
         caller: Address,

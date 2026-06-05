@@ -12637,6 +12637,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-curator-proxy-soroban"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-soroban-governance",
+ "templar-soroban-runtime",
+ "templar-soroban-shared-types",
+]
+
+[[package]]
 name = "templar-funding-bridge"
 version = "0.1.0"
 dependencies = [
