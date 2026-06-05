@@ -246,8 +246,7 @@ fn vault_proxy_fields(
     assets: i128,
     shares: i128,
 ) -> ProxyViewFields {
-    ProxyViewFields::try_from(vault_proxy_view(harness, owner, assets, shares))
-        .expect("proxy view response decodes")
+    vault_proxy_view(harness, owner, assets, shares).into()
 }
 
 #[test]

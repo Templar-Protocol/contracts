@@ -198,16 +198,14 @@ impl From<ProxyPreviewView> for ProxyPreviewFields {
     }
 }
 
-impl TryFrom<ProxyViewResponse> for ProxyViewFields {
-    type Error = core::convert::Infallible;
-
-    fn try_from(value: ProxyViewResponse) -> Result<Self, Self::Error> {
+impl From<ProxyViewResponse> for ProxyViewFields {
+    fn from(value: ProxyViewResponse) -> Self {
         let (core, policy, preview) = value;
-        Ok(Self {
+        Self {
             core: core.into(),
             policy: policy.into(),
             preview: preview.into(),
-        })
+        }
     }
 }
 
@@ -1000,7 +998,7 @@ mod tests {
         let mut groups = SdkVec::new(&env);
         groups.push_back((group_id.clone(), 8, 9));
 
-        let fields = ProxyViewFields::try_from((
+        let fields = ProxyViewFields::from((
             (
                 (
                     address.clone(),
@@ -1014,8 +1012,7 @@ mod tests {
             ),
             (queue.clone(), groups.clone()),
             (40, 41, 42, 43, 44, 45, 46, 47),
-        ))
-        .expect("proxy view response decodes");
+        ));
 
         assert_eq!(fields.core.virtual_offsets.virtual_shares, 10);
         assert_eq!(fields.core.virtual_offsets.virtual_assets, 11);
