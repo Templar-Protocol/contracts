@@ -948,11 +948,7 @@ fn classify_withdrawal_head(
         WithdrawalHeadOutcome::CoolingDown {
             requested_at_ns: head.requested_at_ns,
         }
-    } else if !has_actionable_withdrawal_liquidity(
-        head.expected_assets,
-        available_assets,
-        config.min_withdrawal_assets,
-    ) {
+    } else if !has_actionable_withdrawal_liquidity(head.expected_assets, available_assets) {
         WithdrawalHeadOutcome::InsufficientLiquidity
     } else {
         WithdrawalHeadOutcome::Ready
@@ -960,13 +956,8 @@ fn classify_withdrawal_head(
 }
 
 #[inline]
-fn has_actionable_withdrawal_liquidity(
-    expected_assets: u128,
-    available_assets: u128,
-    min_withdrawal_assets: u128,
-) -> bool {
+fn has_actionable_withdrawal_liquidity(expected_assets: u128, available_assets: u128) -> bool {
     available_assets >= expected_assets
-        || (available_assets > 0 && available_assets >= min_withdrawal_assets)
 }
 
 #[inline]
@@ -1910,11 +1901,8 @@ mod planning {
         }
 
         let available_assets = state.idle_assets;
-        if !has_actionable_withdrawal_liquidity(
-            request_expected,
-            available_assets,
-            min_withdrawal_assets,
-        ) {
+        let _ = min_withdrawal_assets;
+        if !has_actionable_withdrawal_liquidity(request_expected, available_assets) {
             return Err(KernelError::from(
                 InvalidStateCode::WithdrawalLiquidityBelowMinimum,
             ));
