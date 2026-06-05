@@ -399,7 +399,7 @@ fn call_proxy_view_full(
     );
 
     match result {
-        Ok(Ok(response)) => ProxyViewFields::try_from(response).map_err(|error| match error {}),
+        Ok(Ok(response)) => Ok(response.into()),
         Ok(Err(_)) => Err(ContractError::VaultError),
         Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
         Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
