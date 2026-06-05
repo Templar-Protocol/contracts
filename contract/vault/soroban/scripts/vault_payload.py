@@ -114,6 +114,20 @@ def encode_vault(args: argparse.Namespace) -> str:
         push_u32_vec(out, parse_u32_json(args.markets))
     elif command == "refresh-fees":
         push_u8(out, 5)
+    elif command == "atomic-withdraw":
+        push_u8(out, 6)
+        push_string(out, args.owner)
+        push_string(out, args.receiver)
+        push_string(out, args.operator)
+        push_i128(out, int(args.assets))
+        push_i128(out, int(args.max_shares_burned))
+    elif command == "atomic-redeem":
+        push_u8(out, 7)
+        push_string(out, args.owner)
+        push_string(out, args.receiver)
+        push_string(out, args.operator)
+        push_i128(out, int(args.shares))
+        push_i128(out, int(args.min_assets_out))
     elif command == "resync-idle-balance":
         push_u8(out, 8)
     elif command == "cancel-migration":
@@ -197,6 +211,21 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--markets", required=True, help="JSON array of u32 market ids")
 
     vault_sub.add_parser("refresh-fees")
+
+    atomic_withdraw = vault_sub.add_parser("atomic-withdraw")
+    atomic_withdraw.add_argument("--owner", required=True)
+    atomic_withdraw.add_argument("--receiver", required=True)
+    atomic_withdraw.add_argument("--operator", required=True)
+    atomic_withdraw.add_argument("--assets", required=True)
+    atomic_withdraw.add_argument("--max-shares-burned", required=True)
+
+    atomic_redeem = vault_sub.add_parser("atomic-redeem")
+    atomic_redeem.add_argument("--owner", required=True)
+    atomic_redeem.add_argument("--receiver", required=True)
+    atomic_redeem.add_argument("--operator", required=True)
+    atomic_redeem.add_argument("--shares", required=True)
+    atomic_redeem.add_argument("--min-assets-out", required=True)
+
     vault_sub.add_parser("resync-idle-balance")
 
     cancel = vault_sub.add_parser("cancel-migration")

@@ -1176,6 +1176,7 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
@@ -1226,6 +1227,7 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             let (request_id, owner, receiver, escrow_shares, expected_assets) = {
                 let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
@@ -1301,6 +1303,7 @@ mod contract_tests {
             {
                 let state = vault.state_mut().expect("state is loaded");
                 state.idle_assets = low_idle;
+                state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
                 state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             }
 
@@ -1372,7 +1375,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn test_execute_withdraw_insufficient_idle_partially_settles() {
+    fn test_execute_withdraw_insufficient_idle_refuses_partial_settlement() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
         let owner = templar_vault_kernel::Address([1u8; 32]);
@@ -1392,7 +1395,7 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (_head_id, head_escrow_before, head_expected_before) = {
+        let (head_id, head_escrow_before, head_expected_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
@@ -1405,29 +1408,27 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_add(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("partial idle coverage should not settle queued withdrawal");
 
-        assert_eq!(
-            summary.assets_transferred,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
-        assert_eq!(
-            summary.shares_burned,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
+        assert_eq!(error, RuntimeError::KernelError);
         let state = vault.state().unwrap();
         assert!(state.op_state.is_idle());
-        assert!(state.withdraw_queue.is_empty());
-        assert_eq!(state.idle_assets, 0);
-        assert_eq!(state.total_assets, state.external_assets);
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
-        assert_eq!(
-            summary.shares_transferred,
-            head_escrow_before - summary.shares_burned
-        );
+        let (head_id_after, head_after) = state
+            .withdraw_queue
+            .head()
+            .expect("withdrawal still queued");
+        assert_eq!(head_id_after, head_id);
+        assert_eq!(head_after.escrow_shares, head_escrow_before);
+        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_add(1));
+        assert_eq!(state.total_assets, deposit_amount);
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_expected_before, deposit_amount);
     }
 
@@ -2771,6 +2772,7 @@ mod contract_tests {
                 .unwrap()
                 .expect("initialized vault state");
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = (deposit_assets as u128).saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             storage.save_state(&state).unwrap();
         });
