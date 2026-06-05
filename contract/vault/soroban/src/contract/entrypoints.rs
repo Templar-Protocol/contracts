@@ -1467,6 +1467,13 @@ impl SorobanVaultContract {
         execute_governance_command(&env, caller, command, true)
     }
 
+    /// Return the compact proxy view used by clients and tests.
+    ///
+    /// `maxWithdraw` and `maxRedeem` values in the preview tuple are bounded by
+    /// current idle assets and return zero when the vault is non-idle or paused.
+    /// This is intentional: Soroban `withdraw` / `redeem` are atomic idle exits,
+    /// while market-backed exits must use `request_withdraw` and allocator-driven
+    /// queue execution.
     #[allow(
         clippy::type_complexity,
         reason = "proxy view is a compact ABI surface consumed by tests and tooling"
