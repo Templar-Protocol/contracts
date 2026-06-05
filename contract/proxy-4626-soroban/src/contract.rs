@@ -80,6 +80,12 @@ pub struct Soroban4626ProxyContract;
 
 #[contractimpl]
 impl Soroban4626ProxyContract {
+    /// Synchronous asset deposit into the underlying vault.
+    ///
+    /// `caller` is explicit because Soroban has no ambient `msg.sender`; the
+    /// proxy must know which address to authenticate with `require_auth()`.
+    /// This method follows the ERC-4626 deposit shape, but with the Soroban
+    /// caller address passed as an argument.
     pub fn deposit(
         env: Env,
         caller: Address,
@@ -101,6 +107,12 @@ impl Soroban4626ProxyContract {
         Ok(shares)
     }
 
+    /// Synchronous share mint into the underlying vault.
+    ///
+    /// `caller` is explicit because Soroban has no ambient `msg.sender`; the
+    /// proxy must know which address to authenticate with `require_auth()`.
+    /// The proxy previews the assets needed and submits a minimum share output
+    /// equal to `shares`.
     pub fn mint(
         env: Env,
         caller: Address,
@@ -125,6 +137,16 @@ impl Soroban4626ProxyContract {
         Ok(assets)
     }
 
+    /// Request an asynchronous redemption by asset amount.
+    ///
+    /// This is an ERC-7540-style redemption request, not a synchronous
+    /// ERC-4626 withdrawal. It escrows shares in the vault and returns a
+    /// `request_id`; assets are not transferred to `receiver` until the
+    /// withdrawal becomes executable and `execute_withdraw` succeeds.
+    ///
+    /// `caller` is explicit because Soroban has no ambient `msg.sender`.
+    /// The supported path is `caller == owner`. Operator-style delegated
+    /// requests require a transfer-from-backed vault request path.
     pub fn withdraw(
         env: Env,
         caller: Address,
@@ -151,6 +173,16 @@ impl Soroban4626ProxyContract {
         Ok(request_id)
     }
 
+    /// Request an asynchronous redemption by share amount.
+    ///
+    /// This is an ERC-7540-style redemption request, not a synchronous
+    /// ERC-4626 redeem. It escrows `shares` in the vault and returns a
+    /// `request_id`; assets are not transferred to `receiver` until the
+    /// withdrawal becomes executable and `execute_withdraw` succeeds.
+    ///
+    /// `caller` is explicit because Soroban has no ambient `msg.sender`.
+    /// The supported path is `caller == owner`. Operator-style delegated
+    /// requests require a transfer-from-backed vault request path.
     pub fn redeem(
         env: Env,
         caller: Address,
@@ -177,6 +209,12 @@ impl Soroban4626ProxyContract {
         Ok(request_id)
     }
 
+    /// Lower-level asynchronous redemption request with explicit slippage.
+    ///
+    /// This mirrors the vault's native request path: `owner` authenticates,
+    /// `shares` are escrowed, and the returned `request_id` identifies the
+    /// queued redemption request. Claiming assets is a separate
+    /// `execute_withdraw` step after cooldown/liquidity conditions are met.
     pub fn request_withdraw(
         env: Env,
         owner: Address,
@@ -200,6 +238,11 @@ impl Soroban4626ProxyContract {
         Ok(request_id)
     }
 
+    /// Execute the next claimable queued withdrawal.
+    ///
+    /// `caller` is the authenticated vault executor/keeper, not a request id.
+    /// This method executes according to the vault's queue and authorization
+    /// policy; it does not select a withdrawal request by `request_id`.
     pub fn execute_withdraw(env: Env, caller: Address) -> Result<(), ContractError> {
         caller.require_auth();
         expect_unit_result(invoke_vault_execute(
