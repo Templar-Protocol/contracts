@@ -2,13 +2,13 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Install stellar-cli v26 for Templar Soroban vault deployment.
+# Install stellar-cli v26 for Templar Soroban contract deployment.
 #
 # stellar-cli v26 requires Rust 1.92 to compile. This script makes that
 # toolchain available and builds the matching CLI.
 #
 # Usage:
-#   ./scripts/install-stellar-cli.sh
+#   ./script/soroban/install-stellar-cli.sh
 #
 # Prerequisites:
 #   - rustup (https://rustup.rs)

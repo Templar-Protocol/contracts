@@ -187,7 +187,7 @@ Subsequent entries skip this (~3-4 min first time).
 **Without devenv:**
 
 ```
-./scripts/install-stellar-cli.sh
+../../../script/soroban/install-stellar-cli.sh
 ```
 
 The script installs Rust 1.92 (via rustup) and builds the CLI. The optimized
