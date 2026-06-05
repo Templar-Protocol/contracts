@@ -110,14 +110,29 @@ The vault intentionally exposes two withdrawal modes:
 
 - `withdraw` / `redeem` are ERC-4626-style atomic exits from idle liquidity only. They never
   enqueue work, never pull from adapters, and fail if the requested assets exceed `idle_assets`.
+  Accordingly, the `proxy_view` `maxWithdraw` and `maxRedeem` values are bounded by idle assets
+  and can be `0` even when the owner has shares backed by market-deployed assets.
 - `request_withdraw` is the async path for positions that may require allocator/keeper work.
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
 
+`request_withdraw` converts the escrowed shares into a fixed `expected_assets` claim at request
+time. Execution later pays that stored claim rather than repricing the shares. This protects the
+queued withdrawer's requested slippage bound, but it also means later NAV declines are absorbed by
+the remaining share supply rather than by the already-queued request. This is an intentional
+accounting tradeoff of the queued path and should be considered when setting withdrawal cooldowns,
+allocator response processes, and adapter risk limits.
+
+There is no user-callable cancellation path for queued withdrawals in this version. A queued user
+can exit only when the request is executed, skipped by policy as a zero/restricted request, or
+handled by an authorized recovery action such as `AbortWithdrawing` after execution has entered a
+recoverable withdrawal state. Adding `cancel_withdraw(request_id)` is deferred because it needs
+explicit FIFO, escrow refund, restriction, pause, and queue-removal semantics.
+
 ```mermaid
 sequenceDiagram
     actor User
-    actor Keeper
+    actor Keeper as Allocator/Keeper
     participant Contract as SorobanVaultContract
     participant Vault as CuratorVault
     participant Kernel as apply_action()
@@ -133,6 +148,7 @@ sequenceDiagram
 
     Keeper->>Contract: execute_withdraw(caller)
     Contract->>Vault: execute_withdraw(...)
+    Vault->>Vault: authorize ActionKind::ExecuteWithdraw
     Vault->>Kernel: ExecuteWithdraw
     alt queue head is cooled down and fully idle-funded
         Vault->>Vault: complete_withdrawal_from_idle()
@@ -145,10 +161,14 @@ sequenceDiagram
     Contract-->>Keeper: ok
 ```
 
-The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for
-the stable contract ABI. The generic `execute(payload)` command path returns
-`VaultCommandResult::ExecuteWithdrawStatus` for
-`VaultCommand::ExecuteWithdraw`, with:
+`execute_withdraw` is not a public user exit. The Soroban entrypoint requires the caller's
+signature and the vault then authorizes the caller under `ActionKind::ExecuteWithdraw`, which is
+the allocator policy class in the default RBAC policy. Ordinary users use atomic `withdraw` /
+`redeem` for idle liquidity or `request_withdraw` for the queued path.
+
+The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for the stable contract
+ABI. The generic `execute(payload)` command path returns
+`VaultCommandResult::ExecuteWithdrawStatus` for `VaultCommand::ExecuteWithdraw`, with:
 
 - `op_state_before` and `op_state_after`: kernel operation-state codes
   (`0 = Idle`, `1 = Allocating`, `2 = Withdrawing`, `3 = Refreshing`,
@@ -156,12 +176,23 @@ the stable contract ABI. The generic `execute(payload)` command path returns
 - `assets_transferred`: assets paid to receivers during this command.
 - `events_emitted`: kernel/runtime events emitted while processing the command.
 
-Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity
-error as a signal to free market liquidity before retrying. A successful
-command with `assets_transferred == 0` and a non-idle `op_state_after` should
-be alerted as an unexpected no-progress withdrawal state. The A-002 fix is
-intended to reject that zero-progress transition before it is persisted, but the
-structured result keeps automation from relying on a bare `Unit` success.
+Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity error as a signal to
+free market liquidity before retrying. The error is intentionally compact and does not carry
+`needed` / `available` amounts; automation should derive the head request's `expected_assets` from
+the indexed `WithdrawalRequested` event stream and compare it with the current idle assets exposed
+by `proxy_view` before choosing how much liquidity to free. A successful command with
+`assets_transferred == 0` and a non-idle `op_state_after` should be alerted as an unexpected
+no-progress withdrawal state. The A-002 fix is intended to reject that zero-progress transition
+before it is persisted, but the structured result keeps automation from relying on a bare `Unit`
+success.
+
+Finishing an allocation can also advance the withdrawal queue. When `FinishAllocating` returns the
+vault to idle and the queue head is cooled down and fully idle-funded, the kernel immediately starts
+that withdrawal instead of leaving the newly freed liquidity idle. This avoids a second transaction
+and prevents newly freed idle liquidity from being consumed by atomic `withdraw` / `redeem` before
+the queued head is served. Off-chain indexers and reconciliation jobs must therefore treat both
+`execute_withdraw` and `FinishAllocating` transactions as possible withdrawal-settlement triggers
+and follow the emitted withdrawal / payout events.
 
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
