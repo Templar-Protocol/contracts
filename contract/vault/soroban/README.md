@@ -263,6 +263,29 @@ Useful commands:
 - Risk comes from queue backlog plus unusually large in-flight plans.
 - If state would exceed Soroban storage write limits, storage save paths return a typed runtime storage error before the host storage write.
 
+## Runtime TTL and Keeper Responsibility
+
+Soroban contract data is not permanent. Vault deployments must include an ops/keeper job that
+periodically calls the permissionless `VaultCommand::ExtendTtl` path through `execute(payload)`.
+Do not rely on a curator remembering to do this manually.
+
+The runtime TTL keeper renews the vault contract's own storage, not every external contract or
+every user-owned entry elsewhere. In particular, one successful vault runtime TTL call renews:
+
+- runtime instance storage;
+- the canonical `StateBlob`, including any paged blob entries;
+- policy and restriction blobs: `PolicyLocks`, `PolicySupplyQueue`, `PolicyMarkets`,
+  `PolicyPrincipals`, `PolicyCapGroups`, and `Restrictions`, including their paged entries;
+- withdrawal queue pages currently referenced by the state header;
+- runtime address-book mappings referenced by pending withdrawals, active withdrawal/payout
+  operation state, and fee recipients.
+
+Normal state-saving vault paths also refresh runtime storage TTL, but a quiet vault can still
+approach archival. Schedule the keeper on cadence well before the TTL threshold. Related contracts
+need their own TTL maintenance: share token, governance, adapters, proxy contracts, and oracle
+contracts do not inherit the vault runtime's TTL renewal. The 4626 proxy has its own
+permissionless `extend_ttl()` entrypoint for proxy config maintenance.
+
 ## Parity Tests
 
 Parity tests check behavioral equivalence across the shared kernel and chain executors (NEAR and Soroban). They ensure state transitions, accounting behavior, and invariants stay aligned as implementations evolve.
