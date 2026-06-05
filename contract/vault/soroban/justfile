@@ -757,27 +757,34 @@ abort-withdrawing op_id:
 	just vault-execute abort-withdrawing --caller "$addr" --op-id "{{op_id}}"
 	@echo "✓ Withdrawal abort submitted"
 
-# Demo: Request withdrawal of 500 shares and execute.
+# Demo: Request withdrawal of 500 shares and try to execute if cooldown and idle funding allow it.
 demo-withdraw:
 	@echo "=== WITHDRAWAL DEMO ==="
 	@echo "Step 1: Request withdrawal"
 	@just request-withdraw-self 500000
 	@echo ""
 	@echo "Step 2: Execute withdrawal"
-	@just execute-withdraw
+	@if just execute-withdraw; then \
+		echo "execute_withdraw completed"; \
+	else \
+		echo "execute_withdraw pending (cooldown or insufficient idle); retry later."; \
+	fi
 	@echo ""
 	@just vault-state
 
 # Atomic withdraw (ERC-4626-style immediate exit; idle assets only, never queues).
-# Usage: just withdraw <assets> <receiver> <owner>
-withdraw assets receiver owner:
+# Usage: just withdraw <assets> <receiver> <owner> [max_shares_burned]
+withdraw assets receiver owner max_shares_burned="":
 	@echo "Atomic withdrawal of {{assets}} assets..."
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
-	just invoke withdraw \
+	max_shares="{{max_shares_burned}}"; \
+	if [ -z "$max_shares" ]; then max_shares="{{assets}}"; fi; \
+	just vault-execute atomic-withdraw \
+		--owner "{{owner}}" \
+		--operator "$addr" \
 		--assets "{{assets}}" \
 		--receiver "{{receiver}}" \
-		--owner "{{owner}}" \
-		--operator "$addr"
+		--max-shares-burned "$max_shares"
 	@echo "✓ Withdrawal complete"
 
 # =============================================================================
@@ -1185,6 +1192,7 @@ help:
 	@echo "  just deposit-self <assets> [min_shares]"
 	@echo ""
 	@echo "WITHDRAWALS:"
+	@echo "  just withdraw <assets> <receiver> <owner> [max_shares]"
 	@echo "  just request-withdraw <owner> <receiver> <shares> [min_assets]"
 	@echo "  just request-withdraw-self <shares> [min_assets]"
 	@echo "  just execute-withdraw"

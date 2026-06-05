@@ -57,8 +57,9 @@ sequenceDiagram
     participant Storage as SorobanStorage
 
     Caller->>Entry: invoke deposit / atomic withdraw / queued action
-    Entry->>Entry: require_auth()
+    Entry->>Entry: require_auth() for deposit/request/execute callers
     Entry->>Vault: load bootstrap + map addresses
+    Note over Entry,Vault: atomic_withdraw_impl / atomic_redeem_impl delegate operator auth to the vault/share-token path
     Vault->>Storage: load versioned state / config
     Vault->>Vault: authorize(ActionKind, caller)
     Vault->>Kernel: apply_action(...)

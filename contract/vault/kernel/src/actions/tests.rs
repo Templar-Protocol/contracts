@@ -153,7 +153,7 @@ fn execute_withdraw_idle_starts_withdrawal() {
 }
 
 #[test]
-fn execute_withdraw_partially_idle_starts_withdrawal() {
+fn execute_withdraw_partially_idle_refuses_before_withdrawing() {
     let mut state = balanced_state();
     let config = test_config();
     let owner = addr(3);
@@ -179,14 +179,14 @@ fn execute_withdraw_partially_idle_starts_withdrawal() {
         KernelAction::ExecuteWithdraw {
             now_ns: TimestampNs(DEFAULT_COOLDOWN_NS + 1),
         },
-    )
-    .unwrap();
+    );
 
-    let withdraw = result.state.op_state.as_withdrawing().unwrap();
-    assert_eq!(withdraw.owner, owner);
-    assert_eq!(withdraw.receiver, receiver);
-    assert_eq!(withdraw.escrow_shares, 600);
-    assert_eq!(withdraw.remaining, 600);
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalLiquidityBelowMinimum
+        ))
+    ));
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn execute_withdraw_low_liquidity_below_minimum_fails_before_withdrawing() {
 }
 
 #[test]
-fn execute_withdraw_low_liquidity_at_minimum_still_starts_partial_payout() {
+fn execute_withdraw_partial_idle_at_minimum_fails_before_withdrawing() {
     let mut config = test_config();
     config.min_withdrawal_assets = MIN_WITHDRAWAL_ASSETS;
     config.withdrawal_cooldown_ns = 0;
@@ -1293,13 +1293,14 @@ fn execute_withdraw_low_liquidity_at_minimum_still_starts_partial_payout() {
         KernelAction::ExecuteWithdraw {
             now_ns: TimestampNs(0),
         },
-    )
-    .unwrap();
+    );
 
-    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
-    assert_eq!(withdrawing.owner, owner);
-    assert_eq!(withdrawing.receiver, receiver);
-    assert_eq!(withdrawing.remaining, total_assets);
+    assert!(matches!(
+        result,
+        Err(KernelError::InvalidState(
+            InvalidStateCode::WithdrawalLiquidityBelowMinimum
+        ))
+    ));
 }
 
 #[test]
