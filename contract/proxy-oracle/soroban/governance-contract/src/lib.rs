@@ -29,8 +29,8 @@ pub use events::{
 
 use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
-    load_header, load_proposal, proposal_from_kernel, proposal_to_kernel, remove_proposal,
-    save_header, save_proposal, DataKey, KernelGovernance,
+    extend_active_proposal_ttls, load_header, load_proposal, proposal_from_kernel,
+    proposal_to_kernel, remove_proposal, save_header, save_proposal, DataKey, KernelGovernance,
 };
 
 const MAX_PENDING_PROPOSALS: u32 = 64;
@@ -202,6 +202,7 @@ impl ProxyOracleGovernance {
             return Err(GovernanceError::Unauthorized);
         }
         extend_instance_ttl(&env);
+        extend_active_proposal_ttls(&env, &load_header(&env)?);
         TtlExtended {}.publish(&env);
         Ok(())
     }

@@ -26,6 +26,9 @@ use templar_soroban_shared_types::{
 
 use crate::error::ContractError;
 
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
+
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) enum VaultCommand {
     DepositWithMin {
@@ -358,6 +361,7 @@ impl Soroban4626ProxyContract {
         asset_token: Address,
         share_token: Address,
     ) -> Result<(), ContractError> {
+        extend_instance_ttl(&env);
         if is_initialized(&env) {
             return Err(ContractError::AlreadyInitialized);
         }
@@ -374,6 +378,16 @@ impl Soroban4626ProxyContract {
         env.storage()
             .instance()
             .set(&ProxyDataKey::Initialized, &true);
+        extend_instance_ttl(&env);
+        Ok(())
+    }
+
+    /// Extend proxy configuration TTL.
+    ///
+    /// This is permissionless because it only preserves existing proxy config;
+    /// it cannot mutate vault accounting or authorization state.
+    pub fn extend_ttl(env: Env) -> Result<(), ContractError> {
+        extend_instance_ttl(&env);
         Ok(())
     }
 }
@@ -386,6 +400,7 @@ pub(crate) fn is_initialized(env: &Env) -> bool {
 }
 
 pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
+    extend_instance_ttl(env);
     is_initialized(env)
         .then_some(())
         .ok_or(ContractError::NotInitialized)
@@ -395,6 +410,12 @@ fn require_non_negative(amount: i128) -> Result<(), ContractError> {
     (amount >= 0)
         .then_some(())
         .ok_or(ContractError::InvalidInput)
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
 fn deposit_with_min_internal(
