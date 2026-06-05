@@ -107,19 +107,22 @@ impl Soroban4626ProxyContract {
         assets: i128,
         receiver: Address,
     ) -> Result<i128, ContractError> {
-        require_non_negative(assets)?;
-        operator.require_auth();
-        let shares = expect_i128_result(invoke_vault_execute(
-            &env,
-            VaultCommand::DepositWithMin {
-                owner: operator.clone(),
-                receiver: receiver.clone(),
-                assets,
-                min_shares_out: 0,
-            },
-        )?)?;
-        emit_deposit_event(&env, &operator, &receiver, assets, shares);
-        Ok(shares)
+        deposit_with_min_internal(env, operator, assets, receiver, 0)
+    }
+
+    /// Synchronous asset deposit with explicit minimum shares out.
+    ///
+    /// This exposes the vault's native `DepositWithMin` slippage guard through
+    /// the proxy. `operator` is authenticated and is also the asset source for
+    /// this compatibility entrypoint.
+    pub fn deposit_with_min(
+        env: Env,
+        operator: Address,
+        assets: i128,
+        receiver: Address,
+        min_shares_out: i128,
+    ) -> Result<i128, ContractError> {
+        deposit_with_min_internal(env, operator, assets, receiver, min_shares_out)
     }
 
     /// Synchronous share mint into the underlying vault.
@@ -392,6 +395,29 @@ fn require_non_negative(amount: i128) -> Result<(), ContractError> {
     (amount >= 0)
         .then_some(())
         .ok_or(ContractError::InvalidInput)
+}
+
+fn deposit_with_min_internal(
+    env: Env,
+    operator: Address,
+    assets: i128,
+    receiver: Address,
+    min_shares_out: i128,
+) -> Result<i128, ContractError> {
+    require_non_negative(assets)?;
+    require_non_negative(min_shares_out)?;
+    operator.require_auth();
+    let shares = expect_i128_result(invoke_vault_execute(
+        &env,
+        VaultCommand::DepositWithMin {
+            owner: operator.clone(),
+            receiver: receiver.clone(),
+            assets,
+            min_shares_out,
+        },
+    )?)?;
+    emit_deposit_event(&env, &operator, &receiver, assets, shares);
+    Ok(shares)
 }
 
 pub(crate) fn read_vault_address(env: &Env) -> Result<Address, ContractError> {

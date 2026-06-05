@@ -284,6 +284,15 @@ fn test_rejects_negative_amounts_before_vault_call() {
     let deposit = fixture.env.as_contract(&fixture.proxy, || {
         Soroban4626ProxyContract::deposit(fixture.env.clone(), caller.clone(), -1, receiver.clone())
     });
+    let deposit_with_min = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::deposit_with_min(
+            fixture.env.clone(),
+            caller.clone(),
+            1,
+            receiver.clone(),
+            -1,
+        )
+    });
     let mint = fixture.env.as_contract(&fixture.proxy, || {
         Soroban4626ProxyContract::mint(fixture.env.clone(), caller.clone(), -1, receiver.clone())
     });
@@ -316,6 +325,7 @@ fn test_rejects_negative_amounts_before_vault_call() {
     });
 
     assert_eq!(deposit, Err(ContractError::InvalidInput));
+    assert_eq!(deposit_with_min, Err(ContractError::InvalidInput));
     assert_eq!(mint, Err(ContractError::InvalidInput));
     assert_eq!(withdraw, Err(ContractError::InvalidInput));
     assert_eq!(redeem, Err(ContractError::InvalidInput));
@@ -398,6 +408,40 @@ fn test_deposit_command_serialization() {
             receiver: address_wire(&receiver),
             assets: 250,
             min_shares_out: 0,
+        }
+    );
+}
+
+#[test]
+fn test_deposit_with_min_command_serialization() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+
+    let minted = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::deposit_with_min(
+            fixture.env.clone(),
+            operator.clone(),
+            250,
+            receiver.clone(),
+            240,
+        )
+    });
+
+    assert_eq!(minted, Ok(1000));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    let command = decode_command(&payloads.get(0).expect("payload exists"));
+    assert_eq!(
+        command,
+        WireVaultCommand::DepositWithMin {
+            owner: address_wire(&operator),
+            receiver: address_wire(&receiver),
+            assets: 250,
+            min_shares_out: 240,
         }
     );
 }
