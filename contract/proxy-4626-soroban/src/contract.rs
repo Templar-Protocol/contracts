@@ -82,58 +82,60 @@ pub struct Soroban4626ProxyContract;
 impl Soroban4626ProxyContract {
     /// Synchronous asset deposit into the underlying vault.
     ///
-    /// `caller` is explicit because Soroban has no ambient `msg.sender`; the
+    /// `operator` is explicit because Soroban has no ambient `msg.sender`; the
     /// proxy must know which address to authenticate with `require_auth()`.
     /// This method follows the ERC-4626 deposit shape, but with the Soroban
-    /// caller address passed as an argument.
+    /// operator address passed as an argument. The operator is also the asset
+    /// source for this compatibility entrypoint.
     pub fn deposit(
         env: Env,
-        caller: Address,
+        operator: Address,
         assets: i128,
         receiver: Address,
     ) -> Result<i128, ContractError> {
         require_non_negative(assets)?;
-        caller.require_auth();
+        operator.require_auth();
         let shares = expect_i128_result(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
-                owner: caller.clone(),
+                owner: operator.clone(),
                 receiver: receiver.clone(),
                 assets,
                 min_shares_out: 0,
             },
         )?)?;
-        emit_deposit_event(&env, &caller, &receiver, assets, shares);
+        emit_deposit_event(&env, &operator, &receiver, assets, shares);
         Ok(shares)
     }
 
     /// Synchronous share mint into the underlying vault.
     ///
-    /// `caller` is explicit because Soroban has no ambient `msg.sender`; the
+    /// `operator` is explicit because Soroban has no ambient `msg.sender`; the
     /// proxy must know which address to authenticate with `require_auth()`.
     /// The proxy previews the assets needed and submits a minimum share output
-    /// equal to `shares`.
+    /// equal to `shares`. The operator is also the asset source for this
+    /// compatibility entrypoint.
     pub fn mint(
         env: Env,
-        caller: Address,
+        operator: Address,
         shares: i128,
         receiver: Address,
     ) -> Result<i128, ContractError> {
         require_non_negative(shares)?;
-        caller.require_auth();
-        let preview = call_proxy_view(&env, &caller, 0, shares)?;
+        operator.require_auth();
+        let preview = call_proxy_view(&env, &operator, 0, shares)?;
         let assets = preview.preview_mint_assets;
         require_non_negative(assets)?;
         expect_i128_result(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
-                owner: caller.clone(),
+                owner: operator.clone(),
                 receiver: receiver.clone(),
                 assets,
                 min_shares_out: shares,
             },
         )?)?;
-        emit_deposit_event(&env, &caller, &receiver, assets, shares);
+        emit_deposit_event(&env, &operator, &receiver, assets, shares);
         Ok(assets)
     }
 
@@ -144,22 +146,22 @@ impl Soroban4626ProxyContract {
     /// `request_id`; assets are not transferred to `receiver` until the
     /// withdrawal becomes executable and `execute_withdraw` succeeds.
     ///
-    /// `caller` is explicit because Soroban has no ambient `msg.sender`.
-    /// The supported path is `caller == owner`. Operator-style delegated
+    /// `operator` is explicit because Soroban has no ambient `msg.sender`.
+    /// The supported path is `operator == owner`. Operator-style delegated
     /// requests require a transfer-from-backed vault request path.
     pub fn withdraw(
         env: Env,
-        caller: Address,
+        operator: Address,
         assets: i128,
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
         require_non_negative(assets)?;
-        let share_token = read_share_token(&env)?;
+        operator.require_auth();
+        require_self_operator(&operator, &owner)?;
         let preview = call_proxy_view(&env, &owner, assets, 0)?;
         let shares = preview.preview_withdraw_shares;
         require_non_negative(shares)?;
-        require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
         let request_id = expect_u64_result(invoke_vault_execute(
             &env,
             VaultCommand::RequestWithdraw {
@@ -169,7 +171,7 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
+        emit_redeem_request_event(&env, &receiver, &owner, request_id, &operator, shares);
         Ok(request_id)
     }
 
@@ -180,19 +182,19 @@ impl Soroban4626ProxyContract {
     /// `request_id`; assets are not transferred to `receiver` until the
     /// withdrawal becomes executable and `execute_withdraw` succeeds.
     ///
-    /// `caller` is explicit because Soroban has no ambient `msg.sender`.
-    /// The supported path is `caller == owner`. Operator-style delegated
+    /// `operator` is explicit because Soroban has no ambient `msg.sender`.
+    /// The supported path is `operator == owner`. Operator-style delegated
     /// requests require a transfer-from-backed vault request path.
     pub fn redeem(
         env: Env,
-        caller: Address,
+        operator: Address,
         shares: i128,
         receiver: Address,
         owner: Address,
     ) -> Result<u64, ContractError> {
         require_non_negative(shares)?;
-        let share_token = read_share_token(&env)?;
-        require_auth_or_allowance(&env, &caller, &owner, &share_token, shares)?;
+        operator.require_auth();
+        require_self_operator(&operator, &owner)?;
         let preview = call_proxy_view(&env, &owner, 0, shares)?;
         let assets = preview.convert_to_assets;
         require_non_negative(assets)?;
@@ -205,7 +207,7 @@ impl Soroban4626ProxyContract {
                 min_assets_out: assets,
             },
         )?)?;
-        emit_redeem_request_event(&env, &receiver, &owner, request_id, &caller, shares);
+        emit_redeem_request_event(&env, &receiver, &owner, request_id, &operator, shares);
         Ok(request_id)
     }
 
@@ -240,14 +242,14 @@ impl Soroban4626ProxyContract {
 
     /// Execute the next claimable queued withdrawal.
     ///
-    /// `caller` is the authenticated vault executor/keeper, not a request id.
+    /// `operator` is the authenticated vault executor/keeper, not a request id.
     /// This method executes according to the vault's queue and authorization
     /// policy; it does not select a withdrawal request by `request_id`.
-    pub fn execute_withdraw(env: Env, caller: Address) -> Result<(), ContractError> {
-        caller.require_auth();
+    pub fn execute_withdraw(env: Env, operator: Address) -> Result<(), ContractError> {
+        operator.require_auth();
         expect_unit_result(invoke_vault_execute(
             &env,
-            VaultCommand::ExecuteWithdraw { caller },
+            VaultCommand::ExecuteWithdraw { caller: operator },
         )?)
     }
 
@@ -528,43 +530,10 @@ fn expect_unit_result(result: WireVaultCommandResult) -> Result<(), ContractErro
     }
 }
 
-pub(crate) fn require_auth_or_allowance(
-    env: &Env,
-    caller: &Address,
-    owner: &Address,
-    token: &Address,
-    amount: i128,
-) -> Result<(), ContractError> {
-    if caller == owner {
-        owner.require_auth();
-        return Ok(());
-    }
-
-    caller.require_auth();
-    let proxy = env.current_contract_address();
-    let allowance: i128 =
-        call_token_view_with_two_addresses(env, token, "allowance", owner, &proxy)?;
-
-    (allowance >= amount)
+fn require_self_operator(operator: &Address, owner: &Address) -> Result<(), ContractError> {
+    (operator == owner)
         .then_some(())
         .ok_or(ContractError::InsufficientAllowance)
-}
-
-fn call_token_view_with_two_addresses<T>(
-    env: &Env,
-    token: &Address,
-    method: &str,
-    first: &Address,
-    second: &Address,
-) -> Result<T, ContractError>
-where
-    T: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
-{
-    map_token_invoke_result(env.try_invoke_contract::<T, soroban_sdk::Error>(
-        token,
-        &Symbol::new(env, method),
-        soroban_sdk::vec![env, first.into_val(env), second.into_val(env)],
-    ))
 }
 
 #[allow(deprecated)]
