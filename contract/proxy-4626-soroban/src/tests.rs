@@ -273,6 +273,18 @@ fn test_initialize_already_initialized() {
 }
 
 #[test]
+fn test_extend_ttl_succeeds() {
+    let fixture = Fixture::new();
+
+    fixture.initialize().expect("initialize succeeds");
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::extend_ttl(fixture.env.clone())
+    });
+
+    assert_eq!(result, Ok(()));
+}
+
+#[test]
 fn test_rejects_negative_amounts_before_vault_call() {
     let fixture = Fixture::new();
     let caller = Address::generate(&fixture.env);

@@ -77,6 +77,16 @@ pub fn load_proposal(env: &Env, id: u64) -> Option<Proposal> {
     proposal
 }
 
+pub fn extend_active_proposal_ttls(env: &Env, header: &KernelGovernance) {
+    let storage = env.storage().persistent();
+    for id in &header.active_ids {
+        let key = DataKey::Proposal(*id);
+        if storage.has(&key) {
+            storage.extend_ttl(&key, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+        }
+    }
+}
+
 pub fn save_proposal(env: &Env, id: u64, proposal: &Proposal) {
     let key = DataKey::Proposal(id);
     env.storage().persistent().set(&key, proposal);
