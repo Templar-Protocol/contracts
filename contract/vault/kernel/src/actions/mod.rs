@@ -1380,41 +1380,18 @@ fn handle_begin_allocating(
     Ok(KernelResult::new(state, result.effects))
 }
 
-/// Finish an allocation, optionally chaining into a pending withdrawal.
+/// Finish an allocation without advancing the withdrawal queue.
 #[cfg(any(feature = "action-allocation-lifecycle", test))]
 fn handle_finish_allocating(
     mut state: VaultState,
-    config: &VaultConfig,
-    restrictions: Option<&Restrictions>,
-    self_id: &Address,
+    _config: &VaultConfig,
+    _restrictions: Option<&Restrictions>,
+    _self_id: &Address,
     op_id: u64,
-    now_ns: TimestampNs,
+    _now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    let mut skipped_effects = Vec::new();
-
-    let pending_req = if is_globally_paused(config, restrictions) {
-        None
-    } else {
-        match next_withdrawal_queue_outcome(
-            &mut state,
-            config,
-            restrictions,
-            self_id,
-            now_ns,
-            &mut skipped_effects,
-        )? {
-            WithdrawalQueueOutcome::Ready(request) => Some(request),
-            WithdrawalQueueOutcome::None
-            | WithdrawalQueueOutcome::CoolingDown { .. }
-            | WithdrawalQueueOutcome::InsufficientLiquidity => None,
-        }
-    };
-
-    let transition = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req);
-    let mut result = apply_transition_result(state, transition)?;
-    skipped_effects.append(&mut result.effects);
-    result.effects = skipped_effects;
-    Ok(result)
+    let transition = complete_allocation(mem::take(&mut state.op_state), op_id, None);
+    apply_transition_result(state, transition)
 }
 
 #[cfg(any(feature = "action-sync-external", test))]

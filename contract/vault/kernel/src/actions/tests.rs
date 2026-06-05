@@ -1067,7 +1067,7 @@ fn finish_allocating_success() {
 }
 
 #[test]
-fn finish_allocating_with_pending_withdrawal() {
+fn finish_allocating_with_ready_pending_withdrawal_finishes_idle() {
     use crate::state::op_state::AllocatingState;
 
     let mut state = balanced_state();
@@ -1075,7 +1075,6 @@ fn finish_allocating_with_pending_withdrawal() {
     let receiver = addr(11);
     let config = test_config();
 
-    // Add a pending withdrawal that's past cooldown
     state
         .withdraw_queue
         .enqueue(
@@ -1108,8 +1107,35 @@ fn finish_allocating_with_pending_withdrawal() {
     )
     .unwrap();
 
-    // Should transition to Withdrawing instead of Idle
-    assert!(result.state.op_state.as_withdrawing().is_some());
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 1);
+    let (_head_id, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("withdrawal should remain queued");
+    assert_eq!(head.owner, owner);
+    assert_eq!(head.receiver, receiver);
+    assert_eq!(head.expected_assets, 100);
+    assert!(result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::AllocationCompleted {
+                    op_id: 5,
+                    has_withdrawal: false,
+                },
+            }
+        )
+    }));
+    assert!(!result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalStarted { .. },
+            }
+        )
+    }));
 }
 
 #[test]
@@ -3795,7 +3821,7 @@ fn execute_withdraw_persists_skips_before_low_liquidity_head() {
 }
 
 #[test]
-fn finish_allocating_skips_restricted_head_and_chains_next() {
+fn finish_allocating_leaves_restricted_queue_untouched() {
     use crate::state::op_state::AllocatingState;
 
     let config = base_config();
@@ -3848,25 +3874,36 @@ fn finish_allocating_skips_restricted_head_and_chains_next() {
     )
     .expect("finish_allocating");
 
-    let withdrawing = result.state.op_state.as_withdrawing().expect("withdrawing");
-    assert_eq!(withdrawing.owner, next_owner);
-    assert_eq!(withdrawing.receiver, next_receiver);
-    assert!(result.effects.iter().any(|effect| {
+    assert!(result.state.is_idle());
+    assert_eq!(result.state.withdraw_queue.len(), 2);
+    let (head_id, head) = result
+        .state
+        .withdraw_queue
+        .head()
+        .expect("restricted head should remain queued");
+    assert_eq!(head_id, 0);
+    assert_eq!(head.owner, restricted_owner);
+    assert_eq!(head.receiver, first_receiver);
+    assert!(!result.effects.iter().any(|effect| {
         matches!(
             effect,
             KernelEffect::EmitEvent {
-                event: KernelEvent::WithdrawalSkipped {
-                    owner,
-                    reason: WithdrawalSkipReason::Restricted,
-                    ..
-                },
-            } if *owner == restricted_owner
+                event: KernelEvent::WithdrawalSkipped { .. },
+            }
+        )
+    }));
+    assert!(!result.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            KernelEffect::EmitEvent {
+                event: KernelEvent::WithdrawalStarted { .. },
+            }
         )
     }));
 }
 
 #[test]
-fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
+fn finish_allocating_does_not_skip_restricted_head_before_cooldown() {
     use crate::state::op_state::AllocatingState;
 
     let config = base_config();
@@ -3920,21 +3957,17 @@ fn finish_allocating_skips_restricted_head_then_waits_for_cooldown() {
     .expect("finish_allocating");
 
     assert!(result.state.is_idle());
-    assert_eq!(result.state.withdraw_queue.len(), 1);
+    assert_eq!(result.state.withdraw_queue.len(), 2);
     assert_eq!(
         result.state.withdraw_queue.head().map(|(id, _)| id),
-        Some(1)
+        Some(0)
     );
-    assert!(result.effects.iter().any(|effect| {
+    assert!(!result.effects.iter().any(|effect| {
         matches!(
             effect,
             KernelEffect::EmitEvent {
-                event: KernelEvent::WithdrawalSkipped {
-                    owner,
-                    reason: WithdrawalSkipReason::Restricted,
-                    ..
-                },
-            } if *owner == restricted_owner
+                event: KernelEvent::WithdrawalSkipped { .. },
+            }
         )
     }));
 }
