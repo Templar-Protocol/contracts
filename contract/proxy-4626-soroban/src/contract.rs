@@ -1,4 +1,18 @@
 //! Core contract structure and helpers for the Soroban ERC-4626 proxy.
+//!
+//! The proxy uses Soroban-style explicit `operator` arguments instead of an
+//! ambient `msg.sender`. For deposits, the operator is also the asset source.
+//! For asynchronous redemptions, the current audited compatibility path is
+//! owner-operated only: `operator == owner`.
+//!
+//! This deliberately rejects EIP-7540 / OpenZeppelin-style delegated redemption
+//! operators for now. A proper delegated path would need to add `operator` to
+//! the vault request command, thread it through the vault and kernel request
+//! path, escrow shares with `transfer_from` when `operator != owner`, consume
+//! allowance correctly, and test the flow without mocked authorization. That is
+//! useful future UX for routers, custodians, multisigs, batched executors, and
+//! market-maker infrastructure, but it changes share-movement authority and
+//! should be treated as a separately reviewed/audited change.
 
 use alloc::string::String as AllocString;
 
