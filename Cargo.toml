@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "common",
     "contract/market",
+    "contract/proxy-curator-soroban",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
