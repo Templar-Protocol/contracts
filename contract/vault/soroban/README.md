@@ -195,15 +195,13 @@ no-progress withdrawal state. The A-002 fix is intended to reject that zero-prog
 before it is persisted, but the structured result keeps automation from relying on a bare `Unit`
 success.
 
-Finishing an allocation can also advance the withdrawal queue. When `FinishAllocating` returns the
-vault to idle and the queue head is cooled down and fully idle-funded, the kernel immediately starts
-that withdrawal instead of leaving the newly freed liquidity idle. This avoids a second transaction
-and prevents newly freed idle liquidity from being consumed by atomic `withdraw` / `redeem` before
-the queued head is served inside that allocator-driven flow. This is only a local handoff
-optimization for liquidity just returned by allocation finalization; it does not make the queue a
-global reservation over all idle assets. Off-chain indexers and reconciliation jobs must therefore
-treat both `execute_withdraw` and `FinishAllocating` transactions as possible withdrawal-settlement
-triggers and follow the emitted withdrawal / payout events.
+Finishing an allocation does not advance the withdrawal queue. `FinishAllocating` returns the vault
+to idle and leaves any queued requests untouched, even when the queue head is cooled down and fully
+idle-funded. This keeps allocator redeployment explicit: freed liquidity can be supplied elsewhere,
+used by atomic `withdraw` / `redeem`, or paid to a queued request only when an allocator/keeper
+separately calls `execute_withdraw`. Off-chain indexers and reconciliation jobs should treat
+`execute_withdraw` and the emitted withdrawal / payout events as the settlement trigger for the
+async queue.
 
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
