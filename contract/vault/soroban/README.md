@@ -111,10 +111,19 @@ The vault intentionally exposes two withdrawal modes:
 - `withdraw` / `redeem` are ERC-4626-style atomic exits from idle liquidity only. They never
   enqueue work, never pull from adapters, and fail if the requested assets exceed `idle_assets`.
   Accordingly, the `proxy_view` `maxWithdraw` and `maxRedeem` values are bounded by idle assets
-  and can be `0` even when the owner has shares backed by market-deployed assets.
+  and can be `0` even when the owner has shares backed by market-deployed assets. This is the
+  primary user exit path whenever sufficient idle liquidity is already available.
 - `request_withdraw` is the async path for positions that may require allocator/keeper work.
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
+
+The async queue is not a strict FIFO fairness boundary against atomic exits. It coordinates
+cooldowns, escrow, fixed asset claims, and allocator-driven liquidity recovery, but it does not
+reserve idle assets for queued requests while the vault remains idle. A later holder can still use
+atomic `withdraw` / `redeem` against currently idle liquidity before an allocator executes the
+queued head. This mirrors the Morpho-style model where immediate idle-liquidity exits are primary
+and queued or forced-liquidity paths are recovery/coordination mechanisms rather than global
+priority locks.
 
 `request_withdraw` converts the escrowed shares into a fixed `expected_assets` claim at request
 time. Execution later pays that stored claim rather than repricing the shares. This protects the
@@ -190,9 +199,11 @@ Finishing an allocation can also advance the withdrawal queue. When `FinishAlloc
 vault to idle and the queue head is cooled down and fully idle-funded, the kernel immediately starts
 that withdrawal instead of leaving the newly freed liquidity idle. This avoids a second transaction
 and prevents newly freed idle liquidity from being consumed by atomic `withdraw` / `redeem` before
-the queued head is served. Off-chain indexers and reconciliation jobs must therefore treat both
-`execute_withdraw` and `FinishAllocating` transactions as possible withdrawal-settlement triggers
-and follow the emitted withdrawal / payout events.
+the queued head is served inside that allocator-driven flow. This is only a local handoff
+optimization for liquidity just returned by allocation finalization; it does not make the queue a
+global reservation over all idle assets. Off-chain indexers and reconciliation jobs must therefore
+treat both `execute_withdraw` and `FinishAllocating` transactions as possible withdrawal-settlement
+triggers and follow the emitted withdrawal / payout events.
 
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
