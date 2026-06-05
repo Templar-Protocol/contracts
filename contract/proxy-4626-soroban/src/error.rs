@@ -13,7 +13,6 @@ pub enum ContractError {
     InvalidInput = 3,
     VaultError = 4,
     InsufficientAllowance = 5,
-    NotImplemented = 6,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -23,7 +22,6 @@ pub enum RuntimeError {
     AlreadyInitialized,
     VaultError,
     InsufficientAllowance,
-    NotImplemented,
     InvalidInput,
 }
 
@@ -34,7 +32,6 @@ impl From<RuntimeError> for ContractError {
             RuntimeError::AlreadyInitialized => Self::AlreadyInitialized,
             RuntimeError::VaultError => Self::VaultError,
             RuntimeError::InsufficientAllowance => Self::InsufficientAllowance,
-            RuntimeError::NotImplemented => Self::NotImplemented,
             RuntimeError::InvalidInput => Self::InvalidInput,
         }
     }
