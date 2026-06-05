@@ -673,8 +673,7 @@ impl SorobanVaultGovernanceContract {
         env.storage().instance().get(&DataKey::Sentinel)
     }
 
-    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
-        require_admin(&env, &caller)?;
+    pub fn extend_ttl(env: Env) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         extend_pending_queue_ttl(&env);
         Ok(())

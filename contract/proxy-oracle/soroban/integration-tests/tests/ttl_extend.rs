@@ -10,15 +10,15 @@
 //!
 //! Q2 `runtime.extend_ttl()` is publicly callable and renews every
 //!    asset-keyed persistent entry.
-//! Q3 `governance.extend_ttl(caller)` requires `Role::Admin`.
+//! Q3 `governance.extend_ttl()` is publicly callable and renews governance
+//!    state plus active proposal bodies.
 //!
 //! Q1 (instance-TTL fail-closed simulation) is intentionally omitted —
 //! advancing past `max_entry_ttl` in the testutils harness without leaking
 //! host internals isn't reliable; the contract's `MissingConfig` / storage
 //! error paths are still covered by the unit tests inside each crate.
 
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Symbol, Vec as SVec};
+use soroban_sdk::{Symbol, Vec as SVec};
 use templar_proxy_oracle_soroban_common::{Asset, ProxyConfig, SourceConfig};
 use templar_proxy_oracle_soroban_governance_common::GovernanceAction;
 use templar_proxy_oracle_soroban_integration_tests::common::Bootstrap;
@@ -53,13 +53,9 @@ fn runtime_extend_ttl_is_public_and_succeeds_with_assets_configured() {
 }
 
 #[test]
-fn governance_extend_ttl_admin_only() {
+fn governance_extend_ttl_is_public() {
     let b = Bootstrap::new();
-    // Admin succeeds.
-    b.governance.extend_ttl(&b.admin);
 
-    // Non-admin fails.
-    let rando = Address::generate(&b.env);
-    let result = b.governance.try_extend_ttl(&rando);
-    assert!(result.is_err());
+    b.governance.extend_ttl();
+    b.governance.extend_ttl();
 }
