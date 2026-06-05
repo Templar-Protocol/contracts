@@ -495,6 +495,15 @@ fn test_mint_uses_preview() {
     });
 
     assert_eq!(assets, Ok(333));
+    let events = fixture
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&fixture.proxy);
+    assert_eq!(events.events().len(), 1);
+    let rendered = fixture.proxy_events_debug();
+    assert!(rendered.contains("333"));
+    assert!(rendered.contains("1000"));
     assert_eq!(
         fixture.last_proxy_view_call(),
         MockProxyViewCall {

@@ -143,7 +143,7 @@ impl Soroban4626ProxyContract {
         let preview = call_proxy_view(&env, &operator, 0, shares)?;
         let assets = preview.preview_mint_assets;
         require_non_negative(assets)?;
-        expect_i128_result(invoke_vault_execute(
+        let minted_shares = expect_i128_result(invoke_vault_execute(
             &env,
             VaultCommand::DepositWithMin {
                 owner: operator.clone(),
@@ -152,7 +152,7 @@ impl Soroban4626ProxyContract {
                 min_shares_out: shares,
             },
         )?)?;
-        emit_deposit_event(&env, &operator, &receiver, assets, shares);
+        emit_deposit_event(&env, &operator, &receiver, assets, minted_shares);
         Ok(assets)
     }
 
