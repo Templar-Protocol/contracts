@@ -29,7 +29,7 @@ graph TB
         AUTH["RbacAuth / Soroban auth\nrequire_auth() + ActionKind policy"]
         STORAGE["SorobanStorage\nversioned state blob\nTTL extension + migrate gate"]
         ADDR["kernel_address_from_sdk()\nSHA256(domain || strkey)"]
-EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\npostcard kernel events"]
+EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\ntyped kernel events"]
 
         ENTRY --> CVAULT
         CVAULT --> AUTH
