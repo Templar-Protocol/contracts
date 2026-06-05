@@ -169,31 +169,6 @@ impl MockFailingVaultContract {
     }
 }
 
-#[derive(Clone)]
-#[contracttype]
-enum MockShareTokenDataKey {
-    Allowance(Address, Address),
-}
-
-#[contract]
-struct MockShareTokenContract;
-
-#[contractimpl]
-impl MockShareTokenContract {
-    pub fn set_allowance(env: Env, owner: Address, spender: Address, amount: i128) {
-        env.storage()
-            .instance()
-            .set(&MockShareTokenDataKey::Allowance(owner, spender), &amount);
-    }
-
-    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
-        env.storage()
-            .instance()
-            .get(&MockShareTokenDataKey::Allowance(owner, spender))
-            .unwrap_or(0)
-    }
-}
-
 struct Fixture {
     env: Env,
     proxy: Address,
@@ -207,7 +182,7 @@ impl Fixture {
         let env = Env::default();
         let proxy = env.register(Soroban4626ProxyContract, ());
         let vault = env.register(MockVaultContract, ());
-        let share = env.register(MockShareTokenContract, ());
+        let share = Address::generate(&env);
         let asset = Address::generate(&env);
         Self {
             env,
@@ -232,17 +207,6 @@ impl Fixture {
     fn set_preview(&self, preview: MockPreviewConfig) {
         self.env.as_contract(&self.vault, || {
             MockVaultContract::set_preview(self.env.clone(), preview)
-        });
-    }
-
-    fn set_allowance(&self, owner: &Address, spender: &Address, amount: i128) {
-        self.env.as_contract(&self.share, || {
-            MockShareTokenContract::set_allowance(
-                self.env.clone(),
-                owner.clone(),
-                spender.clone(),
-                amount,
-            )
         });
     }
 
@@ -385,9 +349,8 @@ fn test_vault_error_codes_do_not_decode_as_proxy_errors() {
 }
 
 #[test]
-fn test_withdraw_rejects_negative_preview_shares_before_allowance() {
+fn test_withdraw_rejects_negative_preview_shares() {
     let fixture = Fixture::new();
-    let caller = Address::generate(&fixture.env);
     let owner = Address::generate(&fixture.env);
     let receiver = Address::generate(&fixture.env);
 
@@ -397,10 +360,9 @@ fn test_withdraw_rejects_negative_preview_shares_before_allowance() {
         preview_withdraw_shares: -1,
         ..Default::default()
     });
-    fixture.set_allowance(&owner, &fixture.proxy, 0);
 
     let result = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::withdraw(fixture.env.clone(), caller, 111, receiver, owner)
+        Soroban4626ProxyContract::withdraw(fixture.env.clone(), owner.clone(), 111, receiver, owner)
     });
 
     assert_eq!(result, Err(ContractError::InvalidInput));
@@ -727,9 +689,9 @@ fn test_deposit_fails_without_auth() {
 }
 
 #[test]
-fn test_withdraw_fails_without_allowance() {
+fn test_withdraw_rejects_delegated_operator() {
     let fixture = Fixture::new();
-    let caller = Address::generate(&fixture.env);
+    let operator = Address::generate(&fixture.env);
     let owner = Address::generate(&fixture.env);
     let receiver = Address::generate(&fixture.env);
 
@@ -739,10 +701,9 @@ fn test_withdraw_fails_without_allowance() {
         preview_withdraw_shares: 50,
         ..Default::default()
     });
-    fixture.set_allowance(&owner, &fixture.proxy, 0);
 
     let result = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::withdraw(fixture.env.clone(), caller, 111, receiver, owner)
+        Soroban4626ProxyContract::withdraw(fixture.env.clone(), operator, 111, receiver, owner)
     });
 
     assert_eq!(result, Err(ContractError::InsufficientAllowance));
