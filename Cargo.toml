@@ -4,6 +4,7 @@ members = [
     "common",
     "contract/market",
     "contract/proxy-4626-soroban",
+    "contract/proxy-curator-soroban",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",

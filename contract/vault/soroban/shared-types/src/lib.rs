@@ -12,6 +12,9 @@ pub enum CodecError {
     InvalidEncoding,
 }
 
+pub const VAULT_ERR_INVALID_INPUT: u32 = 3;
+pub const VAULT_ERR_ALREADY_INITIALIZED: u32 = 8;
+
 pub type ProxyAddressesView = (
     soroban_sdk::Address,
     soroban_sdk::Address,
