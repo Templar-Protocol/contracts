@@ -112,7 +112,7 @@ The vault intentionally exposes two withdrawal modes:
   enqueue work, never pull from adapters, and fail if the requested assets exceed `idle_assets`.
   Accordingly, the `proxy_view` `maxWithdraw` and `maxRedeem` values are bounded by idle assets
   and can be `0` even when the owner has shares backed by market-deployed assets. This is the
-  primary user exit path whenever sufficient idle liquidity is already available.
+  immediate idle-liquidity exit path when sufficient idle liquidity is available.
 - `request_withdraw` is the async path for positions that may require allocator/keeper work.
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
