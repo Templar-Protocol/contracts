@@ -196,11 +196,7 @@ impl ProxyOracleGovernance {
             .ok_or(GovernanceError::MissingConfig)
     }
 
-    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
-        caller.require_auth();
-        if !roles::has_role(&env, &caller, Role::Admin) {
-            return Err(GovernanceError::Unauthorized);
-        }
+    pub fn extend_ttl(env: Env) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
         extend_active_proposal_ttls(&env, &load_header(&env)?);
         TtlExtended {}.publish(&env);

@@ -189,7 +189,7 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
     );
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::extend_ttl(env.clone(), admin.clone()).unwrap();
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
     });
     assert_eq!(
         governance_events(&env, &governance_id),
@@ -613,11 +613,11 @@ fn revoke_unblocks_later_proposal() {
 // ── TTL tests ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn ttl_governance_extend_requires_admin_and_emits_event() {
-    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+fn ttl_governance_extend_is_permissionless_and_emits_event() {
+    let (env, _admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::extend_ttl(env.clone(), admin.clone()).unwrap();
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
     });
     assert_eq!(
         governance_events(&env, &governance_id),
@@ -646,7 +646,7 @@ fn ttl_governance_extend_renews_active_proposals() {
     let key = DataKey::Proposal(proposal_id);
     let ttl_before = env.as_contract(&governance_id, || env.storage().persistent().get_ttl(&key));
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::extend_ttl(env.clone(), admin.clone()).unwrap();
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
     });
     let ttl_after = env.as_contract(&governance_id, || env.storage().persistent().get_ttl(&key));
 

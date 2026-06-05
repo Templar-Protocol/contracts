@@ -283,8 +283,9 @@ every user-owned entry elsewhere. In particular, one successful vault runtime TT
 Normal state-saving vault paths also refresh runtime storage TTL, but a quiet vault can still
 approach archival. Schedule the keeper on cadence well before the TTL threshold. Related contracts
 need their own TTL maintenance: share token, governance, adapters, proxy contracts, and oracle
-contracts do not inherit the vault runtime's TTL renewal. The 4626 proxy has its own
-permissionless `extend_ttl()` entrypoint for proxy config maintenance.
+contracts do not inherit the vault runtime's TTL renewal. Vault governance and the 4626 proxy
+each have their own permissionless `extend_ttl()` entrypoint for config/proposal-state
+maintenance.
 
 ## Parity Tests
 

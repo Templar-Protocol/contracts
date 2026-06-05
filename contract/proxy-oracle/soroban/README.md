@@ -44,7 +44,7 @@ SEP-40 `PriceFeedTrait` reads dispatch to the parent's `aggregated_latest` / `ag
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
 - Schedule an ops/keeper job for Soroban TTL maintenance; do not rely on curators to remember this manually.
 - Runtime `extend_ttl()` is permissionless and renews runtime instance storage plus every registered asset's persistent `Assets`, `Proxy`, `Breakers`, `Cache`, and `History` entries.
-- Governance `extend_ttl(caller)` is admin-only and renews governance instance state plus active persistent proposal bodies.
+- Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
 - SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
 - Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB, adapter ≤ 32 KiB. Recheck after ABI/event changes.
 
