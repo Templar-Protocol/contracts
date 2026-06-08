@@ -74,6 +74,21 @@ mod tests {
 
     use super::*;
 
+    const STELLAR_ACCOUNT: &str = "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV";
+
+    fn event(receiver_id: &str) -> StellarDepositEvent {
+        let sample_nonce = "55";
+        serde_json::from_value(serde_json::json!({
+            "chain_id": 1100,
+            "nonce": sample_nonce,
+            "sender_id": STELLAR_ACCOUNT,
+            "receiver_id": receiver_id,
+            "token_id": "1100_CUSDC",
+            "amount": "9"
+        }))
+        .unwrap_or_else(|error| panic!("{error}"))
+    }
+
     #[derive(Default)]
     struct RecordingSigner {
         deposit_calls: Mutex<Vec<DepositSignRequest>>,
@@ -100,7 +115,7 @@ mod tests {
     fn routing() -> HotRelayerRouting {
         HotRelayerRouting::new(
             "vault-counterparty.near".to_string(),
-            "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
+            STELLAR_ACCOUNT.to_string(),
             1100,
             "1100_CUSDC".to_string(),
         )
@@ -111,14 +126,7 @@ mod tests {
     async fn hot_relayer_completes_deposit_through_checked_route() {
         let signer = RecordingSigner::default();
         let relayer = HotBridgeRelayer::new(routing(), signer);
-        let event = StellarDepositEvent {
-            chain_id: 1100,
-            nonce: "55".to_string(),
-            sender_id: "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
-            receiver_id: "vault-counterparty.near".to_string(),
-            token_id: "1100_CUSDC".to_string(),
-            amount: "9".to_string(),
-        };
+        let event = event("vault-counterparty.near");
 
         let completion = relayer
             .complete_deposit(&event)
@@ -127,7 +135,7 @@ mod tests {
 
         assert_eq!(completion.signature, "sig-deposit");
         assert_eq!(
-            completion.sign_request.receiver_id,
+            completion.sign_request.receiver_id.as_str(),
             "vault-counterparty.near"
         );
     }
@@ -136,14 +144,7 @@ mod tests {
     async fn hot_relayer_rejects_unexpected_deposit_receiver() {
         let signer = RecordingSigner::default();
         let relayer = HotBridgeRelayer::new(routing(), signer);
-        let event = StellarDepositEvent {
-            chain_id: 1100,
-            nonce: "55".to_string(),
-            sender_id: "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
-            receiver_id: "unexpected.near".to_string(),
-            token_id: "1100_CUSDC".to_string(),
-            amount: "9".to_string(),
-        };
+        let event = event("unexpected.near");
 
         let error = relayer
             .complete_deposit(&event)

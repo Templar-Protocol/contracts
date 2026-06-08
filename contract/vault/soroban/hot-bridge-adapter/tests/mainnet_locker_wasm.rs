@@ -53,6 +53,10 @@ fn register_mainnet_locker_wasm(env: &Env) -> Address {
     locker
 }
 
+fn hot_client_timestamp(env: &Env, same_ledger_sequence: u128) -> u128 {
+    u128::from(env.ledger().timestamp()) * 1_000_000_000_000 - same_ledger_sequence
+}
+
 fn invoke_locker_deposit(
     env: &Env,
     locker: &Address,
@@ -133,7 +137,7 @@ fn mainnet_locker_wasm_accepts_verified_deposit_shape() {
         100,
         &token,
         &receiver,
-        1_777_000_000_000_000_000_000,
+        hot_client_timestamp(&env, 0),
     );
 
     assert_eq!(
@@ -161,7 +165,7 @@ fn mainnet_locker_wasm_rejects_duplicate_client_timestamp_in_same_ledger() {
     let first_sender = dummy_contract(&env);
     let second_sender = dummy_contract(&env);
     let receiver = proven_receiver(&env);
-    let client_timestamp = 1_777_000_000_000_000_000_000;
+    let client_timestamp = hot_client_timestamp(&env, 0);
     token_admin.mint(&first_sender, &100);
     token_admin.mint(&second_sender, &60);
 
@@ -215,7 +219,7 @@ fn adapter_supply_works_against_mainnet_locker_wasm() {
         &locker,
         &receiver,
         100,
-        1_777_000_000_000_000_000_000,
+        hot_client_timestamp(&env, 0),
     );
 
     assert_eq!(adapter_client.total_assets(&token), 100);
@@ -249,7 +253,7 @@ fn adapter_supply_supports_two_deposits_in_same_ledger_against_mainnet_locker_wa
     StellarAssetClient::new(&env, &token).mint(&vault, &100);
     adapter_client.supply(&vault, &token, &100);
 
-    let first_nonce = 1_777_000_000_000_000_000_000;
+    let first_nonce = hot_client_timestamp(&env, 0);
     let second_nonce = first_nonce - 1;
     assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 100, first_nonce);
 

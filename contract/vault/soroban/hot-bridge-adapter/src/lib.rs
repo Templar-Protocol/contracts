@@ -72,6 +72,7 @@ pub enum AdapterError {
 pub struct HotBridgeAdapterContract;
 
 #[contractimpl]
+#[allow(deprecated)]
 impl HotBridgeAdapterContract {
     pub fn __constructor(
         env: Env,
@@ -134,6 +135,9 @@ impl HotBridgeAdapterContract {
         require_vault(&env, &caller)?;
         require_positive_amount(amount)?;
         require_configured_asset(&env, &asset)?;
+        // Returned balances must be progressed back to the vault before new supply
+        // can bridge more of the same asset, otherwise principal and completed
+        // withdrawal accounting would be mixed.
         if returned_of(&env, &asset) > 0 {
             return Err(AdapterError::PendingReturnedBalance);
         }
@@ -932,7 +936,7 @@ mod tests {
                 .set(&Symbol::new(&env, "amount"), &amount_i128);
             soroban_sdk::token::Client::new(&env, &token).transfer(
                 &sender_id,
-                &env.current_contract_address(),
+                env.current_contract_address(),
                 &amount_i128,
             );
             client_timestamp
@@ -1002,6 +1006,10 @@ mod tests {
             (&admin, &vault, &hot_locker, &asset, &receiver),
         );
         (adapter, admin, vault, hot_locker, asset, receiver)
+    }
+
+    fn expected_hot_client_timestamp(env: &Env, same_ledger_sequence: u128) -> u128 {
+        u128::from(env.ledger().timestamp()) * 1_000_000_000_000 - same_ledger_sequence
     }
 
     fn fuzz_env() -> Env {
@@ -1186,13 +1194,16 @@ mod tests {
             &hot_locker,
             &receiver,
             100,
-            1_777_000_000_000_000_000_000,
+            expected_hot_client_timestamp(&env, 0),
         );
 
         let locker_client = MockHotLockerClient::new(&env, &hot_locker);
         assert_eq!(locker_client.receiver(), receiver);
         assert_eq!(locker_client.amount(), 100);
-        assert_eq!(locker_client.timestamp(), 1_777_000_000_000_000_000_000);
+        assert_eq!(
+            locker_client.timestamp(),
+            expected_hot_client_timestamp(&env, 0)
+        );
         assert_eq!(client.total_assets(&asset), 100);
         assert_eq!(
             soroban_sdk::token::Client::new(&env, &asset).balance(&adapter),
@@ -1210,7 +1221,7 @@ mod tests {
         let (adapter, _admin, vault, hot_locker, asset, receiver) = setup(&env);
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
         let asset_admin = StellarAssetClient::new(&env, &asset);
-        let base_nonce = 1_777_000_000_000_000_000_000;
+        let base_nonce = expected_hot_client_timestamp(&env, 0);
 
         asset_admin.mint(&vault, &100);
         client.supply(&vault, &asset, &100);
@@ -1248,7 +1259,7 @@ mod tests {
             &hot_locker,
             &receiver,
             25,
-            1_777_000_001_000_000_000_000,
+            expected_hot_client_timestamp(&env, 0),
         );
         assert_eq!(client.total_assets(&asset), 185);
     }

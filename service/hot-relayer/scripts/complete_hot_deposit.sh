@@ -84,8 +84,8 @@ check_required_config() {
         exit 1
     fi
 
-    if [ -z "${HOT_RELAYER_STELLAR_RECEIVER:-}" ]; then
-        print_error "HOT_RELAYER_STELLAR_RECEIVER is required in .env"
+    if [ -z "${HOT_RELAYER_NEAR_RECEIVER:-}" ]; then
+        print_error "HOT_RELAYER_NEAR_RECEIVER is required in .env"
         exit 1
     fi
 

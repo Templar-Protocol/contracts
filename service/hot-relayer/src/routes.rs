@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::State,
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing, Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     bridge_transport::{BridgeRelayer, DepositCompletion, HotBridgeRelayer},
@@ -32,10 +33,10 @@ impl AppState {
                 field: "config",
                 reason: error.to_string(),
             })?;
-        Self::from_validated_config(validated)
+        Self::from_validated_config(&validated)
     }
 
-    pub fn from_validated_config(config: ValidatedConfig) -> Result<Self, HotRelayerError> {
+    pub fn from_validated_config(config: &ValidatedConfig) -> Result<Self, HotRelayerError> {
         let signer = HotMpcApiClient::new(
             config.hot_mpc_api_url().clone(),
             config.mpc_timeout().duration(),
@@ -63,8 +64,8 @@ impl From<DepositCompletion> for CompleteDepositResponse {
     fn from(value: DepositCompletion) -> Self {
         Self {
             signature: value.signature,
-            signed_receiver: value.sign_request.receiver_id,
-            signed_nonce: value.sign_request.nonce,
+            signed_receiver: value.sign_request.receiver_id.into_string(),
+            signed_nonce: value.sign_request.nonce.into_string(),
         }
     }
 }
@@ -99,31 +100,39 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
-#[tracing::instrument(name = "hot_relay_complete_deposit", skip(state, headers, req))]
+#[tracing::instrument(name = "hot_relay_complete_deposit", skip(state, headers, body))]
 async fn complete_deposit(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CompleteDepositRequest>,
+    body: Bytes,
 ) -> Response {
     if let Some(response) = require_auth(&state, &headers) {
         return response;
     }
+    let req = match parse_json_body::<CompleteDepositRequest>(&body) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
 
     match state.relayer.complete_deposit(&req.event).await {
         Ok(result) => (StatusCode::OK, Json(CompleteDepositResponse::from(result))).into_response(),
-        Err(error) => map_relayer_error(error),
+        Err(error) => map_relayer_error(&error),
     }
 }
 
-#[tracing::instrument(name = "hot_relay_complete_withdrawal", skip(state, headers, req))]
+#[tracing::instrument(name = "hot_relay_complete_withdrawal", skip(state, headers, body))]
 async fn complete_withdrawal(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CompleteWithdrawalRequest>,
+    body: Bytes,
 ) -> Response {
     if let Some(response) = require_auth(&state, &headers) {
         return response;
     }
+    let req = match parse_json_body::<CompleteWithdrawalRequest>(&body) {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
 
     match state.relayer.complete_withdrawal(&req.pending).await {
         Ok(execution) => (
@@ -131,8 +140,20 @@ async fn complete_withdrawal(
             Json(CompleteWithdrawalResponse { execution }),
         )
             .into_response(),
-        Err(error) => map_relayer_error(error),
+        Err(error) => map_relayer_error(&error),
     }
+}
+
+fn parse_json_body<T: DeserializeOwned>(body: &[u8]) -> Result<T, Response> {
+    serde_json::from_slice(body).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": error.to_string(),
+            })),
+        )
+            .into_response()
+    })
 }
 
 fn require_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
@@ -157,8 +178,8 @@ fn require_auth(state: &AppState, headers: &HeaderMap) -> Option<Response> {
     }
 }
 
-fn map_relayer_error(error: HotRelayerError) -> Response {
-    let status = match &error {
+fn map_relayer_error(error: &HotRelayerError) -> Response {
+    let status = match error {
         HotRelayerError::UnexpectedReceiver { .. }
         | HotRelayerError::InvalidField { .. }
         | HotRelayerError::InvalidRouting { .. } => StatusCode::BAD_REQUEST,
@@ -202,7 +223,7 @@ mod tests {
         .unwrap();
         AppState {
             relayer: Arc::new(HotBridgeRelayer::new(routing, signer)),
-            auth_token: AuthToken::new("relay-secret").unwrap(),
+            auth_token: AuthToken::new("RelaySecret-1234567890-ABCDEFGHIJKL").unwrap(),
         }
     }
 
@@ -290,7 +311,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::post("/relay/deposit/complete")
-                    .header(AUTHORIZATION, "Bearer relay-secret")
+                    .header(AUTHORIZATION, "Bearer RelaySecret-1234567890-ABCDEFGHIJKL")
                     .header("Content-Type", "application/json")
                     .body(Body::from(
                         r#"{"event":{"chain_id":1101,"nonce":"1","sender_id":"GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV","receiver_id":"vault-counterparty.near","token_id":"1100_CUSDC","amount":"1"}}"#,
@@ -301,5 +322,21 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_malformed_payload_is_unauthorized() {
+        let app = router(state());
+        let response = app
+            .oneshot(
+                Request::post("/relay/deposit/complete")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }

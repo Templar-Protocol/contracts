@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     };
-    let state = match routes::AppState::from_validated_config(config.clone()) {
+    let state = match routes::AppState::from_validated_config(&config) {
         Ok(state) => state,
         Err(error) => {
             error!(%error, "invalid HOT relayer configuration");

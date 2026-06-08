@@ -10,6 +10,7 @@ use crate::hot_relayer::{HotRelayerError, HotRelayerRouting, HOT_STELLAR_CHAIN_I
 
 const DEFAULT_MPC_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_MAX_REQUEST_BYTES: usize = 16 * 1024;
+const MIN_AUTH_TOKEN_LEN: usize = 32;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "hot-relayer")]
@@ -160,11 +161,13 @@ impl HotMpcApiUrl {
         Ok(Self(url))
     }
 
-    #[must_use]
-    pub fn join(&self, path: &str) -> reqwest::Url {
+    pub fn join(&self, path: &str) -> Result<reqwest::Url, ConfigError> {
         self.0
             .join(path.trim_start_matches('/'))
-            .unwrap_or_else(|error| panic!("validated HOT MPC URL must join path: {error}"))
+            .map_err(|error| ConfigError::InvalidUrl {
+                name: "HOT_MPC_API_URL",
+                reason: format!("failed to join path `{path}`: {error}"),
+            })
     }
 
     #[must_use]
@@ -198,6 +201,26 @@ pub struct AuthToken(String);
 impl AuthToken {
     pub(crate) fn new(value: &str) -> Result<Self, ConfigError> {
         let trimmed = require_non_empty("HOT_RELAYER_AUTH_TOKEN", value)?;
+        if trimmed.len() < MIN_AUTH_TOKEN_LEN {
+            return Err(ConfigError::WeakAuthToken {
+                reason: format!("must be at least {MIN_AUTH_TOKEN_LEN} characters"),
+            });
+        }
+
+        let has_lowercase = trimmed.bytes().any(|byte| byte.is_ascii_lowercase());
+        let has_uppercase = trimmed.bytes().any(|byte| byte.is_ascii_uppercase());
+        let has_digit = trimmed.bytes().any(|byte| byte.is_ascii_digit());
+        let has_symbol = trimmed.bytes().any(|byte| !byte.is_ascii_alphanumeric());
+        let classes = [has_lowercase, has_uppercase, has_digit, has_symbol]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+        if classes < 2 {
+            return Err(ConfigError::WeakAuthToken {
+                reason: "must include at least two character classes".to_string(),
+            });
+        }
+
         Ok(Self(trimmed.to_string()))
     }
 
@@ -222,6 +245,8 @@ pub enum ConfigError {
     Missing(&'static str),
     #[error("{name} is invalid: {reason}")]
     InvalidUrl { name: &'static str, reason: String },
+    #[error("HOT_RELAYER_AUTH_TOKEN is too weak: {reason}")]
+    WeakAuthToken { reason: String },
     #[error("HOT_RELAYER_MPC_TIMEOUT_SECS must be non-zero")]
     ZeroMpcTimeout,
     #[error("HOT_RELAYER_MAX_REQUEST_BYTES must be non-zero")]
@@ -234,6 +259,8 @@ pub enum ConfigError {
 mod tests {
     use super::*;
 
+    const VALID_AUTH_TOKEN: &str = "RelaySecret-1234567890-ABCDEFGHIJKL";
+
     fn valid_config() -> Config {
         Config {
             port: 3001,
@@ -243,7 +270,7 @@ mod tests {
                 .to_string(),
             token_id: "1100_CUSDC".to_string(),
             chain_id: HOT_STELLAR_CHAIN_ID,
-            auth_token: "relay-secret".to_string(),
+            auth_token: VALID_AUTH_TOKEN.to_string(),
             mpc_timeout_secs: DEFAULT_MPC_TIMEOUT_SECS,
             max_request_bytes: DEFAULT_MAX_REQUEST_BYTES,
         }
@@ -256,12 +283,16 @@ mod tests {
 
         assert_eq!(validated.port(), 3001);
         assert_eq!(
-            validated.hot_mpc_api_url().join("/withdraw/sign").as_str(),
+            validated
+                .hot_mpc_api_url()
+                .join("/withdraw/sign")
+                .unwrap_or_else(|error| panic!("{error}"))
+                .as_str(),
             "https://rpc1.hotdao.ai/withdraw/sign"
         );
         assert_eq!(
             validated.auth_token().bearer_header(),
-            "Bearer relay-secret"
+            format!("Bearer {VALID_AUTH_TOKEN}")
         );
         assert_eq!(validated.routing().chain_id(), HOT_STELLAR_CHAIN_ID);
         assert_eq!(
@@ -294,6 +325,17 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(ConfigError::Missing("HOT_RELAYER_AUTH_TOKEN"))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_weak_auth() {
+        let mut config = valid_config();
+        config.auth_token = "short-token".to_string();
+
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::WeakAuthToken { .. })
         ));
     }
 

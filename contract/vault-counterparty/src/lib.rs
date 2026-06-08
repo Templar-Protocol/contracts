@@ -97,7 +97,7 @@ impl OmniTokenId {
             format!("token_id too long, max {}", MAX_TOKEN_ID_LEN)
         );
 
-        let wrapped_prefix = format!("nep245:{}:", omni_contract);
+        let wrapped_prefix = format!("nep245:{omni_contract}:");
         let normalized = token_id
             .strip_prefix(&wrapped_prefix)
             .unwrap_or(&token_id)
@@ -189,6 +189,7 @@ pub struct Operation {
 
 #[derive(PanicOnDefault)]
 #[near(contract_state)]
+#[allow(clippy::struct_field_names)]
 pub struct Contract {
     schema_version: u32,
     stellar_receiver: StellarReceiver,
@@ -212,6 +213,7 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[init]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stellar_receiver: String,
         near_market: AccountId,
@@ -338,6 +340,7 @@ impl Contract {
             .remove(&env::predecessor_account_id());
     }
 
+    #[allow(clippy::used_underscore_binding)]
     pub fn execute_next_supply_withdrawal_request(
         &mut self,
         _batch_limit: Option<u32>,
@@ -373,7 +376,7 @@ impl Contract {
         self.assert_not_paused();
         self.assert_curator();
         Self::assert_amount(amount);
-        self.assert_withdraw_gas_budget();
+        Self::assert_withdraw_gas_budget();
 
         let operation_id = self.start_operation(OperationKind::WithdrawToStellar, amount.0);
         self.hot_withdraw_promise(amount, operation_id).then(
@@ -391,7 +394,7 @@ impl Contract {
         amounts: Vec<U128>,
         msg: String,
     ) -> PromiseOrValue<Vec<U128>> {
-        let _authorized_sender = sender_id;
+        let _ = sender_id;
 
         require!(
             env::predecessor_account_id() == self.intents_integration.contract,
@@ -409,11 +412,11 @@ impl Contract {
 
         let amount = amounts[0];
         Self::assert_amount(amount);
+        self.assert_not_paused();
+        Self::assert_withdraw_gas_budget();
 
         let supplier = previous_owner_ids[0].clone();
         self.increase_supply_position(supplier, amount.0);
-        self.assert_not_paused();
-        self.assert_withdraw_gas_budget();
         let operation_id = self.start_operation(OperationKind::WithdrawToStellar, amount.0);
         self.hot_withdraw_promise(amount, operation_id)
             .then(
@@ -570,7 +573,7 @@ impl Contract {
         let kind = operation.kind;
         let amount = operation.amount;
         if kind == OperationKind::WithdrawToStellar {
-            self.assert_withdraw_gas_budget();
+            Self::assert_withdraw_gas_budget();
         }
 
         let operation = self
@@ -730,7 +733,7 @@ impl Contract {
     pub fn propose_config_update(&mut self, update: ConfigUpdate) {
         assert_one_yocto();
         self.assert_owner();
-        self.validate_config_update(&update);
+        Self::validate_config_update(&update);
         self.pending_config_update = Some(update);
         env::log_str("config_update_proposed");
     }
@@ -743,7 +746,7 @@ impl Contract {
             .pending_config_update
             .take()
             .unwrap_or_else(|| env::panic_str("no pending config update"));
-        self.validate_config_update(&update);
+        Self::validate_config_update(&update);
         self.stellar_receiver = StellarReceiver::new(update.stellar_receiver);
         self.near_market = update.near_market;
         self.omni_token_id = OmniTokenId::new(update.omni_token_id, &update.omni_contract);
@@ -756,7 +759,7 @@ impl Contract {
     pub fn propose_intents_integration(&mut self, integration: IntentsIntegration) {
         assert_one_yocto();
         self.assert_owner();
-        self.validate_intents_integration(&integration);
+        Self::validate_intents_integration(&integration);
         self.pending_intents_integration = Some(integration);
         env::log_str("intents_integration_proposed");
     }
@@ -769,7 +772,7 @@ impl Contract {
             .pending_intents_integration
             .take()
             .unwrap_or_else(|| env::panic_str("no pending intents integration"));
-        self.validate_intents_integration(&integration);
+        Self::validate_intents_integration(&integration);
         self.intents_integration = integration;
         env::log_str("intents_integration_accepted");
     }
@@ -811,7 +814,7 @@ impl Contract {
         require!(!self.paused, "contract is paused");
     }
 
-    fn assert_withdraw_gas_budget(&self) {
+    fn assert_withdraw_gas_budget() {
         let available = env::prepaid_gas()
             .as_gas()
             .saturating_sub(env::used_gas().as_gas());
@@ -826,7 +829,7 @@ impl Contract {
         require!(amount.0 > 0, "amount must be > 0");
     }
 
-    fn validate_config_update(&self, update: &ConfigUpdate) {
+    fn validate_config_update(update: &ConfigUpdate) {
         let _stellar_receiver = StellarReceiver::new(update.stellar_receiver.clone());
         let _omni_token_id = OmniTokenId::new(update.omni_token_id.clone(), &update.omni_contract);
         let _hot_deposit_receiver =
@@ -837,7 +840,7 @@ impl Contract {
         );
     }
 
-    fn validate_intents_integration(&self, integration: &IntentsIntegration) {
+    fn validate_intents_integration(integration: &IntentsIntegration) {
         require!(
             integration.contract != env::current_account_id(),
             "intents contract cannot be this contract"
@@ -872,7 +875,7 @@ mod tests {
     fn account(account_id: &str) -> AccountId {
         account_id
             .parse()
-            .unwrap_or_else(|_| panic!("invalid account id: {account_id}"))
+            .unwrap_or_else(|_| panic!("invalid test account id"))
     }
 
     fn context(predecessor: &AccountId) {
@@ -974,7 +977,7 @@ mod tests {
         if input.trim().is_empty() || input.len() > MAX_TOKEN_ID_LEN {
             return None;
         }
-        let wrapped_prefix = format!("nep245:{}:", omni_contract);
+        let wrapped_prefix = format!("nep245:{omni_contract}:");
         let normalized = input.strip_prefix(&wrapped_prefix).unwrap_or(input);
         if normalized.contains(':')
             || !normalized.starts_with(HOT_STELLAR_CHAIN_PREFIX)
@@ -1017,7 +1020,7 @@ mod tests {
                 && !token_id.starts_with("nep245:")
                 && token_id.len() <= MAX_TOKEN_ID_LEN.saturating_sub("nep245:v2_1.omni.hot.tg:".len())
             {
-                format!("nep245:{}:{token_id}", omni_contract)
+                format!("nep245:{omni_contract}:{token_id}")
             } else {
                 token_id
             };
@@ -1041,7 +1044,10 @@ mod tests {
                     prop_assert_eq!(contract.get_config().omni_token_id, normalized);
                     prop_assert_eq!(
                         contract.intents_wrapped_token_id(),
-                        format!("nep245:{}:{}", omni_contract, contract.get_config().omni_token_id)
+                        format!(
+                            "nep245:{omni_contract}:{}",
+                            contract.get_config().omni_token_id
+                        )
                     );
                 }
                 None => {
@@ -1721,7 +1727,7 @@ mod tests {
         let _ = Contract::new(
             "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV".to_string(),
             account("templar-market.near"),
-            "".to_string(),
+            String::new(),
             account("v2_1.omni.hot.tg"),
             HOT_DEPOSIT_RECEIVER_HEX.to_string(),
             account("curator.near"),

@@ -11,7 +11,7 @@ use getset::{CopyGetters, Getters};
 use near_primitives::types::AccountId;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::{str::FromStr, time::Duration};
+use std::{fmt, str::FromStr, time::Duration};
 use stellar_xdr::curr::ScAddress;
 
 use crate::config::HotMpcApiUrl;
@@ -24,47 +24,235 @@ const MAX_HOT_AMOUNT_LEN: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingWithdrawal {
-    pub nonce: String,
+    pub nonce: HotNonce,
     pub chain_id: u64,
     pub withdraw_data: PendingWithdrawData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PendingWithdrawData {
-    pub receiver_id: String,
-    pub amount: String,
-    pub token_id: String,
+    pub receiver_id: StellarReceiver,
+    pub amount: HotAmount,
+    pub token_id: HotTokenId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StellarDepositEvent {
     pub chain_id: u64,
-    pub nonce: String,
-    pub sender_id: String,
-    pub receiver_id: String,
-    pub token_id: String,
-    pub amount: String,
+    pub nonce: HotNonce,
+    pub sender_id: StellarReceiver,
+    pub receiver_id: NearReceiver,
+    pub token_id: HotTokenId,
+    pub amount: HotAmount,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DepositSignRequest {
     pub chain: u64,
-    pub nonce: String,
-    pub sender_id: String,
-    pub receiver_id: String,
-    pub token_id: String,
-    pub amount: String,
+    pub nonce: HotNonce,
+    pub sender_id: StellarReceiver,
+    pub receiver_id: NearReceiver,
+    pub token_id: HotTokenId,
+    pub amount: HotAmount,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autopilot: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StellarWithdrawExecution {
-    pub nonce: String,
-    pub token_id: String,
-    pub receiver: String,
-    pub amount: String,
+    pub nonce: HotNonce,
+    pub token_id: HotTokenId,
+    pub receiver: StellarReceiver,
+    pub amount: HotAmount,
     pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct HotNonce(String);
+
+impl HotNonce {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for HotNonce {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        validate_nonce_value(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl From<HotNonce> for String {
+    fn from(value: HotNonce) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for HotNonce {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct HotTokenId(String);
+
+impl HotTokenId {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for HotTokenId {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        validate_token_id(&value, HOT_STELLAR_CHAIN_ID)?;
+        Ok(Self(value))
+    }
+}
+
+impl From<HotTokenId> for String {
+    fn from(value: HotTokenId) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for HotTokenId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct HotAmount(String);
+
+impl HotAmount {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for HotAmount {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        validate_amount_value(&value)?;
+        Ok(Self(value))
+    }
+}
+
+impl From<HotAmount> for String {
+    fn from(value: HotAmount) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for HotAmount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct NearReceiver(AccountId);
+
+impl NearReceiver {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0.to_string()
+    }
+}
+
+impl TryFrom<String> for NearReceiver {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value
+            .parse::<AccountId>()
+            .map(Self)
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl From<NearReceiver> for String {
+    fn from(value: NearReceiver) -> Self {
+        value.0.to_string()
+    }
+}
+
+impl fmt::Display for NearReceiver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "String", into = "String")]
+pub struct StellarReceiver(String);
+
+impl StellarReceiver {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for StellarReceiver {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        ScAddress::from_str(&value)
+            .map(|address| Self(address.to_string()))
+            .map_err(|_| "must be a valid Stellar account or contract address".to_string())
+    }
+}
+
+impl From<StellarReceiver> for String {
+    fn from(value: StellarReceiver) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for StellarReceiver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,13 +299,13 @@ pub struct HotMpcApiClient {
 #[derive(Debug, Clone, Getters, CopyGetters, PartialEq, Eq)]
 pub struct HotRelayerRouting {
     #[get = "pub"]
-    near_receiver: String,
+    near_receiver: NearReceiver,
     #[get = "pub"]
-    stellar_receiver: String,
+    stellar_receiver: StellarReceiver,
     #[get_copy = "pub"]
     chain_id: u64,
     #[get = "pub"]
-    token_id: String,
+    token_id: HotTokenId,
 }
 
 impl HotRelayerRouting {
@@ -127,23 +315,28 @@ impl HotRelayerRouting {
         chain_id: u64,
         token_id: String,
     ) -> Result<Self, HotRelayerError> {
-        validate_near_receiver(&near_receiver).map_err(|reason| {
+        validate_chain_id(chain_id).map_err(|reason| HotRelayerError::InvalidRouting {
+            field: "chain_id",
+            reason,
+        })?;
+        let near_receiver = NearReceiver::try_from(near_receiver).map_err(|reason| {
             HotRelayerError::InvalidRouting {
                 field: "near_receiver",
                 reason,
             }
         })?;
-        validate_stellar_receiver(&stellar_receiver).map_err(|reason| {
+        let stellar_receiver = StellarReceiver::try_from(stellar_receiver).map_err(|reason| {
             HotRelayerError::InvalidRouting {
                 field: "stellar_receiver",
                 reason,
             }
         })?;
-        validate_chain_id(chain_id).map_err(|reason| HotRelayerError::InvalidRouting {
-            field: "chain_id",
-            reason,
-        })?;
-        validate_token_id(&token_id, chain_id).map_err(|reason| {
+        let token_id =
+            HotTokenId::try_from(token_id).map_err(|reason| HotRelayerError::InvalidRouting {
+                field: "token_id",
+                reason,
+            })?;
+        validate_token_id(token_id.as_str(), chain_id).map_err(|reason| {
             HotRelayerError::InvalidRouting {
                 field: "token_id",
                 reason,
@@ -163,19 +356,15 @@ impl HotRelayerRouting {
         event: &StellarDepositEvent,
     ) -> Result<(), HotRelayerError> {
         validate_chain_id_matches("deposit", event.chain_id, self.chain_id)?;
-        validate_nonce("deposit", &event.nonce)?;
-        validate_stellar_account("deposit", "sender_id", &event.sender_id)?;
-        validate_token_id_matches("deposit", &event.token_id, &self.token_id, self.chain_id)?;
-        validate_amount("deposit", &event.amount)?;
+        validate_token_id_matches("deposit", &event.token_id, &self.token_id)?;
 
         if event.receiver_id != self.near_receiver {
             return Err(HotRelayerError::UnexpectedReceiver {
                 direction: "deposit",
-                expected: self.near_receiver.clone(),
-                actual: event.receiver_id.clone(),
+                expected: self.near_receiver.to_string(),
+                actual: event.receiver_id.to_string(),
             });
         }
-        validate_near_account("deposit", "receiver_id", &event.receiver_id)?;
         Ok(())
     }
 
@@ -184,27 +373,19 @@ impl HotRelayerRouting {
         pending: &PendingWithdrawal,
     ) -> Result<(), HotRelayerError> {
         validate_chain_id_matches("withdrawal", pending.chain_id, self.chain_id)?;
-        validate_nonce("withdrawal", &pending.nonce)?;
         validate_token_id_matches(
             "withdrawal",
             &pending.withdraw_data.token_id,
             &self.token_id,
-            self.chain_id,
         )?;
-        validate_amount("withdrawal", &pending.withdraw_data.amount)?;
 
         if pending.withdraw_data.receiver_id != self.stellar_receiver {
             return Err(HotRelayerError::UnexpectedReceiver {
                 direction: "withdrawal",
-                expected: self.stellar_receiver.clone(),
-                actual: pending.withdraw_data.receiver_id.clone(),
+                expected: self.stellar_receiver.to_string(),
+                actual: pending.withdraw_data.receiver_id.to_string(),
             });
         }
-        validate_stellar_account(
-            "withdrawal",
-            "receiver_id",
-            &pending.withdraw_data.receiver_id,
-        )?;
         Ok(())
     }
 }
@@ -235,27 +416,15 @@ fn validate_chain_id_matches(
     }
 }
 
-fn validate_nonce(direction: &'static str, nonce: &str) -> Result<(), HotRelayerError> {
+fn validate_nonce_value(nonce: &str) -> Result<(), String> {
     if nonce.is_empty() {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "nonce",
-            reason: "cannot be empty".to_string(),
-        });
+        return Err("cannot be empty".to_string());
     }
     if nonce.len() > MAX_HOT_NONCE_LEN {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "nonce",
-            reason: format!("too long, max {MAX_HOT_NONCE_LEN}"),
-        });
+        return Err(format!("too long, max {MAX_HOT_NONCE_LEN}"));
     }
     if !nonce.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "nonce",
-            reason: "must be decimal digits".to_string(),
-        });
+        return Err("must be decimal digits".to_string());
     }
     Ok(())
 }
@@ -278,15 +447,9 @@ fn validate_token_id(token_id: &str, chain_id: u64) -> Result<(), String> {
 
 fn validate_token_id_matches(
     direction: &'static str,
-    actual: &str,
-    expected: &str,
-    chain_id: u64,
+    actual: &HotTokenId,
+    expected: &HotTokenId,
 ) -> Result<(), HotRelayerError> {
-    validate_token_id(actual, chain_id).map_err(|reason| HotRelayerError::InvalidField {
-        direction,
-        field: "token_id",
-        reason,
-    })?;
     if actual == expected {
         Ok(())
     } else {
@@ -298,80 +461,21 @@ fn validate_token_id_matches(
     }
 }
 
-fn validate_amount(direction: &'static str, amount: &str) -> Result<(), HotRelayerError> {
+fn validate_amount_value(amount: &str) -> Result<(), String> {
     if amount.is_empty() {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "amount",
-            reason: "cannot be empty".to_string(),
-        });
+        return Err("cannot be empty".to_string());
     }
     if amount.len() > MAX_HOT_AMOUNT_LEN {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "amount",
-            reason: format!("too long, max {MAX_HOT_AMOUNT_LEN}"),
-        });
+        return Err(format!("too long, max {MAX_HOT_AMOUNT_LEN}"));
     }
     if !amount.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "amount",
-            reason: "must be decimal digits".to_string(),
-        });
+        return Err("must be decimal digits".to_string());
     }
-    let parsed = amount
-        .parse::<u128>()
-        .map_err(|e| HotRelayerError::InvalidField {
-            direction,
-            field: "amount",
-            reason: e.to_string(),
-        })?;
+    let parsed = amount.parse::<u128>().map_err(|error| error.to_string())?;
     if parsed == 0 {
-        return Err(HotRelayerError::InvalidField {
-            direction,
-            field: "amount",
-            reason: "must be > 0".to_string(),
-        });
+        return Err("must be > 0".to_string());
     }
     Ok(())
-}
-
-fn validate_near_receiver(receiver: &str) -> Result<(), String> {
-    receiver
-        .parse::<AccountId>()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
-fn validate_near_account(
-    direction: &'static str,
-    field: &'static str,
-    account_id: &str,
-) -> Result<(), HotRelayerError> {
-    validate_near_receiver(account_id).map_err(|reason| HotRelayerError::InvalidField {
-        direction,
-        field,
-        reason,
-    })
-}
-
-fn validate_stellar_receiver(receiver: &str) -> Result<(), String> {
-    ScAddress::from_str(receiver)
-        .map(|_| ())
-        .map_err(|_| "must be a valid Stellar account or contract address".to_string())
-}
-
-fn validate_stellar_account(
-    direction: &'static str,
-    field: &'static str,
-    account_id: &str,
-) -> Result<(), HotRelayerError> {
-    validate_stellar_receiver(account_id).map_err(|reason| HotRelayerError::InvalidField {
-        direction,
-        field,
-        reason,
-    })
 }
 
 impl HotMpcApiClient {
@@ -389,8 +493,10 @@ impl HotMpcApiClient {
         Self { client, base_url }
     }
 
-    fn url(&self, path: &str) -> reqwest::Url {
-        self.base_url.join(path)
+    fn url(&self, path: &str) -> Result<reqwest::Url, HotRelayerError> {
+        self.base_url
+            .join(path)
+            .map_err(|error| HotRelayerError::Http(error.to_string()))
     }
 
     async fn sign<T: Serialize + ?Sized>(
@@ -400,7 +506,7 @@ impl HotMpcApiClient {
     ) -> Result<String, HotRelayerError> {
         let response = self
             .client
-            .post(self.url(path))
+            .post(self.url(path)?)
             .json(body)
             .send()
             .await
@@ -422,6 +528,11 @@ impl HotMpcApiClient {
 
         let parsed: SignatureResponse =
             serde_json::from_slice(&bytes).map_err(|e| HotRelayerError::Decode(e.to_string()))?;
+        if parsed.signature.trim().is_empty() {
+            return Err(HotRelayerError::Decode(
+                "mpc response signature is empty".to_string(),
+            ));
+        }
         Ok(parsed.signature)
     }
 }
@@ -482,7 +593,7 @@ async fn plan_stellar_withdraw_execution_unchecked<S: HotMpcSigner + Sync>(
     signer: &S,
     pending: &PendingWithdrawal,
 ) -> Result<StellarWithdrawExecution, HotRelayerError> {
-    let signature = signer.withdraw_sign(&pending.nonce).await?;
+    let signature = signer.withdraw_sign(pending.nonce.as_str()).await?;
     Ok(build_stellar_withdraw_execution(pending, signature))
 }
 
@@ -536,6 +647,27 @@ mod tests {
     }
 
     const STELLAR_ACCOUNT: &str = "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV";
+    const OTHER_STELLAR_ACCOUNT: &str = "GD3SOHKDS7CDGDOTJKP6VNAOEXC3Y5BRWD3WIEK65ZQAJUMTBGE4TVBZ";
+
+    fn hot_nonce(value: &str) -> HotNonce {
+        HotNonce::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn hot_token_id(value: &str) -> HotTokenId {
+        HotTokenId::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn hot_amount(value: &str) -> HotAmount {
+        HotAmount::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn near_receiver(value: &str) -> NearReceiver {
+        NearReceiver::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn stellar_receiver(value: &str) -> StellarReceiver {
+        StellarReceiver::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    }
 
     fn routing() -> HotRelayerRouting {
         HotRelayerRouting::new(
@@ -550,22 +682,22 @@ mod tests {
     fn valid_deposit_event() -> StellarDepositEvent {
         StellarDepositEvent {
             chain_id: 1100,
-            nonce: "21".to_string(),
-            sender_id: STELLAR_ACCOUNT.to_string(),
-            receiver_id: "vault-counterparty.near".to_string(),
-            token_id: "1100_CUSDC".to_string(),
-            amount: "42".to_string(),
+            nonce: hot_nonce("21"),
+            sender_id: stellar_receiver(STELLAR_ACCOUNT),
+            receiver_id: near_receiver("vault-counterparty.near"),
+            token_id: hot_token_id("1100_CUSDC"),
+            amount: hot_amount("42"),
         }
     }
 
     fn valid_pending_withdrawal() -> PendingWithdrawal {
         PendingWithdrawal {
-            nonce: "991".to_string(),
+            nonce: hot_nonce("991"),
             chain_id: 1100,
             withdraw_data: PendingWithdrawData {
-                receiver_id: STELLAR_ACCOUNT.to_string(),
-                amount: "1500".to_string(),
-                token_id: "1100_CUSDC".to_string(),
+                receiver_id: stellar_receiver(STELLAR_ACCOUNT),
+                amount: hot_amount("1500"),
+                token_id: hot_token_id("1100_CUSDC"),
             },
         }
     }
@@ -580,11 +712,11 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("{e}"));
 
-        assert_eq!(execution.nonce, "991");
+        assert_eq!(execution.nonce.as_str(), "991");
         assert_eq!(execution.signature, "withdraw-signature");
-        assert_eq!(execution.receiver, STELLAR_ACCOUNT);
-        assert_eq!(execution.token_id, "1100_CUSDC");
-        assert_eq!(execution.amount, "1500");
+        assert_eq!(execution.receiver.as_str(), STELLAR_ACCOUNT);
+        assert_eq!(execution.token_id.as_str(), "1100_CUSDC");
+        assert_eq!(execution.amount.as_str(), "1500");
         assert_eq!(
             signer
                 .withdraw_nonces
@@ -604,18 +736,18 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
 
         assert_eq!(request.chain, 1100);
-        assert_eq!(request.nonce, "21");
-        assert_eq!(request.sender_id, STELLAR_ACCOUNT);
-        assert_eq!(request.receiver_id, "vault-counterparty.near");
-        assert_eq!(request.token_id, "1100_CUSDC");
-        assert_eq!(request.amount, "42");
+        assert_eq!(request.nonce.as_str(), "21");
+        assert_eq!(request.sender_id.as_str(), STELLAR_ACCOUNT);
+        assert_eq!(request.receiver_id.as_str(), "vault-counterparty.near");
+        assert_eq!(request.token_id.as_str(), "1100_CUSDC");
+        assert_eq!(request.amount.as_str(), "42");
         assert_eq!(request.autopilot, None);
     }
 
     #[test]
     fn deposit_sign_request_checked_rejects_unexpected_receiver() {
         let mut event = valid_deposit_event();
-        event.receiver_id = "wrong.near".to_string();
+        event.receiver_id = near_receiver("wrong.near");
         let routing = routing();
 
         let error = deposit_sign_request_from_event_checked(&event, &routing)
@@ -633,7 +765,7 @@ mod tests {
     async fn withdrawal_plan_checked_rejects_unexpected_receiver() {
         let signer = RecordingSigner::default();
         let mut pending = valid_pending_withdrawal();
-        pending.withdraw_data.receiver_id = "wrong-address".to_string();
+        pending.withdraw_data.receiver_id = stellar_receiver(OTHER_STELLAR_ACCOUNT);
         let routing = routing();
 
         let error = plan_stellar_withdraw_execution_checked(&signer, &pending, &routing)
@@ -711,7 +843,7 @@ mod tests {
         ));
 
         let mut event = valid_deposit_event();
-        event.token_id = "1100_OTHER".to_string();
+        event.token_id = hot_token_id("1100_OTHER");
         assert!(matches!(
             deposit_sign_request_from_event_checked(&event, &routing),
             Err(HotRelayerError::InvalidField {
@@ -720,22 +852,26 @@ mod tests {
             })
         ));
 
-        let mut event = valid_deposit_event();
-        event.amount = "0".to_string();
-        assert!(matches!(
-            deposit_sign_request_from_event_checked(&event, &routing),
-            Err(HotRelayerError::InvalidField {
-                field: "amount",
-                ..
-            })
-        ));
+        let sample_deposit_nonce = hot_nonce("21");
+        assert!(serde_json::from_value::<StellarDepositEvent>(json!({
+            "chain_id": 1100,
+            "nonce": sample_deposit_nonce.as_str(),
+            "sender_id": STELLAR_ACCOUNT,
+            "receiver_id": "vault-counterparty.near",
+            "token_id": "1100_CUSDC",
+            "amount": "0"
+        }))
+        .is_err());
 
-        let mut event = valid_deposit_event();
-        event.nonce = "nonce-21".to_string();
-        assert!(matches!(
-            deposit_sign_request_from_event_checked(&event, &routing),
-            Err(HotRelayerError::InvalidField { field: "nonce", .. })
-        ));
+        assert!(serde_json::from_value::<StellarDepositEvent>(json!({
+            "chain_id": 1100,
+            "nonce": "nonce-21",
+            "sender_id": STELLAR_ACCOUNT,
+            "receiver_id": "vault-counterparty.near",
+            "token_id": "1100_CUSDC",
+            "amount": "42"
+        }))
+        .is_err());
     }
 
     #[tokio::test]
@@ -754,7 +890,7 @@ mod tests {
         ));
 
         let mut pending = valid_pending_withdrawal();
-        pending.withdraw_data.token_id = "1100_OTHER".to_string();
+        pending.withdraw_data.token_id = hot_token_id("1100_OTHER");
         assert!(matches!(
             plan_stellar_withdraw_execution_checked(&signer, &pending, &routing).await,
             Err(HotRelayerError::InvalidField {
@@ -763,30 +899,37 @@ mod tests {
             })
         ));
 
-        let mut pending = valid_pending_withdrawal();
-        pending.withdraw_data.amount = "1.5".to_string();
-        assert!(matches!(
-            plan_stellar_withdraw_execution_checked(&signer, &pending, &routing).await,
-            Err(HotRelayerError::InvalidField {
-                field: "amount",
-                ..
-            })
-        ));
+        let sample_withdrawal_nonce = hot_nonce("991");
+        assert!(serde_json::from_value::<PendingWithdrawal>(json!({
+            "nonce": sample_withdrawal_nonce.as_str(),
+            "chain_id": 1100,
+            "withdraw_data": {
+                "receiver_id": STELLAR_ACCOUNT,
+                "amount": "1.5",
+                "token_id": "1100_CUSDC"
+            }
+        }))
+        .is_err());
 
-        let mut pending = valid_pending_withdrawal();
-        pending.nonce = "".to_string();
-        assert!(matches!(
-            plan_stellar_withdraw_execution_checked(&signer, &pending, &routing).await,
-            Err(HotRelayerError::InvalidField { field: "nonce", .. })
-        ));
+        assert!(serde_json::from_value::<PendingWithdrawal>(json!({
+            "nonce": "",
+            "chain_id": 1100,
+            "withdraw_data": {
+                "receiver_id": STELLAR_ACCOUNT,
+                "amount": "1500",
+                "token_id": "1100_CUSDC"
+            }
+        }))
+        .is_err());
     }
 
     #[tokio::test]
     async fn mpc_client_posts_only_nonce_for_withdraw_sign() {
         let server = MockServer::start().await;
+        let request_nonce = hot_nonce("4242");
         Mock::given(method("POST"))
             .and(path("/withdraw/sign"))
-            .and(body_json(json!({ "nonce": "4242" })))
+            .and(body_json(json!({ "nonce": request_nonce.as_str() })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "signature": "sig-1"
             })))
@@ -799,7 +942,7 @@ mod tests {
         )
         .unwrap_or_else(|e| panic!("{e}"));
         let signature = client
-            .withdraw_sign("4242")
+            .withdraw_sign(request_nonce.as_str())
             .await
             .unwrap_or_else(|e| panic!("{e}"));
 
@@ -809,13 +952,15 @@ mod tests {
     #[tokio::test]
     async fn mpc_client_posts_deposit_sign_tuple_including_receiver() {
         let server = MockServer::start().await;
+        let request_nonce = hot_nonce("12");
+        let request_amount = hot_amount("77");
         let request = DepositSignRequest {
             chain: 1100,
-            nonce: "12".to_string(),
-            sender_id: "GVAULT".to_string(),
-            receiver_id: "vault-counterparty.near".to_string(),
-            token_id: "1100_CUSDC".to_string(),
-            amount: "77".to_string(),
+            nonce: request_nonce.clone(),
+            sender_id: stellar_receiver(STELLAR_ACCOUNT),
+            receiver_id: near_receiver("vault-counterparty.near"),
+            token_id: hot_token_id("1100_CUSDC"),
+            amount: request_amount.clone(),
             autopilot: None,
         };
 
@@ -823,11 +968,11 @@ mod tests {
             .and(path("/deposit/sign"))
             .and(body_json(json!({
                 "chain": 1100,
-                "nonce": "12",
-                "sender_id": "GVAULT",
+                "nonce": request_nonce.as_str(),
+                "sender_id": STELLAR_ACCOUNT,
                 "receiver_id": "vault-counterparty.near",
                 "token_id": "1100_CUSDC",
-                "amount": "77"
+                "amount": request_amount.as_str()
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "signature": "sig-2"
