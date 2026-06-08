@@ -5,6 +5,55 @@ use templar_soroban_governance::{
     FeeParams, GovernanceActionKind, RestrictionMode, SupplyQueueProposalEntry, TimelockKind,
 };
 use templar_soroban_shared_types::strkey;
+use zeroize::Zeroizing;
+
+pub struct SourceAccount(Zeroizing<String>);
+
+impl SourceAccount {
+    #[must_use]
+    pub fn as_secret_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    #[must_use]
+    pub fn clone_secret(&self) -> String {
+        self.as_secret_str().to_string()
+    }
+}
+
+impl Clone for SourceAccount {
+    fn clone(&self) -> Self {
+        Self(Zeroizing::new(self.as_secret_str().to_string()))
+    }
+}
+
+impl FromStr for SourceAccount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Zeroizing::new(value.to_string())))
+    }
+}
+
+impl fmt::Debug for SourceAccount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SourceAccount(<redacted>)")
+    }
+}
+
+impl fmt::Display for SourceAccount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+impl PartialEq for SourceAccount {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_secret_str() == other.as_secret_str()
+    }
+}
+
+impl Eq for SourceAccount {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct AddressStr(String);

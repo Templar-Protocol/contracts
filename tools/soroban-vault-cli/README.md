@@ -57,8 +57,9 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
-- `--dry-run` prints the `stellar` commands, returns planned contract ids in the response, and never writes the manifest.
+- `--dry-run` prints the `stellar` commands with source-account values redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits machine-readable command responses.
+- `--source-account` may be an identity alias, public key, secret key, or seed phrase. The CLI redacts it from command displays, zeroizes its in-process command-argument copies after use, and does not persist it to the deployment manifest.
 
 ## Docker
 
