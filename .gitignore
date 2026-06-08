@@ -35,6 +35,7 @@ _site/
 
 # generated soroban test snapshots
 contract/vault/**/test_snapshots/
+contract/proxy-*-soroban/test_snapshots/
 contract/proxy-oracle/**/test_snapshots/
 
 # generated bindings

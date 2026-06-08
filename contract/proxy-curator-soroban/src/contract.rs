@@ -17,6 +17,9 @@ use templar_soroban_shared_types::{
 
 use crate::error::ContractError;
 
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
+
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub enum AllocationDelta {
@@ -196,6 +199,7 @@ impl SorobanCuratorProxyContract {
         env.storage()
             .instance()
             .set(&ProxyDataKey::Initialized, &true);
+        extend_instance_ttl(&env);
         Ok(())
     }
 
@@ -249,6 +253,15 @@ impl SorobanCuratorProxyContract {
 
     pub fn extend_vault_ttl(env: Env) -> Result<(), ContractError> {
         expect_unit_result(invoke_vault_execute(&env, VaultCommand::ExtendTtl)?)
+    }
+
+    /// Extend proxy configuration TTL.
+    ///
+    /// This is permissionless because it only preserves existing proxy config;
+    /// it cannot mutate vault accounting or authorization state.
+    pub fn extend_ttl(env: Env) -> Result<(), ContractError> {
+        extend_instance_ttl(&env);
+        Ok(())
     }
 
     pub fn cancel_migration(env: Env, admin: Address) -> Result<(), ContractError> {
@@ -694,9 +707,16 @@ pub(crate) fn is_initialized(env: &Env) -> bool {
 }
 
 pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
+    extend_instance_ttl(env);
     is_initialized(env)
         .then_some(())
         .ok_or(ContractError::NotInitialized)
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
 
 pub(crate) fn read_vault_address(env: &Env) -> Result<Address, ContractError> {
