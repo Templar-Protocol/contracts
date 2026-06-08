@@ -7,8 +7,8 @@ use soroban_sdk::{
     InvokeError, String, Symbol, TryFromVal, Val, Vec,
 };
 use templar_soroban_governance::{
-    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal, TimelockKind,
-    Timelocks,
+    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal,
+    SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
@@ -130,9 +130,6 @@ pub(crate) enum VaultCommand {
         markets: Vec<u32>,
     },
     ResyncIdleBalance,
-    CancelMigration {
-        caller: Address,
-    },
     ExtendTtl,
 }
 
@@ -155,9 +152,6 @@ impl VaultCommand {
                 markets: soroban_u32_vec_to_alloc(markets),
             }),
             Self::ResyncIdleBalance => Ok(WireVaultCommand::ResyncIdleBalance),
-            Self::CancelMigration { caller } => Ok(WireVaultCommand::CancelMigration {
-                caller: address_to_wire(&caller)?,
-            }),
             Self::ExtendTtl => Ok(WireVaultCommand::ExtendTtl),
         }
     }
@@ -251,12 +245,9 @@ impl SorobanCuratorProxyContract {
         expect_unit_result(invoke_vault_execute(&env, VaultCommand::ExtendTtl)?)
     }
 
-    pub fn cancel_migration(env: Env, admin: Address) -> Result<(), ContractError> {
+    pub fn cancel_migration(env: Env, admin: Address) -> Result<u64, ContractError> {
         admin.require_auth();
-        expect_unit_result(invoke_vault_execute(
-            &env,
-            VaultCommand::CancelMigration { caller: admin },
-        )?)
+        invoke_governance(&env, "submit_cancel_migration", (admin,).into_val(&env))
     }
 
     pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<u64, ContractError> {
@@ -293,13 +284,13 @@ impl SorobanCuratorProxyContract {
     pub fn set_supply_queue(
         env: Env,
         admin: Address,
-        markets: Vec<u32>,
+        entries: Vec<SupplyQueueProposalEntry>,
     ) -> Result<u64, ContractError> {
         admin.require_auth();
         invoke_governance(
             &env,
             "submit_set_supply_queue",
-            (admin, markets).into_val(&env),
+            (admin, entries).into_val(&env),
         )
     }
 

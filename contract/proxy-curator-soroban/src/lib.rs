@@ -14,7 +14,7 @@ pub use contract::{
 };
 pub use error::ContractError;
 pub use templar_soroban_governance::{
-    GovernanceActionKind, PendingProposal, TimelockKind, Timelocks,
+    GovernanceActionKind, PendingProposal, SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 
 #[cfg(test)]
