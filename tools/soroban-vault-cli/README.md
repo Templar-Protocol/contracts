@@ -60,6 +60,37 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 - `--dry-run` prints the `stellar` commands, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits machine-readable command responses.
 
+## Docker
+
+Build the operator image from the repository root:
+
+```sh
+docker build \
+  -f tools/soroban-vault-cli/Dockerfile \
+  -t templar/soroban-vault-cli:local \
+  .
+```
+
+The image includes `tmplr-soroban-vault`, `stellar-cli` v26, Python for the runtime
+contractspec-strip step, and Rust toolchains/targets for `stellar contract build`. It defaults to
+`/workspace` as the Templar workspace and persists Stellar config, deployment state, Cargo cache,
+and build outputs through mount points.
+
+```sh
+docker run --rm templar/soroban-vault-cli:local --help
+
+docker run --rm -it \
+  -v "$PWD:/workspace" \
+  -v "$HOME/.config/stellar:/home/templar/.config/stellar" \
+  -v "$PWD/contract/vault/soroban/.deploy-state:/workspace/contract/vault/soroban/.deploy-state" \
+  -v "$PWD/target:/workspace/target" \
+  templar/soroban-vault-cli:local status
+```
+
+The same mount pattern supports deployment commands. Mounting the workspace and `target` directory
+lets `deploy ... --build` reuse local source and build artifacts, while mounting the Stellar config
+preserves identities and network configuration across runs.
+
 ## Common Operations
 
 ```sh
