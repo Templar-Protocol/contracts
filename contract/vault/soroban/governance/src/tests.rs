@@ -99,9 +99,9 @@ impl MockVault {
         accounts: Option<Vec<Address>>,
         market_id: Option<u32>,
         cap_group_id: Option<SdkString>,
-        value: Option<i128>,
-        value_b: Option<i128>,
-        value_c: Option<i128>,
+        value: Option<u128>,
+        value_b: Option<u128>,
+        value_c: Option<u128>,
     ) {
         Self::set_governance_policy_impl(
             env,
@@ -130,7 +130,7 @@ impl MockVault {
         );
     }
 
-    fn submit_cap(env: Env, caller: Address, market_id: u32, value: i128) {
+    fn submit_cap(env: Env, caller: Address, market_id: u32, value: u128) {
         Self::set_governance_policy_impl(
             env,
             caller,
@@ -168,7 +168,7 @@ impl MockVault {
         mode: u32,
         market_id: Option<u32>,
         cap_group_id: Option<SdkString>,
-        value: Option<i128>,
+        value: Option<u128>,
     ) {
         Self::set_governance_policy_impl(
             env,
@@ -322,13 +322,13 @@ impl MockVault {
         env.storage().instance().get(&MockVaultKey::SkimRecipient)
     }
 
-    pub fn withdrawal_cooldown_ns(env: Env) -> Option<i128> {
+    pub fn withdrawal_cooldown_ns(env: Env) -> Option<u128> {
         env.storage()
             .instance()
             .get(&MockVaultKey::WithdrawalCooldownNs)
     }
 
-    pub fn idle_resync_cooldown_ns(env: Env) -> Option<i128> {
+    pub fn idle_resync_cooldown_ns(env: Env) -> Option<u128> {
         env.storage()
             .instance()
             .get(&MockVaultKey::IdleResyncCooldownNs)
@@ -370,7 +370,7 @@ impl MockVault {
         env.storage().instance().get(&MockVaultKey::LastCapMarketId)
     }
 
-    pub fn last_cap_value(env: Env) -> Option<i128> {
+    pub fn last_cap_value(env: Env) -> Option<u128> {
         env.storage().instance().get(&MockVaultKey::LastCapValue)
     }
 
@@ -386,7 +386,7 @@ impl MockVault {
             .get(&MockVaultKey::LastGroupCapGroupId)
     }
 
-    pub fn last_group_cap_value(env: Env) -> Option<i128> {
+    pub fn last_group_cap_value(env: Env) -> Option<u128> {
         env.storage()
             .instance()
             .get(&MockVaultKey::LastGroupCapValue)
@@ -398,7 +398,7 @@ impl MockVault {
             .get(&MockVaultKey::LastGroupRelCapGroupId)
     }
 
-    pub fn last_group_rel_cap_value(env: Env) -> Option<i128> {
+    pub fn last_group_rel_cap_value(env: Env) -> Option<u128> {
         env.storage()
             .instance()
             .get(&MockVaultKey::LastGroupRelCapValue)
@@ -443,8 +443,8 @@ impl MockVault {
         kind: u32,
         primary: Option<Address>,
         many: Option<Vec<Address>>,
-        value_a: Option<i128>,
-        _value_b: Option<i128>,
+        value_a: Option<u128>,
+        _value_b: Option<u128>,
     ) {
         match kind {
             GOVERNANCE_CONFIG_KIND_SENTINEL => {
@@ -518,9 +518,9 @@ impl MockVault {
         accounts: Option<Vec<Address>>,
         market_id: Option<u32>,
         cap_group_id: Option<SdkString>,
-        value: Option<i128>,
-        _value_b: Option<i128>,
-        _value_c: Option<i128>,
+        value: Option<u128>,
+        _value_b: Option<u128>,
+        _value_c: Option<u128>,
     ) {
         if kind == GOVERNANCE_POLICY_KIND_PAUSED {
             let paused = mode.unwrap_or(0) != 0;
@@ -2152,9 +2152,9 @@ fn fee_decrease_applies_immediately_when_recipients_unchanged() {
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            100_000_000_000_000_000i128, // 10% performance fee
+            100_000_000_000_000_000u128, // 10% performance fee
             performance_recipient.clone(),
-            50_000_000_000_000_000i128, // 5% management fee
+            50_000_000_000_000_000u128, // 5% management fee
             management_recipient.clone(),
             None,
         )
@@ -2187,9 +2187,9 @@ fn fee_decrease_applies_immediately_when_recipients_unchanged() {
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            50_000_000_000_000_000i128, // 5% performance fee (decreased)
+            50_000_000_000_000_000u128, // 5% performance fee (decreased)
             performance_recipient.clone(),
-            50_000_000_000_000_000i128, // same management fee
+            50_000_000_000_000_000u128, // same management fee
             management_recipient.clone(),
             None,
         )
@@ -2234,9 +2234,9 @@ fn fee_increase_uses_fee_specific_pending_accept_and_revoke() {
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            50_000_000_000_000_000i128, // 5% performance fee
+            50_000_000_000_000_000u128, // 5% performance fee
             performance_recipient.clone(),
-            50_000_000_000_000_000i128, // 5% management fee
+            50_000_000_000_000_000u128, // 5% management fee
             management_recipient.clone(),
             None,
         )
@@ -2269,9 +2269,9 @@ fn fee_increase_uses_fee_specific_pending_accept_and_revoke() {
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            100_000_000_000_000_000i128, // 10% performance fee (increased)
+            100_000_000_000_000_000u128, // 10% performance fee (increased)
             performance_recipient.clone(),
-            50_000_000_000_000_000i128, // same management fee
+            50_000_000_000_000_000u128, // same management fee
             management_recipient.clone(),
             None,
         )
@@ -2693,7 +2693,7 @@ fn group_cap_unknown_state_is_timelocked_and_routes_after_maturity() {
     );
 
     let group_id = SdkString::from_str(&env, "group-a");
-    let new_cap = 1_000_000i128;
+    let new_cap = 1_000_000u128;
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_group_cap(
@@ -2799,7 +2799,7 @@ fn group_rel_cap_unknown_state_is_timelocked_and_routes_after_maturity() {
     );
 
     let group_id = SdkString::from_str(&env, "group-b");
-    let rel_cap_wad = 500_000_000_000_000_000i128; // 0.5 wad
+    let rel_cap_wad = 500_000_000_000_000_000u128; // 0.5 wad
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_group_rel_cap(
@@ -3005,7 +3005,7 @@ fn cap_routes_market_id_and_value_to_vault() {
     );
 
     let market_id = 3u32;
-    let cap_value = 10i128;
+    let cap_value = 10u128;
 
     let proposal_id = env.as_contract(&governance, || {
         SorobanVaultGovernanceContract::submit_set_cap(
@@ -3085,9 +3085,9 @@ fn submit_initial_fee_config(
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            50_000_000_000_000_000i128,
+            50_000_000_000_000_000u128,
             performance_recipient.clone(),
-            50_000_000_000_000_000i128,
+            50_000_000_000_000_000u128,
             management_recipient.clone(),
             None,
         )
@@ -3128,9 +3128,9 @@ fn submit_fee_increase(
         SorobanVaultGovernanceContract::submit_set_fees(
             env.clone(),
             admin.clone(),
-            100_000_000_000_000_000i128,
+            100_000_000_000_000_000u128,
             performance_recipient.clone(),
-            50_000_000_000_000_000i128,
+            50_000_000_000_000_000u128,
             management_recipient.clone(),
             None,
         )

@@ -68,8 +68,8 @@ fn setup_harness() -> Harness {
             &users.governance,
             &asset_token,
             &share_token,
-            &0i128,
-            &0i128,
+            &0u128,
+            &0u128,
         )
             .into_val(&env),
     );
@@ -125,20 +125,26 @@ fn share_client(harness: &Harness) -> TokenClient<'_> {
     TokenClient::new(&harness.env, &harness.share_token)
 }
 
-fn vault_total_shares(harness: &Harness) -> i128 {
+fn vault_total_shares(harness: &Harness) -> u128 {
     vault_proxy_fields(harness, &harness.proxy, 0, 0)
         .core
         .totals
         .total_shares
 }
 
-fn mint_and_approve_assets(harness: &Harness, owner: &Address, amount: i128) {
-    asset_admin_client(harness).mint(owner, &amount);
-    asset_client(harness).approve(owner, &harness.proxy, &amount, &AUTH_EXPIRATION_LEDGER);
+fn mint_and_approve_assets(harness: &Harness, owner: &Address, amount: u128) {
+    let token_amount = amount as i128;
+    asset_admin_client(harness).mint(owner, &token_amount);
+    asset_client(harness).approve(
+        owner,
+        &harness.proxy,
+        &token_amount,
+        &AUTH_EXPIRATION_LEDGER,
+    );
 }
 
-fn proxy_deposit(harness: &Harness, caller: &Address, assets: i128, receiver: &Address) -> i128 {
-    harness.env.invoke_contract::<i128>(
+fn proxy_deposit(harness: &Harness, caller: &Address, assets: u128, receiver: &Address) -> u128 {
+    harness.env.invoke_contract::<u128>(
         &harness.proxy,
         &Symbol::new(&harness.env, "deposit"),
         (caller, &assets, receiver).into_val(&harness.env),
@@ -149,8 +155,8 @@ fn proxy_request_withdraw(
     harness: &Harness,
     owner: &Address,
     receiver: &Address,
-    shares: i128,
-    min_assets_out: i128,
+    shares: u128,
+    min_assets_out: u128,
 ) -> u64 {
     harness.env.invoke_contract::<u64>(
         &harness.proxy,
@@ -167,32 +173,32 @@ fn proxy_execute_withdraw(harness: &Harness, caller: &Address) {
     );
 }
 
-fn proxy_total_assets(harness: &Harness) -> i128 {
-    harness.env.invoke_contract::<i128>(
+fn proxy_total_assets(harness: &Harness) -> u128 {
+    harness.env.invoke_contract::<u128>(
         &harness.proxy,
         &Symbol::new(&harness.env, "total_assets"),
         soroban_sdk::vec![&harness.env],
     )
 }
 
-fn proxy_convert_to_shares(harness: &Harness, assets: i128) -> i128 {
-    harness.env.invoke_contract::<i128>(
+fn proxy_convert_to_shares(harness: &Harness, assets: u128) -> u128 {
+    harness.env.invoke_contract::<u128>(
         &harness.proxy,
         &Symbol::new(&harness.env, "convert_to_shares"),
         (&assets,).into_val(&harness.env),
     )
 }
 
-fn proxy_convert_to_assets(harness: &Harness, shares: i128) -> i128 {
-    harness.env.invoke_contract::<i128>(
+fn proxy_convert_to_assets(harness: &Harness, shares: u128) -> u128 {
+    harness.env.invoke_contract::<u128>(
         &harness.proxy,
         &Symbol::new(&harness.env, "convert_to_assets"),
         (&shares,).into_val(&harness.env),
     )
 }
 
-fn proxy_max_deposit(harness: &Harness, receiver: &Address) -> i128 {
-    harness.env.invoke_contract::<i128>(
+fn proxy_max_deposit(harness: &Harness, receiver: &Address) -> u128 {
+    harness.env.invoke_contract::<u128>(
         &harness.proxy,
         &Symbol::new(&harness.env, "max_deposit"),
         (receiver,).into_val(&harness.env),
@@ -202,7 +208,7 @@ fn proxy_max_deposit(harness: &Harness, receiver: &Address) -> i128 {
 fn proxy_withdraw(
     harness: &Harness,
     caller: &Address,
-    assets: i128,
+    assets: u128,
     receiver: &Address,
     owner: &Address,
 ) -> u64 {
@@ -216,7 +222,7 @@ fn proxy_withdraw(
 fn proxy_redeem(
     harness: &Harness,
     caller: &Address,
-    shares: i128,
+    shares: u128,
     receiver: &Address,
     owner: &Address,
 ) -> u64 {
@@ -230,8 +236,8 @@ fn proxy_redeem(
 fn vault_proxy_view(
     harness: &Harness,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) -> ProxyViewResponse {
     harness.env.invoke_contract::<ProxyViewResponse>(
         &harness.vault,
@@ -243,8 +249,8 @@ fn vault_proxy_view(
 fn vault_proxy_fields(
     harness: &Harness,
     owner: &Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 ) -> ProxyViewFields {
     vault_proxy_view(harness, owner, assets, shares).into()
 }
@@ -252,7 +258,7 @@ fn vault_proxy_fields(
 #[test]
 fn deposit_flow_mints_shares_and_increases_total_assets() {
     let harness = setup_harness();
-    let deposit_assets = 500_i128;
+    let deposit_assets = 500u128;
 
     mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
 
@@ -266,20 +272,20 @@ fn deposit_flow_mints_shares_and_increases_total_assets() {
     assert_eq!(minted_shares, deposit_assets);
     assert_eq!(
         share_client(&harness).balance(&harness.users.user),
-        minted_shares
+        minted_shares as i128
     );
     assert_eq!(proxy_total_assets(&harness), deposit_assets);
     assert_eq!(
         asset_client(&harness).balance(&harness.vault),
-        deposit_assets
+        deposit_assets as i128
     );
 }
 
 #[test]
 fn view_methods_match_vault_proxy_view() {
     let harness = setup_harness();
-    let deposit_assets = 750_i128;
-    let preview_assets = 123_i128;
+    let deposit_assets = 750u128;
+    let preview_assets = 123u128;
 
     mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
     proxy_deposit(
@@ -303,13 +309,13 @@ fn view_methods_match_vault_proxy_view() {
         proxy_max_deposit(&harness, &harness.users.receiver),
         expected_max_deposit
     );
-    assert_eq!(expected_max_deposit, i128::MAX);
+    assert_eq!(expected_max_deposit, u128::MAX - deposit_assets);
 }
 
 #[test]
 fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
     let harness = setup_harness();
-    let deposit_assets = 1_200_i128;
+    let deposit_assets = 1_200u128;
 
     mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
     let minted_shares = proxy_deposit(
@@ -332,7 +338,7 @@ fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
     assert_eq!(share_client(&harness).balance(&harness.users.user), 0);
     assert_eq!(
         share_client(&harness).balance(&harness.vault),
-        minted_shares
+        minted_shares as i128
     );
     assert_eq!(vault_total_shares(&harness), supply_after_deposit);
 
@@ -343,7 +349,7 @@ fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
     assert_eq!(vault_total_shares(&harness), 0);
     assert_eq!(
         asset_client(&harness).balance(&harness.users.receiver),
-        deposit_assets
+        deposit_assets as i128
     );
     assert_eq!(proxy_total_assets(&harness), 0);
 }
@@ -351,8 +357,8 @@ fn request_execute_withdraw_flow_burns_shares_and_returns_assets() {
 #[test]
 fn withdraw_flow_completes_queued_withdrawal() {
     let harness = setup_harness();
-    let deposit_assets = 2_000_i128;
-    let withdraw_assets = 1_200_i128;
+    let deposit_assets = 2_000u128;
+    let withdraw_assets = 1_200u128;
 
     mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
     let minted_shares = proxy_deposit(
@@ -373,12 +379,12 @@ fn withdraw_flow_completes_queued_withdrawal() {
     assert_eq!(request_id, 0);
     assert_eq!(
         share_client(&harness).balance(&harness.users.user),
-        minted_shares - withdraw_shares
+        (minted_shares - withdraw_shares) as i128
     );
     assert_eq!(vault_total_shares(&harness), minted_shares);
     assert_eq!(
         share_client(&harness).balance(&harness.vault),
-        withdraw_shares
+        withdraw_shares as i128
     );
     assert_eq!(asset_client(&harness).balance(&harness.users.receiver), 0);
     assert_eq!(proxy_total_assets(&harness), deposit_assets);
@@ -388,7 +394,7 @@ fn withdraw_flow_completes_queued_withdrawal() {
 
     assert_eq!(
         share_client(&harness).balance(&harness.users.user),
-        minted_shares - withdraw_shares
+        (minted_shares - withdraw_shares) as i128
     );
     assert_eq!(
         vault_total_shares(&harness),
@@ -396,7 +402,7 @@ fn withdraw_flow_completes_queued_withdrawal() {
     );
     assert_eq!(
         asset_client(&harness).balance(&harness.users.receiver),
-        withdraw_assets
+        withdraw_assets as i128
     );
     assert_eq!(
         proxy_total_assets(&harness),
@@ -407,8 +413,8 @@ fn withdraw_flow_completes_queued_withdrawal() {
 #[test]
 fn redeem_flow_completes_queued_withdrawal() {
     let harness = setup_harness();
-    let deposit_assets = 2_000_i128;
-    let redeem_shares = 1_200_i128;
+    let deposit_assets = 2_000u128;
+    let redeem_shares = 1_200u128;
 
     mint_and_approve_assets(&harness, &harness.users.user, deposit_assets);
     let minted_shares = proxy_deposit(
@@ -428,12 +434,12 @@ fn redeem_flow_completes_queued_withdrawal() {
     assert_eq!(request_id, 0);
     assert_eq!(
         share_client(&harness).balance(&harness.users.user),
-        minted_shares - redeem_shares
+        (minted_shares - redeem_shares) as i128
     );
     assert_eq!(vault_total_shares(&harness), minted_shares);
     assert_eq!(
         share_client(&harness).balance(&harness.vault),
-        redeem_shares
+        redeem_shares as i128
     );
     assert_eq!(asset_client(&harness).balance(&harness.users.receiver), 0);
     assert_eq!(proxy_total_assets(&harness), deposit_assets);
@@ -444,12 +450,12 @@ fn redeem_flow_completes_queued_withdrawal() {
     let redeemed_assets = proxy_convert_to_assets(&harness, redeem_shares);
     assert_eq!(
         share_client(&harness).balance(&harness.users.user),
-        minted_shares - redeem_shares
+        (minted_shares - redeem_shares) as i128
     );
     assert_eq!(vault_total_shares(&harness), minted_shares - redeem_shares);
     assert_eq!(
         asset_client(&harness).balance(&harness.users.receiver),
-        redeemed_assets
+        redeemed_assets as i128
     );
     assert_eq!(
         proxy_total_assets(&harness),

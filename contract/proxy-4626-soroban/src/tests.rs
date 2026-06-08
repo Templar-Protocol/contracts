@@ -26,14 +26,14 @@ enum MockVaultDataKey {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[contracttype]
 struct MockPreviewConfig {
-    convert_to_shares: i128,
-    convert_to_assets: i128,
-    max_deposit: i128,
-    max_mint: i128,
-    max_withdraw: i128,
-    max_redeem: i128,
-    preview_mint_assets: i128,
-    preview_withdraw_shares: i128,
+    convert_to_shares: u128,
+    convert_to_assets: u128,
+    max_deposit: u128,
+    max_mint: u128,
+    max_withdraw: u128,
+    max_redeem: u128,
+    preview_mint_assets: u128,
+    preview_withdraw_shares: u128,
 }
 
 impl MockPreviewConfig {
@@ -55,8 +55,8 @@ impl MockPreviewConfig {
 #[contracttype]
 struct MockProxyViewCall {
     owner: Address,
-    assets: i128,
-    shares: i128,
+    assets: u128,
+    shares: u128,
 }
 
 #[contract]
@@ -92,7 +92,7 @@ impl MockVaultContract {
 
         let command = WireVaultCommand::decode(&payload.to_alloc_vec()).expect("decode command");
         let result = match command {
-            WireVaultCommand::DepositWithMin { .. } => WireVaultCommandResult::I128(1000),
+            WireVaultCommand::DepositWithMin { .. } => WireVaultCommandResult::U128(1000),
             WireVaultCommand::RequestWithdraw { .. } => WireVaultCommandResult::U64(42),
             WireVaultCommand::ExecuteWithdraw { .. } => {
                 WireVaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
@@ -108,7 +108,7 @@ impl MockVaultContract {
         Bytes::from_slice(&env, &result.encode())
     }
 
-    pub fn proxy_view(env: Env, owner: Address, assets: i128, shares: i128) -> ProxyViewResponse {
+    pub fn proxy_view(env: Env, owner: Address, assets: u128, shares: u128) -> ProxyViewResponse {
         env.storage().instance().set(
             &MockVaultDataKey::LastProxyViewCall,
             &MockProxyViewCall {
@@ -162,8 +162,8 @@ impl MockFailingVaultContract {
     pub fn proxy_view(
         _env: Env,
         _owner: Address,
-        _assets: i128,
-        _shares: i128,
+        _assets: u128,
+        _shares: u128,
     ) -> Result<ProxyViewResponse, MockVaultError> {
         Err(MockVaultError::Unauthorized)
     }
@@ -285,67 +285,6 @@ fn test_extend_ttl_succeeds() {
 }
 
 #[test]
-fn test_rejects_negative_amounts_before_vault_call() {
-    let fixture = Fixture::new();
-    let caller = Address::generate(&fixture.env);
-    let owner = Address::generate(&fixture.env);
-    let receiver = Address::generate(&fixture.env);
-
-    fixture.initialize().expect("initialize succeeds");
-
-    let deposit = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::deposit(fixture.env.clone(), caller.clone(), -1, receiver.clone())
-    });
-    let deposit_with_min = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::deposit_with_min(
-            fixture.env.clone(),
-            caller.clone(),
-            1,
-            receiver.clone(),
-            -1,
-        )
-    });
-    let mint = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::mint(fixture.env.clone(), caller.clone(), -1, receiver.clone())
-    });
-    let withdraw = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::withdraw(
-            fixture.env.clone(),
-            caller.clone(),
-            -1,
-            receiver.clone(),
-            owner.clone(),
-        )
-    });
-    let redeem = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::redeem(
-            fixture.env.clone(),
-            caller.clone(),
-            -1,
-            receiver.clone(),
-            owner.clone(),
-        )
-    });
-    let request = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::request_withdraw(
-            fixture.env.clone(),
-            owner.clone(),
-            receiver,
-            1,
-            -1,
-        )
-    });
-
-    assert_eq!(deposit, Err(ContractError::InvalidInput));
-    assert_eq!(deposit_with_min, Err(ContractError::InvalidInput));
-    assert_eq!(mint, Err(ContractError::InvalidInput));
-    assert_eq!(withdraw, Err(ContractError::InvalidInput));
-    assert_eq!(redeem, Err(ContractError::InvalidInput));
-    assert_eq!(request, Err(ContractError::InvalidInput));
-    assert_eq!(fixture.recorded_payloads().len(), 0);
-}
-
-#[test]
 fn test_vault_error_codes_do_not_decode_as_proxy_errors() {
     let fixture = Fixture::new();
     let failing_vault = fixture.env.register(MockFailingVaultContract, ());
@@ -368,27 +307,6 @@ fn test_vault_error_codes_do_not_decode_as_proxy_errors() {
     });
 
     assert_eq!(result, Err(ContractError::VaultError));
-}
-
-#[test]
-fn test_withdraw_rejects_negative_preview_shares() {
-    let fixture = Fixture::new();
-    let owner = Address::generate(&fixture.env);
-    let receiver = Address::generate(&fixture.env);
-
-    fixture.env.mock_all_auths();
-    fixture.initialize().expect("initialize succeeds");
-    fixture.set_preview(MockPreviewConfig {
-        preview_withdraw_shares: -1,
-        ..Default::default()
-    });
-
-    let result = fixture.env.as_contract(&fixture.proxy, || {
-        Soroban4626ProxyContract::withdraw(fixture.env.clone(), owner.clone(), 111, receiver, owner)
-    });
-
-    assert_eq!(result, Err(ContractError::InvalidInput));
-    assert_eq!(fixture.recorded_payloads().len(), 0);
 }
 
 #[test]
@@ -746,10 +664,10 @@ fn test_deposit_fails_without_auth() {
     fixture.initialize().expect("initialize succeeds");
     fixture.env.mock_auths(&[]);
 
-    fixture.env.invoke_contract::<i128>(
+    fixture.env.invoke_contract::<u128>(
         &fixture.proxy,
         &soroban_sdk::Symbol::new(&fixture.env, "deposit"),
-        (&caller, &100i128, &receiver).into_val(&fixture.env),
+        (&caller, &100u128, &receiver).into_val(&fixture.env),
     );
 }
 

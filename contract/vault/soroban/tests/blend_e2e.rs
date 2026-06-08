@@ -53,7 +53,7 @@ impl<'a> VaultProxy<'a> {
         Self { env }
     }
 
-    fn snapshot(&self, vault: &Address) -> (i128, i128, i128) {
+    fn snapshot(&self, vault: &Address) -> (u128, u128, u128) {
         self.env.as_contract(vault, || {
             let core = SorobanVaultContract::proxy_view(
                 self.env.clone(),
@@ -130,7 +130,7 @@ fn setup_blend_pool(
     (pool_addr, pool_client, asset, asset_admin, deployer)
 }
 
-fn vault_snapshot(env: &Env, vault: &Address) -> (i128, i128, i128) {
+fn vault_snapshot(env: &Env, vault: &Address) -> (u128, u128, u128) {
     VaultProxy::new(env).snapshot(vault)
 }
 
@@ -196,7 +196,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         let mut storage = SorobanStorage::new(&env);
         let mut policy_state = storage.load_policy_state().unwrap().unwrap_or_default();
         policy_state
-            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
             .unwrap();
         storage.save_policy_state(&policy_state).unwrap();
     });
@@ -233,11 +233,11 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
         .unwrap();
     });
 
-    let deposit_amount = 10_000_000_000;
-    let supply_amount = 6_000_000_000;
-    let withdraw_amount = 2_500_000_000;
+    let deposit_amount = 10_000_000_000u128;
+    let supply_amount = 6_000_000_000u128;
+    let withdraw_amount = 2_500_000_000u128;
 
-    asset_admin.mint(&user, &deposit_amount);
+    asset_admin.mint(&user, &(deposit_amount as i128));
 
     let minted = env
         .as_contract(&vault, || {
@@ -252,8 +252,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(minted) = minted else {
-        panic!("expected i128 result")
+    let VaultCommandResult::U128(minted) = minted else {
+        panic!("expected u128 result")
     };
     assert_eq!(minted, deposit_amount);
     assert_eq!(
@@ -274,8 +274,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(new_external) = new_external else {
-        panic!("expected i128 result")
+    let VaultCommandResult::U128(new_external) = new_external else {
+        panic!("expected u128 result")
     };
     assert_eq!(new_external, supply_amount);
     assert_eq!(
@@ -286,7 +286,10 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             supply_amount
         )
     );
-    assert_eq!(asset_client.balance(&vault), deposit_amount - supply_amount);
+    assert_eq!(
+        asset_client.balance(&vault),
+        (deposit_amount - supply_amount) as i128
+    );
 
     let positions_after_supply = pool_client.get_positions(&adapter);
     let b_tokens_after_supply = positions_after_supply.supply.get(0).unwrap_or(0);
@@ -303,8 +306,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(refreshed_external) = refreshed_external else {
-        panic!("expected i128 result")
+    let VaultCommandResult::U128(refreshed_external) = refreshed_external else {
+        panic!("expected u128 result")
     };
     assert_eq!(refreshed_external, supply_amount);
     assert_eq!(
@@ -329,8 +332,8 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
             )
         })
         .unwrap();
-    let VaultCommandResult::I128(remaining_external) = remaining_external else {
-        panic!("expected i128 result")
+    let VaultCommandResult::U128(remaining_external) = remaining_external else {
+        panic!("expected u128 result")
     };
     assert_eq!(remaining_external, supply_amount - withdraw_amount);
     assert_eq!(
@@ -343,7 +346,7 @@ fn vault_allocates_supply_to_blend_and_withdraws_back() {
     );
     assert_eq!(
         asset_client.balance(&vault),
-        deposit_amount - supply_amount + withdraw_amount
+        (deposit_amount - supply_amount + withdraw_amount) as i128
     );
 
     let positions_after_withdraw = pool_client.get_positions(&adapter);
@@ -397,7 +400,7 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
         let mut storage = SorobanStorage::new(&env);
         let mut policy_state = storage.load_policy_state().unwrap().unwrap_or_default();
         policy_state
-            .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+            .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
             .unwrap();
         storage.save_policy_state(&policy_state).unwrap();
     });
@@ -434,11 +437,11 @@ fn withdraw_allocation_rejects_adapter_reported_assets_without_matching_balance_
         .unwrap();
     });
 
-    let deposit_amount = 10_000_000_000;
-    let supply_amount = 6_000_000_000;
-    let withdraw_amount = 2_500_000_000;
+    let deposit_amount = 10_000_000_000u128;
+    let supply_amount = 6_000_000_000u128;
+    let withdraw_amount = 2_500_000_000u128;
 
-    asset_admin.mint(&user, &deposit_amount);
+    asset_admin.mint(&user, &(deposit_amount as i128));
 
     env.as_contract(&vault, || {
         execute_command(

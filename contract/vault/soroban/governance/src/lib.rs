@@ -17,7 +17,7 @@ use templar_curator_primitives::governance::{
     PendingActions, PendingValue, RelativeCapChangeError, Restrictions as GovernanceRestrictions,
     TakePending, TimelockConfigError, TimelockDecision,
 };
-use templar_curator_primitives::{nonnegative_i128_to_u128, seconds_to_nanoseconds};
+use templar_curator_primitives::seconds_to_nanoseconds;
 use templar_soroban_shared_types::{
     GovernanceCommand, VaultCommand, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
     GOVERNANCE_CONFIG_KIND_ALLOWED_ADAPTERS, GOVERNANCE_CONFIG_KIND_CURATOR,
@@ -227,11 +227,11 @@ impl SorobanVaultGovernanceContract {
     pub fn submit_set_fees(
         env: Env,
         caller: Address,
-        performance_fee_wad: i128,
+        performance_fee_wad: u128,
         performance_recipient: Address,
-        management_fee_wad: i128,
+        management_fee_wad: u128,
         management_recipient: Address,
-        max_growth_rate_wad: Option<i128>,
+        max_growth_rate_wad: Option<u128>,
     ) -> Result<u64, GovernanceError> {
         let params = FeeParams {
             performance_fee_wad,
@@ -364,7 +364,7 @@ impl SorobanVaultGovernanceContract {
         env: Env,
         caller: Address,
         market_id: u32,
-        new_cap: i128,
+        new_cap: u128,
     ) -> Result<u64, GovernanceError> {
         Self::submit(env, caller, GovernanceAction::SetCap(market_id, new_cap))
     }
@@ -381,7 +381,7 @@ impl SorobanVaultGovernanceContract {
         env: Env,
         caller: Address,
         cap_group_id: String,
-        new_cap: i128,
+        new_cap: u128,
     ) -> Result<u64, GovernanceError> {
         Self::submit(
             env,
@@ -394,7 +394,7 @@ impl SorobanVaultGovernanceContract {
         env: Env,
         caller: Address,
         cap_group_id: String,
-        new_relative_cap_wad: i128,
+        new_relative_cap_wad: u128,
     ) -> Result<u64, GovernanceError> {
         Self::submit(
             env,
@@ -465,6 +465,13 @@ impl SorobanVaultGovernanceContract {
             .unwrap_or(false)
     }
 
+    /// Submit an opaque governance action when typed governance APIs are insufficient.
+    ///
+    /// Prefer typed submission methods whenever the action has a typed form.
+    /// Use a stable, documented `key` namespace for the action schema, and set
+    /// `payload_hash` to the hash of the exact canonical payload bytes the
+    /// downstream consumer will verify. Reusing keys across schemas or hashing
+    /// non-canonical bytes can create unsafe or unverifiable governance state.
     pub fn submit_other(
         env: Env,
         caller: Address,
@@ -474,6 +481,12 @@ impl SorobanVaultGovernanceContract {
         Self::submit(env, caller, GovernanceAction::Other(key, payload_hash))
     }
 
+    /// Check whether an opaque key/hash governance action is approved.
+    ///
+    /// Typed state should use typed query/accept paths instead. For opaque
+    /// actions, `key` names the documented action schema and `payload_hash`
+    /// must be the hash of the exact canonical payload bytes that will be
+    /// consumed. Misuse can make approvals unverifiable or unsafe to execute.
     pub fn check_other(env: Env, key: Symbol, payload_hash: BytesN<32>) -> bool {
         extend_instance_ttl(&env);
         env.storage()
@@ -506,6 +519,13 @@ impl SorobanVaultGovernanceContract {
         Ok(())
     }
 
+    /// Revoke pending opaque governance actions by their exact key/hash pair.
+    ///
+    /// This is only for actions submitted through `submit_other`; prefer typed
+    /// revoke helpers for typed proposals. The `key` namespace and
+    /// `payload_hash` must match the original canonical payload identifier.
+    /// Mismatched or ambiguous values can leave unsafe or unverifiable
+    /// governance state pending.
     pub fn revoke_other_pending(
         env: Env,
         caller: Address,
@@ -827,19 +847,19 @@ fn validate_action(env: &Env, action: &GovernanceAction) -> Result<(), Governanc
             Ok(())
         }
         GovernanceAction::SetFees(params) => {
-            let _ = to_wad(params.performance_fee_wad)?;
-            let _ = to_wad(params.management_fee_wad)?;
+            let _ = Wad::from(params.performance_fee_wad);
+            let _ = Wad::from(params.management_fee_wad);
             if let Some(max_rate) = params.max_growth_rate_wad {
-                let _ = to_wad(max_rate)?;
+                let _ = Wad::from(max_rate);
             }
             Ok(())
         }
         GovernanceAction::SetCap(_, new_cap) | GovernanceAction::SetGroupCap(_, new_cap) => {
-            let _ = to_wad(*new_cap)?;
+            let _ = Wad::from(*new_cap);
             Ok(())
         }
         GovernanceAction::SetGroupRelCap(_, new_relative_cap_wad) => {
-            let relative = to_wad(*new_relative_cap_wad)?;
+            let relative = Wad::from(*new_relative_cap_wad);
             if relative > Wad::one() {
                 return Err(GovernanceError::InvalidInput);
             }
@@ -849,10 +869,6 @@ fn validate_action(env: &Env, action: &GovernanceAction) -> Result<(), Governanc
         GovernanceAction::Other(_, _) => Ok(()),
         _ => Ok(()),
     }
-}
-
-fn cap_to_u128(value: i128) -> Result<u128, GovernanceError> {
-    nonnegative_i128_to_u128(value).ok_or(GovernanceError::InvalidInput)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -912,18 +928,18 @@ fn decide_submission(
                 .ok_or(GovernanceError::MissingConfig)?;
 
             let current_cfg = FeeConfig {
-                performance_fee: to_wad(current.performance_fee_wad)?,
-                management_fee: to_wad(current.management_fee_wad)?,
+                performance_fee: Wad::from(current.performance_fee_wad),
+                management_fee: Wad::from(current.management_fee_wad),
                 performance_recipient: &current.performance_recipient,
                 management_recipient: &current.management_recipient,
-                max_rate: to_optional_wad(current.max_growth_rate_wad)?,
+                max_rate: current.max_growth_rate_wad.map(Wad::from),
             };
             let proposed_cfg = FeeConfig {
-                performance_fee: to_wad(proposed.performance_fee_wad)?,
-                management_fee: to_wad(proposed.management_fee_wad)?,
+                performance_fee: Wad::from(proposed.performance_fee_wad),
+                management_fee: Wad::from(proposed.management_fee_wad),
                 performance_recipient: &proposed.performance_recipient,
                 management_recipient: &proposed.management_recipient,
-                max_rate: to_optional_wad(proposed.max_growth_rate_wad)?,
+                max_rate: proposed.max_growth_rate_wad.map(Wad::from),
             };
             let decision = FeeConfig::evaluate_change(&current_cfg, &proposed_cfg).map_err(
                 |err| match err {
@@ -980,12 +996,11 @@ fn decide_submission(
             Ok(TimelockDecision::Timelocked)
         }
         GovernanceAction::SetCap(market_id, new_cap) => {
-            let current: Option<i128> = env
+            let current: Option<u128> = env
                 .storage()
                 .instance()
                 .get(&DataKey::CurrentCap(*market_id));
-            let current = current.map(cap_to_u128).transpose()?;
-            let decision = TimelockDecision::from_cap_change(current, cap_to_u128(*new_cap)?);
+            let decision = TimelockDecision::from_cap_change(current, *new_cap);
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
@@ -1001,13 +1016,11 @@ fn decide_submission(
             if known != Some(true) {
                 return Ok(TimelockDecision::Timelocked);
             }
-            let current: Option<i128> = env
+            let current: Option<u128> = env
                 .storage()
                 .instance()
                 .get(&DataKey::CurrentCapGroupCap(cap_group_id.clone()));
-            let current = current.map(cap_to_u128).transpose()?;
-            let decision =
-                TimelockDecision::from_cap_group_cap_change(current, Some(cap_to_u128(*new_cap)?));
+            let decision = TimelockDecision::from_cap_group_cap_change(current, Some(*new_cap));
             match decision {
                 Ok(TimelockDecision::Immediate) => Ok(TimelockDecision::Immediate),
                 Ok(TimelockDecision::Timelocked) => Ok(TimelockDecision::Timelocked),
@@ -1022,14 +1035,14 @@ fn decide_submission(
             if known != Some(true) {
                 return Ok(TimelockDecision::Timelocked);
             }
-            let current: Option<i128> = env
+            let current: Option<u128> = env
                 .storage()
                 .instance()
                 .get(&DataKey::CurrentCapGroupRelCap(cap_group_id.clone()));
-            let current = current.map(to_wad).transpose()?;
+            let current = current.map(Wad::from);
             match TimelockDecision::from_relative_cap_change(
                 current,
-                Some(to_wad(*new_relative_cap_wad)?),
+                Some(Wad::from(*new_relative_cap_wad)),
             ) {
                 Ok(decision) => Ok(decision),
                 Err(RelativeCapChangeError::NoChange) => Err(GovernanceError::NoChange),
@@ -1090,19 +1103,6 @@ fn decide_submission(
             }
             Ok(TimelockDecision::Timelocked)
         }
-    }
-}
-
-fn to_wad(value: i128) -> Result<Wad, GovernanceError> {
-    nonnegative_i128_to_u128(value)
-        .map(Wad::from)
-        .ok_or(GovernanceError::InvalidInput)
-}
-
-fn to_optional_wad(value: Option<i128>) -> Result<Option<Wad>, GovernanceError> {
-    match value {
-        Some(v) => Ok(Some(to_wad(v)?)),
-        None => Ok(None),
     }
 }
 
@@ -1561,7 +1561,7 @@ fn governance_payload_for_action(
                 kind: GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
                 primary: None,
                 many: None,
-                value_a: Some(i128::from(*withdrawal_cooldown_ns)),
+                value_a: Some(u128::from(*withdrawal_cooldown_ns)),
                 value_b: None,
             })
         }
@@ -1570,7 +1570,7 @@ fn governance_payload_for_action(
                 kind: GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
                 primary: None,
                 many: None,
-                value_a: Some(i128::from(*idle_resync_cooldown_ns)),
+                value_a: Some(u128::from(*idle_resync_cooldown_ns)),
                 value_b: None,
             })
         }

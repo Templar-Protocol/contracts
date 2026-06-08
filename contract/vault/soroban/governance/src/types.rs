@@ -177,11 +177,11 @@ impl Timelocks {
 #[contracttype]
 #[derive(Clone, Eq, PartialEq)]
 pub struct FeeParams {
-    pub performance_fee_wad: i128,
+    pub performance_fee_wad: u128,
     pub performance_recipient: Address,
-    pub management_fee_wad: i128,
+    pub management_fee_wad: u128,
     pub management_recipient: Address,
-    pub max_growth_rate_wad: Option<i128>,
+    pub max_growth_rate_wad: Option<u128>,
 }
 
 #[contracttype]
@@ -231,10 +231,10 @@ pub enum GovernanceAction {
     SetSentinel(Address),
     SetAllocators(Vec<Address>),
     SetAllowedAdapters(Vec<Address>),
-    SetCap(u32, i128),
+    SetCap(u32, u128),
     RemoveMarket(u32),
-    SetGroupCap(String, i128),
-    SetGroupRelCap(String, i128),
+    SetGroupCap(String, u128),
+    SetGroupRelCap(String, u128),
     SetGroupMember(u32, String),
     SetSkimRecipient(Address),
     Skim(Address),

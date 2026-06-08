@@ -58,15 +58,15 @@ type ProxyCoreView = (
         soroban_sdk::Address,
         soroban_sdk::Address,
     ),
-    (i128, i128, bool),
-    (i128, i128, i128, i128),
-    (i128, u64, i128, i128, i128),
+    (u128, u128, bool),
+    (u128, u128, u128, u128),
+    (u128, u64, u128, u128, u128),
 );
 type ProxyPolicyView = (
     soroban_sdk::Vec<u32>,
-    soroban_sdk::Vec<(soroban_sdk::String, i128, i128)>,
+    soroban_sdk::Vec<(soroban_sdk::String, u128, u128)>,
 );
-type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+type ProxyPreviewView = (u128, u128, u128, u128, u128, u128, u128, u128);
 type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
 
 // Test Helpers
@@ -120,18 +120,18 @@ impl<'a> VaultProxy<'a> {
     fn view(
         &self,
         owner: soroban_sdk::Address,
-        assets: i128,
-        shares: i128,
+        assets: u128,
+        shares: u128,
     ) -> Result<ProxyViewResponse, templar_soroban_runtime::ContractError> {
         SorobanVaultContract::proxy_view(self.env.clone(), owner, assets, shares)
     }
 
-    fn snapshot(&self) -> Result<(i128, i128, i128), templar_soroban_runtime::ContractError> {
+    fn snapshot(&self) -> Result<(u128, u128, u128), templar_soroban_runtime::ContractError> {
         let core = self.view(soroban_sdk::Address::generate(self.env), 0, 0)?.0;
         Ok((core.2 .0, core.2 .1, core.2 .2))
     }
 
-    fn total_assets(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+    fn total_assets(&self) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), 0, 0)?
             .0
@@ -147,22 +147,22 @@ impl<'a> VaultProxy<'a> {
              .1)
     }
 
-    fn virtual_offsets(&self) -> Result<(i128, i128), templar_soroban_runtime::ContractError> {
+    fn virtual_offsets(&self) -> Result<(u128, u128), templar_soroban_runtime::ContractError> {
         let core = self.view(soroban_sdk::Address::generate(self.env), 0, 0)?.0;
         Ok((core.1 .0, core.1 .1))
     }
 
     fn preview_deposit(
         &self,
-        assets: i128,
-    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        assets: u128,
+    ) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), assets, 0)?
             .2
              .0)
     }
 
-    fn preview_redeem(&self, shares: i128) -> Result<i128, templar_soroban_runtime::ContractError> {
+    fn preview_redeem(&self, shares: u128) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), 0, shares)?
             .2
@@ -171,22 +171,22 @@ impl<'a> VaultProxy<'a> {
 
     fn preview_withdraw(
         &self,
-        assets: i128,
-    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        assets: u128,
+    ) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), assets, 0)?
             .2
              .7)
     }
 
-    fn max_deposit(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+    fn max_deposit(&self) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), 0, 0)?
             .2
              .2)
     }
 
-    fn max_mint(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+    fn max_mint(&self) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self
             .view(soroban_sdk::Address::generate(self.env), 0, 0)?
             .2
@@ -196,14 +196,14 @@ impl<'a> VaultProxy<'a> {
     fn max_withdraw(
         &self,
         owner: soroban_sdk::Address,
-    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+    ) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self.view(owner, 0, 0)?.2 .4)
     }
 
     fn max_redeem(
         &self,
         owner: soroban_sdk::Address,
-    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+    ) -> Result<u128, templar_soroban_runtime::ContractError> {
         Ok(self.view(owner, 0, 0)?.2 .5)
     }
 
@@ -523,7 +523,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
         let empty_state = VaultState::default();
         storage.save_state(&empty_state).unwrap();
 
-        let preview = proxy.preview_deposit(assets_in as i128).unwrap();
+        let preview = proxy.preview_deposit(assets_in as u128).unwrap();
         let minted = mint_shares_from_deposit(empty_state, assets_in, 0, 0);
         assert_eq!(preview as u128, minted);
     });
@@ -541,7 +541,7 @@ fn soroban_contract_preview_deposit_matches_kernel(
     asset_admin_client.mint(&contract_id, &10_000);
 
     env.as_contract(&contract_id, || {
-        let preview = proxy.preview_deposit(assets_in as i128).unwrap();
+        let preview = proxy.preview_deposit(assets_in as u128).unwrap();
         let state = VaultState {
             total_assets: 10_000,
             total_shares: 8_000,
@@ -575,8 +575,8 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
                     kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
                     primary: None,
                     many: None,
-                    value_a: Some(virtual_shares as i128),
-                    value_b: Some(virtual_assets as i128),
+                    value_a: Some(virtual_shares as u128),
+                    value_b: Some(virtual_assets as u128),
                 },
             )
             .unwrap();
@@ -593,13 +593,13 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
         let stored_offsets = proxy.virtual_offsets().unwrap();
         assert_eq!(
             stored_offsets,
-            (virtual_shares as i128, virtual_assets as i128)
+            (virtual_shares as u128, virtual_assets as u128)
         );
     });
     asset_admin_client.mint(&contract_id, &10_000);
 
     env.as_contract(&contract_id, || {
-        let preview = proxy.preview_deposit(assets_in as i128).unwrap();
+        let preview = proxy.preview_deposit(assets_in as u128).unwrap();
         let state = VaultState {
             total_assets: 10_000,
             total_shares: 8_000,
@@ -878,7 +878,7 @@ fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
 }
 
 #[rstest]
-fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
+fn soroban_contract_proxy_view_reports_large_fee_anchor(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
     let env = soroban_contract_fixture.env;
@@ -895,17 +895,16 @@ fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
                 idle_assets: 0,
                 external_assets: 1_000,
                 fee_anchor: FeeAccrualAnchor::new(
-                    i128::MAX as u128 + 1,
+                    (i128::MAX as u128) + 1,
                     templar_vault_kernel::TimestampNs(123),
                 ),
                 ..Default::default()
             })
             .expect("save state");
 
-        assert_eq!(
-            proxy.view(owner, 0, 0),
-            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
-        );
+        let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
+        assert_eq!(fee_info.0, (i128::MAX as u128) + 1);
+        assert_eq!(fee_info.1, 123);
     });
 }
 
@@ -975,7 +974,7 @@ fn soroban_contract_proxy_view_reports_fee_growth_cap(
         );
 
         let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
-        assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as i128);
+        assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as u128);
     });
 }
 
@@ -998,8 +997,8 @@ fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
             })
             .expect("save state");
 
-        assert_eq!(proxy.max_deposit().unwrap(), i128::MAX);
-        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+        assert_eq!(proxy.max_deposit().unwrap(), u128::MAX / 2);
+        assert_eq!(proxy.max_mint().unwrap(), u128::MAX - 1);
 
         storage
             .save_state(&VaultState {
@@ -1010,14 +1009,14 @@ fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
             })
             .expect("save state");
 
-        let expected_max_deposit = (((i128::MAX as u128) * 2) / 3) as i128;
+        let expected_max_deposit = (u128::MAX - 2) / 3;
         assert_eq!(proxy.max_deposit().unwrap(), expected_max_deposit);
-        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+        assert_eq!(proxy.max_mint().unwrap(), u128::MAX - 2);
     });
 }
 
 #[rstest]
-fn soroban_contract_fee_aware_preview_fails_on_supply_overflow(
+fn soroban_contract_fee_aware_preview_saturates_at_u128_max(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
     let env = soroban_contract_fixture.env;
@@ -1058,10 +1057,7 @@ fn soroban_contract_fee_aware_preview_fails_on_supply_overflow(
             })
             .expect("save state");
 
-        assert_eq!(
-            proxy.preview_deposit(1),
-            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
-        );
+        assert_eq!(proxy.preview_deposit(1).unwrap(), u128::MAX);
     });
 }
 
@@ -1153,11 +1149,11 @@ fn soroban_contract_preview_withdraw_matches_kernel(
     asset_admin_client.mint(&contract_id, &20_000);
 
     env.as_contract(&contract_id, || {
-        let assets_in: i128 = 1000;
+        let assets_in: u128 = 1000;
         let shares_burned = proxy.preview_withdraw(assets_in).unwrap();
         assert_eq!(shares_burned, 601);
 
-        let shares_in: i128 = 800;
+        let shares_in: u128 = 800;
         let assets_out = proxy.preview_redeem(shares_in).unwrap();
         assert_eq!(assets_out, 1333);
     });
@@ -1223,15 +1219,15 @@ fn create_test_vault() -> TestVault {
     vault.load_state().unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(1, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(2, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
 }
@@ -1257,7 +1253,7 @@ fn create_rbac_vault() -> RbacVault {
     vault.load_state().unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
 }
@@ -1340,11 +1336,11 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(1, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -1477,7 +1473,7 @@ fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
 
     rbac_vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     rbac_vault.deposit(curator, curator, 10000, 0, 100).unwrap();
@@ -1597,11 +1593,11 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(1, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -1796,7 +1792,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -1835,7 +1831,7 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
@@ -1974,15 +1970,15 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(1, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
     vault
         .policy_state_mut()
-        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(2, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
@@ -2028,7 +2024,7 @@ fn test_allocate_withdraw_uses_allocation_lifecycle(mut vault: TestVault) {
 
     vault
         .policy_state_mut()
-        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .set_market_config(0, MarketConfig::new(true, u128::MAX as u128, None))
         .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
@@ -2341,7 +2337,7 @@ fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
             .unwrap()
     });
 
-    let VaultCommandResult::I128(minted_shares) = minted else {
+    let VaultCommandResult::U128(minted_shares) = minted else {
         panic!("deposit should return minted shares");
     };
 
@@ -2537,7 +2533,7 @@ fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
                     market_id: None,
                     cap_group_id: None,
                     value: Some(0),
-                    value_b: Some(management_fee_wad.as_u128_trunc() as i128),
+                    value_b: Some(management_fee_wad.as_u128_trunc() as u128),
                     value_c: None,
                 },
             )

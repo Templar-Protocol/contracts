@@ -290,7 +290,7 @@ pub(crate) fn emit_admin_event(env: &Env, action: soroban_sdk::Symbol) {
 
 #[allow(deprecated)]
 #[inline(never)]
-pub(crate) fn emit_alloc_event(env: &Env, market: u32, amount: i128, supply: bool) {
+pub(crate) fn emit_alloc_event(env: &Env, market: u32, amount: u128, supply: bool) {
     env.events()
         .publish((symbol_short!("alloc"), supply), (market, amount));
 }
@@ -324,37 +324,24 @@ pub(crate) fn supply_adapter_for_market(
     Ok(adapter)
 }
 
-fn require_non_negative_bounded_wad(value: i128, max: u128) -> Result<Wad, ContractError> {
-    let value = u128::try_from(value).map_err(|_| ContractError::InvalidInput)?;
+fn require_bounded_wad(value: u128, max: u128) -> Result<Wad, ContractError> {
     if value > max {
         return Err(ContractError::InvalidInput);
     }
     Ok(Wad::from(value))
 }
 
-fn optional_wad(value: Option<i128>) -> Result<Option<Wad>, ContractError> {
-    value
-        .map(|value| {
-            u128::try_from(value)
-                .map(Wad::from)
-                .map_err(|_| ContractError::InvalidInput)
-        })
-        .transpose()
-}
-
 pub(crate) fn apply_fee_change(
     env: &Env,
-    performance_fee_wad: i128,
+    performance_fee_wad: u128,
     performance_recipient: SdkAddress,
-    management_fee_wad: i128,
+    management_fee_wad: u128,
     management_recipient: SdkAddress,
-    max_growth_rate_wad: Option<i128>,
+    max_growth_rate_wad: Option<u128>,
 ) -> Result<(), ContractError> {
-    let performance_fee =
-        require_non_negative_bounded_wad(performance_fee_wad, MAX_PERFORMANCE_FEE_WAD)?;
-    let management_fee =
-        require_non_negative_bounded_wad(management_fee_wad, MAX_MANAGEMENT_FEE_WAD)?;
-    let max_rate = optional_wad(max_growth_rate_wad)?;
+    let performance_fee = require_bounded_wad(performance_fee_wad, MAX_PERFORMANCE_FEE_WAD)?;
+    let management_fee = require_bounded_wad(management_fee_wad, MAX_MANAGEMENT_FEE_WAD)?;
+    let max_rate = max_growth_rate_wad.map(Wad::from);
 
     let performance_kernel = kernel_address_from_sdk(env, &performance_recipient);
     let management_kernel = kernel_address_from_sdk(env, &management_recipient);
