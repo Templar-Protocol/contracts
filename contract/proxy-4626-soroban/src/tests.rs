@@ -551,6 +551,78 @@ fn test_deposit_rejects_receipt_with_trailing_bytes() {
 }
 
 #[test]
+fn test_request_withdraw_rejects_receipt_with_trailing_bytes() {
+    let fixture = Fixture::new();
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+    let mut malformed_receipt = RequestWithdrawReceipt {
+        request_id: 42,
+        shares_escrowed: 80,
+    }
+    .encode();
+    malformed_receipt.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+    fixture.set_next_receipt(&malformed_receipt);
+
+    let request_id = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::request_withdraw(
+            fixture.env.clone(),
+            owner.clone(),
+            receiver.clone(),
+            80,
+            70,
+        )
+    });
+
+    assert_eq!(request_id, Err(ContractError::InvalidInput));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_command(&payloads.get(0).expect("payload exists")),
+        WireVaultCommand::RequestWithdraw {
+            owner: address_wire(&owner),
+            receiver: address_wire(&receiver),
+            shares: 80,
+            min_assets_out: 70,
+        }
+    );
+}
+
+#[test]
+fn test_execute_withdraw_rejects_receipt_with_trailing_bytes() {
+    let fixture = Fixture::new();
+    let caller = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+    let status = ExecuteWithdrawStatus {
+        op_state_before: 0,
+        op_state_after: 0,
+        assets_transferred: 0,
+        events_emitted: 0,
+    };
+    let mut malformed_receipt = ExecuteWithdrawReceipt::NoPayout { status }.encode();
+    malformed_receipt.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+    fixture.set_next_receipt(&malformed_receipt);
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::execute_withdraw(fixture.env.clone(), caller.clone())
+    });
+
+    assert_eq!(result, Err(ContractError::InvalidInput));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_command(&payloads.get(0).expect("payload exists")),
+        WireVaultCommand::ExecuteWithdraw {
+            caller: address_wire(&caller),
+        }
+    );
+}
+
+#[test]
 fn test_deposit_with_min_command_serialization() {
     let fixture = Fixture::new();
     let operator = Address::generate(&fixture.env);
