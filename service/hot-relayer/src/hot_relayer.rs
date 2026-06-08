@@ -608,7 +608,10 @@ pub async fn plan_stellar_withdraw_execution_checked<S: HotMpcSigner + Sync>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::{
+        sync::Mutex,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use serde_json::json;
     use wiremock::{
@@ -650,7 +653,12 @@ mod tests {
     const OTHER_STELLAR_ACCOUNT: &str = "GD3SOHKDS7CDGDOTJKP6VNAOEXC3Y5BRWD3WIEK65ZQAJUMTBGE4TVBZ";
 
     fn synthetic_nonce() -> HotNonce {
-        HotNonce::try_from(line!().to_string()).unwrap_or_else(|error| panic!("{error}"))
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|error| panic!("{error}"))
+            .as_nanos()
+            .to_string();
+        HotNonce::try_from(nonce).unwrap_or_else(|error| panic!("{error}"))
     }
 
     fn hot_token_id(value: &str) -> HotTokenId {

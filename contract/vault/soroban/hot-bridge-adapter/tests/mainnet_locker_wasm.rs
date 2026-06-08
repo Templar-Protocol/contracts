@@ -57,10 +57,6 @@ fn initial_hot_client_timestamp(env: &Env) -> u128 {
     u128::from(env.ledger().timestamp()) * 10_u128.pow(12)
 }
 
-fn next_hot_client_timestamp(previous: u128) -> u128 {
-    previous - u128::from(true)
-}
-
 fn invoke_locker_deposit(
     env: &Env,
     locker: &Address,
@@ -110,6 +106,56 @@ fn assert_hot_deposit_event(
             && body.topics[1] == asset_scval
             && body.data == data_scval
     }));
+}
+
+fn hot_deposit_event_nonce(
+    env: &Env,
+    adapter: &Address,
+    asset: &Address,
+    hot_locker: &Address,
+    receiver: &BytesN<32>,
+    amount: i128,
+) -> u128 {
+    let hot_deposit = ScVal::try_from_val(env, &symbol_short!("hot_dep")).unwrap();
+    let asset_val: Val = asset.clone().into_val(env);
+    let asset_scval = ScVal::try_from_val(env, &asset_val).unwrap();
+    let amount_val: Val = amount.into_val(env);
+    let amount_scval = ScVal::try_from_val(env, &amount_val).unwrap();
+    let hot_locker_val: Val = hot_locker.clone().into_val(env);
+    let hot_locker_scval = ScVal::try_from_val(env, &hot_locker_val).unwrap();
+    let receiver_val: Val = receiver.clone().into_val(env);
+    let receiver_scval = ScVal::try_from_val(env, &receiver_val).unwrap();
+    let filtered_events = env.events().all().filter_by_contract(adapter);
+    let events = filtered_events.events();
+
+    events
+        .iter()
+        .find_map(|event| {
+            let ContractEventBody::V0(body) = &event.body;
+            if body.topics.len() != 2
+                || body.topics[0] != hot_deposit
+                || body.topics[1] != asset_scval
+            {
+                return None;
+            }
+
+            let ScVal::Vec(Some(fields)) = &body.data else {
+                return None;
+            };
+            if fields.len() != 4
+                || fields[0] != amount_scval
+                || fields[1] != hot_locker_scval
+                || fields[2] != receiver_scval
+            {
+                return None;
+            }
+
+            let ScVal::U128(parts) = &fields[3] else {
+                return None;
+            };
+            Some((u128::from(parts.hi) << 64) | u128::from(parts.lo))
+        })
+        .expect("expected hot deposit event")
 }
 
 #[test]
@@ -258,11 +304,11 @@ fn adapter_supply_supports_two_deposits_in_same_ledger_against_mainnet_locker_wa
     adapter_client.supply(&vault, &token, &100);
 
     let first_nonce = initial_hot_client_timestamp(&env);
-    let second_nonce = next_hot_client_timestamp(first_nonce);
     assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 100, first_nonce);
 
     StellarAssetClient::new(&env, &token).mint(&vault, &60);
     adapter_client.supply(&vault, &token, &60);
+    let second_nonce = hot_deposit_event_nonce(&env, &adapter, &token, &locker, &receiver, 60);
     assert_hot_deposit_event(&env, &adapter, &token, &locker, &receiver, 60, second_nonce);
     assert!(!get_locker_deposit(&env, &locker, first_nonce).is_empty());
     assert!(!get_locker_deposit(&env, &locker, second_nonce).is_empty());

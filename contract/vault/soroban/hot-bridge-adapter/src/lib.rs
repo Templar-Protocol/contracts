@@ -1013,7 +1013,8 @@ mod tests {
     }
 
     fn next_expected_hot_client_timestamp(previous: u128) -> u128 {
-        previous - u128::from(true)
+        choose_hot_client_timestamp(previous, Some(previous))
+            .expect("test timestamp should step down")
     }
 
     fn fuzz_env() -> Env {
