@@ -1157,6 +1157,13 @@ fn run_extend_ttl<E: CommandExecutor>(
         skipped.push("proxy_4626".to_string());
     }
 
+    if let Some(proxy) = contract_id(manifest, "curator_proxy") {
+        stellar.invoke(proxy, "extend_ttl", Vec::new())?;
+        extended.push("curator_proxy".to_string());
+    } else {
+        skipped.push("curator_proxy".to_string());
+    }
+
     let caller = if contract_id(manifest, "share_token").is_some()
         || !blend_adapter_statuses(manifest).is_empty()
     {
@@ -1188,7 +1195,7 @@ fn run_extend_ttl<E: CommandExecutor>(
         }
     }
 
-    for key in ["asset_token", "curator_proxy"] {
+    for key in ["asset_token"] {
         if contract_id(manifest, key).is_some() {
             skipped.push(format!("{key}: no deployment-wide TTL entrypoint"));
         }
@@ -1857,20 +1864,26 @@ mod tests {
         run(&cli, &executor).expect("extend ttl");
 
         let calls = executor.calls();
-        assert_eq!(calls.len(), 5);
+        assert_eq!(calls.len(), 6);
         assert!(calls.iter().any(|(_, args)| args
             .windows(2)
             .any(|pair| pair == ["--id", "CVAULT"])
             && args.iter().any(|arg| arg == "execute")));
-        for contract_id in ["CGOVERNANCE", "CPROXY4626", "CSHARE", "CADAPTER0"] {
+        for contract_id in [
+            "CGOVERNANCE",
+            "CPROXY4626",
+            "CCURATORPROXY",
+            "CSHARE",
+            "CADAPTER0",
+        ] {
             assert!(calls.iter().any(|(_, args)| args
                 .windows(2)
                 .any(|pair| pair == ["--id", contract_id])
                 && args.iter().any(|arg| arg == "extend_ttl")));
         }
-        assert!(!calls.iter().any(|(_, args)| args
-            .windows(2)
-            .any(|pair| pair == ["--id", "CCURATORPROXY"] || pair == ["--id", "CASSET"])));
+        assert!(!calls
+            .iter()
+            .any(|(_, args)| args.windows(2).any(|pair| pair == ["--id", "CASSET"])));
     }
 
     #[test]
