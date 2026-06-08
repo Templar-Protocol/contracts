@@ -13139,6 +13139,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-soroban-vault-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "templar-curator-proxy-soroban",
+ "templar-soroban-governance",
+ "templar-soroban-shared-types",
+ "tracing",
+]
+
+[[package]]
 name = "templar-tools-common"
 version = "0.1.0"
 dependencies = [
