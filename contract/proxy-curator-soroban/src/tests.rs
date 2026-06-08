@@ -1,8 +1,8 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
 use templar_soroban_governance::{
-    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal, TimelockKind,
-    Timelocks,
+    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal,
+    SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 use templar_soroban_runtime::ContractError as VaultContractError;
 use templar_soroban_shared_types::{
@@ -62,10 +62,12 @@ impl MockVaultContract {
 #[allow(clippy::enum_variant_names)]
 enum MockGovernanceDataKey {
     LastSetCap,
+    LastSetSupplyQueue,
     LastTimelock,
     LastFees,
     LastRestrictions,
     LastCapGroupUpdate,
+    LastCancelMigration,
     LastAccept,
     LastRevoke,
     PendingIds,
@@ -78,6 +80,13 @@ struct MockSetCapCall {
     caller: Address,
     market_id: u32,
     new_cap: i128,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+#[contracttype]
+struct MockSetSupplyQueueCall {
+    caller: Address,
+    entries: Vec<SupplyQueueProposalEntry>,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -107,6 +116,12 @@ struct MockRestrictionsCall {
 struct MockCapGroupUpdateCall {
     caller: Address,
     update: CapGroupUpdate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+struct MockCancelMigrationCall {
+    caller: Address,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,6 +164,24 @@ impl MockGovernanceContract {
         env.storage()
             .instance()
             .get(&MockGovernanceDataKey::LastSetCap)
+    }
+
+    pub fn submit_set_supply_queue(
+        env: Env,
+        caller: Address,
+        entries: Vec<SupplyQueueProposalEntry>,
+    ) -> Result<u64, GovernanceError> {
+        env.storage().instance().set(
+            &MockGovernanceDataKey::LastSetSupplyQueue,
+            &MockSetSupplyQueueCall { caller, entries },
+        );
+        Ok(91)
+    }
+
+    pub fn last_set_supply_queue(env: Env) -> Option<MockSetSupplyQueueCall> {
+        env.storage()
+            .instance()
+            .get(&MockGovernanceDataKey::LastSetSupplyQueue)
     }
 
     pub fn submit_set_timelock(
@@ -249,6 +282,20 @@ impl MockGovernanceContract {
         env.storage()
             .instance()
             .get(&MockGovernanceDataKey::LastCapGroupUpdate)
+    }
+
+    pub fn submit_cancel_migration(env: Env, caller: Address) -> Result<u64, GovernanceError> {
+        env.storage().instance().set(
+            &MockGovernanceDataKey::LastCancelMigration,
+            &MockCancelMigrationCall { caller },
+        );
+        Ok(92)
+    }
+
+    pub fn last_cancel_migration(env: Env) -> Option<MockCancelMigrationCall> {
+        env.storage()
+            .instance()
+            .get(&MockGovernanceDataKey::LastCancelMigration)
     }
 
     pub fn accept(env: Env, caller: Address, proposal_id: u64) -> Result<(), GovernanceError> {
@@ -488,7 +535,6 @@ fn refresh_markets_encodes_refresh_command() {
 fn unit_vault_operations_encode_unit_commands() {
     let fixture = Fixture::new();
     fixture.initialize().expect("initialize succeeds");
-    let caller = Address::generate(&fixture.env);
 
     fixture
         .env
@@ -502,15 +548,9 @@ fn unit_vault_operations_encode_unit_commands() {
             SorobanCuratorProxyContract::extend_vault_ttl(fixture.env.clone())
         })
         .unwrap();
-    fixture
-        .env
-        .as_contract(&fixture.proxy, || {
-            SorobanCuratorProxyContract::cancel_migration(fixture.env.clone(), caller.clone())
-        })
-        .unwrap();
 
     let payloads = fixture.recorded_payloads();
-    assert_eq!(payloads.len(), 3);
+    assert_eq!(payloads.len(), 2);
     assert_eq!(
         decode_command(&payloads.get_unchecked(0)),
         WireVaultCommand::ResyncIdleBalance
@@ -519,10 +559,28 @@ fn unit_vault_operations_encode_unit_commands() {
         decode_command(&payloads.get_unchecked(1)),
         WireVaultCommand::ExtendTtl
     );
-    assert!(matches!(
-        decode_command(&payloads.get_unchecked(2)),
-        WireVaultCommand::CancelMigration { .. }
-    ));
+}
+
+#[test]
+fn cancel_migration_submits_timelocked_governance_proposal() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+    let admin = Address::generate(&fixture.env);
+
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::cancel_migration(fixture.env.clone(), admin.clone())
+        }),
+        Ok(92)
+    );
+
+    assert_eq!(fixture.recorded_payloads().len(), 0);
+    assert_eq!(
+        fixture.env.as_contract(&fixture.governance, || {
+            MockGovernanceContract::last_cancel_migration(fixture.env.clone())
+        }),
+        Some(MockCancelMigrationCall { caller: admin })
+    );
 }
 
 #[test]
@@ -559,7 +617,35 @@ fn typed_governance_facade_forwards_domain_arguments() {
     let admin = Address::generate(&fixture.env);
     let fee_recipient = Address::generate(&fixture.env);
     let restriction_account = Address::generate(&fixture.env);
+    let adapter = Address::generate(&fixture.env);
     let group = soroban_sdk::String::from_str(&fixture.env, "senior");
+
+    let supply_entries = Vec::from_array(
+        &fixture.env,
+        [SupplyQueueProposalEntry {
+            target_id: 17,
+            adapter: adapter.clone(),
+        }],
+    );
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::set_supply_queue(
+                fixture.env.clone(),
+                admin.clone(),
+                supply_entries.clone(),
+            )
+        }),
+        Ok(91)
+    );
+    let supply_queue_call = fixture
+        .env
+        .as_contract(&fixture.governance, || {
+            MockGovernanceContract::last_set_supply_queue(fixture.env.clone())
+        })
+        .expect("set supply queue call recorded");
+    assert_eq!(supply_queue_call.caller, admin.clone());
+    assert_eq!(supply_queue_call.entries.len(), 1);
+    assert!(supply_queue_call.entries.get_unchecked(0) == supply_entries.get_unchecked(0));
 
     let fees = Fees {
         performance_fee_wad: 10,
