@@ -1,6 +1,7 @@
-use std::{ffi::OsString, process::Command};
+use std::{collections::BTreeSet, process::Command};
 
 use anyhow::Context;
+use zeroize::Zeroize;
 
 use crate::cli::Cli;
 
@@ -11,23 +12,33 @@ pub struct CommandOutput {
 }
 
 pub trait CommandExecutor {
-    fn run(&self, program: &str, args: &[String]) -> anyhow::Result<CommandOutput>;
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted_args: &[usize],
+    ) -> anyhow::Result<CommandOutput>;
 }
 
 pub struct RealExecutor;
 
 impl CommandExecutor for RealExecutor {
-    fn run(&self, program: &str, args: &[String]) -> anyhow::Result<CommandOutput> {
+    fn run(
+        &self,
+        program: &str,
+        args: &[String],
+        redacted_args: &[usize],
+    ) -> anyhow::Result<CommandOutput> {
         let output = Command::new(program)
-            .args(args.iter().map(OsString::from))
+            .args(args)
             .output()
-            .with_context(|| format!("run {}", display_command(program, args)))?;
+            .with_context(|| format!("run {}", display_command(program, args, redacted_args)))?;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         anyhow::ensure!(
             output.status.success(),
             "command failed: {}\n{}",
-            display_command(program, args),
+            display_command(program, args, redacted_args),
             stderr
         );
         Ok(CommandOutput { stdout, stderr })
@@ -44,16 +55,25 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         Self { cli, executor }
     }
 
-    pub fn run(&self, args: &[String]) -> anyhow::Result<CommandOutput> {
-        if self.cli.dry_run {
-            println!("dry-run: {}", display_command("stellar", args));
+    pub fn run(
+        &self,
+        mut args: Vec<String>,
+        redacted_args: &[usize],
+    ) -> anyhow::Result<CommandOutput> {
+        let result = if self.cli.dry_run {
+            println!(
+                "dry-run: {}",
+                display_command("stellar", &args, redacted_args)
+            );
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
             })
         } else {
-            self.executor.run("stellar", args)
-        }
+            self.executor.run("stellar", &args, redacted_args)
+        };
+        zeroize_redacted_args(&mut args, redacted_args);
+        result
     }
 
     pub fn network_args(&self) -> Vec<String> {
@@ -72,32 +92,27 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         args
     }
 
-    pub fn source_args(&self) -> Vec<String> {
-        vec![
-            "--source-account".to_string(),
-            self.cli.source_account.clone(),
-        ]
+    pub fn extend_source_args(&self, args: &mut Vec<String>, redacted_args: &mut Vec<usize>) {
+        args.push("--source-account".to_string());
+        redacted_args.push(args.len());
+        args.push(self.cli.source_account.clone_secret());
     }
 
-    pub fn keys_address(&self, identity: &str) -> anyhow::Result<String> {
+    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
         let args = vec![
             "keys".to_string(),
             "address".to_string(),
-            identity.to_string(),
+            self.cli.source_account.clone_secret(),
         ];
-        let out = self.run(&args)?;
+        let out = self.run(args, &[2])?;
         if self.cli.dry_run {
-            return Ok(format!("GDRYRUN{identity}"));
+            return Ok("GDRYRUNSOURCEACCOUNT".to_string());
         }
         anyhow::ensure!(
             !out.stdout.is_empty(),
             "stellar keys address returned no address"
         );
         Ok(out.stdout)
-    }
-
-    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
-        self.keys_address(&self.cli.source_account)
     }
 
     pub fn invoke(
@@ -107,25 +122,27 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         function_args: Vec<String>,
     ) -> anyhow::Result<CommandOutput> {
         let mut args = vec!["contract".to_string(), "invoke".to_string()];
+        let mut redacted_args = Vec::new();
         args.extend(["--id".to_string(), contract_id.to_string()]);
         args.extend(self.network_args());
-        args.extend(self.source_args());
+        self.extend_source_args(&mut args, &mut redacted_args);
         args.push("--".to_string());
         args.push(function.to_string());
         args.extend(function_args);
-        self.run(&args)
+        self.run(args, &redacted_args)
     }
 
     pub fn deploy(&self, wasm_hash: &str, constructor_args: Vec<String>) -> anyhow::Result<String> {
         let mut args = vec!["contract".to_string(), "deploy".to_string()];
+        let mut redacted_args = Vec::new();
         args.extend(["--wasm-hash".to_string(), wasm_hash.to_string()]);
         args.extend(self.network_args());
-        args.extend(self.source_args());
+        self.extend_source_args(&mut args, &mut redacted_args);
         if !constructor_args.is_empty() {
             args.push("--".to_string());
             args.extend(constructor_args);
         }
-        let out = self.run(&args)?;
+        let out = self.run(args, &redacted_args)?;
         if self.cli.dry_run {
             return Ok(format!("CDRYRUN{}", &wasm_hash[..8.min(wasm_hash.len())]));
         }
@@ -134,10 +151,11 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
 
     pub fn upload(&self, wasm_path: &str) -> anyhow::Result<String> {
         let mut args = vec!["contract".to_string(), "upload".to_string()];
+        let mut redacted_args = Vec::new();
         args.extend(["--wasm".to_string(), wasm_path.to_string()]);
         args.extend(self.network_args());
-        args.extend(self.source_args());
-        let out = self.run(&args)?;
+        self.extend_source_args(&mut args, &mut redacted_args);
+        let out = self.run(args, &redacted_args)?;
         if self.cli.dry_run {
             return Ok(
                 "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -150,7 +168,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         let mut args = vec!["contract".to_string(), "fetch".to_string()];
         args.extend(["--wasm-hash".to_string(), wasm_hash.to_string()]);
         args.extend(self.network_args());
-        Ok(self.run(&args).is_ok())
+        Ok(self.run(args, &[]).is_ok())
     }
 
     pub fn deploy_native_asset(&self) -> anyhow::Result<()> {
@@ -161,9 +179,10 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "--asset".to_string(),
             "native".to_string(),
         ];
+        let mut redacted_args = Vec::new();
         args.extend(self.network_args());
-        args.extend(self.source_args());
-        let _ = self.run(&args)?;
+        self.extend_source_args(&mut args, &mut redacted_args);
+        let _ = self.run(args, &redacted_args)?;
         Ok(())
     }
 
@@ -176,7 +195,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "native".to_string(),
         ];
         args.extend(self.network_args());
-        let out = self.run(&args)?;
+        let out = self.run(args, &[])?;
         if self.cli.dry_run {
             return Ok("CDRYRUNNATIVEASSET".to_string());
         }
@@ -200,7 +219,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "--out-dir".to_string(),
             out_dir.to_string(),
         ];
-        let _ = self.run(&args)?;
+        let _ = self.run(args, &[])?;
         Ok(())
     }
 }
@@ -224,11 +243,26 @@ pub fn parse_hash(stdout: &str) -> anyhow::Result<String> {
         .context("no wasm hash found in stellar output")
 }
 
-pub fn display_command(program: &str, args: &[String]) -> String {
+pub fn display_command(program: &str, args: &[String], redacted_args: &[usize]) -> String {
+    let redacted_args = redacted_args.iter().copied().collect::<BTreeSet<_>>();
     std::iter::once(program.to_string())
-        .chain(args.iter().map(|arg| shell_escape(arg)))
+        .chain(args.iter().enumerate().map(|(index, arg)| {
+            if redacted_args.contains(&index) {
+                "<redacted>".to_string()
+            } else {
+                shell_escape(arg)
+            }
+        }))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn zeroize_redacted_args(args: &mut [String], redacted_args: &[usize]) {
+    for index in redacted_args {
+        if let Some(arg) = args.get_mut(*index) {
+            arg.zeroize();
+        }
+    }
 }
 
 fn shell_escape(value: &str) -> String {
@@ -267,5 +301,22 @@ mod tests {
             hash,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+    }
+
+    #[test]
+    fn display_command_redacts_sensitive_arguments() {
+        let args = vec![
+            "contract".to_string(),
+            "invoke".to_string(),
+            "--source-account".to_string(),
+            "SAUCE SECRET SEED".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+        ];
+
+        let display = display_command("stellar", &args, &[3]);
+
+        assert!(display.contains("--source-account <redacted>"));
+        assert!(!display.contains("SAUCE SECRET SEED"));
     }
 }

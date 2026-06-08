@@ -13153,6 +13153,7 @@ dependencies = [
  "templar-soroban-governance",
  "templar-soroban-shared-types",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

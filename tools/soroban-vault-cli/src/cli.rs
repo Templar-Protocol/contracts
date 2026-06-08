@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::types::{
-    AddressStr, GovernanceActionKindArg, RestrictionModeArg, SupplyQueueEntryArg, TimelockKindArg,
-    WasmHash,
+    AddressStr, GovernanceActionKindArg, RestrictionModeArg, SourceAccount, SupplyQueueEntryArg,
+    TimelockKindArg, WasmHash,
 };
 
 #[derive(Parser, Debug)]
@@ -36,7 +36,7 @@ pub struct Cli {
 
     /// Stellar source account identity, public key, secret key, or seed phrase
     #[arg(long, env = "SOROBAN_IDENTITY", default_value = "templar")]
-    pub source_account: String,
+    pub source_account: SourceAccount,
 
     /// Stellar config directory
     #[arg(long, env = "STELLAR_CONFIG_DIR")]

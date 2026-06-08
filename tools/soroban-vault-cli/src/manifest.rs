@@ -26,16 +26,12 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    pub fn new(
-        network: impl Into<String>,
-        rpc_url: Option<String>,
-        source_account: String,
-    ) -> Self {
+    pub fn new(network: impl Into<String>, rpc_url: Option<String>) -> Self {
         Self {
             version: MANIFEST_VERSION,
             network: network.into(),
             rpc_url,
-            source_account: Some(source_account),
+            source_account: None,
             artifacts: BTreeMap::new(),
             contracts: BTreeMap::new(),
             transactions: Vec::new(),
@@ -46,10 +42,9 @@ impl Manifest {
         path: &Path,
         network: &str,
         rpc_url: Option<String>,
-        source_account: String,
     ) -> anyhow::Result<Self> {
         if !path.exists() {
-            return Ok(Self::new(network, rpc_url, source_account));
+            return Ok(Self::new(network, rpc_url));
         }
         let raw = fs::read_to_string(path)
             .with_context(|| format!("read manifest {}", path.display()))?;
@@ -63,6 +58,7 @@ impl Manifest {
         if manifest.network.is_empty() {
             manifest.network = network.to_string();
         }
+        manifest.source_account = None;
         Ok(manifest)
     }
 
@@ -116,11 +112,7 @@ mod tests {
     fn manifest_round_trips() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new(
-            "testnet",
-            Some("https://rpc".to_string()),
-            "alice".to_string(),
-        );
+        let mut manifest = Manifest::new("testnet", Some("https://rpc".to_string()));
         manifest.artifacts.insert(
             "vault".to_string(),
             ArtifactRecord {
@@ -133,9 +125,9 @@ mod tests {
         );
         manifest.save(&path).expect("save");
 
-        let loaded =
-            Manifest::load_or_new(&path, "testnet", None, "alice".to_string()).expect("load");
+        let loaded = Manifest::load_or_new(&path, "testnet", None).expect("load");
         assert_eq!(loaded.version, MANIFEST_VERSION);
         assert!(loaded.artifacts.contains_key("vault"));
+        assert_eq!(loaded.source_account, None);
     }
 }
