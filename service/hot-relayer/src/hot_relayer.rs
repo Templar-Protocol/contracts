@@ -649,8 +649,8 @@ mod tests {
     const STELLAR_ACCOUNT: &str = "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV";
     const OTHER_STELLAR_ACCOUNT: &str = "GD3SOHKDS7CDGDOTJKP6VNAOEXC3Y5BRWD3WIEK65ZQAJUMTBGE4TVBZ";
 
-    fn hot_nonce(value: &str) -> HotNonce {
-        HotNonce::try_from(value.to_string()).unwrap_or_else(|error| panic!("{error}"))
+    fn synthetic_nonce() -> HotNonce {
+        HotNonce::try_from(line!().to_string()).unwrap_or_else(|error| panic!("{error}"))
     }
 
     fn hot_token_id(value: &str) -> HotTokenId {
@@ -682,7 +682,7 @@ mod tests {
     fn valid_deposit_event() -> StellarDepositEvent {
         StellarDepositEvent {
             chain_id: 1100,
-            nonce: hot_nonce("21"),
+            nonce: synthetic_nonce(),
             sender_id: stellar_receiver(STELLAR_ACCOUNT),
             receiver_id: near_receiver("vault-counterparty.near"),
             token_id: hot_token_id("1100_CUSDC"),
@@ -692,7 +692,7 @@ mod tests {
 
     fn valid_pending_withdrawal() -> PendingWithdrawal {
         PendingWithdrawal {
-            nonce: hot_nonce("991"),
+            nonce: synthetic_nonce(),
             chain_id: 1100,
             withdraw_data: PendingWithdrawData {
                 receiver_id: stellar_receiver(STELLAR_ACCOUNT),
@@ -712,7 +712,7 @@ mod tests {
             .await
             .unwrap_or_else(|e| panic!("{e}"));
 
-        assert_eq!(execution.nonce.as_str(), "991");
+        assert_eq!(execution.nonce.as_str(), pending.nonce.as_str());
         assert_eq!(execution.signature, "withdraw-signature");
         assert_eq!(execution.receiver.as_str(), STELLAR_ACCOUNT);
         assert_eq!(execution.token_id.as_str(), "1100_CUSDC");
@@ -723,7 +723,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| panic!("{e}"))
                 .as_slice(),
-            &["991".to_string()]
+            &[pending.nonce.as_str().to_string()]
         );
     }
 
@@ -736,7 +736,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
 
         assert_eq!(request.chain, 1100);
-        assert_eq!(request.nonce.as_str(), "21");
+        assert_eq!(request.nonce.as_str(), event.nonce.as_str());
         assert_eq!(request.sender_id.as_str(), STELLAR_ACCOUNT);
         assert_eq!(request.receiver_id.as_str(), "vault-counterparty.near");
         assert_eq!(request.token_id.as_str(), "1100_CUSDC");
@@ -852,7 +852,7 @@ mod tests {
             })
         ));
 
-        let sample_deposit_nonce = hot_nonce("21");
+        let sample_deposit_nonce = synthetic_nonce();
         assert!(serde_json::from_value::<StellarDepositEvent>(json!({
             "chain_id": 1100,
             "nonce": sample_deposit_nonce.as_str(),
@@ -899,7 +899,7 @@ mod tests {
             })
         ));
 
-        let sample_withdrawal_nonce = hot_nonce("991");
+        let sample_withdrawal_nonce = synthetic_nonce();
         assert!(serde_json::from_value::<PendingWithdrawal>(json!({
             "nonce": sample_withdrawal_nonce.as_str(),
             "chain_id": 1100,
@@ -926,7 +926,7 @@ mod tests {
     #[tokio::test]
     async fn mpc_client_posts_only_nonce_for_withdraw_sign() {
         let server = MockServer::start().await;
-        let request_nonce = hot_nonce("4242");
+        let request_nonce = synthetic_nonce();
         Mock::given(method("POST"))
             .and(path("/withdraw/sign"))
             .and(body_json(json!({ "nonce": request_nonce.as_str() })))
@@ -952,7 +952,7 @@ mod tests {
     #[tokio::test]
     async fn mpc_client_posts_deposit_sign_tuple_including_receiver() {
         let server = MockServer::start().await;
-        let request_nonce = hot_nonce("12");
+        let request_nonce = synthetic_nonce();
         let request_amount = hot_amount("77");
         let request = DepositSignRequest {
             chain: 1100,

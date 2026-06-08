@@ -1008,8 +1008,12 @@ mod tests {
         (adapter, admin, vault, hot_locker, asset, receiver)
     }
 
-    fn expected_hot_client_timestamp(env: &Env, same_ledger_sequence: u128) -> u128 {
-        u128::from(env.ledger().timestamp()) * 1_000_000_000_000 - same_ledger_sequence
+    fn initial_expected_hot_client_timestamp(env: &Env) -> u128 {
+        u128::from(env.ledger().timestamp()) * HOT_TIMESTAMP_SCALE
+    }
+
+    fn next_expected_hot_client_timestamp(previous: u128) -> u128 {
+        previous - u128::from(true)
     }
 
     fn fuzz_env() -> Env {
@@ -1194,7 +1198,7 @@ mod tests {
             &hot_locker,
             &receiver,
             100,
-            expected_hot_client_timestamp(&env, 0),
+            initial_expected_hot_client_timestamp(&env),
         );
 
         let locker_client = MockHotLockerClient::new(&env, &hot_locker);
@@ -1202,7 +1206,7 @@ mod tests {
         assert_eq!(locker_client.amount(), 100);
         assert_eq!(
             locker_client.timestamp(),
-            expected_hot_client_timestamp(&env, 0)
+            initial_expected_hot_client_timestamp(&env)
         );
         assert_eq!(client.total_assets(&asset), 100);
         assert_eq!(
@@ -1221,7 +1225,7 @@ mod tests {
         let (adapter, _admin, vault, hot_locker, asset, receiver) = setup(&env);
         let client = HotBridgeAdapterContractClient::new(&env, &adapter);
         let asset_admin = StellarAssetClient::new(&env, &asset);
-        let base_nonce = expected_hot_client_timestamp(&env, 0);
+        let base_nonce = initial_expected_hot_client_timestamp(&env);
 
         asset_admin.mint(&vault, &100);
         client.supply(&vault, &asset, &100);
@@ -1244,7 +1248,7 @@ mod tests {
             &hot_locker,
             &receiver,
             60,
-            base_nonce - 1,
+            next_expected_hot_client_timestamp(base_nonce),
         );
         assert_eq!(client.total_assets(&asset), 160);
 
@@ -1259,7 +1263,7 @@ mod tests {
             &hot_locker,
             &receiver,
             25,
-            expected_hot_client_timestamp(&env, 0),
+            initial_expected_hot_client_timestamp(&env),
         );
         assert_eq!(client.total_assets(&asset), 185);
     }
