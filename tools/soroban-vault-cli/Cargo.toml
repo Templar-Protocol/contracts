@@ -20,6 +20,7 @@ templar-curator-proxy-soroban = { path = "../../contract/proxy-curator-soroban" 
 templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
 templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
 tracing.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile = "3.13"

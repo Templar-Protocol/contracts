@@ -18,12 +18,7 @@ use crate::{
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
-    let mut manifest = Manifest::load_or_new(
-        &cli.state,
-        &cli.network,
-        cli.rpc_url.clone(),
-        cli.source_account.clone(),
-    )?;
+    let mut manifest = Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone())?;
     let stellar = Stellar::new(cli, executor);
     let result = match &cli.command {
         Commands::Deploy(args) => match &args.command {
@@ -82,7 +77,7 @@ fn deploy_stack<E: CommandExecutor>(
 
     let admin = match &args.admin {
         Some(admin) => admin.to_string(),
-        None => stellar.keys_address(&cli.source_account)?,
+        None => stellar.keys_address_source_account()?,
     };
 
     let include_blend = !args.blend_pools.is_empty();
@@ -1622,7 +1617,12 @@ mod tests {
     }
 
     impl CommandExecutor for RecordingExecutor {
-        fn run(&self, program: &str, args: &[String]) -> anyhow::Result<CommandOutput> {
+        fn run(
+            &self,
+            program: &str,
+            args: &[String],
+            _redacted_args: &[usize],
+        ) -> anyhow::Result<CommandOutput> {
             self.calls
                 .lock()
                 .expect("lock calls")
@@ -1652,7 +1652,7 @@ mod tests {
 
     #[test]
     fn export_env_uses_manifest_contracts() {
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         manifest.contracts.insert(
             "vault".to_string(),
             ContractRecord {
@@ -1696,7 +1696,7 @@ mod tests {
     fn user_deposit_prefers_erc4626_proxy() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         manifest.contracts.insert(
             "proxy_4626".to_string(),
             ContractRecord {
@@ -1737,7 +1737,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_blend_wasm(dir.path());
         let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         manifest
             .contracts
             .insert("vault".to_string(), imported_record(CONTRACT));
@@ -1780,8 +1780,7 @@ mod tests {
 
         run(&cli, &executor).expect("deploy adapters");
 
-        let loaded = Manifest::load_or_new(&state, "testnet", None, "alice".to_string())
-            .expect("load manifest");
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
         assert!(loaded.contracts.contains_key("blend_adapter_0"));
         assert_eq!(
             loaded
@@ -1836,7 +1835,7 @@ mod tests {
     fn extend_ttl_runs_for_entire_ttl_capable_deployment_set() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         for (key, contract_id) in [
             ("vault", "CVAULT"),
             ("governance", "CGOVERNANCE"),
@@ -1993,7 +1992,7 @@ mod tests {
             network: "testnet".to_string(),
             rpc_url: None,
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
-            source_account: "alice".to_string(),
+            source_account: "alice".parse().expect("source account"),
             config_dir: None,
             state,
             workspace_path: ".".into(),
@@ -2007,7 +2006,7 @@ mod tests {
     }
 
     fn manifest_with_governance(path: &std::path::Path) {
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         manifest
             .contracts
             .insert("governance".to_string(), imported_record(CONTRACT));
@@ -2015,7 +2014,7 @@ mod tests {
     }
 
     fn manifest_with_governance_and_vault(path: &std::path::Path) {
-        let mut manifest = Manifest::new("testnet", None, "alice".to_string());
+        let mut manifest = Manifest::new("testnet", None);
         manifest
             .contracts
             .insert("governance".to_string(), imported_record(CONTRACT));
