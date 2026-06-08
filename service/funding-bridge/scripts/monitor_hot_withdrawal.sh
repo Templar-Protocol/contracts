@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ -f "$PROJECT_DIR/.env" ]; then
   set -a
@@ -15,19 +16,25 @@ NONCE="${1:-1776177129000001087571}"
 RECEIVER="${2:-${STELLAR_SECRET_KEY:+$(stellar keys address templar-hot-mainnet 2>/dev/null || true)}}"
 INTERVAL="${3:-15}"
 ONCE="${ONCE:-0}"
+ENCODER_WORKSPACE="${HOT_ENCODER_WORKSPACE:-$WORKSPACE_DIR}"
 
 if [ -z "$RECEIVER" ]; then
   echo "receiver is required as arg 2 or via local Stellar identity" >&2
   exit 1
 fi
 
-ENCODED_RECEIVER="$(python3 - <<'PY' "$RECEIVER"
+if ! ENCODED_RECEIVER="$(python3 - <<'PY' "$RECEIVER" "$ENCODER_WORKSPACE")"; then
 import sys
-alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 addr = sys.argv[1]
+root_arg = sys.argv[2]
+src = None
+bin_path = None
 try:
     import subprocess, tempfile, pathlib, os
-    root = pathlib.Path('/data/projects/t-private-fork')
+    root = pathlib.Path(root_arg).resolve()
+    deps = root / 'target' / 'debug' / 'deps'
+    if not deps.is_dir():
+        raise RuntimeError(f'missing dependency directory: {deps}')
     bs58 = next((root / 'target' / 'debug' / 'deps').glob('libbs58-*.rlib'))
     stellar_xdr = next((root / 'target' / 'debug' / 'deps').glob('libstellar_xdr-*.rlib'))
     src = tempfile.NamedTemporaryFile('w', suffix='.rs', delete=False)
@@ -43,12 +50,31 @@ try:
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     out = subprocess.check_output([bin_path, addr], text=True).strip()
     print(out)
-    os.unlink(src.name)
-    os.unlink(bin_path)
-except Exception:
-    print('')
+except Exception as error:
+    print(f'failed to derive ENCODED_RECEIVER: {error}', file=sys.stderr)
+    sys.exit(1)
+finally:
+    import os
+    if src is not None:
+        try:
+            os.unlink(src.name)
+        except OSError:
+            pass
+    if bin_path is not None:
+        try:
+            os.unlink(bin_path)
+        except OSError:
+            pass
 PY
-)"
+)"; then
+  echo "Failed to derive ENCODED_RECEIVER; set HOT_ENCODER_WORKSPACE or fix local encoder deps." >&2
+  exit 1
+fi
+
+if [ -z "$ENCODED_RECEIVER" ]; then
+  echo "Failed to derive ENCODED_RECEIVER; encoder returned an empty value." >&2
+  exit 1
+fi
 
 while true; do
   echo "===== $(date -u '+%Y-%m-%dT%H:%M:%SZ') ====="
@@ -95,9 +121,8 @@ for (const url of ['https://api0.herewallet.app/api/v1/transactions/clear_comple
 }
 JS
 
-  if [ -n "$ENCODED_RECEIVER" ]; then
-    echo "-- near pending withdrawals --"
-    python3 - <<'PY' "$ENCODED_RECEIVER"
+  echo "-- near pending withdrawals --"
+  python3 - <<'PY' "$ENCODED_RECEIVER"
 import sys, json, urllib.request, base64
 encoded = sys.argv[1]
 args = {'receiver_id': encoded, 'chain_id': 1100}
@@ -106,7 +131,6 @@ req=urllib.request.Request('https://rpc.mainnet.near.org', data=json.dumps(paylo
 with urllib.request.urlopen(req, timeout=60) as r:
     print(r.read().decode())
 PY
-  fi
 
   if [ "$ONCE" = "1" ]; then
     break

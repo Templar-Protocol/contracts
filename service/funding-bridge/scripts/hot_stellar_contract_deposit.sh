@@ -8,6 +8,8 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 HOT_STELLAR_LOCKER_CONTRACT="${HOT_STELLAR_LOCKER_CONTRACT:-CCLWL5NYSV2WJQ3VBU44AMDHEVKEPA45N2QP2LL62O3JVKPGWWAQUVAG}"
 STELLAR_RPC_URL="${STELLAR_RPC_URL:-https://mainnet.sorobanrpc.com}"
 STELLAR_NETWORK_PASSPHRASE="${STELLAR_NETWORK_PASSPHRASE:-Public Global Stellar Network ; September 2015}"
+STELLAR_SOURCE_IDENTITY="${STELLAR_SOURCE_IDENTITY:-templar-hot-mainnet}"
+PROVEN_HOT_RECEIVER_HEX="52fd581de41f4bace88c936b89bf267a1161426a466adc518cd9e56f201651dd"
 TARGET_NEAR_ACCOUNT="${1:-carrion256.near}"
 ASSET_KIND="${2:-native}"
 AMOUNT="${3:-1000000}"
@@ -21,8 +23,8 @@ set -a
 source "$PROJECT_DIR/.env"
 set +a
 
-if [ -z "${STELLAR_SECRET_KEY:-}" ]; then
-  echo "STELLAR_SECRET_KEY is required in $PROJECT_DIR/.env" >&2
+if ! SENDER_ACCOUNT="$(stellar keys address "$STELLAR_SOURCE_IDENTITY")"; then
+  echo "failed to resolve Stellar sender identity: $STELLAR_SOURCE_IDENTITY" >&2
   exit 1
 fi
 
@@ -31,20 +33,17 @@ if [ "$ASSET_KIND" != "native" ]; then
   exit 1
 fi
 
-SENDER_ACCOUNT="$(stellar keys address templar-hot-mainnet)"
 TOKEN_CONTRACT="$(stellar contract id asset --asset native --rpc-url "$STELLAR_RPC_URL" --network-passphrase "$STELLAR_NETWORK_PASSPHRASE")"
 CLIENT_TIMESTAMP="$(python3 - <<'PY'
 import time
 print(time.time_ns() - 20_000_000_000)
 PY
 )"
-RECEIVER_HEX="$(python3 - <<PY
-import hashlib, json
-target = ${TARGET_NEAR_ACCOUNT@Q}
-payload = json.dumps({"account_id": "intents.near", "msg": json.dumps({"receiver_id": target})})
-print(hashlib.sha256(payload.encode()).hexdigest())
-PY
-)"
+RECEIVER_HEX="${RECEIVER_HEX_OVERRIDE:-${HOT_RECEIVER_HEX:-$PROVEN_HOT_RECEIVER_HEX}}"
+if [[ ! "$RECEIVER_HEX" =~ ^[0-9A-Fa-f]{64}$ ]]; then
+  echo "receiver hex must be exactly 64 hex characters" >&2
+  exit 1
+fi
 
 echo "HOT locker contract: $HOT_STELLAR_LOCKER_CONTRACT"
 echo "Stellar sender: $SENDER_ACCOUNT"
@@ -56,7 +55,7 @@ echo "Client timestamp: $CLIENT_TIMESTAMP"
 
 stellar contract invoke \
   --id "$HOT_STELLAR_LOCKER_CONTRACT" \
-  --source-account "$STELLAR_SECRET_KEY" \
+  --source-account "$STELLAR_SOURCE_IDENTITY" \
   --rpc-url "$STELLAR_RPC_URL" \
   --network-passphrase "$STELLAR_NETWORK_PASSPHRASE" \
   --send=yes \

@@ -2,6 +2,8 @@
 set -ex
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
+# cargo-near rejects Rust >=1.87 for this NEAR WASM build path, so the
+# prebuild toolchain intentionally stays separate from the repo lint/test pin.
 NEAR_RUST_TOOLCHAIN="${NEAR_RUST_TOOLCHAIN:-1.86.0}"
 
 cargo_near_build() {

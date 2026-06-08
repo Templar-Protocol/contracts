@@ -414,6 +414,10 @@ impl HotBridgeAdapterContract {
         let token = soroban_sdk::token::Client::new(&env, &asset);
         let balance = token.balance(&adapter);
         let reserved = returned_of(&env, &asset);
+        // `reserved` is recorded through `record_returned` after funds arrive at
+        // this adapter, so it should not exceed `balance`; underflow here is a
+        // defensive signal for external balance/accounting drift, not a normal
+        // user path. `surplus` is the only amount available for rescue.
         let surplus = balance
             .checked_sub(reserved)
             .ok_or(AdapterError::InsufficientSurplus)?;
