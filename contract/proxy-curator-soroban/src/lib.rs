@@ -16,7 +16,6 @@ pub use error::ContractError;
 pub use templar_soroban_governance::{
     GovernanceActionKind, PendingProposal, TimelockKind, Timelocks,
 };
-pub use templar_soroban_shared_types::VaultCommandResult;
 
 #[cfg(test)]
 mod tests;

@@ -11,8 +11,8 @@ use templar_soroban_governance::{
     Timelocks,
 };
 use templar_soroban_shared_types::{
-    ProxyPreviewFields, ProxyViewFields, ProxyViewResponse, VaultCommand as WireVaultCommand,
-    VaultCommandResult as WireVaultCommandResult,
+    EmptyReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
+    VaultCommand as WireVaultCommand,
 };
 
 use crate::error::ContractError;
@@ -718,7 +718,7 @@ pub(crate) fn read_governance_address(env: &Env) -> Result<Address, ContractErro
 pub(crate) fn invoke_vault_execute(
     env: &Env,
     command: VaultCommand,
-) -> Result<WireVaultCommandResult, ContractError> {
+) -> Result<Bytes, ContractError> {
     let vault_address = read_vault_address(env)?;
     let command = command.into_wire()?;
     let payload = Bytes::from_slice(env, &command.encode());
@@ -740,7 +740,7 @@ pub(crate) fn invoke_vault_execute(
         }
     };
 
-    WireVaultCommandResult::decode(&bytes.to_alloc_vec()).map_err(Into::into)
+    Ok(bytes)
 }
 
 fn call_proxy_view_full(
@@ -970,18 +970,14 @@ where
     }
 }
 
-fn expect_i128_result(result: WireVaultCommandResult) -> Result<i128, ContractError> {
-    match result {
-        WireVaultCommandResult::I128(value) => Ok(value),
-        _ => Err(ContractError::VaultError),
-    }
+fn expect_i128_result(bytes: Bytes) -> Result<i128, ContractError> {
+    let receipt = I128Receipt::decode(&bytes.to_alloc_vec())?;
+    Ok(receipt.value)
 }
 
-fn expect_unit_result(result: WireVaultCommandResult) -> Result<(), ContractError> {
-    match result {
-        WireVaultCommandResult::Unit => Ok(()),
-        _ => Err(ContractError::VaultError),
-    }
+fn expect_unit_result(bytes: Bytes) -> Result<(), ContractError> {
+    EmptyReceipt::decode(&bytes.to_alloc_vec())?;
+    Ok(())
 }
 
 fn address_to_wire(address: &Address) -> Result<AllocString, ContractError> {
