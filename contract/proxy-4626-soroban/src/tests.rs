@@ -131,6 +131,9 @@ impl MockVaultContract {
             .instance()
             .get::<_, Bytes>(&MockVaultDataKey::NextReceipt)
         {
+            env.storage()
+                .instance()
+                .remove(&MockVaultDataKey::NextReceipt);
             return receipt;
         }
 

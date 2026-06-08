@@ -1289,6 +1289,18 @@ fn soroban_contract_execute_withdraw_decodes_completed_receipt(
     assert_eq!(receiver.as_str(), sdk_wire(&owner));
     assert_eq!(assets_out, deposit_assets as u128);
     assert_eq!(shares_burned, deposit_assets as u128);
+
+    env.as_contract(&contract_id, || {
+        let state = SorobanStorage::new(&env)
+            .load_state()
+            .unwrap()
+            .expect("state should remain persisted");
+        assert!(state.withdraw_queue.is_empty());
+        assert!(state
+            .withdraw_queue
+            .iter()
+            .all(|(queued_request_id, _)| queued_request_id != request_id));
+    });
 }
 
 #[rstest]
