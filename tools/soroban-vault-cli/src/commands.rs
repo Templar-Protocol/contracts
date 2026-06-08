@@ -1622,6 +1622,7 @@ mod tests {
             program: &str,
             args: &[String],
             _redacted_args: &[usize],
+            _env: &[crate::stellar::CommandEnv],
         ) -> anyhow::Result<CommandOutput> {
             self.calls
                 .lock()
@@ -1992,7 +1993,7 @@ mod tests {
             network: "testnet".to_string(),
             rpc_url: None,
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
-            source_account: "alice".parse().expect("source account"),
+            source_account: Some("alice".parse().expect("source account")),
             config_dir: None,
             state,
             workspace_path: ".".into(),
