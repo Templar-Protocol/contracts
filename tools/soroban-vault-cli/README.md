@@ -151,6 +151,6 @@ tmplr-soroban-vault export-env
 constructor args are known.
 
 `extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
-`extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter `extend_ttl --caller`.
-Manifest contracts without an explicit deployment-wide TTL entrypoint, such as the asset token and
-curator proxy, are reported as skipped.
+`extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter
+`extend_ttl --caller`. Manifest contracts without an explicit deployment-wide TTL entrypoint, such
+as the asset token, are reported as skipped.

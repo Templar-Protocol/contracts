@@ -584,6 +584,19 @@ fn cancel_migration_submits_timelocked_governance_proposal() {
 }
 
 #[test]
+fn extend_ttl_succeeds_without_vault_call() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::extend_ttl(fixture.env.clone())
+    });
+
+    assert_eq!(result, Ok(()));
+    assert!(fixture.recorded_payloads().is_empty());
+}
+
+#[test]
 fn governance_submit_forwards_typed_arguments() {
     let fixture = Fixture::new();
     fixture.initialize().expect("initialize succeeds");
