@@ -6,8 +6,8 @@ use templar_soroban_governance::{
 };
 use templar_soroban_runtime::ContractError as VaultContractError;
 use templar_soroban_shared_types::{
-    VaultCommand as WireVaultCommand, VaultCommandResult as WireVaultCommandResult,
-    VAULT_ERR_ALREADY_INITIALIZED, VAULT_ERR_INVALID_INPUT,
+    EmptyReceipt, I128Receipt, VaultCommand as WireVaultCommand, VAULT_ERR_ALREADY_INITIALIZED,
+    VAULT_ERR_INVALID_INPUT,
 };
 
 use crate::{
@@ -44,16 +44,16 @@ impl MockVaultContract {
             .set(&MockVaultDataKey::RecordedPayloads, &payloads);
 
         let command = WireVaultCommand::decode(&payload.to_alloc_vec()).expect("decode command");
-        let result = match command {
-            WireVaultCommand::Allocate { .. } => WireVaultCommandResult::I128(123),
-            WireVaultCommand::RefreshMarkets { .. } => WireVaultCommandResult::I128(456),
+        let receipt = match command {
+            WireVaultCommand::Allocate { .. } => I128Receipt { value: 123 }.encode(),
+            WireVaultCommand::RefreshMarkets { .. } => I128Receipt { value: 456 }.encode(),
             WireVaultCommand::ResyncIdleBalance
             | WireVaultCommand::CancelMigration { .. }
-            | WireVaultCommand::ExtendTtl => WireVaultCommandResult::Unit,
-            _ => WireVaultCommandResult::Unit,
+            | WireVaultCommand::ExtendTtl => EmptyReceipt.encode(),
+            _ => EmptyReceipt.encode(),
         };
 
-        Bytes::from_slice(&env, &result.encode())
+        Bytes::from_slice(&env, &receipt)
     }
 }
 
