@@ -176,7 +176,7 @@ impl SupplyQueue {
 
         if self.is_full() {
             let Some(max_length) = self.max_length else {
-                return Err(SupplyQueueError::LengthOverflow);
+                unreachable!("is_full() guarantees max_length is Some");
             };
             return Err(SupplyQueueError::QueueFull { max_length });
         }
