@@ -31,6 +31,12 @@ impl FromStr for SourceAccount {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if looks_like_secret_source_account(value) {
+            return Err(
+                "do not pass secret keys or seed phrases via --source-account; use Stellar keystore/default identity or STELLAR_ACCOUNT"
+                    .to_string(),
+            );
+        }
         Ok(Self(Zeroizing::new(value.to_string())))
     }
 }
@@ -54,6 +60,14 @@ impl PartialEq for SourceAccount {
 }
 
 impl Eq for SourceAccount {}
+
+fn looks_like_secret_source_account(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.split_whitespace().count() > 1
+        || (trimmed.starts_with('S')
+            && trimmed.len() >= 56
+            && trimmed.chars().all(|c| c.is_ascii_alphanumeric()))
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct AddressStr(String);

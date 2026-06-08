@@ -87,7 +87,6 @@ ENV CARGO_HOME=/home/templar/.cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 ENV RUSTUP_TOOLCHAIN=${SOROBAN_RUST_VERSION}
 ENV SOROBAN_NETWORK=testnet
-ENV SOROBAN_IDENTITY=templar
 ENV STELLAR_CONFIG_DIR=/home/templar/.config/stellar
 ENV TEMPLAR_SOROBAN_VAULT_STATE=/workspace/contract/vault/soroban/.deploy-state/manifest.json
 ENV WORKSPACE_PATH=/workspace

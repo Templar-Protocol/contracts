@@ -11,7 +11,6 @@ routing.
 
 ```sh
 cargo run -p templar-soroban-vault-cli -- \
-  --source-account templar \
   deploy stack \
   --governance-timelock-ns 86400000000000
 ```
@@ -57,9 +56,11 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
-- `--dry-run` prints the `stellar` commands with source-account values redacted, returns planned contract ids in the response, and never writes the manifest.
+- `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits machine-readable command responses.
-- `--source-account` may be an identity alias, public key, secret key, or seed phrase. The CLI redacts it from command displays, zeroizes its in-process command-argument copies after use, and does not persist it to the deployment manifest.
+- Prefer Stellar keystore identities: run `stellar keys use <identity>` in the mounted/configured Stellar config directory, or pass a non-secret identity alias/public account with `--source-account`.
+- Do not pass raw secret keys or seed phrases to `--source-account`; the CLI rejects obvious secret material there. If an operator must use an ephemeral secret, set `STELLAR_ACCOUNT` for the `stellar` child process environment instead of putting it in CLI argv.
+- Source-account overrides are redacted from command displays, zeroized from in-process environment override copies after use, and never persisted to the deployment manifest.
 
 ## Docker
 
@@ -90,7 +91,9 @@ docker run --rm -it \
 
 The same mount pattern supports deployment commands. Mounting the workspace and `target` directory
 lets `deploy ... --build` reuse local source and build artifacts, while mounting the Stellar config
-preserves identities and network configuration across runs.
+preserves identities and network configuration across runs. Use `stellar keys use <identity>` in
+that config, or pass `-e STELLAR_ACCOUNT` to Docker when an ephemeral source account must come from
+the environment.
 
 ## Common Operations
 
