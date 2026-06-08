@@ -62,6 +62,7 @@ impl MockVaultContract {
 #[allow(clippy::enum_variant_names)]
 enum MockGovernanceDataKey {
     LastSetCap,
+    LastTimelock,
     LastFees,
     LastRestrictions,
     LastCapGroupUpdate,
@@ -77,6 +78,14 @@ struct MockSetCapCall {
     caller: Address,
     market_id: u32,
     new_cap: i128,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+#[contracttype]
+struct MockTimelockCall {
+    caller: Address,
+    kind: TimelockKind,
+    new_timelock_ns: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,6 +149,29 @@ impl MockGovernanceContract {
         env.storage()
             .instance()
             .get(&MockGovernanceDataKey::LastSetCap)
+    }
+
+    pub fn submit_set_timelock(
+        env: Env,
+        caller: Address,
+        kind: TimelockKind,
+        new_timelock_ns: u64,
+    ) -> Result<u64, GovernanceError> {
+        env.storage().instance().set(
+            &MockGovernanceDataKey::LastTimelock,
+            &MockTimelockCall {
+                caller,
+                kind,
+                new_timelock_ns,
+            },
+        );
+        Ok(87)
+    }
+
+    pub fn last_timelock(env: Env) -> Option<MockTimelockCall> {
+        env.storage()
+            .instance()
+            .get(&MockGovernanceDataKey::LastTimelock)
     }
 
     pub fn submit_set_fees(
@@ -573,6 +605,27 @@ fn typed_governance_facade_forwards_domain_arguments() {
             restrictions,
         })
     );
+
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::submit_timelock(
+                fixture.env.clone(),
+                admin.clone(),
+                1234,
+                TimelockKind::Cap,
+            )
+        }),
+        Ok(87)
+    );
+    let timelock_call = fixture
+        .env
+        .as_contract(&fixture.governance, || {
+            MockGovernanceContract::last_timelock(fixture.env.clone())
+        })
+        .expect("timelock call recorded");
+    assert_eq!(timelock_call.caller, admin.clone());
+    assert!(timelock_call.kind == TimelockKind::Cap);
+    assert_eq!(timelock_call.new_timelock_ns, 1234);
 
     let update = CapGroupUpdate::SetMember(4, group);
     assert_eq!(

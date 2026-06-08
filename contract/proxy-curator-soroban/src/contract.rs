@@ -94,11 +94,8 @@ pub enum Restrictions {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 pub enum CapGroupUpdate {
     SetCap(String, i128),
-    RemoveCap(String),
     SetRelativeCap(String, i128),
-    RemoveRelativeCap(String),
     SetMember(u32, String),
-    RemoveMember(u32),
 }
 
 #[contracttype]
@@ -363,10 +360,9 @@ impl SorobanCuratorProxyContract {
         env: Env,
         admin: Address,
         new_timelock_ns: u64,
-        kind: Option<TimelockKind>,
+        kind: TimelockKind,
     ) -> Result<u64, ContractError> {
         admin.require_auth();
-        let kind = kind.ok_or(ContractError::InvalidInput)?;
         invoke_governance(
             &env,
             "submit_set_timelock",
@@ -423,9 +419,6 @@ impl SorobanCuratorProxyContract {
                 "submit_set_group_member",
                 (admin, market, group).into_val(&env),
             ),
-            CapGroupUpdate::RemoveCap(_)
-            | CapGroupUpdate::RemoveRelativeCap(_)
-            | CapGroupUpdate::RemoveMember(_) => Err(ContractError::NotImplemented),
         }
     }
 
