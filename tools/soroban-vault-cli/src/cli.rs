@@ -34,9 +34,9 @@ pub struct Cli {
     )]
     pub network_passphrase: String,
 
-    /// Stellar source account identity, public key, secret key, or seed phrase
-    #[arg(long, env = "SOROBAN_IDENTITY", default_value = "templar")]
-    pub source_account: SourceAccount,
+    /// Stellar source account identity alias, public key, or muxed account. Do not pass secret keys or seed phrases here; use Stellar keystore/default identity or STELLAR_ACCOUNT.
+    #[arg(long, env = "SOROBAN_IDENTITY")]
+    pub source_account: Option<SourceAccount>,
 
     /// Stellar config directory
     #[arg(long, env = "STELLAR_CONFIG_DIR")]
@@ -899,6 +899,19 @@ mod tests {
         .expect_err("invalid address should fail");
 
         assert!(err.to_string().contains("invalid Soroban"));
+    }
+
+    #[test]
+    fn rejects_secret_source_account_cli_values() {
+        let err = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "--source-account",
+            "SC36XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+            "status",
+        ])
+        .expect_err("secret source account should fail");
+
+        assert!(err.to_string().contains("do not pass secret keys"));
     }
 
     #[test]
