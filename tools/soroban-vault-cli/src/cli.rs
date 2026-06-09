@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::types::{
-    AddressStr, GovernanceActionKindArg, RestrictionModeArg, SourceAccount, SupplyQueueEntryArg,
-    TimelockKindArg, WasmHash,
+    AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg, ShareDecimalsArg,
+    SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
 };
 
 #[derive(Parser, Debug)]
@@ -57,6 +57,10 @@ pub struct Cli {
     /// Output machine-readable JSON
     #[arg(long)]
     pub json: bool,
+
+    /// Output newline-delimited machine-readable JSON envelopes
+    #[arg(long)]
+    pub json_lines: bool,
 
     /// Print commands and manifest decisions without running writes
     #[arg(long)]
@@ -277,12 +281,24 @@ pub enum UserCommand {
         /// Share receiver address. Defaults to --operator.
         #[arg(long)]
         receiver: Option<AddressStr>,
-        /// Asset amount in contract base units.
+        /// Asset amount in display units, converted using --asset-decimals.
+        #[arg(long, conflicts_with = "assets_raw")]
+        assets: Option<DecimalAmount>,
+        /// Asset amount in raw contract base units.
         #[arg(long)]
-        assets: i128,
-        /// Minimum shares accepted from the deposit.
+        assets_raw: Option<i128>,
+        /// Asset token decimals used for --assets.
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
+        /// Minimum shares accepted in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "min_shares_out_raw")]
+        min_shares_out: Option<DecimalAmount>,
+        /// Minimum shares accepted in raw share-token base units.
         #[arg(long, default_value_t = 0)]
-        min_shares_out: i128,
+        min_shares_out_raw: i128,
+        /// Share token decimals for --min-shares-out; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
     },
     /// Mint an exact number of shares through the ERC-4626 proxy.
     Mint {
@@ -292,9 +308,15 @@ pub enum UserCommand {
         /// Share receiver address. Defaults to --operator.
         #[arg(long)]
         receiver: Option<AddressStr>,
-        /// Share amount in share-token base units.
+        /// Share amount in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
+        /// Share amount in raw share-token base units.
         #[arg(long)]
-        shares: i128,
+        shares_raw: Option<i128>,
+        /// Share token decimals for --shares; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
     },
     /// Withdraw an exact asset amount through the ERC-4626 proxy.
     Withdraw {
@@ -307,12 +329,24 @@ pub enum UserCommand {
         /// Share owner address. Defaults to --operator.
         #[arg(long)]
         owner: Option<AddressStr>,
-        /// Asset amount in contract base units.
+        /// Asset amount in display units, converted using --asset-decimals.
+        #[arg(long, conflicts_with = "assets_raw")]
+        assets: Option<DecimalAmount>,
+        /// Asset amount in raw contract base units.
         #[arg(long)]
-        assets: i128,
-        /// Maximum shares allowed to burn. Defaults to --assets for operator workflows.
+        assets_raw: Option<i128>,
+        /// Asset token decimals used for --assets.
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
+        /// Maximum shares allowed to burn in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "max_shares_burned_raw")]
+        max_shares_burned: Option<DecimalAmount>,
+        /// Maximum shares allowed to burn in raw share-token base units. Defaults to raw assets for operator workflows.
         #[arg(long)]
-        max_shares_burned: Option<i128>,
+        max_shares_burned_raw: Option<i128>,
+        /// Share token decimals for --max-shares-burned; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
     },
     /// Redeem an exact share amount through the ERC-4626 proxy.
     Redeem {
@@ -325,12 +359,24 @@ pub enum UserCommand {
         /// Share owner address. Defaults to --operator.
         #[arg(long)]
         owner: Option<AddressStr>,
-        /// Share amount in share-token base units.
+        /// Share amount in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
+        /// Share amount in raw share-token base units.
         #[arg(long)]
-        shares: i128,
-        /// Minimum assets accepted from the redeem.
+        shares_raw: Option<i128>,
+        /// Share token decimals for --shares; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
+        /// Minimum assets accepted in display units, converted using --asset-decimals.
+        #[arg(long, conflicts_with = "min_assets_out_raw")]
+        min_assets_out: Option<DecimalAmount>,
+        /// Minimum assets accepted in raw contract base units.
         #[arg(long, default_value_t = 0)]
-        min_assets_out: i128,
+        min_assets_out_raw: i128,
+        /// Asset token decimals used for --min-assets-out.
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
     },
     /// Queue a delayed withdrawal request directly against the vault.
     RequestWithdraw {
@@ -340,12 +386,24 @@ pub enum UserCommand {
         /// Asset receiver address. Defaults to --owner.
         #[arg(long)]
         receiver: Option<AddressStr>,
-        /// Share amount to burn after cooldown.
+        /// Share amount to burn after cooldown in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
+        /// Share amount to burn after cooldown in raw share-token base units.
         #[arg(long)]
-        shares: i128,
-        /// Minimum assets accepted when the withdrawal executes.
+        shares_raw: Option<i128>,
+        /// Share token decimals for --shares; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
+        /// Minimum assets accepted when the withdrawal executes in display units.
+        #[arg(long, conflicts_with = "min_assets_out_raw")]
+        min_assets_out: Option<DecimalAmount>,
+        /// Minimum assets accepted when the withdrawal executes in raw contract base units.
         #[arg(long, default_value_t = 0)]
-        min_assets_out: i128,
+        min_assets_out_raw: i128,
+        /// Asset token decimals used for --min-assets-out.
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
     },
     /// Execute the caller's pending withdrawal through the proxy when available.
     ExecuteWithdraw {
@@ -362,19 +420,35 @@ pub enum UserCommand {
     Preview {
         #[arg(long)]
         owner: AddressStr,
+        #[arg(long, conflicts_with = "assets_raw")]
+        assets: Option<DecimalAmount>,
         #[arg(long, default_value_t = 0)]
-        assets: i128,
+        assets_raw: i128,
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
         #[arg(long, default_value_t = 0)]
-        shares: i128,
+        shares_raw: i128,
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
     },
     /// Alias for preview that preserves the underlying vault view naming.
     View {
         #[arg(long)]
         owner: AddressStr,
+        #[arg(long, conflicts_with = "assets_raw")]
+        assets: Option<DecimalAmount>,
         #[arg(long, default_value_t = 0)]
-        assets: i128,
+        assets_raw: i128,
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
         #[arg(long, default_value_t = 0)]
-        shares: i128,
+        shares_raw: i128,
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
     },
 }
 
@@ -401,8 +475,12 @@ pub enum CuratorCommand {
         caller: AddressStr,
         #[arg(long)]
         market: u32,
+        #[arg(long, conflicts_with = "amount_raw")]
+        amount: Option<DecimalAmount>,
         #[arg(long)]
-        amount: i128,
+        amount_raw: Option<i128>,
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
     },
     /// Allocate a positive or negative withdrawal delta to a market through the vault command payload.
     AllocateWithdraw {
@@ -410,8 +488,12 @@ pub enum CuratorCommand {
         caller: AddressStr,
         #[arg(long)]
         market: u32,
+        #[arg(long, conflicts_with = "amount_raw")]
+        amount: Option<DecimalAmount>,
         #[arg(long)]
-        amount: i128,
+        amount_raw: Option<i128>,
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
     },
     /// Refresh one or more market ids through the vault command payload.
     RefreshMarkets {
@@ -1054,6 +1136,37 @@ mod tests {
             .expect("parse cli");
 
         assert!(matches!(cli.command, Commands::ExtendTtl(_)));
+    }
+
+    #[test]
+    fn parses_decimal_and_raw_user_amount_flags() {
+        let decimal_cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "deposit",
+            "--operator",
+            ADMIN,
+            "--assets",
+            "1.25",
+            "--asset-decimals",
+            "7",
+            "--min-shares-out-raw",
+            "0",
+        ])
+        .expect("parse decimal deposit");
+        assert!(matches!(decimal_cli.command, Commands::User(_)));
+
+        let raw_cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "deposit",
+            "--operator",
+            ADMIN,
+            "--assets-raw",
+            "12500000",
+        ])
+        .expect("parse raw deposit");
+        assert!(matches!(raw_cli.command, Commands::User(_)));
     }
 
     #[test]

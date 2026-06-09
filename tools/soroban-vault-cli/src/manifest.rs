@@ -97,11 +97,25 @@ pub struct ContractRecord {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TransactionRecord {
+    #[serde(default)]
+    pub timestamp_unix_seconds: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_public_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_hash: Option<String>,
 }
 
 #[cfg(test)]
