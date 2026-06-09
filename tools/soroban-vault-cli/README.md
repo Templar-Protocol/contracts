@@ -9,6 +9,16 @@ routing.
 
 ## Deployment
 
+Before deploying, run `doctor` to check local readiness without submitting transactions:
+
+```sh
+tmplr-soroban-vault doctor
+```
+
+`doctor` checks the installed `stellar` CLI, configured network/passphrase/RPC inputs, source
+identity availability without printing secret values, manifest writability, expected WASM artifacts,
+Docker mount health when running inside a container, and mainnet guard status.
+
 ```sh
 cargo run -p templar-soroban-vault-cli -- \
   deploy stack \
@@ -46,6 +56,20 @@ tmplr-soroban-vault deploy adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --asset-token CASSET... \
+  --blend-pool CPOOL...
+```
+
+Use `deploy plan` to inspect reuse, upload, deploy, and manifest decisions without network writes or
+manifest changes:
+
+```sh
+tmplr-soroban-vault deploy plan stack \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CPOOL...
+
+tmplr-soroban-vault deploy plan adapters \
+  --vault CVAULT... \
+  --governance CGOV... \
   --blend-pool CPOOL...
 ```
 
@@ -114,6 +138,30 @@ tmplr-soroban-vault governance submit-set-supply-queue \
   --admin G... \
   --entry 0:C... \
   --entry 1:C...
+
+# Plan common governance transactions without submitting them.
+tmplr-soroban-vault governance plan-submit-set-supply-queue \
+  --admin G... \
+  --entry 0:C...
+tmplr-soroban-vault governance plan-submit-set-timelock \
+  --admin G... \
+  --kind supply-queue \
+  --timelock-ns 86400000000000
+tmplr-soroban-vault governance plan-accept --admin G... --proposal-id 7
+
+# Inspect and progress pending governance proposals.
+tmplr-soroban-vault governance queue
+tmplr-soroban-vault governance explain --proposal-id 7
+tmplr-soroban-vault governance accept-ready --admin G...
+tmplr-soroban-vault governance submit-and-wait \
+  --max-wait-seconds 3600 \
+  set-timelock \
+  --admin G... \
+  --kind supply-queue \
+  --timelock-ns 86400000000000
+tmplr-soroban-vault governance submit-and-wait proposal \
+  --admin G... \
+  --proposal-id 7
 
 # Update a specific governance timelock using the contract TimelockKind variants.
 tmplr-soroban-vault governance submit-set-timelock \
