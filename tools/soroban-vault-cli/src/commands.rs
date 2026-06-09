@@ -13,6 +13,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use templar_curator_proxy_soroban::AllocationDelta;
 use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
+use tracing::{debug, info};
 
 use crate::{
     artifacts::{ensure_uploaded, sha256_file, ArtifactSpec},
@@ -24,11 +25,22 @@ use crate::{
     manifest::{ContractRecord, Manifest, TransactionRecord},
     profile,
     stellar::{CommandExecutor, CommandOutput, Stellar},
-    types::{AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SupplyQueueEntryArg},
+    types::{
+        AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SourceAccount,
+        SupplyQueueEntryArg,
+    },
 };
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
+    debug!(
+        command = command_name(&cli.command),
+        network = %cli.network,
+        manifest = %cli.state.display(),
+        dry_run = cli.dry_run,
+        json = cli.json || cli.json_lines,
+        "starting CLI command"
+    );
     match &cli.command {
         Commands::Profile(args) => return run_profile(cli, &args.command),
         Commands::Completions { shell } => {
@@ -83,8 +95,18 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
         manifest
             .transactions
             .push(transaction_record(cli, &manifest, &result));
+        debug!(
+            manifest = %cli.state.display(),
+            command = command_name(&cli.command),
+            "recording transaction audit entry"
+        );
         manifest.save(&cli.state)?;
     }
+    info!(
+        command = command_name(&cli.command),
+        network = %cli.network,
+        "completed CLI command"
+    );
     print_response(&result, cli)
 }
 
@@ -97,8 +119,18 @@ fn guard_write(cli: &Cli) -> anyhow::Result<()> {
 
 fn checkpoint_manifest(cli: &Cli, manifest: &Manifest) -> anyhow::Result<()> {
     if cli.dry_run {
+        debug!(
+            manifest = %cli.state.display(),
+            "skipping manifest checkpoint during dry run"
+        );
         return Ok(());
     }
+    debug!(
+        manifest = %cli.state.display(),
+        contracts = manifest.contracts.len(),
+        transactions = manifest.transactions.len(),
+        "checkpointing deployment manifest"
+    );
     manifest.save(&cli.state)
 }
 
@@ -1099,9 +1131,18 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
 ) -> anyhow::Result<String> {
     if !force_new {
         if let Some(record) = manifest.contracts.get(key) {
+            info!(
+                contract_key = key,
+                contract_id = %record.contract_id,
+                "reusing contract recorded in manifest"
+            );
             return Ok(record.contract_id.clone());
         }
     }
+    info!(
+        contract_key = key,
+        wasm_hash, force_new, "deploying contract"
+    );
     let contract_id = stellar.deploy(wasm_hash, constructor_args)?;
     manifest.contracts.insert(
         key.to_string(),
@@ -1115,6 +1156,11 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
         },
     );
     checkpoint_manifest(cli, manifest)?;
+    info!(
+        contract_key = key,
+        contract_id = %contract_id,
+        "recorded deployed contract"
+    );
     Ok(contract_id)
 }
 
@@ -1183,6 +1229,11 @@ fn record_imported_contract_if_provided(
             contract_id
         );
         checkpoint_manifest(cli, manifest)?;
+        info!(
+            contract_key = key,
+            contract_id = %record.contract_id,
+            "confirmed imported contract already recorded"
+        );
         return Ok(());
     }
     manifest.contracts.insert(
@@ -1197,6 +1248,11 @@ fn record_imported_contract_if_provided(
         },
     );
     checkpoint_manifest(cli, manifest)?;
+    info!(
+        contract_key = key,
+        contract_id = %contract_id,
+        "recorded imported contract"
+    );
     Ok(())
 }
 
@@ -1214,6 +1270,11 @@ fn record_asset_token(
             asset_token
         );
         checkpoint_manifest(cli, manifest)?;
+        info!(
+            contract_key = "asset_token",
+            contract_id = %record.contract_id,
+            "confirmed asset token already recorded"
+        );
         return Ok(());
     }
     let asset_source = if predeployed { "predeployed" } else { "native" };
@@ -1229,6 +1290,12 @@ fn record_asset_token(
         },
     );
     checkpoint_manifest(cli, manifest)?;
+    info!(
+        contract_key = "asset_token",
+        contract_id = %asset_token,
+        predeployed,
+        "recorded asset token"
+    );
     Ok(())
 }
 
@@ -2389,8 +2456,7 @@ fn transaction_record(cli: &Cli, manifest: &Manifest, response: &Response) -> Tr
         source_public_address: cli
             .source_account
             .as_ref()
-            .map(|source| source.as_secret_str().to_string())
-            .filter(|value| value.starts_with('G') || value.starts_with('M')),
+            .and_then(SourceAccount::public_address),
         result_status: Some("success".to_string()),
         artifact_hash: command_artifact_hash(&cli.command, manifest),
     }

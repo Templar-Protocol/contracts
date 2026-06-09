@@ -1,29 +1,39 @@
 use std::{fmt, str::FromStr};
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use templar_soroban_governance::{
     FeeParams, GovernanceActionKind, RestrictionMode, SupplyQueueProposalEntry, TimelockKind,
 };
 use templar_soroban_shared_types::strkey;
-use zeroize::Zeroizing;
 
-pub struct SourceAccount(Zeroizing<String>);
+pub struct SourceAccount(SecretString);
 
 impl SourceAccount {
     #[must_use]
     pub fn as_secret_str(&self) -> &str {
-        self.0.as_str()
+        self.0.expose_secret()
     }
 
     #[must_use]
     pub fn clone_secret(&self) -> String {
         self.as_secret_str().to_string()
     }
+
+    #[must_use]
+    pub fn public_address(&self) -> Option<String> {
+        let value = self.as_secret_str();
+        if value.starts_with('G') || value.starts_with('M') {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    }
 }
 
 impl Clone for SourceAccount {
     fn clone(&self) -> Self {
-        Self(Zeroizing::new(self.as_secret_str().to_string()))
+        Self(self.0.clone())
     }
 }
 
@@ -37,7 +47,7 @@ impl FromStr for SourceAccount {
                     .to_string(),
             );
         }
-        Ok(Self(Zeroizing::new(value.to_string())))
+        Ok(Self(SecretString::from(value.to_string())))
     }
 }
 
@@ -512,6 +522,22 @@ mod tests {
         assert!(ACCOUNT.parse::<AddressStr>().is_ok());
         assert!(CONTRACT.parse::<AddressStr>().is_ok());
         assert!("not-an-address".parse::<AddressStr>().is_err());
+    }
+
+    #[test]
+    fn source_account_debug_display_redacts_inner_value() {
+        let source = ACCOUNT.parse::<SourceAccount>().expect("source");
+
+        assert_eq!(source.to_string(), "<redacted>");
+        assert!(!format!("{source:?}").contains(ACCOUNT));
+        assert_eq!(source.public_address().as_deref(), Some(ACCOUNT));
+    }
+
+    #[test]
+    fn source_account_non_public_alias_is_not_recorded_as_public_address() {
+        let source = "operator-alias".parse::<SourceAccount>().expect("source");
+
+        assert_eq!(source.public_address(), None);
     }
 
     #[test]

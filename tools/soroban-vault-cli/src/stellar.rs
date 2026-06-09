@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::Context;
 use serde_json::Value;
+use tracing::{debug, info, warn};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
@@ -64,17 +65,25 @@ impl CommandExecutor for RealExecutor {
         for var in env {
             command.env(var.key, var.value.as_str());
         }
-        let output = command.output().with_context(|| {
-            format!("run {}", display_command(program, args, redacted_args, env))
-        })?;
+        let command_display = display_command(program, args, redacted_args, env);
+        debug!(command = %command_display, "running external command");
+        let output = command
+            .output()
+            .with_context(|| format!("run {command_display}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if output.status.success() {
+            debug!(command = %command_display, "external command completed");
+        } else {
+            warn!(
+                command = %command_display,
+                status = ?output.status.code(),
+                "external command failed"
+            );
+        }
         anyhow::ensure!(
             output.status.success(),
-            "command failed: {}\nstdout: {}\nstderr: {}",
-            display_command(program, args, redacted_args, env),
-            stdout,
-            stderr
+            "command failed: {command_display}\nstdout: {stdout}\nstderr: {stderr}"
         );
         Ok(CommandOutput { stdout, stderr })
     }
@@ -97,11 +106,15 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         mut env: Vec<CommandEnv>,
     ) -> anyhow::Result<CommandOutput> {
         let confirm_transaction = should_confirm_transaction(&args);
+        let command_display = display_command("stellar", &args, redacted_args, &env);
+        debug!(
+            command = %command_display,
+            confirm_transaction,
+            dry_run = self.cli.dry_run,
+            "preparing stellar command"
+        );
         let result = if self.cli.dry_run {
-            println!(
-                "dry-run: {}",
-                display_command("stellar", &args, redacted_args, &env)
-            );
+            println!("dry-run: {command_display}");
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
@@ -275,6 +288,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         match result {
             Ok(mut output) => {
                 if let Some(hash) = first_tx_hash(&output.stdout, &output.stderr) {
+                    info!(tx_hash = %hash, "waiting for submitted transaction confirmation");
                     self.wait_for_transaction_success(&hash)?;
                     append_reconciled_tx_hash(&mut output, &hash);
                 }
@@ -286,12 +300,18 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
                     return Err(error);
                 };
                 match self.wait_for_transaction_success(&hash) {
-                    Ok(()) => Ok(CommandOutput {
-                        stdout: format!("tx hash: {hash}"),
-                        stderr: format!(
-                            "stellar command returned an error, but RPC confirmed transaction success: {error}"
-                        ),
-                    }),
+                    Ok(()) => {
+                        warn!(
+                            tx_hash = %hash,
+                            "stellar command errored after submission, but RPC confirmed success"
+                        );
+                        Ok(CommandOutput {
+                            stdout: format!("tx hash: {hash}"),
+                            stderr: format!(
+                                "stellar command returned an error, but RPC confirmed transaction success: {error}"
+                            ),
+                        })
+                    }
                     Err(wait_error) => Err(error).with_context(|| {
                         format!("could not confirm submitted transaction {hash}: {wait_error}")
                     }),
@@ -309,14 +329,20 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
 
         while started.elapsed() < timeout {
             match self.fetch_transaction_status(tx_hash) {
-                Ok(TransactionConfirmationStatus::Success) => return Ok(()),
+                Ok(TransactionConfirmationStatus::Success) => {
+                    info!(tx_hash, "transaction confirmed");
+                    return Ok(());
+                }
                 Ok(TransactionConfirmationStatus::Failed) => {
+                    warn!(tx_hash, "transaction failed after submission");
                     anyhow::bail!("transaction {tx_hash} failed after submission")
                 }
                 Ok(TransactionConfirmationStatus::NotFound) => {
+                    debug!(tx_hash, "transaction not found yet");
                     last_status = "not_found".to_string();
                 }
                 Err(error) => {
+                    debug!(tx_hash, error = %error, "transaction fetch failed while polling");
                     last_error = Some(error.to_string());
                 }
             }
