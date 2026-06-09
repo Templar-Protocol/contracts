@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete = "4.5"
+clap_mangen = "0.2"
+dirs.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -20,6 +23,7 @@ templar-curator-proxy-soroban = { path = "../../contract/proxy-curator-soroban" 
 templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
 templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
 tracing.workspace = true
+toml = "0.8"
 zeroize.workspace = true
 
 [dev-dependencies]
