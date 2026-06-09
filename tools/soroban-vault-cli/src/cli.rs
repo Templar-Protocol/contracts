@@ -80,6 +80,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Check local operator readiness before deployment or write operations
+    Doctor,
     /// Deploy, verify, or reuse vault stack components
     Deploy(DeployArgs),
     /// User-facing vault/share operations
@@ -103,8 +105,9 @@ pub enum Commands {
 impl Commands {
     pub fn is_write(&self) -> bool {
         match self {
-            Self::Status | Self::ExportEnv => false,
-            Self::Deploy(_) | Self::ExtendTtl(_) => true,
+            Self::Doctor | Self::Status | Self::ExportEnv => false,
+            Self::Deploy(args) => args.command.is_write(),
+            Self::ExtendTtl(_) => true,
             Self::User(args) => args.command.is_write(),
             Self::Curator(args) => args.command.is_write(),
             Self::Governance(args) => args.command.is_write(),
@@ -129,12 +132,34 @@ pub struct DeployArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DeployCommand {
+    /// Plan a deployment without uploading WASM, deploying contracts, or writing the manifest
+    Plan(DeployPlanArgs),
     /// Deploy or reuse a full vault stack
     Stack(Box<DeployStackArgs>),
     /// Add Blend adapters to an existing or imported vault deployment
     Adapters(DeployAdaptersArgs),
     /// Upload or verify a single WASM artifact
     Wasm(DeployWasmArgs),
+}
+
+impl DeployCommand {
+    pub const fn is_write(&self) -> bool {
+        !matches!(self, Self::Plan(_))
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct DeployPlanArgs {
+    #[command(subcommand)]
+    pub command: DeployPlanCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeployPlanCommand {
+    /// Plan a full vault stack deployment or reuse flow
+    Stack(Box<DeployStackArgs>),
+    /// Plan appending Blend adapters to an existing or imported deployment
+    Adapters(DeployAdaptersArgs),
 }
 
 #[derive(Args, Debug)]
@@ -434,6 +459,62 @@ pub struct GovernanceArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum GovernanceCommand {
+    /// Plan accepting a pending proposal without submitting a transaction.
+    PlanAccept {
+        /// Governance admin address that would accept the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Pending proposal id to accept.
+        #[arg(long)]
+        proposal_id: u64,
+    },
+    /// Plan a supply queue proposal without submitting a transaction.
+    PlanSubmitSetSupplyQueue {
+        /// Governance admin address that would submit the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Supply queue entry formatted as `target_id:adapter_address`. Repeat for each queue item.
+        #[arg(long = "entry")]
+        entries: Vec<SupplyQueueEntryArg>,
+    },
+    /// Plan a timelock proposal without submitting a transaction.
+    PlanSubmitSetTimelock {
+        /// Governance admin address that would submit the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Timelock kind from the governance contract.
+        #[arg(long)]
+        kind: TimelockKindArg,
+        /// Proposed timelock duration in nanoseconds.
+        #[arg(long)]
+        timelock_ns: u64,
+    },
+    /// List pending proposals with decoded readiness when the view output exposes it.
+    Queue {
+        /// Optional action-kind filter, matched against decoded/raw proposal text.
+        #[arg(long)]
+        kind: Option<GovernanceActionKindArg>,
+    },
+    /// Explain one pending proposal with decoded readiness and raw contract output.
+    Explain {
+        /// Pending proposal id to inspect.
+        #[arg(long)]
+        proposal_id: u64,
+    },
+    /// Accept every ready pending proposal, optionally filtered by action kind.
+    AcceptReady {
+        /// Governance admin address accepting ready proposals.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Optional action-kind filter, matched against decoded/raw proposal text.
+        #[arg(long)]
+        kind: Option<GovernanceActionKindArg>,
+        /// Maximum number of ready proposals to accept.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Submit a typed proposal or wait on an existing proposal id, then accept it when ready.
+    SubmitAndWait(GovernanceSubmitAndWaitArgs),
     /// Accept a pending proposal after its timelock has elapsed.
     Accept {
         /// Governance admin address accepting the proposal.
@@ -702,9 +783,64 @@ pub enum GovernanceCommand {
     },
 }
 
+#[derive(Args, Debug)]
+pub struct GovernanceSubmitAndWaitArgs {
+    /// Poll interval in seconds while waiting.
+    #[arg(long, default_value_t = 15)]
+    pub poll_seconds: u64,
+    /// Maximum seconds to wait. Zero checks once and returns if not ready.
+    #[arg(long, default_value_t = 0)]
+    pub max_wait_seconds: u64,
+    #[command(subcommand)]
+    pub command: GovernanceSubmitAndWaitCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GovernanceSubmitAndWaitCommand {
+    /// Wait on an already submitted proposal id, then accept it when ready.
+    Proposal {
+        /// Governance admin address accepting the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Proposal id returned by a submit-* command.
+        #[arg(long)]
+        proposal_id: u64,
+    },
+    /// Submit a supply queue proposal, then wait for and accept it when ready.
+    SetSupplyQueue {
+        /// Governance admin address submitting and accepting the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Supply queue entry formatted as `target_id:adapter_address`. Repeat for each queue item.
+        #[arg(long = "entry")]
+        entries: Vec<SupplyQueueEntryArg>,
+    },
+    /// Submit a timelock proposal, then wait for and accept it when ready.
+    SetTimelock {
+        /// Governance admin address submitting and accepting the proposal.
+        #[arg(long)]
+        admin: AddressStr,
+        /// Timelock kind from the governance contract.
+        #[arg(long)]
+        kind: TimelockKindArg,
+        /// Proposed timelock duration in nanoseconds.
+        #[arg(long)]
+        timelock_ns: u64,
+    },
+}
+
 impl GovernanceCommand {
     pub fn is_write(&self) -> bool {
-        !matches!(self, Self::Pending { .. } | Self::Timelocks)
+        !matches!(
+            self,
+            Self::PlanAccept { .. }
+                | Self::PlanSubmitSetSupplyQueue { .. }
+                | Self::PlanSubmitSetTimelock { .. }
+                | Self::Queue { .. }
+                | Self::Explain { .. }
+                | Self::Pending { .. }
+                | Self::Timelocks
+        )
     }
 }
 
@@ -837,7 +973,7 @@ mod tests {
                     assert_eq!(stack.governance_timelock_ns, Some(1000));
                     assert_eq!(stack.blend_pools.len(), 2);
                 }
-                DeployCommand::Adapters(_) | DeployCommand::Wasm(_) => {
+                DeployCommand::Plan(_) | DeployCommand::Adapters(_) | DeployCommand::Wasm(_) => {
                     panic!("expected deploy stack")
                 }
             },
@@ -871,8 +1007,41 @@ mod tests {
                     );
                     assert_eq!(args.blend_pools.len(), 1);
                 }
-                DeployCommand::Stack(_) | DeployCommand::Wasm(_) => {
+                DeployCommand::Plan(_) | DeployCommand::Stack(_) | DeployCommand::Wasm(_) => {
                     panic!("expected deploy adapters")
+                }
+            },
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn parses_deploy_plan_stack_flags() {
+        let cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "plan",
+            "stack",
+            "--admin",
+            ADMIN,
+            "--governance-timelock-ns",
+            "1000",
+        ])
+        .expect("parse deploy plan");
+
+        match cli.command {
+            Commands::Deploy(args) => match args.command {
+                DeployCommand::Plan(plan) => match plan.command {
+                    super::DeployPlanCommand::Stack(stack) => {
+                        assert_eq!(
+                            stack.admin.as_ref().map(ToString::to_string).as_deref(),
+                            Some(ADMIN)
+                        );
+                    }
+                    super::DeployPlanCommand::Adapters(_) => panic!("expected stack plan"),
+                },
+                DeployCommand::Stack(_) | DeployCommand::Adapters(_) | DeployCommand::Wasm(_) => {
+                    panic!("expected deploy plan")
                 }
             },
             _ => panic!("expected deploy command"),
