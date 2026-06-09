@@ -146,8 +146,8 @@ docker build \
   .
 ```
 
-The image includes `tmplr-soroban-vault`, `stellar-cli` v26, Python for the runtime
-contractspec-strip step, and Rust toolchains/targets for `stellar contract build`. It defaults to
+The image includes `tmplr-soroban-vault`, `stellar-cli` v26, and Rust toolchains/targets for
+`stellar contract build`. It defaults to
 `/workspace` as the Templar workspace and persists Stellar config, deployment state, Cargo cache,
 and build outputs through mount points.
 
