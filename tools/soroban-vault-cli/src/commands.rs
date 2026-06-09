@@ -1,4 +1,10 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs::{self, OpenOptions},
+    path::Path,
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::Context;
 use serde::Serialize;
@@ -6,10 +12,11 @@ use templar_curator_proxy_soroban::AllocationDelta;
 use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
 
 use crate::{
-    artifacts::{ensure_uploaded, ArtifactSpec},
+    artifacts::{ensure_uploaded, sha256_file, ArtifactSpec},
     cli::{
-        AdapterArgs, AdapterCommand, Cli, Commands, CuratorCommand, DeployCommand, ExtendTtlArgs,
-        GovernanceCommand, ShareTokenCommand, UserCommand,
+        AdapterArgs, AdapterCommand, Cli, Commands, CuratorCommand, DeployCommand,
+        DeployPlanCommand, ExtendTtlArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
+        ShareTokenCommand, UserCommand,
     },
     manifest::{ContractRecord, Manifest},
     stellar::{CommandExecutor, CommandOutput, Stellar},
@@ -18,10 +25,16 @@ use crate::{
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
+    if matches!(cli.command, Commands::Doctor) {
+        let result = run_doctor(cli, executor);
+        return print_response(&result, cli.json);
+    }
     let mut manifest = Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone())?;
     let stellar = Stellar::new(cli, executor);
     let result = match &cli.command {
+        Commands::Doctor => unreachable!("doctor returns before manifest load"),
         Commands::Deploy(args) => match &args.command {
+            DeployCommand::Plan(plan) => run_deploy_plan(cli, &manifest, plan),
             DeployCommand::Stack(stack) => deploy_stack(cli, &stellar, &mut manifest, stack),
             DeployCommand::Adapters(adapters) => {
                 deploy_adapters(cli, &stellar, &mut manifest, adapters)
@@ -59,6 +72,248 @@ fn guard_write(cli: &Cli) -> anyhow::Result<()> {
         anyhow::bail!("mainnet write blocked; pass --allow-mainnet-write to continue");
     }
     Ok(())
+}
+
+fn run_doctor<E: CommandExecutor>(cli: &Cli, executor: &E) -> Response {
+    let mut checks = Vec::new();
+
+    let version_args = vec!["--version".to_string()];
+    match executor.run("stellar", &version_args, &[], &[]) {
+        Ok(output) => checks.push(DoctorCheck::pass(
+            "stellar_version",
+            first_nonempty_line(&output.stdout, &output.stderr)
+                .unwrap_or("stellar CLI responded")
+                .to_string(),
+        )),
+        Err(error) => checks.push(DoctorCheck::fail(
+            "stellar_version",
+            format!("stellar CLI is not runnable: {error}"),
+        )),
+    }
+
+    checks.push(DoctorCheck::pass(
+        "network",
+        format!(
+            "network={} passphrase={}",
+            cli.network, cli.network_passphrase
+        ),
+    ));
+    if let Some(rpc_url) = &cli.rpc_url {
+        checks.push(DoctorCheck::pass("rpc_url", rpc_url.clone()));
+    } else {
+        checks.push(DoctorCheck::warn(
+            "rpc_url",
+            "no RPC URL override configured; Stellar CLI network config must provide one"
+                .to_string(),
+        ));
+    }
+    if cli.network == "mainnet" && !cli.allow_mainnet_write {
+        checks.push(DoctorCheck::warn(
+            "mainnet_guard",
+            "mainnet is selected; write commands remain blocked until --allow-mainnet-write is passed"
+                .to_string(),
+        ));
+    }
+
+    checks.push(source_account_doctor_check(cli, executor));
+    checks.push(manifest_writable_check(&cli.state));
+    checks.extend(artifact_doctor_checks(cli));
+    checks.extend(docker_mount_checks(cli));
+
+    Response::Doctor(DoctorResponse {
+        ok: checks
+            .iter()
+            .all(|check| check.status != DoctorStatus::Fail),
+        checks,
+    })
+}
+
+fn source_account_doctor_check<E: CommandExecutor>(cli: &Cli, executor: &E) -> DoctorCheck {
+    if cli.source_account.is_some() {
+        let stellar = Stellar::new(cli, executor);
+        return match stellar.keys_address_source_account() {
+            Ok(address) => DoctorCheck::pass(
+                "source_account",
+                format!("source identity/address resolves to {address}"),
+            ),
+            Err(error) => DoctorCheck::fail(
+                "source_account",
+                format!("source identity/address did not resolve: {error}"),
+            ),
+        };
+    }
+    if std::env::var_os("STELLAR_ACCOUNT").is_some() {
+        return DoctorCheck::pass(
+            "source_account",
+            "STELLAR_ACCOUNT is set for child stellar signing; value is not inspected".to_string(),
+        );
+    }
+
+    let args = vec!["keys".to_string(), "address".to_string()];
+    match executor.run("stellar", &args, &[], &[]) {
+        Ok(output) if !output.stdout.trim().is_empty() => DoctorCheck::pass(
+            "source_account",
+            format!(
+                "default Stellar identity resolves to {}",
+                output.stdout.trim()
+            ),
+        ),
+        Ok(_) => DoctorCheck::warn(
+            "source_account",
+            "no --source-account, SOROBAN_IDENTITY, STELLAR_ACCOUNT, or default Stellar identity detected"
+                .to_string(),
+        ),
+        Err(error) => DoctorCheck::warn(
+            "source_account",
+            format!("could not inspect default Stellar identity: {error}"),
+        ),
+    }
+}
+
+fn manifest_writable_check(path: &Path) -> DoctorCheck {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return DoctorCheck::warn(
+            "manifest_writable",
+            format!("manifest path {} has no parent directory", path.display()),
+        );
+    };
+    if !parent.exists() {
+        return DoctorCheck::warn(
+            "manifest_writable",
+            format!(
+                "manifest directory {} does not exist yet; deploy will try to create it",
+                parent.display()
+            ),
+        );
+    }
+    if !parent.is_dir() {
+        return DoctorCheck::fail(
+            "manifest_writable",
+            format!("manifest parent {} is not a directory", parent.display()),
+        );
+    }
+
+    let probe = parent.join(format!(
+        ".tmplr-soroban-vault-cli-write-test-{}",
+        std::process::id()
+    ));
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            DoctorCheck::pass(
+                "manifest_writable",
+                format!("manifest directory {} is writable", parent.display()),
+            )
+        }
+        Err(error) => DoctorCheck::fail(
+            "manifest_writable",
+            format!(
+                "cannot write manifest directory {}: {error}",
+                parent.display()
+            ),
+        ),
+    }
+}
+
+fn artifact_doctor_checks(cli: &Cli) -> Vec<DoctorCheck> {
+    let workspace_manifest = cli.workspace_path.join("Cargo.toml");
+    ArtifactSpec::stack_artifacts(true)
+        .into_iter()
+        .map(|spec| {
+            let wasm_path = spec.wasm_path(&cli.workspace_path);
+            if wasm_path.exists() {
+                DoctorCheck::pass(
+                    format!("artifact_{}", spec.key),
+                    format!("found {}", wasm_path.display()),
+                )
+            } else if workspace_manifest.exists() {
+                DoctorCheck::warn(
+                    format!("artifact_{}", spec.key),
+                    format!(
+                        "{} is missing; deploy --build can build package {}",
+                        wasm_path.display(),
+                        spec.package
+                    ),
+                )
+            } else {
+                DoctorCheck::fail(
+                    format!("artifact_{}", spec.key),
+                    format!(
+                        "{} is missing and {} was not found",
+                        wasm_path.display(),
+                        workspace_manifest.display()
+                    ),
+                )
+            }
+        })
+        .collect()
+}
+
+fn docker_mount_checks(cli: &Cli) -> Vec<DoctorCheck> {
+    if !Path::new("/.dockerenv").exists() {
+        return vec![DoctorCheck::warn(
+            "docker_mounts",
+            "not running inside Docker; mount checks skipped".to_string(),
+        )];
+    }
+
+    let mut checks = Vec::new();
+    if cli.workspace_path.exists() {
+        checks.push(DoctorCheck::pass(
+            "docker_workspace_mount",
+            format!("workspace path {} exists", cli.workspace_path.display()),
+        ));
+    } else {
+        checks.push(DoctorCheck::fail(
+            "docker_workspace_mount",
+            format!("workspace path {} is missing", cli.workspace_path.display()),
+        ));
+    }
+
+    let target = cli.workspace_path.join("target");
+    if target.exists() {
+        checks.push(DoctorCheck::pass(
+            "docker_target_mount",
+            format!("target path {} exists", target.display()),
+        ));
+    } else {
+        checks.push(DoctorCheck::warn(
+            "docker_target_mount",
+            format!(
+                "target path {} is missing; builds will not reuse host artifacts",
+                target.display()
+            ),
+        ));
+    }
+
+    if let Some(config_dir) = &cli.config_dir {
+        if config_dir.exists() {
+            checks.push(DoctorCheck::pass(
+                "docker_stellar_config_mount",
+                format!("Stellar config path {} exists", config_dir.display()),
+            ));
+        } else {
+            checks.push(DoctorCheck::warn(
+                "docker_stellar_config_mount",
+                format!(
+                    "Stellar config path {} is missing; identities may not persist",
+                    config_dir.display()
+                ),
+            ));
+        }
+    }
+    checks
+}
+
+fn first_nonempty_line<'a>(first: &'a str, second: &'a str) -> Option<&'a str> {
+    first
+        .lines()
+        .chain(second.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
 }
 
 #[allow(
@@ -289,6 +544,234 @@ fn deploy_adapters<E: CommandExecutor>(
         curator_proxy: contract_id(manifest, "curator_proxy").map(ToString::to_string),
         blend_adapters,
     }))
+}
+
+fn run_deploy_plan(
+    cli: &Cli,
+    manifest: &Manifest,
+    args: &crate::cli::DeployPlanArgs,
+) -> anyhow::Result<Response> {
+    let plan = match &args.command {
+        DeployPlanCommand::Stack(stack) => deploy_stack_plan(cli, manifest, stack)?,
+        DeployPlanCommand::Adapters(adapters) => deploy_adapters_plan(cli, manifest, adapters)?,
+    };
+    Ok(Response::Plan(plan))
+}
+
+fn deploy_stack_plan(
+    cli: &Cli,
+    manifest: &Manifest,
+    args: &crate::cli::DeployStackArgs,
+) -> anyhow::Result<PlanResponse> {
+    let mut plan = PlanResponse::new("deploy stack", &cli.network);
+    if args.governance_timelock_ns == Some(0) && !cli.allow_zero_timelock {
+        plan.warnings.push(
+            "zero governance timelock would be blocked without --allow-zero-timelock".to_string(),
+        );
+    }
+    plan.required_signers.push(
+        args.admin
+            .as_ref()
+            .map_or_else(default_source_label, |admin| admin.to_string()),
+    );
+
+    let include_blend = !args.blend_pools.is_empty();
+    for spec in ArtifactSpec::stack_artifacts(include_blend) {
+        plan.wasm.push(wasm_plan(cli, manifest, spec, args.build)?);
+    }
+
+    for key in [
+        "vault",
+        "share_token",
+        "governance",
+        "proxy_4626",
+        "curator_proxy",
+    ] {
+        push_contract_plan(&mut plan, manifest, key, args.force_new);
+    }
+    if let Some(asset_token) = &args.asset_token {
+        if let Some(existing) = contract_id(manifest, "asset_token") {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: "asset_token".to_string(),
+                contract_id: Some(existing.to_string()),
+                reason: "already recorded in manifest".to_string(),
+            });
+        } else {
+            plan.manifest_mutations.push(format!(
+                "record provided asset_token contract {asset_token}"
+            ));
+        }
+    } else if let Some(asset_token) = contract_id(manifest, "asset_token") {
+        plan.contracts_to_reuse.push(PlanContract {
+            key: "asset_token".to_string(),
+            contract_id: Some(asset_token.to_string()),
+            reason: "already recorded in manifest".to_string(),
+        });
+    } else {
+        plan.manifest_mutations
+            .push("record native asset token contract id".to_string());
+        plan.stellar_commands.push(stellar_command_shape(
+            "contract asset deploy --asset native",
+            true,
+        ));
+    }
+    for pool in &args.blend_pools {
+        if !args.force_new && blend_adapter_by_pool(manifest, pool).is_some() {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: format!("blend adapter for pool {pool}"),
+                contract_id: blend_adapter_by_pool(manifest, pool).map(ToString::to_string),
+                reason: "adapter for pool is already recorded in manifest".to_string(),
+            });
+        } else {
+            plan.contracts_to_deploy.push(PlanContract {
+                key: next_blend_adapter_key(manifest),
+                contract_id: None,
+                reason: format!("new adapter for pool {pool}"),
+            });
+            plan.manifest_mutations
+                .push(format!("record new Blend adapter for pool {pool}"));
+            plan.stellar_commands.push(stellar_command_shape(
+                "contract deploy --wasm-hash <blend_adapter_hash> -- --admin <governance> --vault <vault> --pool <pool>",
+                true,
+            ));
+        }
+    }
+    plan.manifest_mutations
+        .push("mark initialized contracts after successful initialize calls".to_string());
+    Ok(plan)
+}
+
+fn deploy_adapters_plan(
+    cli: &Cli,
+    manifest: &Manifest,
+    args: &crate::cli::DeployAdaptersArgs,
+) -> anyhow::Result<PlanResponse> {
+    let mut plan = PlanResponse::new("deploy adapters", &cli.network);
+    plan.required_signers.push(default_source_label());
+    plan.wasm.push(wasm_plan(
+        cli,
+        manifest,
+        ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
+        args.build,
+    )?);
+
+    for (key, provided) in [
+        ("vault", args.vault.as_ref()),
+        ("governance", args.governance.as_ref()),
+        ("asset_token", args.asset_token.as_ref()),
+    ] {
+        if let Some(existing) = contract_id(manifest, key) {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: key.to_string(),
+                contract_id: Some(existing.to_string()),
+                reason: "already recorded in manifest".to_string(),
+            });
+        } else if let Some(provided) = provided {
+            plan.manifest_mutations
+                .push(format!("record imported {key} contract {provided}"));
+        } else if key != "asset_token" {
+            plan.warnings.push(format!(
+                "{key} is missing from manifest and must be passed for deploy adapters"
+            ));
+        }
+    }
+
+    for pool in &args.blend_pools {
+        if !args.force_new && blend_adapter_by_pool(manifest, pool).is_some() {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: format!("blend adapter for pool {pool}"),
+                contract_id: blend_adapter_by_pool(manifest, pool).map(ToString::to_string),
+                reason: "adapter for pool is already recorded in manifest".to_string(),
+            });
+        } else {
+            plan.contracts_to_deploy.push(PlanContract {
+                key: next_blend_adapter_key(manifest),
+                contract_id: None,
+                reason: format!("new adapter for pool {pool}"),
+            });
+            plan.manifest_mutations
+                .push(format!("record new Blend adapter for pool {pool}"));
+            plan.stellar_commands.push(stellar_command_shape(
+                "contract deploy --wasm-hash <blend_adapter_hash> -- --admin <governance> --vault <vault> --pool <pool>",
+                true,
+            ));
+        }
+    }
+    Ok(plan)
+}
+
+fn push_contract_plan(plan: &mut PlanResponse, manifest: &Manifest, key: &str, force_new: bool) {
+    if !force_new {
+        if let Some(contract_id) = contract_id(manifest, key) {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: key.to_string(),
+                contract_id: Some(contract_id.to_string()),
+                reason: "already recorded in manifest".to_string(),
+            });
+            return;
+        }
+    }
+    plan.contracts_to_deploy.push(PlanContract {
+        key: key.to_string(),
+        contract_id: None,
+        reason: if force_new {
+            "--force-new requested".to_string()
+        } else {
+            "not recorded in manifest".to_string()
+        },
+    });
+    plan.manifest_mutations
+        .push(format!("record deployed {key} contract id"));
+    plan.stellar_commands.push(stellar_command_shape(
+        &format!("contract deploy --wasm-hash <{key}_hash>"),
+        true,
+    ));
+}
+
+fn wasm_plan(
+    cli: &Cli,
+    manifest: &Manifest,
+    spec: ArtifactSpec,
+    build: bool,
+) -> anyhow::Result<PlanWasm> {
+    let wasm_path = spec.wasm_path(&cli.workspace_path);
+    let local_hash = if wasm_path.exists() {
+        Some(sha256_file(&wasm_path)?)
+    } else {
+        None
+    };
+    let recorded_remote_hash = manifest
+        .artifacts
+        .get(spec.key)
+        .and_then(|record| record.remote_wasm_hash.clone());
+    let action = match (&local_hash, &recorded_remote_hash) {
+        (Some(local), Some(remote)) if local == remote => {
+            "reuse recorded remote hash after fetch verification".to_string()
+        }
+        (Some(_), _) => "fetch local hash, upload if missing remotely".to_string(),
+        (None, _) if build => "build artifact, then fetch/upload resulting hash".to_string(),
+        (None, _) => "missing local artifact and build disabled".to_string(),
+    };
+    Ok(PlanWasm {
+        key: spec.key.to_string(),
+        package: spec.package.to_string(),
+        path: wasm_path.display().to_string(),
+        local_hash,
+        recorded_remote_hash,
+        action,
+    })
+}
+
+fn stellar_command_shape(command: &str, uses_source: bool) -> String {
+    if uses_source {
+        format!("STELLAR_ACCOUNT=<redacted-if-overridden> stellar {command}")
+    } else {
+        format!("stellar {command}")
+    }
+}
+
+fn default_source_label() -> String {
+    "Stellar default identity/keystore or STELLAR_ACCOUNT".to_string()
 }
 
 fn deploy_contract_if_needed<E: CommandExecutor>(
@@ -764,6 +1247,62 @@ fn run_governance<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let governance = required_contract(manifest, "governance")?;
     match command {
+        GovernanceCommand::PlanAccept { admin, proposal_id } => {
+            Ok(Response::Plan(governance_plan(
+                "governance accept",
+                &manifest.network,
+                vec![admin.to_string()],
+                vec![stellar_command_shape(
+                    &format!(
+                        "contract invoke --id {governance} -- accept --caller {admin} --proposal_id {proposal_id}"
+                    ),
+                    true,
+                )],
+            )))
+        }
+        GovernanceCommand::PlanSubmitSetSupplyQueue { admin, entries } => {
+            let entries_json = supply_queue_entries_json(entries)?;
+            Ok(Response::Plan(governance_plan(
+                "governance submit-set-supply-queue",
+                &manifest.network,
+                vec![admin.to_string()],
+                vec![stellar_command_shape(
+                    &format!(
+                        "contract invoke --id {governance} -- submit_set_supply_queue --caller {admin} --entries '{entries_json}'"
+                    ),
+                    true,
+                )],
+            )))
+        }
+        GovernanceCommand::PlanSubmitSetTimelock {
+            admin,
+            kind,
+            timelock_ns,
+        } => Ok(Response::Plan(governance_plan(
+            "governance submit-set-timelock",
+            &manifest.network,
+            vec![admin.to_string()],
+            vec![stellar_command_shape(
+                &format!(
+                    "contract invoke --id {governance} -- submit_set_timelock --caller {admin} --kind {kind} --new_timelock_ns {timelock_ns}"
+                ),
+                true,
+            )],
+        ))),
+        GovernanceCommand::Queue { kind } => {
+            let queue = governance_queue(stellar, governance, kind.as_ref())?;
+            Ok(Response::GovernanceQueue(queue))
+        }
+        GovernanceCommand::Explain { proposal_id } => {
+            let proposal = inspect_governance_proposal(stellar, governance, *proposal_id)?;
+            Ok(Response::GovernanceExplain(proposal))
+        }
+        GovernanceCommand::AcceptReady { admin, kind, limit } => {
+            run_governance_accept_ready(stellar, governance, admin, kind.as_ref(), *limit)
+        }
+        GovernanceCommand::SubmitAndWait(args) => {
+            run_governance_submit_and_wait(stellar, governance, args)
+        }
         GovernanceCommand::Accept { admin, proposal_id } => invoke_response(stellar.invoke(
             governance,
             "accept",
@@ -1062,6 +1601,272 @@ fn run_governance<E: CommandExecutor>(
             args([("--caller", admin.as_str()), ("--kind", &kind.to_string())]),
         )?),
     }
+}
+
+fn governance_plan(
+    scope: impl Into<String>,
+    network: &str,
+    required_signers: Vec<String>,
+    stellar_commands: Vec<String>,
+) -> PlanResponse {
+    let mut plan = PlanResponse::new(scope, network);
+    plan.required_signers = required_signers;
+    plan.stellar_commands = stellar_commands;
+    plan.manifest_mutations
+        .push("none; governance proposals are stored on-chain".to_string());
+    plan
+}
+
+fn governance_queue<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    governance: &str,
+    kind: Option<&crate::types::GovernanceActionKindArg>,
+) -> anyhow::Result<GovernanceQueueResponse> {
+    let out = stellar.invoke(governance, "pending_ids", Vec::new())?;
+    let ids = parse_u64s(&out.stdout);
+    let mut proposals = Vec::new();
+    let mut warnings = Vec::new();
+    for proposal_id in ids {
+        match inspect_governance_proposal(stellar, governance, proposal_id) {
+            Ok(proposal) if proposal_matches_kind(&proposal, kind) => proposals.push(proposal),
+            Ok(_) => {}
+            Err(error) => warnings.push(format!("proposal {proposal_id}: {error}")),
+        }
+    }
+    Ok(GovernanceQueueResponse {
+        proposals,
+        warnings,
+    })
+}
+
+fn inspect_governance_proposal<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    governance: &str,
+    proposal_id: u64,
+) -> anyhow::Result<GovernanceProposalView> {
+    let out = stellar.invoke(
+        governance,
+        "pending",
+        args([("--proposal_id", &proposal_id.to_string())]),
+    )?;
+    Ok(governance_proposal_view(proposal_id, out.stdout))
+}
+
+fn governance_proposal_view(proposal_id: u64, raw: String) -> GovernanceProposalView {
+    let valid_after_ns =
+        parse_named_u64(&raw, "valid_after_ns").or_else(|| parse_named_u64(&raw, "valid_at_ns"));
+    let now_ns = system_now_ns();
+    let ready = valid_after_ns.map(|valid_after_ns| now_ns >= valid_after_ns);
+    let eta_seconds = valid_after_ns.map(|valid_after_ns| {
+        if now_ns >= valid_after_ns {
+            0
+        } else {
+            i64::try_from((valid_after_ns - now_ns) / 1_000_000_000).unwrap_or(i64::MAX)
+        }
+    });
+    GovernanceProposalView {
+        proposal_id,
+        action: summarize_governance_action(&raw),
+        valid_after_ns,
+        ready,
+        eta_seconds,
+        raw,
+    }
+}
+
+fn run_governance_accept_ready<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    governance: &str,
+    admin: &AddressStr,
+    kind: Option<&crate::types::GovernanceActionKindArg>,
+    limit: Option<usize>,
+) -> anyhow::Result<Response> {
+    let queue = governance_queue(stellar, governance, kind)?;
+    let mut accepted = Vec::new();
+    let mut skipped = queue.warnings;
+    for proposal in queue.proposals {
+        if limit.is_some_and(|limit| accepted.len() >= limit) {
+            skipped.push(format!("proposal {}: limit reached", proposal.proposal_id));
+            continue;
+        }
+        match proposal.ready {
+            Some(true) => {
+                stellar.invoke(
+                    governance,
+                    "accept",
+                    args([
+                        ("--caller", admin.as_str()),
+                        ("--proposal_id", &proposal.proposal_id.to_string()),
+                    ]),
+                )?;
+                accepted.push(proposal.proposal_id);
+            }
+            Some(false) => skipped.push(format!(
+                "proposal {}: not ready for {} seconds",
+                proposal.proposal_id,
+                proposal.eta_seconds.unwrap_or_default()
+            )),
+            None => skipped.push(format!(
+                "proposal {}: readiness could not be decoded",
+                proposal.proposal_id
+            )),
+        }
+    }
+    Ok(Response::GovernanceAcceptReady(
+        GovernanceAcceptReadyResponse { accepted, skipped },
+    ))
+}
+
+fn run_governance_submit_and_wait<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    governance: &str,
+    wait_args: &crate::cli::GovernanceSubmitAndWaitArgs,
+) -> anyhow::Result<Response> {
+    let (admin, proposal_id) = match &wait_args.command {
+        GovernanceSubmitAndWaitCommand::Proposal { admin, proposal_id } => (admin, *proposal_id),
+        GovernanceSubmitAndWaitCommand::SetSupplyQueue { admin, entries } => {
+            let out = stellar.invoke(
+                governance,
+                "submit_set_supply_queue",
+                vec![
+                    "--caller".to_string(),
+                    admin.to_string(),
+                    "--entries".to_string(),
+                    supply_queue_entries_json(entries)?,
+                ],
+            )?;
+            (admin, parse_last_u64(&out.stdout)?)
+        }
+        GovernanceSubmitAndWaitCommand::SetTimelock {
+            admin,
+            kind,
+            timelock_ns,
+        } => {
+            let out = stellar.invoke(
+                governance,
+                "submit_set_timelock",
+                args([
+                    ("--caller", admin.as_str()),
+                    ("--kind", &kind.to_string()),
+                    ("--new_timelock_ns", &timelock_ns.to_string()),
+                ]),
+            )?;
+            (admin, parse_last_u64(&out.stdout)?)
+        }
+    };
+    wait_for_governance_proposal(
+        stellar,
+        governance,
+        admin,
+        proposal_id,
+        wait_args.poll_seconds,
+        wait_args.max_wait_seconds,
+    )
+}
+
+fn wait_for_governance_proposal<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    governance: &str,
+    admin: &AddressStr,
+    proposal_id: u64,
+    poll_seconds: u64,
+    max_wait_seconds: u64,
+) -> anyhow::Result<Response> {
+    let started = SystemTime::now();
+    loop {
+        let proposal = inspect_governance_proposal(stellar, governance, proposal_id)?;
+        if proposal.ready == Some(true) {
+            stellar.invoke(
+                governance,
+                "accept",
+                args([
+                    ("--caller", admin.as_str()),
+                    ("--proposal_id", &proposal_id.to_string()),
+                ]),
+            )?;
+            return Ok(Response::message(format!(
+                "accepted ready proposal {proposal_id}"
+            )));
+        }
+        if max_wait_seconds == 0 {
+            return Ok(Response::GovernanceExplain(proposal));
+        }
+        let elapsed = started.elapsed().unwrap_or_default().as_secs();
+        if elapsed >= max_wait_seconds {
+            return Ok(Response::GovernanceExplain(proposal));
+        }
+        let remaining = max_wait_seconds.saturating_sub(elapsed);
+        thread::sleep(Duration::from_secs(poll_seconds.min(remaining).max(1)));
+    }
+}
+
+fn proposal_matches_kind(
+    proposal: &GovernanceProposalView,
+    kind: Option<&crate::types::GovernanceActionKindArg>,
+) -> bool {
+    let Some(kind) = kind else {
+        return true;
+    };
+    let needle = kind.to_string().to_ascii_lowercase();
+    proposal.action.to_ascii_lowercase().contains(&needle)
+        || proposal.raw.to_ascii_lowercase().contains(&needle)
+}
+
+fn summarize_governance_action(raw: &str) -> String {
+    for action in [
+        "SetAdmin",
+        "SetCurator",
+        "SetGovernance",
+        "SetPaused",
+        "SetSupplyQueue",
+        "SetFees",
+        "SetRestrictions",
+        "SetSentinel",
+        "SetAllocators",
+        "SetAllowedAdapters",
+        "SetTimelock",
+        "SetCap",
+        "RemoveMarket",
+        "SetGroupCap",
+        "SetGroupRelCap",
+        "SetGroupMember",
+        "SetSkimRecipient",
+        "Skim",
+        "Upgrade",
+        "Migrate",
+        "CancelMigration",
+        "SetWithdrawalCooldown",
+        "SetIdleResyncCooldown",
+    ] {
+        if raw.contains(action) {
+            return action.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+fn parse_named_u64(raw: &str, name: &str) -> Option<u64> {
+    let start = raw.find(name)? + name.len();
+    raw[start..]
+        .split(|c: char| !c.is_ascii_digit())
+        .find(|part| !part.is_empty())?
+        .parse()
+        .ok()
+}
+
+fn parse_u64s(raw: &str) -> Vec<u64> {
+    raw.split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+fn system_now_ns() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 fn run_share_token<E: CommandExecutor>(
@@ -1475,6 +2280,10 @@ fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
     values
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single response printer keeps CLI human output routing explicit"
+)]
 fn print_response(response: &Response, json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string(response)?);
@@ -1529,8 +2338,126 @@ fn print_response(response: &Response, json: bool) -> anyhow::Result<()> {
                 println!("Skipped: {}", result.skipped.join(", "));
             }
         }
+        Response::Doctor(result) => {
+            println!(
+                "Doctor: {}",
+                if result.ok {
+                    "ready"
+                } else {
+                    "action required"
+                }
+            );
+            for check in &result.checks {
+                println!(
+                    "[{}] {}: {}",
+                    check.status.as_label(),
+                    check.name,
+                    check.message
+                );
+            }
+        }
+        Response::Plan(plan) => {
+            println!("Plan: {} ({})", plan.scope, plan.network);
+            if !plan.required_signers.is_empty() {
+                println!("Required signers: {}", plan.required_signers.join(", "));
+            }
+            print_plan_contracts("Reuse", &plan.contracts_to_reuse);
+            print_plan_contracts("Deploy", &plan.contracts_to_deploy);
+            if !plan.wasm.is_empty() {
+                println!("WASM:");
+                for wasm in &plan.wasm {
+                    println!("  - {}: {}", wasm.key, wasm.action);
+                    if let Some(hash) = &wasm.local_hash {
+                        println!("    local hash: {hash}");
+                    }
+                    if let Some(hash) = &wasm.recorded_remote_hash {
+                        println!("    recorded remote hash: {hash}");
+                    }
+                }
+            }
+            if !plan.manifest_mutations.is_empty() {
+                println!("Manifest mutations:");
+                for mutation in &plan.manifest_mutations {
+                    println!("  - {mutation}");
+                }
+            }
+            if !plan.stellar_commands.is_empty() {
+                println!("Stellar commands:");
+                for command in &plan.stellar_commands {
+                    println!("  - {command}");
+                }
+            }
+            if !plan.warnings.is_empty() {
+                println!("Warnings:");
+                for warning in &plan.warnings {
+                    println!("  - {warning}");
+                }
+            }
+        }
+        Response::GovernanceQueue(queue) => {
+            if queue.proposals.is_empty() {
+                println!("Governance queue: no matching pending proposals");
+            } else {
+                println!("Governance queue:");
+                for proposal in &queue.proposals {
+                    print_governance_proposal(proposal);
+                }
+            }
+            for warning in &queue.warnings {
+                println!("Warning: {warning}");
+            }
+        }
+        Response::GovernanceExplain(proposal) => {
+            print_governance_proposal(proposal);
+            println!("Raw: {}", proposal.raw);
+        }
+        Response::GovernanceAcceptReady(result) => {
+            if result.accepted.is_empty() {
+                println!("Accepted proposals: none");
+            } else {
+                println!("Accepted proposals: {:?}", result.accepted);
+            }
+            if !result.skipped.is_empty() {
+                println!("Skipped:");
+                for skipped in &result.skipped {
+                    println!("  - {skipped}");
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn print_governance_proposal(proposal: &GovernanceProposalView) {
+    println!(
+        "  - #{} {} ready={} eta_seconds={}",
+        proposal.proposal_id,
+        proposal.action,
+        proposal
+            .ready
+            .map_or_else(|| "unknown".to_string(), |ready| ready.to_string()),
+        proposal
+            .eta_seconds
+            .map_or_else(|| "unknown".to_string(), |eta| eta.to_string())
+    );
+}
+
+fn print_plan_contracts(label: &str, contracts: &[PlanContract]) {
+    if contracts.is_empty() {
+        return;
+    }
+    println!("{label}:");
+    for contract in contracts {
+        println!(
+            "  - {}{}: {}",
+            contract.key,
+            contract
+                .contract_id
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" ({id})")),
+            contract.reason
+        );
+    }
 }
 
 fn print_optional(label: &str, value: Option<&String>) {
@@ -1549,6 +2476,11 @@ enum Response {
     Status(StatusResponse),
     Env(Vec<(String, String)>),
     ExtendTtl(ExtendTtlResponse),
+    Doctor(DoctorResponse),
+    Plan(PlanResponse),
+    GovernanceQueue(GovernanceQueueResponse),
+    GovernanceExplain(GovernanceProposalView),
+    GovernanceAcceptReady(GovernanceAcceptReadyResponse),
 }
 
 impl Response {
@@ -1580,6 +2512,131 @@ struct BlendAdapterStatus {
 struct ExtendTtlResponse {
     extended: Vec<String>,
     skipped: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorResponse {
+    ok: bool,
+    checks: Vec<DoctorCheck>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanResponse {
+    scope: String,
+    network: String,
+    required_signers: Vec<String>,
+    contracts_to_reuse: Vec<PlanContract>,
+    contracts_to_deploy: Vec<PlanContract>,
+    wasm: Vec<PlanWasm>,
+    manifest_mutations: Vec<String>,
+    stellar_commands: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl PlanResponse {
+    fn new(scope: impl Into<String>, network: &str) -> Self {
+        Self {
+            scope: scope.into(),
+            network: network.to_string(),
+            required_signers: Vec::new(),
+            contracts_to_reuse: Vec::new(),
+            contracts_to_deploy: Vec::new(),
+            wasm: Vec::new(),
+            manifest_mutations: Vec::new(),
+            stellar_commands: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PlanContract {
+    key: String,
+    contract_id: Option<String>,
+    reason: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PlanWasm {
+    key: String,
+    package: String,
+    path: String,
+    local_hash: Option<String>,
+    recorded_remote_hash: Option<String>,
+    action: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GovernanceQueueResponse {
+    proposals: Vec<GovernanceProposalView>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct GovernanceProposalView {
+    proposal_id: u64,
+    action: String,
+    valid_after_ns: Option<u64>,
+    ready: Option<bool>,
+    eta_seconds: Option<i64>,
+    raw: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GovernanceAcceptReadyResponse {
+    accepted: Vec<u64>,
+    skipped: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorCheck {
+    name: String,
+    status: DoctorStatus,
+    message: String,
+}
+
+impl DoctorCheck {
+    fn pass(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            status: DoctorStatus::Pass,
+            message: message.into(),
+        }
+    }
+
+    fn warn(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            status: DoctorStatus::Warn,
+            message: message.into(),
+        }
+    }
+
+    fn fail(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            status: DoctorStatus::Fail,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DoctorStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
+impl DoctorStatus {
+    const fn as_label(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1628,6 +2685,34 @@ mod tests {
                 .lock()
                 .expect("lock calls")
                 .push((program.to_string(), args.to_vec()));
+            if args.iter().any(|arg| arg == "pending_ids") {
+                return Ok(CommandOutput {
+                    stdout: "[1, 2]".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            if args
+                .iter()
+                .any(|arg| arg == "submit_set_timelock" || arg == "submit_set_supply_queue")
+            {
+                return Ok(CommandOutput {
+                    stdout: "proposal 1".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            if args.iter().any(|arg| arg == "pending") {
+                let proposal_id = args
+                    .windows(2)
+                    .find_map(|pair| (pair[0] == "--proposal_id").then(|| pair[1].as_str()))
+                    .unwrap_or("0");
+                let valid_after_ns = if proposal_id == "1" { 0 } else { u64::MAX };
+                return Ok(CommandOutput {
+                    stdout: format!(
+                        "{{id: {proposal_id}, action: SetPaused(false), valid_after_ns: {valid_after_ns}}}"
+                    ),
+                    stderr: String::new(),
+                });
+            }
             Ok(CommandOutput {
                 stdout: CONTRACT.to_string(),
                 stderr: String::new(),
@@ -1691,6 +2776,32 @@ mod tests {
 
         let err = run(&cli, &RecordingExecutor::new()).expect_err("mainnet write blocked");
         assert!(err.to_string().contains("mainnet write blocked"));
+    }
+
+    #[test]
+    fn doctor_checks_stellar_and_source_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").expect("write Cargo.toml");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Doctor,
+            ..base_cli(dir.path().join("manifest.json"), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("run doctor");
+
+        let calls = executor.calls();
+        assert!(calls
+            .iter()
+            .any(|(_, args)| args == &["--version".to_string()]));
+        assert!(calls.iter().any(|(_, args)| args
+            == &[
+                "keys".to_string(),
+                "address".to_string(),
+                "alice".to_string()
+            ]));
     }
 
     #[test]
@@ -1833,6 +2944,43 @@ mod tests {
     }
 
     #[test]
+    fn deploy_plan_does_not_execute_or_write_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let before = fs::read_to_string(&state).expect("read manifest");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Plan(crate::cli::DeployPlanArgs {
+                    command: crate::cli::DeployPlanCommand::Stack(Box::new(DeployStackArgs {
+                        admin: Some(ACCOUNT.parse().expect("admin")),
+                        asset_token: Some(CONTRACT.parse().expect("asset token")),
+                        governance_timelock_ns: Some(1_000),
+                        virtual_shares: 0,
+                        virtual_assets: 0,
+                        share_name: "Templar Vault Share".to_string(),
+                        share_symbol: "tvSHARE".to_string(),
+                        share_decimals: 7,
+                        blend_pools: vec![CONTRACT.parse().expect("pool")],
+                        build: false,
+                        force_new: false,
+                    })),
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy plan");
+
+        assert!(executor.calls().is_empty());
+        let after = fs::read_to_string(&state).expect("read manifest");
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn extend_ttl_runs_for_entire_ttl_capable_deployment_set() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
@@ -1947,6 +3095,75 @@ mod tests {
             .1
             .windows(2)
             .any(|pair| pair[0] == "--accounts" && pair[1].contains(ACCOUNT)));
+    }
+
+    #[test]
+    fn governance_accept_ready_accepts_only_ready_decoded_proposals() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance(&state);
+        let cli = base_cli(
+            state,
+            Commands::Governance(GovernanceArgs {
+                command: GovernanceCommand::AcceptReady {
+                    admin: ACCOUNT.parse().expect("admin"),
+                    kind: None,
+                    limit: None,
+                },
+            }),
+        );
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("accept ready proposals");
+
+        let calls = executor.calls();
+        let accepted = calls
+            .iter()
+            .filter(|(_, args)| {
+                args.iter().any(|arg| arg == "accept")
+                    && args.windows(2).any(|pair| pair == ["--proposal_id", "1"])
+            })
+            .count();
+        assert_eq!(accepted, 1);
+        assert!(!calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "accept")
+                && args.windows(2).any(|pair| pair == ["--proposal_id", "2"])));
+    }
+
+    #[test]
+    fn governance_submit_and_wait_submits_then_accepts_ready_proposal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance(&state);
+        let cli = base_cli(
+            state,
+            Commands::Governance(GovernanceArgs {
+                command: GovernanceCommand::SubmitAndWait(
+                    crate::cli::GovernanceSubmitAndWaitArgs {
+                        poll_seconds: 1,
+                        max_wait_seconds: 0,
+                        command: GovernanceSubmitAndWaitCommand::SetTimelock {
+                            admin: ACCOUNT.parse().expect("admin"),
+                            kind: "supply-queue".parse().expect("kind"),
+                            timelock_ns: 42,
+                        },
+                    },
+                ),
+            }),
+        );
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("submit and wait");
+
+        let calls = executor.calls();
+        assert!(calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "submit_set_timelock")));
+        assert!(calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "accept")
+                && args.windows(2).any(|pair| pair == ["--proposal_id", "1"])));
     }
 
     #[test]
