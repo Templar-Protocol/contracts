@@ -18,16 +18,16 @@ use crate::{
         DeployPlanCommand, ExtendTtlArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
         ShareTokenCommand, UserCommand,
     },
-    manifest::{ContractRecord, Manifest},
+    manifest::{ContractRecord, Manifest, TransactionRecord},
     stellar::{CommandExecutor, CommandOutput, Stellar},
-    types::{AddressStr, FeeParamsArg, SupplyQueueEntryArg},
+    types::{AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SupplyQueueEntryArg},
 };
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
     if matches!(cli.command, Commands::Doctor) {
         let result = run_doctor(cli, executor);
-        return print_response(&result, cli.json);
+        return print_response(&result, cli);
     }
     let mut manifest = Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone())?;
     let stellar = Stellar::new(cli, executor);
@@ -62,9 +62,12 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     }?;
 
     if cli.command.is_write() && !cli.dry_run {
+        manifest
+            .transactions
+            .push(transaction_record(cli, &manifest, &result));
         manifest.save(&cli.state)?;
     }
-    print_response(&result, cli.json)
+    print_response(&result, cli)
 }
 
 fn guard_write(cli: &Cli) -> anyhow::Result<()> {
@@ -382,6 +385,7 @@ fn deploy_stack<E: CommandExecutor>(
             ("vault", vault.as_str()),
             ("name", args.share_name.as_str()),
             ("symbol", args.share_symbol.as_str()),
+            ("decimals", &args.share_decimals.to_string()),
         ]),
         args.force_new,
     )?;
@@ -994,8 +998,21 @@ fn run_user<E: CommandExecutor>(
             operator,
             receiver,
             assets,
+            assets_raw,
+            asset_decimals,
             min_shares_out,
+            min_shares_out_raw,
+            share_decimals,
         } => {
+            let assets = required_amount("assets", assets.as_ref(), *assets_raw, *asset_decimals)?;
+            let min_shares_out = optional_share_amount(
+                manifest,
+                "min_shares_out",
+                min_shares_out.as_ref(),
+                Some(*min_shares_out_raw),
+                *share_decimals,
+            )?
+            .unwrap_or(0);
             let receiver = receiver.as_ref().unwrap_or(operator);
             if let Some(proxy) = contract_id(manifest, "proxy_4626") {
                 invoke_response(stellar.invoke(
@@ -1015,8 +1032,8 @@ fn run_user<E: CommandExecutor>(
                     WireVaultCommand::DepositWithMin {
                         owner: operator.to_string(),
                         receiver: receiver.to_string(),
-                        assets: *assets,
-                        min_shares_out: *min_shares_out,
+                        assets,
+                        min_shares_out,
                     },
                 )
             }
@@ -1025,7 +1042,16 @@ fn run_user<E: CommandExecutor>(
             operator,
             receiver,
             shares,
+            shares_raw,
+            share_decimals,
         } => {
+            let shares = required_share_amount(
+                manifest,
+                "shares",
+                shares.as_ref(),
+                *shares_raw,
+                *share_decimals,
+            )?;
             let receiver = receiver.as_ref().unwrap_or(operator);
             let proxy = required_contract(manifest, "proxy_4626")?;
             invoke_response(stellar.invoke(
@@ -1043,8 +1069,21 @@ fn run_user<E: CommandExecutor>(
             receiver,
             owner,
             assets,
+            assets_raw,
+            asset_decimals,
             max_shares_burned,
+            max_shares_burned_raw,
+            share_decimals,
         } => {
+            let assets = required_amount("assets", assets.as_ref(), *assets_raw, *asset_decimals)?;
+            let max_shares_burned = optional_share_amount(
+                manifest,
+                "max_shares_burned",
+                max_shares_burned.as_ref(),
+                *max_shares_burned_raw,
+                *share_decimals,
+            )?
+            .unwrap_or(assets);
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
             let proxy = required_contract(manifest, "proxy_4626")?;
@@ -1056,10 +1095,7 @@ fn run_user<E: CommandExecutor>(
                     ("--assets", &assets.to_string()),
                     ("--receiver", receiver.as_str()),
                     ("--owner", owner.as_str()),
-                    (
-                        "--max_shares_burned",
-                        &max_shares_burned.unwrap_or(*assets).to_string(),
-                    ),
+                    ("--max_shares_burned", &max_shares_burned.to_string()),
                 ]),
             )?)
         }
@@ -1068,8 +1104,25 @@ fn run_user<E: CommandExecutor>(
             receiver,
             owner,
             shares,
+            shares_raw,
+            share_decimals,
             min_assets_out,
+            min_assets_out_raw,
+            asset_decimals,
         } => {
+            let shares = required_share_amount(
+                manifest,
+                "shares",
+                shares.as_ref(),
+                *shares_raw,
+                *share_decimals,
+            )?;
+            let min_assets_out = optional_amount(
+                "min_assets_out",
+                min_assets_out.as_ref(),
+                Some(*min_assets_out_raw),
+                *asset_decimals,
+            )?;
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
             let proxy = required_contract(manifest, "proxy_4626")?;
@@ -1089,8 +1142,25 @@ fn run_user<E: CommandExecutor>(
             owner,
             receiver,
             shares,
+            shares_raw,
+            share_decimals,
             min_assets_out,
+            min_assets_out_raw,
+            asset_decimals,
         } => {
+            let shares = required_share_amount(
+                manifest,
+                "shares",
+                shares.as_ref(),
+                *shares_raw,
+                *share_decimals,
+            )?;
+            let min_assets_out = optional_amount(
+                "min_assets_out",
+                min_assets_out.as_ref(),
+                Some(*min_assets_out_raw),
+                *asset_decimals,
+            )?;
             let receiver = receiver.as_ref().unwrap_or(owner);
             execute_vault(
                 stellar,
@@ -1098,8 +1168,8 @@ fn run_user<E: CommandExecutor>(
                 WireVaultCommand::RequestWithdraw {
                     owner: owner.to_string(),
                     receiver: receiver.to_string(),
-                    shares: *shares,
-                    min_assets_out: *min_assets_out,
+                    shares,
+                    min_assets_out,
                 },
             )
         }
@@ -1131,13 +1201,35 @@ fn run_user<E: CommandExecutor>(
         UserCommand::Preview {
             owner,
             assets,
+            assets_raw,
+            asset_decimals,
             shares,
+            shares_raw,
+            share_decimals,
         }
         | UserCommand::View {
             owner,
             assets,
+            assets_raw,
+            asset_decimals,
             shares,
+            shares_raw,
+            share_decimals,
         } => {
+            let assets = optional_amount(
+                "assets",
+                assets.as_ref(),
+                Some(*assets_raw),
+                *asset_decimals,
+            )?;
+            let shares = optional_share_amount(
+                manifest,
+                "shares",
+                shares.as_ref(),
+                Some(*shares_raw),
+                *share_decimals,
+            )?
+            .unwrap_or(0);
             let target = contract_id(manifest, "proxy_4626")
                 .or_else(|| contract_id(manifest, "vault"))
                 .context("missing proxy_4626 or vault contract id in manifest")?;
@@ -1169,22 +1261,32 @@ fn run_curator<E: CommandExecutor>(
             caller,
             market,
             amount,
-        } => execute_allocation(
-            stellar,
-            manifest,
-            caller,
-            &AllocationDelta::Supply(*market, *amount),
-        ),
+            amount_raw,
+            asset_decimals,
+        } => {
+            let amount = required_amount("amount", amount.as_ref(), *amount_raw, *asset_decimals)?;
+            execute_allocation(
+                stellar,
+                manifest,
+                caller,
+                &AllocationDelta::Supply(*market, amount),
+            )
+        }
         CuratorCommand::AllocateWithdraw {
             caller,
             market,
             amount,
-        } => execute_allocation(
-            stellar,
-            manifest,
-            caller,
-            &AllocationDelta::Withdraw(*market, *amount),
-        ),
+            amount_raw,
+            asset_decimals,
+        } => {
+            let amount = required_amount("amount", amount.as_ref(), *amount_raw, *asset_decimals)?;
+            execute_allocation(
+                stellar,
+                manifest,
+                caller,
+                &AllocationDelta::Withdraw(*market, amount),
+            )
+        }
         CuratorCommand::RefreshMarkets { caller, markets } => execute_vault(
             stellar,
             manifest,
@@ -1233,6 +1335,79 @@ fn run_curator<E: CommandExecutor>(
             ],
             *auto_accept,
         ),
+    }
+}
+
+fn required_amount(
+    name: &str,
+    decimal: Option<&DecimalAmount>,
+    raw: Option<i128>,
+    decimals: u32,
+) -> anyhow::Result<i128> {
+    if let Some(decimal) = decimal {
+        return decimal
+            .to_raw(decimals)
+            .map_err(|error| anyhow::anyhow!("{name}: {error}"));
+    }
+    raw.with_context(|| format!("missing amount; pass --{name} or --{name}-raw"))
+}
+
+fn optional_amount(
+    name: &str,
+    decimal: Option<&DecimalAmount>,
+    raw: Option<i128>,
+    decimals: u32,
+) -> anyhow::Result<i128> {
+    if let Some(decimal) = decimal {
+        return decimal
+            .to_raw(decimals)
+            .map_err(|error| anyhow::anyhow!("{name}: {error}"));
+    }
+    Ok(raw.unwrap_or(0))
+}
+
+fn required_share_amount(
+    manifest: &Manifest,
+    name: &str,
+    decimal: Option<&DecimalAmount>,
+    raw: Option<i128>,
+    decimals: ShareDecimalsArg,
+) -> anyhow::Result<i128> {
+    if decimal.is_some() {
+        let decimals = resolve_share_decimals(manifest, decimals)?;
+        return required_amount(name, decimal, raw, decimals);
+    }
+    raw.with_context(|| format!("missing amount; pass --{name} or --{name}-raw"))
+}
+
+fn optional_share_amount(
+    manifest: &Manifest,
+    name: &str,
+    decimal: Option<&DecimalAmount>,
+    raw: Option<i128>,
+    decimals: ShareDecimalsArg,
+) -> anyhow::Result<Option<i128>> {
+    if let Some(decimal) = decimal {
+        let decimals = resolve_share_decimals(manifest, decimals)?;
+        return decimal
+            .to_raw(decimals)
+            .map(Some)
+            .map_err(|error| anyhow::anyhow!("{name}: {error}"));
+    }
+    Ok(raw)
+}
+
+fn resolve_share_decimals(manifest: &Manifest, decimals: ShareDecimalsArg) -> anyhow::Result<u32> {
+    match decimals {
+        ShareDecimalsArg::Explicit(decimals) => Ok(decimals),
+        ShareDecimalsArg::Manifest => manifest
+            .contracts
+            .get("share_token")
+            .and_then(|record| record.constructor_args.get("decimals"))
+            .and_then(|value| value.parse().ok())
+            .context(
+                "share decimals are not recorded in the manifest; pass --share-decimals <n> or use --shares-raw",
+            ),
     }
 }
 
@@ -1869,6 +2044,105 @@ fn system_now_ns() -> u64 {
     u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
+fn transaction_record(cli: &Cli, manifest: &Manifest, response: &Response) -> TransactionRecord {
+    let (contract_id, function) = command_target_and_function(&cli.command, manifest);
+    let tx_hashes = response.tx_hashes();
+    TransactionRecord {
+        timestamp_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        command: Some(command_name(&cli.command)),
+        action: response.kind().to_string(),
+        target: contract_id.clone(),
+        contract_id,
+        function,
+        tx_hash: tx_hashes.first().cloned(),
+        source_public_address: cli
+            .source_account
+            .as_ref()
+            .map(|source| source.as_secret_str().to_string())
+            .filter(|value| value.starts_with('G') || value.starts_with('M')),
+        result_status: Some("success".to_string()),
+        artifact_hash: command_artifact_hash(&cli.command, manifest),
+    }
+}
+
+fn command_name(command: &Commands) -> String {
+    match command {
+        Commands::Doctor => "doctor",
+        Commands::Deploy(_) => "deploy",
+        Commands::User(_) => "user",
+        Commands::Curator(_) => "curator",
+        Commands::Governance(_) => "governance",
+        Commands::ShareToken(_) => "share-token",
+        Commands::Adapter(_) => "adapter",
+        Commands::ExtendTtl(_) => "extend-ttl",
+        Commands::Status => "status",
+        Commands::ExportEnv => "export-env",
+    }
+    .to_string()
+}
+
+fn command_target_and_function(
+    command: &Commands,
+    manifest: &Manifest,
+) -> (Option<String>, Option<String>) {
+    match command {
+        Commands::User(args) => {
+            let target = contract_id(manifest, "proxy_4626")
+                .or_else(|| contract_id(manifest, "vault"))
+                .map(ToString::to_string);
+            let function = match &args.command {
+                UserCommand::Deposit { .. } => "deposit_with_min",
+                UserCommand::Mint { .. } => "mint",
+                UserCommand::Withdraw { .. } => "withdraw",
+                UserCommand::Redeem { .. } => "redeem",
+                UserCommand::RequestWithdraw { .. } => "execute",
+                UserCommand::ExecuteWithdraw { .. } => "execute_withdraw",
+                UserCommand::Balance { .. }
+                | UserCommand::Preview { .. }
+                | UserCommand::View { .. } => "view",
+            };
+            (target, Some(function.to_string()))
+        }
+        Commands::Curator(_) => (
+            contract_id(manifest, "vault").map(ToString::to_string),
+            Some("execute".to_string()),
+        ),
+        Commands::Governance(_) => (
+            contract_id(manifest, "governance").map(ToString::to_string),
+            Some("governance".to_string()),
+        ),
+        Commands::ShareToken(_) => (
+            contract_id(manifest, "share_token").map(ToString::to_string),
+            Some("share_token".to_string()),
+        ),
+        Commands::Adapter(args) => (
+            selected_blend_adapter(manifest, args)
+                .ok()
+                .map(ToString::to_string),
+            Some("adapter".to_string()),
+        ),
+        Commands::ExtendTtl(_) => (None, Some("extend_ttl".to_string())),
+        Commands::Deploy(_) => (None, Some("deploy".to_string())),
+        Commands::Doctor | Commands::Status | Commands::ExportEnv => (None, None),
+    }
+}
+
+fn command_artifact_hash(command: &Commands, manifest: &Manifest) -> Option<String> {
+    let Commands::Deploy(args) = command else {
+        return None;
+    };
+    match &args.command {
+        DeployCommand::Wasm(wasm) => manifest
+            .artifacts
+            .get(ArtifactSpec::from_name(wasm.artifact).key)
+            .and_then(|record| record.remote_wasm_hash.clone()),
+        DeployCommand::Stack(_) | DeployCommand::Adapters(_) | DeployCommand::Plan(_) => None,
+    }
+}
+
 fn run_share_token<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     manifest: &Manifest,
@@ -2284,9 +2558,12 @@ fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
     clippy::too_many_lines,
     reason = "single response printer keeps CLI human output routing explicit"
 )]
-fn print_response(response: &Response, json: bool) -> anyhow::Result<()> {
-    if json {
-        println!("{}", serde_json::to_string(response)?);
+fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
+    if cli.json || cli.json_lines {
+        println!(
+            "{}",
+            serde_json::to_string(&OutputEnvelope::success(cli, response))?
+        );
         return Ok(());
     }
     match response {
@@ -2428,6 +2705,22 @@ fn print_response(response: &Response, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn print_error(cli: &Cli, error: &anyhow::Error) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(&OutputEnvelope::error(cli, error))?
+    );
+    Ok(())
+}
+
+pub fn print_parse_error(raw_args: &[String], error: &clap::Error) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(&ParseErrorEnvelope::new(raw_args, error))?
+    );
+    Ok(())
+}
+
 fn print_governance_proposal(proposal: &GovernanceProposalView) {
     println!(
         "  - #{} {} ready={} eta_seconds={}",
@@ -2469,6 +2762,127 @@ fn print_optional(label: &str, value: Option<&String>) {
 }
 
 #[derive(Debug, Serialize)]
+struct OutputEnvelope<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    ok: bool,
+    network: &'a str,
+    manifest: String,
+    commands: Vec<String>,
+    tx_hashes: Vec<String>,
+    warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<&'a Response>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ErrorEnvelope>,
+}
+
+impl<'a> OutputEnvelope<'a> {
+    fn success(cli: &'a Cli, response: &'a Response) -> Self {
+        Self {
+            kind: response.kind(),
+            ok: true,
+            network: &cli.network,
+            manifest: cli.state.display().to_string(),
+            commands: response.command_shapes(),
+            tx_hashes: response.tx_hashes(),
+            warnings: response.warnings(),
+            data: Some(response),
+            error: None,
+        }
+    }
+
+    fn error(cli: &'a Cli, error: &anyhow::Error) -> Self {
+        Self {
+            kind: "error",
+            ok: false,
+            network: &cli.network,
+            manifest: cli.state.display().to_string(),
+            commands: Vec::new(),
+            tx_hashes: Vec::new(),
+            warnings: Vec::new(),
+            data: None,
+            error: Some(ErrorEnvelope {
+                code: classify_error(error),
+                message: error.to_string(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorEnvelope {
+    code: &'static str,
+    message: String,
+}
+
+fn classify_error(error: &anyhow::Error) -> &'static str {
+    classify_error_message(&error.to_string())
+}
+
+fn classify_error_message(message: &str) -> &'static str {
+    if message.contains("missing ") && message.contains(" contract id in manifest") {
+        "missing_manifest_contract"
+    } else if message.contains("mainnet write blocked") {
+        "mainnet_guard"
+    } else if message.contains("do not pass secret keys")
+        || message.contains("without exposing it to child argv")
+    {
+        "secret_in_argv"
+    } else {
+        "command_failed"
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ParseErrorEnvelope {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    ok: bool,
+    network: String,
+    manifest: String,
+    commands: Vec<String>,
+    tx_hashes: Vec<String>,
+    warnings: Vec<String>,
+    error: ErrorEnvelope,
+}
+
+impl ParseErrorEnvelope {
+    fn new(raw_args: &[String], error: &clap::Error) -> Self {
+        let message = error.to_string();
+        Self {
+            kind: "error",
+            ok: false,
+            network: raw_arg_value(raw_args, "--network").unwrap_or_else(|| "testnet".to_string()),
+            manifest: raw_arg_value(raw_args, "--state").unwrap_or_else(|| {
+                "contract/vault/soroban/.deploy-state/manifest.json".to_string()
+            }),
+            commands: Vec::new(),
+            tx_hashes: Vec::new(),
+            warnings: Vec::new(),
+            error: ErrorEnvelope {
+                code: match classify_error_message(&message) {
+                    "command_failed" => "invalid_args",
+                    code => code,
+                },
+                message,
+            },
+        }
+    }
+}
+
+fn raw_arg_value(raw_args: &[String], flag: &str) -> Option<String> {
+    raw_args.iter().enumerate().find_map(|(index, arg)| {
+        if arg == flag {
+            return raw_args.get(index + 1).cloned();
+        }
+        arg.strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
+            .map(ToString::to_string)
+    })
+}
+
+#[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Response {
     Message { message: String },
@@ -2487,6 +2901,61 @@ impl Response {
     fn message(message: String) -> Self {
         Self::Message { message }
     }
+
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Message { .. } => "message",
+            Self::Command { .. } => "command",
+            Self::Status(_) => "status",
+            Self::Env(_) => "env",
+            Self::ExtendTtl(_) => "extend_ttl",
+            Self::Doctor(_) => "doctor",
+            Self::Plan(_) => "plan",
+            Self::GovernanceQueue(_) => "governance_queue",
+            Self::GovernanceExplain(_) => "governance_explain",
+            Self::GovernanceAcceptReady(_) => "governance_accept_ready",
+        }
+    }
+
+    fn warnings(&self) -> Vec<String> {
+        match self {
+            Self::Plan(plan) => plan.warnings.clone(),
+            Self::GovernanceQueue(queue) => queue.warnings.clone(),
+            Self::GovernanceAcceptReady(result) => result.skipped.clone(),
+            Self::Doctor(result) => result
+                .checks
+                .iter()
+                .filter(|check| check.status == DoctorStatus::Warn)
+                .map(|check| format!("{}: {}", check.name, check.message))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn command_shapes(&self) -> Vec<String> {
+        match self {
+            Self::Plan(plan) => plan.stellar_commands.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn tx_hashes(&self) -> Vec<String> {
+        match self {
+            Self::Command { stdout, stderr } => parse_tx_hashes(stdout)
+                .into_iter()
+                .chain(parse_tx_hashes(stderr))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+fn parse_tx_hashes(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .filter(|token| token.len() == 64)
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -2756,6 +3225,46 @@ mod tests {
     }
 
     #[test]
+    fn json_envelope_has_stable_machine_fields() {
+        let cli = base_cli("manifest.json".into(), Commands::Status);
+        let response = Response::message("ok".to_string());
+        let value =
+            serde_json::to_value(OutputEnvelope::success(&cli, &response)).expect("json envelope");
+
+        assert_eq!(value["type"], "message");
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["network"], "testnet");
+        assert_eq!(value["manifest"], "manifest.json");
+        assert!(value["commands"].is_array());
+        assert!(value["tx_hashes"].is_array());
+        assert!(value["warnings"].is_array());
+        assert_eq!(value["data"]["type"], "message");
+    }
+
+    #[test]
+    fn parse_error_envelope_reports_secret_argv_code() {
+        let error = clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            "do not pass secret keys via --source-account",
+        );
+        let value = serde_json::to_value(ParseErrorEnvelope::new(
+            &[
+                "tmplr-soroban-vault".to_string(),
+                "--json".to_string(),
+                "--network".to_string(),
+                "testnet".to_string(),
+                "status".to_string(),
+            ],
+            &error,
+        ))
+        .expect("json envelope");
+
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "secret_in_argv");
+    }
+
+    #[test]
     fn mainnet_write_requires_explicit_allow_flag() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cli = base_cli(
@@ -2764,8 +3273,12 @@ mod tests {
                 command: UserCommand::Deposit {
                     operator: ACCOUNT.parse().expect("operator"),
                     receiver: None,
-                    assets: 1,
-                    min_shares_out: 0,
+                    assets: None,
+                    assets_raw: Some(1),
+                    asset_decimals: 7,
+                    min_shares_out: None,
+                    min_shares_out_raw: 0,
+                    share_decimals: ShareDecimalsArg::Manifest,
                 },
             }),
         );
@@ -2822,13 +3335,17 @@ mod tests {
         );
         manifest.save(&state).expect("save manifest");
         let cli = base_cli(
-            state,
+            state.clone(),
             Commands::User(UserArgs {
                 command: UserCommand::Deposit {
                     operator: ACCOUNT.parse().expect("operator"),
                     receiver: Some(ACCOUNT.parse().expect("receiver")),
-                    assets: 11,
-                    min_shares_out: 7,
+                    assets: None,
+                    assets_raw: Some(11),
+                    asset_decimals: 7,
+                    min_shares_out: None,
+                    min_shares_out_raw: 7,
+                    share_decimals: ShareDecimalsArg::Manifest,
                 },
             }),
         );
@@ -2842,6 +3359,15 @@ mod tests {
         assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
         assert!(calls[0].1.iter().any(|arg| arg == "deposit_with_min"));
         assert!(calls[0].1.windows(2).any(|pair| pair == ["--assets", "11"]));
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let tx = loaded
+            .transactions
+            .last()
+            .expect("transaction record should be written");
+        assert_eq!(tx.command.as_deref(), Some("user"));
+        assert_eq!(tx.contract_id.as_deref(), Some("CPROXY"));
+        assert_eq!(tx.function.as_deref(), Some("deposit_with_min"));
+        assert_eq!(tx.result_status.as_deref(), Some("success"));
     }
 
     #[test]
@@ -3215,6 +3741,7 @@ mod tests {
             state,
             workspace_path: ".".into(),
             json: true,
+            json_lines: false,
             dry_run: false,
             yes: false,
             allow_mainnet_write: false,

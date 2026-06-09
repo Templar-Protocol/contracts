@@ -81,10 +81,14 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
-- `--json` emits machine-readable command responses.
+- `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
+- `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.
 - Prefer Stellar keystore identities: run `stellar keys use <identity>` in the mounted/configured Stellar config directory, or pass a non-secret identity alias/public account with `--source-account`.
 - Do not pass raw secret keys or seed phrases to `--source-account`; the CLI rejects obvious secret material there. If an operator must use an ephemeral secret, set `STELLAR_ACCOUNT` for the `stellar` child process environment instead of putting it in CLI argv.
 - Source-account overrides are redacted from command displays, zeroized from in-process environment override copies after use, and never persisted to the deployment manifest.
+- Decimal amount flags such as `--assets 1.25 --asset-decimals 7` and `--shares 10 --share-decimals manifest` are converted to raw contract units without floating point. Exact machine callers can use raw flags such as `--assets-raw`, `--shares-raw`, and `--amount-raw`.
+- Machine output is described by `tools/soroban-vault-cli/schema/output.schema.json`. Structured errors include codes such as `missing_manifest_contract`, `mainnet_guard`, and `secret_in_argv`.
+- Successful non-dry-run write commands append an audit record to the manifest `transactions` list with timestamp, command/action, target contract/function when known, tx hash when visible in Stellar output, source public address when known, status, and artifact hash when applicable.
 
 ## Docker
 
@@ -122,11 +126,22 @@ the environment.
 ## Common Operations
 
 ```sh
-# User deposit through ERC-4626 proxy when configured.
-tmplr-soroban-vault user deposit --operator G... --assets 1000000
+# User deposit through ERC-4626 proxy when configured, using decimal asset units.
+tmplr-soroban-vault user deposit \
+  --operator G... \
+  --assets 1.25 \
+  --asset-decimals 7 \
+  --min-shares-out-raw 0
+
+# Exact raw units remain available for automation.
+tmplr-soroban-vault user deposit --operator G... --assets-raw 12500000
 
 # Allocator supply through the vault compact command ABI.
-tmplr-soroban-vault curator allocate-supply --caller G... --market 0 --amount 1000000
+tmplr-soroban-vault curator allocate-supply \
+  --caller G... \
+  --market 0 \
+  --amount 1.25 \
+  --asset-decimals 7
 
 # Submit and optionally accept governance-backed supply queue changes.
 tmplr-soroban-vault curator set-supply-queue \
