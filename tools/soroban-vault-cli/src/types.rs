@@ -69,6 +69,140 @@ fn looks_like_secret_source_account(value: &str) -> bool {
             && trimmed.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecimalAmount(String);
+
+impl DecimalAmount {
+    pub fn to_raw(&self, decimals: u32) -> Result<i128, String> {
+        decimal_to_raw(&self.0, decimals)
+    }
+}
+
+impl FromStr for DecimalAmount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        validate_decimal_amount(value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl fmt::Display for DecimalAmount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShareDecimalsArg {
+    Manifest,
+    Explicit(u32),
+}
+
+impl FromStr for ShareDecimalsArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "manifest" {
+            return Ok(Self::Manifest);
+        }
+        let decimals = value
+            .parse::<u32>()
+            .map_err(|_| "expected `manifest` or a decimal count".to_string())?;
+        if decimals > 38 {
+            return Err("decimal count must be <= 38".to_string());
+        }
+        Ok(Self::Explicit(decimals))
+    }
+}
+
+impl fmt::Display for ShareDecimalsArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manifest => formatter.write_str("manifest"),
+            Self::Explicit(decimals) => write!(formatter, "{decimals}"),
+        }
+    }
+}
+
+fn validate_decimal_amount(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("amount cannot be empty".to_string());
+    }
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    if unsigned.is_empty() {
+        return Err("amount must include digits".to_string());
+    }
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    if parts.next().is_some() {
+        return Err("amount must contain at most one decimal point".to_string());
+    }
+    if whole.is_empty() && fraction.is_none_or(str::is_empty) {
+        return Err("amount must include digits".to_string());
+    }
+    if !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount whole part must contain only digits".to_string());
+    }
+    if let Some(fraction) = fraction {
+        if !fraction.chars().all(|c| c.is_ascii_digit()) {
+            return Err("amount fractional part must contain only digits".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn decimal_to_raw(value: &str, decimals: u32) -> Result<i128, String> {
+    if decimals > 38 {
+        return Err("decimal count must be <= 38".to_string());
+    }
+    let decimals =
+        usize::try_from(decimals).map_err(|_| "decimal count does not fit usize".to_string())?;
+    let negative = value.starts_with('-');
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next().unwrap_or_default();
+    if fraction.len() > decimals {
+        return Err(format!(
+            "amount {value} has more fractional digits than decimals={decimals}"
+        ));
+    }
+    let scale = 10_i128
+        .checked_pow(
+            u32::try_from(decimals).map_err(|_| "decimal count does not fit u32".to_string())?,
+        )
+        .ok_or_else(|| "decimal scale overflow".to_string())?;
+    let whole_raw = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse::<i128>()
+            .map_err(|_| "amount whole part overflows i128".to_string())?
+            .checked_mul(scale)
+            .ok_or_else(|| "amount overflows i128".to_string())?
+    };
+    let mut padded_fraction = fraction.to_string();
+    padded_fraction.extend(std::iter::repeat_n('0', decimals - fraction.len()));
+    let fraction_raw = if padded_fraction.is_empty() {
+        0
+    } else {
+        padded_fraction
+            .parse::<i128>()
+            .map_err(|_| "amount fractional part overflows i128".to_string())?
+    };
+    let raw = whole_raw
+        .checked_add(fraction_raw)
+        .ok_or_else(|| "amount overflows i128".to_string())?;
+    if negative {
+        raw.checked_neg()
+            .ok_or_else(|| "amount overflows i128".to_string())
+    } else {
+        Ok(raw)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct AddressStr(String);
 
@@ -378,6 +512,31 @@ mod tests {
         assert!(ACCOUNT.parse::<AddressStr>().is_ok());
         assert!(CONTRACT.parse::<AddressStr>().is_ok());
         assert!("not-an-address".parse::<AddressStr>().is_err());
+    }
+
+    #[test]
+    fn decimal_amount_converts_to_raw_units() {
+        assert_eq!(
+            "1.25"
+                .parse::<DecimalAmount>()
+                .expect("amount")
+                .to_raw(7)
+                .expect("raw"),
+            12_500_000
+        );
+        assert_eq!(
+            "-0.5"
+                .parse::<DecimalAmount>()
+                .expect("amount")
+                .to_raw(7)
+                .expect("raw"),
+            -5_000_000
+        );
+        assert!("1.234"
+            .parse::<DecimalAmount>()
+            .expect("amount")
+            .to_raw(2)
+            .is_err());
     }
 
     #[test]
