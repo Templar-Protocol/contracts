@@ -16,6 +16,7 @@ pub struct ProfileConfig {
     pub network_passphrase: Option<String>,
     pub state: Option<PathBuf>,
     pub workspace_path: Option<PathBuf>,
+    pub contract_source_repo: Option<String>,
     pub config_dir: Option<PathBuf>,
     pub admin: Option<String>,
     pub caller: Option<String>,
@@ -151,6 +152,13 @@ fn push_global_profile_args(
         "--workspace-path",
         "WORKSPACE_PATH",
         profile.workspace_path.as_deref().and_then(Path::to_str),
+    );
+    push_profile_arg(
+        expanded,
+        raw_args,
+        "--contract-source-repo",
+        "SOROBAN_CONTRACT_SOURCE_REPO",
+        profile.contract_source_repo.as_deref(),
     );
     push_profile_arg(
         expanded,
@@ -317,6 +325,7 @@ fn flag_takes_value(arg: &str) -> bool {
         "--config-dir",
         "--state",
         "--workspace-path",
+        "--contract-source-repo",
     ]
     .into_iter()
     .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
@@ -344,6 +353,7 @@ workspace_path = "."
 # Optional public config.
 # rpc_url = "https://..."
 # config_dir = "/home/operator/.config/stellar"
+# contract_source_repo = "github:Templar-Protocol/contracts"
 # admin = "G..."
 # caller = "G..."
 # operator = "G..."
@@ -365,6 +375,7 @@ network = "testnet"
 rpc_url = "https://rpc.example"
 state = "state.json"
 workspace_path = "/workspace"
+contract_source_repo = "github:example/contracts"
 admin = "GADMIN"
 "#,
         )
@@ -394,6 +405,9 @@ admin = "GADMIN"
             .any(|pair| pair == ["--rpc-url", "https://rpc.example"]));
         assert!(expanded
             .windows(2)
+            .any(|pair| pair == ["--contract-source-repo", "github:example/contracts"]));
+        assert!(expanded
+            .windows(2)
             .any(|pair| pair == ["--admin", "GADMIN"]));
     }
 
@@ -418,6 +432,7 @@ admin = "GADMIN"
         let template = profile_template("testnet");
         assert!(template.contains("Do not put secret keys"));
         assert!(template.contains("network = \"testnet\""));
+        assert!(template.contains("contract_source_repo"));
     }
 
     #[test]

@@ -4,8 +4,7 @@
 
 The CLI delegates most transaction construction, signing, and submission to the installed
 `stellar` CLI. It owns the Templar-specific pieces around artifact hashing, WASM upload/reuse,
-deployment manifests, compact vault command payloads, stripped-runtime vault initialization, and
-operator command routing.
+deployment manifests, compact vault command payloads, and operator command routing.
 
 ## Deployment
 
@@ -34,6 +33,10 @@ contract/vault/soroban/.deploy-state/manifest.json
 The deploy flow reuses contract IDs already recorded in the manifest unless `--force-new` is set.
 It reuses uploaded WASM by local SHA-256 hash when the hash can be fetched from the configured
 network, and uploads only when the WASM is missing remotely.
+When the CLI builds WASM artifacts, it embeds `source_repo` contract metadata for explorer
+build-info and source-attestation discovery. The default is
+`github:Templar-Protocol/contracts`; override it with `--contract-source-repo` or
+`SOROBAN_CONTRACT_SOURCE_REPO`, or pass an empty value to disable the metadata.
 During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
 upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
@@ -41,13 +44,15 @@ In interactive human mode, `deploy stack` shows a progress bar across WASM uploa
 deployment/reuse, initialization, and adapter deployment stages. Progress rendering is disabled for
 `--json`, `--json-lines`, `--dry-run`, and non-TTY stderr.
 
-The vault runtime WASM is deployed without an embedded contract spec. For vault initialization, the
-CLI builds the `initialize` invocation from the known ABI, prepares it through Soroban RPC, and then
-hands the prepared transaction to `stellar tx sign` and `stellar tx send`. The RPC preparation path
-uses a 120 second timeout so transient RPC slowness is less likely to leave an ambiguous deployment
-state after earlier contracts have already been checkpointed. Configure RPC with `--rpc-url`,
-`STELLAR_RPC_URL`, or a profile `rpc_url`. Keep signing material in the Stellar keystore,
-`STELLAR_SIGN_WITH_KEY`, or `STELLAR_ACCOUNT`; the CLI does not require secrets in argv.
+The vault runtime WASM keeps its embedded contract spec. Vault initialization uses the ordinary
+`stellar contract invoke -- initialize ...` path, so the Stellar CLI can resolve the ABI from the
+deployed WASM. Configure RPC with `--rpc-url`, `STELLAR_RPC_URL`, or a profile `rpc_url`. Keep
+signing material in the Stellar keystore or `STELLAR_ACCOUNT`; the CLI does not require secrets in
+argv.
+
+For write commands that emit a transaction hash, the CLI polls `stellar tx fetch` until RPC reports
+success or failure, up to 300 seconds. If the original Stellar command exits after emitting a hash
+and RPC later reports success, the CLI treats the transaction as confirmed and records the hash.
 
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are

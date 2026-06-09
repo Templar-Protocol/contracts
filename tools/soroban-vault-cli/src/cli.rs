@@ -8,6 +8,8 @@ use crate::types::{
     SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
 };
 
+pub const DEFAULT_CONTRACT_SOURCE_REPO: &str = "github:Templar-Protocol/contracts";
+
 #[derive(Parser, Debug)]
 #[command(
     version,
@@ -58,6 +60,14 @@ pub struct Cli {
     /// Path to the workspace root
     #[arg(long, env = "WORKSPACE_PATH", default_value = ".")]
     pub workspace_path: PathBuf,
+
+    /// Contract source repository metadata embedded into future WASM builds. Use an empty value to disable.
+    #[arg(
+        long,
+        env = "SOROBAN_CONTRACT_SOURCE_REPO",
+        default_value = DEFAULT_CONTRACT_SOURCE_REPO
+    )]
+    pub contract_source_repo: Option<String>,
 
     /// Output machine-readable JSON
     #[arg(long)]

@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "network": "mainnet",
+  "rpc_url": "https://mainnet.sorobanrpc.com",
+  "artifacts": {
+    "blend_adapter": {
+      "package": "templar-soroban-blend-adapter",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_blend_adapter.wasm",
+      "local_hash": "8518d13075e694930480bea1446518e0c4a2d4cd3681aeff4d825b1c4b5cfc81",
+      "remote_wasm_hash": "8518d13075e694930480bea1446518e0c4a2d4cd3681aeff4d825b1c4b5cfc81",
+      "verified": true
+    },
+    "curator_proxy": {
+      "package": "templar-curator-proxy-soroban",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_curator_proxy_soroban.wasm",
+      "local_hash": "2008e237f928dc1eba92f072707e6587a7a00cfa7b2dd30718af5f64c8bd9a8e",
+      "remote_wasm_hash": "2008e237f928dc1eba92f072707e6587a7a00cfa7b2dd30718af5f64c8bd9a8e",
+      "verified": true
+    },
+    "governance": {
+      "package": "templar-soroban-governance",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_governance.wasm",
+      "local_hash": "0c872d8526f8749c25160f5208166645fc6ffaa8738b4fc4d066369ee2f1350c",
+      "remote_wasm_hash": "0c872d8526f8749c25160f5208166645fc6ffaa8738b4fc4d066369ee2f1350c",
+      "verified": true
+    },
+    "proxy_4626": {
+      "package": "templar-4626-proxy-soroban",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_4626_proxy_soroban.wasm",
+      "local_hash": "6e00a774d7ad80e70d4243049c23be3a8f7159dcb2a1da540140c0fee9fa6fa1",
+      "remote_wasm_hash": "6e00a774d7ad80e70d4243049c23be3a8f7159dcb2a1da540140c0fee9fa6fa1",
+      "verified": true
+    },
+    "share_token": {
+      "package": "templar-soroban-share-token",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_share_token.wasm",
+      "local_hash": "bfeea38590f0e23e355b47f61b1f71fe65f72d32fa457e769627d38b523324cc",
+      "remote_wasm_hash": "bfeea38590f0e23e355b47f61b1f71fe65f72d32fa457e769627d38b523324cc",
+      "verified": true
+    },
+    "vault": {
+      "package": "templar-soroban-runtime",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm",
+      "local_hash": "cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244",
+      "remote_wasm_hash": "cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244",
+      "verified": true
+    }
+  },
+  "contracts": {
+    "asset_token": {
+      "contract_id": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+      "wasm_hash": "stellar-asset-contract",
+      "constructor_args": {
+        "asset": "predeployed"
+      },
+      "initialized": true
+    },
+    "blend_adapter_0": {
+      "contract_id": "CDC4WGJI6F7FGLCYLCEBDGSMGGCIT7RREO6G7IPSVCMJYRJM3W34XBMQ",
+      "wasm_hash": "8518d13075e694930480bea1446518e0c4a2d4cd3681aeff4d825b1c4b5cfc81",
+      "constructor_args": {
+        "admin": "CCZ7YDBVOV77SBMNRSKBPFI6W2EVJD3LA3OKWL27CHFO5655WHTYEZH4",
+        "pool": "CAJJZSGMMM3PD7N33TAPHGBUGTB43OC73HVIK2L2G6BNGGGYOSSYBXBD",
+        "vault": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV"
+      },
+      "initialized": false
+    },
+    "curator_proxy": {
+      "contract_id": "CA4KS6UWZM2URDWHELOH5IXWKOEODSADMC6G3ZFLLEBF7FCKPI7KDB6Z",
+      "wasm_hash": "2008e237f928dc1eba92f072707e6587a7a00cfa7b2dd30718af5f64c8bd9a8e",
+      "constructor_args": {},
+      "initialized": true
+    },
+    "governance": {
+      "contract_id": "CCZ7YDBVOV77SBMNRSKBPFI6W2EVJD3LA3OKWL27CHFO5655WHTYEZH4",
+      "wasm_hash": "0c872d8526f8749c25160f5208166645fc6ffaa8738b4fc4d066369ee2f1350c",
+      "constructor_args": {
+        "admin": "GASFUXQFGKJFVWUCRAHL4WOWE5344SUESN7U7RDLTTJEA5Q4OQWXOWPM",
+        "timelock_ns": "0",
+        "vault": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV"
+      },
+      "initialized": true
+    },
+    "proxy_4626": {
+      "contract_id": "CDBBJXSK22AFN34GHAHOLZVEZOHSXGWZYMBMYPFRYBJSO5D7BTN7P6QX",
+      "wasm_hash": "6e00a774d7ad80e70d4243049c23be3a8f7159dcb2a1da540140c0fee9fa6fa1",
+      "constructor_args": {},
+      "initialized": true
+    },
+    "share_token": {
+      "contract_id": "CASWCIC2EIOGGCY5SYMX52VDXUGPWFQURKNLSQRO5D6A5YGFZ32EPAIS",
+      "wasm_hash": "bfeea38590f0e23e355b47f61b1f71fe65f72d32fa457e769627d38b523324cc",
+      "constructor_args": {
+        "admin": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV",
+        "decimals": "7",
+        "name": "Test Templar USDC",
+        "symbol": "tTUSDC",
+        "vault": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV"
+      },
+      "initialized": true
+    },
+    "vault": {
+      "contract_id": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV",
+      "wasm_hash": "cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244",
+      "constructor_args": {
+        "asset_token": "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+        "curator": "GASFUXQFGKJFVWUCRAHL4WOWE5344SUESN7U7RDLTTJEA5Q4OQWXOWPM",
+        "governance": "CCZ7YDBVOV77SBMNRSKBPFI6W2EVJD3LA3OKWL27CHFO5655WHTYEZH4",
+        "share_token": "CASWCIC2EIOGGCY5SYMX52VDXUGPWFQURKNLSQRO5D6A5YGFZ32EPAIS",
+        "virtual_assets": "0",
+        "virtual_shares": "0"
+      },
+      "initialized": true
+    }
+  },
+  "transactions": [
+    {
+      "timestamp_unix_seconds": 0,
+      "action": "recover_initialize_vault",
+      "target": "vault",
+      "contract_id": "CA3M5DXSSDUSTAXIPH5GGTS55SIZJKUHKQEOJVZ57GMZKEQCGZBTY7ZV",
+      "function": "initialize",
+      "tx_hash": "b01a5928be0edfa15fd30d4890180f2374f978e5b9d07f3101bf657788fd3753",
+      "source_public_address": "GCMVV45LOZUYYVXOQJ626VXGL3KFXY73DHFBT4EDPDBE2LN4USRQDYVV",
+      "result_status": "success"
+    },
+    {
+      "timestamp_unix_seconds": 1781017070,
+      "command": "deploy",
+      "action": "status",
+      "function": "deploy",
+      "result_status": "success"
+    }
+  ]
+}

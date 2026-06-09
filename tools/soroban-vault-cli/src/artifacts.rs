@@ -1,7 +1,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 use anyhow::Context;
@@ -19,7 +18,6 @@ pub struct ArtifactSpec {
     pub package: &'static str,
     pub wasm_relative_path: &'static str,
     pub build_output_dir: &'static str,
-    pub needs_runtime_strip: bool,
 }
 
 impl ArtifactSpec {
@@ -53,9 +51,8 @@ impl ArtifactSpec {
             key: "vault",
             package: "templar-soroban-runtime",
             wasm_relative_path:
-                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm",
+                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: true,
         }
     }
 
@@ -66,7 +63,6 @@ impl ArtifactSpec {
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_soroban_governance.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: false,
         }
     }
 
@@ -77,7 +73,6 @@ impl ArtifactSpec {
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_soroban_share_token.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: false,
         }
     }
 
@@ -88,7 +83,6 @@ impl ArtifactSpec {
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_soroban_blend_adapter.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: false,
         }
     }
 
@@ -99,7 +93,6 @@ impl ArtifactSpec {
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_4626_proxy_soroban.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: false,
         }
     }
 
@@ -110,7 +103,6 @@ impl ArtifactSpec {
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_curator_proxy_soroban.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
-            needs_runtime_strip: false,
         }
     }
 
@@ -184,27 +176,6 @@ fn build_artifact<E: CommandExecutor>(
         spec.package,
         &out_dir.display().to_string(),
     )?;
-    if spec.needs_runtime_strip {
-        strip_runtime_contractspec(workspace)?;
-    }
-    Ok(())
-}
-
-fn strip_runtime_contractspec(workspace: &Path) -> anyhow::Result<()> {
-    let script = workspace.join("contract/vault/soroban/scripts/strip_contractspec.py");
-    let input = workspace
-        .join("target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm");
-    let output = workspace
-        .join("target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm");
-    let status = Command::new("python3")
-        .arg(script)
-        .arg("--input")
-        .arg(&input)
-        .arg("--output")
-        .arg(&output)
-        .status()
-        .context("run strip_contractspec.py")?;
-    anyhow::ensure!(status.success(), "strip_contractspec.py failed");
     Ok(())
 }
 
@@ -224,7 +195,7 @@ mod tests {
         assert_eq!(
             ArtifactSpec::from_name(ArtifactName::Vault).wasm_path(root),
             PathBuf::from(
-                "/workspace/target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm"
+                "/workspace/target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm"
             )
         );
     }

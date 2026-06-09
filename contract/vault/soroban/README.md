@@ -296,18 +296,17 @@ After deployment, register the adapter as a vault market before allocation.
 
 ## Deployment Artifact
 
-The Soroban justfile builds two runtime artifacts:
+The Soroban justfile deploys the optimized runtime artifact directly:
 
-- `templar_soroban_runtime.wasm` with Stellar optimizer output and contractspec metadata
-- `templar_soroban_runtime.deploy.wasm` with contractspec metadata stripped for deployment and
-  size-budget checks
+- `templar_soroban_runtime.wasm` with Stellar optimizer output, contractspec metadata, and
+  contract metadata used by explorer build-info/source-attestation flows
 
 Useful commands:
 
 - `wasm-path` -> default runtime artifact, currently `templar_soroban_runtime.wasm`
 - `optimized-wasm-path` -> explicit optimized artifact path
-- `deploy-wasm-path` -> contractspec-stripped deploy artifact path used for deployment and size verification
-- `size-budget-check` -> verifies `templar_soroban_runtime.deploy.wasm <= 131072` bytes
+- `deploy-wasm-path` -> deploy artifact path used for deployment and size verification
+- `size-budget-check` -> verifies `templar_soroban_runtime.wasm <= 131072` bytes
 
 ## State Size and Operational Limits
 
