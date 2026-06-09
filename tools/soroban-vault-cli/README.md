@@ -43,9 +43,11 @@ deployment/reuse, initialization, and adapter deployment stages. Progress render
 
 The vault runtime WASM is deployed without an embedded contract spec. For vault initialization, the
 CLI builds the `initialize` invocation from the known ABI, prepares it through Soroban RPC, and then
-hands the prepared transaction to `stellar tx sign` and `stellar tx send`. Configure RPC with
-`--rpc-url`, `STELLAR_RPC_URL`, or a profile `rpc_url`. Keep signing material in the Stellar
-keystore, `STELLAR_SIGN_WITH_KEY`, or `STELLAR_ACCOUNT`; the CLI does not require secrets in argv.
+hands the prepared transaction to `stellar tx sign` and `stellar tx send`. The RPC preparation path
+uses a 120 second timeout so transient RPC slowness is less likely to leave an ambiguous deployment
+state after earlier contracts have already been checkpointed. Configure RPC with `--rpc-url`,
+`STELLAR_RPC_URL`, or a profile `rpc_url`. Keep signing material in the Stellar keystore,
+`STELLAR_SIGN_WITH_KEY`, or `STELLAR_ACCOUNT`; the CLI does not require secrets in argv.
 
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are

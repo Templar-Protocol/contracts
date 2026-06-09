@@ -16,6 +16,8 @@ use zeroize::Zeroizing;
 use crate::cli::Cli;
 use crate::types::SourceAccount;
 
+const STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS: u64 = 120;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {
     pub stdout: String,
@@ -489,6 +491,7 @@ fn i128_val(value: i128) -> ScVal {
 fn rpc_options_for_url(url: &str) -> Options {
     Options {
         allow_http: url.starts_with("http://"),
+        timeout: STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS,
         ..Options::default()
     }
 }
@@ -637,5 +640,16 @@ mod tests {
         assert!(err
             .to_string()
             .contains("without exposing it to child argv"));
+    }
+
+    #[test]
+    fn stripped_vault_initialize_rpc_options_allow_slow_preparation() {
+        let https = rpc_options_for_url("https://rpc.example");
+        assert!(!https.allow_http);
+        assert_eq!(https.timeout, STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS);
+
+        let http = rpc_options_for_url("http://localhost:8000");
+        assert!(http.allow_http);
+        assert_eq!(http.timeout, STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS);
     }
 }
