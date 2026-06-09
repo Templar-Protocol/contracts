@@ -1,9 +1,5 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
-use templar_soroban_governance::{
-    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal, TimelockKind,
-    Timelocks,
-};
 use templar_soroban_runtime::ContractError as VaultContractError;
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, VaultCommand as WireVaultCommand, VAULT_ERR_ALREADY_INITIALIZED,
@@ -15,6 +11,10 @@ use crate::{
         timelocks_from_kind_values, AllocationDelta, ProxyDataKey, SorobanCuratorProxyContract,
     },
     error::ContractError,
+    governance_abi::{
+        GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal, TimelockKind,
+        Timelocks,
+    },
     CapGroupUpdate, CapGroupUpdateKey, Fees, Restrictions,
 };
 
