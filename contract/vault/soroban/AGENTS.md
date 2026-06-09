@@ -64,12 +64,12 @@ Use these commands:
 
 Important details:
 
-- The size gate checks `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`.
-- `build` emits the optimized `templar_soroban_runtime.wasm`; the deploy artifact is the
-  contractspec-stripped one.
-- `scripts/strip_contractspec.py` typically saves about `7 KiB` by removing `contractspecv0`.
-- Recent local evidence from PR #417 records the deploy artifact at about `128807` bytes
-  (`125.8 KiB`), leaving roughly `2.2 KiB` of headroom under the `131072` byte gate.
+- The size gate checks `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`.
+- `build` emits the optimized runtime WASM and uses that same artifact for deployment. It keeps
+  contractspec metadata so standard Stellar CLI invocation and explorer source-attestation tooling
+  can inspect the deployed WASM.
+- Recent local evidence records the unstripped deploy artifact at `128955` bytes (`125.9 KiB`),
+  leaving roughly `2.1 KiB` of headroom under the `131072` byte gate.
 
 Common growth pitfalls:
 
@@ -93,10 +93,9 @@ When the size gate fails:
 Do not stop at `size-budget-check`. When the artifact grows, inspect the built release artifacts
 directly and keep the commands/results in the task notes or PR description.
 
-Release artifacts to inspect after `just -f contract/vault/soroban/justfile build`:
+Release artifact to inspect after `just -f contract/vault/soroban/justfile build`:
 
 - `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
-- `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
 
 Recommended workflow:
 
@@ -109,13 +108,13 @@ Recommended workflow:
 
 Commands:
 
-- `stat -c '%s %n' target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
-- `wasm-objdump -h target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
-- `wasm-objdump -x target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm > /tmp/templar_soroban_runtime.deploy.objdump.txt`
+- `stat -c '%s %n' target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
+- `wasm-objdump -h target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
+- `wasm-objdump -x target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm > /tmp/templar_soroban_runtime.objdump.txt`
 - `twiggy top target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm -n 80`
 - `twiggy dominators target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
 - `twiggy monos target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
-- `wasm2wat target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm -o /tmp/templar_soroban_runtime.deploy.wat`
+- `wasm2wat target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm -o /tmp/templar_soroban_runtime.wat`
 
 What to look for:
 
@@ -130,9 +129,7 @@ What to look for:
 
 Interpretation guidance:
 
-- If `deploy.wasm` grew but `templar_soroban_runtime.wasm` did not, check stripping/output-path issues first.
-- If both `templar_soroban_runtime.wasm` and `deploy.wasm` grew similarly, inspect retained code shape with
-  `twiggy`.
+- If `templar_soroban_runtime.wasm` grew unexpectedly, inspect retained code shape with `twiggy`.
 - If section growth is concentrated in custom/data sections, inspect serialization payloads,
   event/spec metadata, and embedded strings before changing control flow.
 - If code growth is concentrated in a few dominators, attack those first. Small deletions there

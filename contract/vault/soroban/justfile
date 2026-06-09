@@ -44,7 +44,7 @@ wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
-deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
+deploy_wasm := optimized_wasm
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
@@ -116,10 +116,7 @@ build:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-runtime "{{wasm_dir}}/templar_soroban_runtime.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-governance "{{wasm_dir}}/templar_soroban_governance.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-share-token "{{wasm_dir}}/templar_soroban_share_token.wasm"
-	@python3 "{{justfile_directory()}}/scripts/strip_contractspec.py" \
-		--input "{{optimized_wasm}}" --output "{{deploy_wasm}}"
-	@echo "✓ Built optimized: {{optimized_wasm}}"
-	@echo "✓ Built deploy:    {{deploy_wasm}}"
+	@echo "✓ Built runtime/deploy: {{deploy_wasm}}"
 	@echo "✓ Built governance: {{governance_wasm}}"
 	@echo "✓ Built share token: {{share_token_wasm}}"
 
@@ -200,7 +197,7 @@ wasm-path:
 optimized-wasm-path:
 	@echo "{{optimized_wasm}}"
 
-# Print the deploy (spec-stripped) WASM path.
+# Print the deploy WASM path.
 deploy-wasm-path:
 	@echo "{{deploy_wasm}}"
 

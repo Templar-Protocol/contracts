@@ -1,22 +1,21 @@
-use std::{collections::BTreeSet, process::Command};
+use std::{
+    collections::BTreeSet,
+    fmt::Write as _,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
-use soroban_client::{
-    keypair::{Keypair, KeypairBehavior},
-    operation::Operation,
-    transaction::{TransactionBehavior, TransactionBuilderBehavior},
-    transaction_builder::TransactionBuilder,
-    xdr::{Int128Parts, Limits, ScAddress, ScVal, WriteXdr},
-    Options, Server,
-};
-use stellar_strkey::ed25519::PrivateKey;
+use serde_json::Value;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
 use crate::cli::Cli;
 use crate::types::SourceAccount;
 
-const STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS: u64 = 120;
+const SUBMITTED_TX_CONFIRMATION_TIMEOUT_SECONDS: u64 = 300;
+const SUBMITTED_TX_CONFIRMATION_POLL_SECONDS: u64 = 5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {
@@ -72,8 +71,9 @@ impl CommandExecutor for RealExecutor {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         anyhow::ensure!(
             output.status.success(),
-            "command failed: {}\n{}",
+            "command failed: {}\nstdout: {}\nstderr: {}",
             display_command(program, args, redacted_args, env),
+            stdout,
             stderr
         );
         Ok(CommandOutput { stdout, stderr })
@@ -96,6 +96,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         redacted_args: &[usize],
         mut env: Vec<CommandEnv>,
     ) -> anyhow::Result<CommandOutput> {
+        let confirm_transaction = should_confirm_transaction(&args);
         let result = if self.cli.dry_run {
             println!(
                 "dry-run: {}",
@@ -107,6 +108,11 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             })
         } else {
             self.executor.run("stellar", &args, redacted_args, &env)
+        };
+        let result = if confirm_transaction && !self.cli.dry_run {
+            self.confirm_transaction_result(result)
+        } else {
+            result
         };
         zeroize_redacted_args(&mut args, redacted_args);
         zeroize_env(&mut env);
@@ -134,26 +140,6 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             .source_account
             .as_ref()
             .map(|source| CommandEnv::redacted("STELLAR_ACCOUNT", source.clone_secret()))
-            .into_iter()
-            .collect()
-    }
-
-    fn sign_env(&self) -> Vec<CommandEnv> {
-        if let Some(source) = &self.cli.source_account {
-            let source = source.as_secret_str();
-            if !is_public_account_address(source) {
-                return vec![CommandEnv::redacted(
-                    "STELLAR_SIGN_WITH_KEY",
-                    source.to_string(),
-                )];
-            }
-        }
-        if std::env::var_os("STELLAR_SIGN_WITH_KEY").is_some() {
-            return Vec::new();
-        }
-        std::env::var("STELLAR_ACCOUNT")
-            .ok()
-            .map(|value| CommandEnv::redacted("STELLAR_SIGN_WITH_KEY", value))
             .into_iter()
             .collect()
     }
@@ -187,182 +173,6 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         args.push(function.to_string());
         args.extend(function_args);
         self.run(args, &[], self.source_env())
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "vault initialization mirrors the stripped contract ABI"
-    )]
-    pub fn invoke_vault_initialize_without_spec(
-        &self,
-        vault: &str,
-        curator: &str,
-        governance: &str,
-        asset_token: &str,
-        share_token: &str,
-        virtual_shares: i128,
-        virtual_assets: i128,
-    ) -> anyhow::Result<CommandOutput> {
-        if self.cli.dry_run {
-            let _ = self.run(
-                vec![
-                    "tx".to_string(),
-                    "sign".to_string(),
-                    "<prepared-vault-initialize-xdr>".to_string(),
-                ],
-                &[],
-                self.sign_env(),
-            )?;
-            return self.run(
-                vec![
-                    "tx".to_string(),
-                    "send".to_string(),
-                    "<signed-vault-initialize-xdr>".to_string(),
-                ],
-                &[],
-                Vec::new(),
-            );
-        }
-
-        let source = self.source_public_address()?;
-        let prepared = self.prepare_vault_initialize_transaction(
-            &source,
-            vault,
-            curator,
-            governance,
-            asset_token,
-            share_token,
-            virtual_shares,
-            virtual_assets,
-        )?;
-        let prepared_xdr = prepared
-            .to_envelope()
-            .map_err(|err| anyhow::anyhow!("build prepared vault initialize envelope: {err}"))?
-            .to_xdr_base64(Limits::none())
-            .context("encode prepared vault initialize envelope")?;
-
-        let mut sign_args = vec!["tx".to_string(), "sign".to_string()];
-        sign_args.extend(self.network_args());
-        sign_args.push(prepared_xdr);
-        let signed = self.run(sign_args, &[], self.sign_env())?;
-        anyhow::ensure!(
-            !signed.stdout.is_empty(),
-            "stellar tx sign returned no signed transaction xdr"
-        );
-
-        let mut send_args = vec!["tx".to_string(), "send".to_string()];
-        send_args.extend(self.network_args());
-        send_args.push(signed.stdout);
-        self.run(send_args, &[], Vec::new())
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "vault initialization mirrors the stripped contract ABI"
-    )]
-    fn prepare_vault_initialize_transaction(
-        &self,
-        source: &str,
-        vault: &str,
-        curator: &str,
-        governance: &str,
-        asset_token: &str,
-        share_token: &str,
-        virtual_shares: i128,
-        virtual_assets: i128,
-    ) -> anyhow::Result<soroban_client::transaction::Transaction> {
-        let rpc_url = self.rpc_url()?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("create tokio runtime for stripped vault initialize")?;
-        runtime.block_on(async {
-            let server = Server::new(&rpc_url, rpc_options_for_url(&rpc_url))
-                .context("create Soroban RPC client")?;
-            let mut account = server
-                .get_account(source)
-                .await
-                .with_context(|| format!("load source account {source}"))?;
-            let operation = Operation::new()
-                .invoke_contract(
-                    vault,
-                    "initialize",
-                    vec![
-                        address_val(curator)?,
-                        address_val(governance)?,
-                        address_val(asset_token)?,
-                        address_val(share_token)?,
-                        i128_val(virtual_shares),
-                        i128_val(virtual_assets),
-                    ],
-                    None,
-                )
-                .map_err(|err| {
-                    anyhow::anyhow!("build stripped vault initialize operation: {err:?}")
-                })?;
-            let tx = TransactionBuilder::new(&mut account, &self.cli.network_passphrase, None)
-                .fee(100_u32)
-                .add_operation(operation)
-                .build_for_simulation();
-            server
-                .prepare_transaction(&tx)
-                .await
-                .context("simulate and prepare stripped vault initialize transaction")
-        })
-    }
-
-    fn rpc_url(&self) -> anyhow::Result<String> {
-        self.cli
-            .rpc_url
-            .clone()
-            .or_else(|| std::env::var("STELLAR_RPC_URL").ok())
-            .context(
-                "stripped vault initialize requires an RPC URL; pass --rpc-url, set STELLAR_RPC_URL, or configure it in the selected profile",
-            )
-    }
-
-    fn source_public_address(&self) -> anyhow::Result<String> {
-        if let Some(source) = &self.cli.source_account {
-            let source = source.as_secret_str();
-            if is_public_account_address(source) {
-                return Ok(source.to_string());
-            }
-            return self.keys_address_source_account();
-        }
-
-        let Some(mut source) = std::env::var("STELLAR_ACCOUNT").ok().map(Zeroizing::new) else {
-            return self.keys_address_source_account();
-        };
-        if is_public_account_address(source.as_str()) {
-            return Ok(source.to_string());
-        }
-        if source.as_str().starts_with('S') {
-            let seed = PrivateKey::from_string(source.as_str())
-                .context("decode STELLAR_ACCOUNT secret seed")?;
-            let public = Keypair::from_raw_ed25519_seed(&seed.0)
-                .map_err(|err| {
-                    anyhow::anyhow!("derive public source address from STELLAR_ACCOUNT: {err}")
-                })?
-                .public_key();
-            source.zeroize();
-            return Ok(public);
-        }
-        if !source.as_str().contains(char::is_whitespace) {
-            let (args, redacted_args) = keys_address_source_account_args(
-                Some(&SourceAccount::from_non_secret(source.as_str())),
-                false,
-            )?;
-            source.zeroize();
-            let out = self.run(args, &redacted_args, Vec::new())?;
-            anyhow::ensure!(
-                !out.stdout.is_empty(),
-                "stellar keys address returned no address"
-            );
-            return Ok(out.stdout);
-        }
-        anyhow::bail!(
-            "cannot derive source public address from STELLAR_ACCOUNT seed phrase; use a Stellar keystore identity, set STELLAR_ACCOUNT to a secret seed, or pass --source-account with a public address/identity"
-        );
     }
 
     pub fn deploy(&self, wasm_hash: &str, constructor_args: Vec<String>) -> anyhow::Result<String> {
@@ -435,7 +245,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         package: &str,
         out_dir: &str,
     ) -> anyhow::Result<()> {
-        let args = vec![
+        let mut args = vec![
             "contract".to_string(),
             "build".to_string(),
             "--manifest-path".to_string(),
@@ -443,11 +253,111 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "--package".to_string(),
             package.to_string(),
             "--optimize".to_string(),
-            "--out-dir".to_string(),
-            out_dir.to_string(),
         ];
+        if let Some(source_repo) = self
+            .cli
+            .contract_source_repo
+            .as_deref()
+            .map(str::trim)
+            .filter(|source_repo| !source_repo.is_empty())
+        {
+            args.extend(["--meta".to_string(), format!("source_repo={source_repo}")]);
+        }
+        args.extend(["--out-dir".to_string(), out_dir.to_string()]);
         let _ = self.run(args, &[], Vec::new())?;
         Ok(())
+    }
+
+    fn confirm_transaction_result(
+        &self,
+        result: anyhow::Result<CommandOutput>,
+    ) -> anyhow::Result<CommandOutput> {
+        match result {
+            Ok(mut output) => {
+                if let Some(hash) = first_tx_hash(&output.stdout, &output.stderr) {
+                    self.wait_for_transaction_success(&hash)?;
+                    append_reconciled_tx_hash(&mut output, &hash);
+                }
+                Ok(output)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let Some(hash) = first_tx_hash(&message, "") else {
+                    return Err(error);
+                };
+                match self.wait_for_transaction_success(&hash) {
+                    Ok(()) => Ok(CommandOutput {
+                        stdout: format!("tx hash: {hash}"),
+                        stderr: format!(
+                            "stellar command returned an error, but RPC confirmed transaction success: {error}"
+                        ),
+                    }),
+                    Err(wait_error) => Err(error).with_context(|| {
+                        format!("could not confirm submitted transaction {hash}: {wait_error}")
+                    }),
+                }
+            }
+        }
+    }
+
+    fn wait_for_transaction_success(&self, tx_hash: &str) -> anyhow::Result<()> {
+        let started = Instant::now();
+        let timeout = Duration::from_secs(SUBMITTED_TX_CONFIRMATION_TIMEOUT_SECONDS);
+        let poll = Duration::from_secs(SUBMITTED_TX_CONFIRMATION_POLL_SECONDS);
+        let mut last_status = "not_found".to_string();
+        let mut last_error = None;
+
+        while started.elapsed() < timeout {
+            match self.fetch_transaction_status(tx_hash) {
+                Ok(TransactionConfirmationStatus::Success) => return Ok(()),
+                Ok(TransactionConfirmationStatus::Failed) => {
+                    anyhow::bail!("transaction {tx_hash} failed after submission")
+                }
+                Ok(TransactionConfirmationStatus::NotFound) => {
+                    last_status = "not_found".to_string();
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
+            }
+            thread::sleep(poll);
+        }
+
+        if let Some(error) = last_error {
+            anyhow::bail!(
+                "transaction {tx_hash} was not confirmed before timeout; last status: {last_status}; last error: {error}"
+            );
+        }
+        anyhow::bail!(
+            "transaction {tx_hash} was not confirmed before timeout; last status: {last_status}"
+        )
+    }
+
+    fn fetch_transaction_status(
+        &self,
+        tx_hash: &str,
+    ) -> anyhow::Result<TransactionConfirmationStatus> {
+        let mut args = vec![
+            "tx".to_string(),
+            "fetch".to_string(),
+            "--hash".to_string(),
+            tx_hash.to_string(),
+            "--output".to_string(),
+            "json".to_string(),
+        ];
+        args.extend(self.network_args());
+        match self.executor.run("stellar", &args, &[], &[]) {
+            Ok(output) => Ok(transaction_status_from_output(&output.stdout)
+                .unwrap_or(TransactionConfirmationStatus::Success)),
+            Err(error) => {
+                let message = error.to_string();
+                if looks_not_found(&message) {
+                    Ok(TransactionConfirmationStatus::NotFound)
+                } else {
+                    Err(error).with_context(|| format!("fetch transaction {tx_hash}"))
+                }
+            }
+        }
     }
 }
 
@@ -470,34 +380,103 @@ pub fn parse_hash(stdout: &str) -> anyhow::Result<String> {
         .context("no wasm hash found in stellar output")
 }
 
-fn address_val(value: &str) -> anyhow::Result<ScVal> {
-    Ok(ScVal::Address(value.parse::<ScAddress>().with_context(
-        || format!("parse Soroban address {value}"),
-    )?))
-}
-
-fn i128_val(value: i128) -> ScVal {
-    let bytes = value.to_be_bytes();
-    let mut high = [0_u8; 8];
-    high.copy_from_slice(&bytes[..8]);
-    let mut low = [0_u8; 8];
-    low.copy_from_slice(&bytes[8..]);
-    ScVal::I128(Int128Parts {
-        hi: i64::from_be_bytes(high),
-        lo: u64::from_be_bytes(low),
-    })
-}
-
-fn rpc_options_for_url(url: &str) -> Options {
-    Options {
-        allow_http: url.starts_with("http://"),
-        timeout: STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS,
-        ..Options::default()
+fn append_reconciled_tx_hash(output: &mut CommandOutput, tx_hash: &str) {
+    if parse_tx_hashes(&output.stdout)
+        .into_iter()
+        .chain(parse_tx_hashes(&output.stderr))
+        .any(|hash| hash == tx_hash)
+    {
+        return;
+    }
+    if output.stdout.is_empty() {
+        output.stdout = format!("tx hash: {tx_hash}");
+    } else {
+        let _ = write!(output.stdout, "\ntx hash: {tx_hash}");
     }
 }
 
-fn is_public_account_address(value: &str) -> bool {
-    value.starts_with('G') && value.len() >= 56 && value.chars().all(|c| c.is_ascii_alphanumeric())
+fn should_confirm_transaction(args: &[String]) -> bool {
+    match args {
+        [first, second, ..] if first == "tx" && second == "send" => true,
+        [first, second, ..]
+            if first == "contract" && matches!(second.as_str(), "deploy" | "invoke" | "upload") =>
+        {
+            true
+        }
+        [first, second, third, ..]
+            if first == "contract" && second == "asset" && third == "deploy" =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn first_tx_hash(stdout: &str, stderr: &str) -> Option<String> {
+    parse_tx_hashes(stdout)
+        .into_iter()
+        .chain(parse_tx_hashes(stderr))
+        .next()
+}
+
+fn parse_tx_hashes(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .filter(|token| token.len() == 64)
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransactionConfirmationStatus {
+    Success,
+    Failed,
+    NotFound,
+}
+
+fn transaction_status_from_output(output: &str) -> Option<TransactionConfirmationStatus> {
+    serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|value| find_transaction_status(&value))
+        .or_else(|| transaction_status_from_text(output))
+}
+
+fn find_transaction_status(value: &Value) -> Option<TransactionConfirmationStatus> {
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if key.eq_ignore_ascii_case("status") {
+                    if let Some(status) = value.as_str().and_then(transaction_status_from_text) {
+                        return Some(status);
+                    }
+                }
+                if let Some(status) = find_transaction_status(value) {
+                    return Some(status);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(find_transaction_status),
+        Value::String(text) => transaction_status_from_text(text),
+        _ => None,
+    }
+}
+
+fn transaction_status_from_text(text: &str) -> Option<TransactionConfirmationStatus> {
+    let normalized = text.to_ascii_uppercase();
+    if normalized.contains("SUCCESS") {
+        Some(TransactionConfirmationStatus::Success)
+    } else if normalized.contains("FAILED") || normalized.contains("ERROR") {
+        Some(TransactionConfirmationStatus::Failed)
+    } else if normalized.contains("NOT_FOUND") || normalized.contains("NOT FOUND") {
+        Some(TransactionConfirmationStatus::NotFound)
+    } else {
+        None
+    }
+}
+
+fn looks_not_found(message: &str) -> bool {
+    transaction_status_from_text(message) == Some(TransactionConfirmationStatus::NotFound)
 }
 
 pub fn display_command(
@@ -643,13 +622,65 @@ mod tests {
     }
 
     #[test]
-    fn stripped_vault_initialize_rpc_options_allow_slow_preparation() {
-        let https = rpc_options_for_url("https://rpc.example");
-        assert!(!https.allow_http);
-        assert_eq!(https.timeout, STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS);
+    fn detects_write_commands_that_can_emit_transaction_hashes() {
+        assert!(should_confirm_transaction(&[
+            "contract".to_string(),
+            "invoke".to_string()
+        ]));
+        assert!(should_confirm_transaction(&[
+            "contract".to_string(),
+            "deploy".to_string()
+        ]));
+        assert!(should_confirm_transaction(&[
+            "contract".to_string(),
+            "asset".to_string(),
+            "deploy".to_string()
+        ]));
+        assert!(should_confirm_transaction(&[
+            "tx".to_string(),
+            "send".to_string()
+        ]));
+        assert!(!should_confirm_transaction(&[
+            "contract".to_string(),
+            "fetch".to_string()
+        ]));
+    }
 
-        let http = rpc_options_for_url("http://localhost:8000");
-        assert!(http.allow_http);
-        assert_eq!(http.timeout, STRIPPED_VAULT_INIT_RPC_TIMEOUT_SECONDS);
+    #[test]
+    fn parses_transaction_hashes_from_command_text() {
+        let hashes = parse_tx_hashes(
+            "tx hash: 0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+
+        assert_eq!(
+            hashes,
+            vec!["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+        );
+    }
+
+    #[test]
+    fn parses_transaction_status_from_json() {
+        let status = transaction_status_from_output(r#"{"status":"SUCCESS"}"#);
+        assert_eq!(status, Some(TransactionConfirmationStatus::Success));
+
+        let status = transaction_status_from_output(r#"{"result":{"status":"FAILED"}}"#);
+        assert_eq!(status, Some(TransactionConfirmationStatus::Failed));
+    }
+
+    #[test]
+    fn appends_reconciled_tx_hash_when_send_output_has_no_hash() {
+        let mut output = CommandOutput {
+            stdout: "submitted".to_string(),
+            stderr: String::new(),
+        };
+
+        append_reconciled_tx_hash(
+            &mut output,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+
+        assert!(output
+            .stdout
+            .contains("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
     }
 }
