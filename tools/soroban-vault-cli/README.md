@@ -37,6 +37,9 @@ network, and uploads only when the WASM is missing remotely.
 During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
 upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
+In interactive human mode, `deploy stack` shows a progress bar across WASM upload/reuse, contract
+deployment/reuse, initialization, and adapter deployment stages. Progress rendering is disabled for
+`--json`, `--json-lines`, `--dry-run`, and non-TTY stderr.
 
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are
