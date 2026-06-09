@@ -1252,14 +1252,23 @@ fn initialize_vault_if_needed<E: CommandExecutor>(
     {
         return Ok(());
     }
-    stellar.invoke_vault_initialize_without_spec(
+    stellar.invoke(
         vault,
-        admin,
-        governance,
-        asset_token,
-        share_token,
-        virtual_shares,
-        virtual_assets,
+        "initialize",
+        vec![
+            "--curator".to_string(),
+            admin.to_string(),
+            "--governance".to_string(),
+            governance.to_string(),
+            "--asset_token".to_string(),
+            asset_token.to_string(),
+            "--share_token".to_string(),
+            share_token.to_string(),
+            "--virtual_shares".to_string(),
+            virtual_shares.to_string(),
+            "--virtual_assets".to_string(),
+            virtual_assets.to_string(),
+        ],
     )?;
     if let Some(record) = manifest.contracts.get_mut("vault") {
         record.initialized = true;
@@ -3443,7 +3452,7 @@ mod tests {
         artifacts::ArtifactSpec,
         cli::{
             ArtifactName, Cli, Commands, DeployArgs, DeployCommand, DeployStackArgs, ExtendTtlArgs,
-            GovernanceArgs, UserArgs,
+            GovernanceArgs, UserArgs, DEFAULT_CONTRACT_SOURCE_REPO,
         },
         stellar::{CommandExecutor, CommandOutput},
     };
@@ -4122,9 +4131,7 @@ mod tests {
         let executor = FailingInitializeExecutor::new();
 
         let err = run(&cli, &executor).expect_err("initialize should fail");
-        assert!(err
-            .to_string()
-            .contains("stripped vault initialize requires an RPC URL"));
+        assert!(err.to_string().contains("forced initialize failure"));
 
         let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
         for key in ["vault", "share_token", "governance", "asset_token"] {
@@ -4238,6 +4245,39 @@ mod tests {
         assert!(executor.calls().is_empty());
     }
 
+    #[test]
+    fn deploy_wasm_build_embeds_source_repo_metadata() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let governance_path =
+            ArtifactSpec::from_name(ArtifactName::Governance).wasm_path(dir.path());
+        fs::create_dir_all(governance_path.parent().expect("parent")).expect("create parent");
+        fs::write(&governance_path, "governance").expect("write wasm");
+        fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").expect("write Cargo.toml");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Wasm(crate::cli::DeployWasmArgs {
+                    artifact: ArtifactName::Governance,
+                    build: true,
+                }),
+            }),
+            ..base_cli(dir.path().join("manifest.json"), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy wasm");
+
+        let calls = executor.calls();
+        let build = calls
+            .iter()
+            .find(|(_, args)| args.windows(2).any(|pair| pair == ["contract", "build"]))
+            .expect("build command should run");
+        assert!(build
+            .1
+            .windows(2)
+            .any(|pair| pair == ["--meta", "source_repo=github:Templar-Protocol/contracts"]));
+    }
+
     fn base_cli(state: std::path::PathBuf, command: Commands) -> Cli {
         Cli {
             profile: None,
@@ -4246,6 +4286,7 @@ mod tests {
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             source_account: Some("alice".parse().expect("source account")),
             config_dir: None,
+            contract_source_repo: Some(DEFAULT_CONTRACT_SOURCE_REPO.to_string()),
             state,
             workspace_path: ".".into(),
             json: true,
