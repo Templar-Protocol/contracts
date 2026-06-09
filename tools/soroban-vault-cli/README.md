@@ -34,6 +34,9 @@ contract/vault/soroban/.deploy-state/manifest.json
 The deploy flow reuses contract IDs already recorded in the manifest unless `--force-new` is set.
 It reuses uploaded WASM by local SHA-256 hash when the hash can be fetched from the configured
 network, and uploads only when the WASM is missing remotely.
+During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
+upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
+later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
 
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are
@@ -89,6 +92,32 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 - Decimal amount flags such as `--assets 1.25 --asset-decimals 7` and `--shares 10 --share-decimals manifest` are converted to raw contract units without floating point. Exact machine callers can use raw flags such as `--assets-raw`, `--shares-raw`, and `--amount-raw`.
 - Machine output is described by `tools/soroban-vault-cli/schema/output.schema.json`. Structured errors include codes such as `missing_manifest_contract`, `mainnet_guard`, and `secret_in_argv`.
 - Successful non-dry-run write commands append an audit record to the manifest `transactions` list with timestamp, command/action, target contract/function when known, tx hash when visible in Stellar output, source public address when known, status, and artifact hash when applicable.
+- Dangerous governance submissions such as admin rotation, timelock updates, supply queue replacement, and fee updates print a semantic old/new diff in human mode and require `--yes` or interactive confirmation before submitting. JSON/JSON-lines mode skips prompts for automation.
+
+## Profiles
+
+Profiles are public TOML config files for repeated local and Docker operations. They can store
+network, RPC URL, passphrase, manifest path, workspace path, Stellar config directory, and default
+public admin/caller/operator addresses. Do not store secret keys or seed phrases in profile files.
+
+```sh
+tmplr-soroban-vault profile init testnet
+tmplr-soroban-vault --profile testnet status
+```
+
+By default, profiles live under the user config directory in
+`templar/soroban-vault-cli/profiles/<name>.toml`. Set
+`TEMPLAR_SOROBAN_VAULT_PROFILE_DIR` to use a project-local or Docker-mounted profile directory.
+Explicit CLI flags and environment variables override profile values.
+
+## Operator Assistance
+
+```sh
+tmplr-soroban-vault completions zsh > _tmplr-soroban-vault
+tmplr-soroban-vault completions bash
+tmplr-soroban-vault completions fish
+tmplr-soroban-vault man > tmplr-soroban-vault.1
+```
 
 ## Docker
 

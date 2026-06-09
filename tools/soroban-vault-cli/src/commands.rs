@@ -1,12 +1,14 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
+    io::{self, Write as _},
     path::Path,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
+use clap::CommandFactory;
 use serde::Serialize;
 use templar_curator_proxy_soroban::AllocationDelta;
 use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
@@ -16,23 +18,37 @@ use crate::{
     cli::{
         AdapterArgs, AdapterCommand, Cli, Commands, CuratorCommand, DeployCommand,
         DeployPlanCommand, ExtendTtlArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
-        ShareTokenCommand, UserCommand,
+        ProfileCommand, ShareTokenCommand, UserCommand,
     },
     manifest::{ContractRecord, Manifest, TransactionRecord},
+    profile,
     stellar::{CommandExecutor, CommandOutput, Stellar},
     types::{AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SupplyQueueEntryArg},
 };
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
+    match &cli.command {
+        Commands::Profile(args) => return run_profile(cli, &args.command),
+        Commands::Completions { shell } => {
+            print_completions(*shell);
+            return Ok(());
+        }
+        Commands::Man => return print_manpage(),
+        _ => {}
+    }
     if matches!(cli.command, Commands::Doctor) {
         let result = run_doctor(cli, executor);
         return print_response(&result, cli);
     }
     let mut manifest = Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone())?;
     let stellar = Stellar::new(cli, executor);
+    confirm_dangerous_governance_change(cli, &stellar, &manifest)?;
     let result = match &cli.command {
         Commands::Doctor => unreachable!("doctor returns before manifest load"),
+        Commands::Profile(_) | Commands::Completions { .. } | Commands::Man => {
+            unreachable!("handled before manifest load")
+        }
         Commands::Deploy(args) => match &args.command {
             DeployCommand::Plan(plan) => run_deploy_plan(cli, &manifest, plan),
             DeployCommand::Stack(stack) => deploy_stack(cli, &stellar, &mut manifest, stack),
@@ -48,6 +64,7 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
                     spec,
                     wasm.build,
                 )?;
+                checkpoint_manifest(cli, &manifest)?;
                 Ok(Response::message(format!("{} wasm hash: {hash}", spec.key)))
             }
         },
@@ -75,6 +92,175 @@ fn guard_write(cli: &Cli) -> anyhow::Result<()> {
         anyhow::bail!("mainnet write blocked; pass --allow-mainnet-write to continue");
     }
     Ok(())
+}
+
+fn checkpoint_manifest(cli: &Cli, manifest: &Manifest) -> anyhow::Result<()> {
+    if cli.dry_run {
+        return Ok(());
+    }
+    manifest.save(&cli.state)
+}
+
+fn run_profile(cli: &Cli, command: &ProfileCommand) -> anyhow::Result<()> {
+    let response = match command {
+        ProfileCommand::Init { name, force } => {
+            let path = profile::init_profile(name, *force)?;
+            Response::message(format!("created profile {name} at {}", path.display()))
+        }
+    };
+    print_response(&response, cli)
+}
+
+fn print_completions(shell: clap_complete::Shell) {
+    let mut command = Cli::command();
+    let bin_name = command.get_name().to_string();
+    clap_complete::generate(shell, &mut command, bin_name, &mut io::stdout());
+}
+
+fn print_manpage() -> anyhow::Result<()> {
+    let command = Cli::command();
+    clap_mangen::Man::new(command).render(&mut io::stdout().lock())?;
+    Ok(())
+}
+
+fn confirm_dangerous_governance_change<E: CommandExecutor>(
+    cli: &Cli,
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+) -> anyhow::Result<()> {
+    if cli.json || cli.json_lines {
+        return Ok(());
+    }
+    let Some(diff) = governance_safety_diff(stellar, manifest, &cli.command)? else {
+        return Ok(());
+    };
+    eprintln!("Dangerous governance change: {}", diff.title);
+    for line in diff.lines {
+        eprintln!("  {line}");
+    }
+    if cli.yes || cli.dry_run {
+        return Ok(());
+    }
+
+    eprint!("Continue? Type 'yes' to submit: ");
+    io::stderr().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    anyhow::ensure!(
+        matches!(answer.trim(), "yes" | "y"),
+        "operation cancelled; pass --yes to confirm after reviewing the semantic diff"
+    );
+    Ok(())
+}
+
+fn governance_safety_diff<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    command: &Commands,
+) -> anyhow::Result<Option<SafetyDiff>> {
+    let Commands::Governance(governance_args) = command else {
+        return Ok(None);
+    };
+    let governance = required_contract(manifest, "governance")?;
+    let diff = match &governance_args.command {
+        GovernanceCommand::SubmitSetAdmin { new_admin, .. } => SafetyDiff {
+            title: "admin rotation".to_string(),
+            lines: vec![format!(
+                "admin: {} -> {}",
+                view_or_unavailable(stellar, governance, "admin", Vec::new()),
+                new_admin
+            )],
+        },
+        GovernanceCommand::SubmitSetTimelock {
+            kind, timelock_ns, ..
+        } => SafetyDiff {
+            title: "timelock update".to_string(),
+            lines: vec![format!(
+                "{kind} timelock_ns: {} -> {}",
+                view_or_unavailable(
+                    stellar,
+                    governance,
+                    "timelock_ns",
+                    args([("--kind", &kind.to_string())]),
+                ),
+                timelock_ns
+            )],
+        },
+        GovernanceCommand::SubmitSetSupplyQueue { admin, entries } => SafetyDiff {
+            title: "supply queue replacement".to_string(),
+            lines: vec![
+                format!(
+                    "current supply queue view: {}",
+                    current_vault_view(stellar, manifest, admin)
+                ),
+                format!(
+                    "proposed supply queue: {}",
+                    supply_queue_entries_json(entries)?
+                ),
+            ],
+        },
+        GovernanceCommand::SubmitSetFees {
+            admin,
+            performance_fee_wad,
+            performance_recipient,
+            management_fee_wad,
+            management_recipient,
+            max_growth_rate_wad,
+        } => SafetyDiff {
+            title: "fee parameter update".to_string(),
+            lines: vec![
+                format!("current fee view: {}", current_vault_view(stellar, manifest, admin)),
+                format!(
+                    "proposed fees: performance_fee_wad={} performance_recipient={} management_fee_wad={} management_recipient={} max_growth_rate_wad={}",
+                    performance_fee_wad,
+                    performance_recipient,
+                    management_fee_wad,
+                    management_recipient,
+                    option_i128_arg(*max_growth_rate_wad),
+                ),
+            ],
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(diff))
+}
+
+fn view_or_unavailable<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    contract_id: &str,
+    function: &str,
+    args: Vec<String>,
+) -> String {
+    match stellar.invoke(contract_id, function, args) {
+        Ok(output) if !output.stdout.is_empty() => output.stdout,
+        Ok(_) => "<empty>".to_string(),
+        Err(error) => format!("unavailable ({error})"),
+    }
+}
+
+fn current_vault_view<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    owner: &AddressStr,
+) -> String {
+    let Some(vault) = contract_id(manifest, "vault") else {
+        return "unavailable (missing vault contract id in manifest)".to_string();
+    };
+    view_or_unavailable(
+        stellar,
+        vault,
+        "proxy_view",
+        args([
+            ("--owner", owner.as_str()),
+            ("--assets", "0"),
+            ("--shares", "0"),
+        ]),
+    )
+}
+
+struct SafetyDiff {
+    title: String,
+    lines: Vec<String>,
 }
 
 fn run_doctor<E: CommandExecutor>(cli: &Cli, executor: &E) -> Response {
@@ -342,6 +528,7 @@ fn deploy_stack<E: CommandExecutor>(
     let mut wasm_hashes = BTreeMap::new();
     for spec in ArtifactSpec::stack_artifacts(include_blend) {
         let hash = ensure_uploaded(stellar, manifest, &cli.workspace_path, spec, args.build)?;
+        checkpoint_manifest(cli, manifest)?;
         wasm_hashes.insert(spec.key.to_string(), hash);
     }
 
@@ -353,6 +540,8 @@ fn deploy_stack<E: CommandExecutor>(
         let _ = stellar.deploy_native_asset();
         stellar.native_asset_id()?
     };
+    record_asset_token(manifest, &asset_token, args.asset_token.is_some())?;
+    checkpoint_manifest(cli, manifest)?;
 
     let vault = deploy_contract_if_needed(
         stellar,
@@ -363,6 +552,7 @@ fn deploy_stack<E: CommandExecutor>(
         BTreeMap::new(),
         args.force_new,
     )?;
+    checkpoint_manifest(cli, manifest)?;
     let share_token = deploy_contract_if_needed(
         stellar,
         manifest,
@@ -389,6 +579,7 @@ fn deploy_stack<E: CommandExecutor>(
         ]),
         args.force_new,
     )?;
+    checkpoint_manifest(cli, manifest)?;
     let timelock_ns = args
         .governance_timelock_ns
         .or_else(|| {
@@ -419,6 +610,7 @@ fn deploy_stack<E: CommandExecutor>(
         ]),
         args.force_new,
     )?;
+    checkpoint_manifest(cli, manifest)?;
 
     initialize_vault_if_needed(
         stellar,
@@ -431,6 +623,7 @@ fn deploy_stack<E: CommandExecutor>(
         args.virtual_shares,
         args.virtual_assets,
     )?;
+    checkpoint_manifest(cli, manifest)?;
 
     let proxy_4626 = deploy_contract_if_needed(
         stellar,
@@ -441,6 +634,7 @@ fn deploy_stack<E: CommandExecutor>(
         BTreeMap::new(),
         args.force_new,
     )?;
+    checkpoint_manifest(cli, manifest)?;
     initialize_proxy_if_needed(
         stellar,
         manifest,
@@ -455,6 +649,7 @@ fn deploy_stack<E: CommandExecutor>(
             share_token.clone(),
         ],
     )?;
+    checkpoint_manifest(cli, manifest)?;
 
     let curator_proxy = deploy_contract_if_needed(
         stellar,
@@ -465,6 +660,7 @@ fn deploy_stack<E: CommandExecutor>(
         BTreeMap::new(),
         args.force_new,
     )?;
+    checkpoint_manifest(cli, manifest)?;
     initialize_proxy_if_needed(
         stellar,
         manifest,
@@ -477,18 +673,22 @@ fn deploy_stack<E: CommandExecutor>(
             governance.clone(),
         ],
     )?;
+    checkpoint_manifest(cli, manifest)?;
 
-    let blend_adapters = append_blend_adapters(
-        stellar,
-        manifest,
-        &wasm_hashes["blend_adapter"],
-        &governance,
-        &vault,
-        &args.blend_pools,
-        args.force_new,
-    )?;
-
-    record_asset_token(manifest, &asset_token, args.asset_token.is_some())?;
+    let blend_adapters = if args.blend_pools.is_empty() {
+        blend_adapter_statuses(manifest)
+    } else {
+        append_blend_adapters(
+            cli,
+            stellar,
+            manifest,
+            &wasm_hashes["blend_adapter"],
+            &governance,
+            &vault,
+            &args.blend_pools,
+            args.force_new,
+        )?
+    };
 
     Ok(Response::Status(StatusResponse {
         network: manifest.network.clone(),
@@ -514,9 +714,12 @@ fn deploy_adapters<E: CommandExecutor>(
     );
 
     record_imported_contract_if_provided(manifest, "vault", args.vault.as_ref())?;
+    checkpoint_manifest(cli, manifest)?;
     record_imported_contract_if_provided(manifest, "governance", args.governance.as_ref())?;
+    checkpoint_manifest(cli, manifest)?;
     if let Some(asset_token) = &args.asset_token {
         record_asset_token(manifest, asset_token.as_str(), true)?;
+        checkpoint_manifest(cli, manifest)?;
     }
 
     let vault = required_contract(manifest, "vault")?.to_string();
@@ -528,7 +731,9 @@ fn deploy_adapters<E: CommandExecutor>(
         ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
         args.build,
     )?;
+    checkpoint_manifest(cli, manifest)?;
     let blend_adapters = append_blend_adapters(
+        cli,
         stellar,
         manifest,
         &wasm_hash,
@@ -807,7 +1012,12 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
     Ok(contract_id)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "adapter deployment needs both manifest checkpoint context and constructor inputs"
+)]
 fn append_blend_adapters<E: CommandExecutor>(
+    cli: &Cli,
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     wasm_hash: &str,
@@ -844,6 +1054,7 @@ fn append_blend_adapters<E: CommandExecutor>(
         if let Some(record) = manifest.contracts.get_mut(&key) {
             record.contract_id = adapter;
         }
+        checkpoint_manifest(cli, manifest)?;
     }
     Ok(blend_adapter_statuses(manifest))
 }
@@ -2080,6 +2291,9 @@ fn command_name(command: &Commands) -> String {
         Commands::ExtendTtl(_) => "extend-ttl",
         Commands::Status => "status",
         Commands::ExportEnv => "export-env",
+        Commands::Profile(_) => "profile",
+        Commands::Completions { .. } => "completions",
+        Commands::Man => "man",
     }
     .to_string()
 }
@@ -2126,7 +2340,12 @@ fn command_target_and_function(
         ),
         Commands::ExtendTtl(_) => (None, Some("extend_ttl".to_string())),
         Commands::Deploy(_) => (None, Some("deploy".to_string())),
-        Commands::Doctor | Commands::Status | Commands::ExportEnv => (None, None),
+        Commands::Doctor
+        | Commands::Status
+        | Commands::ExportEnv
+        | Commands::Profile(_)
+        | Commands::Completions { .. }
+        | Commands::Man => (None, None),
     }
 }
 
@@ -3189,6 +3408,38 @@ mod tests {
         }
     }
 
+    struct FailingInitializeExecutor {
+        inner: RecordingExecutor,
+    }
+
+    impl FailingInitializeExecutor {
+        fn new() -> Self {
+            Self {
+                inner: RecordingExecutor::new(),
+            }
+        }
+    }
+
+    impl CommandExecutor for FailingInitializeExecutor {
+        fn run(
+            &self,
+            program: &str,
+            args: &[String],
+            redacted_args: &[usize],
+            env: &[crate::stellar::CommandEnv],
+        ) -> anyhow::Result<CommandOutput> {
+            if args.iter().any(|arg| arg == "initialize") {
+                self.inner
+                    .calls
+                    .lock()
+                    .expect("lock calls")
+                    .push((program.to_string(), args.to_vec()));
+                anyhow::bail!("forced initialize failure");
+            }
+            self.inner.run(program, args, redacted_args, env)
+        }
+    }
+
     #[test]
     fn parses_supply_queue_entries_to_governance_json() {
         let entries = [
@@ -3731,8 +3982,89 @@ mod tests {
         assert_eq!(adapter_deploys, 2);
     }
 
+    #[test]
+    fn deploy_stack_checkpoints_manifest_before_initialize_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(DeployStackArgs {
+                    admin: Some(ACCOUNT.parse().expect("admin")),
+                    asset_token: Some(CONTRACT.parse().expect("asset token")),
+                    governance_timelock_ns: Some(1_000),
+                    virtual_shares: 0,
+                    virtual_assets: 0,
+                    share_name: "Templar Vault Share".to_string(),
+                    share_symbol: "tvSHARE".to_string(),
+                    share_decimals: 7,
+                    blend_pools: Vec::new(),
+                    build: false,
+                    force_new: false,
+                })),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = FailingInitializeExecutor::new();
+
+        let err = run(&cli, &executor).expect_err("initialize should fail");
+        assert!(err.to_string().contains("forced initialize failure"));
+
+        let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        for key in ["vault", "share_token", "governance", "asset_token"] {
+            assert!(
+                manifest.contracts.contains_key(key),
+                "{key} should be checkpointed"
+            );
+        }
+        assert!(
+            !manifest
+                .contracts
+                .get("vault")
+                .expect("vault record")
+                .initialized
+        );
+        assert!(!manifest.contracts.contains_key("proxy_4626"));
+        assert!(manifest.artifacts.contains_key("vault"));
+        assert!(manifest.transactions.is_empty());
+    }
+
+    #[test]
+    fn deploy_stack_without_blend_pools_skips_blend_adapter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            dry_run: true,
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(DeployStackArgs {
+                    admin: Some(ACCOUNT.parse().expect("admin")),
+                    asset_token: Some(CONTRACT.parse().expect("asset token")),
+                    governance_timelock_ns: Some(1_000),
+                    virtual_shares: 0,
+                    virtual_assets: 0,
+                    share_name: "Templar Vault Share".to_string(),
+                    share_symbol: "tvSHARE".to_string(),
+                    share_decimals: 7,
+                    blend_pools: Vec::new(),
+                    build: false,
+                    force_new: false,
+                })),
+            }),
+            ..base_cli(state, Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy stack without blend pools");
+
+        assert!(executor.calls().is_empty());
+    }
+
     fn base_cli(state: std::path::PathBuf, command: Commands) -> Cli {
         Cli {
+            profile: None,
             network: "testnet".to_string(),
             rpc_url: None,
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
