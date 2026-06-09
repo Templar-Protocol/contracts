@@ -20,9 +20,12 @@ indicatif = "0.18.4"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+soroban-client = "0.5.5"
+stellar-strkey.workspace = true
 templar-curator-proxy-soroban = { path = "../../contract/proxy-curator-soroban" }
 templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
 templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
+tokio.workspace = true
 tracing.workspace = true
 toml = "0.8"
 zeroize.workspace = true

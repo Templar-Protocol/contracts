@@ -1,6 +1,15 @@
 use std::{collections::BTreeSet, process::Command};
 
 use anyhow::Context;
+use soroban_client::{
+    keypair::{Keypair, KeypairBehavior},
+    operation::Operation,
+    transaction::{TransactionBehavior, TransactionBuilderBehavior},
+    transaction_builder::TransactionBuilder,
+    xdr::{Int128Parts, Limits, ScAddress, ScVal, WriteXdr},
+    Options, Server,
+};
+use stellar_strkey::ed25519::PrivateKey;
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
@@ -127,6 +136,26 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             .collect()
     }
 
+    fn sign_env(&self) -> Vec<CommandEnv> {
+        if let Some(source) = &self.cli.source_account {
+            let source = source.as_secret_str();
+            if !is_public_account_address(source) {
+                return vec![CommandEnv::redacted(
+                    "STELLAR_SIGN_WITH_KEY",
+                    source.to_string(),
+                )];
+            }
+        }
+        if std::env::var_os("STELLAR_SIGN_WITH_KEY").is_some() {
+            return Vec::new();
+        }
+        std::env::var("STELLAR_ACCOUNT")
+            .ok()
+            .map(|value| CommandEnv::redacted("STELLAR_SIGN_WITH_KEY", value))
+            .into_iter()
+            .collect()
+    }
+
     pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
         let (args, redacted_args) = keys_address_source_account_args(
             self.cli.source_account.as_ref(),
@@ -156,6 +185,182 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         args.push(function.to_string());
         args.extend(function_args);
         self.run(args, &[], self.source_env())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "vault initialization mirrors the stripped contract ABI"
+    )]
+    pub fn invoke_vault_initialize_without_spec(
+        &self,
+        vault: &str,
+        curator: &str,
+        governance: &str,
+        asset_token: &str,
+        share_token: &str,
+        virtual_shares: i128,
+        virtual_assets: i128,
+    ) -> anyhow::Result<CommandOutput> {
+        if self.cli.dry_run {
+            let _ = self.run(
+                vec![
+                    "tx".to_string(),
+                    "sign".to_string(),
+                    "<prepared-vault-initialize-xdr>".to_string(),
+                ],
+                &[],
+                self.sign_env(),
+            )?;
+            return self.run(
+                vec![
+                    "tx".to_string(),
+                    "send".to_string(),
+                    "<signed-vault-initialize-xdr>".to_string(),
+                ],
+                &[],
+                Vec::new(),
+            );
+        }
+
+        let source = self.source_public_address()?;
+        let prepared = self.prepare_vault_initialize_transaction(
+            &source,
+            vault,
+            curator,
+            governance,
+            asset_token,
+            share_token,
+            virtual_shares,
+            virtual_assets,
+        )?;
+        let prepared_xdr = prepared
+            .to_envelope()
+            .map_err(|err| anyhow::anyhow!("build prepared vault initialize envelope: {err}"))?
+            .to_xdr_base64(Limits::none())
+            .context("encode prepared vault initialize envelope")?;
+
+        let mut sign_args = vec!["tx".to_string(), "sign".to_string()];
+        sign_args.extend(self.network_args());
+        sign_args.push(prepared_xdr);
+        let signed = self.run(sign_args, &[], self.sign_env())?;
+        anyhow::ensure!(
+            !signed.stdout.is_empty(),
+            "stellar tx sign returned no signed transaction xdr"
+        );
+
+        let mut send_args = vec!["tx".to_string(), "send".to_string()];
+        send_args.extend(self.network_args());
+        send_args.push(signed.stdout);
+        self.run(send_args, &[], Vec::new())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "vault initialization mirrors the stripped contract ABI"
+    )]
+    fn prepare_vault_initialize_transaction(
+        &self,
+        source: &str,
+        vault: &str,
+        curator: &str,
+        governance: &str,
+        asset_token: &str,
+        share_token: &str,
+        virtual_shares: i128,
+        virtual_assets: i128,
+    ) -> anyhow::Result<soroban_client::transaction::Transaction> {
+        let rpc_url = self.rpc_url()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create tokio runtime for stripped vault initialize")?;
+        runtime.block_on(async {
+            let server = Server::new(&rpc_url, rpc_options_for_url(&rpc_url))
+                .context("create Soroban RPC client")?;
+            let mut account = server
+                .get_account(source)
+                .await
+                .with_context(|| format!("load source account {source}"))?;
+            let operation = Operation::new()
+                .invoke_contract(
+                    vault,
+                    "initialize",
+                    vec![
+                        address_val(curator)?,
+                        address_val(governance)?,
+                        address_val(asset_token)?,
+                        address_val(share_token)?,
+                        i128_val(virtual_shares),
+                        i128_val(virtual_assets),
+                    ],
+                    None,
+                )
+                .map_err(|err| {
+                    anyhow::anyhow!("build stripped vault initialize operation: {err:?}")
+                })?;
+            let tx = TransactionBuilder::new(&mut account, &self.cli.network_passphrase, None)
+                .fee(100_u32)
+                .add_operation(operation)
+                .build_for_simulation();
+            server
+                .prepare_transaction(&tx)
+                .await
+                .context("simulate and prepare stripped vault initialize transaction")
+        })
+    }
+
+    fn rpc_url(&self) -> anyhow::Result<String> {
+        self.cli
+            .rpc_url
+            .clone()
+            .or_else(|| std::env::var("STELLAR_RPC_URL").ok())
+            .context(
+                "stripped vault initialize requires an RPC URL; pass --rpc-url, set STELLAR_RPC_URL, or configure it in the selected profile",
+            )
+    }
+
+    fn source_public_address(&self) -> anyhow::Result<String> {
+        if let Some(source) = &self.cli.source_account {
+            let source = source.as_secret_str();
+            if is_public_account_address(source) {
+                return Ok(source.to_string());
+            }
+            return self.keys_address_source_account();
+        }
+
+        let Some(mut source) = std::env::var("STELLAR_ACCOUNT").ok().map(Zeroizing::new) else {
+            return self.keys_address_source_account();
+        };
+        if is_public_account_address(source.as_str()) {
+            return Ok(source.to_string());
+        }
+        if source.as_str().starts_with('S') {
+            let seed = PrivateKey::from_string(source.as_str())
+                .context("decode STELLAR_ACCOUNT secret seed")?;
+            let public = Keypair::from_raw_ed25519_seed(&seed.0)
+                .map_err(|err| {
+                    anyhow::anyhow!("derive public source address from STELLAR_ACCOUNT: {err}")
+                })?
+                .public_key();
+            source.zeroize();
+            return Ok(public);
+        }
+        if !source.as_str().contains(char::is_whitespace) {
+            let (args, redacted_args) = keys_address_source_account_args(
+                Some(&SourceAccount::from_non_secret(source.as_str())),
+                false,
+            )?;
+            source.zeroize();
+            let out = self.run(args, &redacted_args, Vec::new())?;
+            anyhow::ensure!(
+                !out.stdout.is_empty(),
+                "stellar keys address returned no address"
+            );
+            return Ok(out.stdout);
+        }
+        anyhow::bail!(
+            "cannot derive source public address from STELLAR_ACCOUNT seed phrase; use a Stellar keystore identity, set STELLAR_ACCOUNT to a secret seed, or pass --source-account with a public address/identity"
+        );
     }
 
     pub fn deploy(&self, wasm_hash: &str, constructor_args: Vec<String>) -> anyhow::Result<String> {
@@ -261,6 +466,35 @@ pub fn parse_hash(stdout: &str) -> anyhow::Result<String> {
         .find(|token| token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit()))
         .map(str::to_lowercase)
         .context("no wasm hash found in stellar output")
+}
+
+fn address_val(value: &str) -> anyhow::Result<ScVal> {
+    Ok(ScVal::Address(value.parse::<ScAddress>().with_context(
+        || format!("parse Soroban address {value}"),
+    )?))
+}
+
+fn i128_val(value: i128) -> ScVal {
+    let bytes = value.to_be_bytes();
+    let mut high = [0_u8; 8];
+    high.copy_from_slice(&bytes[..8]);
+    let mut low = [0_u8; 8];
+    low.copy_from_slice(&bytes[8..]);
+    ScVal::I128(Int128Parts {
+        hi: i64::from_be_bytes(high),
+        lo: u64::from_be_bytes(low),
+    })
+}
+
+fn rpc_options_for_url(url: &str) -> Options {
+    Options {
+        allow_http: url.starts_with("http://"),
+        ..Options::default()
+    }
+}
+
+fn is_public_account_address(value: &str) -> bool {
+    value.starts_with('G') && value.len() >= 56 && value.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 pub fn display_command(
