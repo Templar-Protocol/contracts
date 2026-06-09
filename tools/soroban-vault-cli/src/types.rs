@@ -11,6 +11,11 @@ pub struct SourceAccount(Zeroizing<String>);
 
 impl SourceAccount {
     #[must_use]
+    pub(crate) fn from_non_secret(value: &str) -> Self {
+        Self(Zeroizing::new(value.to_string()))
+    }
+
+    #[must_use]
     pub fn as_secret_str(&self) -> &str {
         self.0.as_str()
     }
