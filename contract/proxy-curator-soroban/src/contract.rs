@@ -2,13 +2,13 @@
 
 use alloc::string::String as AllocString;
 
+use crate::governance_abi::{
+    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal,
+    SupplyQueueProposalEntry, TimelockKind, Timelocks,
+};
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal,
     InvokeError, String, Symbol, TryFromVal, Val, Vec,
-};
-use templar_soroban_governance::{
-    GovernanceAction, GovernanceActionKind, GovernanceError, PendingProposal,
-    SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
