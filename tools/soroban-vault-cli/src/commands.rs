@@ -1252,23 +1252,14 @@ fn initialize_vault_if_needed<E: CommandExecutor>(
     {
         return Ok(());
     }
-    stellar.invoke(
+    stellar.invoke_vault_initialize_without_spec(
         vault,
-        "initialize",
-        vec![
-            "--curator".to_string(),
-            admin.to_string(),
-            "--governance".to_string(),
-            governance.to_string(),
-            "--asset_token".to_string(),
-            asset_token.to_string(),
-            "--share_token".to_string(),
-            share_token.to_string(),
-            "--virtual_shares".to_string(),
-            virtual_shares.to_string(),
-            "--virtual_assets".to_string(),
-            virtual_assets.to_string(),
-        ],
+        admin,
+        governance,
+        asset_token,
+        share_token,
+        virtual_shares,
+        virtual_assets,
     )?;
     if let Some(record) = manifest.contracts.get_mut("vault") {
         record.initialized = true;
@@ -4065,6 +4056,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_stack_wasms(dir.path());
         let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest.save(&state).expect("save manifest");
         let cli = Cli {
             workspace_path: dir.path().into(),
             command: Commands::Deploy(DeployArgs {
@@ -4126,7 +4122,9 @@ mod tests {
         let executor = FailingInitializeExecutor::new();
 
         let err = run(&cli, &executor).expect_err("initialize should fail");
-        assert!(err.to_string().contains("forced initialize failure"));
+        assert!(err
+            .to_string()
+            .contains("stripped vault initialize requires an RPC URL"));
 
         let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
         for key in ["vault", "share_token", "governance", "asset_token"] {

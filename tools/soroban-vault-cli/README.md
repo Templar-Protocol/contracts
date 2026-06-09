@@ -2,10 +2,10 @@
 
 `tmplr-soroban-vault` deploys and operates Templar Soroban vault stacks.
 
-The CLI intentionally delegates transaction construction, simulation, signing, and submission to
-the installed `stellar` CLI. It owns the Templar-specific pieces around artifact hashing,
-WASM upload/reuse, deployment manifests, compact vault command payloads, and operator command
-routing.
+The CLI delegates most transaction construction, signing, and submission to the installed
+`stellar` CLI. It owns the Templar-specific pieces around artifact hashing, WASM upload/reuse,
+deployment manifests, compact vault command payloads, stripped-runtime vault initialization, and
+operator command routing.
 
 ## Deployment
 
@@ -40,6 +40,12 @@ later initialize call fails, rerunning the command can reuse the IDs already wri
 In interactive human mode, `deploy stack` shows a progress bar across WASM upload/reuse, contract
 deployment/reuse, initialization, and adapter deployment stages. Progress rendering is disabled for
 `--json`, `--json-lines`, `--dry-run`, and non-TTY stderr.
+
+The vault runtime WASM is deployed without an embedded contract spec. For vault initialization, the
+CLI builds the `initialize` invocation from the known ABI, prepares it through Soroban RPC, and then
+hands the prepared transaction to `stellar tx sign` and `stellar tx send`. Configure RPC with
+`--rpc-url`, `STELLAR_RPC_URL`, or a profile `rpc_url`. Keep signing material in the Stellar
+keystore, `STELLAR_SIGN_WITH_KEY`, or `STELLAR_ACCOUNT`; the CLI does not require secrets in argv.
 
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are
