@@ -8481,6 +8481,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
+]
+
+[[package]]
 name = "secret-vault-value"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13174,6 +13183,7 @@ dependencies = [
  "dirs 6.0.0",
  "hex",
  "indicatif",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -13186,6 +13196,7 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "tracing",
+ "tracing-subscriber",
  "zeroize",
 ]
 
