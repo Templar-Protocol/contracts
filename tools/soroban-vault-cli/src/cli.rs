@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 
 use crate::types::{
     AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg, ShareDecimalsArg,
@@ -18,6 +19,10 @@ use crate::types::{
     reason = "CLI flags are independent switches"
 )]
 pub struct Cli {
+    /// Load defaults from a named public TOML profile
+    #[arg(long, env = "TEMPLAR_SOROBAN_VAULT_PROFILE")]
+    pub profile: Option<String>,
+
     /// Stellar network name from the local stellar config
     #[arg(long, env = "SOROBAN_NETWORK", default_value = "testnet")]
     pub network: String,
@@ -104,12 +109,27 @@ pub enum Commands {
     Status,
     /// Export manifest values as shell environment assignments
     ExportEnv,
+    /// Create or manage public CLI profile files
+    Profile(ProfileArgs),
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    /// Generate a roff manpage on stdout
+    Man,
 }
 
 impl Commands {
     pub fn is_write(&self) -> bool {
         match self {
-            Self::Doctor | Self::Status | Self::ExportEnv => false,
+            Self::Doctor
+            | Self::Status
+            | Self::ExportEnv
+            | Self::Profile(_)
+            | Self::Completions { .. }
+            | Self::Man => false,
             Self::Deploy(args) => args.command.is_write(),
             Self::ExtendTtl(_) => true,
             Self::User(args) => args.command.is_write(),
@@ -119,6 +139,24 @@ impl Commands {
             Self::Adapter(args) => args.command.is_write(),
         }
     }
+}
+
+#[derive(Args, Debug)]
+pub struct ProfileArgs {
+    #[command(subcommand)]
+    pub command: ProfileCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfileCommand {
+    /// Create a public TOML profile template
+    Init {
+        /// Profile name, for example testnet
+        name: String,
+        /// Overwrite an existing profile file
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Args, Debug)]

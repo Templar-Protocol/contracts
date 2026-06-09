@@ -4,6 +4,7 @@ pub mod artifacts;
 pub mod cli;
 pub mod commands;
 pub mod manifest;
+pub mod profile;
 pub mod stellar;
 pub mod types;
 
@@ -11,7 +12,8 @@ use clap::{error::ErrorKind, Parser};
 
 pub fn run() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
-    let cli = match cli::Cli::try_parse_from(raw_args.clone()) {
+    let expanded_args = profile::expand_args(&raw_args)?;
+    let cli = match cli::Cli::try_parse_from(expanded_args.clone()) {
         Ok(cli) => cli,
         Err(error)
             if matches!(
@@ -23,11 +25,11 @@ pub fn run() -> anyhow::Result<()> {
             std::process::exit(error.exit_code());
         }
         Err(error)
-            if raw_args
+            if expanded_args
                 .iter()
                 .any(|arg| arg == "--json" || arg == "--json-lines") =>
         {
-            commands::print_parse_error(&raw_args, &error)?;
+            commands::print_parse_error(&expanded_args, &error)?;
             std::process::exit(error.exit_code());
         }
         Err(error) => return Err(error.into()),
