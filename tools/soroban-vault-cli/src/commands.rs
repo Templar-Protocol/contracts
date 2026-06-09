@@ -606,13 +606,14 @@ fn deploy_stack<E: CommandExecutor>(
             let _ = stellar.deploy_native_asset();
             stellar.native_asset_id()?
         };
-        record_asset_token(manifest, &asset_token, args.asset_token.is_some())?;
+        record_asset_token(cli, manifest, &asset_token, args.asset_token.is_some())?;
         checkpoint_manifest(cli, manifest)?;
         Ok(asset_token)
     })?;
 
     let vault = progress.step("vault deploy/reuse", || {
         let vault = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             "vault",
@@ -626,6 +627,7 @@ fn deploy_stack<E: CommandExecutor>(
     })?;
     let share_token = progress.step("share token deploy/reuse", || {
         let share_token = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             "share_token",
@@ -666,6 +668,7 @@ fn deploy_stack<E: CommandExecutor>(
         .context("new governance deployment requires --governance-timelock-ns")?;
     let governance = progress.step("governance deploy/reuse", || {
         let governance = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             "governance",
@@ -691,6 +694,7 @@ fn deploy_stack<E: CommandExecutor>(
 
     progress.step("vault initialize", || {
         initialize_vault_if_needed(
+            cli,
             stellar,
             manifest,
             &vault,
@@ -706,6 +710,7 @@ fn deploy_stack<E: CommandExecutor>(
 
     let proxy_4626 = progress.step("ERC-4626 proxy deploy/reuse", || {
         let proxy_4626 = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             "proxy_4626",
@@ -719,6 +724,7 @@ fn deploy_stack<E: CommandExecutor>(
     })?;
     progress.step("ERC-4626 proxy initialize", || {
         initialize_proxy_if_needed(
+            cli,
             stellar,
             manifest,
             "proxy_4626",
@@ -737,6 +743,7 @@ fn deploy_stack<E: CommandExecutor>(
 
     let curator_proxy = progress.step("curator proxy deploy/reuse", || {
         let curator_proxy = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             "curator_proxy",
@@ -750,6 +757,7 @@ fn deploy_stack<E: CommandExecutor>(
     })?;
     progress.step("curator proxy initialize", || {
         initialize_proxy_if_needed(
+            cli,
             stellar,
             manifest,
             "curator_proxy",
@@ -805,12 +813,12 @@ fn deploy_adapters<E: CommandExecutor>(
         "deploy adapters requires at least one --blend-pool"
     );
 
-    record_imported_contract_if_provided(manifest, "vault", args.vault.as_ref())?;
+    record_imported_contract_if_provided(cli, manifest, "vault", args.vault.as_ref())?;
     checkpoint_manifest(cli, manifest)?;
-    record_imported_contract_if_provided(manifest, "governance", args.governance.as_ref())?;
+    record_imported_contract_if_provided(cli, manifest, "governance", args.governance.as_ref())?;
     checkpoint_manifest(cli, manifest)?;
     if let Some(asset_token) = &args.asset_token {
-        record_asset_token(manifest, asset_token.as_str(), true)?;
+        record_asset_token(cli, manifest, asset_token.as_str(), true)?;
         checkpoint_manifest(cli, manifest)?;
     }
 
@@ -1075,7 +1083,12 @@ fn default_source_label() -> String {
     "Stellar default identity/keystore or STELLAR_ACCOUNT".to_string()
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "deployment recording needs checkpoint context plus constructor metadata"
+)]
 fn deploy_contract_if_needed<E: CommandExecutor>(
+    cli: &Cli,
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     key: &str,
@@ -1101,6 +1114,7 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
             initialized: false,
         },
     );
+    checkpoint_manifest(cli, manifest)?;
     Ok(contract_id)
 }
 
@@ -1124,6 +1138,7 @@ fn append_blend_adapters<E: CommandExecutor>(
         }
         let key = next_blend_adapter_key(manifest);
         let adapter = deploy_contract_if_needed(
+            cli,
             stellar,
             manifest,
             &key,
@@ -1152,6 +1167,7 @@ fn append_blend_adapters<E: CommandExecutor>(
 }
 
 fn record_imported_contract_if_provided(
+    cli: &Cli,
     manifest: &mut Manifest,
     key: &str,
     contract_id: Option<&AddressStr>,
@@ -1166,6 +1182,7 @@ fn record_imported_contract_if_provided(
             record.contract_id,
             contract_id
         );
+        checkpoint_manifest(cli, manifest)?;
         return Ok(());
     }
     manifest.contracts.insert(
@@ -1179,10 +1196,12 @@ fn record_imported_contract_if_provided(
             initialized: true,
         },
     );
+    checkpoint_manifest(cli, manifest)?;
     Ok(())
 }
 
 fn record_asset_token(
+    cli: &Cli,
     manifest: &mut Manifest,
     asset_token: &str,
     predeployed: bool,
@@ -1194,6 +1213,7 @@ fn record_asset_token(
             record.contract_id,
             asset_token
         );
+        checkpoint_manifest(cli, manifest)?;
         return Ok(());
     }
     let asset_source = if predeployed { "predeployed" } else { "native" };
@@ -1208,11 +1228,13 @@ fn record_asset_token(
             initialized: true,
         },
     );
+    checkpoint_manifest(cli, manifest)?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn initialize_vault_if_needed<E: CommandExecutor>(
+    cli: &Cli,
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     vault: &str,
@@ -1263,10 +1285,12 @@ fn initialize_vault_if_needed<E: CommandExecutor>(
             .constructor_args
             .insert("virtual_assets".to_string(), virtual_assets.to_string());
     }
+    checkpoint_manifest(cli, manifest)?;
     Ok(())
 }
 
 fn initialize_proxy_if_needed<E: CommandExecutor>(
+    cli: &Cli,
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     key: &str,
@@ -1284,6 +1308,7 @@ fn initialize_proxy_if_needed<E: CommandExecutor>(
     if let Some(record) = manifest.contracts.get_mut(key) {
         record.initialized = true;
     }
+    checkpoint_manifest(cli, manifest)?;
     Ok(())
 }
 
@@ -4123,6 +4148,67 @@ mod tests {
     }
 
     #[test]
+    fn deploy_contract_helper_checkpoints_contract_record_immediately() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let cli = base_cli(state.clone(), Commands::Status);
+        let executor = RecordingExecutor::new();
+        let stellar = Stellar::new(&cli, &executor);
+        let mut manifest = Manifest::new("testnet", None);
+
+        let contract_id = deploy_contract_if_needed(
+            &cli,
+            &stellar,
+            &mut manifest,
+            "vault",
+            "abc123",
+            Vec::new(),
+            BTreeMap::new(),
+            false,
+        )
+        .expect("deploy contract");
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let record = loaded.contracts.get("vault").expect("vault record");
+        assert_eq!(contract_id, CONTRACT);
+        assert_eq!(record.contract_id, CONTRACT);
+        assert!(!record.initialized);
+    }
+
+    #[test]
+    fn initialize_proxy_helper_checkpoints_initialized_state_immediately() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let cli = base_cli(state.clone(), Commands::Status);
+        let executor = RecordingExecutor::new();
+        let stellar = Stellar::new(&cli, &executor);
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("proxy_4626".to_string(), uninitialized_record(CONTRACT));
+        manifest.save(&state).expect("save manifest");
+
+        initialize_proxy_if_needed(
+            &cli,
+            &stellar,
+            &mut manifest,
+            "proxy_4626",
+            CONTRACT,
+            Vec::new(),
+        )
+        .expect("initialize proxy");
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        assert!(
+            loaded
+                .contracts
+                .get("proxy_4626")
+                .expect("proxy record")
+                .initialized
+        );
+    }
+
+    #[test]
     fn deploy_stack_without_blend_pools_skips_blend_adapter() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_stack_wasms(dir.path());
@@ -4201,6 +4287,13 @@ mod tests {
             constructor_args: BTreeMap::new(),
             deploy_tx: None,
             initialized: true,
+        }
+    }
+
+    fn uninitialized_record(contract_id: &str) -> ContractRecord {
+        ContractRecord {
+            initialized: false,
+            ..imported_record(contract_id)
         }
     }
 
