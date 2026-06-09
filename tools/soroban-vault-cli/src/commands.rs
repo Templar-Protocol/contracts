@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::{self, Write as _},
+    io::{self, IsTerminal, Write as _},
     path::Path,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Context;
 use clap::CommandFactory;
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use templar_curator_proxy_soroban::AllocationDelta;
 use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
@@ -505,6 +506,63 @@ fn first_nonempty_line<'a>(first: &'a str, second: &'a str) -> Option<&'a str> {
         .find(|line| !line.is_empty())
 }
 
+struct DeploymentProgress {
+    bar: Option<ProgressBar>,
+}
+
+impl DeploymentProgress {
+    fn stack(cli: &Cli, steps: u64) -> Self {
+        if cli.json || cli.json_lines || cli.dry_run || !io::stderr().is_terminal() {
+            return Self { bar: None };
+        }
+        let bar = ProgressBar::new(steps);
+        let style = ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:30.cyan/blue}] {pos}/{len} {msg}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar())
+        .progress_chars("=>-");
+        bar.set_style(style);
+        bar.set_message("starting stack deployment");
+        Self { bar: Some(bar) }
+    }
+
+    fn step<T>(
+        &self,
+        label: impl Into<String>,
+        operation: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let label = label.into();
+        if let Some(bar) = &self.bar {
+            bar.set_message(label.clone());
+        }
+        match operation() {
+            Ok(value) => {
+                if let Some(bar) = &self.bar {
+                    bar.inc(1);
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                if let Some(bar) = &self.bar {
+                    bar.abandon_with_message(format!("failed: {label}"));
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn finish(&self) {
+        if let Some(bar) = &self.bar {
+            bar.finish_with_message("stack deployment complete");
+        }
+    }
+}
+
+fn stack_progress_steps(include_blend: bool, blend_pool_count: usize) -> u64 {
+    let artifact_steps = ArtifactSpec::stack_artifacts(include_blend).len();
+    u64::try_from(artifact_steps + 9 + usize::from(blend_pool_count > 0)).unwrap_or(u64::MAX)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "deployment orchestration is clearer in sequence"
@@ -525,61 +583,77 @@ fn deploy_stack<E: CommandExecutor>(
     };
 
     let include_blend = !args.blend_pools.is_empty();
+    let progress = DeploymentProgress::stack(
+        cli,
+        stack_progress_steps(include_blend, args.blend_pools.len()),
+    );
     let mut wasm_hashes = BTreeMap::new();
     for spec in ArtifactSpec::stack_artifacts(include_blend) {
-        let hash = ensure_uploaded(stellar, manifest, &cli.workspace_path, spec, args.build)?;
-        checkpoint_manifest(cli, manifest)?;
+        let hash = progress.step(format!("WASM {} upload/reuse", spec.key), || {
+            let hash = ensure_uploaded(stellar, manifest, &cli.workspace_path, spec, args.build)?;
+            checkpoint_manifest(cli, manifest)?;
+            Ok(hash)
+        })?;
         wasm_hashes.insert(spec.key.to_string(), hash);
     }
 
-    let asset_token = if let Some(asset) = &args.asset_token {
-        asset.to_string()
-    } else if let Some(asset) = contract_id(manifest, "asset_token") {
-        asset.to_string()
-    } else {
-        let _ = stellar.deploy_native_asset();
-        stellar.native_asset_id()?
-    };
-    record_asset_token(manifest, &asset_token, args.asset_token.is_some())?;
-    checkpoint_manifest(cli, manifest)?;
+    let asset_token = progress.step("asset token record", || {
+        let asset_token = if let Some(asset) = &args.asset_token {
+            asset.to_string()
+        } else if let Some(asset) = contract_id(manifest, "asset_token") {
+            asset.to_string()
+        } else {
+            let _ = stellar.deploy_native_asset();
+            stellar.native_asset_id()?
+        };
+        record_asset_token(manifest, &asset_token, args.asset_token.is_some())?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(asset_token)
+    })?;
 
-    let vault = deploy_contract_if_needed(
-        stellar,
-        manifest,
-        "vault",
-        &wasm_hashes["vault"],
-        Vec::new(),
-        BTreeMap::new(),
-        args.force_new,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
-    let share_token = deploy_contract_if_needed(
-        stellar,
-        manifest,
-        "share_token",
-        &wasm_hashes["share_token"],
-        vec![
-            "--admin".to_string(),
-            vault.clone(),
-            "--vault".to_string(),
-            vault.clone(),
-            "--name".to_string(),
-            args.share_name.clone(),
-            "--symbol".to_string(),
-            args.share_symbol.clone(),
-            "--decimals".to_string(),
-            args.share_decimals.to_string(),
-        ],
-        map_args([
-            ("admin", vault.as_str()),
-            ("vault", vault.as_str()),
-            ("name", args.share_name.as_str()),
-            ("symbol", args.share_symbol.as_str()),
-            ("decimals", &args.share_decimals.to_string()),
-        ]),
-        args.force_new,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
+    let vault = progress.step("vault deploy/reuse", || {
+        let vault = deploy_contract_if_needed(
+            stellar,
+            manifest,
+            "vault",
+            &wasm_hashes["vault"],
+            Vec::new(),
+            BTreeMap::new(),
+            args.force_new,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(vault)
+    })?;
+    let share_token = progress.step("share token deploy/reuse", || {
+        let share_token = deploy_contract_if_needed(
+            stellar,
+            manifest,
+            "share_token",
+            &wasm_hashes["share_token"],
+            vec![
+                "--admin".to_string(),
+                vault.clone(),
+                "--vault".to_string(),
+                vault.clone(),
+                "--name".to_string(),
+                args.share_name.clone(),
+                "--symbol".to_string(),
+                args.share_symbol.clone(),
+                "--decimals".to_string(),
+                args.share_decimals.to_string(),
+            ],
+            map_args([
+                ("admin", vault.as_str()),
+                ("vault", vault.as_str()),
+                ("name", args.share_name.as_str()),
+                ("symbol", args.share_symbol.as_str()),
+                ("decimals", &args.share_decimals.to_string()),
+            ]),
+            args.force_new,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(share_token)
+    })?;
     let timelock_ns = args
         .governance_timelock_ns
         .or_else(|| {
@@ -590,105 +664,123 @@ fn deploy_stack<E: CommandExecutor>(
                 .and_then(|value| value.parse::<u64>().ok())
         })
         .context("new governance deployment requires --governance-timelock-ns")?;
-    let governance = deploy_contract_if_needed(
-        stellar,
-        manifest,
-        "governance",
-        &wasm_hashes["governance"],
-        vec![
-            "--admin".to_string(),
-            admin.clone(),
-            "--vault".to_string(),
-            vault.clone(),
-            "--timelock_ns".to_string(),
-            timelock_ns.to_string(),
-        ],
-        map_args([
-            ("admin", admin.as_str()),
-            ("vault", vault.as_str()),
-            ("timelock_ns", &timelock_ns.to_string()),
-        ]),
-        args.force_new,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
+    let governance = progress.step("governance deploy/reuse", || {
+        let governance = deploy_contract_if_needed(
+            stellar,
+            manifest,
+            "governance",
+            &wasm_hashes["governance"],
+            vec![
+                "--admin".to_string(),
+                admin.clone(),
+                "--vault".to_string(),
+                vault.clone(),
+                "--timelock_ns".to_string(),
+                timelock_ns.to_string(),
+            ],
+            map_args([
+                ("admin", admin.as_str()),
+                ("vault", vault.as_str()),
+                ("timelock_ns", &timelock_ns.to_string()),
+            ]),
+            args.force_new,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(governance)
+    })?;
 
-    initialize_vault_if_needed(
-        stellar,
-        manifest,
-        &vault,
-        &admin,
-        &governance,
-        &asset_token,
-        &share_token,
-        args.virtual_shares,
-        args.virtual_assets,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
+    progress.step("vault initialize", || {
+        initialize_vault_if_needed(
+            stellar,
+            manifest,
+            &vault,
+            &admin,
+            &governance,
+            &asset_token,
+            &share_token,
+            args.virtual_shares,
+            args.virtual_assets,
+        )?;
+        checkpoint_manifest(cli, manifest)
+    })?;
 
-    let proxy_4626 = deploy_contract_if_needed(
-        stellar,
-        manifest,
-        "proxy_4626",
-        &wasm_hashes["proxy_4626"],
-        Vec::new(),
-        BTreeMap::new(),
-        args.force_new,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
-    initialize_proxy_if_needed(
-        stellar,
-        manifest,
-        "proxy_4626",
-        &proxy_4626,
-        vec![
-            "--vault_address".to_string(),
-            vault.clone(),
-            "--asset_token".to_string(),
-            asset_token.clone(),
-            "--share_token".to_string(),
-            share_token.clone(),
-        ],
-    )?;
-    checkpoint_manifest(cli, manifest)?;
+    let proxy_4626 = progress.step("ERC-4626 proxy deploy/reuse", || {
+        let proxy_4626 = deploy_contract_if_needed(
+            stellar,
+            manifest,
+            "proxy_4626",
+            &wasm_hashes["proxy_4626"],
+            Vec::new(),
+            BTreeMap::new(),
+            args.force_new,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(proxy_4626)
+    })?;
+    progress.step("ERC-4626 proxy initialize", || {
+        initialize_proxy_if_needed(
+            stellar,
+            manifest,
+            "proxy_4626",
+            &proxy_4626,
+            vec![
+                "--vault_address".to_string(),
+                vault.clone(),
+                "--asset_token".to_string(),
+                asset_token.clone(),
+                "--share_token".to_string(),
+                share_token.clone(),
+            ],
+        )?;
+        checkpoint_manifest(cli, manifest)
+    })?;
 
-    let curator_proxy = deploy_contract_if_needed(
-        stellar,
-        manifest,
-        "curator_proxy",
-        &wasm_hashes["curator_proxy"],
-        Vec::new(),
-        BTreeMap::new(),
-        args.force_new,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
-    initialize_proxy_if_needed(
-        stellar,
-        manifest,
-        "curator_proxy",
-        &curator_proxy,
-        vec![
-            "--vault_address".to_string(),
-            vault.clone(),
-            "--governance_address".to_string(),
-            governance.clone(),
-        ],
-    )?;
-    checkpoint_manifest(cli, manifest)?;
+    let curator_proxy = progress.step("curator proxy deploy/reuse", || {
+        let curator_proxy = deploy_contract_if_needed(
+            stellar,
+            manifest,
+            "curator_proxy",
+            &wasm_hashes["curator_proxy"],
+            Vec::new(),
+            BTreeMap::new(),
+            args.force_new,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        Ok(curator_proxy)
+    })?;
+    progress.step("curator proxy initialize", || {
+        initialize_proxy_if_needed(
+            stellar,
+            manifest,
+            "curator_proxy",
+            &curator_proxy,
+            vec![
+                "--vault_address".to_string(),
+                vault.clone(),
+                "--governance_address".to_string(),
+                governance.clone(),
+            ],
+        )?;
+        checkpoint_manifest(cli, manifest)
+    })?;
 
     let blend_adapters = if args.blend_pools.is_empty() {
         blend_adapter_statuses(manifest)
     } else {
-        append_blend_adapters(
-            cli,
-            stellar,
-            manifest,
-            &wasm_hashes["blend_adapter"],
-            &governance,
-            &vault,
-            &args.blend_pools,
-            args.force_new,
-        )?
+        progress.step("Blend adapters deploy/reuse", || {
+            append_blend_adapters(
+                cli,
+                stellar,
+                manifest,
+                &wasm_hashes["blend_adapter"],
+                &governance,
+                &vault,
+                &args.blend_pools,
+                args.force_new,
+            )
+        })?
     };
+    progress.finish();
 
     Ok(Response::Status(StatusResponse {
         network: manifest.network.clone(),
