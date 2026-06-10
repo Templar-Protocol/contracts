@@ -58,6 +58,8 @@ impl Manifest {
         if manifest.network.is_empty() {
             manifest.network = network.to_string();
         }
+        // Scrub legacy or hand-edited source account data; signing identity
+        // must stay in env/keystore.
         manifest.source_account = None;
         Ok(manifest)
     }

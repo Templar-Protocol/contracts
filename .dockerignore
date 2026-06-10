@@ -1,5 +1,18 @@
 # .gitignore contents
 
+# VCS/history
+.git
+.git/
+.jj
+.jj/
+
+# Local secrets and operator state
+.env
+.env.*
+*.pem
+*.key
+*.seed
+
 # Rust
 /target/*
 !/target/release/
