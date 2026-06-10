@@ -254,8 +254,7 @@ impl SorobanCuratorProxyContract {
     /// This is permissionless because it only preserves existing proxy config;
     /// it cannot mutate vault accounting or authorization state.
     pub fn extend_ttl(env: Env) -> Result<(), ContractError> {
-        extend_instance_ttl(&env);
-        Ok(())
+        require_initialized(&env)
     }
 
     pub fn cancel_migration(env: Env, admin: Address) -> Result<u64, ContractError> {
@@ -698,10 +697,11 @@ pub(crate) fn is_initialized(env: &Env) -> bool {
 }
 
 pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
+    if !is_initialized(env) {
+        return Err(ContractError::NotInitialized);
+    }
     extend_instance_ttl(env);
-    is_initialized(env)
-        .then_some(())
-        .ok_or(ContractError::NotInitialized)
+    Ok(())
 }
 
 fn extend_instance_ttl(env: &Env) {

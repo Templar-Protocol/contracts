@@ -3,6 +3,13 @@
 This directory stores the canonical deployment manifest for the mainnet test
 Templar USDC vault stack.
 
+This is an experimental mainnet test deployment for "Test Templar USDC"
+(`tTUSDC`), not a production vault. The recorded governance constructor uses
+`timelock_ns = 0`, equivalent to deploying with `SOROBAN_GOV_TIMELOCK_NS=0` and
+`SOROBAN_ALLOW_ZERO_GOV_TIMELOCK=1`. A zero timelock removes the normal delay for
+reviewing governance proposals before execution, so this configuration can put
+user funds at immediate risk and must remain temporary/test-only.
+
 Use this state path for CLI commands:
 
 ```sh

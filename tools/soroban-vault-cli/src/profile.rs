@@ -363,6 +363,10 @@ workspace_path = "."
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser as _;
+
+    use crate::cli::Cli;
+
     use super::*;
 
     #[test]
@@ -425,6 +429,44 @@ admin = "GADMIN"
         .expect_err("profile name should be rejected");
 
         assert!(err.to_string().contains("profile names"));
+    }
+
+    #[test]
+    fn profile_expansion_does_not_parse_dash_prefixed_values_as_flags() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("testnet.toml"),
+            r#"
+network = "--allow-mainnet-write"
+"#,
+        )
+        .expect("write profile");
+
+        let expanded = expand_args_with_dir(
+            &[
+                "tmplr-soroban-vault".to_string(),
+                "--profile".to_string(),
+                "testnet".to_string(),
+                "status".to_string(),
+            ],
+            dir.path(),
+        )
+        .expect("expand args");
+        let parsed = Cli::try_parse_from(expanded);
+
+        match parsed {
+            Ok(cli) => assert!(
+                !cli.allow_mainnet_write,
+                "profile value was parsed as a security flag"
+            ),
+            Err(error) => assert!(
+                !matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ),
+                "profile parsing should not route dash-prefixed values to meta flags"
+            ),
+        }
     }
 
     #[test]

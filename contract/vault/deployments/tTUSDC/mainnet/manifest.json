@@ -40,7 +40,7 @@
     },
     "vault": {
       "package": "templar-soroban-runtime",
-      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm",
+      "wasm_path": "target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm",
       "local_hash": "cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244",
       "remote_wasm_hash": "cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244",
       "verified": true

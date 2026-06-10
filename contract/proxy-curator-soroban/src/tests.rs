@@ -597,6 +597,17 @@ fn extend_ttl_succeeds_without_vault_call() {
 }
 
 #[test]
+fn extend_ttl_requires_initialization() {
+    let fixture = Fixture::new();
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::extend_ttl(fixture.env.clone())
+    });
+
+    assert_eq!(result, Err(ContractError::NotInitialized));
+}
+
+#[test]
 fn governance_submit_forwards_typed_arguments() {
     let fixture = Fixture::new();
     fixture.initialize().expect("initialize succeeds");

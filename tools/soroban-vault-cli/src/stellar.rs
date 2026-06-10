@@ -260,7 +260,13 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         result?;
         let bytes = fs::read(&out_file)
             .with_context(|| format!("read fetched contract wasm {}", out_file.display()))?;
-        let _ = fs::remove_file(&out_file);
+        if let Err(error) = fs::remove_file(&out_file) {
+            warn!(
+                path = %out_file.display(),
+                error = %error,
+                "failed to remove fetched contract wasm temp file"
+            );
+        }
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
@@ -473,8 +479,12 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         ];
         args.extend(self.network_args());
         match self.executor.run("stellar", &args, &[], &[]) {
-            Ok(output) => Ok(transaction_status_from_output(&output.stdout)
-                .unwrap_or(TransactionConfirmationStatus::Success)),
+            Ok(output) => transaction_status_from_output(&output.stdout).with_context(|| {
+                format!(
+                    "could not parse transaction status for {tx_hash}; output: {}",
+                    output_excerpt(&output.stdout)
+                )
+            }),
             Err(error) => {
                 let message = error.to_string();
                 if looks_not_found(&message) {
@@ -617,6 +627,26 @@ fn parse_tx_hashes(value: &str) -> Vec<String> {
         .filter(|token| token.len() == 64)
         .map(str::to_ascii_lowercase)
         .collect()
+}
+
+fn output_excerpt(value: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return "<empty>".to_string();
+    }
+    let mut chars = trimmed.chars();
+    let mut excerpt = String::new();
+    for _ in 0..MAX_CHARS {
+        let Some(ch) = chars.next() else {
+            return excerpt;
+        };
+        excerpt.push(ch);
+    }
+    if chars.next().is_some() {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -977,6 +1007,13 @@ mod tests {
 
         let status = transaction_status_from_output(r#"{"result":{"status":"FAILED"}}"#);
         assert_eq!(status, Some(TransactionConfirmationStatus::Failed));
+    }
+
+    #[test]
+    fn output_excerpt_is_bounded_and_marks_empty_output() {
+        assert_eq!(output_excerpt(" \n "), "<empty>");
+        assert!(output_excerpt(&"x".repeat(400)).len() < 260);
+        assert!(output_excerpt(&"x".repeat(400)).ends_with("..."));
     }
 
     #[test]
