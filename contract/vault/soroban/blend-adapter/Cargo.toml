@@ -1,0 +1,24 @@
+[package]
+name = "templar-soroban-blend-adapter"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Soroban adapter contract for Blend v2 pool integration"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+doctest = false
+
+[features]
+default = []
+testutils = ["soroban-sdk/testutils", "blend-contract-sdk/testutils"]
+
+[dependencies]
+soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", "hazmat-address"] }
+blend-contract-sdk = "2.25.0"
+stellar-contract-utils.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { version = "25.3.0", features = ["testutils", "experimental_spec_shaking_v2"] }
+blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }

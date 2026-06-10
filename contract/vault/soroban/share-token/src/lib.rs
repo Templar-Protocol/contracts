@@ -1,0 +1,368 @@
+#![no_std]
+
+#[cfg(test)]
+extern crate std;
+
+mod types;
+pub use types::*;
+
+use soroban_sdk::{
+    address_payload::AddressPayload, contract, contractimpl, panic_with_error, symbol_short,
+    Address, BytesN, Env, MuxedAddress, String, Vec,
+};
+use stellar_contract_utils::upgradeable::{self, Upgradeable};
+use stellar_tokens::fungible::{
+    burnable::{emit_burn, FungibleBurnable},
+    Base, FungibleToken,
+};
+
+const INSTANCE_TTL_THRESHOLD: u32 = 518_400;
+const INSTANCE_TTL_EXTEND_TO: u32 = 3_110_400;
+
+#[contract]
+pub struct SorobanShareTokenContract;
+
+// ── SEP-41 core (delegates to OZ Base) ───────────────────────
+
+#[contractimpl]
+impl FungibleToken for SorobanShareTokenContract {
+    type ContractType = Base;
+
+    fn total_supply(e: &Env) -> i128 {
+        extend_instance_ttl(e);
+        Base::total_supply(e)
+    }
+
+    fn balance(e: &Env, account: Address) -> i128 {
+        extend_instance_ttl(e);
+        Base::balance(e, &account)
+    }
+
+    fn allowance(e: &Env, owner: Address, spender: Address) -> i128 {
+        extend_instance_ttl(e);
+        Base::allowance(e, &owner, &spender)
+    }
+
+    fn transfer(e: &Env, from: Address, to: MuxedAddress, amount: i128) {
+        extend_instance_ttl(e);
+        require_not_paused(e);
+        require_unrestricted(e, &from);
+        require_unrestricted(e, &to.address());
+        Base::transfer(e, &from, &to, amount);
+    }
+
+    fn transfer_from(e: &Env, spender: Address, from: Address, to: Address, amount: i128) {
+        extend_instance_ttl(e);
+        require_not_paused(e);
+        require_unrestricted(e, &from);
+        require_unrestricted(e, &to);
+        Base::transfer_from(e, &spender, &from, &to, amount);
+    }
+
+    fn approve(e: &Env, owner: Address, spender: Address, amount: i128, live_until_ledger: u32) {
+        extend_instance_ttl(e);
+        Base::approve(e, &owner, &spender, amount, live_until_ledger);
+    }
+
+    fn decimals(e: &Env) -> u32 {
+        extend_instance_ttl(e);
+        Base::decimals(e)
+    }
+
+    fn name(e: &Env) -> String {
+        extend_instance_ttl(e);
+        Base::name(e)
+    }
+
+    fn symbol(e: &Env) -> String {
+        extend_instance_ttl(e);
+        Base::symbol(e)
+    }
+}
+
+// ── SEP-41 burnable (vault-gated override) ───────────────────
+
+#[contractimpl]
+impl FungibleBurnable for SorobanShareTokenContract {
+    fn burn(e: &Env, from: Address, amount: i128) {
+        extend_instance_ttl(e);
+        require_not_paused(e);
+        require_vault_invoker(e);
+        Base::update(e, Some(&from), None, amount);
+        emit_burn(e, &from, amount);
+    }
+
+    fn burn_from(e: &Env, spender: Address, from: Address, amount: i128) {
+        extend_instance_ttl(e);
+        require_not_paused(e);
+        require_vault_invoker(e);
+        Base::spend_allowance(e, &from, &spender, amount);
+        Base::update(e, Some(&from), None, amount);
+        emit_burn(e, &from, amount);
+        #[allow(deprecated)]
+        e.events()
+            .publish((symbol_short!("burn_from"), spender, from), amount);
+    }
+}
+
+// ── Vault share-token extras ─────────────────────────────────
+
+#[contractimpl]
+impl SorobanShareTokenContract {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        vault: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+    ) {
+        extend_instance_ttl(&env);
+        require_contract_address(&env, &vault);
+        require_vault_admin(&env, &admin, &vault);
+        env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Vault, &vault);
+        Base::set_metadata(&env, decimals, name.clone(), symbol.clone());
+        #[allow(deprecated)]
+        {
+            env.events().publish(
+                (symbol_short!("config"), admin, vault),
+                (name, symbol, decimals),
+            );
+        }
+    }
+
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        extend_instance_ttl(&env);
+        require_not_paused(&env);
+        require_vault_invoker(&env);
+        Base::mint(&env, &to, amount);
+    }
+
+    #[allow(deprecated)]
+    pub fn set_paused(env: Env, caller: Address, paused: bool) {
+        extend_instance_ttl(&env);
+        require_admin_or_vault(&env, &caller);
+        env.storage().instance().set(&DataKey::Paused, &paused);
+        env.events()
+            .publish((symbol_short!("paused"), caller), paused);
+    }
+
+    pub fn paused(env: Env) -> bool {
+        extend_instance_ttl(&env);
+        is_paused(&env)
+    }
+
+    #[allow(deprecated)]
+    pub fn set_restrictions(env: Env, caller: Address, mode: u32, accounts: Vec<Address>) {
+        extend_instance_ttl(&env);
+        require_admin_or_vault(&env, &caller);
+        let restrictions = match mode {
+            0 => Restrictions {
+                mode: RestrictionMode::None,
+                accounts: Vec::new(&env),
+            },
+            1 => Restrictions {
+                mode: RestrictionMode::Blacklist,
+                accounts,
+            },
+            2 => Restrictions {
+                mode: RestrictionMode::Whitelist,
+                accounts,
+            },
+            _ => panic_with_error!(&env, ShareTokenError::InvalidInput),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Restrictions, &restrictions);
+        env.events()
+            .publish((symbol_short!("rstrct"), caller), mode);
+    }
+
+    #[allow(deprecated)]
+    pub fn set_admin(env: Env, caller: Address, admin: Address) {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller);
+        let vault = Self::vault(env.clone());
+        require_vault_admin(&env, &admin, &vault);
+        env.storage().instance().set(&DataKey::PendingAdmin, &admin);
+        env.events()
+            .publish((symbol_short!("admin_set"), caller), admin);
+    }
+
+    #[allow(deprecated)]
+    pub fn accept_admin(env: Env, caller: Address) {
+        extend_instance_ttl(&env);
+        caller.require_auth();
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig));
+        if caller != pending_admin {
+            panic_with_error!(&env, ShareTokenError::Unauthorized);
+        }
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig));
+        env.storage().instance().set(&DataKey::Admin, &caller);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events()
+            .publish((symbol_short!("admin_acc"), old_admin), caller);
+    }
+
+    pub fn set_vault(env: Env, caller: Address, vault: Address) {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller);
+        require_contract_address(&env, &vault);
+        panic_with_error!(&env, ShareTokenError::VaultImmutable);
+    }
+
+    pub fn set_metadata(env: Env, caller: Address, _name: String, _symbol: String, _decimals: u32) {
+        extend_instance_ttl(&env);
+        require_admin(&env, &caller);
+        panic_with_error!(&env, ShareTokenError::MetadataImmutable);
+    }
+
+    pub fn admin(env: Env) -> Address {
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig))
+    }
+
+    pub fn pending_admin(env: Env) -> Option<Address> {
+        extend_instance_ttl(&env);
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    pub fn vault(env: Env) -> Address {
+        extend_instance_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&DataKey::Vault)
+            .unwrap_or_else(|| panic_with_error!(&env, ShareTokenError::MissingConfig))
+    }
+
+    pub fn extend_ttl(env: Env, caller: Address) {
+        require_admin(&env, &caller);
+        extend_instance_ttl(&env);
+    }
+}
+
+#[contractimpl]
+impl Upgradeable for SorobanShareTokenContract {
+    #[allow(deprecated)]
+    fn upgrade(e: &Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        extend_instance_ttl(e);
+        require_admin(e, &operator);
+        upgradeable::upgrade(e, &new_wasm_hash);
+        e.events()
+            .publish((symbol_short!("upgrade"), operator), new_wasm_hash);
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────
+
+fn require_admin(env: &Env, caller: &Address) {
+    caller.require_auth();
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
+    if caller != &admin {
+        panic_with_error!(env, ShareTokenError::Unauthorized);
+    }
+}
+
+fn require_vault_invoker(env: &Env) {
+    let vault: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Vault)
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
+    vault.require_auth();
+}
+
+fn require_admin_or_vault(env: &Env, caller: &Address) {
+    caller.require_auth();
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
+    let vault: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Vault)
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
+    if caller != &admin && caller != &vault {
+        panic_with_error!(env, ShareTokenError::Unauthorized);
+    }
+}
+
+fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+fn require_not_paused(env: &Env) {
+    if is_paused(env) {
+        panic_with_error!(env, ShareTokenError::Paused);
+    }
+}
+
+fn contains_address(accounts: &Vec<Address>, address: &Address) -> bool {
+    accounts.iter().any(|account| &account == address)
+}
+
+fn require_unrestricted(env: &Env, address: &Address) {
+    let Some(restrictions): Option<Restrictions> =
+        env.storage().instance().get(&DataKey::Restrictions)
+    else {
+        return;
+    };
+    let listed = contains_address(&restrictions.accounts, address);
+    let allowed = match restrictions.mode {
+        RestrictionMode::None => true,
+        RestrictionMode::Blacklist => !listed,
+        RestrictionMode::Whitelist => listed,
+    };
+    if !allowed {
+        panic_with_error!(env, ShareTokenError::Restricted);
+    }
+}
+
+fn is_contract_address(addr: &Address) -> bool {
+    matches!(
+        AddressPayload::from_address(addr),
+        Some(AddressPayload::ContractIdHash(_))
+    )
+}
+
+fn require_contract_address(env: &Env, addr: &Address) {
+    if !is_contract_address(addr) {
+        panic_with_error!(env, ShareTokenError::InvalidInput);
+    }
+}
+
+fn require_vault_admin(env: &Env, admin: &Address, vault: &Address) {
+    if admin != vault {
+        panic_with_error!(env, ShareTokenError::InvalidInput);
+    }
+}
+
+fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
+#[cfg(test)]
+mod tests;

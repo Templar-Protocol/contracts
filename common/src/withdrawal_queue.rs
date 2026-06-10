@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 
-use near_sdk::{collections::LookupMap, env, near, AccountId, BorshStorageKey, IntoStorageKey};
+use near_sdk::{collections::LookupMap, near, AccountId, BorshStorageKey, IntoStorageKey};
 
 use crate::asset::BorrowAssetAmount;
 
@@ -18,7 +18,6 @@ pub struct QueueNode {
 pub struct WithdrawalQueue {
     prefix: Vec<u8>,
     length: u32,
-    is_locked: bool,
     next_queue_node_id: NonZeroU32,
     queue: LookupMap<NonZeroU32, QueueNode>,
     queue_head: Option<NonZeroU32>,
@@ -33,6 +32,10 @@ enum StorageKey {
     Entries,
 }
 
+fn inconsistent_state<T>() -> T {
+    crate::panic_with_message("Inconsistent state")
+}
+
 impl WithdrawalQueue {
     pub fn new(prefix: impl IntoStorageKey) -> Self {
         let prefix = prefix.into_storage_key();
@@ -44,7 +47,6 @@ impl WithdrawalQueue {
         Self {
             prefix: prefix.clone(),
             length: 0,
-            is_locked: false,
             next_queue_node_id: NonZeroU32::MIN,
             queue: LookupMap::new(key!(Queue)),
             queue_head: None,
@@ -79,67 +81,42 @@ impl WithdrawalQueue {
         node_id: NonZeroU32,
         f: impl FnOnce(&mut QueueNode) -> T,
     ) -> T {
-        if self.is_locked && Some(node_id) == self.queue_head {
-            env::panic_str("Cannot mutate withdrawal queue head while queue is locked.");
-        }
-
-        let mut node = self
-            .queue
-            .get(&node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
         let r = f(&mut node);
         self.queue.insert(&node_id, &node);
         r
+    }
+
+    fn set_existing_node_next(&mut self, node_id: NonZeroU32, next: Option<NonZeroU32>) {
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
+        node.next = next;
+        self.queue.insert(&node_id, &node);
+    }
+
+    fn set_existing_node_prev(&mut self, node_id: NonZeroU32, prev: Option<NonZeroU32>) {
+        let mut node = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
+        node.prev = prev;
+        self.queue.insert(&node_id, &node);
     }
 
     pub fn peek(&self) -> Option<(AccountId, BorrowAssetAmount)> {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id, amount, ..
-            } = self
-                .queue
-                .get(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+            } = self.queue.get(&node_id).unwrap_or_else(inconsistent_state);
             Some((account_id, amount))
         } else {
             None
         }
     }
 
-    /// # Errors
-    /// - If the queue is already locked.
-    /// - If the queue is empty.
-    pub fn try_lock(
-        &mut self,
-    ) -> Result<(AccountId, BorrowAssetAmount), error::WithdrawalQueueLockError> {
-        if self.is_locked {
-            return Err(error::AlreadyLockedError.into());
-        }
-
-        if let Some(peek) = self.peek() {
-            self.is_locked = true;
-            Ok(peek)
-        } else {
-            Err(error::EmptyError.into())
-        }
+    pub fn mut_head<T>(&mut self, f: impl FnOnce(&mut BorrowAssetAmount) -> T) -> Option<T> {
+        self.queue_head
+            .map(|node_id| self.mut_existing_node(node_id, |n| f(&mut n.amount)))
     }
 
-    pub fn unlock(&mut self) {
-        self.is_locked = false;
-    }
-
-    /// Only pops if:
-    /// 1. Queue is non-empty.
-    /// 2. Queue is locked.
-    ///
-    /// Unlocks the queue.
-    pub fn try_pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
-        if !self.is_locked {
-            env::panic_str("Withdrawal queue must be locked to pop.");
-        }
-
-        self.is_locked = false;
-
+    /// Only pops if queue is non-empty.
+    pub fn pop(&mut self) -> Option<(AccountId, BorrowAssetAmount)> {
         if let Some(node_id) = self.queue_head {
             let QueueNode {
                 account_id,
@@ -149,10 +126,10 @@ impl WithdrawalQueue {
             } = self
                 .queue
                 .remove(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+                .unwrap_or_else(inconsistent_state);
             self.queue_head = next;
             if let Some(next_id) = next {
-                self.mut_existing_node(next_id, |next| next.prev = None);
+                self.set_existing_node_prev(next_id, None);
             } else {
                 self.queue_tail = None;
             }
@@ -167,24 +144,20 @@ impl WithdrawalQueue {
     /// If the queue is locked, accounts can only be removed if they are not
     /// at the head of the queue.
     pub fn remove(&mut self, account_id: &AccountId) -> Option<BorrowAssetAmount> {
-        if self.is_locked && self.queue_head == self.entries.get(account_id) {
-            env::panic_str("Cannot remove head while withdrawal queue is locked.");
-        }
-
         if let Some(node_id) = self.entries.remove(account_id) {
             let node = self
                 .queue
                 .remove(&node_id)
-                .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+                .unwrap_or_else(inconsistent_state);
 
             if let Some(next_id) = node.next {
-                self.mut_existing_node(next_id, |next| next.prev = node.prev);
+                self.set_existing_node_prev(next_id, node.prev);
             } else {
                 self.queue_tail = node.prev;
             }
 
             if let Some(prev_id) = node.prev {
-                self.mut_existing_node(prev_id, |prev| prev.next = node.next);
+                self.set_existing_node_next(prev_id, node.next);
             } else {
                 self.queue_head = node.next;
             }
@@ -197,7 +170,6 @@ impl WithdrawalQueue {
         }
     }
 
-    #[allow(clippy::missing_panics_doc)]
     pub fn insert_or_update(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
         if let Some(node_id) = self.entries.get(account_id) {
             // update existing
@@ -212,7 +184,7 @@ impl WithdrawalQueue {
             }
 
             if let Some(tail_id) = self.queue_tail {
-                self.mut_existing_node(tail_id, |tail| tail.next = Some(node_id));
+                self.set_existing_node_next(tail_id, Some(node_id));
             }
             let node = QueueNode {
                 account_id: account_id.clone(),
@@ -230,7 +202,7 @@ impl WithdrawalQueue {
         }
     }
 
-    pub fn iter(&self) -> WithdrawalQueueIter {
+    pub fn iter(&self) -> WithdrawalQueueIter<'_> {
         WithdrawalQueueIter {
             withdrawal_queue: self,
             next_node_id: self.queue_head,
@@ -238,13 +210,12 @@ impl WithdrawalQueue {
     }
 
     pub fn get_status(&self) -> WithdrawalQueueStatus {
-        let depth = self
-            .iter()
-            .map(|(_, amount)| amount.as_u128())
-            .sum::<u128>()
-            .into();
         WithdrawalQueueStatus {
-            depth,
+            depth: self
+                .iter()
+                .map(|(_, amount)| u128::from(amount))
+                .sum::<u128>()
+                .into(),
             length: self.len(),
         }
     }
@@ -258,15 +229,17 @@ impl WithdrawalQueue {
         for (index, (current_account, amount)) in self.iter().enumerate() {
             if &current_account == account_id {
                 return Some(WithdrawalRequestStatus {
-                    // The queue's length is u32, so this will never truncate.
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "Queue length is u32, so this will never truncate"
+                    )]
                     index: index as u32,
                     depth,
                     amount,
                 });
             }
 
-            depth.join(amount);
+            depth += amount;
         }
 
         unreachable!()
@@ -296,24 +269,45 @@ impl Iterator for WithdrawalQueueIter<'_> {
             .withdrawal_queue
             .queue
             .get(&next_node_id)
-            .unwrap_or_else(|| env::panic_str("Inconsistent state"));
+            .unwrap_or_else(inconsistent_state);
         self.next_node_id = r.next;
         Some((r.account_id, r.amount))
     }
 }
 
+/// Status of a single account in the withdrawal queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct WithdrawalRequestStatus {
+    /// What index is this account in the queue?
+    /// That is, how many other withdrawal requests are ahead of this account
+    /// in the queue?
     pub index: u32,
+    /// Sum of requested amounts of the requests ahead of this account in the
+    /// queue.
     pub depth: BorrowAssetAmount,
+    /// The amount that this account has requested to withdraw from the
+    /// contract.
     pub amount: BorrowAssetAmount,
 }
 
+/// Status of the withdrawal queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub struct WithdrawalQueueStatus {
+    /// Sum of all amounts of requests in the queue.
     pub depth: BorrowAssetAmount,
+    /// Number of requests in the queue.
+    pub length: u32,
+}
+
+/// Return value after executing requests from the withdrawal queue.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct WithdrawalQueueExecutionResult {
+    /// What is the total value of the requests that were cleared from the queue?
+    pub depth: BorrowAssetAmount,
+    /// How many requests were cleared from the queue?
     pub length: u32,
 }
 
@@ -321,21 +315,8 @@ pub mod error {
     use thiserror::Error;
 
     #[derive(Error, Debug)]
-    #[error("The withdrawal queue is already locked")]
-    pub struct AlreadyLockedError;
-
-    #[derive(Error, Debug)]
     #[error("The withdrawal queue is empty")]
     pub struct EmptyError;
-
-    #[derive(Error, Debug)]
-    #[error("The withdrawal queue could not be locked: {}", .0)]
-    pub enum WithdrawalQueueLockError {
-        #[error(transparent)]
-        AlreadyLocked(#[from] AlreadyLockedError),
-        #[error(transparent)]
-        Empty(#[from] EmptyError),
-    }
 }
 
 #[cfg(test)]
@@ -344,7 +325,41 @@ mod tests {
 
     use super::WithdrawalQueue;
 
-    // TODO: Test locking.
+    #[test]
+    fn mut_head() {
+        let mut wq = WithdrawalQueue::new(b"w");
+
+        let alice: AccountId = "alice".parse().unwrap();
+        let bob: AccountId = "bob".parse().unwrap();
+        let charlie: AccountId = "charlie".parse().unwrap();
+
+        wq.insert_or_update(&alice, 1.into());
+        wq.insert_or_update(&bob, 2.into());
+        wq.insert_or_update(&charlie, 3.into());
+
+        wq.mut_head(|a| *a += 10).unwrap();
+        assert_eq!(wq.len(), 3);
+
+        assert_eq!(wq.get(&alice).unwrap(), 11.into());
+        assert_eq!(wq.get(&bob).unwrap(), 2.into());
+        assert_eq!(wq.get(&charlie).unwrap(), 3.into());
+        assert_eq!(wq.remove(&alice).unwrap(), 11.into());
+        assert_eq!(wq.len(), 2);
+
+        wq.mut_head(|a| *a += 20).unwrap();
+        assert_eq!(wq.get(&alice), None);
+        assert_eq!(wq.get(&bob).unwrap(), 22.into());
+        assert_eq!(wq.get(&charlie).unwrap(), 3.into());
+        assert_eq!(wq.remove(&bob).unwrap(), 22.into());
+        assert_eq!(wq.len(), 1);
+
+        wq.mut_head(|a| *a += 30).unwrap();
+        assert_eq!(wq.get(&alice), None);
+        assert_eq!(wq.get(&bob), None);
+        assert_eq!(wq.get(&charlie).unwrap(), 33.into());
+        assert_eq!(wq.remove(&charlie).unwrap(), 33.into());
+        assert_eq!(wq.len(), 0);
+    }
 
     #[test]
     fn withdrawal_remove() {
@@ -384,16 +399,21 @@ mod tests {
         assert_eq!(wq.peek(), Some((alice.clone(), 99.into())));
         wq.insert_or_update(&bob, 123.into());
         assert_eq!(wq.len(), 2);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((alice.clone(), 99.into())));
+
+        assert_eq!(wq.pop(), Some((alice.clone(), 99.into())));
         assert_eq!(wq.len(), 1);
-        wq.insert_or_update(&charlie, 42.into());
+        assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
+
+        wq.insert_or_update(&charlie, 8080.into());
         assert_eq!(wq.len(), 2);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((bob.clone(), 123.into())));
+        assert_eq!(wq.peek(), Some((bob.clone(), 123.into())));
+
+        assert_eq!(wq.pop(), Some((bob.clone(), 123.into())));
         assert_eq!(wq.len(), 1);
-        wq.try_lock().unwrap();
-        assert_eq!(wq.try_pop(), Some((charlie.clone(), 42.into())));
+        assert_eq!(wq.peek(), Some((charlie.clone(), 8080.into())));
+
+        assert_eq!(wq.pop(), Some((charlie.clone(), 8080.into())));
         assert_eq!(wq.len(), 0);
+        assert_eq!(wq.peek(), None);
     }
 }

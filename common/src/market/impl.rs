@@ -1,32 +1,33 @@
-use borsh::BorshDeserialize;
 use near_sdk::{
-    collections::{LookupMap, UnorderedMap, Vector},
-    env, near, require, AccountId, BorshStorageKey, IntoStorageKey,
+    collections::{LookupMap, UnorderedMap},
+    env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
+use templar_primitives::number::Decimal;
 
 use crate::{
-    asset::{
-        AssetClass, BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAssetAmount,
-    },
-    balance_log::{search_balance_logs, BalanceLog, SearchResult},
-    borrow::BorrowPosition,
-    chain_time::ChainTime,
+    accumulator::{AccumulationRecord, Accumulator},
+    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
+    borrow::{BorrowPosition, BorrowPositionGuard, BorrowPositionRef},
+    chunked_append_only_list::ChunkedAppendOnlyList,
+    event::MarketEvent,
+    incoming_deposit::IncomingDeposit,
     market::MarketConfiguration,
-    number::Decimal,
-    static_yield::StaticYieldRecord,
-    supply::SupplyPosition,
-    withdrawal_queue::{error::WithdrawalQueueLockError, WithdrawalQueue},
+    snapshot::Snapshot,
+    supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
+    time_chunk::TimeChunk,
+    withdrawal_queue::WithdrawalQueue,
+    YEAR_PER_MS,
 };
 
-use super::OraclePriceProof;
+#[derive(Debug, Copy, Clone)]
+pub struct SnapshotProof(());
 
 #[derive(BorshStorageKey)]
 #[near]
 enum StorageKey {
     SupplyPositions,
     BorrowPositions,
-    TotalBorrowAssetDepositedLog,
-    BorrowAssetYieldDistributionLog,
+    FinalizedSnapshots,
     WithdrawalQueue,
     StaticYield,
 }
@@ -35,20 +36,39 @@ enum StorageKey {
 pub struct Market {
     prefix: Vec<u8>,
     pub configuration: MarketConfiguration,
-    pub borrow_asset_deposited: BorrowAssetAmount,
-    pub borrow_asset_in_flight: BorrowAssetAmount,
-    pub supply_positions: UnorderedMap<AccountId, SupplyPosition>,
-    pub borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
-    pub total_borrow_asset_deposited_log: Vector<BalanceLog<BorrowAsset>>,
-    pub borrow_asset_yield_distribution_log: Vector<BalanceLog<BorrowAsset>>,
+    /// Total amount of borrow asset that the market knows it currently holds.
+    pub borrow_asset_balance: BorrowAssetAmount,
+    /// Total amount of borrow asset earning interest in the market.
+    pub borrow_asset_deposited_active: BorrowAssetAmount,
+    /// Upcoming snapshot indices with amounts of borrow asset that will be activated.
+    pub borrow_asset_deposited_incoming: Vec<IncomingDeposit>,
+    pub borrow_asset_withdrawal_in_flight: BorrowAssetAmount,
+    /// Sending borrow asset out, because if somebody sends the contract borrow asset, it's ok for the
+    /// contract to attempt to fulfill withdrawal request, even if the market thinks it doesn't have
+    /// enough to fulfill.
+    pub borrow_asset_borrowed_in_flight: BorrowAssetAmount,
+    /// Amount of borrow asset that has been withdrawn (is in use by) by borrowers.
+    ///
+    /// `borrow_asset_deposited_active - borrow_asset_borrowed - borrow_asset_borrowed_in_flight >= 0` should always be true.
+    pub borrow_asset_borrowed: BorrowAssetAmount,
+    /// Amount paid to fees that can be withdrawn by suppliers as yield.
+    pub borrow_asset_paid_to_fees: BorrowAssetAmount,
+    /// Market-wide collateral asset deposit tracking.
+    pub collateral_asset_deposited: CollateralAssetAmount,
+    pub(crate) supply_positions: UnorderedMap<AccountId, SupplyPosition>,
+    pub(crate) borrow_positions: UnorderedMap<AccountId, BorrowPosition>,
+    pub current_time_chunk: TimeChunk,
+    pub current_yield_distribution: BorrowAssetAmount,
+    pub finalized_snapshots: ChunkedAppendOnlyList<Snapshot, 32>,
     pub withdrawal_queue: WithdrawalQueue,
-    pub static_yield: LookupMap<AccountId, StaticYieldRecord>,
+    pub static_yield: LookupMap<AccountId, Accumulator<BorrowAsset>>,
+    single_snapshot_maximum_interest_precomputed: Decimal,
 }
 
 impl Market {
     pub fn new(prefix: impl IntoStorageKey, configuration: MarketConfiguration) -> Self {
         if let Err(e) = configuration.validate() {
-            env::panic_str(&e.to_string());
+            crate::panic_with_message(&e.to_string());
         }
 
         let prefix = prefix.into_storage_key();
@@ -61,447 +81,953 @@ impl Market {
                 .concat()
             };
         }
-        Self {
+
+        let first_snapshot = Snapshot::new(configuration.time_chunk_configuration.previous());
+        let last_time_chunk = configuration.time_chunk_configuration.now();
+
+        let single_snapshot_maximum_interest_precomputed =
+            configuration.single_snapshot_maximum_interest();
+
+        let mut self_ = Self {
             prefix: prefix.clone(),
             configuration,
-            borrow_asset_deposited: 0.into(),
-            borrow_asset_in_flight: 0.into(),
+            borrow_asset_balance: 0.into(),
+            borrow_asset_deposited_active: 0.into(),
+            borrow_asset_deposited_incoming: Vec::new(),
+            borrow_asset_withdrawal_in_flight: 0.into(),
+            borrow_asset_borrowed_in_flight: 0.into(),
+            borrow_asset_borrowed: 0.into(),
+            borrow_asset_paid_to_fees: 0.into(),
+            collateral_asset_deposited: 0.into(),
             supply_positions: UnorderedMap::new(key!(SupplyPositions)),
             borrow_positions: UnorderedMap::new(key!(BorrowPositions)),
-            total_borrow_asset_deposited_log: Vector::new(key!(TotalBorrowAssetDepositedLog)),
-            borrow_asset_yield_distribution_log: Vector::new(key!(BorrowAssetYieldDistributionLog)),
+            current_time_chunk: last_time_chunk,
+            current_yield_distribution: 0.into(),
+            finalized_snapshots: ChunkedAppendOnlyList::new(key!(FinalizedSnapshots)),
             withdrawal_queue: WithdrawalQueue::new(key!(WithdrawalQueue)),
             static_yield: LookupMap::new(key!(StaticYield)),
-        }
-    }
-
-    pub fn get_borrow_asset_available_to_borrow(
-        &self,
-        current_contract_balance: BorrowAssetAmount,
-    ) -> BorrowAssetAmount {
-        let must_retain = ((1u32 - &self.configuration.maximum_borrow_asset_usage_ratio)
-            * self.borrow_asset_deposited.as_u128())
-        .to_u128_ceil()
-        .unwrap();
-
-        let known_available = current_contract_balance
-            .as_u128()
-            .saturating_sub(self.borrow_asset_in_flight.as_u128());
-
-        known_available.saturating_sub(must_retain).into()
-    }
-
-    /// # Errors
-    /// - If the withdrawal queue is already locked.
-    /// - If the withdrawal queue is empty.
-    pub fn try_lock_next_withdrawal_request(
-        &mut self,
-    ) -> Result<Option<(AccountId, BorrowAssetAmount)>, WithdrawalQueueLockError> {
-        let (account_id, requested_amount) = self.withdrawal_queue.try_lock()?;
-
-        let Some((amount, mut supply_position)) =
-            self.supply_positions
-                .get(&account_id)
-                .and_then(|supply_position| {
-                    // Cap withdrawal amount to deposit amount at most.
-                    let amount = supply_position
-                        .get_borrow_asset_deposit()
-                        .min(requested_amount);
-
-                    if amount.is_zero() {
-                        None
-                    } else {
-                        Some((amount, supply_position))
-                    }
-                })
-        else {
-            // The amount that the entry is eligible to withdraw is zero, so skip it.
-            self.withdrawal_queue
-                .try_pop()
-                .unwrap_or_else(|| env::panic_str("Inconsistent state")); // we just locked the queue
-            return Ok(None);
+            single_snapshot_maximum_interest_precomputed,
         };
 
-        self.record_supply_position_borrow_asset_withdrawal(&mut supply_position, amount);
+        self_.finalized_snapshots.push(first_snapshot);
 
-        self.supply_positions.insert(&account_id, &supply_position);
-
-        Ok(Some((account_id, amount)))
+        self_
     }
 
-    fn log_total_borrow_asset_deposited(&mut self, amount: BorrowAssetAmount) {
-        let now = ChainTime::now();
+    pub fn borrowed(&self) -> BorrowAssetAmount {
+        self.borrow_asset_borrowed + self.borrow_asset_borrowed_in_flight
+    }
 
-        if let Some((last_index, mut last)) = self
-            .total_borrow_asset_deposited_log
-            .len()
-            .checked_sub(1)
-            .and_then(|last_index| {
-                self.total_borrow_asset_deposited_log
-                    .get(last_index)
-                    .filter(|log| log.chain_time == now)
-                    .map(|log| (last_index, log))
+    pub fn total_incoming(&self) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+            .iter()
+            .fold(BorrowAssetAmount::zero(), |total_incoming, incoming| {
+                total_incoming + incoming.amount
             })
-        {
-            last.amount = amount;
-            self.total_borrow_asset_deposited_log
-                .replace(last_index, &last);
-        } else {
-            self.total_borrow_asset_deposited_log
-                .push(&BalanceLog::new(now, amount));
+    }
+
+    pub fn incoming_at(&self, snapshot_index: u32) -> BorrowAssetAmount {
+        self.borrow_asset_deposited_incoming
+            .iter()
+            .find_map(|incoming| {
+                (incoming.activate_at_snapshot_index == snapshot_index).then_some(incoming.amount)
+            })
+            .unwrap_or(0.into())
+    }
+
+    pub fn get_last_finalized_snapshot(&self) -> &Snapshot {
+        #[allow(clippy::unwrap_used, reason = "Snapshots are never empty")]
+        self.finalized_snapshots
+            .get(self.finalized_snapshots.len() - 1)
+            .unwrap()
+    }
+
+    pub fn current_snapshot(&self) -> Snapshot {
+        let current_snapshot_index = self.finalized_snapshots.len();
+        let incoming = self.incoming_at(current_snapshot_index);
+
+        let active = self.borrow_asset_deposited_active + incoming;
+
+        let borrowed = self.borrowed();
+
+        let interest_rate = self
+            .configuration
+            .borrow_interest_rate_strategy
+            .at(usage_ratio(active, borrowed));
+
+        Snapshot {
+            time_chunk: self.current_time_chunk,
+            end_timestamp_ms: env::block_timestamp_ms().into(),
+            borrow_asset_deposited_active: active,
+            borrow_asset_borrowed: borrowed,
+            collateral_asset_deposited: self.collateral_asset_deposited,
+            yield_distribution: self.current_yield_distribution,
+            interest_rate,
         }
     }
 
-    fn record_borrow_asset_yield_distribution(&mut self, mut amount: BorrowAssetAmount) {
+    pub fn snapshot(&mut self) -> SnapshotProof {
+        let now = self.configuration.time_chunk_configuration.now();
+
+        // Do we need to finalize the current snapshot?
+        if self.current_time_chunk == now {
+            return SnapshotProof(());
+        }
+
+        let snapshot = self.current_snapshot();
+        let current_snapshot_index = self.finalized_snapshots.len();
+
+        // Emit event and push finalized snapshot
+        MarketEvent::SnapshotFinalized {
+            index: current_snapshot_index,
+            snapshot: snapshot.clone(),
+        }
+        .emit();
+        self.finalized_snapshots.push(snapshot);
+
+        // We just pushed a snapshot
+        let current_snapshot_index = current_snapshot_index + 1;
+
+        // Activate incoming funds
+        for i in 0..self.borrow_asset_deposited_incoming.len() {
+            let incoming = &self.borrow_asset_deposited_incoming[i];
+            if incoming.activate_at_snapshot_index == current_snapshot_index {
+                self.borrow_asset_deposited_active += incoming.amount;
+                self.borrow_asset_deposited_incoming.remove(i);
+                break;
+            }
+        }
+
+        // Reset for the new time chunk
+        self.current_time_chunk = now;
+        self.current_yield_distribution = 0.into();
+
+        SnapshotProof(())
+    }
+
+    pub fn single_snapshot_fee(&self, amount: BorrowAssetAmount) -> Option<BorrowAssetAmount> {
+        (u128::from(amount) * self.single_snapshot_maximum_interest_precomputed)
+            .to_u128_ceil()
+            .map(Into::into)
+    }
+
+    pub fn interest_rate(&self) -> Decimal {
+        self.configuration
+            .borrow_interest_rate_strategy
+            .at(usage_ratio(
+                self.borrow_asset_deposited_active,
+                self.borrowed(),
+            ))
+    }
+
+    pub fn get_borrow_asset_available_to_borrow(&self) -> BorrowAssetAmount {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "Factor is guaranteed to be <=1, so value must still fit in u128"
+        )]
+        let must_retain: BorrowAssetAmount = ((1u32
+            - self.configuration.borrow_asset_maximum_usage_ratio)
+            * Decimal::from(self.borrow_asset_deposited_active))
+        .to_u128_ceil()
+        .unwrap()
+        .into();
+
+        self.borrow_asset_deposited_active
+            .saturating_sub(self.borrowed())
+            .saturating_sub(must_retain)
+    }
+
+    pub fn iter_supply_positions(&self) -> impl Iterator<Item = (AccountId, SupplyPosition)> + '_ {
+        self.supply_positions.iter()
+    }
+
+    pub fn supply_position_ref(&self, account_id: AccountId) -> Option<SupplyPositionRef<&Self>> {
+        self.supply_positions
+            .get(&account_id)
+            .map(|position| SupplyPositionRef::new(self, account_id, position))
+    }
+
+    pub fn supply_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> Option<SupplyPositionGuard<'_>> {
+        self.supply_positions
+            .get(&account_id)
+            .map(|position| SupplyPositionGuard::new(self, account_id, position))
+    }
+
+    pub fn get_or_create_supply_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> SupplyPositionGuard<'_> {
+        let position = self
+            .supply_positions
+            .get(&account_id)
+            .unwrap_or_else(|| SupplyPosition::new(self.finalized_snapshots.len()));
+
+        SupplyPositionGuard::new(self, account_id, position)
+    }
+
+    pub fn cleanup_supply_position(&mut self, account_id: &AccountId) -> bool {
+        self.supply_positions
+            .get(account_id)
+            .filter(SupplyPosition::can_be_removed)
+            .and_then(|_| self.supply_positions.remove(account_id))
+            .is_some()
+    }
+
+    pub fn iter_borrow_positions(&self) -> impl Iterator<Item = (AccountId, BorrowPosition)> + '_ {
+        self.borrow_positions.iter()
+    }
+
+    pub fn borrow_position_ref(&self, account_id: AccountId) -> Option<BorrowPositionRef<&Self>> {
+        self.borrow_positions
+            .get(&account_id)
+            .map(|position| BorrowPositionRef::new(self, account_id, position))
+    }
+
+    pub fn borrow_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> Option<BorrowPositionGuard<'_>> {
+        self.borrow_positions
+            .get(&account_id)
+            .map(|position| BorrowPositionGuard::new(self, account_id, position))
+    }
+
+    pub fn get_or_create_borrow_position_guard(
+        &mut self,
+        _proof: SnapshotProof,
+        account_id: AccountId,
+    ) -> BorrowPositionGuard<'_> {
+        let position = self
+            .borrow_positions
+            .get(&account_id)
+            .unwrap_or_else(|| BorrowPosition::new(self.finalized_snapshots.len()));
+
+        BorrowPositionGuard::new(self, account_id, position)
+    }
+
+    pub fn cleanup_borrow_position(&mut self, account_id: &AccountId) -> bool {
+        self.borrow_positions
+            .get(account_id)
+            .filter(|p| !p.exists())
+            .and_then(|_| self.borrow_positions.remove(account_id))
+            .is_some()
+    }
+
+    pub fn record_borrow_asset_protocol_yield(&mut self, amount: BorrowAssetAmount) {
+        let mut yield_record = self
+            .static_yield
+            .get(&self.configuration.protocol_account_id)
+            .unwrap_or_else(|| Accumulator::new(1));
+
+        yield_record.add_once(amount);
+
+        self.static_yield
+            .insert(&self.configuration.protocol_account_id, &yield_record);
+    }
+
+    pub fn record_borrow_asset_yield_distribution(&mut self, amount: BorrowAssetAmount) {
         // Sanity.
         if amount.is_zero() {
             return;
         }
 
-        // First, static yield.
-
-        let total_weight = u128::from(u16::from(self.configuration.yield_weights.total_weight()));
-        let total_amount = amount.as_u128();
-        if total_weight != 0 {
-            for (account_id, share) in &self.configuration.yield_weights.r#static {
-                #[allow(clippy::unwrap_used)]
-                let portion = amount
-                    .split(
-                        // Safety:
-                        // total_weight is guaranteed >0 and <=u16::MAX
-                        // share is guaranteed <=u16::MAX
-                        // Therefore, as long as total_amount <= u128::MAX / u16::MAX, this will never overflow.
-                        // u128::MAX / u16::MAX == 5192376087906286159508272029171713 (0x10001000100010001000100010001)
-                        // With 24 decimals, that's about 5,192,376,087 tokens.
-                        // TODO: Fix.
-                        total_amount
-                            .checked_mul(u128::from(*share))
-                            .unwrap() // TODO: This one might panic.
-                        / total_weight, // This will never panic: is never div0
-                    )
-                    // Safety:
-                    // Guaranteed share <= total_weight
-                    // Guaranteed sum(shares) == total_weight
-                    // Guaranteed sum(floor(total_amount * share / total_weight) for each share in shares) <= total_amount
-                    // Therefore this should never panic.
-                    .unwrap();
-
-                let mut yield_record = self.static_yield.get(account_id).unwrap_or_default();
-                // Assuming borrow_asset is implemented correctly:
-                // this only panics if the circulating supply is somehow >u128::MAX
-                // and we have somehow obtained >u128::MAX amount.
-                // TODO: Include warning somewhere about tokens with >u128::MAX supply.
-                //
-                // Otherwise, borrow_asset is implemented incorrectly.
-                // TODO: If that is the case, how to deal?
-                #[allow(clippy::unwrap_used)]
-                yield_record.borrow_asset.join(portion).unwrap();
-                self.static_yield.insert(account_id, &yield_record);
-            }
-        }
-
-        // Next, dynamic (supply-based) yield.
-        let now = ChainTime::now();
-
-        if let Some((last_index, mut last)) = self
-            .borrow_asset_yield_distribution_log
-            .len()
-            .checked_sub(1)
-            .and_then(|last_index| {
-                self.borrow_asset_yield_distribution_log
-                    .get(last_index)
-                    .filter(|log| log.chain_time == now)
-                    .map(|log| (last_index, log))
-            })
-        {
-            last.amount = amount;
-            self.borrow_asset_yield_distribution_log
-                .replace(last_index, &last);
-        } else {
-            self.borrow_asset_yield_distribution_log
-                .push(&BalanceLog::new(now, amount));
-        }
+        self.current_yield_distribution += amount;
     }
 
-    pub fn record_supply_position_borrow_asset_deposit(
+    /// Accumulate static yield for an account.
+    ///
+    /// # Errors
+    ///
+    /// - When the account is not configured to earn static yield.
+    pub fn accumulate_static_yield(
         &mut self,
-        supply_position: &mut SupplyPosition,
-        amount: BorrowAssetAmount,
-    ) {
-        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
-        supply_position
-            .increase_borrow_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Supply position borrow asset overflow"));
-
-        self.borrow_asset_deposited
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset deposited overflow"));
-
-        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
-    }
-
-    pub fn record_supply_position_borrow_asset_withdrawal(
-        &mut self,
-        supply_position: &mut SupplyPosition,
-        amount: BorrowAssetAmount,
-    ) -> BorrowAssetAmount {
-        self.accumulate_yield_on_supply_position(supply_position, ChainTime::now());
-        let withdrawn = supply_position
-            .decrease_borrow_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Supply position borrow asset underflow"));
-
-        self.borrow_asset_deposited
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset deposited underflow"));
-
-        self.log_total_borrow_asset_deposited(self.borrow_asset_deposited);
-
-        withdrawn
-    }
-
-    pub fn record_borrow_position_collateral_asset_deposit(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: CollateralAssetAmount,
-    ) {
-        borrow_position
-            .increase_collateral_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow position collateral asset overflow"));
-    }
-
-    pub fn record_borrow_position_collateral_asset_withdrawal(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: CollateralAssetAmount,
-    ) {
-        borrow_position
-            .decrease_collateral_asset_deposit(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow position collateral asset underflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_in_flight_start(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        self.borrow_asset_in_flight
-            .join(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount overflow"));
-        borrow_position
-            .temporary_lock
-            .join(amount)
-            .and_then(|()| borrow_position.temporary_lock.join(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount overflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_in_flight_end(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        // This should never panic, because a given amount of in-flight borrow
-        // asset should always be added before it is removed.
-        self.borrow_asset_in_flight
-            .split(amount)
-            .unwrap_or_else(|| env::panic_str("Borrow asset in flight amount underflow"));
-        borrow_position
-            .temporary_lock
-            .split(amount)
-            .and_then(|_| borrow_position.temporary_lock.split(fees))
-            .unwrap_or_else(|| env::panic_str("Borrow position in flight amount underflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_withdrawal(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        borrow_position
-            .borrow_asset_fees
-            .accumulate_fees(fees, ChainTime::now());
-        borrow_position
-            .increase_borrow_asset_principal(amount, env::block_timestamp_ms())
-            .unwrap_or_else(|| env::panic_str("Increase borrow asset principal overflow"));
-    }
-
-    pub fn record_borrow_position_borrow_asset_repay(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        amount: BorrowAssetAmount,
-    ) {
-        let liability_reduction = borrow_position
-            .reduce_borrow_asset_liability(amount)
-            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
-
-        require!(
-            liability_reduction.amount_remaining.is_zero(),
-            "Overpayment not supported",
-        );
-
-        self.record_borrow_asset_yield_distribution(liability_reduction.amount_to_fees);
-    }
-
-    /// In order for yield calculations to be accurate, this function MUST
-    /// BE CALLED every time a supply position's deposit changes. This
-    /// requirement is largely met by virtue of the fact that
-    /// `SupplyPosition->borrow_asset_deposit` is a private field and can only
-    /// be modified via `Self::record_supply_position_*` methods.
-    pub fn accumulate_yield_on_supply_position(
-        &self,
-        supply_position: &mut SupplyPosition,
-        until: ChainTime,
-    ) {
-        let (accumulated, last_epoch_height) = self.calculate_supply_position_yield(
-            &self.borrow_asset_yield_distribution_log,
-            supply_position.borrow_asset_yield.last_updated,
-            supply_position.get_borrow_asset_deposit(),
-            until,
-        );
-
-        supply_position
-            .borrow_asset_yield
-            .accumulate_yield(accumulated, last_epoch_height);
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    pub fn calculate_supply_position_yield<T: AssetClass + BorshDeserialize>(
-        &self,
-        yield_distribution_logs: &Vector<BalanceLog<T>>,
-        last_updated: ChainTime,
-        borrow_asset_deposited_during_interval: BorrowAssetAmount,
-        until: ChainTime,
-    ) -> (FungibleAssetAmount<T>, ChainTime) {
-        if yield_distribution_logs.is_empty() || self.total_borrow_asset_deposited_log.is_empty() {
-            return (0.into(), last_updated);
-        }
-
-        let (starting_index, starting_chain_time) =
-            match search_balance_logs(yield_distribution_logs, last_updated) {
-                SearchResult::Found { index, log } => (index, log.chain_time),
-                SearchResult::NotFound { index_below } => {
-                    let index_after = index_below.map_or(0, |i| i + 1);
-                    match yield_distribution_logs
-                        .get(index_after)
-                        .filter(|log| log.chain_time < until)
-                    {
-                        Some(log) => (index_after, log.chain_time),
-                        None => return (0.into(), last_updated),
-                    }
-                }
-            };
-
-        let mut accumulated_fees_in_span = FungibleAssetAmount::<T>::zero();
-
-        let mut total_assets_deposited_at_distribution = match search_balance_logs(
-            &self.total_borrow_asset_deposited_log,
-            starting_chain_time,
-        ) {
-            SearchResult::Found { index, log } => (index, log),
-            SearchResult::NotFound {
-                index_below: Some(index_below),
-            } => (
-                index_below,
-                if let Some(log) = self.total_borrow_asset_deposited_log.get(index_below) {
-                    log
-                } else {
-                    return (0.into(), last_updated);
-                },
-            ),
-            SearchResult::NotFound { index_below: None } => {
-                env::panic_str("Invariant violation: yield distribution before any deposits.");
-            }
-        };
-
-        // This value is not necessary for correctness; it just reduces
-        // duplicate reads.
-        let mut next_total_assets_deposited_at_distribution = self
-            .total_borrow_asset_deposited_log
-            .get(total_assets_deposited_at_distribution.0 + 1);
-
-        let mut last_chain_time = last_updated;
-
-        for i in starting_index..yield_distribution_logs.len() {
-            let log = yield_distribution_logs.get(i).unwrap();
-            if log.chain_time >= until {
-                break;
-            }
-
-            // Now, we are looking for the latest total asset deposited amount
-            // AT OR BEFORE the current yield distribution log.
-            while let Some(next) = next_total_assets_deposited_at_distribution
-                .clone()
-                .filter(|l| l.chain_time <= log.chain_time)
-            {
-                total_assets_deposited_at_distribution.0 += 1;
-                total_assets_deposited_at_distribution.1 = next;
-
-                next_total_assets_deposited_at_distribution = self
-                    .total_borrow_asset_deposited_log
-                    .get(total_assets_deposited_at_distribution.0 + 1);
-            }
-
-            let share_fraction = Decimal::from(borrow_asset_deposited_during_interval.as_u128())
-                / total_assets_deposited_at_distribution.1.amount.as_u128();
-
-            let share_amount = FungibleAssetAmount::new(
-                (share_fraction * log.amount.as_u128())
-                    .to_u128_floor()
-                    .unwrap(),
-            );
-
-            accumulated_fees_in_span.join(share_amount);
-
-            last_chain_time = log.chain_time;
-        }
-
-        (accumulated_fees_in_span, last_chain_time)
-    }
-
-    pub fn can_borrow_position_be_liquidated(
-        &self,
         account_id: &AccountId,
-        oracle_price_proof: &OraclePriceProof,
-    ) -> bool {
-        let Some(borrow_position) = self.borrow_positions.get(account_id) else {
-            return false;
+        snapshot_limit: u32,
+    ) -> Result<(), UnknownAccount> {
+        let weight_numerator = *self
+            .configuration
+            .yield_weights
+            .r#static
+            .get(account_id)
+            .ok_or(UnknownAccount)?;
+        let weight_denominator = self.configuration.yield_weights.total_weight().get();
+        let mut accumulator = self
+            .static_yield
+            .get(account_id)
+            .unwrap_or_else(|| Accumulator::new(1));
+
+        let mut next_snapshot_index = accumulator.get_next_snapshot_index();
+        let mut accumulated = Decimal::ZERO;
+
+        #[allow(clippy::unwrap_used, reason = "Guaranteed previous snapshot exists")]
+        let mut prev_end_timestamp_ms = self
+            .finalized_snapshots
+            .get(next_snapshot_index.checked_sub(1).unwrap())
+            .unwrap()
+            .end_timestamp_ms
+            .0;
+
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Assume # of snapshots is never >u32::MAX"
+        )]
+        for (i, snapshot) in self
+            .finalized_snapshots
+            .iter()
+            .enumerate()
+            .skip(next_snapshot_index as usize)
+            .take(snapshot_limit as usize)
+        {
+            let snapshot_duration_ms = snapshot.end_timestamp_ms.0 - prev_end_timestamp_ms;
+            let interest_paid_by_borrowers = Decimal::from(snapshot.borrow_asset_borrowed)
+                * snapshot.interest_rate
+                * snapshot_duration_ms
+                * YEAR_PER_MS;
+            let other_yield = Decimal::from(snapshot.yield_distribution);
+            accumulated +=
+                (interest_paid_by_borrowers + other_yield) * weight_numerator / weight_denominator;
+
+            next_snapshot_index = i as u32 + 1;
+            prev_end_timestamp_ms = snapshot.end_timestamp_ms.0;
+        }
+
+        let accumulation_record = AccumulationRecord {
+            // Accumulated amount is derived from real balances, so it should
+            // never overflow underlying data type.
+            #[allow(clippy::unwrap_used, reason = "Derived from real balances")]
+            amount: accumulated.to_u128_floor().unwrap().into(),
+            fraction_as_u128_dividend: accumulated.fractional_part_as_u128_dividend(),
+            next_snapshot_index,
         };
 
-        self.configuration
-            .borrow_status(
-                &borrow_position,
-                oracle_price_proof,
+        accumulator.accumulate(accumulation_record);
+
+        self.static_yield.insert(account_id, &accumulator);
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("This account does not earn static yield")]
+pub struct UnknownAccount;
+
+fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decimal {
+    if active.is_zero() || borrowed.is_zero() {
+        Decimal::ZERO
+    } else if borrowed >= active {
+        Decimal::ONE
+    } else {
+        Decimal::from(borrowed) / Decimal::from(active)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+#[cfg(test)]
+mod tests {
+    use near_sdk::{test_utils::*, testing_env, VMContext};
+    use templar_primitives::dec;
+
+    use crate::{
+        asset::FungibleAsset,
+        borrow::InitialBorrow,
+        fee::{Fee, TimeBasedFee},
+        interest_rate_strategy::InterestRateStrategy,
+        market::{PriceOracleConfiguration, Withdrawal, YieldWeights},
+        oracle::pyth::{PriceIdentifier, PythTimestamp},
+        price::PricePair,
+        supply::WithdrawalAttempt,
+        time_chunk::TimeChunkConfiguration,
+    };
+
+    use super::*;
+
+    fn configuration() -> MarketConfiguration {
+        MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(1),
+            borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "pyth-oracle.near".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([0xcc; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([0xbb; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: dec!("1.25"),
+            borrow_mcr_liquidation: dec!("1.2"),
+            borrow_asset_maximum_usage_ratio: dec!("0.9"),
+            borrow_origination_fee: Fee::Proportional(dec!("0.25")),
+            borrow_interest_rate_strategy: InterestRateStrategy::zero(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(9)
+                .with_static("revenue.tmplr.near".parse().unwrap(), 1),
+            protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
+            liquidation_maximum_spread: dec!("0.05"),
+        }
+    }
+
+    fn price_pair(collateral: i64, borrow: i64) -> PricePair {
+        PricePair::new(
+            &crate::oracle::pyth::Price {
+                price: collateral.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: PythTimestamp::from_secs(10),
+            },
+            24,
+            &crate::oracle::pyth::Price {
+                price: borrow.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: PythTimestamp::from_secs(10),
+            },
+            24,
+        )
+        .unwrap()
+    }
+
+    struct TestMarketController {
+        pub context: VMContext,
+        pub market: Market,
+    }
+
+    impl TestMarketController {
+        pub fn print(&self) {
+            eprintln!(
+                "Available: {}",
+                self.market.get_borrow_asset_available_to_borrow(),
+            );
+            eprintln!("Balance: {}", self.market.borrow_asset_balance);
+            eprintln!("Borrowed: {}", self.market.borrow_asset_borrowed);
+            eprintln!("Supply: {}", self.market.borrow_asset_deposited_active);
+            eprintln!("Paid to fees: {}", self.market.borrow_asset_paid_to_fees);
+            eprintln!("{:#?}", self.market.borrow_asset_deposited_incoming);
+        }
+
+        pub fn new(configuration: MarketConfiguration) -> Self {
+            let context = VMContextBuilder::new()
+                .block_timestamp(1_000_000_000_000)
+                .build();
+            testing_env!(context.clone());
+
+            let market = Market::new(b"m", configuration);
+
+            Self { context, market }
+        }
+
+        pub fn tick(&mut self) -> SnapshotProof {
+            self.context.block_timestamp += 1_000_000;
+            testing_env!(self.context.clone());
+            self.market.snapshot()
+        }
+
+        pub fn supply(&mut self, account: AccountId, amount: u128) {
+            let snapshot = self.tick();
+            let mut supply_position = self
+                .market
+                .get_or_create_supply_position_guard(snapshot, account);
+            let yield_proof = supply_position.accumulate_yield();
+            supply_position.record_deposit(yield_proof, amount.into(), env::block_timestamp_ms());
+        }
+
+        pub fn collateralize(&mut self, account: AccountId, amount: u128) {
+            let snapshot_proof = self.tick();
+            let mut borrow_position = self
+                .market
+                .get_or_create_borrow_position_guard(snapshot_proof, account);
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position.record_collateral_asset_deposit(interest_proof, amount.into());
+        }
+
+        pub fn borrow_initial(&mut self, account_id: AccountId, amount: u128) -> InitialBorrow {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position
+                .record_borrow_initial(
+                    snapshot,
+                    interest_proof,
+                    amount.into(),
+                    &price_pair(1, 1),
+                    env::block_timestamp_ms(),
+                )
+                .unwrap()
+        }
+
+        pub fn borrow_final(&mut self, account_id: AccountId, initial: &InitialBorrow) {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position.record_borrow_final(
+                snapshot,
+                interest_proof,
+                initial,
+                true,
+                env::block_timestamp_ms(),
+            );
+        }
+
+        pub fn accumulate_interest(&mut self, account_id: AccountId) -> BorrowPosition {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let _ = borrow_position.accumulate_interest();
+            borrow_position.inner().clone()
+        }
+
+        pub fn repay(
+            &mut self,
+            account_id: AccountId,
+            amount: impl Into<BorrowAssetAmount>,
+        ) -> BorrowAssetAmount {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position.record_repay(interest_proof, amount.into())
+        }
+
+        pub fn withdraw_collateral_initial(&mut self, account_id: AccountId, amount: u128) {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position
+                .record_collateral_asset_withdrawal_initial(interest_proof, amount.into());
+        }
+
+        pub fn withdraw_collateral_final(&mut self, account_id: AccountId, amount: u128) {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, account_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            borrow_position.record_collateral_asset_withdrawal_final(
+                interest_proof,
+                amount.into(),
+                true,
+            );
+        }
+
+        pub fn liquidate(
+            &mut self,
+            liquidator_id: AccountId,
+            position_id: AccountId,
+            send: u128,
+            request: u128,
+            price_pair: &PricePair,
+        ) {
+            let snapshot = self.tick();
+            let mut borrow_position = self
+                .market
+                .borrow_position_guard(snapshot, position_id)
+                .unwrap();
+            let interest_proof = borrow_position.accumulate_interest();
+            let liquidation = borrow_position
+                .record_liquidation(
+                    interest_proof,
+                    liquidator_id,
+                    send.into(),
+                    Some(request.into()),
+                    price_pair,
+                    env::block_timestamp_ms(),
+                )
+                .unwrap();
+            assert_eq!(u128::from(liquidation.liquidated), request);
+        }
+
+        pub fn accumulate_yield(&mut self, account_id: AccountId) -> SupplyPosition {
+            let snapshot = self.tick();
+            let mut supply_position = self
+                .market
+                .supply_position_guard(snapshot, account_id)
+                .unwrap();
+            let _ = supply_position.accumulate_yield();
+            supply_position.inner().clone()
+        }
+
+        pub fn withdraw_supply_initial(
+            &mut self,
+            account_id: AccountId,
+            amount: u128,
+        ) -> WithdrawalAttempt {
+            let snapshot = self.tick();
+            let mut supply_position = self
+                .market
+                .supply_position_guard(snapshot, account_id)
+                .unwrap();
+            let proof = supply_position.accumulate_yield();
+            supply_position.record_withdrawal_initial(
+                proof,
+                amount.into(),
                 env::block_timestamp_ms(),
             )
-            .is_liquidation()
-    }
-
-    pub fn record_liquidation_lock(&mut self, borrow_position: &mut BorrowPosition) {
-        borrow_position.liquidation_lock = true;
-    }
-
-    pub fn record_liquidation_unlock(&mut self, borrow_position: &mut BorrowPosition) {
-        borrow_position.liquidation_lock = false;
-    }
-
-    pub fn record_full_liquidation(
-        &mut self,
-        borrow_position: &mut BorrowPosition,
-        mut recovered_amount: BorrowAssetAmount,
-    ) {
-        let principal = borrow_position.get_borrow_asset_principal();
-        borrow_position.full_liquidation(ChainTime::now());
-
-        // TODO: Is it correct to only care about the original principal here?
-        if recovered_amount.split(principal).is_some() {
-            // distribute yield
-            self.record_borrow_asset_yield_distribution(recovered_amount);
-        } else {
-            // we took a loss
-            // TODO: some sort of recovery for suppliers
-            todo!("Took a loss during liquidation");
         }
+
+        pub fn withdraw_supply_final(&mut self, account_id: AccountId, initial: &Withdrawal) {
+            let snapshot = self.tick();
+            let mut supply_position = self
+                .market
+                .supply_position_guard(snapshot, account_id)
+                .unwrap();
+            supply_position.record_withdrawal_final(initial, true);
+        }
+    }
+
+    #[test]
+    fn balance_1() {
+        let supplier: AccountId = "supply.near".parse().unwrap();
+        let borrower: AccountId = "borrow.near".parse().unwrap();
+
+        let mut c = TestMarketController::new(configuration());
+
+        // Supply
+        c.supply(supplier.clone(), 10_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 10_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            0.into(),
+            "still incoming, not yet active",
+        );
+
+        c.collateralize(borrower.clone(), 4_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 10_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            9_000_000.into()
+        );
+
+        let initial = c.borrow_initial(borrower.clone(), 2_000_000);
+        c.print();
+        assert_eq!(c.market.borrow_asset_balance, 8_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            7_000_000.into()
+        );
+
+        c.borrow_final(borrower.clone(), &initial);
+        assert_eq!(c.market.borrow_asset_borrowed, 2_000_000.into());
+        assert_eq!(c.market.borrow_asset_balance, 8_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            7_000_000.into()
+        );
+
+        // Repay half
+        c.repay(borrower.clone(), 1_500_000);
+        assert_eq!(c.market.borrow_asset_borrowed, 1_000_000.into());
+        assert_eq!(c.market.borrow_asset_balance, 9_500_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            8_000_000.into()
+        );
+
+        // Withdraw half of collateral: initial
+        c.withdraw_collateral_initial(borrower.clone(), 2_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 9_500_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            8_000_000.into()
+        );
+
+        // Withdraw half of collateral: final
+        c.withdraw_collateral_final(borrower.clone(), 2_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 9_500_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            8_000_000.into()
+        );
+
+        // Liquidate the position
+        let liquidator: AccountId = "liquidator.near".parse().unwrap();
+        c.liquidate(
+            liquidator.clone(),
+            borrower.clone(),
+            1_000_000,
+            2_000_000,
+            &price_pair(1, 2),
+        );
+        assert_eq!(c.market.borrow_asset_balance, 10_500_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            9_000_000.into()
+        );
+
+        // Supply yield compounding
+        let expected_yield_amount: BorrowAssetAmount = (500_000 * 9 / 10).into();
+        let yield_amount = c
+            .accumulate_yield(supplier.clone())
+            .borrow_asset_yield
+            .get_total();
+        assert_eq!(yield_amount, expected_yield_amount);
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            10_500_000.into(),
+            "Yield compounding does not affect the market's recorded balance",
+        );
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            BorrowAssetAmount::new(9_000_000), // should still be in incoming
+        );
+
+        c.tick(); // move incoming to active
+        assert_eq!(c.market.borrow_asset_balance, 10_500_000.into());
+        assert_eq!(c.market.borrow_asset_deposited_active, 10_000_000.into());
+        // assert_eq!(c.market.supply.r#virtual(), 450_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            BorrowAssetAmount::new(10_000_000 * 9 / 10),
+        );
+
+        // Withdraw supply: initial
+        let initial = c.withdraw_supply_initial(supplier.clone(), 10_450_000);
+        let initial = match initial {
+            WithdrawalAttempt::Full(initial) => initial,
+            a => {
+                panic!("Should be full withdrawal: {a:?}");
+            }
+        };
+        assert_eq!(c.market.borrow_asset_balance, 50_000.into());
+        assert_eq!(c.market.get_borrow_asset_available_to_borrow(), 0.into());
+
+        // Withdraw supply: final
+        c.withdraw_supply_final(supplier.clone(), &initial);
+        assert_eq!(c.market.borrow_asset_balance, 50_000.into());
+        assert_eq!(c.market.get_borrow_asset_available_to_borrow(), 0.into());
+    }
+
+    #[rstest::rstest]
+    #[should_panic = "InsufficientBorrowAssetAvailable"]
+    #[case(65_000_000)]
+    #[case(63_500_000)]
+    fn balance_2(#[case] second_borrow_amount: u128) {
+        let mut configuration = configuration();
+
+        configuration.borrow_origination_fee = Fee::Flat(15_000_000.into());
+        configuration.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+        configuration.borrow_asset_maximum_usage_ratio = Decimal::ONE;
+
+        let mut c = TestMarketController::new(configuration);
+
+        let supply_id: AccountId = "supply.near".parse().unwrap();
+        let borrow_id: AccountId = "borrow.near".parse().unwrap();
+        let borrow_2_id: AccountId = "borrow2.near".parse().unwrap();
+
+        // Supply 100
+        c.supply(supply_id.clone(), 100_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 100_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            0.into() // still in incoming
+        );
+
+        // Collateralize 200
+        c.collateralize(borrow_id.clone(), 200_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 100_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            100_000_000.into()
+        );
+
+        // Borrow 100 initial
+        let initial = c.borrow_initial(borrow_id.clone(), 100_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 0.into());
+        assert_eq!(c.market.get_borrow_asset_available_to_borrow(), 0.into());
+
+        // Borrow final
+        c.borrow_final(borrow_id.clone(), &initial);
+        assert_eq!(c.market.borrow_asset_balance, 0.into());
+        assert_eq!(c.market.get_borrow_asset_available_to_borrow(), 0.into());
+
+        // Borrow repay 100% + fees
+        let amount_repaid = c
+            .accumulate_interest(borrow_id.clone())
+            .get_total_borrow_asset_liability();
+        let amount_remaining = c.repay(borrow_id.clone(), amount_repaid);
+        assert_eq!(amount_remaining, 0.into());
+        assert_eq!(c.market.borrow_asset_balance, amount_repaid);
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            100_000_000.into()
+        );
+
+        // Supplier withdraws 50: initial
+        let yield_amount = c
+            .accumulate_yield(supply_id.clone())
+            .borrow_asset_yield
+            .get_total();
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            BorrowAssetAmount::new(100_000_000)
+        );
+        let withdrawal = c.withdraw_supply_initial(supply_id.clone(), 50_000_000);
+        let WithdrawalAttempt::Full(withdrawal) = withdrawal else {
+            panic!("Expected full withdrawal");
+        };
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            amount_repaid - BorrowAssetAmount::new(50_000_000),
+        );
+        c.print();
+        assert_eq!(
+            BorrowAssetAmount::new(50_000_000) + yield_amount,
+            63_500_000.into(),
+        );
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            63_500_000.into(),
+        );
+
+        // Supply withdrawal final
+        c.withdraw_supply_final(supply_id.clone(), &withdrawal);
+        c.print();
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            amount_repaid - BorrowAssetAmount::new(50_000_000),
+        );
+        assert_eq!(c.market.borrow_asset_deposited_incoming.len(), 0);
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            63_500_000.into(),
+        );
+
+        c.accumulate_yield(supply_id.clone());
+        c.print();
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            63_500_000.into(),
+        );
+
+        // Collateralize2 200
+        c.collateralize(borrow_2_id.clone(), 200_000_000);
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            amount_repaid - BorrowAssetAmount::new(50_000_000),
+        );
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            63_500_000.into(),
+        );
+
+        c.print();
+
+        // Borrow2 initial
+        let initial = c.borrow_initial(borrow_2_id.clone(), second_borrow_amount);
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            amount_repaid - BorrowAssetAmount::new(50_000_000) - second_borrow_amount,
+        );
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            BorrowAssetAmount::new(63_500_000) - second_borrow_amount,
+        );
+
+        eprintln!("Borrow2 final");
+        eprintln!("{initial:?}");
+        eprintln!("{}", c.market.borrow_asset_borrowed_in_flight);
+
+        // Borrow2 final
+        c.borrow_final(borrow_2_id.clone(), &initial);
+        assert_eq!(
+            c.market.borrow_asset_balance,
+            amount_repaid - BorrowAssetAmount::new(50_000_000) - second_borrow_amount,
+        );
+
+        c.print();
+    }
+
+    #[test]
+    fn balance_3() {
+        let mut configuration = configuration();
+        configuration.borrow_origination_fee = Fee::Flat(10_000_000.into());
+        configuration.borrow_interest_rate_strategy = InterestRateStrategy::zero();
+        configuration.yield_weights = YieldWeights::new_with_supply_weight(1);
+        configuration.borrow_asset_maximum_usage_ratio = Decimal::ONE;
+
+        let supply_id: AccountId = "supply.near".parse().unwrap();
+        let borrow_id: AccountId = "borrow.near".parse().unwrap();
+
+        let mut c = TestMarketController::new(configuration);
+
+        // Supply
+        c.supply(supply_id.clone(), 100_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 100_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            0.into(),
+            "still incoming, not yet active",
+        );
+
+        // Collateralize
+        c.collateralize(borrow_id.clone(), 100_000_000);
+        assert_eq!(c.market.borrow_asset_balance, 100_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            100_000_000.into()
+        );
+
+        // Borrow: initial
+        let initial = c.borrow_initial(borrow_id.clone(), 60_000_000);
+        c.print();
+        assert_eq!(c.market.borrow_asset_balance, 40_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            40_000_000.into()
+        );
+
+        // Borrow: final
+        c.borrow_final(borrow_id.clone(), &initial);
+        assert_eq!(c.market.borrow_asset_borrowed, 60_000_000.into());
+        assert_eq!(c.market.borrow_asset_balance, 40_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            40_000_000.into()
+        );
+
+        c.accumulate_yield(supply_id.clone())
+            .borrow_asset_yield
+            .get_total();
+        assert_eq!(c.market.borrow_asset_borrowed, 60_000_000.into());
+        assert_eq!(c.market.borrow_asset_balance, 40_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            40_000_000.into()
+        );
+
+        c.tick();
+        c.tick();
+        c.print();
+
+        assert_eq!(c.market.borrow_asset_borrowed, 60_000_000.into());
+        assert_eq!(c.market.borrow_asset_balance, 40_000_000.into());
+        assert_eq!(
+            c.market.get_borrow_asset_available_to_borrow(),
+            40_000_000.into()
+        );
     }
 }

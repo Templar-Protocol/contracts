@@ -1,8 +1,48 @@
-# Ignore the target directory
+# Rust
 /target/
 
-# Ignore Cargo.lock for library projects (optional)
-# Cargo.lock
+# Python
+__pycache__/
+*.pyc
+*.pyo
 
-# Ignore .DS_Store
+# IDEs and Editors
+.helix/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+
+# Environment files
+.env
+.env.local
+.env.smoketest
+
+# Oh My OpenAgent working state
+.omo/
+
+# documentation site
+_site/
+
+# fuzz artifacts
+**/artifacts
+**/corpus
+**/fuzz*.log
+**/coverage
+
+# generated soroban test snapshots
+contract/vault/**/test_snapshots/
+contract/proxy-oracle/**/test_snapshots/
+contract/proxy-*-soroban/**/test_snapshots/
+
+# generated bindings
+client/vault/dist/
+
+# local agent scratch space
+.codex/
+
+.aider*
+.claude/

@@ -1,0 +1,65 @@
+services:
+  liquidator:
+    build:
+      context: ../..
+      dockerfile: service/liquidator/Dockerfile
+    image: templar-liquidator:latest
+    container_name: templar-liquidator
+    restart: unless-stopped
+
+    # Environment variables from .env file
+    env_file:
+      - .env
+
+    # Additional environment variables
+    environment:
+      - RUST_LOG=${RUST_LOG:-info,templar_liquidator=debug}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-1}
+
+    command: [
+      "--network", "${NETWORK:-mainnet}",
+      "--signer-account", "${SIGNER_ACCOUNT_ID}",
+      "--signer-key", "${SIGNER_KEY}",
+      "--registries", "${REGISTRY_ACCOUNT_IDS:-v1.tmplr.near}",
+      "--partial-percentage", "${PARTIAL_LIQUIDATION_PERCENTAGE:-50}",
+      "--min-profit-bps", "${MIN_PROFIT_BPS:-50}",
+      "--liquidation-scan-interval", "${LIQUIDATION_SCAN_INTERVAL:-600}",
+      "--registry-refresh-interval", "${REGISTRY_REFRESH_INTERVAL:-3600}",
+      "--concurrency", "${CONCURRENCY:-10}",
+      "--transaction-timeout", "${TRANSACTION_TIMEOUT:-60}",
+      "--collateral-strategy", "${COLLATERAL_STRATEGY:-hold}",
+      "--max-loop-iterations", "${MAX_LOOP_ITERATIONS:-10}",
+      "--hermes-url", "${PYTH_HERMES_URL:-https://hermes.pyth.network}",
+      "--redstone-gateway-url", "${REDSTONE_GATEWAY_URL:-https://oracle-gateway-1.a.redstone.vip}",
+      # Uncomment to enable loop liquidation (repeatedly liquidate until healthy):
+      # "--loop-liquidation",
+      # "--fixed-liquidation-amount-usd", "${FIXED_LIQUIDATION_AMOUNT_USD}",
+      # "--oneclick-api-token", "${ONECLICK_API_TOKEN}",
+      # "--ref-contract", "${REF_CONTRACT:-v2.ref-finance.near}",
+      "--dry-run"
+    ]
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "liquidator"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

@@ -1,0 +1,29 @@
+name: Setup Rust
+description: Install Rust version and setup caching
+inputs:
+  targets:
+    description: Rust targets to install
+    required: false
+    default: wasm32-unknown-unknown
+  components:
+    description: Rust components to install
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@dd44c20b1206a46e25fba8503d5d7c9a33bd355a
+      with:
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      with:
+        save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+        # Cache target directory but with smart cleanup
+        cache-on-failure: false
+        # Add shared key to deduplicate cache across jobs
+        shared-key: "rust-cache"
+        # Only save cache from main/dev branches to reduce storage
+        workspaces: ". -> target"

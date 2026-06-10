@@ -2,11 +2,11 @@
 
 use std::ops::{Deref, DerefMut};
 
-use near_sdk::{env, json_types::U128, near, BorshStorageKey, PanicOnDefault};
-use templar_common::{
-    asset::ReturnNativeBalance,
-    market::{Market, MarketConfiguration},
+use near_sdk::{env, near, AccountId, BorshStorageKey, PanicOnDefault};
+use near_sdk_contract_tools::standard::nep145::{
+    Nep145Controller, Nep145ForceUnregister, StorageBalanceBounds,
 };
+use templar_common::market::{Market, MarketConfiguration};
 
 #[derive(BorshStorageKey)]
 #[near(serializers = [borsh])]
@@ -14,19 +14,85 @@ enum StorageKey {
     Market,
 }
 
-#[derive(PanicOnDefault)]
+#[derive(PanicOnDefault, near_sdk_contract_tools::Nep145)]
+#[nep145(force_unregister_hook = "Self")]
 #[near(contract_state)]
 pub struct Contract {
     pub market: Market,
+    storage_usage_snapshot: u64,
+    storage_usage_supply_position: u64,
+    storage_usage_borrow_position: u64,
 }
 
 #[near]
 impl Contract {
+    #[allow(clippy::unwrap_used, reason = "Infallible")]
     #[init]
     pub fn new(configuration: MarketConfiguration) -> Self {
-        Self {
-            market: Market::new(StorageKey::Market, configuration),
-        }
+        let mut market = Market::new(StorageKey::Market, configuration);
+        let snapshot = market.snapshot();
+        let storage_usage_1 = env::storage_usage();
+        market.finalized_snapshots.flush();
+        let storage_usage_2 = env::storage_usage();
+        let storage_usage_snapshot = storage_usage_2.saturating_sub(storage_usage_1);
+
+        // These values shoud be approximately:
+        // 161 (fixed cost) +
+        // borsh serialization length of position record +
+        // 128 (max account length in bytes)
+        let zero_account: AccountId = "0".repeat(64).parse().unwrap();
+
+        drop(market.get_or_create_supply_position_guard(snapshot, zero_account.clone()));
+        let storage_usage_3 = env::storage_usage();
+        let storage_usage_supply_position = storage_usage_3.saturating_sub(storage_usage_2);
+
+        drop(market.get_or_create_borrow_position_guard(snapshot, zero_account.clone()));
+        let storage_usage_4 = env::storage_usage();
+        let storage_usage_borrow_position = storage_usage_4.saturating_sub(storage_usage_3);
+
+        env::log_str(&format!("Storage usage: {{ \"snapshot\": {storage_usage_snapshot}, \"supply_position\":{storage_usage_supply_position}, \"borrow_position\": {storage_usage_borrow_position} }}"));
+
+        market.cleanup_supply_position(&zero_account);
+        market.cleanup_borrow_position(&zero_account);
+
+        let mut self_ = Self {
+            market,
+            storage_usage_snapshot,
+            storage_usage_supply_position,
+            storage_usage_borrow_position,
+        };
+
+        self_.set_storage_balance_bounds(&StorageBalanceBounds {
+            min: env::storage_byte_cost().saturating_mul(u128::from(
+                storage_usage_supply_position.max(storage_usage_borrow_position)
+                    + 2 * storage_usage_snapshot,
+            )),
+            max: None,
+        });
+
+        self_
+    }
+
+    fn charge_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
+        self.lock_storage(
+            account_id,
+            env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
+        )
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
+    }
+
+    fn refund_for_storage(&mut self, account_id: &AccountId, storage_consumption: u64) {
+        self.unlock_storage(
+            account_id,
+            env::storage_byte_cost().saturating_mul(u128::from(storage_consumption)),
+        )
+        .unwrap_or_else(|e| templar_common::panic_with_message(&format!("Storage error: {e}")));
+    }
+}
+
+impl near_sdk_contract_tools::hook::Hook<Self, Nep145ForceUnregister<'_>> for Contract {
+    fn hook<R>(_: &mut Self, _: &Nep145ForceUnregister, _: impl FnOnce(&mut Self) -> R) -> R {
+        templar_common::panic_with_message("force unregistration is not supported")
     }
 }
 
@@ -44,16 +110,9 @@ impl DerefMut for Contract {
     }
 }
 
-#[near]
-impl ReturnNativeBalance for Contract {
-    fn return_native_balance(&self) -> U128 {
-        U128(env::account_balance().as_yoctonear())
-    }
-}
-
-mod impl_ft_receiver;
 mod impl_helper;
 mod impl_market_external;
+mod impl_token_receiver;
 
 #[cfg(target_arch = "wasm32")]
 mod custom_getrandom {

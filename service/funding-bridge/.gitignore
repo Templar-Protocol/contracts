@@ -1,0 +1,35 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+target/
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+funding-bridge.log
+
+# Test artifacts
+*.profraw
+*.profdata
+
+# Temporary files
+tmp/
+temp/
+
+# Node.js
+node_modules/
+package-lock.json

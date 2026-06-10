@@ -1,0 +1,427 @@
+//! Deposit endpoint - Automated cross-chain deposits from external wallets
+//!
+//! Transfers tokens from configured external wallets (Ethereum, Arbitrum, Solana, etc.) to the
+//! NEAR Intents bridge, which credits the NEAR treasury with OMFT tokens.
+
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
+use tracing::{error, info};
+
+use crate::app::App;
+
+use super::models::{DepositRequest, DepositResponse};
+
+/// POST /deposit - Execute automated deposit from external wallet
+///
+/// Transfers tokens from configured external wallet to bridge deposit address.
+/// The bridge then credits NEAR treasury with OMFT tokens.
+///
+/// Requires ETH_PRIVATE_KEY for Ethereum/EVM deposits or SOLANA_PRIVATE_KEY for Solana deposits.
+#[tracing::instrument(
+    name = "deposit",
+    skip(app, req),
+    fields(
+        source_chain = %req.source_chain,
+        asset = %req.asset,
+        amount = %req.amount
+    )
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn deposit(State(app): State<App>, Json(req): Json<DepositRequest>) -> Response {
+    let chain_id = normalize_chain_id(&req.source_chain);
+
+    let chain_handler = match app.external_chains.get(&chain_id) {
+        Some(handler) => handler,
+        None => {
+            error!(chain = %chain_id, "Chain not configured");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(DepositResponse {
+                    source_tx_hash: String::new(),
+                    status: "FAILED".to_string(),
+                    source_chain: chain_id.clone(),
+                    bridge_deposit_address: None,
+                    bridge_deposit_memo: None,
+                    error: Some(format!(
+                        "Chain {} not configured. Available chains: {:?}",
+                        chain_id,
+                        app.available_external_chains()
+                    )),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    if !chain_handler.supports_token(&req.asset) {
+        error!(asset = %req.asset, chain = %chain_id, "Token not supported");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(DepositResponse {
+                source_tx_hash: String::new(),
+                status: "FAILED".to_string(),
+                source_chain: chain_id,
+                bridge_deposit_address: None,
+                bridge_deposit_memo: None,
+                error: Some(format!(
+                    "Token {} not supported on {}",
+                    req.asset,
+                    chain_handler.chain_id()
+                )),
+            }),
+        )
+            .into_response();
+    }
+
+    // For NEAR → NEAR: Transfer directly to treasury (no bridge)
+    // For External → NEAR: Use bridge deposit address
+    let (deposit_address, deposit_memo) = if chain_id == "near:mainnet" {
+        (app.near_handler.treasury_account().to_string(), None)
+    } else {
+        let deposit_info = match app
+            .bridge_client
+            .get_deposit_address(app.near_handler.treasury_account().as_str(), &chain_id)
+            .await
+        {
+            Ok(result) => result,
+            Err(e) => {
+                error!(error = %e, "Failed to get deposit address from bridge");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(DepositResponse {
+                        source_tx_hash: String::new(),
+                        status: "FAILED".to_string(),
+                        source_chain: chain_id,
+                        bridge_deposit_address: None,
+                        bridge_deposit_memo: None,
+                        error: Some(format!("Failed to get bridge deposit address: {}", e)),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+
+        (deposit_info.address.clone(), deposit_info.memo.clone())
+    };
+
+    // If dry run, return success without executing
+    if app.dry_run || req.dry_run {
+        info!("Dry run mode - would execute transfer");
+        return (
+            StatusCode::OK,
+            Json(DepositResponse {
+                source_tx_hash: "dry-run-tx-hash".to_string(),
+                status: "DRY_RUN".to_string(),
+                source_chain: chain_id,
+                bridge_deposit_address: Some(deposit_address),
+                bridge_deposit_memo: deposit_memo,
+                error: None,
+            }),
+        )
+            .into_response();
+    }
+
+    match chain_handler
+        .transfer_tokens(
+            &deposit_address,
+            &req.asset,
+            &req.amount,
+            deposit_memo.as_deref(),
+        )
+        .await
+    {
+        Ok(result) => {
+            info!(
+                tx_hash = %result.tx_hash,
+                bridge_address = %deposit_address,
+                "Deposit executed"
+            );
+            (
+                StatusCode::OK,
+                Json(DepositResponse {
+                    source_tx_hash: result.tx_hash,
+                    status: if result.confirmed {
+                        "PENDING".to_string() // Pending bridge processing
+                    } else {
+                        "SUBMITTED".to_string()
+                    },
+                    source_chain: chain_id,
+                    bridge_deposit_address: Some(deposit_address),
+                    bridge_deposit_memo: deposit_memo,
+                    error: None,
+                }),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "Transfer failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(DepositResponse {
+                    source_tx_hash: String::new(),
+                    status: "FAILED".to_string(),
+                    source_chain: chain_id,
+                    bridge_deposit_address: Some(deposit_address),
+                    bridge_deposit_memo: deposit_memo,
+                    error: Some(format!("Transfer failed: {}", e)),
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Normalize chain identifier to standard format
+///
+/// Converts human-readable names to chain IDs:
+/// - "ethereum" -> "eth:1"
+/// - "arbitrum" -> "eth:42161"
+/// - "solana" -> "sol:mainnet"
+/// - "stellar" -> "stellar:mainnet"
+/// - "near" -> "near:mainnet"
+/// - "eth:1" -> "eth:1" (unchanged)
+pub fn normalize_chain_id(chain: &str) -> String {
+    match chain.to_lowercase().as_str() {
+        "ethereum" | "eth" => "eth:1".to_string(),
+        "arbitrum" | "arb" => "eth:42161".to_string(),
+        "base" => "eth:8453".to_string(),
+        "optimism" | "op" => "eth:10".to_string(),
+        "polygon" | "matic" => "eth:137".to_string(),
+        "solana" | "sol" => "sol:mainnet".to_string(),
+        "stellar" => "stellar:mainnet".to_string(),
+        "near" => "near:mainnet".to_string(),
+        _ => chain.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_chain_id_ethereum() {
+        assert_eq!(normalize_chain_id("ethereum"), "eth:1");
+        assert_eq!(normalize_chain_id("eth"), "eth:1");
+        assert_eq!(normalize_chain_id("Ethereum"), "eth:1");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_arbitrum() {
+        assert_eq!(normalize_chain_id("arbitrum"), "eth:42161");
+        assert_eq!(normalize_chain_id("arb"), "eth:42161");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_base() {
+        assert_eq!(normalize_chain_id("base"), "eth:8453");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_solana() {
+        assert_eq!(normalize_chain_id("solana"), "sol:mainnet");
+        assert_eq!(normalize_chain_id("sol"), "sol:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_passthrough() {
+        assert_eq!(normalize_chain_id("eth:1"), "eth:1");
+        assert_eq!(normalize_chain_id("eth:42161"), "eth:42161");
+        assert_eq!(normalize_chain_id("sol:mainnet"), "sol:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_stellar() {
+        assert_eq!(normalize_chain_id("stellar"), "stellar:mainnet");
+        assert_eq!(normalize_chain_id("Stellar"), "stellar:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_optimism() {
+        assert_eq!(normalize_chain_id("optimism"), "eth:10");
+        assert_eq!(normalize_chain_id("op"), "eth:10");
+        assert_eq!(normalize_chain_id("Optimism"), "eth:10");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_polygon() {
+        assert_eq!(normalize_chain_id("polygon"), "eth:137");
+        assert_eq!(normalize_chain_id("matic"), "eth:137");
+        assert_eq!(normalize_chain_id("Polygon"), "eth:137");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_unknown() {
+        // Unknown chains should pass through unchanged
+        assert_eq!(normalize_chain_id("bitcoin"), "bitcoin");
+        assert_eq!(normalize_chain_id("unknown:123"), "unknown:123");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_case_insensitive() {
+        assert_eq!(normalize_chain_id("ETHEREUM"), "eth:1");
+        assert_eq!(normalize_chain_id("SoLaNa"), "sol:mainnet");
+        assert_eq!(normalize_chain_id("BASE"), "eth:8453");
+    }
+
+    #[test]
+    fn test_deposit_request_serialization() {
+        let req = DepositRequest {
+            source_chain: "ethereum".to_string(),
+            asset: "USDC".to_string(),
+            amount: "1000000".to_string(),
+            dry_run: false,
+        };
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"source_chain\":\"ethereum\""));
+        assert!(json.contains("\"asset\":\"USDC\""));
+        assert!(json.contains("\"amount\":\"1000000\""));
+    }
+
+    #[test]
+    fn test_deposit_request_deserialization() {
+        let json = r#"{
+            "source_chain": "eth:1",
+            "asset": "USDT",
+            "amount": "5000000",
+            "dry_run": true
+        }"#;
+
+        let req: DepositRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.source_chain, "eth:1");
+        assert_eq!(req.asset, "USDT");
+        assert_eq!(req.amount, "5000000");
+        assert!(req.dry_run);
+    }
+
+    #[test]
+    fn test_deposit_response_success() {
+        let resp = DepositResponse {
+            source_tx_hash: "0xabc123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit123".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"source_tx_hash\":\"0xabc123\""));
+        assert!(json.contains("\"status\":\"PENDING\""));
+        assert!(json.contains("\"bridge_deposit_address\""));
+    }
+
+    #[test]
+    fn test_deposit_response_with_memo() {
+        let resp = DepositResponse {
+            source_tx_hash: "ABC123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "stellar:mainnet".to_string(),
+            bridge_deposit_address: Some("GB4Y2K2...".to_string()),
+            bridge_deposit_memo: Some("12345678".to_string()),
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"bridge_deposit_memo\":\"12345678\""));
+    }
+
+    #[test]
+    fn test_deposit_response_error() {
+        let resp = DepositResponse {
+            source_tx_hash: String::new(),
+            status: "FAILED".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: None,
+            bridge_deposit_memo: None,
+            error: Some("Insufficient balance".to_string()),
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"status\":\"FAILED\""));
+        assert!(json.contains("\"error\":\"Insufficient balance\""));
+    }
+
+    #[test]
+    fn test_deposit_response_dry_run() {
+        let resp = DepositResponse {
+            source_tx_hash: "dry-run-tx-hash".to_string(),
+            status: "DRY_RUN".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        assert_eq!(resp.status, "DRY_RUN");
+        assert_eq!(resp.source_tx_hash, "dry-run-tx-hash");
+    }
+
+    #[test]
+    fn test_deposit_request_default_dry_run() {
+        let json = r#"{
+            "source_chain": "eth:1",
+            "asset": "ETH",
+            "amount": "1000000000000000000"
+        }"#;
+
+        let req: DepositRequest = serde_json::from_str(json).unwrap();
+        assert!(!req.dry_run); // Should default to false
+    }
+
+    #[test]
+    fn test_deposit_response_serialization_omits_nulls() {
+        let resp = DepositResponse {
+            source_tx_hash: "0x123".to_string(),
+            status: "PENDING".to_string(),
+            source_chain: "eth:1".to_string(),
+            bridge_deposit_address: Some("0xdeposit".to_string()),
+            bridge_deposit_memo: None,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&resp).unwrap();
+        // None fields should be omitted or null
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // error should be null or omitted
+        if let Some(error) = value.get("error") {
+            assert!(error.is_null());
+        }
+    }
+
+    #[test]
+    fn test_normalize_all_evm_chains() {
+        // All EVM chains
+        assert_eq!(normalize_chain_id("ethereum"), "eth:1");
+        assert_eq!(normalize_chain_id("arbitrum"), "eth:42161");
+        assert_eq!(normalize_chain_id("base"), "eth:8453");
+        assert_eq!(normalize_chain_id("optimism"), "eth:10");
+        assert_eq!(normalize_chain_id("polygon"), "eth:137");
+    }
+
+    #[test]
+    fn test_normalize_all_non_evm_chains() {
+        // Non-EVM chains
+        assert_eq!(normalize_chain_id("solana"), "sol:mainnet");
+        assert_eq!(normalize_chain_id("stellar"), "stellar:mainnet");
+        assert_eq!(normalize_chain_id("near"), "near:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_near() {
+        assert_eq!(normalize_chain_id("near"), "near:mainnet");
+        assert_eq!(normalize_chain_id("NEAR"), "near:mainnet");
+        assert_eq!(normalize_chain_id("Near"), "near:mainnet");
+    }
+
+    #[test]
+    fn test_normalize_chain_id_near_passthrough() {
+        assert_eq!(normalize_chain_id("near:mainnet"), "near:mainnet");
+        assert_eq!(normalize_chain_id("near:testnet"), "near:testnet");
+    }
+}

@@ -1,0 +1,55 @@
+[package]
+name = "templar-relayer"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+axum = "0.8.4"
+clap.workspace = true
+dotenvy = "0.15.7"
+futures.workspace = true
+hex.workspace = true
+near-contract-standards.workspace = true
+near-crypto.workspace = true
+near-jsonrpc-client.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
+near-sdk = { workspace = true, features = [
+    "non-contract-usage",
+    "unit-testing",
+] }
+near-sdk-contract-tools.workspace = true
+sha2.workspace = true
+sqlx = { version = "0.8", features = [
+    "runtime-tokio",
+    "tls-native-tls",
+    "postgres",
+    "derive",
+    "macros",
+    "migrate",
+    "rust_decimal",
+    "uuid",
+] }
+templar-common = { workspace = true, features = ["rpc"] }
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-near-common = { workspace = true }
+templar-redstone-bridge.workspace = true
+templar-universal-account.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+tracing = { workspace = true, features = ["attributes"] }
+reqwest = { version = "0.12.24", features = ["json"] }
+
+[dev-dependencies]
+near-workspaces = { workspace = true, features = ["experimental"] }
+p256.workspace = true
+rstest.workspace = true
+solana-sdk.workspace = true
+test-utils.workspace = true
+
+[lints]
+workspace = true

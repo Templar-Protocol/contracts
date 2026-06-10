@@ -1,0 +1,28 @@
+[profile.default]
+# Limit test threads to reduce memory/disk usage
+test-threads = 4
+
+# Reduce retries to save disk space
+retries = 0
+
+# Run tests serially in each binary to reduce memory
+max-fail = 10
+
+[profile.ci]
+# CI-specific profile balancing disk space and performance
+test-threads = 6
+retries = 1
+default-filter = "not package(templar-soroban-runtime) and not test(/^requires_network_/)"
+
+# Fail fast to avoid wasting resources
+fail-fast = false
+
+# Show output for failed tests only to reduce log size
+status-level = "fail"
+
+# Set slower timeout for CI runners
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+[store]
+# Reduce disk usage by not storing test output
+dir = "target/nextest"

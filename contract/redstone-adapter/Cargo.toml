@@ -1,0 +1,44 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "templar-redstone-adapter-contract"
+repository.workspace = true
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+getrandom.workspace = true
+near-sdk-contract-tools.workspace = true
+near-sdk.workspace = true
+primitive-types.workspace = true
+templar-common.workspace = true
+templar-primitives = { workspace = true, features = ["near", "redstone"] }
+
+[dev-dependencies]
+hex-literal.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
+rstest.workspace = true
+
+# fields to configure build with WASM reproducibility, according to specs
+# in https://github.com/near/NEPs/blob/master/neps/nep-0330.md
+[package.metadata.near.reproducible_build]
+# docker image, descriptor of build environment
+image = "sourcescan/cargo-near:0.17.0-rust-1.86.0"
+# tag after colon above serves only descriptive purpose; image is identified by digest
+image_digest = "sha256:1784ca6310f3496f0048356ce420921c8f5fdf71ee8124d43a2e1ceb1f70db8a"
+# build command inside of docker container
+# if docker image from default gallery is used https://hub.docker.com/r/sourcescan/cargo-near/tags,
+# the command may be any combination of flags of `cargo-near`,
+# supported by respective version of binary inside the container besides `--no-locked` flag
+container_build_command = [
+    "cargo",
+    "near",
+    "build",
+    "non-reproducible-wasm",
+    "--locked",
+]
+
+[lints]
+workspace = true

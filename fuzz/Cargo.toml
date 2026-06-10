@@ -1,0 +1,116 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "templar-fuzz"
+publish = false
+repository.workspace = true
+version = "0.0.0"
+
+[dependencies]
+arbitrary.workspace = true
+hex-literal.workspace = true
+libfuzzer-sys.workspace = true
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+primitive-types.workspace = true
+templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-vault-kernel = { path = "../contract/vault/kernel", features = ["postcard", "soroban"] }
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["postcard"] }
+templar-soroban-runtime = { path = "../contract/vault/soroban", features = ["testutils"] }
+
+[lints]
+workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "fuzz_borrow_invariants"
+path = "fuzz_targets/fuzz_borrow_invariants.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_borrow"
+path = "fuzz_targets/fuzz_borrow.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_decimal_arithmetic"
+path = "fuzz_targets/fuzz_decimal_arithmetic.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_decimal_parsing"
+path = "fuzz_targets/fuzz_decimal_parsing.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_decimals"
+path = "fuzz_targets/fuzz_decimals.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_interest_math"
+path = "fuzz_targets/fuzz_interest_math.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_liquidations"
+path = "fuzz_targets/fuzz_liquidations.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_liquidator_logic"
+path = "fuzz_targets/fuzz_liquidator_logic.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_liquidator_transactions"
+path = "fuzz_targets/fuzz_liquidator_transactions.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_market_creation"
+path = "fuzz_targets/fuzz_market_creation.rs"
+test = false
+bench = false
+
+# [[bin]]
+# name = "fuzz_market_state"
+# path = "fuzz_targets/fuzz_market_state.rs"
+# test = false
+
+[[bin]]
+name = "fuzz_price"
+path = "fuzz_targets/fuzz_price.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_price_calculations"
+path = "fuzz_targets/fuzz_price_calculations.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_supply"
+path = "fuzz_targets/fuzz_supply.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_soroban_storage_codecs"
+path = "fuzz_targets/fuzz_soroban_storage_codecs.rs"
+test = false
+bench = false

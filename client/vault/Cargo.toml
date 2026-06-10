@@ -1,0 +1,50 @@
+[package]
+name = "templar-vault-client"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { workspace = true, features = ["cli", "tokio"] }
+templar-common.workspace = true
+templar-vault-kernel = { path = "../../contract/vault/kernel", features = ["serde"] }
+near-jsonrpc-client.workspace = true
+near-crypto.workspace = true
+near-account-id.workspace = true
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+futures.workspace = true
+zeroize = { workspace = true }
+paste = "1.0"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+mini-moka = "0.10.3"
+hex.workspace = true
+
+near-sdk = { version = "5.17.2", features = ["unstable", "non-contract-usage"] }
+
+[build-dependencies]
+uniffi = { workspace = true, features = [
+    "build",
+    "tokio",
+    "wasm-unstable-single-threaded",
+] }
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

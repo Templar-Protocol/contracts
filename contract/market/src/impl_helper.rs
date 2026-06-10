@@ -1,37 +1,58 @@
-use near_sdk::{
-    env, json_types::U128, near, require, serde_json, AccountId, Promise, PromiseError,
-    PromiseOrValue, PromiseResult,
-};
+use near_sdk::{env, near, require, serde_json, AccountId, Gas, Promise, PromiseResult};
 use templar_common::{
-    asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
-    balance_log::BalanceLog,
-    borrow::BorrowPosition,
-    chain_time::ChainTime,
-    market::OraclePriceProof,
-    supply::SupplyPosition,
+    asset::{
+        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+        ReturnStyle,
+    },
+    borrow::InitialBorrow,
+    market::{LiquidateMsg, Withdrawal},
+    oracle::pyth::OracleResponse,
+    price::PricePair,
+    self_ext,
+    withdrawal_queue::WithdrawalQueueExecutionResult,
 };
 
 use crate::{Contract, ContractExt};
 
 /// Internal helpers.
 impl Contract {
-    pub fn execute_supply(&mut self, account_id: &AccountId, amount: BorrowAssetAmount) {
-        let mut supply_position = self
-            .supply_positions
-            .get(account_id)
-            .unwrap_or_else(|| SupplyPosition::new(ChainTime::now()));
-
-        self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
-
-        self.supply_positions.insert(account_id, &supply_position);
+    pub fn retrieve_price_pair(&self) -> Promise {
+        self.configuration
+            .price_oracle_configuration
+            .retrieve_price_pair()
     }
 
-    pub fn execute_collateralize(&mut self, account_id: &AccountId, amount: CollateralAssetAmount) {
-        let mut borrow_position = self
-            .borrow_positions
-            .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
+    pub fn price_pair(&self, oracle_response: OracleResponse) -> PricePair {
+        self.configuration
+            .price_oracle_configuration
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+    }
 
+    pub fn execute_supply(&mut self, account_id: AccountId, amount: BorrowAssetAmount) {
+        if self.supply_position_ref(account_id.clone()).is_none() {
+            self.charge_for_storage(
+                &account_id,
+                self.storage_usage_supply_position + self.storage_usage_snapshot * 2,
+            );
+        }
+
+        let snapshot = self.snapshot();
+        let mut supply_position = self.get_or_create_supply_position_guard(snapshot, account_id);
+        let proof = supply_position.accumulate_yield();
+        supply_position.record_deposit(proof, amount, env::block_timestamp_ms());
+        require!(
+            supply_position.is_within_allowable_range(),
+            "New supply position is outside of allowable range",
+        );
+    }
+
+    pub fn execute_collateralize(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        price_pair: &PricePair,
+    ) {
         // TODO: This creates a borrow record implicitly. If we
         // require a discrete "sign-up" step, we will need to add
         // checks before this function call.
@@ -39,342 +60,360 @@ impl Contract {
         // The sign-up step would only be NFT gating or something of
         // that sort, which is just an additional pre condition check.
         // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923871982
-        self.record_borrow_position_collateral_asset_deposit(&mut borrow_position, amount);
+        if self.borrow_position_ref(account_id.clone()).is_none() {
+            self.charge_for_storage(
+                &account_id,
+                self.storage_usage_borrow_position + self.storage_usage_snapshot * 2,
+            );
+        }
 
-        self.borrow_positions.insert(account_id, &borrow_position);
+        let snapshot = self.snapshot();
+        let mut borrow_position = self.get_or_create_borrow_position_guard(snapshot, account_id);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_deposit(proof, amount);
+        require!(
+            !borrow_position
+                .status(price_pair, env::block_timestamp_ms())
+                .is_liquidation(),
+            "Position is eligible for liquidation after collateralization",
+        );
     }
 
     /// Returns the amount that should be returned to the account.
     pub fn execute_repay(
         &mut self,
-        account_id: &AccountId,
+        account_id: AccountId,
         amount: BorrowAssetAmount,
+        price_pair: &PricePair,
     ) -> BorrowAssetAmount {
-        if let Some(mut borrow_position) = self.borrow_positions.get(account_id) {
-            // TODO: This function *errors* on overpayment. Instead, add a
-            // check before and only repay the maximum, then return the excess.
-            //
-            // Due to the slightly imprecise calculation of yield and
-            // other fees, the returning of the excess should be
-            // anything >1%, for example, over the total amount
-            // borrowed + fees/interest.
-            // -- https://github.com/Templar-Protocol/contract-mvp/pull/6#discussion_r1923876327
-            self.record_borrow_position_borrow_asset_repay(&mut borrow_position, amount);
-
-            self.borrow_positions.insert(account_id, &borrow_position);
-            BorrowAssetAmount::zero()
-        } else {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
             // No borrow exists: just return the whole amount.
-            amount
-        }
-    }
-
-    pub fn execute_liquidate_initial(
-        &mut self,
-        account_id: &AccountId,
-        amount: BorrowAssetAmount,
-        oracle_price_proof: &OraclePriceProof,
-    ) -> CollateralAssetAmount {
-        let mut borrow_position = self
-            .borrow_positions
-            .get(account_id)
-            .unwrap_or_else(|| BorrowPosition::new(ChainTime::now()));
-
+            return amount;
+        };
+        let proof = borrow_position.accumulate_interest();
         require!(
-            self.configuration
-                .borrow_status(
-                    &borrow_position,
-                    oracle_price_proof,
-                    env::block_timestamp_ms(),
-                )
+            !borrow_position
+                .status(price_pair, env::block_timestamp_ms())
                 .is_liquidation(),
-            "Borrow position cannot be liquidated",
+            "Cannot repay when eligible for liquidation",
         );
-
-        let minimum_acceptable_amount = self.configuration.minimum_acceptable_liquidation_amount(
-            borrow_position.collateral_asset_deposit,
-            oracle_price_proof,
-        );
-
-        require!(
-            amount >= minimum_acceptable_amount,
-            "Too little attached to liquidate",
-        );
-
-        self.record_liquidation_lock(&mut borrow_position);
-
-        self.borrow_positions.insert(account_id, &borrow_position);
-
-        borrow_position.collateral_asset_deposit
-    }
-
-    /// Returns the amount to return to the liquidator.
-    pub fn execute_liquidate_final(
-        &mut self,
-        account_id: &AccountId,
-        amount: BorrowAssetAmount,
-        success: bool,
-    ) -> BorrowAssetAmount {
-        let mut borrow_position = self.borrow_positions.get(account_id).unwrap_or_else(|| {
-            env::panic_str("Invariant violation: Liquidation of nonexistent position.")
-        });
-
-        if success {
-            self.record_full_liquidation(&mut borrow_position, amount);
-            BorrowAssetAmount::zero()
-        } else {
-            // Somehow transfer of collateral failed. This could mean:
-            //
-            // 1. Somehow the contract does not have enough collateral
-            //  available. This would be indicative of a *fundamental flaw*
-            //  in the contract (i.e. this should never happen).
-            //
-            // 2. More likely, in a multichain context, communication
-            //  broke down somewhere between the signer and the remote RPC.
-            //  Could be as simple as a nonce sync issue. Should just wait
-            //  and try again later.
-            self.record_liquidation_unlock(&mut borrow_position);
-            amount
-        }
+        // Returns the amount that should be returned to the borrower.
+        borrow_position.record_repay(proof, amount)
     }
 }
 
 /// External helpers.
 #[near]
 impl Contract {
-    pub fn get_total_borrow_asset_deposited_log(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> Vec<BalanceLog<BorrowAsset>> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.total_borrow_asset_deposited_log
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
-
-    pub fn get_borrow_asset_yield_distribution_log(
-        &self,
-        offset: Option<u32>,
-        count: Option<u32>,
-    ) -> Vec<BalanceLog<BorrowAsset>> {
-        let offset = offset.map_or(0, |o| o as usize);
-        let count = count.map_or(usize::MAX, |c| c as usize);
-        self.borrow_asset_yield_distribution_log
-            .iter()
-            .skip(offset)
-            .take(count)
-            .collect::<Vec<_>>()
-    }
+    // 3.9 Tgas
+    pub const GAS_BORROW_01_CONSUME_PRICE: Gas = Gas::from_tgas(6)
+        .saturating_add(FungibleAsset::<BorrowAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_BORROW_02_FINALIZE);
 
     #[private]
-    pub fn return_static(&self, value: serde_json::Value) -> serde_json::Value {
-        value
-    }
-
-    #[private]
-    pub fn borrow_01_consume_balance_and_price(
+    pub fn borrow_01_consume_price(
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        #[callback_result] current_balance: Result<BorrowAssetAmount, PromiseError>,
-        #[callback_result] oracle_price_proof: Result<OraclePriceProof, PromiseError>,
+        #[callback_unwrap] oracle_response: OracleResponse,
     ) -> Promise {
-        let current_balance = current_balance
-            .unwrap_or_else(|_| env::panic_str("Failed to fetch borrow asset current balance."));
-        let oracle_price_proof = oracle_price_proof
-            .unwrap_or_else(|_| env::panic_str("Failed to fetch price data from oracle."));
+        let price_pair = self.price_pair(oracle_response);
+        let snapshot = self.snapshot();
 
-        // Ensure we have enough funds to dispense.
-        let available_to_borrow = self.get_borrow_asset_available_to_borrow(current_balance);
-        require!(
-            amount <= available_to_borrow,
-            "Insufficient borrow asset available",
-        );
-
-        let fees = self
-            .configuration
-            .borrow_origination_fee
-            .of(amount)
-            .unwrap_or_else(|| env::panic_str("Fee calculation failed"));
-
-        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
-            env::panic_str("No borrower record. Please deposit collateral first.");
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
         };
 
-        self.record_borrow_position_borrow_asset_in_flight_start(
-            &mut borrow_position,
-            amount,
-            fees,
-        );
+        let interest = borrow_position.accumulate_interest();
 
-        require!(
-            self.configuration
-                .is_within_minimum_initial_collateral_ratio(&borrow_position, &oracle_price_proof),
-            "New position must exceed initial minimum collateral ratio",
-        );
+        let initial_borrow = borrow_position
+            .record_borrow_initial(
+                snapshot,
+                interest,
+                amount,
+                &price_pair,
+                env::block_timestamp_ms(),
+            )
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
-        require!(
-            self.configuration
-                .borrow_status(
-                    &borrow_position,
-                    &oracle_price_proof,
-                    env::block_timestamp_ms(),
-                )
-                .is_healthy(),
-            "New position would be in liquidation",
-        );
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
+        drop(borrow_position);
 
         self.configuration
             .borrow_asset
-            .transfer(account_id.clone(), amount) // TODO: Check for failure
+            .transfer(account_id.clone(), amount)
             .then(
-                Self::ext(env::current_account_id())
-                    .borrow_02_after_transfer(account_id, amount, fees),
+                self_ext!(Self::GAS_BORROW_02_FINALIZE)
+                    .borrow_02_finalize(account_id, initial_borrow),
             )
     }
 
+    // 3.1 Tgas
+    pub const GAS_BORROW_02_FINALIZE: Gas = Gas::from_tgas(6);
+
     #[private]
-    pub fn borrow_02_after_transfer(
+    pub fn borrow_02_finalize(&mut self, account_id: AccountId, initial_borrow: InitialBorrow) {
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id) else {
+            templar_common::panic_with_message(
+                "Invariant violation: borrow position does not exist after transfer.",
+            );
+        };
+
+        let proof = borrow_position.accumulate_interest();
+        #[allow(deprecated)]
+        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        borrow_position.record_borrow_final(
+            snapshot,
+            proof,
+            &initial_borrow,
+            success,
+            env::block_timestamp_ms(),
+        );
+    }
+
+    // ~5.8 Tgas
+    pub const GAS_EXECUTE_NEXT_SUPPLY_WITHDRAWAL_REQUEST_01_FINALIZE: Gas = Gas::from_tgas(8);
+
+    #[private]
+    pub fn execute_next_supply_withdrawal_request_01_finalize(
+        &mut self,
+        resolutions: Vec<Withdrawal>,
+        result: WithdrawalQueueExecutionResult,
+    ) -> WithdrawalQueueExecutionResult {
+        let snapshot = self.snapshot();
+
+        for (i, resolution) in resolutions.iter().enumerate() {
+            #[allow(deprecated)]
+            let succeeded = matches!(env::promise_result(i as u64), PromiseResult::Successful(_));
+
+            if let Some(mut position) =
+                self.supply_position_guard(snapshot, resolution.account_id.clone())
+            {
+                position.record_withdrawal_final(resolution, succeeded);
+            }
+
+            if succeeded && self.cleanup_supply_position(&resolution.account_id) {
+                self.refund_for_storage(&resolution.account_id, self.storage_usage_supply_position);
+            }
+        }
+
+        result
+    }
+
+    // ~3.4 TGas
+    pub const GAS_COLLATERALIZE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(6);
+
+    #[private]
+    pub fn collateralize_transfer_call_01_consume_price(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+        return_style: ReturnStyle,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> serde_json::Value {
+        let price_pair = self.price_pair(oracle_response);
+
+        self.execute_collateralize(account_id, amount, &price_pair);
+
+        return_style.serialize(CollateralAssetAmount::zero())
+    }
+
+    // ~4.3 TGas
+    pub const GAS_REPAY_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7);
+
+    #[private]
+    pub fn repay_transfer_call_01_consume_price(
         &mut self,
         account_id: AccountId,
         amount: BorrowAssetAmount,
-        fees: BorrowAssetAmount,
-    ) {
-        require!(env::promise_results_count() == 1);
+        return_style: ReturnStyle,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> serde_json::Value {
+        let price_pair = self.price_pair(oracle_response);
 
-        let Some(mut borrow_position) = self.borrow_positions.get(&account_id) else {
-            env::panic_str("Invariant violation: borrow position does not exist after transfer.");
-        };
+        let amount = self.execute_repay(account_id, amount, &price_pair);
 
-        self.record_borrow_position_borrow_asset_in_flight_end(&mut borrow_position, amount, fees);
-
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                // GREAT SUCCESS
-                //
-                // Borrow position has already been created: finalize
-                // withdrawal record.
-                self.record_borrow_position_borrow_asset_withdrawal(
-                    &mut borrow_position,
-                    amount,
-                    fees,
-                );
-            }
-            PromiseResult::Failed => {
-                // Likely reasons for failure:
-                //
-                // 1. Balance oracle is out-of-date. This is kind of bad, but
-                //  not necessarily catastrophic nor unrecoverable. Probably,
-                //  the oracle is just lagging and will be fine if the user
-                //  tries again later.
-                //
-                // Mitigation strategy: Revert locks & state changes (i.e. do
-                // nothing else).
-                //
-                // 2. MPC signing failed or took too long. Need to do a bit
-                //  more research to see if it is possible for the signature to
-                //  still show up on chain after the promise expires.
-                //
-                // Mitigation strategy: Retain locks until we know the
-                // signature will not be issued. Note that we can't implement
-                // this strategy until we implement asset transfer for MPC
-                // assets, so we IGNORE THIS CASE FOR NOW.
-                //
-                // TODO: Implement case 2 mitigation.
-            }
-        }
-
-        self.borrow_positions.insert(&account_id, &borrow_position);
+        return_style.serialize(amount)
     }
+
+    // ~5.3 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
+        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE);
 
     #[private]
-    pub fn after_execute_next_withdrawal(&mut self, account: AccountId, amount: BorrowAssetAmount) {
-        // TODO: Is this check even necessary in a #[private] function?
-        require!(env::promise_results_count() == 1);
+    pub fn liquidate_transfer_call_01_consume_price(
+        &mut self,
+        liquidator_id: AccountId,
+        amount: BorrowAssetAmount,
+        msg: LiquidateMsg,
+        return_style: ReturnStyle,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> Promise {
+        let price_pair = self
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&oracle_response)
+            .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()));
 
-        match env::promise_result(0) {
-            PromiseResult::Successful(_) => {
-                // Withdrawal succeeded: remove the withdrawal request from the queue.
-
-                // TODO: If this panics, this is BIG BAD, as it means there is
-                // some way to unlock the queue while a withdrawal is in-flight.
-                // So, maybe we should not *actually* panic here, but do some sort of recovery?
-                let (popped_account, _) = self.withdrawal_queue.try_pop().unwrap_or_else(|| {
-                    env::panic_str("Invariant violation: Withdrawal queue should have been locked.")
+        let result = {
+            let snapshot = self.snapshot();
+            let mut borrow_position = self
+                .borrow_position_guard(snapshot, msg.account_id.clone())
+                .unwrap_or_else(|| {
+                    templar_common::panic_with_message("Borrow position does not exist")
                 });
 
-                // This is another consistency check: that the account at the
-                // head of the queue cannot change while transfers are
-                // in-flight. This should be maintained by the queue itself.
-                require!(
-                    popped_account == account,
-                    "Invariant violation: Queue shifted while locked/in-flight.",
-                );
-            }
-            PromiseResult::Failed => {
-                // Withdrawal failed: unlock the queue so they can try again.
+            let proof = borrow_position.accumulate_interest();
 
-                // This occurs when the contract does not control enough of
-                // the borrow asset to fulfill the withdrawal request. That is
-                // to say, it has distributed all of the funds to current
-                // borrows.
+            borrow_position
+                .record_liquidation(
+                    proof,
+                    liquidator_id.clone(),
+                    amount,
+                    msg.amount,
+                    &price_pair,
+                    env::block_timestamp_ms(),
+                )
+                .unwrap_or_else(|e| templar_common::panic_with_message(&e.to_string()))
+        };
 
-                env::log_str("The withdrawal request cannot be fulfilled at this time. Please try again later.");
-                self.withdrawal_queue.unlock();
-                if let Some(mut supply_position) = self.supply_positions.get(&account) {
-                    self.record_supply_position_borrow_asset_deposit(&mut supply_position, amount);
-                    self.supply_positions.insert(&account, &supply_position);
-                }
-            }
+        if self.cleanup_borrow_position(&msg.account_id) {
+            self.refund_for_storage(&msg.account_id, self.storage_usage_borrow_position);
         }
+
+        self.configuration
+            .collateral_asset
+            .transfer(liquidator_id.clone(), result.liquidated)
+            .then(
+                self_ext!(Self::GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE)
+                    .liquidate_transfer_call_02_finalize(result.refund, return_style),
+            )
     }
+
+    // ~2.1 Tgas
+    pub const GAS_LIQUIDATE_TRANSFER_CALL_02_FINALIZE: Gas = Gas::from_tgas(4);
 
     /// Called during liquidation process; checks whether the transfer of
     /// collateral to the liquidator was successful.
     #[private]
-    pub fn after_liquidate_via_ft_transfer_call(
+    pub fn liquidate_transfer_call_02_finalize(
         &mut self,
-        account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-    ) -> U128 {
-        require!(env::promise_results_count() == 1);
+        refund: BorrowAssetAmount,
+        return_style: ReturnStyle,
+    ) -> serde_json::Value {
+        // let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        // If the transfer of collateral failed, it could mean:
+        //
+        // 1. The liquidator has opted-out of storage management for the
+        //  collateral token. This can be due to negligence or malice, but
+        //  we cannot be sure, so we cannot refund the tokens, because
+        //  that would allow a borrow position in liquidation to
+        //  indefinitely lock their collateral from being liquidated.
+        //
+        // 2. Somehow the contract does not have enough collateral
+        //  available. This would be indicative of a *fundamental flaw*
+        //  in the contract (i.e. this should never happen).
 
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
-
-        let refund_to_liquidator =
-            self.execute_liquidate_final(&account_id, borrow_asset_amount, success);
-
-        refund_to_liquidator.into()
+        return_style.serialize(refund)
     }
 
+    // ~5.0 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_01_CONSUME_PRICE: Gas = Gas::from_tgas(7)
+        .saturating_add(FungibleAsset::<CollateralAsset>::GAS_FT_TRANSFER)
+        .saturating_add(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE);
+
     #[private]
-    pub fn after_liquidate_native(
+    pub fn withdraw_collateral_01_consume_price(
         &mut self,
-        liquidator_id: AccountId,
         account_id: AccountId,
-        borrow_asset_amount: BorrowAssetAmount,
-    ) -> PromiseOrValue<()> {
-        require!(env::promise_results_count() == 1);
+        amount: CollateralAssetAmount,
+        #[callback_unwrap] oracle_response: OracleResponse,
+    ) -> Promise {
+        let price_pair = self.price_pair(oracle_response);
 
-        let success = matches!(env::promise_result(0), PromiseResult::Successful(_));
+        let snapshot = self.snapshot();
+        let Some(mut borrow_position) = self.borrow_position_guard(snapshot, account_id.clone())
+        else {
+            templar_common::panic_with_message(
+                "No borrower record. Please deposit collateral first.",
+            );
+        };
 
-        let refund_to_liquidator =
-            self.execute_liquidate_final(&account_id, borrow_asset_amount, success);
+        let proof = borrow_position.accumulate_interest();
+        borrow_position.record_collateral_asset_withdrawal_initial(proof, amount);
 
-        if refund_to_liquidator.is_zero() {
-            PromiseOrValue::Value(())
-        } else {
-            PromiseOrValue::Promise(
-                self.configuration
-                    .borrow_asset
-                    .transfer(liquidator_id, refund_to_liquidator),
+        require!(
+            borrow_position
+                .status(&price_pair, env::block_timestamp_ms())
+                .is_healthy(),
+            "Borrow position must be healthy after collateral withdrawal",
+        );
+
+        drop(borrow_position);
+
+        self.configuration
+            .collateral_asset
+            .transfer(account_id.clone(), amount)
+            .then(
+                self_ext!(Self::GAS_WITHDRAW_COLLATERAL_02_FINALIZE)
+                    .withdraw_collateral_02_finalize(account_id, amount),
             )
+    }
+
+    // ~2.2 Tgas
+    pub const GAS_WITHDRAW_COLLATERAL_02_FINALIZE: Gas = Gas::from_tgas(5);
+
+    #[private]
+    pub fn withdraw_collateral_02_finalize(
+        &mut self,
+        account_id: AccountId,
+        amount: CollateralAssetAmount,
+    ) {
+        #[allow(deprecated)]
+        let succeeded = matches!(env::promise_result(0), PromiseResult::Successful(_));
+
+        let snapshot = self.snapshot();
+        let Some(mut position) = self.borrow_position_guard(snapshot, account_id.clone()) else {
+            templar_common::panic_with_message(
+                "Invariant violation: Borrow position must exist after collateral withdrawal.",
+            );
+        };
+
+        let proof = position.accumulate_interest();
+        position.record_collateral_asset_withdrawal_final(proof, amount, succeeded);
+
+        if succeeded {
+            drop(position);
+            if self.cleanup_borrow_position(&account_id) {
+                self.refund_for_storage(&account_id, self.storage_usage_borrow_position);
+            }
+        }
+    }
+
+    // ~2.1 Tgas
+    pub const GAS_WITHDRAW_STATIC_YIELD_01_FINALIZE: Gas = Gas::from_tgas(5);
+
+    #[private]
+    pub fn withdraw_static_yield_01_finalize(
+        &mut self,
+        account_id: AccountId,
+        amount: BorrowAssetAmount,
+    ) {
+        #[allow(deprecated)]
+        if matches!(env::promise_result(0), PromiseResult::Failed) {
+            let mut yield_record = self.static_yield.get(&account_id).unwrap_or_else(|| {
+                templar_common::panic_with_message(
+                    "Invariant violation: static yield entry must exist during callback",
+                )
+            });
+            yield_record.add_once(amount);
+            self.static_yield.insert(&account_id, &yield_record);
+            self.borrow_asset_balance += amount;
         }
     }
 }

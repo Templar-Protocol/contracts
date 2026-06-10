@@ -1,0 +1,37 @@
+[package]
+name = "templar-soroban-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[features]
+default = []
+std = []
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+# Core dependency - vault kernel types
+templar-vault-kernel = { path = "../kernel", features = ["postcard", "soroban", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-sync-external", "action-recovery"] }
+
+templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }
+templar-soroban-shared-types = { path = "./shared-types" }
+derive_more.workspace = true
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+
+# Soroban SDK for Stellar smart contracts
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
+
+[dev-dependencies]
+proptest = "1.4"
+soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimental_spec_shaking_v2"] }
+rstest.workspace = true
+blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
+templar-soroban-blend-adapter = { path = "./blend-adapter" }
+templar-soroban-runtime = { path = ".", features = ["testutils"] }
+templar-soroban-governance = { path = "./governance" }

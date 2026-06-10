@@ -1,0 +1,318 @@
+set dotenv-load := false
+
+# =============================================================================
+# Templar Soroban Proxy Oracle — build, test, and release gates
+# =============================================================================
+# Run `just -f contract/proxy-oracle/soroban/justfile --list` for all recipes.
+#
+# Prerequisites:
+#   - Rust with the wasm32v1-none target (rustup target add wasm32v1-none)
+#   - Stellar CLI v25.2.0+ (cargo install --locked stellar-cli --features opt)
+#   - Python 3 (size/budget/release gate scripts)
+#
+# Size budgets: runtime & governance <= 131072 bytes (128 KiB); adapter <= 32768 (32 KiB).
+# =============================================================================
+
+root             := justfile_directory() + "/../../.."
+release_dir      := root + "/target/proxy-oracle-soroban"
+# `wasm_dir` is a justfile-managed output path (populated via `stellar contract
+# build --out-dir`), not where cargo writes intermediates. Cargo actually builds
+# to `target/wasm32v1-none/release-soroban-checked/`; keeping wasm_dir under
+# `release_dir` makes it clear this is a chosen artifact location.
+wasm_dir         := release_dir + "/wasm"
+scripts_dir      := justfile_directory() + "/scripts"
+shared_scripts_dir := root + "/script/soroban"
+evidence_dir     := release_dir + "/evidence"
+manifest_path    := release_dir + "/release-manifest.json"
+
+runtime_pkg      := "templar-proxy-oracle-soroban-contract"
+governance_pkg   := "templar-proxy-oracle-soroban-governance-contract"
+adapter_pkg      := "templar-proxy-oracle-soroban-sep40-adapter-contract"
+
+runtime_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_contract.wasm"
+governance_wasm  := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.wasm"
+adapter_wasm     := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.wasm"
+
+runtime_opt      := wasm_dir + "/templar_proxy_oracle_soroban_contract.optimized.wasm"
+governance_opt   := wasm_dir + "/templar_proxy_oracle_soroban_governance_contract.optimized.wasm"
+adapter_opt      := wasm_dir + "/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm"
+
+remap_rustflags  := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
+soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
+
+size_limit       := "131072"
+adapter_size_limit := "32768"
+
+# =============================================================================
+# TEST
+# =============================================================================
+
+# Run all proxy-oracle Soroban unit tests (runtime + governance + adapter).
+test:
+    @echo "Running proxy-oracle Soroban tests..."
+    @cargo test -p "{{runtime_pkg}}" --features testutils -- --nocapture
+    @cargo test -p "{{governance_pkg}}" --features testutils -- --nocapture
+    @cargo test -p "{{adapter_pkg}}" --features testutils -- --nocapture
+    @echo "✓ All proxy-oracle Soroban tests passed"
+
+# Run cross-contract integration tests (full deploy + Blend pool, in-process Env).
+test-integration:
+    @echo "Running proxy-oracle Soroban integration tests..."
+    @cargo test -p templar-proxy-oracle-soroban-integration-tests -- --nocapture
+    @echo "✓ All proxy-oracle Soroban integration tests passed"
+
+# =============================================================================
+# BUILD
+# =============================================================================
+
+# Build the runtime WASM (stellar contract build, release-soroban-checked profile).
+build-runtime:
+    @echo "Building proxy-oracle runtime WASM..."
+    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+        --profile release-soroban-checked \
+        --manifest-path "{{root}}/Cargo.toml" \
+        --package "{{runtime_pkg}}" \
+        --out-dir "{{wasm_dir}}"
+    @echo "✓ Built: {{runtime_wasm}}"
+
+# Build the governance WASM (stellar contract build; stellar-access needs the CLI).
+build-governance:
+    @echo "Building proxy-oracle governance WASM..."
+    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+        --profile release-soroban-checked \
+        --manifest-path "{{root}}/Cargo.toml" \
+        --package "{{governance_pkg}}" \
+        --out-dir "{{wasm_dir}}"
+    @echo "✓ Built: {{governance_wasm}}"
+
+# Build the SEP-40 adapter WASM (stellar contract build; depends on stellar-access).
+build-sep40-adapter:
+    @echo "Building proxy-oracle SEP-40 adapter WASM..."
+    @RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+        --profile release-soroban-checked \
+        --manifest-path "{{root}}/Cargo.toml" \
+        --package "{{adapter_pkg}}" \
+        --out-dir "{{wasm_dir}}"
+    @echo "✓ Built: {{adapter_wasm}}"
+
+# Build runtime, governance, and adapter WASMs.
+build: build-runtime build-governance build-sep40-adapter
+    @echo "✓ All proxy-oracle WASMs built"
+
+# =============================================================================
+# OPTIMIZE
+# =============================================================================
+
+# Optimize a package into `<name>.optimized.wasm` via `stellar contract build
+# --optimize`. That command rewrites the wasm in place under the crate's own
+# name, so we build into a staging dir and copy the single artifact to the
+# expected `.optimized.wasm` path, leaving the unoptimized build (used for the
+# before/after size delta) intact. The cargo compile is shared with the
+# unoptimized `build-*` step, so this only adds the wasm-opt pass.
+_optimize-wasm package optimized_path:
+    @staging="$(mktemp -d)"; \
+    RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build \
+        --profile release-soroban-checked \
+        --manifest-path "{{root}}/Cargo.toml" \
+        --package "{{package}}" \
+        --optimize \
+        --out-dir "$staging"; \
+    cp "$staging/$(echo '{{package}}' | tr - _).wasm" "{{optimized_path}}"; \
+    rm -rf "$staging"
+
+# Build and optimize the runtime WASM.
+optimize-runtime: build-runtime
+    @echo "Optimizing runtime WASM..."
+    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{runtime_pkg}}" "{{runtime_opt}}"
+    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+        --wasm "{{runtime_wasm}}" \
+        --optimized "{{runtime_opt}}" \
+        --label "runtime"
+    @echo "✓ Optimized: {{runtime_opt}}"
+
+# Build and optimize the governance WASM.
+optimize-governance: build-governance
+    @echo "Optimizing governance WASM..."
+    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{governance_pkg}}" "{{governance_opt}}"
+    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+        --wasm "{{governance_wasm}}" \
+        --optimized "{{governance_opt}}" \
+        --label "governance"
+    @echo "✓ Optimized: {{governance_opt}}"
+
+# Build and optimize the SEP-40 adapter WASM.
+optimize-sep40-adapter: build-sep40-adapter
+    @echo "Optimizing SEP-40 adapter WASM..."
+    @just -f "{{justfile_directory()}}/justfile" _optimize-wasm "{{adapter_pkg}}" "{{adapter_opt}}"
+    @python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+        --wasm "{{adapter_wasm}}" \
+        --optimized "{{adapter_opt}}" \
+        --label "sep40-adapter"
+    @echo "✓ Optimized: {{adapter_opt}}"
+
+# Build and optimize all WASMs.
+optimize: optimize-runtime optimize-governance optimize-sep40-adapter
+    @echo "✓ All proxy-oracle WASMs optimized"
+
+# =============================================================================
+# SIZE GATE
+# =============================================================================
+
+# Enforce optimized-WASM size budgets (runtime/governance 128 KiB, adapter 32 KiB).
+size-check: optimize
+    @echo "Running size gate (limit: {{size_limit}} bytes)..."
+    @mkdir -p "{{evidence_dir}}"
+    @{ \
+        echo "# Proxy-Oracle Soroban Size Gate"; \
+        echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+        echo "limit: {{size_limit}} bytes (128 KiB)"; \
+        echo ""; \
+        echo "## Runtime"; \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{runtime_wasm}}" \
+            --optimized "{{runtime_opt}}" \
+            --label "runtime"; \
+        echo ""; \
+        echo "## Governance"; \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{governance_wasm}}" \
+            --optimized "{{governance_opt}}" \
+            --label "governance"; \
+        echo ""; \
+        echo "## SEP-40 Adapter"; \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{adapter_wasm}}" \
+            --optimized "{{adapter_opt}}" \
+            --label "sep40-adapter"; \
+        echo ""; \
+    } | tee "{{evidence_dir}}/size-check.txt"
+    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
+        --wasm "{{runtime_opt}}" \
+        --max-bytes "{{size_limit}}"
+    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
+        --wasm "{{governance_opt}}" \
+        --max-bytes "{{size_limit}}"
+    @python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
+        --wasm "{{adapter_opt}}" \
+        --max-bytes "{{adapter_size_limit}}"
+    @echo "" >> "{{evidence_dir}}/size-check.txt"
+    @echo "## Result: PASS" >> "{{evidence_dir}}/size-check.txt"
+    @echo "✓ Size gate passed — evidence: {{evidence_dir}}/size-check.txt"
+
+# =============================================================================
+# BUDGET GATE
+# =============================================================================
+
+# Run deterministic budget scenarios (soroban-sdk testutils, not live simulation).
+budget-check:
+    @echo "Running proxy-oracle budget check scenarios..."
+    @mkdir -p "{{evidence_dir}}"
+    @python3 "{{scripts_dir}}/budget_report.py" \
+        --root "{{root}}" \
+        --out "{{evidence_dir}}/budget-check.txt"
+    @echo "✓ Budget check passed — evidence: {{evidence_dir}}/budget-check.txt"
+
+# =============================================================================
+# COMBINED RELEASE GATE
+# =============================================================================
+
+# Run full release gate: test + optimize + size-check + budget-check.
+release-gate: test size-check budget-check
+    @echo ""
+    @echo "✓ Proxy-oracle Soroban release gate complete"
+
+# =============================================================================
+# RELEASE ARTIFACTS
+# =============================================================================
+
+# Build optimized WASMs and write the release manifest (SHA-256, sizes, versions).
+release: optimize
+    @echo "Generating release manifest..."
+    @mkdir -p "{{release_dir}}"
+    @python3 "{{scripts_dir}}/make_release_manifest.py" \
+        --root "{{root}}" \
+        --runtime-wasm "{{runtime_opt}}" \
+        --governance-wasm "{{governance_opt}}" \
+        --adapter-wasm "{{adapter_opt}}" \
+        --runtime-pkg "{{runtime_pkg}}" \
+        --governance-pkg "{{governance_pkg}}" \
+        --adapter-pkg "{{adapter_pkg}}" \
+        --out "{{manifest_path}}"
+    @echo "✓ Release manifest: {{manifest_path}}"
+
+# =============================================================================
+# DRY-RUN DEPLOY
+# =============================================================================
+
+# Validate release artifacts (SHA-256 + size) without broadcasting. Run `release` first.
+dry-run:
+    @echo "Running dry-run deploy validation..."
+    @if [ ! -f "{{manifest_path}}" ]; then \
+        echo "ERROR: release manifest not found — run: just -f {{justfile_directory()}}/justfile release" >&2; \
+        exit 1; \
+    fi
+    @mkdir -p "{{evidence_dir}}"
+    @python3 "{{scripts_dir}}/dry_run_deploy.py" \
+        --manifest "{{manifest_path}}" \
+        --root "{{root}}" \
+        --out "{{evidence_dir}}/dry-run.txt"
+    @echo "✓ Dry-run passed — evidence: {{evidence_dir}}/dry-run.txt"
+
+# =============================================================================
+# AUDIT READINESS GATE
+# =============================================================================
+
+# Full pre-audit gate (reproducible from a clean checkout): tests, size + budget, fmt, clippy, diff.
+audit-ready: test size-check budget-check release dry-run
+    @echo ""
+    @echo "=== Soroban Proxy Oracle audit-ready gate ==="
+    @echo "--- AUDIT.md placeholder check..."
+    @if rg -n "TBD|TODO|DECISION NEEDED|FIXME" "{{justfile_directory()}}/AUDIT.md"; then \
+        echo "ERROR: unresolved placeholders in AUDIT.md" >&2; \
+        exit 1; \
+    fi
+    @echo "--- shared kernel + workspace checks..."
+    @cd "{{root}}" && cargo test -p templar-proxy-oracle-kernel --features serde,borsh --lib
+    @cd "{{root}}" && cargo fmt --check
+    @cd "{{root}}" && cargo clippy --all-features --workspace --tests -- -D warnings
+    @cd "{{root}}" && git diff --check
+    @echo "✓ audit-ready gate passed"
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+# Print the runtime optimized WASM path.
+runtime-wasm-path:
+    @echo "{{runtime_opt}}"
+
+# Print the governance optimized WASM path.
+governance-wasm-path:
+    @echo "{{governance_opt}}"
+
+# Print size of existing artifacts (no rebuild).
+sizes:
+    @if [ -f "{{runtime_opt}}" ]; then \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{runtime_wasm}}" \
+            --optimized "{{runtime_opt}}" \
+            --label "runtime"; \
+    else \
+        echo "runtime optimized WASM not found — run: just optimize-runtime"; \
+    fi
+    @if [ -f "{{governance_opt}}" ]; then \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{governance_wasm}}" \
+            --optimized "{{governance_opt}}" \
+            --label "governance"; \
+    else \
+        echo "governance optimized WASM not found — run: just optimize-governance"; \
+    fi
+    @if [ -f "{{adapter_opt}}" ]; then \
+        python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
+            --wasm "{{adapter_wasm}}" \
+            --optimized "{{adapter_opt}}" \
+            --label "sep40-adapter"; \
+    else \
+        echo "adapter optimized WASM not found — run: just optimize-sep40-adapter"; \
+    fi

@@ -1,0 +1,25 @@
+[package]
+name = "templar-proxy-oracle-governance-kernel"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version = "0.1.0"
+
+[dependencies]
+borsh = { version = "1.5", default-features = false, features = ["derive", "unstable__schema"], optional = true }
+schemars = { version = "0.8", default-features = false, features = ["derive"], optional = true }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"], optional = true }
+templar-primitives = { path = "../../../primitives", default-features = false, features = [] }
+
+[dev-dependencies]
+rstest.workspace = true
+
+[features]
+default = []
+std = ["templar-primitives/std", "borsh?/std", "serde?/std"]
+borsh = ["dep:borsh", "templar-primitives/borsh"]
+serde = ["dep:serde", "templar-primitives/serde"]
+schemars = ["std", "dep:schemars", "schemars/derive", "templar-primitives/schemars"]
+
+[lints]
+workspace = true

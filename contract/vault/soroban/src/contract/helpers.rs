@@ -1,0 +1,572 @@
+use super::*;
+use templar_soroban_shared_types::strkey::validate_address_strkey;
+
+#[cold]
+pub(crate) fn contract_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::contract_error(msg)
+}
+
+#[cold]
+pub(crate) fn invalid_state_error(msg: &'static str) -> RuntimeError {
+    RuntimeError::invalid_state(msg)
+}
+
+pub(crate) fn kernel_address_from_sdk(env: &Env, addr: &SdkAddress) -> Address {
+    let strkey_bytes = addr.to_string().to_bytes().to_alloc_vec();
+    let mut raw = Vec::with_capacity(KERNEL_ADDRESS_DOMAIN.len() + strkey_bytes.len());
+    raw.extend_from_slice(KERNEL_ADDRESS_DOMAIN);
+    raw.extend_from_slice(&strkey_bytes);
+    let bytes = Bytes::from_slice(env, &raw);
+    Address(env.crypto().sha256(&bytes).to_bytes().to_array())
+}
+
+pub(crate) fn address_from_alloc_string(
+    env: &Env,
+    value: &AllocString,
+) -> Result<SdkAddress, ContractError> {
+    validate_address_strkey(value.as_bytes()).map_err(|_| ContractError::InvalidInput)?;
+    Ok(SdkAddress::from_str(env, value))
+}
+
+pub(crate) fn addresses_from_alloc_strings(
+    env: &Env,
+    values: &[AllocString],
+) -> Result<soroban_sdk::Vec<SdkAddress>, ContractError> {
+    let mut result = soroban_sdk::Vec::new(env);
+    for value in values {
+        result.push_back(address_from_alloc_string(env, value)?);
+    }
+    Ok(result)
+}
+
+fn is_contract_address(addr: &SdkAddress) -> bool {
+    matches!(
+        addr.executable(),
+        Some(Executable::Wasm(_)) | Some(Executable::StellarAsset)
+    )
+}
+
+pub(crate) fn require_contract_address(addr: &SdkAddress) -> Result<(), ContractError> {
+    is_contract_address(addr)
+        .then_some(())
+        .ok_or(ContractError::InvalidInput)
+}
+
+pub(crate) fn require_wasm_or_account_address(addr: &SdkAddress) -> Result<(), ContractError> {
+    (!matches!(addr.executable(), Some(Executable::StellarAsset)))
+        .then_some(())
+        .ok_or(ContractError::InvalidInput)
+}
+
+fn serialize_fees_spec(fees: &FeesSpec) -> Result<Vec<u8>, RuntimeError> {
+    let mut bytes = Vec::with_capacity(96);
+    bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+    bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+    bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+    bytes.extend_from_slice(fees.management.recipient.as_bytes());
+    match fees.max_total_assets_growth_rate {
+        Some(value) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&value.as_u128_trunc().to_le_bytes());
+        }
+        None => bytes.push(0),
+    }
+    Ok(bytes)
+}
+
+fn deserialize_fees_spec(bytes: &[u8]) -> Result<FeesSpec, RuntimeError> {
+    const FIXED_LEN_NO_GROWTH: usize = 97;
+    const FIXED_LEN_WITH_GROWTH: usize = 113;
+
+    if bytes.len() != FIXED_LEN_NO_GROWTH && bytes.len() != FIXED_LEN_WITH_GROWTH {
+        return Err(RuntimeError::storage_error(""));
+    }
+
+    fn read_u128(bytes: &[u8], cursor: &mut usize) -> Result<u128, RuntimeError> {
+        let end = *cursor + 16;
+        let raw = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
+        let mut array = [0u8; 16];
+        array.copy_from_slice(raw);
+        *cursor = end;
+        Ok(u128::from_le_bytes(array))
+    }
+
+    fn read_address(bytes: &[u8], cursor: &mut usize) -> Result<Address, RuntimeError> {
+        let end = *cursor + 32;
+        let raw = bytes
+            .get(*cursor..end)
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
+        let mut array = [0u8; 32];
+        array.copy_from_slice(raw);
+        *cursor = end;
+        Ok(Address(array))
+    }
+
+    let mut cursor = 0usize;
+
+    let performance = FeeSlot::new(
+        Wad::from(read_u128(bytes, &mut cursor)?),
+        read_address(bytes, &mut cursor)?,
+    );
+    let management = FeeSlot::new(
+        Wad::from(read_u128(bytes, &mut cursor)?),
+        read_address(bytes, &mut cursor)?,
+    );
+    let max_total_assets_growth_rate = match *bytes
+        .get(cursor)
+        .ok_or_else(|| RuntimeError::storage_error(""))?
+    {
+        0 => {
+            cursor += 1;
+            None
+        }
+        1 => {
+            cursor += 1;
+            Some(Wad::from(read_u128(bytes, &mut cursor)?))
+        }
+        _ => return Err(RuntimeError::storage_error("")),
+    };
+
+    if cursor != bytes.len() {
+        return Err(RuntimeError::storage_error(""));
+    }
+
+    Ok(FeesSpec::new(
+        performance,
+        management,
+        max_total_assets_growth_rate,
+    ))
+}
+
+pub(crate) fn load_fees_spec(env: &Env) -> Result<FeesSpec, RuntimeError> {
+    let stored: Option<Bytes> = env.storage().instance().get(&VaultDataKey::FeesSpec);
+    match stored {
+        Some(bytes) => deserialize_fees_spec(&bytes.to_alloc_vec()),
+        None => Ok(FeesSpec::zero()),
+    }
+}
+
+pub(crate) fn store_fees_spec(env: &Env, fees: &FeesSpec) -> Result<(), RuntimeError> {
+    let bytes = serialize_fees_spec(fees)?;
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::FeesSpec, &Bytes::from_slice(env, &bytes));
+    Ok(())
+}
+
+pub(crate) fn load_virtual_offsets(env: &Env) -> (u128, u128) {
+    let virtual_shares = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::VirtualShares)
+        .unwrap_or(0u128);
+    let virtual_assets = env
+        .storage()
+        .instance()
+        .get(&VaultDataKey::VirtualAssets)
+        .unwrap_or(0u128);
+    (virtual_shares, virtual_assets)
+}
+
+pub(crate) fn store_virtual_offsets(env: &Env, virtual_shares: u128, virtual_assets: u128) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::VirtualShares, &virtual_shares);
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::VirtualAssets, &virtual_assets);
+}
+
+pub(crate) fn load_withdrawal_cooldown_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::WithdrawalCooldownNs)
+        .unwrap_or(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
+}
+
+pub(crate) fn store_withdrawal_cooldown_ns(env: &Env, withdrawal_cooldown_ns: u64) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::WithdrawalCooldownNs, &withdrawal_cooldown_ns);
+}
+
+pub(crate) fn load_idle_resync_cooldown_ns(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::IdleResyncCooldownNs)
+        .unwrap_or(SOROBAN_DEFAULT_IDLE_RESYNC_COOLDOWN_NS)
+}
+
+pub(crate) fn store_idle_resync_cooldown_ns(env: &Env, idle_resync_cooldown_ns: u64) {
+    env.storage().instance().set(
+        &VaultDataKey::IdleResyncCooldownNs,
+        &idle_resync_cooldown_ns,
+    );
+}
+
+pub(crate) fn virtual_offsets_locked(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&VaultDataKey::VirtualOffsetsLocked)
+        .unwrap_or(false)
+}
+
+pub(crate) fn lock_virtual_offsets(env: &Env) {
+    env.storage()
+        .instance()
+        .set(&VaultDataKey::VirtualOffsetsLocked, &true);
+}
+
+#[allow(deprecated)]
+#[inline(never)]
+pub(crate) fn emit_admin_event(env: &Env, action: soroban_sdk::Symbol) {
+    env.events().publish((symbol_short!("admin"),), action);
+}
+
+#[allow(deprecated)]
+#[inline(never)]
+pub(crate) fn emit_alloc_event(env: &Env, market: u32, amount: i128, supply: bool) {
+    env.events()
+        .publish((symbol_short!("alloc"), supply), (market, amount));
+}
+
+pub(crate) fn adapter_for_market(env: &Env, market: u32) -> Result<SdkAddress, ContractError> {
+    let bindings = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Map<u32, SdkAddress>>(&VaultDataKey::AdapterBindings)
+        .ok_or(ContractError::InvalidInput)?;
+
+    bindings.get(market).ok_or(ContractError::InvalidInput)
+}
+
+pub(crate) fn supply_adapter_for_market(
+    env: &Env,
+    market: u32,
+) -> Result<SdkAddress, ContractError> {
+    let adapter = adapter_for_market(env, market)?;
+    let allowed_adapters = env
+        .storage()
+        .instance()
+        .get::<_, soroban_sdk::Vec<SdkAddress>>(&VaultDataKey::AllowedAdapters)
+        .ok_or(ContractError::InvalidInput)?;
+    if !allowed_adapters
+        .iter()
+        .any(|candidate| candidate == adapter)
+    {
+        return Err(ContractError::InvalidInput);
+    }
+    Ok(adapter)
+}
+
+fn require_non_negative_bounded_wad(value: i128, max: u128) -> Result<Wad, ContractError> {
+    let value = u128::try_from(value).map_err(|_| ContractError::InvalidInput)?;
+    if value > max {
+        return Err(ContractError::InvalidInput);
+    }
+    Ok(Wad::from(value))
+}
+
+fn optional_wad(value: Option<i128>) -> Result<Option<Wad>, ContractError> {
+    value
+        .map(|value| {
+            u128::try_from(value)
+                .map(Wad::from)
+                .map_err(|_| ContractError::InvalidInput)
+        })
+        .transpose()
+}
+
+pub(crate) fn apply_fee_change(
+    env: &Env,
+    performance_fee_wad: i128,
+    performance_recipient: SdkAddress,
+    management_fee_wad: i128,
+    management_recipient: SdkAddress,
+    max_growth_rate_wad: Option<i128>,
+) -> Result<(), ContractError> {
+    let performance_fee =
+        require_non_negative_bounded_wad(performance_fee_wad, MAX_PERFORMANCE_FEE_WAD)?;
+    let management_fee =
+        require_non_negative_bounded_wad(management_fee_wad, MAX_MANAGEMENT_FEE_WAD)?;
+    let max_rate = optional_wad(max_growth_rate_wad)?;
+
+    let performance_kernel = kernel_address_from_sdk(env, &performance_recipient);
+    let management_kernel = kernel_address_from_sdk(env, &management_recipient);
+    let fees = FeesSpec::new(
+        FeeSlot::new(performance_fee, performance_kernel),
+        FeeSlot::new(management_fee, management_kernel),
+        max_rate,
+    );
+
+    runtime_to_contract(store_fees_spec(env, &fees))?;
+    let storage = SorobanStorage::new(env);
+    runtime_to_contract(storage.save_address(&performance_kernel, &performance_recipient))?;
+    runtime_to_contract(storage.save_address(&management_kernel, &management_recipient))?;
+    Ok(())
+}
+
+pub(crate) fn extend_storage_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+    let storage = SorobanStorage::new(env);
+    storage.extend_ttl(DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+    if let Ok(fees) = load_fees_spec(env) {
+        storage.extend_address_ttl(
+            &fees.performance.recipient,
+            DEFAULT_TTL_THRESHOLD,
+            DEFAULT_TTL_EXTEND_TO,
+        );
+        storage.extend_address_ttl(
+            &fees.management.recipient,
+            DEFAULT_TTL_THRESHOLD,
+            DEFAULT_TTL_EXTEND_TO,
+        );
+    }
+    for key in [
+        VaultDataKey::Curator,
+        VaultDataKey::Governance,
+        VaultDataKey::AssetToken,
+        VaultDataKey::ShareToken,
+    ] {
+        if let Ok(address) = get_config_address(env, &key) {
+            let kernel = kernel_address_from_sdk(env, &address);
+            storage.extend_address_ttl(&kernel, DEFAULT_TTL_THRESHOLD, DEFAULT_TTL_EXTEND_TO);
+        }
+    }
+}
+
+pub(crate) fn get_config_address(
+    env: &Env,
+    key: &soroban_sdk::Symbol,
+) -> Result<SdkAddress, ContractError> {
+    match env.storage().instance().get(key) {
+        Some(address) => Ok(address),
+        None => Err(ContractError::MissingConfig),
+    }
+}
+
+#[inline]
+fn require_config_address(
+    env: &Env,
+    key: &soroban_sdk::Symbol,
+    msg: &'static str,
+) -> Result<SdkAddress, RuntimeError> {
+    get_config_address(env, key).map_err(|_| RuntimeError::storage_error(msg))
+}
+
+pub(crate) fn set_config_address(env: &Env, key: &soroban_sdk::Symbol, addr: &SdkAddress) {
+    env.storage().instance().set(key, addr);
+}
+
+pub(crate) fn sdk_string_to_alloc(
+    value: soroban_sdk::String,
+) -> Result<AllocString, ContractError> {
+    AllocString::from_utf8(value.to_bytes().to_alloc_vec()).map_err(|_| ContractError::InvalidInput)
+}
+
+pub(crate) fn validate_and_rewrite_storage(env: &Env) -> Result<(), RuntimeError> {
+    let mut storage = SorobanStorage::new(env);
+    if let Some(state) = storage.load_state()? {
+        storage.save_state(&state)?;
+    }
+    if let Some(policy) = storage.load_policy_state()? {
+        storage.save_policy_state(&policy)?;
+    }
+    if let Some(restrictions) = Storage::load_restrictions(&storage)? {
+        Storage::save_restrictions(&mut storage, &Some(restrictions))?;
+    }
+    let fees = load_fees_spec(env)?;
+    store_fees_spec(env, &fees)?;
+    Ok(())
+}
+
+#[inline(never)]
+pub(crate) fn load_vault_bootstrap(env: &Env) -> Result<VaultBootstrap<'_>, RuntimeError> {
+    if migration_in_progress(env) {
+        return Err(RuntimeError::invalid_state(
+            "migration in progress - call migrate() first",
+        ));
+    }
+
+    extend_storage_ttl(env);
+    let curator: SdkAddress =
+        require_config_address(env, &VaultDataKey::Curator, "curator not set")?;
+    let _governance: SdkAddress =
+        require_config_address(env, &VaultDataKey::Governance, "governance not set")?;
+    let asset_token: SdkAddress =
+        require_config_address(env, &VaultDataKey::AssetToken, "asset token not set")?;
+    let share_token: SdkAddress =
+        require_config_address(env, &VaultDataKey::ShareToken, "share token not set")?;
+
+    let vault_sdk = env.current_contract_address();
+    let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
+    let curator_kernel = kernel_address_from_sdk(env, &curator);
+    let asset_kernel = kernel_address_from_sdk(env, &asset_token);
+    let share_kernel = kernel_address_from_sdk(env, &share_token);
+
+    let mut config = ContractConfig::new(
+        curator_kernel,
+        vault_kernel,
+        Vec::new(),
+        asset_kernel,
+        share_kernel,
+    );
+    let (virtual_shares, virtual_assets) = load_virtual_offsets(env);
+    config = config
+        .with_fees(load_fees_spec(env)?)
+        .with_virtual_offsets(virtual_shares, virtual_assets)
+        .with_withdrawal_cooldown_ns(load_withdrawal_cooldown_ns(env));
+
+    let storage = SorobanStorage::new(env);
+    let paused = storage.is_paused();
+    let mut rbac_config = RbacConfig::with_curator(curator_kernel);
+
+    load_rbac_addresses(
+        env,
+        &VaultDataKey::Allocators,
+        Role::Allocator,
+        &mut rbac_config,
+    );
+    let sentinel: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::Sentinel);
+    if let Some(sentinel_addr) = sentinel {
+        rbac_config.add_role(kernel_address_from_sdk(env, &sentinel_addr), Role::Sentinel);
+    }
+    rbac_config.set_paused(paused);
+    let auth = RbacAuth::new(rbac_config);
+
+    Ok(VaultBootstrap {
+        config,
+        storage,
+        auth,
+        asset_token,
+        share_token,
+    })
+}
+
+pub(crate) type ContractVaultCallback<'a> =
+    dyn for<'b> FnMut(&mut ContractVault<'b>) -> Result<(), RuntimeError> + 'a;
+
+fn load_rbac_addresses(env: &Env, key: &soroban_sdk::Symbol, role: Role, config: &mut RbacConfig) {
+    let addresses: Option<soroban_sdk::Vec<SdkAddress>> = env.storage().instance().get(key);
+    if let Some(addresses) = addresses {
+        for address in addresses.iter() {
+            config.add_role(kernel_address_from_sdk(env, &address), role);
+        }
+    }
+}
+
+#[inline(never)]
+pub(crate) fn with_contract_vault(
+    env: &Env,
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), RuntimeError> {
+    let bootstrap = load_vault_bootstrap(env)?;
+    let share_adapter = ShareTokenAdapter::new(env, &bootstrap.share_token);
+    let asset_adapter = SdkTokenAdapter::new(env, &bootstrap.asset_token);
+    let interpreter = SorobanEffectInterpreter::new(env, &share_adapter, &asset_adapter);
+
+    let mut vault = CuratorVault::new(
+        bootstrap.config,
+        bootstrap.storage,
+        bootstrap.auth,
+        interpreter,
+    );
+    vault.load_state()?;
+    f(&mut vault)
+}
+
+#[inline]
+pub(crate) fn transition_to_runtime<T, E>(result: Result<T, E>) -> Result<T, RuntimeError> {
+    result.map_err(|_| RuntimeError::transition_error())
+}
+
+#[inline]
+pub(crate) fn with_contract_vault_contract_error(
+    env: &Env,
+    f: &mut ContractVaultCallback<'_>,
+) -> Result<(), ContractError> {
+    runtime_to_contract(with_contract_vault(env, f))
+}
+
+#[inline]
+pub(crate) fn require_signed(addr: &SdkAddress) {
+    addr.require_auth();
+}
+
+#[inline]
+pub(crate) fn migration_in_progress(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&MIGRATION_FLAG_KEY)
+        .unwrap_or(false)
+}
+
+#[inline]
+pub(crate) fn set_migration_in_progress(env: &Env, migrating: bool) {
+    if migrating {
+        env.storage().instance().set(&MIGRATION_FLAG_KEY, &true);
+    } else {
+        env.storage().instance().remove(&MIGRATION_FLAG_KEY);
+    }
+}
+
+#[inline]
+#[allow(deprecated)]
+pub(crate) fn emit_pause_state_event(env: &Env, paused: bool) {
+    let event = if paused {
+        symbol_short!("paused")
+    } else {
+        symbol_short!("unpause")
+    };
+    env.events().publish((event,), ());
+}
+
+pub(crate) fn ensure_governance_identity(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
+    let governance: SdkAddress = get_config_address(env, &VaultDataKey::Governance)?;
+    if caller != &governance {
+        return Err(ContractError::Unauthorized);
+    }
+    Ok(())
+}
+
+pub(crate) fn require_governance(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+    require_signed(caller);
+    ensure_governance_identity(env, caller)
+}
+
+pub(crate) fn ensure_sentinel_identity(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
+    let sentinel: SdkAddress = get_config_address(env, &VaultDataKey::Sentinel)?;
+    if caller != &sentinel {
+        return Err(ContractError::Unauthorized);
+    }
+    Ok(())
+}
+
+pub(crate) fn require_sentinel(env: &Env, caller: &SdkAddress) -> Result<(), ContractError> {
+    require_signed(caller);
+    ensure_sentinel_identity(env, caller)
+}
+
+pub(crate) fn require_governance_control_plane(
+    env: &Env,
+    caller: &SdkAddress,
+) -> Result<(), ContractError> {
+    require_signed(caller);
+    ensure_governance_identity(env, caller)
+}
+
+#[inline(never)]
+pub(crate) fn governance_caller(env: &Env, caller: &SdkAddress) -> Result<Address, ContractError> {
+    require_governance(env, caller)?;
+    Ok(kernel_address_from_sdk(env, caller))
+}

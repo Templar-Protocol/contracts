@@ -1,0 +1,43 @@
+services:
+  liquidator:
+    image: templar-liquidator:latest
+    container_name: templar-liquidator
+    restart: always
+
+    env_file:
+      - .env
+
+    environment:
+      - RUST_LOG=info,templar_liquidator=info
+      - RUST_BACKTRACE=0
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 3G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+        compress: "true"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "-x", "liquidator"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    read_only: false
+    tmpfs:
+      - /tmp

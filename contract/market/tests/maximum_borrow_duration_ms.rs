@@ -1,36 +1,42 @@
+use std::time::Duration;
+
 use near_sdk::json_types::U64;
+use near_workspaces::{network::Sandbox, Worker};
+use rstest::rstest;
+
 use templar_common::borrow::{BorrowStatus, LiquidationReason};
 use test_utils::*;
 
+#[rstest]
 #[tokio::test]
-async fn liquidation_after_expiration() {
-    let SetupEverything {
-        c,
-        supply_user,
-        borrow_user,
-        ..
-    } = setup_everything(|c| {
-        c.maximum_borrow_duration_ms = Some(U64(100));
-    })
-    .await;
+async fn liquidation_after_expiration(#[future(awt)] worker: Worker<Sandbox>) {
+    setup_test!(
+        worker
+        extract(c)
+        accounts(borrow_user, supply_user)
+        config(|c| {
+            c.borrow_maximum_duration_ms = Some(U64(1000));
+        })
+    );
 
-    c.supply(&supply_user, 1000).await;
-    c.collateralize(&borrow_user, 2000).await;
-    c.borrow(&borrow_user, 100, EQUAL_PRICE).await;
+    tokio::join!(
+        c.supply_and_harvest_until_activation(&supply_user, 1000),
+        c.collateralize(&borrow_user, 2000),
+    );
+    c.borrow(&borrow_user, 100).await;
+
+    let prices = c.get_prices().await;
 
     let status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
+        .get_borrow_status(borrow_user.id(), prices.clone())
         .await
         .unwrap();
 
     assert!(status.is_healthy());
 
-    c.worker.fast_forward(10).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let status = c
-        .get_borrow_status(borrow_user.id(), EQUAL_PRICE)
-        .await
-        .unwrap();
+    let status = c.get_borrow_status(borrow_user.id(), prices).await.unwrap();
 
     assert_eq!(
         status,

@@ -1,0 +1,57 @@
+name: Generate gas report
+on:
+  workflow_call:
+    outputs:
+      comment:
+        description: Markdown gas report
+        value: ${{ jobs.gas-report.outputs.comment }}
+
+jobs:
+  # Add a job to check if relevant files changed
+  check-changes:
+    name: Check for relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.changes.outputs.contracts }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for change detection
+
+      - name: Check for changes
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            contracts:
+              - 'common/**'
+              - 'contract/**'
+              - 'mock/**'
+              - 'script/**'
+
+  gas-report:
+    name: Gas report
+    runs-on: ubuntu-latest
+    needs: check-changes
+    # Only run if there are relevant changes
+    if: needs.check-changes.outputs.should-run == 'true'
+    outputs:
+      comment: ${{ steps.generate.outputs.comment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: ./.github/actions/rust
+      - name: Install cargo-near CLI
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
+      - name: Generate gas report
+        id: generate
+        env:
+          SQLX_OFFLINE: true
+        run: |
+          ./script/gas-report.sh > gas-report.md
+          cat gas-report.md >> $GITHUB_STEP_SUMMARY
+
+          echo "comment<<EOF" >> $GITHUB_OUTPUT
+          cat gas-report.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT

@@ -1,0 +1,17 @@
+services:
+  market-monitor:
+    build:
+      context: ../..
+      dockerfile: service/market-monitor/Dockerfile
+    container_name: templar-market-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - TZ=UTC
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

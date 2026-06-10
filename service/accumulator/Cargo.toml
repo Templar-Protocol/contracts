@@ -1,0 +1,33 @@
+[package]
+name = "templar-accumulator"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version = "0.1.0"
+
+[[bin]]
+name = "accumulator"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+futures = { workspace = true }
+near-crypto = { workspace = true }
+near-jsonrpc-client = { workspace = true }
+near-jsonrpc-primitives = { workspace = true }
+near-primitives = { workspace = true }
+near-sdk = { workspace = true, features = ["non-contract-usage"] }
+templar-common = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+wiremock = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

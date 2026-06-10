@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc de28f3cf386c4733c5db287f2a364c26f3c131298a0fe87b3f1a94c265ae0aa0 # shrinks to queue = [PendingWithdrawal { owner: "owner_857", receiver: "owner_857", escrow_shares: 1, expected_assets: 1000, requested_at_ns: 0 }, PendingWithdrawal { owner: "owner_1", receiver: "owner_1", escrow_shares: 1, expected_assets: 1000, requested_at_ns: 0 }, PendingWithdrawal { owner: "owner_1", receiver: "owner_1", escrow_shares: 1, expected_assets: 1000, requested_at_ns: 0 }, PendingWithdrawal { owner: "owner_857", receiver: "owner_857", escrow_shares: 1, expected_assets: 1000, requested_at_ns: 0 }], idx = 2

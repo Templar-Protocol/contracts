@@ -1,0 +1,37 @@
+name: Install NEAR CLI
+description: Installs near-cli-rs and configures RPC connections
+inputs:
+  network:
+    description: NEAR network name
+    required: false
+    default: testnet
+  rpc-url:
+    description: NEAR RPC URL
+    required: false
+    default: https://archival-rpc.testnet.near.org/
+  rpc-api-key:
+    description: NEAR RPC API key
+    required: false
+    default: "null"
+runs:
+  using: composite
+  steps:
+    - name: Install near CLI
+      shell: bash
+      run: |
+        curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/v0.23.5/near-cli-rs-installer.sh | sh
+
+    - name: Configure RPC URL
+      shell: bash
+      run: |
+        near config edit-connection "${{ inputs.network }}" \
+          --key rpc_url \
+          --value "${{ inputs.rpc-url }}"
+
+    - name: Configure RPC API key
+      if: ${{ inputs.rpc-api-key != 'null' && inputs.rpc-api-key != null && inputs.rpc-api-key != '' }}
+      shell: bash
+      run: |
+        near config edit-connection "${{ inputs.network }}" \
+          --key rpc_api_key \
+          --value "${{ inputs.rpc-api-key }}"

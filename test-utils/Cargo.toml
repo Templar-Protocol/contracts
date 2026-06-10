@@ -3,9 +3,29 @@ name = "test-utils"
 version = "0.1.0"
 edition = "2021"
 publish = false
+license.workspace = true
 
 [dependencies]
-near-sdk.workspace = true
+alloy = { workspace = true, features = ["signer-local"] }
+ed25519-dalek.workspace = true
+hex-literal.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing"] }
+near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
+p256.workspace = true
+rstest.workspace = true
+serde.workspace = true
 templar-common.workspace = true
+templar-primitives.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
+templar-proxy-oracle-near-governance-contract.workspace = true
+templar-universal-account = { workspace = true, features = ["signing"] }
 tokio.workspace = true
+
+[[example]]
+name = "generate_testnet_configuration"
+
+[[example]]
+name = "registry_add_version_args"

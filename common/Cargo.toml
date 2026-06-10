@@ -1,15 +1,32 @@
 [package]
+edition.workspace = true
+license.workspace = true
 name = "templar-common"
-version = "0.1.0"
-edition = "2021"
+repository.workspace = true
+version = "1.4.0"
 
 [dependencies]
-borsh.workspace = true
+borsh = { workspace = true, features = ["rc"] }
+derive_more.workspace = true
+hex-literal.workspace = true
+hex.workspace = true
+k256.workspace = true
 near-contract-standards.workspace = true
+near-sdk-contract-tools.workspace = true
 near-sdk.workspace = true
-thiserror.workspace = true
 primitive-types.workspace = true
+redstone = { workspace = true, default-features = false, features = [] }
 schemars.workspace = true
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["borsh", "serde", "std", "borsh-schema", "schemars"] }
+templar-primitives = { workspace = true, features = ["near", "redstone"] }
+templar-vault-kernel.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+clap = { workspace = true, optional = true }
+near-jsonrpc-client = { workspace = true, optional = true }
+near-primitives = { workspace = true, optional = true }
+sha2.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
@@ -18,3 +35,8 @@ rand = "0.8"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+non-contract-usage = ["near-sdk/non-contract-usage"]
+rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]

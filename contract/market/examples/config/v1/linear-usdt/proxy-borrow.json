@@ -1,0 +1,23 @@
+{
+  "aggregator": {
+    "method": "MedianLow",
+    "filter": {
+      "max_age": "60000000000",
+      "max_clock_drift": "10000000000",
+      "min_sources": 1
+    }
+  },
+  "entries": [
+    {
+      "source": {
+        "Request": {
+          "Pyth": {
+            "oracle_id": "pyth-oracle.near",
+            "price_id": "2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b"
+          }
+        }
+      },
+      "weight": 1
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+# Templar vault workflows (kernel + curator-primitives + NEAR + Soroban)
+
+vault_root := justfile_directory()
+repo_root  := vault_root / "../.."
+
+default:
+	@just --list
+
+# --------------------------------------------------------------------
+# Core tests
+# --------------------------------------------------------------------
+
+kernel-test:
+	cargo test -p templar-vault-kernel --features all-actions
+
+kernel-prop:
+	cargo test -p templar-vault-kernel --features all-actions --test property_tests
+
+curator-test:
+	cargo test -p templar-curator-primitives
+
+curator-prop:
+	cargo test -p templar-curator-primitives --test property_tests
+
+near-test:
+	cargo test -p templar-vault-contract
+
+soroban-test:
+	cargo test -p templar-soroban-runtime
+
+soroban-integration:
+	cargo test -p templar-soroban-runtime --test integration_tests
+
+soroban-prop:
+	cargo test -p templar-soroban-runtime --test property_tests
+
+vault-test: kernel-test curator-test near-test soroban-test
+
+# --------------------------------------------------------------------
+# Parity testing (property-focused)
+# --------------------------------------------------------------------
+
+parity:
+	just kernel-prop
+	just curator-prop
+	just soroban-prop
+
+# --------------------------------------------------------------------
+# Gas profiling (from AGENTS.md)
+# --------------------------------------------------------------------
+
+gas-report:
+	cargo run --example gas_report -p templar-market-contract
+	cargo run --example gas_report -p templar-vault-contract
+
+# --------------------------------------------------------------------
+# NEAR build/check
+# --------------------------------------------------------------------
+
+near-check:
+	cargo check -p templar-vault-contract --target wasm32-unknown-unknown
+
+near-build:
+	cargo near build non-reproducible-wasm --manifest-path "{{vault_root}}/near/Cargo.toml"
+
+# --------------------------------------------------------------------
+# Soroban operations (requires stellar CLI)
+#
+# Configure via env vars (see contract/vault/soroban/.env.example):
+#   SOROBAN_NETWORK, SOROBAN_IDENTITY, SOROBAN_WASM,
+#   SOROBAN_CONTRACT_ID, SOROBAN_ADMIN,
+#   SHARE_TOKEN_NAME, SHARE_TOKEN_SYMBOL, SHARE_TOKEN_DECIMALS
+# --------------------------------------------------------------------
+
+# Common Stellar CLI flags (DRY helper — not a recipe)
+_stellar_net := "--network ${SOROBAN_NETWORK:-testnet} --source-account ${SOROBAN_IDENTITY:-${SOROBAN_SOURCE:-identity}}"
+
+soroban-deploy:
+	@if [ -z "${SOROBAN_WASM:-}" ]; then echo "Set SOROBAN_WASM=/path/to/contract.wasm"; exit 1; fi
+	@echo "Deploying ${SOROBAN_WASM} to ${SOROBAN_NETWORK:-testnet}"; \
+	stellar contract deploy --wasm "${SOROBAN_WASM}" {{_stellar_net}}
+
+soroban-invoke fn *args:
+	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
+	stellar contract invoke --id "${SOROBAN_CONTRACT_ID}" {{_stellar_net}} -- "{{fn}}" {{args}}
+
+soroban-extend-ttl:
+	@if [ -z "${SOROBAN_CONTRACT_ID:-}" ]; then echo "Set SOROBAN_CONTRACT_ID"; exit 1; fi
+	stellar contract extend --id "${SOROBAN_CONTRACT_ID}" {{_stellar_net}} --ledgers-to-extend 100000
+
+# Share-token metadata is immutable after deployment in the current Soroban contract.
+soroban-share-metadata:
+	@echo "Share-token metadata is set in the constructor and is immutable after deployment."
+	@echo "Use contract/vault/soroban: just deploy-share-token with SHARE_TOKEN_NAME/SHARE_TOKEN_SYMBOL/SHARE_TOKEN_DECIMALS."
+	@exit 1
+
+# --------------------------------------------------------------------
+# Audit LOC counting
+# --------------------------------------------------------------------
+
+# Count auditor-facing Rust LOC for vault runtime code only.
+# Includes: src/ trees for curator-primitives, kernel, near, soroban, soroban-blend-adapter, soroban-governance, soroban-share-token.
+# Excludes: tests, proofs, test helpers, examples, snapshots.
+audit-loc:
+	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
+	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
+	@tokei \
+		"{{vault_root}}/curator-primitives/src" \
+		"{{vault_root}}/kernel/src" \
+		"{{vault_root}}/near/src" \
+		"{{vault_root}}/soroban/src" \
+		"{{vault_root}}/soroban/blend-adapter/src" \
+		"{{vault_root}}/soroban/governance/src" \
+		"{{vault_root}}/soroban/share-token/src" \
+		--types Rust \
+		--exclude "**/tests/**" \
+		--exclude "**/tests.rs" \
+		--exclude "**/*_tests.rs" \
+		--exclude "**/*proof*.rs" \
+		--exclude "**/test_utils.rs" \
+		--exclude "**/examples/**" \
+		--exclude "**/test_snapshots/**" \
+		--output json | jq '{code: .Rust.code, comments: .Rust.comments, blanks: .Rust.blanks, code_plus_comments: (.Rust.code + .Rust.comments), lines: (.Rust.code + .Rust.comments + .Rust.blanks)}'
+
+# Count auditor-facing Rust LOC per vault crate.
+audit-loc-per-crate:
+	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
+	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
+	@for crate in curator-primitives kernel near soroban soroban/blend-adapter soroban/governance soroban/share-token; do \
+		stats=$(tokei \
+			"{{vault_root}}/$crate/src" \
+			--types Rust \
+			--exclude "**/tests/**" \
+			--exclude "**/tests.rs" \
+			--exclude "**/*_tests.rs" \
+			--exclude "**/*proof*.rs" \
+			--exclude "**/test_utils.rs" \
+			--exclude "**/examples/**" \
+			--exclude "**/test_snapshots/**" \
+			--output json); \
+		echo "$stats" | jq --arg crate "$crate" '{crate: $crate, code: .Rust.code, comments: .Rust.comments, blanks: .Rust.blanks, code_plus_comments: (.Rust.code + .Rust.comments), lines: (.Rust.code + .Rust.comments + .Rust.blanks)}'; \
+	done | jq -s '{crates: ., totals: {code: (map(.code) | add), comments: (map(.comments) | add), blanks: (map(.blanks) | add), code_plus_comments: (map(.code_plus_comments) | add), lines: (map(.lines) | add)}}'
