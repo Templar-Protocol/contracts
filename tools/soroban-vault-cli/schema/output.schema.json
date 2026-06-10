@@ -7,7 +7,21 @@
   "additionalProperties": false,
   "properties": {
     "type": {
-      "type": "string"
+      "type": "string",
+      "enum": [
+        "message",
+        "command",
+        "status",
+        "env",
+        "extend_ttl",
+        "reconcile",
+        "doctor",
+        "plan",
+        "governance_queue",
+        "governance_explain",
+        "governance_accept_ready",
+        "error"
+      ]
     },
     "ok": {
       "type": "boolean"

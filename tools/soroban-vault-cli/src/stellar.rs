@@ -1,13 +1,16 @@
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
+    fs,
+    path::PathBuf,
     process::Command,
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
@@ -106,10 +109,12 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         mut env: Vec<CommandEnv>,
     ) -> anyhow::Result<CommandOutput> {
         let confirm_transaction = should_confirm_transaction(&args);
+        let preflight = preflight_plan(&args).is_some();
         let command_display = display_command("stellar", &args, redacted_args, &env);
         debug!(
             command = %command_display,
             confirm_transaction,
+            preflight,
             dry_run = self.cli.dry_run,
             "preparing stellar command"
         );
@@ -120,6 +125,9 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
                 stderr: String::new(),
             })
         } else {
+            if preflight {
+                self.preflight_command(&args, redacted_args, &env)?;
+            }
             self.executor.run("stellar", &args, redacted_args, &env)
         };
         let result = if confirm_transaction && !self.cli.dry_run {
@@ -188,6 +196,22 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         self.run(args, &[], self.source_env())
     }
 
+    pub fn invoke_view(
+        &self,
+        contract_id: &str,
+        function: &str,
+        function_args: Vec<String>,
+    ) -> anyhow::Result<CommandOutput> {
+        let mut args = vec!["contract".to_string(), "invoke".to_string()];
+        args.extend(["--id".to_string(), contract_id.to_string()]);
+        args.extend(["--send".to_string(), "no".to_string()]);
+        args.extend(self.network_args());
+        args.push("--".to_string());
+        args.push(function.to_string());
+        args.extend(function_args);
+        self.run(args, &[], self.source_env())
+    }
+
     pub fn deploy(&self, wasm_hash: &str, constructor_args: Vec<String>) -> anyhow::Result<String> {
         let mut args = vec!["contract".to_string(), "deploy".to_string()];
         args.extend(["--wasm-hash".to_string(), wasm_hash.to_string()]);
@@ -221,6 +245,23 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         args.extend(["--wasm-hash".to_string(), wasm_hash.to_string()]);
         args.extend(self.network_args());
         Ok(self.run(args, &[], Vec::new()).is_ok())
+    }
+
+    pub fn fetch_contract_wasm_hash(&self, contract_id: &str) -> anyhow::Result<String> {
+        let out_file = temp_wasm_path(contract_id);
+        let mut args = vec!["contract".to_string(), "fetch".to_string()];
+        args.extend(["--id".to_string(), contract_id.to_string()]);
+        args.extend(["--out-file".to_string(), out_file.display().to_string()]);
+        args.extend(self.network_args());
+        let result = self.run(args, &[], Vec::new());
+        if self.cli.dry_run {
+            return Ok("dry-run-wasm-hash".to_string());
+        }
+        result?;
+        let bytes = fs::read(&out_file)
+            .with_context(|| format!("read fetched contract wasm {}", out_file.display()))?;
+        let _ = fs::remove_file(&out_file);
+        Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
     pub fn deploy_native_asset(&self) -> anyhow::Result<()> {
@@ -318,6 +359,67 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
                 }
             }
         }
+    }
+
+    fn preflight_command(
+        &self,
+        args: &[String],
+        redacted_args: &[usize],
+        env: &[CommandEnv],
+    ) -> anyhow::Result<()> {
+        let Some(plan) = preflight_plan(args) else {
+            return Ok(());
+        };
+        let (command_display, output) = match plan {
+            PreflightPlan::Invoke(preflight_args) => {
+                let command_display =
+                    display_command("stellar", &preflight_args, redacted_args, env);
+                info!(command = %command_display, "running stellar preflight simulation");
+                let output = self
+                    .executor
+                    .run("stellar", &preflight_args, redacted_args, env)
+                    .with_context(|| {
+                        format!("preflight simulation failed for {command_display}")
+                    })?;
+                (command_display, output)
+            }
+            PreflightPlan::BuildAndSimulate(build_args) => {
+                let build_display = display_command("stellar", &build_args, redacted_args, env);
+                info!(command = %build_display, "building stellar transaction for preflight simulation");
+                let xdr = self
+                    .executor
+                    .run("stellar", &build_args, redacted_args, env)
+                    .with_context(|| format!("preflight build-only failed for {build_display}"))?
+                    .stdout
+                    .trim()
+                    .to_string();
+                anyhow::ensure!(
+                    !xdr.is_empty(),
+                    "preflight build-only produced empty transaction XDR for {build_display}"
+                );
+                let mut simulate_args = vec!["tx".to_string(), "simulate".to_string(), xdr];
+                simulate_args.extend(self.network_args());
+                let simulate_display = display_command("stellar", &simulate_args, &[], env);
+                info!(command = %simulate_display, "running stellar preflight simulation");
+                let output = self
+                    .executor
+                    .run("stellar", &simulate_args, &[], env)
+                    .with_context(|| {
+                        format!("preflight simulation failed for {simulate_display}")
+                    })?;
+                (simulate_display, output)
+            }
+        };
+        if !self.cli.json && !self.cli.json_lines {
+            eprintln!("Preflight simulation succeeded: {command_display}");
+            if !output.stdout.is_empty() {
+                eprintln!("{}", output.stdout);
+            }
+            if !output.stderr.is_empty() {
+                eprintln!("{}", output.stderr);
+            }
+        }
+        Ok(())
     }
 
     fn wait_for_transaction_success(&self, tx_hash: &str) -> anyhow::Result<()> {
@@ -436,6 +538,72 @@ fn should_confirm_transaction(args: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+enum PreflightPlan {
+    Invoke(Vec<String>),
+    BuildAndSimulate(Vec<String>),
+}
+
+fn preflight_plan(args: &[String]) -> Option<PreflightPlan> {
+    match args {
+        [first, second, ..] if first == "contract" && second == "invoke" => {
+            invoke_preflight_args(args).map(PreflightPlan::Invoke)
+        }
+        [first, second, ..]
+            if first == "contract" && matches!(second.as_str(), "deploy" | "upload") =>
+        {
+            build_only_preflight_args(args).map(PreflightPlan::BuildAndSimulate)
+        }
+        [first, second, third, ..]
+            if first == "contract" && second == "asset" && third == "deploy" =>
+        {
+            build_only_preflight_args(args).map(PreflightPlan::BuildAndSimulate)
+        }
+        _ => None,
+    }
+}
+
+fn invoke_preflight_args(args: &[String]) -> Option<Vec<String>> {
+    if args
+        .windows(2)
+        .any(|pair| pair[0] == "--send" && pair[1] == "no")
+    {
+        return None;
+    }
+    let separator = args.iter().position(|arg| arg == "--")?;
+    let mut preflight = Vec::with_capacity(args.len() + 2);
+    preflight.extend_from_slice(&args[..separator]);
+    preflight.extend(["--send".to_string(), "no".to_string()]);
+    preflight.extend_from_slice(&args[separator..]);
+    Some(preflight)
+}
+
+fn build_only_preflight_args(args: &[String]) -> Option<Vec<String>> {
+    if args.iter().any(|arg| arg == "--build-only") {
+        return None;
+    }
+    let mut preflight = Vec::with_capacity(args.len() + 1);
+    if let Some(separator) = args.iter().position(|arg| arg == "--") {
+        preflight.extend_from_slice(&args[..separator]);
+        preflight.push("--build-only".to_string());
+        preflight.extend_from_slice(&args[separator..]);
+    } else {
+        preflight.extend_from_slice(args);
+        preflight.push("--build-only".to_string());
+    }
+    Some(preflight)
+}
+
+fn temp_wasm_path(contract_id: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "tmplr-soroban-vault-cli-{}-{nanos}-{contract_id}.wasm",
+        std::process::id()
+    ))
 }
 
 fn first_tx_hash(stdout: &str, stderr: &str) -> Option<String> {
@@ -670,6 +838,126 @@ mod tests {
             "contract".to_string(),
             "fetch".to_string()
         ]));
+    }
+
+    #[test]
+    fn builds_preflight_args_for_contract_invokes() {
+        let args = vec![
+            "contract".to_string(),
+            "invoke".to_string(),
+            "--id".to_string(),
+            "CCONTRACT".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--".to_string(),
+            "initialize".to_string(),
+        ];
+
+        let preflight = invoke_preflight_args(&args).expect("preflight args");
+
+        assert_eq!(
+            preflight,
+            vec![
+                "contract",
+                "invoke",
+                "--id",
+                "CCONTRACT",
+                "--network",
+                "testnet",
+                "--send",
+                "no",
+                "--",
+                "initialize"
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_preflight_for_view_invokes() {
+        let args = vec![
+            "contract".to_string(),
+            "invoke".to_string(),
+            "--id".to_string(),
+            "CCONTRACT".to_string(),
+            "--send".to_string(),
+            "no".to_string(),
+            "--".to_string(),
+            "vault".to_string(),
+        ];
+
+        assert_eq!(invoke_preflight_args(&args), None);
+    }
+
+    #[test]
+    fn builds_build_only_preflight_args_for_contract_deploys() {
+        let args = vec![
+            "contract".to_string(),
+            "deploy".to_string(),
+            "--wasm-hash".to_string(),
+            "abc".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+            "--".to_string(),
+            "--admin".to_string(),
+            "GADMIN".to_string(),
+        ];
+
+        let preflight = build_only_preflight_args(&args).expect("preflight args");
+
+        assert_eq!(
+            preflight,
+            vec![
+                "contract",
+                "deploy",
+                "--wasm-hash",
+                "abc",
+                "--network",
+                "testnet",
+                "--build-only",
+                "--",
+                "--admin",
+                "GADMIN"
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_build_only_preflight_args_for_uploads_and_asset_deploys() {
+        let upload = vec![
+            "contract".to_string(),
+            "upload".to_string(),
+            "--wasm".to_string(),
+            "contract.wasm".to_string(),
+        ];
+        assert_eq!(
+            build_only_preflight_args(&upload).expect("upload preflight args"),
+            vec![
+                "contract",
+                "upload",
+                "--wasm",
+                "contract.wasm",
+                "--build-only"
+            ]
+        );
+
+        let asset_deploy = vec![
+            "contract".to_string(),
+            "asset".to_string(),
+            "deploy".to_string(),
+            "--asset".to_string(),
+            "native".to_string(),
+        ];
+        assert_eq!(
+            build_only_preflight_args(&asset_deploy).expect("asset deploy preflight args"),
+            vec![
+                "contract",
+                "asset",
+                "deploy",
+                "--asset",
+                "native",
+                "--build-only"
+            ]
+        );
     }
 
     #[test]

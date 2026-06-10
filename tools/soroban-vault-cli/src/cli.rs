@@ -103,6 +103,8 @@ pub enum Commands {
     Doctor,
     /// Deploy, verify, or reuse vault stack components
     Deploy(DeployArgs),
+    /// Reconcile the manifest against chain state and print a repair plan
+    Reconcile(ReconcileArgs),
     /// User-facing vault/share operations
     User(UserArgs),
     /// Curator and allocator operations
@@ -139,6 +141,7 @@ impl Commands {
             | Self::ExportEnv
             | Self::Profile(_)
             | Self::Completions { .. }
+            | Self::Reconcile(_)
             | Self::Man => false,
             Self::Deploy(args) => args.command.is_write(),
             Self::ExtendTtl(_) => true,
@@ -182,12 +185,23 @@ pub struct DeployArgs {
     pub command: DeployCommand,
 }
 
+#[derive(Args, Debug)]
+pub struct ReconcileArgs {
+    /// Skip view calls that verify initialized wiring where contract getters are available
+    #[arg(long)]
+    pub skip_view_verification: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum DeployCommand {
     /// Plan a deployment without uploading WASM, deploying contracts, or writing the manifest
     Plan(DeployPlanArgs),
     /// Deploy or reuse a full vault stack
     Stack(Box<DeployStackArgs>),
+    /// Resume a checkpointed stack deployment after checking recorded chain state
+    Resume(Box<DeployStackArgs>),
+    /// Print the safe repair/resume plan for the current manifest
+    Repair(ReconcileArgs),
     /// Add Blend adapters to an existing or imported vault deployment
     Adapters(DeployAdaptersArgs),
     /// Upload or verify a single WASM artifact
@@ -196,7 +210,7 @@ pub enum DeployCommand {
 
 impl DeployCommand {
     pub const fn is_write(&self) -> bool {
-        !matches!(self, Self::Plan(_))
+        !matches!(self, Self::Plan(_) | Self::Repair(_))
     }
 }
 
@@ -1069,7 +1083,7 @@ impl AdapterCommand {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, DeployCommand};
+    use super::{Cli, Commands, DeployCommand, ReconcileArgs};
 
     const ADMIN: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
     const POOL: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
@@ -1103,9 +1117,11 @@ mod tests {
                     assert_eq!(stack.governance_timelock_ns, Some(1000));
                     assert_eq!(stack.blend_pools.len(), 2);
                 }
-                DeployCommand::Plan(_) | DeployCommand::Adapters(_) | DeployCommand::Wasm(_) => {
-                    panic!("expected deploy stack")
-                }
+                DeployCommand::Plan(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Adapters(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1137,9 +1153,11 @@ mod tests {
                     );
                     assert_eq!(args.blend_pools.len(), 1);
                 }
-                DeployCommand::Plan(_) | DeployCommand::Stack(_) | DeployCommand::Wasm(_) => {
-                    panic!("expected deploy adapters")
-                }
+                DeployCommand::Plan(_)
+                | DeployCommand::Stack(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy adapters"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1170,9 +1188,11 @@ mod tests {
                     }
                     super::DeployPlanCommand::Adapters(_) => panic!("expected stack plan"),
                 },
-                DeployCommand::Stack(_) | DeployCommand::Adapters(_) | DeployCommand::Wasm(_) => {
-                    panic!("expected deploy plan")
-                }
+                DeployCommand::Stack(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Adapters(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy plan"),
             },
             _ => panic!("expected deploy command"),
         }
@@ -1184,6 +1204,51 @@ mod tests {
             .expect("parse cli");
 
         assert!(matches!(cli.command, Commands::ExtendTtl(_)));
+    }
+
+    #[test]
+    fn parses_reconcile_and_deploy_recovery_commands() {
+        let reconcile =
+            Cli::try_parse_from(["tmplr-soroban-vault", "reconcile"]).expect("reconcile");
+        assert!(matches!(
+            reconcile.command,
+            Commands::Reconcile(ReconcileArgs {
+                skip_view_verification: false
+            })
+        ));
+
+        let skip_views = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "reconcile",
+            "--skip-view-verification",
+        ])
+        .expect("reconcile without view checks");
+        assert!(matches!(
+            skip_views.command,
+            Commands::Reconcile(ReconcileArgs {
+                skip_view_verification: true
+            })
+        ));
+
+        let repair = Cli::try_parse_from(["tmplr-soroban-vault", "deploy", "repair"])
+            .expect("deploy repair");
+        assert!(matches!(
+            repair.command,
+            Commands::Deploy(args) if matches!(args.command, DeployCommand::Repair(_))
+        ));
+
+        let resume = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "resume",
+            "--governance-timelock-ns",
+            "1000",
+        ])
+        .expect("deploy resume");
+        assert!(matches!(
+            resume.command,
+            Commands::Deploy(args) if matches!(args.command, DeployCommand::Resume(_))
+        ));
     }
 
     #[test]

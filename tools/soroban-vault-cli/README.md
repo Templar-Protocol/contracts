@@ -40,6 +40,11 @@ build-info and source-attestation discovery. The default is
 During non-dry-run deployment writes, the manifest is checkpointed after each successful artifact
 upload/reuse decision, contract deploy/import record, asset-token record, and initialization. If a
 later initialize call fails, rerunning the command can reuse the IDs already written to the manifest.
+Use `reconcile` or `deploy repair` to compare a checkpointed manifest with chain state before
+manual recovery. The repair plan classifies each component as `missing`, `deployed`, `initialized`,
+`unknown`, or `mismatched`, includes fetched on-chain WASM hashes where available, and reports
+safe next steps. `deploy resume` runs the same reconciliation gate and continues only when recorded
+contracts are not mismatched or unknown.
 In interactive human mode, `deploy stack` shows a progress bar across WASM upload/reuse, contract
 deployment/reuse, initialization, and adapter deployment stages. Progress rendering is disabled for
 `--json`, `--json-lines`, `--dry-run`, and non-TTY stderr.
@@ -92,6 +97,18 @@ tmplr-soroban-vault deploy plan adapters \
   --blend-pool CPOOL...
 ```
 
+Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
+`safe_to_resume: true`:
+
+```sh
+tmplr-soroban-vault reconcile --json
+tmplr-soroban-vault reconcile --skip-view-verification --json
+tmplr-soroban-vault deploy repair --json
+tmplr-soroban-vault deploy resume \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CPOOL...
+```
+
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
 WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 
@@ -102,6 +119,7 @@ WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.
+- Contract invoke writes run a Stellar preflight simulation with `--send no` before submission. In human mode the CLI prints the simulation output, including Stellar-reported auth, footprint/resource, fee, and contract-error details when the Stellar CLI provides them; JSON modes keep stdout machine-readable and surface preflight failures as structured command errors.
 - Prefer Stellar keystore identities: run `stellar keys use <identity>` in the mounted/configured Stellar config directory, or pass a non-secret identity alias/public account with `--source-account`.
 - Do not pass raw secret keys or seed phrases to `--source-account`; the CLI rejects obvious secret material there. If an operator must use an ephemeral secret, set `STELLAR_ACCOUNT` for the `stellar` child process environment instead of putting it in CLI argv.
 - Source-account overrides use `secrecy`/`zeroize` wrappers, are redacted from command displays and tracing logs, are zeroized from in-process environment override copies after use, and are never persisted to the deployment manifest.
