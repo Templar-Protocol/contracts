@@ -410,14 +410,12 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
                 (simulate_display, output)
             }
         };
-        if !self.cli.json && !self.cli.json_lines {
-            eprintln!("Preflight simulation succeeded: {command_display}");
-            if !output.stdout.is_empty() {
-                eprintln!("{}", output.stdout);
-            }
-            if !output.stderr.is_empty() {
-                eprintln!("{}", output.stderr);
-            }
+        eprintln!("Preflight simulation succeeded: {command_display}");
+        if !output.stdout.is_empty() {
+            eprintln!("{}", output.stdout);
+        }
+        if !output.stderr.is_empty() {
+            eprintln!("{}", output.stderr);
         }
         Ok(())
     }
