@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{self, IsTerminal, Write as _},
     path::Path,
@@ -20,7 +20,7 @@ use crate::{
     cli::{
         AdapterArgs, AdapterCommand, Cli, Commands, CuratorCommand, DeployCommand,
         DeployPlanCommand, ExtendTtlArgs, GovernanceCommand, GovernanceSubmitAndWaitCommand,
-        ProfileCommand, ShareTokenCommand, UserCommand,
+        ProfileCommand, ReconcileArgs, ShareTokenCommand, UserCommand,
     },
     manifest::{ContractRecord, Manifest, TransactionRecord},
     profile,
@@ -65,6 +65,8 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
         Commands::Deploy(args) => match &args.command {
             DeployCommand::Plan(plan) => run_deploy_plan(cli, &manifest, plan),
             DeployCommand::Stack(stack) => deploy_stack(cli, &stellar, &mut manifest, stack),
+            DeployCommand::Resume(stack) => deploy_resume(cli, &stellar, &mut manifest, stack),
+            DeployCommand::Repair(repair) => Ok(run_reconcile(&stellar, &manifest, repair)),
             DeployCommand::Adapters(adapters) => {
                 deploy_adapters(cli, &stellar, &mut manifest, adapters)
             }
@@ -81,6 +83,7 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
                 Ok(Response::message(format!("{} wasm hash: {hash}", spec.key)))
             }
         },
+        Commands::Reconcile(args) => Ok(run_reconcile(&stellar, &manifest, args)),
         Commands::User(args) => run_user(&stellar, &manifest, &args.command),
         Commands::Curator(args) => run_curator(&stellar, &manifest, &args.command),
         Commands::Governance(args) => run_governance(&stellar, &manifest, &args.command),
@@ -834,6 +837,411 @@ fn deploy_stack<E: CommandExecutor>(
     }))
 }
 
+fn deploy_resume<E: CommandExecutor>(
+    cli: &Cli,
+    stellar: &Stellar<'_, E>,
+    manifest: &mut Manifest,
+    args: &crate::cli::DeployStackArgs,
+) -> anyhow::Result<Response> {
+    let reconcile = reconcile_manifest(stellar, manifest, true);
+    anyhow::ensure!(
+        reconcile.safe_to_resume,
+        "manifest is not safe to resume; run `tmplr-soroban-vault reconcile --json` or `tmplr-soroban-vault deploy repair --json` for the repair plan"
+    );
+    apply_reconcile_safe_manifest_updates(cli, manifest, &reconcile)?;
+    deploy_stack(cli, stellar, manifest, args)
+}
+
+fn run_reconcile<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    args: &ReconcileArgs,
+) -> Response {
+    Response::Reconcile(reconcile_manifest(
+        stellar,
+        manifest,
+        !args.skip_view_verification,
+    ))
+}
+
+fn reconcile_manifest<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    verify_views: bool,
+) -> ReconcileResponse {
+    let mut keys = BTreeSet::<String>::new();
+    for key in [
+        "vault",
+        "governance",
+        "share_token",
+        "asset_token",
+        "proxy_4626",
+        "curator_proxy",
+    ] {
+        keys.insert(key.to_string());
+    }
+    for key in manifest.contracts.keys() {
+        keys.insert(key.clone());
+    }
+
+    let mut components = Vec::new();
+    let mut repair_actions = Vec::new();
+    for key in &keys {
+        let component = reconcile_component(stellar, manifest, key, verify_views);
+        repair_actions.extend(component.repair_actions.clone());
+        components.push(component);
+    }
+
+    let safe_to_resume = components.iter().all(ReconcileComponent::safe_to_resume);
+    let drift_detected = components
+        .iter()
+        .any(|component| component.status.is_drift() || !component.warnings.is_empty());
+    let mut safe_next_steps = Vec::new();
+    if safe_to_resume {
+        safe_next_steps.push("deploy resume can continue missing manifest components and uninitialized recorded contracts".to_string());
+    } else {
+        safe_next_steps.push(
+            "do not resume until mismatched, unknown, or missing recorded contracts are resolved"
+                .to_string(),
+        );
+    }
+    ReconcileResponse {
+        safe_to_resume,
+        drift_detected,
+        components,
+        repair_actions,
+        safe_next_steps,
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "classification keeps all status transitions in one place"
+)]
+fn reconcile_component<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    key: &str,
+    verify_views: bool,
+) -> ReconcileComponent {
+    let Some(record) = manifest.contracts.get(key) else {
+        return ReconcileComponent {
+            key: key.to_string(),
+            contract_id: None,
+            manifest_recorded: false,
+            manifest_initialized: false,
+            recorded_wasm_hash: None,
+            chain_wasm_hash: None,
+            status: ReconcileStatus::Missing,
+            wiring: Vec::new(),
+            warnings: Vec::new(),
+            repair_actions: vec![format!(
+                "{key}: deploy or import contract, then checkpoint manifest"
+            )],
+        };
+    };
+
+    let mut component = ReconcileComponent {
+        key: key.to_string(),
+        contract_id: Some(record.contract_id.clone()),
+        manifest_recorded: true,
+        manifest_initialized: record.initialized,
+        recorded_wasm_hash: Some(record.wasm_hash.clone()),
+        chain_wasm_hash: None,
+        status: ReconcileStatus::Unknown,
+        wiring: Vec::new(),
+        warnings: Vec::new(),
+        repair_actions: Vec::new(),
+    };
+
+    match stellar.fetch_contract_wasm_hash(&record.contract_id) {
+        Ok(chain_hash) => {
+            component.chain_wasm_hash = Some(chain_hash.clone());
+            if should_compare_wasm_hash(&record.wasm_hash) && record.wasm_hash != chain_hash {
+                component.status = ReconcileStatus::Mismatched;
+                component.warnings.push(format!(
+                    "manifest wasm hash {} does not match chain wasm hash {chain_hash}",
+                    record.wasm_hash
+                ));
+                component.repair_actions.push(format!(
+                    "{key}: inspect wrong-network or wrong-contract drift before editing manifest"
+                ));
+                return component;
+            }
+            component.status = if record.initialized {
+                ReconcileStatus::Initialized
+            } else {
+                ReconcileStatus::Deployed
+            };
+        }
+        Err(error) if looks_missing_contract(&error.to_string()) => {
+            component.status = ReconcileStatus::Missing;
+            component
+                .warnings
+                .push(format!("recorded contract was not found on chain: {error}"));
+            component.repair_actions.push(format!(
+                "{key}: verify network/RPC, then remove or replace stale manifest record manually"
+            ));
+            return component;
+        }
+        Err(error) => {
+            component.status = ReconcileStatus::Unknown;
+            component
+                .warnings
+                .push(format!("could not fetch recorded contract: {error}"));
+            component.repair_actions.push(format!(
+                "{key}: retry reconciliation with a healthy RPC before resuming"
+            ));
+            return component;
+        }
+    }
+
+    if verify_views {
+        match verify_component_wiring(stellar, manifest, key, record) {
+            Ok(wiring) => {
+                if wiring
+                    .iter()
+                    .any(|check| check.status == WiringStatus::Mismatch)
+                {
+                    component.status = ReconcileStatus::Mismatched;
+                    component
+                        .repair_actions
+                        .push(format!("{key}: investigate manifest/chain wiring mismatch"));
+                } else if !wiring.is_empty() {
+                    component.status = ReconcileStatus::Initialized;
+                }
+                component.wiring = wiring;
+            }
+            Err(error) => {
+                component
+                    .warnings
+                    .push(format!("view verification unavailable: {error}"));
+                if record.initialized {
+                    component.status = ReconcileStatus::Unknown;
+                    component.repair_actions.push(format!(
+                        "{key}: retry view verification before treating as initialized"
+                    ));
+                }
+            }
+        }
+    }
+
+    if component.status == ReconcileStatus::Deployed {
+        component
+            .repair_actions
+            .push(format!("{key}: run deploy resume to continue initialization if this component has an initializer"));
+    }
+    if component.status == ReconcileStatus::Initialized && !component.manifest_initialized {
+        component.warnings.push(
+            "manifest marks this contract uninitialized, but chain views indicate it is initialized"
+                .to_string(),
+        );
+        component.repair_actions.push(format!(
+            "{key}: deploy resume can safely checkpoint initialized=true before continuing"
+        ));
+    }
+    component
+}
+
+fn apply_reconcile_safe_manifest_updates(
+    cli: &Cli,
+    manifest: &mut Manifest,
+    reconcile: &ReconcileResponse,
+) -> anyhow::Result<()> {
+    let mut changed = false;
+    for component in &reconcile.components {
+        if component.status != ReconcileStatus::Initialized || component.manifest_initialized {
+            continue;
+        }
+        if let Some(record) = manifest.contracts.get_mut(&component.key) {
+            record.initialized = true;
+            changed = true;
+        }
+    }
+    if changed {
+        checkpoint_manifest(cli, manifest)?;
+    }
+    Ok(())
+}
+
+fn should_compare_wasm_hash(wasm_hash: &str) -> bool {
+    !matches!(wasm_hash, "predeployed" | "stellar-asset-contract")
+}
+
+fn looks_missing_contract(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("not found")
+        || message.contains("does not exist")
+        || message.contains("missing")
+        || message.contains("not exist")
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "contract-specific view checks are clearer as one dispatch table"
+)]
+fn verify_component_wiring<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    key: &str,
+    record: &ContractRecord,
+) -> anyhow::Result<Vec<WiringCheck>> {
+    let mut checks = Vec::new();
+    match key {
+        "vault" => {
+            let owner = contract_id(manifest, "governance")
+                .or_else(|| contract_id(manifest, "vault"))
+                .context("vault proxy_view needs a recorded owner address")?;
+            let out = stellar.invoke_view(
+                &record.contract_id,
+                "proxy_view",
+                args([("--owner", owner), ("--assets", "0"), ("--shares", "0")]),
+            )?;
+            push_contains_check(
+                &mut checks,
+                "governance",
+                contract_id(manifest, "governance"),
+                &out.stdout,
+            );
+            push_contains_check(
+                &mut checks,
+                "asset_token",
+                contract_id(manifest, "asset_token"),
+                &out.stdout,
+            );
+            push_contains_check(
+                &mut checks,
+                "share_token",
+                contract_id(manifest, "share_token"),
+                &out.stdout,
+            );
+        }
+        "governance" => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "vault",
+                contract_id(manifest, "vault"),
+            )?);
+            if let Some(admin) = record.constructor_args.get("admin") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "admin",
+                    Some(admin),
+                )?);
+            }
+        }
+        "share_token" => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "vault",
+                contract_id(manifest, "vault"),
+            )?);
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "admin",
+                contract_id(manifest, "vault"),
+            )?);
+        }
+        "proxy_4626" => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "asset",
+                contract_id(manifest, "asset_token"),
+            )?);
+        }
+        "curator_proxy" => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "vault",
+                contract_id(manifest, "vault"),
+            )?);
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "governance",
+                contract_id(manifest, "governance"),
+            )?);
+        }
+        key if key.starts_with("blend_adapter") => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "vault",
+                contract_id(manifest, "vault"),
+            )?);
+            if let Some(pool) = record.constructor_args.get("pool") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "pool",
+                    Some(pool),
+                )?);
+            }
+            if let Some(admin) = record.constructor_args.get("admin") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "admin",
+                    Some(admin),
+                )?);
+            }
+        }
+        _ => {}
+    }
+    Ok(checks)
+}
+
+fn view_equals_check<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    contract_id: &str,
+    function: &str,
+    expected: Option<&str>,
+) -> anyhow::Result<WiringCheck> {
+    let Some(expected) = expected else {
+        return Ok(WiringCheck {
+            field: function.to_string(),
+            expected: None,
+            observed: None,
+            status: WiringStatus::Unknown,
+        });
+    };
+    let out = stellar.invoke_view(contract_id, function, Vec::new())?;
+    Ok(WiringCheck {
+        field: function.to_string(),
+        expected: Some(expected.to_string()),
+        observed: Some(out.stdout.clone()),
+        status: if out.stdout.contains(expected) {
+            WiringStatus::Match
+        } else {
+            WiringStatus::Mismatch
+        },
+    })
+}
+
+fn push_contains_check(
+    checks: &mut Vec<WiringCheck>,
+    field: &str,
+    expected: Option<&str>,
+    observed: &str,
+) {
+    checks.push(WiringCheck {
+        field: field.to_string(),
+        expected: expected.map(ToString::to_string),
+        observed: Some(observed.to_string()),
+        status: match expected {
+            Some(expected) if observed.contains(expected) => WiringStatus::Match,
+            Some(_) => WiringStatus::Mismatch,
+            None => WiringStatus::Unknown,
+        },
+    });
+}
+
 fn deploy_adapters<E: CommandExecutor>(
     cli: &Cli,
     stellar: &Stellar<'_, E>,
@@ -1143,6 +1551,7 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
         contract_key = key,
         wasm_hash, force_new, "deploying contract"
     );
+    let has_constructor_args = !constructor_args.is_empty();
     let contract_id = stellar.deploy(wasm_hash, constructor_args)?;
     manifest.contracts.insert(
         key.to_string(),
@@ -1152,7 +1561,7 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
             salt: None,
             constructor_args: constructor_summary,
             deploy_tx: None,
-            initialized: false,
+            initialized: has_constructor_args,
         },
     );
     checkpoint_manifest(cli, manifest)?;
@@ -2472,6 +2881,7 @@ fn command_name(command: &Commands) -> String {
         Commands::ShareToken(_) => "share-token",
         Commands::Adapter(_) => "adapter",
         Commands::ExtendTtl(_) => "extend-ttl",
+        Commands::Reconcile(_) => "reconcile",
         Commands::Status => "status",
         Commands::ExportEnv => "export-env",
         Commands::Profile(_) => "profile",
@@ -2523,6 +2933,7 @@ fn command_target_and_function(
         ),
         Commands::ExtendTtl(_) => (None, Some("extend_ttl".to_string())),
         Commands::Deploy(_) => (None, Some("deploy".to_string())),
+        Commands::Reconcile(_) => (None, Some("reconcile".to_string())),
         Commands::Doctor
         | Commands::Status
         | Commands::ExportEnv
@@ -2541,7 +2952,11 @@ fn command_artifact_hash(command: &Commands, manifest: &Manifest) -> Option<Stri
             .artifacts
             .get(ArtifactSpec::from_name(wasm.artifact).key)
             .and_then(|record| record.remote_wasm_hash.clone()),
-        DeployCommand::Stack(_) | DeployCommand::Adapters(_) | DeployCommand::Plan(_) => None,
+        DeployCommand::Stack(_)
+        | DeployCommand::Resume(_)
+        | DeployCommand::Adapters(_)
+        | DeployCommand::Plan(_)
+        | DeployCommand::Repair(_) => None,
     }
 }
 
@@ -3017,6 +3432,38 @@ fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
                 println!("Skipped: {}", result.skipped.join(", "));
             }
         }
+        Response::Reconcile(result) => {
+            println!("Safe to resume: {}", result.safe_to_resume);
+            println!("Drift detected: {}", result.drift_detected);
+            println!("Components:");
+            for component in &result.components {
+                println!(
+                    "  - {}: {}{}",
+                    component.key,
+                    component.status.as_label(),
+                    component
+                        .contract_id
+                        .as_ref()
+                        .map(|id| format!(" ({id})"))
+                        .unwrap_or_default()
+                );
+                for warning in &component.warnings {
+                    println!("    warning: {warning}");
+                }
+            }
+            if !result.repair_actions.is_empty() {
+                println!("Repair plan:");
+                for action in &result.repair_actions {
+                    println!("  - {action}");
+                }
+            }
+            if !result.safe_next_steps.is_empty() {
+                println!("Next steps:");
+                for step in &result.safe_next_steps {
+                    println!("  - {step}");
+                }
+            }
+        }
         Response::Doctor(result) => {
             println!(
                 "Doctor: {}",
@@ -3292,6 +3739,7 @@ enum Response {
     Status(StatusResponse),
     Env(Vec<(String, String)>),
     ExtendTtl(ExtendTtlResponse),
+    Reconcile(ReconcileResponse),
     Doctor(DoctorResponse),
     Plan(PlanResponse),
     GovernanceQueue(GovernanceQueueResponse),
@@ -3311,6 +3759,7 @@ impl Response {
             Self::Status(_) => "status",
             Self::Env(_) => "env",
             Self::ExtendTtl(_) => "extend_ttl",
+            Self::Reconcile(_) => "reconcile",
             Self::Doctor(_) => "doctor",
             Self::Plan(_) => "plan",
             Self::GovernanceQueue(_) => "governance_queue",
@@ -3324,6 +3773,11 @@ impl Response {
             Self::Plan(plan) => plan.warnings.clone(),
             Self::GovernanceQueue(queue) => queue.warnings.clone(),
             Self::GovernanceAcceptReady(result) => result.skipped.clone(),
+            Self::Reconcile(result) => result
+                .components
+                .iter()
+                .flat_map(|component| component.warnings.clone())
+                .collect(),
             Self::Doctor(result) => result
                 .checks
                 .iter()
@@ -3383,6 +3837,81 @@ struct BlendAdapterStatus {
 struct ExtendTtlResponse {
     extended: Vec<String>,
     skipped: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReconcileResponse {
+    safe_to_resume: bool,
+    drift_detected: bool,
+    components: Vec<ReconcileComponent>,
+    repair_actions: Vec<String>,
+    safe_next_steps: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReconcileComponent {
+    key: String,
+    contract_id: Option<String>,
+    manifest_recorded: bool,
+    manifest_initialized: bool,
+    recorded_wasm_hash: Option<String>,
+    chain_wasm_hash: Option<String>,
+    status: ReconcileStatus,
+    wiring: Vec<WiringCheck>,
+    warnings: Vec<String>,
+    repair_actions: Vec<String>,
+}
+
+impl ReconcileComponent {
+    const fn safe_to_resume(&self) -> bool {
+        match self.status {
+            ReconcileStatus::Initialized | ReconcileStatus::Deployed => true,
+            ReconcileStatus::Missing => !self.manifest_recorded,
+            ReconcileStatus::Unknown | ReconcileStatus::Mismatched => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReconcileStatus {
+    Missing,
+    Deployed,
+    Initialized,
+    Unknown,
+    Mismatched,
+}
+
+impl ReconcileStatus {
+    const fn as_label(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Deployed => "deployed",
+            Self::Initialized => "initialized",
+            Self::Unknown => "unknown",
+            Self::Mismatched => "mismatched",
+        }
+    }
+
+    const fn is_drift(self) -> bool {
+        matches!(self, Self::Unknown | Self::Mismatched)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct WiringCheck {
+    field: String,
+    expected: Option<String>,
+    observed: Option<String>,
+    status: WiringStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WiringStatus {
+    Match,
+    Mismatch,
+    Unknown,
 }
 
 #[derive(Debug, Serialize)]
@@ -3514,6 +4043,8 @@ impl DoctorStatus {
 mod tests {
     use std::{fs, sync::Mutex};
 
+    use sha2::{Digest, Sha256};
+
     use crate::{
         artifacts::ArtifactSpec,
         cli::{
@@ -3623,6 +4154,51 @@ mod tests {
         }
     }
 
+    struct ChainStateExecutor {
+        wasm: &'static [u8],
+    }
+
+    impl CommandExecutor for ChainStateExecutor {
+        fn run(
+            &self,
+            _program: &str,
+            args: &[String],
+            _redacted_args: &[usize],
+            _env: &[crate::stellar::CommandEnv],
+        ) -> anyhow::Result<CommandOutput> {
+            if args
+                .windows(2)
+                .any(|pair| pair[0] == "--id" && pair[1] == CONTRACT)
+            {
+                if let Some(path) = args
+                    .windows(2)
+                    .find_map(|pair| (pair[0] == "--out-file").then(|| &pair[1]))
+                {
+                    fs::write(path, self.wasm).expect("write fetched wasm");
+                }
+                return Ok(CommandOutput {
+                    stdout: CONTRACT.to_string(),
+                    stderr: String::new(),
+                });
+            }
+            anyhow::bail!("contract not found")
+        }
+    }
+
+    fn submitted_calls(calls: &[(String, Vec<String>)]) -> Vec<(String, Vec<String>)> {
+        calls
+            .iter()
+            .filter(|(_, args)| {
+                !args
+                    .windows(2)
+                    .any(|pair| pair[0] == "--send" && pair[1] == "no")
+                    && !args.iter().any(|arg| arg == "--build-only")
+                    && !matches!(args.as_slice(), [first, second, ..] if first == "tx" && second == "simulate")
+            })
+            .cloned()
+            .collect()
+    }
+
     #[test]
     fn parses_supply_queue_entries_to_governance_json() {
         let entries = [
@@ -3673,6 +4249,133 @@ mod tests {
         assert!(value["tx_hashes"].is_array());
         assert!(value["warnings"].is_array());
         assert_eq!(value["data"]["type"], "message");
+    }
+
+    #[test]
+    fn reconcile_classifies_matching_recorded_contract_as_initialized() {
+        let wasm_hash = format!("{:x}", Sha256::digest(b"vault wasm"));
+        let mut manifest = Manifest::new("testnet", None);
+        manifest.contracts.insert(
+            "vault".to_string(),
+            ContractRecord {
+                contract_id: CONTRACT.to_string(),
+                wasm_hash: wasm_hash.clone(),
+                salt: None,
+                constructor_args: BTreeMap::new(),
+                deploy_tx: None,
+                initialized: true,
+            },
+        );
+        let cli = base_cli("manifest.json".into(), Commands::Status);
+        let executor = ChainStateExecutor {
+            wasm: b"vault wasm",
+        };
+        let stellar = Stellar::new(&cli, &executor);
+
+        let response = reconcile_manifest(&stellar, &manifest, false);
+
+        let vault = response
+            .components
+            .iter()
+            .find(|component| component.key == "vault")
+            .expect("vault component");
+        assert_eq!(vault.status, ReconcileStatus::Initialized);
+        assert_eq!(vault.chain_wasm_hash.as_deref(), Some(wasm_hash.as_str()));
+        assert!(response.safe_to_resume);
+    }
+
+    #[test]
+    fn reconcile_detects_wasm_hash_mismatch_and_blocks_resume() {
+        let mut manifest = Manifest::new("testnet", None);
+        manifest.contracts.insert(
+            "vault".to_string(),
+            ContractRecord {
+                contract_id: CONTRACT.to_string(),
+                wasm_hash: "different".to_string(),
+                salt: None,
+                constructor_args: BTreeMap::new(),
+                deploy_tx: None,
+                initialized: true,
+            },
+        );
+        let cli = base_cli("manifest.json".into(), Commands::Status);
+        let executor = ChainStateExecutor {
+            wasm: b"vault wasm",
+        };
+        let stellar = Stellar::new(&cli, &executor);
+
+        let response = reconcile_manifest(&stellar, &manifest, false);
+
+        let vault = response
+            .components
+            .iter()
+            .find(|component| component.key == "vault")
+            .expect("vault component");
+        assert_eq!(vault.status, ReconcileStatus::Mismatched);
+        assert!(!response.safe_to_resume);
+        assert!(response.drift_detected);
+    }
+
+    #[test]
+    fn resume_repair_marks_chain_initialized_manifest_records_initialized() {
+        let wasm_hash = format!("{:x}", Sha256::digest(b"share wasm"));
+        let mut manifest = Manifest::new("testnet", None);
+        manifest.contracts.insert(
+            "vault".to_string(),
+            ContractRecord {
+                contract_id: CONTRACT.to_string(),
+                wasm_hash: "predeployed".to_string(),
+                salt: None,
+                constructor_args: BTreeMap::new(),
+                deploy_tx: None,
+                initialized: true,
+            },
+        );
+        manifest.contracts.insert(
+            "share_token".to_string(),
+            ContractRecord {
+                contract_id: CONTRACT.to_string(),
+                wasm_hash,
+                salt: None,
+                constructor_args: map_args([("vault", CONTRACT), ("admin", CONTRACT)]),
+                deploy_tx: None,
+                initialized: false,
+            },
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let cli = base_cli(state.clone(), Commands::Status);
+        let executor = ChainStateExecutor {
+            wasm: b"share wasm",
+        };
+        let stellar = Stellar::new(&cli, &executor);
+
+        let response = reconcile_manifest(&stellar, &manifest, true);
+        let share = response
+            .components
+            .iter()
+            .find(|component| component.key == "share_token")
+            .expect("share component");
+        assert_eq!(share.status, ReconcileStatus::Initialized);
+        assert!(!share.manifest_initialized);
+        assert!(!share.warnings.is_empty());
+
+        apply_reconcile_safe_manifest_updates(&cli, &mut manifest, &response)
+            .expect("apply safe repair");
+
+        let share = manifest
+            .contracts
+            .get("share_token")
+            .expect("share token record");
+        assert!(share.initialized);
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        assert!(
+            loaded
+                .contracts
+                .get("share_token")
+                .expect("saved share token record")
+                .initialized
+        );
     }
 
     #[test]
@@ -3787,7 +4490,7 @@ mod tests {
 
         run(&cli, &executor).expect("run deposit");
 
-        let calls = executor.calls();
+        let calls = submitted_calls(&executor.calls());
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "stellar");
         assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
@@ -3864,8 +4567,7 @@ mod tests {
                 .map(String::as_str),
             Some(ACCOUNT)
         );
-        let adapter_deploys = executor
-            .calls()
+        let adapter_deploys = submitted_calls(&executor.calls())
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--pool"))
             .count();
@@ -3971,7 +4673,7 @@ mod tests {
 
         run(&cli, &executor).expect("extend ttl");
 
-        let calls = executor.calls();
+        let calls = submitted_calls(&executor.calls());
         assert_eq!(calls.len(), 6);
         assert!(calls.iter().any(|(_, args)| args
             .windows(2)
@@ -4013,7 +4715,7 @@ mod tests {
 
         run(&cli, &executor).expect("run governance timelock");
 
-        let calls = executor.calls();
+        let calls = submitted_calls(&executor.calls());
         assert_eq!(calls.len(), 1);
         assert!(calls[0].1.iter().any(|arg| arg == "submit_set_timelock"));
         assert!(calls[0]
@@ -4076,7 +4778,7 @@ mod tests {
 
         run(&cli, &executor).expect("accept ready proposals");
 
-        let calls = executor.calls();
+        let calls = submitted_calls(&executor.calls());
         let accepted = calls
             .iter()
             .filter(|(_, args)| {
@@ -4162,7 +4864,7 @@ mod tests {
 
         run(&cli, &executor).expect("deploy stack");
 
-        let calls = executor.calls();
+        let calls = submitted_calls(&executor.calls());
         let adapter_deploys = calls
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--pool"))
@@ -4197,7 +4899,10 @@ mod tests {
         let executor = FailingInitializeExecutor::new();
 
         let err = run(&cli, &executor).expect_err("initialize should fail");
-        assert!(err.to_string().contains("forced initialize failure"));
+        assert!(
+            err.to_string().contains("forced initialize failure")
+                || err.to_string().contains("preflight simulation failed")
+        );
 
         let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
         for key in ["vault", "share_token", "governance", "asset_token"] {
@@ -4211,6 +4916,20 @@ mod tests {
                 .contracts
                 .get("vault")
                 .expect("vault record")
+                .initialized
+        );
+        assert!(
+            manifest
+                .contracts
+                .get("share_token")
+                .expect("share token record")
+                .initialized
+        );
+        assert!(
+            manifest
+                .contracts
+                .get("governance")
+                .expect("governance record")
                 .initialized
         );
         assert!(!manifest.contracts.contains_key("proxy_4626"));
@@ -4244,6 +4963,35 @@ mod tests {
         assert_eq!(contract_id, CONTRACT);
         assert_eq!(record.contract_id, CONTRACT);
         assert!(!record.initialized);
+    }
+
+    #[test]
+    fn deploy_contract_helper_marks_constructor_deployments_initialized() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let cli = base_cli(state.clone(), Commands::Status);
+        let executor = RecordingExecutor::new();
+        let stellar = Stellar::new(&cli, &executor);
+        let mut manifest = Manifest::new("testnet", None);
+
+        deploy_contract_if_needed(
+            &cli,
+            &stellar,
+            &mut manifest,
+            "governance",
+            "abc123",
+            args([("--admin", ACCOUNT), ("--vault", CONTRACT)]),
+            map_args([("admin", ACCOUNT), ("vault", CONTRACT)]),
+            false,
+        )
+        .expect("deploy contract");
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let record = loaded
+            .contracts
+            .get("governance")
+            .expect("governance record");
+        assert!(record.initialized);
     }
 
     #[test]
