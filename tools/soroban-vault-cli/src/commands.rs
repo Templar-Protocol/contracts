@@ -1996,7 +1996,7 @@ fn run_user<E: CommandExecutor>(
         }
         UserCommand::Balance { owner } => {
             let share = required_contract(manifest, "share_token")?;
-            invoke_response(stellar.invoke(
+            invoke_response(stellar.invoke_view(
                 share,
                 "balance",
                 args([("--account", owner.as_str())]),
@@ -2042,7 +2042,7 @@ fn run_user<E: CommandExecutor>(
             } else {
                 "proxy_view"
             };
-            invoke_response(stellar.invoke(
+            invoke_response(stellar.invoke_view(
                 target,
                 function,
                 args([
@@ -2300,17 +2300,17 @@ fn run_governance<E: CommandExecutor>(
         )?),
         GovernanceCommand::Pending { proposal_id } => {
             if let Some(proposal_id) = proposal_id {
-                invoke_response(stellar.invoke(
+                invoke_response(stellar.invoke_view(
                     governance,
                     "pending",
                     args([("--proposal_id", &proposal_id.to_string())]),
                 )?)
             } else {
-                invoke_response(stellar.invoke(governance, "pending_ids", Vec::new())?)
+                invoke_response(stellar.invoke_view(governance, "pending_ids", Vec::new())?)
             }
         }
         GovernanceCommand::Timelocks => {
-            invoke_response(stellar.invoke(governance, "timelocks", Vec::new())?)
+            invoke_response(stellar.invoke_view(governance, "timelocks", Vec::new())?)
         }
         GovernanceCommand::SubmitSetAdmin { admin, new_admin } => invoke_response(stellar.invoke(
             governance,
@@ -2601,7 +2601,7 @@ fn governance_queue<E: CommandExecutor>(
     governance: &str,
     kind: Option<&crate::types::GovernanceActionKindArg>,
 ) -> anyhow::Result<GovernanceQueueResponse> {
-    let out = stellar.invoke(governance, "pending_ids", Vec::new())?;
+    let out = stellar.invoke_view(governance, "pending_ids", Vec::new())?;
     let ids = parse_u64s(&out.stdout);
     let mut proposals = Vec::new();
     let mut warnings = Vec::new();
@@ -2623,7 +2623,7 @@ fn inspect_governance_proposal<E: CommandExecutor>(
     governance: &str,
     proposal_id: u64,
 ) -> anyhow::Result<GovernanceProposalView> {
-    let out = stellar.invoke(
+    let out = stellar.invoke_view(
         governance,
         "pending",
         args([("--proposal_id", &proposal_id.to_string())]),
@@ -2714,7 +2714,7 @@ fn run_governance_submit_and_wait<E: CommandExecutor>(
                     supply_queue_entries_json(entries)?,
                 ],
             )?;
-            (admin, parse_last_u64(&out.stdout)?)
+            (admin, parse_proposal_id(&out.stdout)?)
         }
         GovernanceSubmitAndWaitCommand::SetTimelock {
             admin,
@@ -2730,7 +2730,7 @@ fn run_governance_submit_and_wait<E: CommandExecutor>(
                     ("--new_timelock_ns", &timelock_ns.to_string()),
                 ]),
             )?;
-            (admin, parse_last_u64(&out.stdout)?)
+            (admin, parse_proposal_id(&out.stdout)?)
         }
     };
     wait_for_governance_proposal(
@@ -2967,16 +2967,20 @@ fn run_share_token<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let share = required_contract(manifest, "share_token")?;
     match command {
-        ShareTokenCommand::Balance { account } => invoke_response(stellar.invoke(
+        ShareTokenCommand::Balance { account } => invoke_response(stellar.invoke_view(
             share,
             "balance",
             args([("--account", account.as_str())]),
         )?),
         ShareTokenCommand::TotalSupply => {
-            invoke_response(stellar.invoke(share, "total_supply", Vec::new())?)
+            invoke_response(stellar.invoke_view(share, "total_supply", Vec::new())?)
         }
-        ShareTokenCommand::Admin => invoke_response(stellar.invoke(share, "admin", Vec::new())?),
-        ShareTokenCommand::Vault => invoke_response(stellar.invoke(share, "vault", Vec::new())?),
+        ShareTokenCommand::Admin => {
+            invoke_response(stellar.invoke_view(share, "admin", Vec::new())?)
+        }
+        ShareTokenCommand::Vault => {
+            invoke_response(stellar.invoke_view(share, "vault", Vec::new())?)
+        }
         ShareTokenCommand::ExtendTtl { caller } => invoke_response(stellar.invoke(
             share,
             "extend_ttl",
@@ -2992,14 +2996,20 @@ fn run_adapter<E: CommandExecutor>(
 ) -> anyhow::Result<Response> {
     let adapter = selected_blend_adapter(manifest, adapter_args)?;
     match &adapter_args.command {
-        AdapterCommand::TotalAssets { asset } => invoke_response(stellar.invoke(
+        AdapterCommand::TotalAssets { asset } => invoke_response(stellar.invoke_view(
             adapter,
             "total_assets",
             args([("--asset", asset.as_str())]),
         )?),
-        AdapterCommand::Admin => invoke_response(stellar.invoke(adapter, "admin", Vec::new())?),
-        AdapterCommand::Vault => invoke_response(stellar.invoke(adapter, "vault", Vec::new())?),
-        AdapterCommand::Pool => invoke_response(stellar.invoke(adapter, "pool", Vec::new())?),
+        AdapterCommand::Admin => {
+            invoke_response(stellar.invoke_view(adapter, "admin", Vec::new())?)
+        }
+        AdapterCommand::Vault => {
+            invoke_response(stellar.invoke_view(adapter, "vault", Vec::new())?)
+        }
+        AdapterCommand::Pool => {
+            invoke_response(stellar.invoke_view(adapter, "pool", Vec::new())?)
+        }
         AdapterCommand::SetAdmin { caller, admin } => invoke_response(stellar.invoke(
             adapter,
             "set_admin",
@@ -3152,7 +3162,7 @@ fn submit_and_maybe_accept<E: CommandExecutor>(
     let governance = required_contract(manifest, "governance")?;
     let out = stellar.invoke(governance, submit_method, submit_args)?;
     if auto_accept {
-        let proposal_id = parse_last_u64(&out.stdout)?;
+        let proposal_id = parse_proposal_id(&out.stdout)?;
         stellar.invoke(
             governance,
             "accept",
@@ -3286,8 +3296,18 @@ fn map_args<const N: usize>(items: [(&str, &str); N]) -> BTreeMap<String, String
         .collect()
 }
 
-fn parse_last_u64(stdout: &str) -> anyhow::Result<u64> {
-    stdout
+fn parse_proposal_id(stdout: &str) -> anyhow::Result<u64> {
+    let proposal_output = stdout
+        .lines()
+        .take_while(|line| {
+            !line
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("tx hash:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    proposal_output
         .split(|c: char| !c.is_ascii_digit())
         .rev()
         .find(|part| !part.is_empty())
@@ -4049,7 +4069,7 @@ mod tests {
         artifacts::ArtifactSpec,
         cli::{
             ArtifactName, Cli, Commands, DeployArgs, DeployCommand, DeployStackArgs, ExtendTtlArgs,
-            GovernanceArgs, UserArgs, DEFAULT_CONTRACT_SOURCE_REPO,
+            GovernanceArgs, ShareTokenArgs, UserArgs, DEFAULT_CONTRACT_SOURCE_REPO,
         },
         stellar::{CommandExecutor, CommandOutput},
     };
@@ -4199,6 +4219,18 @@ mod tests {
             .collect()
     }
 
+    fn assert_contract_invokes_are_views(calls: &[(String, Vec<String>)]) {
+        for (_, args) in calls
+            .iter()
+            .filter(|(_, args)| args.windows(2).any(|pair| pair == ["contract", "invoke"]))
+        {
+            assert!(
+                args.windows(2).any(|pair| pair == ["--send", "no"]),
+                "contract invoke should use --send no: {args:?}"
+            );
+        }
+    }
+
     #[test]
     fn parses_supply_queue_entries_to_governance_json() {
         let entries = [
@@ -4213,6 +4245,14 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&encoded).expect("json");
         assert_eq!(value[0]["target_id"], 0);
         assert_eq!(value[1]["adapter"], CONTRACT);
+    }
+
+    #[test]
+    fn parse_proposal_id_ignores_confirmed_tx_hash_suffix() {
+        let proposal_id =
+            parse_proposal_id("proposal 1\ntx hash: abcdef9876543210").expect("proposal id");
+
+        assert_eq!(proposal_id, 1);
     }
 
     #[test]
@@ -4794,6 +4834,35 @@ mod tests {
     }
 
     #[test]
+    fn governance_read_only_commands_use_view_invocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance(&state);
+
+        for command in [
+            GovernanceCommand::Pending { proposal_id: None },
+            GovernanceCommand::Pending {
+                proposal_id: Some(1),
+            },
+            GovernanceCommand::Timelocks,
+            GovernanceCommand::Queue { kind: None },
+            GovernanceCommand::Explain { proposal_id: 1 },
+        ] {
+            let cli = base_cli(
+                state.clone(),
+                Commands::Governance(GovernanceArgs { command }),
+            );
+            let executor = RecordingExecutor::new();
+
+            run(&cli, &executor).expect("run governance view");
+
+            let calls = executor.calls();
+            assert_contract_invokes_are_views(&calls);
+            assert!(submitted_calls(&calls).is_empty());
+        }
+    }
+
+    #[test]
     fn governance_submit_and_wait_submits_then_accepts_ready_proposal() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
@@ -4826,6 +4895,65 @@ mod tests {
             .iter()
             .any(|(_, args)| args.iter().any(|arg| arg == "accept")
                 && args.windows(2).any(|pair| pair == ["--proposal_id", "1"])));
+    }
+
+    #[test]
+    fn user_share_token_and_adapter_read_only_commands_use_view_invocation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_view_contracts(&state);
+
+        let commands = [
+            Commands::User(UserArgs {
+                command: UserCommand::Balance {
+                    owner: ACCOUNT.parse().expect("owner"),
+                },
+            }),
+            Commands::User(UserArgs {
+                command: UserCommand::Preview {
+                    owner: ACCOUNT.parse().expect("owner"),
+                    assets: None,
+                    assets_raw: 0,
+                    asset_decimals: 7,
+                    shares: None,
+                    shares_raw: 0,
+                    share_decimals: "manifest".parse().expect("share decimals"),
+                },
+            }),
+            Commands::ShareToken(ShareTokenArgs {
+                command: ShareTokenCommand::Balance {
+                    account: ACCOUNT.parse().expect("account"),
+                },
+            }),
+            Commands::ShareToken(ShareTokenArgs {
+                command: ShareTokenCommand::Admin,
+            }),
+            Commands::Adapter(AdapterArgs {
+                adapter_index: 0,
+                adapter_key: None,
+                adapter_pool: None,
+                command: AdapterCommand::TotalAssets {
+                    asset: CONTRACT.parse().expect("asset"),
+                },
+            }),
+            Commands::Adapter(AdapterArgs {
+                adapter_index: 0,
+                adapter_key: None,
+                adapter_pool: None,
+                command: AdapterCommand::Pool,
+            }),
+        ];
+
+        for command in commands {
+            let cli = base_cli(state.clone(), command);
+            let executor = RecordingExecutor::new();
+
+            run(&cli, &executor).expect("run read-only command");
+
+            let calls = executor.calls();
+            assert_contract_invokes_are_views(&calls);
+            assert!(submitted_calls(&calls).is_empty());
+        }
     }
 
     #[test]
@@ -5129,6 +5257,16 @@ mod tests {
         manifest
             .contracts
             .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest.save(path).expect("save manifest");
+    }
+
+    fn manifest_with_view_contracts(path: &std::path::Path) {
+        let mut manifest = Manifest::new("testnet", None);
+        for key in ["vault", "proxy_4626", "share_token", "blend_adapter_0"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
         manifest.save(path).expect("save manifest");
     }
 
