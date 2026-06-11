@@ -97,6 +97,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Refresh apt package metadata
+        run: sudo apt-get update
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -130,7 +133,7 @@ jobs:
             -p templar-soroban-blend-adapter
 
       - name: Install packages
-        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
+        run: sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stellar CLI
         run: script/soroban/install-stellar-cli.sh
