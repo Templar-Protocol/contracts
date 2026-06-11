@@ -1,0 +1,226 @@
+set shell := ["bash", "-euo", "pipefail", "-c"]
+set dotenv-load := true
+
+NETWORK_ID := env_var_or_default("NETWORK_ID", "mainnet")
+OMNI_CONTRACT := env_var_or_default("OMNI_CONTRACT", "v2_1.omni.hot.tg")
+STORAGE_DEPOSIT_NEAR := env_var_or_default("STORAGE_DEPOSIT_NEAR", "0.25")
+CALL_GAS := env_var_or_default("CALL_GAS", "300000000000000")
+WASM_PATH := "../../target/wasm32-unknown-unknown/release/templar_vault_counterparty_contract.wasm"
+HOT_STELLAR_LOCKER_CONTRACT := env_var_or_default("HOT_STELLAR_LOCKER_CONTRACT", "CCLWL5NYSV2WJQ3VBU44AMDHEVKEPA45N2QP2LL62O3JVKPGWWAQUVAG")
+STELLAR_RPC_URL := env_var_or_default("STELLAR_RPC_URL", "https://mainnet.sorobanrpc.com")
+STELLAR_NETWORK_PASSPHRASE := env_var_or_default("STELLAR_NETWORK_PASSPHRASE", "Public Global Stellar Network ; September 2015")
+STELLAR_KEY_NAME := env_var_or_default("STELLAR_KEY_NAME", "templar-hot-mainnet")
+HOT_OMNI_NEAR_RPC_URL := env_var_or_default("HOT_OMNI_NEAR_RPC_URL", "https://rpc.mainnet.near.org")
+
+_default:
+  @just --list
+
+# Print required env vars and available tasks.
+help:
+  @echo "Required env vars for e2e:";
+  @echo "  COUNTERPARTY_ACCOUNT";
+  @echo "  OWNER_ACCOUNT";
+  @echo "  CURATOR_ACCOUNT";
+  @echo "  NEAR_MARKET";
+  @echo "  STELLAR_RECEIVER";
+  @echo "  HOT_STELLAR_RECEIVER_HEX";
+  @echo "  OMNI_TOKEN_ID";
+  @echo "  FUNDER_ACCOUNT (for fund/smoke)";
+  @echo "  WITHDRAW_LIQUIDITY_ACK=YES (required for Stellar withdraw)";
+  @echo "  STELLAR_KEY_NAME or STELLAR_SECRET_KEY (for stellar-deposit)";
+  @echo "Optional:";
+  @echo "  NETWORK_ID (default: mainnet)";
+  @echo "  OMNI_CONTRACT (default: v2_1.omni.hot.tg)";
+  @echo "  STORAGE_DEPOSIT_NEAR (default: 0.25)";
+  @echo "  CALL_GAS (default: 300000000000000)";
+  @echo "  HOT_STELLAR_LOCKER_CONTRACT (default: mainnet HOT locker)";
+  @echo "  STELLAR_RPC_URL (default: https://mainnet.sorobanrpc.com)";
+  @echo "  STELLAR_NETWORK_PASSPHRASE (default: public mainnet)";
+  @echo "  STELLAR_KEY_NAME (default: templar-hot-mainnet)";
+  @echo "  HOT_STELLAR_ENCODED_RECEIVER (optional for monitor-withdrawal)";
+  @echo;
+  @echo "Load STELLAR_SECRET_KEY from Stellar keystore when needed:";
+  @echo "  source contract/vault-counterparty/scripts/load-stellar-secret-env.sh";
+  @echo;
+  @echo "Mainnet flow:";
+  @echo "  1) just bootstrap";
+  @echo "  2) just bridge-preflight";
+  @echo "  3) perform Stellar->HOT locker deposit to mint omni asset";
+  @echo "  4) just smoke-bridge";
+  @echo;
+  @just --list
+
+check-tools:
+  command -v cargo >/dev/null
+  command -v near >/dev/null
+
+check-stellar-tools:
+  command -v stellar >/dev/null
+  command -v python3 >/dev/null
+
+check-monitor-tools:
+  command -v node >/dev/null
+  command -v python3 >/dev/null
+
+check-env:
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  : "${OWNER_ACCOUNT:?set OWNER_ACCOUNT}"
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${NEAR_MARKET:?set NEAR_MARKET}"
+  : "${STELLAR_RECEIVER:?set STELLAR_RECEIVER}"
+  : "${HOT_STELLAR_RECEIVER_HEX:?set HOT_STELLAR_RECEIVER_HEX}"
+  : "${OMNI_TOKEN_ID:?set OMNI_TOKEN_ID}"
+
+build: check-tools
+  cargo build -p templar-vault-counterparty-contract --target wasm32-unknown-unknown --release
+  ls -lh "{{WASM_PATH}}"
+
+deploy: check-tools
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near deploy --accountId "$COUNTERPARTY_ACCOUNT" --wasmFile "{{WASM_PATH}}" --networkId "{{NETWORK_ID}}"
+
+init: check-env
+  ARGS='{"stellar_receiver":"'"$STELLAR_RECEIVER"'","near_market":"'"$NEAR_MARKET"'","omni_token_id":"'"$OMNI_TOKEN_ID"'","omni_contract":"'"{{OMNI_CONTRACT}}"'","hot_deposit_receiver_hex":"'"$HOT_STELLAR_RECEIVER_HEX"'","curator":"'"$CURATOR_ACCOUNT"'","owner":"'"$OWNER_ACCOUNT"'"}'
+  near call "$COUNTERPARTY_ACCOUNT" new "$ARGS" --accountId "$OWNER_ACCOUNT" --networkId "{{NETWORK_ID}}"
+
+config:
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near view "$COUNTERPARTY_ACCOUNT" get_config '{}' --networkId "{{NETWORK_ID}}"
+
+storage-counterparty:
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  : "${OWNER_ACCOUNT:?set OWNER_ACCOUNT}"
+  near call "{{OMNI_CONTRACT}}" storage_deposit '{"account_id":"'"$COUNTERPARTY_ACCOUNT"'"}' --deposit "{{STORAGE_DEPOSIT_NEAR}}" --accountId "$OWNER_ACCOUNT" --networkId "{{NETWORK_ID}}"
+
+storage-market:
+  : "${NEAR_MARKET:?set NEAR_MARKET}"
+  : "${OWNER_ACCOUNT:?set OWNER_ACCOUNT}"
+  near call "{{OMNI_CONTRACT}}" storage_deposit '{"account_id":"'"$NEAR_MARKET"'"}' --deposit "{{STORAGE_DEPOSIT_NEAR}}" --accountId "$OWNER_ACCOUNT" --networkId "{{NETWORK_ID}}"
+
+storage-all: storage-counterparty storage-market
+
+bootstrap: build deploy init config storage-all
+
+bridge-preflight: check-env
+  @echo "Bridge preflight (mainnet):"
+  @echo "  - Deposit underlying asset into HOT Stellar locker (via your Stellar adapter flow)."
+  @echo "  - Ensure deposit receiver on Stellar side is your configured NEAR counterparty:"
+  @echo "      $COUNTERPARTY_ACCOUNT"
+  @echo "  - Wait for relayer completion so omni asset appears on NEAR."
+  @echo "  - Verify counterparty omni balance is >= planned withdraw amount:"
+  @echo "      just balance $COUNTERPARTY_ACCOUNT"
+  @echo "  - Then set:"
+  @echo "      export WITHDRAW_LIQUIDITY_ACK=YES"
+  @echo "  - If assets were forwarded to market, run:"
+  @echo "      just request-market-withdraw <amount>"
+  @echo "      just execute-market-withdraw"
+  @echo "    before withdrawing the returned counterparty balance to Stellar."
+
+fund amount='1000':
+  : "${FUNDER_ACCOUNT:?set FUNDER_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  : "${OMNI_TOKEN_ID:?set OMNI_TOKEN_ID}"
+  ARGS='{"receiver_id":"'"$COUNTERPARTY_ACCOUNT"'","token_id":"'"$OMNI_TOKEN_ID"'","amount":"{{amount}}"}'
+  near call "{{OMNI_CONTRACT}}" mt_transfer "$ARGS" --depositYocto 1 --accountId "$FUNDER_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+stellar-deposit amount='1000000' asset='native' receiver='': check-stellar-tools
+  : "${HOT_STELLAR_RECEIVER_HEX:?set HOT_STELLAR_RECEIVER_HEX}"
+  RECEIVER="{{receiver}}"; if [ -z "$RECEIVER" ]; then RECEIVER="${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT or pass receiver}"; fi
+  if [ "{{asset}}" != "native" ]; then echo "only native XLM is supported by this recipe right now" >&2; exit 1; fi
+  SOURCE_ACCOUNT="${STELLAR_SECRET_KEY:-{{STELLAR_KEY_NAME}}}"
+  SENDER_ACCOUNT="${STELLAR_SENDER_ACCOUNT:-$(stellar keys address "{{STELLAR_KEY_NAME}}")}"
+  TOKEN_CONTRACT="$(stellar contract id asset --asset native --rpc-url "{{STELLAR_RPC_URL}}" --network-passphrase "{{STELLAR_NETWORK_PASSPHRASE}}")"
+  CLIENT_TIMESTAMP="$(python3 -c 'import time; print(time.time_ns() * 1000 - 20_000_000_000_000)')"
+  echo "HOT locker contract: {{HOT_STELLAR_LOCKER_CONTRACT}}"
+  echo "Stellar sender: $SENDER_ACCOUNT"
+  echo "NEAR receiver: $RECEIVER"
+  echo "Receiver hash: $HOT_STELLAR_RECEIVER_HEX"
+  echo "Token contract: $TOKEN_CONTRACT"
+  echo "Amount: {{amount}}"
+  echo "Client timestamp: $CLIENT_TIMESTAMP"
+  stellar contract invoke \
+    --id "{{HOT_STELLAR_LOCKER_CONTRACT}}" \
+    --source-account "$SOURCE_ACCOUNT" \
+    --rpc-url "{{STELLAR_RPC_URL}}" \
+    --network-passphrase "{{STELLAR_NETWORK_PASSPHRASE}}" \
+    --send=yes \
+    -- \
+    deposit \
+    --sender_id "$SENDER_ACCOUNT" \
+    --receiver_id "$HOT_STELLAR_RECEIVER_HEX" \
+    --token "$TOKEN_CONTRACT" \
+    --client_timestamp "$CLIENT_TIMESTAMP" \
+    --amount "{{amount}}"
+
+forward amount='100':
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near call "$COUNTERPARTY_ACCOUNT" forward_to_market '{"amount":"{{amount}}"}' --accountId "$CURATOR_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+request-market-withdraw amount='50':
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near call "$COUNTERPARTY_ACCOUNT" request_market_withdrawal '{"amount":"{{amount}}"}' --accountId "$CURATOR_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+cancel-market-withdraw:
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near call "$COUNTERPARTY_ACCOUNT" cancel_market_withdrawal '{}' --accountId "$CURATOR_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+execute-market-withdraw batch_limit='1':
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  near call "$COUNTERPARTY_ACCOUNT" execute_market_withdrawal '{"batch_limit":{{batch_limit}}}' --accountId "$CURATOR_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+withdraw amount='50':
+  : "${CURATOR_ACCOUNT:?set CURATOR_ACCOUNT}"
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  : "${WITHDRAW_LIQUIDITY_ACK:?set WITHDRAW_LIQUIDITY_ACK=YES after confirming Stellar locker backing liquidity}"
+  [ "$WITHDRAW_LIQUIDITY_ACK" = "YES" ]
+  near call "$COUNTERPARTY_ACCOUNT" withdraw_to_stellar '{"amount":"{{amount}}"}' --accountId "$CURATOR_ACCOUNT" --networkId "{{NETWORK_ID}}" --gas "{{CALL_GAS}}"
+
+balance account='':
+  : "${OMNI_TOKEN_ID:?set OMNI_TOKEN_ID}"
+  ACCOUNT="{{account}}"; if [ -z "$ACCOUNT" ]; then ACCOUNT="$COUNTERPARTY_ACCOUNT"; fi
+  ARGS='{"account_id":"'"$ACCOUNT"'","token_id":"'"$OMNI_TOKEN_ID"'"}'
+  near view "{{OMNI_CONTRACT}}" mt_balance_of "$ARGS" --networkId "{{NETWORK_ID}}"
+
+balances:
+  : "${COUNTERPARTY_ACCOUNT:?set COUNTERPARTY_ACCOUNT}"
+  : "${NEAR_MARKET:?set NEAR_MARKET}"
+  @echo "counterparty balance:";
+  just balance "$COUNTERPARTY_ACCOUNT"
+  @echo "market balance:";
+  just balance "$NEAR_MARKET"
+
+monitor-withdrawal nonce receiver='' interval='15': check-monitor-tools
+  bash contract/vault-counterparty/scripts/monitor-withdrawal.sh "{{nonce}}" "{{receiver}}" "{{interval}}"
+
+# Fast synthetic smoke path: funds counterparty by direct NEAR mt_transfer.
+smoke-synthetic fund_amount='1000' forward_amount='100' market_withdraw_amount='50' stellar_withdraw_amount='50': check-env
+  : "${FUNDER_ACCOUNT:?set FUNDER_ACCOUNT}"
+  just bootstrap
+  just fund "{{fund_amount}}"
+  just balances
+  just forward "{{forward_amount}}"
+  just balances
+  just request-market-withdraw "{{market_withdraw_amount}}"
+  just execute-market-withdraw
+  just balances
+  just withdraw "{{stellar_withdraw_amount}}"
+  just balances
+
+# Real bridge smoke path: assumes Stellar->HOT locker deposit already happened.
+smoke-bridge forward_amount='100' market_withdraw_amount='50' stellar_withdraw_amount='50': check-env
+  just bridge-preflight
+  just balances
+  just forward "{{forward_amount}}"
+  just balances
+  just request-market-withdraw "{{market_withdraw_amount}}"
+  just execute-market-withdraw
+  just balances
+  just withdraw "{{stellar_withdraw_amount}}"
+  just balances
+
+smoke forward_amount='100' market_withdraw_amount='50' stellar_withdraw_amount='50':
+  just smoke-bridge forward_amount="{{forward_amount}}" market_withdraw_amount="{{market_withdraw_amount}}" stellar_withdraw_amount="{{stellar_withdraw_amount}}"

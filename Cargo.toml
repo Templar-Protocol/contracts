@@ -18,6 +18,7 @@ members = [
     "contract/proxy-oracle/soroban/common",
     "contract/proxy-oracle/soroban/integration-tests",
     "contract/proxy-oracle/soroban/sep40-adapter-contract",
+    "contract/vault-counterparty",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -28,6 +29,7 @@ members = [
     "contract/vault/soroban",
     "contract/vault/soroban/shared-types",
     "contract/vault/soroban/blend-adapter",
+    "contract/vault/soroban/hot-bridge-adapter",
     "contract/vault/soroban/governance",
     "contract/vault/soroban/share-token",
     "fuzz",
@@ -68,6 +70,7 @@ derive_more = { version = "1", default-features = false, features = [
     "is_variant",
 ] }
 getrandom = { version = "0.2", features = ["custom"] }
+getset = "0.1.6"
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"

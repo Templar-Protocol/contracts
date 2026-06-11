@@ -382,8 +382,8 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           # --lib: unit tests only (excludes slow WASM integration tests).
-          # Soroban crates are tested in the dedicated Soroban job with their
-          # newer toolchain; exclude them from the default 1.86 coverage build.
+          # Soroban crates are tested in the dedicated Soroban job; exclude them
+          # from the default workspace coverage build.
           cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov \
             --exclude templar-proxy-oracle-soroban-common \
             --exclude templar-proxy-oracle-soroban-contract \

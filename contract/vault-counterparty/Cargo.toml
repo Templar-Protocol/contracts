@@ -1,0 +1,21 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "templar-vault-counterparty-contract"
+repository.workspace = true
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk.workspace = true
+bs58 = "0.5"
+stellar-xdr = { version = "24.0", default-features = false, features = ["curr", "std"] }
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
+proptest = "1.4"
+
+[lints]
+workspace = true

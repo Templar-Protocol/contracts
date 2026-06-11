@@ -101,7 +101,7 @@ soroban-share-metadata:
 # --------------------------------------------------------------------
 
 # Count auditor-facing Rust LOC for vault runtime code only.
-# Includes: src/ trees for curator-primitives, kernel, near, soroban, soroban-blend-adapter, soroban-governance, soroban-share-token.
+# Includes: src/ trees for curator-primitives, kernel, near, soroban, soroban-blend-adapter, soroban-hot-bridge-adapter, soroban-governance, soroban-share-token.
 # Excludes: tests, proofs, test helpers, examples, snapshots.
 audit-loc:
 	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
@@ -112,6 +112,7 @@ audit-loc:
 		"{{vault_root}}/near/src" \
 		"{{vault_root}}/soroban/src" \
 		"{{vault_root}}/soroban/blend-adapter/src" \
+		"{{vault_root}}/soroban/hot-bridge-adapter/src" \
 		"{{vault_root}}/soroban/governance/src" \
 		"{{vault_root}}/soroban/share-token/src" \
 		--types Rust \
@@ -128,7 +129,7 @@ audit-loc:
 audit-loc-per-crate:
 	@if ! command -v tokei >/dev/null 2>&1; then echo "tokei not found"; exit 1; fi
 	@if ! command -v jq >/dev/null 2>&1; then echo "jq not found"; exit 1; fi
-	@for crate in curator-primitives kernel near soroban soroban/blend-adapter soroban/governance soroban/share-token; do \
+	@for crate in curator-primitives kernel near soroban soroban/blend-adapter soroban/hot-bridge-adapter soroban/governance soroban/share-token; do \
 		stats=$(tokei \
 			"{{vault_root}}/$crate/src" \
 			--types Rust \

@@ -1,0 +1,34 @@
+[package]
+name = "templar-hot-relayer"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version = "0.1.0"
+
+[[bin]]
+name = "hot-relayer"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+getset = { workspace = true }
+near-primitives = { workspace = true }
+prometheus = "0.13"
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+stellar-xdr = { version = "26.0", default-features = false, features = ["curr", "std"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true, features = ["util"] }
+tower-http = { workspace = true, features = ["trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+wiremock = { workspace = true }
+
+[lints]
+workspace = true

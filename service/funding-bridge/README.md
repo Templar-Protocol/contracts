@@ -272,6 +272,11 @@ curl "http://localhost:3000/tokens/lookup?asset=USDT&chain=ethereum"
 }
 ```
 
+#### 6. HOT Relay Completion
+
+HOT completion endpoints live in the standalone `templar-hot-relayer` service under
+`service/hot-relayer`. `funding-bridge` does not load HOT MPC config or expose `/relay/*`.
+
 ## Use Cases
 
 ### 1. Liquidation Bot Pre-funding

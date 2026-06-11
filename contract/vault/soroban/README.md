@@ -294,6 +294,102 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 After deployment, register the adapter as a vault market before allocation.
 
+## Market Adapter Approaches
+
+Vault allocations into Templar-specific markets can use either a custodial forwarding adapter or the
+onchain HOT bridge adapter.
+
+### Custodial / Multisig Adapter
+
+A forwarding adapter sends allocated assets to a multisig or address controlled by the operator. The
+operator then handles the HOT/Intents bridge and Templar market deposit offchain.
+
+Supply flow:
+
+```text
+allocate
+-> market adapter
+-> operator multisig/address
+-> operator infra bridges/deposits via HOT / Intents
+-> Templar market
+```
+
+Withdrawal flow:
+
+```text
+operator infra exits/unwinds the Templar market position offchain
+-> operator bridges/returns funds back to the adapter
+-> funds sit as idle liquidity in the adapter
+-> vault withdraws idle liquidity from the adapter
+```
+
+In this model, a vault withdrawal only withdraws idle liquidity already present in the adapter. The
+operator is responsible for making that liquidity available first by unwinding the market position and
+returning funds. There is no automatic onchain market-exit step in the adapter.
+
+### Onchain HOT Bridge Adapter
+
+The HOT bridge adapter automatically routes the vault allocation through HOT. The bridged assets land
+in the Templar counterparty contract, and the counterparty forwards into the configured Templar
+market.
+
+Supply flow:
+
+```text
+allocate
+-> HOT bridge adapter
+-> HOT / Intents bridge
+-> Templar counterparty
+-> Templar market
+```
+
+Withdrawal flow:
+
+```text
+vault requests withdrawal from HOT bridge adapter
+-> Templar counterparty exits/advances the market withdrawal flow
+-> counterparty receives the withdrawn Intents/HOT asset
+-> counterparty initiates HOT withdrawal back to Stellar
+-> HOT bridge returns funds to the Stellar-side adapter
+-> adapter releases returned funds back to the vault
+```
+
+This is more automated, but the withdrawal path has more moving parts. The Soroban adapter can
+observe funds once they return on Stellar, but it cannot cryptographically prove the NEAR-side
+settlement caused that return. This uses the same broad HOT/Intents bridge trust model already used
+for Stellar deposits into Templar markets; the difference is whether operator infra or the onchain
+adapter/counterparty owns routing and market-forwarding/withdrawal steps.
+
+## HOT Bridge Adapter
+
+HOT bridge integration lives in `contract/vault/soroban/hot-bridge-adapter`. It exposes the same
+Soroban market-adapter surface as Blend (`supply`, `progress_withdrawal`, `total_assets`) while
+routing supplied assets into the HOT Stellar locker.
+
+Use recipes in [contract/vault/soroban/justfile](./justfile):
+
+- `just build-hot-bridge-adapter`
+- `SOROBAN_ASSET_TOKEN=<token> HOT_STELLAR_LOCKER_CONTRACT=<contract> HOT_STELLAR_RECEIVER_HEX=<64 hex chars> just deploy-hot-bridge-adapter`
+- `just hot-bridge-adapter-status`
+
+`HOT_STELLAR_RECEIVER_HEX` is intentionally explicit. It should be copied from a proven HOT receiver
+for the NEAR counterparty, not recomputed locally during deployment.
+`SOROBAN_ASSET_TOKEN` pins the single token this adapter will accept; if unset, the deploy recipe
+uses `state/asset_token_id` from `deploy-test-token`.
+
+`deploy-hot-bridge-adapter` pins the production HOT Stellar locker by contract ID and fetched WASM
+SHA-256 before deploying. For non-production testing only, set `HOT_STELLAR_LOCKER_ALLOW_UNPINNED=1`
+and override `HOT_STELLAR_LOCKER_EXPECTED_WASM_SHA256` for the test locker.
+
+Supply now pulls freshly authorized funds from the configured vault during the adapter call and
+rejects pre-existing adapter balances. Returned HOT funds must be recorded by the configured HOT
+locker with `record_returned` before the vault can call `progress_withdrawal`; raw adapter token
+balance alone is not treated as settlement proof.
+
+The HOT locker deposit field named `client_timestamp` is treated by the adapter as a client nonce.
+The pinned locker rejects duplicate values and also rejects same-ledger values above the ledger-base
+timestamp, so same-ledger deposits use the next lower unused nonce for locker compatibility.
+
 ## Deployment Artifact
 
 The Soroban justfile builds two runtime artifacts:
