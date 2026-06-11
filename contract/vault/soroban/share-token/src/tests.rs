@@ -502,6 +502,21 @@ fn share_token_whitelist_allows_vault_authorized_escrow_to_vault() {
     accounts.push_back(listed_owner.clone());
 
     env.as_contract(&vault, || {
+        VaultCaller::set_restrictions(env.clone(), token.clone(), 2, accounts.clone());
+    });
+    env.mock_auths(&[]);
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "transfer"),
+        (&listed_owner, MuxedAddress::from(vault.clone()), &1i128).into_val(&env),
+    );
+    assert!(
+        matches!(err, Err(Err(_))),
+        "direct transfer without vault authorization must fail, got {err:?}"
+    );
+
+    env.mock_all_auths_allowing_non_root_auth();
+    env.as_contract(&vault, || {
         VaultCaller::mint(env.clone(), token.clone(), listed_owner.clone(), 1000);
         VaultCaller::set_restrictions(env.clone(), token.clone(), 2, accounts.clone());
         VaultCaller::transfer(
