@@ -46,8 +46,8 @@ impl FungibleToken for SorobanShareTokenContract {
     fn transfer(e: &Env, from: Address, to: MuxedAddress, amount: i128) {
         extend_instance_ttl(e);
         require_not_paused(e);
-        require_unrestricted(e, &from);
-        require_unrestricted(e, &to.address());
+        require_unrestricted_or_vault(e, &from);
+        require_unrestricted_or_vault(e, &to.address());
         Base::transfer(e, &from, &to, amount);
     }
 
@@ -323,19 +323,39 @@ fn contains_address(accounts: &Vec<Address>, address: &Address) -> bool {
 }
 
 fn require_unrestricted(env: &Env, address: &Address) {
+    if is_unrestricted(env, address) {
+        return;
+    }
+    panic_with_error!(env, ShareTokenError::Restricted);
+}
+
+fn require_unrestricted_or_vault(env: &Env, address: &Address) {
+    if is_unrestricted(env, address) {
+        return;
+    }
+    let vault: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Vault)
+        .unwrap_or_else(|| panic_with_error!(env, ShareTokenError::MissingConfig));
+    if address == &vault {
+        vault.require_auth();
+        return;
+    }
+    panic_with_error!(env, ShareTokenError::Restricted);
+}
+
+fn is_unrestricted(env: &Env, address: &Address) -> bool {
     let Some(restrictions): Option<Restrictions> =
         env.storage().instance().get(&DataKey::Restrictions)
     else {
-        return;
+        return true;
     };
     let listed = contains_address(&restrictions.accounts, address);
-    let allowed = match restrictions.mode {
+    match restrictions.mode {
         RestrictionMode::None => true,
         RestrictionMode::Blacklist => !listed,
         RestrictionMode::Whitelist => listed,
-    };
-    if !allowed {
-        panic_with_error!(env, ShareTokenError::Restricted);
     }
 }
 
