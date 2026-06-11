@@ -66,14 +66,18 @@ jobs:
             --password-stdin
 
       - name: Build image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TAG: ${{ steps.image.outputs.tag }}
+          SHA_TAG: ${{ steps.image.outputs.sha_tag }}
         run: |
           set -euo pipefail
           docker build \
             --file tools/soroban-vault-cli/Dockerfile \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --tag "${{ steps.image.outputs.image }}:${{ steps.image.outputs.tag }}" \
-            --tag "${{ steps.image.outputs.image }}:${{ steps.image.outputs.sha_tag }}" \
+            --tag "${IMAGE}:${TAG}" \
+            --tag "${IMAGE}:${SHA_TAG}" \
             .
 
       - name: Push image
