@@ -16,6 +16,7 @@ templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-vault-kernel = { path = "../contract/vault/kernel", features = ["postcard", "soroban"] }
 templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["postcard"] }
 templar-soroban-runtime = { path = "../contract/vault/soroban", features = ["testutils"] }
+templar-soroban-custodial-adapter = { path = "../contract/vault/soroban/custodial-adapter", features = ["testutils"] }
 
 [lints]
 workspace = true
@@ -144,5 +145,11 @@ bench = false
 [[bin]]
 name = "fuzz_snapshot"
 path = "fuzz_targets/fuzz_snapshot.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_soroban_custodial_adapter"
+path = "fuzz_targets/fuzz_soroban_custodial_adapter.rs"
 test = false
 bench = false
