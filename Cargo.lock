@@ -12238,8 +12238,7 @@ dependencies = [
 [[package]]
 name = "stellar-contract-utils"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acd8001a84e189032af6d8d17355a923d98ea97917064d6e6003ff3e5accb0f5"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts?rev=f9d7cee755ee09cd43f6978eecf7ea8156e32a86#f9d7cee755ee09cd43f6978eecf7ea8156e32a86"
 dependencies = [
  "soroban-sdk",
 ]
