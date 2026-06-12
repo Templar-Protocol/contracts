@@ -3,15 +3,6 @@
 //! Contains conversion helpers and atomic withdrawal logic used by the
 //! `#[contractimpl]` block in `contract.rs`. The `#[contractimpl]` must live
 //! in the same module as the struct definition to avoid Soroban macro conflicts.
-//!
-//! **Key differences from a vanilla ERC-4626 vault:**
-//!
-//! - `total_assets` includes external (market-deployed) assets tracked by the kernel.
-//! - `withdraw` / `redeem` are **atomic from idle assets only**: they require the
-//!   vault to be in `Idle` state and sufficient `idle_assets`. For the general case
-//!   (assets deployed to markets), use `request_withdraw` + `execute_withdraw`.
-//! - Conversion math uses the kernel's `effective_totals` formula which includes
-//!   configurable `virtual_shares` / `virtual_assets` for inflation-attack mitigation.
 
 use soroban_sdk::{token, Address as SdkAddress, Env};
 use templar_vault_kernel::{
@@ -99,6 +90,14 @@ fn load_actual_idle_assets(env: &Env) -> Result<u128, ContractError> {
     to_u128(token::Client::new(env, &asset_token).balance(&env.current_contract_address()))
 }
 
+pub(crate) fn share_balance(env: &Env, owner: &SdkAddress) -> i128 {
+    let share_token: Option<SdkAddress> = env.storage().instance().get(&VaultDataKey::ShareToken);
+    let Some(share_token) = share_token else {
+        return 0;
+    };
+    token::Client::new(env, &share_token).balance(owner)
+}
+
 pub(crate) fn reconcile_actual_idle_assets(
     state: &mut VaultState,
     actual_idle_assets: u128,
@@ -115,6 +114,18 @@ pub(crate) fn reconcile_actual_idle_assets(
 }
 
 /// Load kernel state and a default config for read-only conversion math.
+///
+/// This helper feeds the Soroban view surface. Its values intentionally differ
+/// from a vanilla ERC-4626 vault in two ways:
+///
+/// - `total_assets` includes market-deployed external assets tracked by the
+///   kernel, while atomic `withdraw` / `redeem` can only consume `idle_assets`.
+/// - Conversion math uses the kernel's `effective_totals` formula, including
+///   configurable `virtual_shares` / `virtual_assets` for inflation-attack
+///   mitigation.
+///
+/// Public view methods that report atomic withdrawal capacity must continue to
+/// bound user exits by idle liquidity, not by total managed assets.
 pub(crate) fn load_state_and_config(env: &Env) -> Result<(VaultState, VaultConfig), ContractError> {
     let storage = SorobanStorage::new(env);
     let stored_state = storage.load_state();

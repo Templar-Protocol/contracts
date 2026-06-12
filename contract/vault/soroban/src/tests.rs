@@ -361,7 +361,8 @@ mod contract_tests {
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
-        ExecuteWithdrawStatus, GovernanceCommand, VaultCommand, VaultCommandResult,
+        DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
+        GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt, VaultCommand,
         GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
         GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
     };
@@ -459,11 +460,31 @@ mod contract_tests {
     fn execute_command(
         env: &Env,
         command: &VaultCommand,
-    ) -> Result<VaultCommandResult, crate::error::ContractError> {
+    ) -> Result<Bytes, crate::error::ContractError> {
         let payload = Bytes::from_slice(env, &command.encode());
-        let result = SorobanVaultContract::execute(env.clone(), payload)?;
-        VaultCommandResult::decode(&result.to_alloc_vec())
-            .map_err(|_| crate::error::ContractError::InvalidInput)
+        SorobanVaultContract::execute(env.clone(), payload)
+    }
+
+    fn decode_i128_receipt(bytes: &Bytes) -> i128 {
+        I128Receipt::decode(&bytes.to_alloc_vec())
+            .expect("decode i128 receipt")
+            .value
+    }
+
+    fn decode_deposit_receipt(bytes: &Bytes) -> DepositReceipt {
+        DepositReceipt::decode(&bytes.to_alloc_vec()).expect("decode deposit receipt")
+    }
+
+    fn decode_request_withdraw_receipt(bytes: &Bytes) -> RequestWithdrawReceipt {
+        RequestWithdrawReceipt::decode(&bytes.to_alloc_vec()).expect("decode request receipt")
+    }
+
+    fn decode_empty_receipt(bytes: &Bytes) -> EmptyReceipt {
+        EmptyReceipt::decode(&bytes.to_alloc_vec()).expect("decode empty receipt")
+    }
+
+    fn decode_execute_withdraw_receipt(bytes: &Bytes) -> ExecuteWithdrawReceipt {
+        ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec()).expect("decode execute receipt")
     }
 
     fn execute_governance_command(
@@ -1176,6 +1197,7 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
@@ -1226,6 +1248,7 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             let (request_id, owner, receiver, escrow_shares, expected_assets) = {
                 let (request_id, head) = state.withdraw_queue.head().expect("withdrawal queued");
@@ -1301,6 +1324,7 @@ mod contract_tests {
             {
                 let state = vault.state_mut().expect("state is loaded");
                 state.idle_assets = low_idle;
+                state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
                 state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             }
 
@@ -1372,7 +1396,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn test_execute_withdraw_insufficient_idle_partially_settles() {
+    fn test_execute_withdraw_insufficient_idle_refuses_partial_settlement() {
         let mut vault = create_test_vault();
         let allocator = templar_vault_kernel::Address([3u8; 32]);
         let owner = templar_vault_kernel::Address([1u8; 32]);
@@ -1392,7 +1416,7 @@ mod contract_tests {
             .request_withdraw(owner, receiver, deposit_amount, 0, request_time)
             .unwrap();
 
-        let (_head_id, head_escrow_before, head_expected_before) = {
+        let (head_id, head_escrow_before, head_expected_before) = {
             let (id, head) = vault
                 .state()
                 .unwrap()
@@ -1405,29 +1429,27 @@ mod contract_tests {
         {
             let state = vault.state_mut().unwrap();
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_add(1);
+            state.external_assets = deposit_amount.saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
         }
 
-        let summary = vault.execute_withdraw(allocator, exec_time).unwrap();
+        let error = vault
+            .execute_withdraw(allocator, exec_time)
+            .expect_err("partial idle coverage should not settle queued withdrawal");
 
-        assert_eq!(
-            summary.assets_transferred,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
-        assert_eq!(
-            summary.shares_burned,
-            MIN_WITHDRAWAL_ASSETS.saturating_add(1)
-        );
+        assert_eq!(error, RuntimeError::KernelError);
         let state = vault.state().unwrap();
         assert!(state.op_state.is_idle());
-        assert!(state.withdraw_queue.is_empty());
-        assert_eq!(state.idle_assets, 0);
-        assert_eq!(state.total_assets, state.external_assets);
-        assert_eq!(state.total_shares, deposit_amount - summary.shares_burned);
-        assert_eq!(
-            summary.shares_transferred,
-            head_escrow_before - summary.shares_burned
-        );
+        let (head_id_after, head_after) = state
+            .withdraw_queue
+            .head()
+            .expect("withdrawal still queued");
+        assert_eq!(head_id_after, head_id);
+        assert_eq!(head_after.escrow_shares, head_escrow_before);
+        assert_eq!(head_after.expected_assets, head_expected_before);
+        assert_eq!(state.idle_assets, MIN_WITHDRAWAL_ASSETS.saturating_add(1));
+        assert_eq!(state.total_assets, deposit_amount);
+        assert_eq!(state.total_shares, deposit_amount);
         assert_eq!(head_expected_before, deposit_amount);
     }
 
@@ -1502,9 +1524,12 @@ mod contract_tests {
                 .saturating_add(SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS)
                 .saturating_add(1);
             let executor_kernel = next_vault.map_caller(&env, &executor).unwrap();
-            let summary = next_vault
+            let result = next_vault
                 .execute_withdraw(executor_kernel, exec_time)
                 .unwrap();
+            let crate::contract::ExecuteWithdrawResult::Payout { summary, .. } = result else {
+                panic!("execute_withdraw should complete a payout");
+            };
 
             assert!(summary.assets_transferred > 0);
             assert!(next_vault.interpreter.has_address(&receiver_kernel));
@@ -2414,6 +2439,187 @@ mod contract_tests {
     }
 
     #[test]
+    fn test_atomic_command_withdraw_and_redeem_use_idle_assets() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 1_500,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &1_500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let burned = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicWithdraw {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        assets: 500,
+                        max_shares_burned: i128::MAX,
+                    },
+                )
+            })
+            .expect("atomic withdraw command should execute");
+        assert_eq!(decode_i128_receipt(&burned), 500);
+
+        let redeemed = env
+            .as_contract(&contract_id, || {
+                execute_command(
+                    &env,
+                    &VaultCommand::AtomicRedeem {
+                        owner: sdk_text(&owner),
+                        receiver: sdk_text(&receiver),
+                        operator: sdk_text(&owner),
+                        shares: 250,
+                        min_assets_out: 0,
+                    },
+                )
+            })
+            .expect("atomic redeem command should execute");
+        assert_eq!(decode_i128_receipt(&redeemed), 250);
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 750);
+        assert_eq!(asset_client.balance(&contract_id), 750);
+        assert_eq!(share_client.balance(&owner), 750);
+    }
+
+    #[test]
+    fn test_atomic_commands_reject_external_assets_as_liquidity() {
+        use soroban_sdk::testutils::Address as _;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(SorobanVaultContract, ());
+        let curator = soroban_sdk::Address::generate(&env);
+        let governance = env.register(
+            SorobanVaultGovernanceContract,
+            (&curator, &contract_id, &(0u64)),
+        );
+
+        let asset_admin = soroban_sdk::Address::generate(&env);
+        let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+        let asset = asset_sac.address();
+        let asset_admin_client = StellarAssetClient::new(&env, &asset);
+
+        let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+        let share = share_sac.address();
+        let share_admin_client = StellarAssetClient::new(&env, &share);
+
+        let owner = soroban_sdk::Address::generate(&env);
+        let receiver = soroban_sdk::Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            SorobanVaultContract::initialize(
+                env.clone(),
+                curator.clone(),
+                governance,
+                asset.clone(),
+                share.clone(),
+                0,
+                0,
+            )
+            .unwrap();
+
+            let mut storage = SorobanStorage::new(&env);
+            storage
+                .save_state(&VaultState {
+                    total_assets: 1_500,
+                    total_shares: 1_500,
+                    idle_assets: 500,
+                    external_assets: 1_000,
+                    ..Default::default()
+                })
+                .expect("save state");
+        });
+
+        asset_admin_client.mint(&contract_id, &500);
+        share_admin_client.mint(&owner, &1_500);
+
+        let withdraw = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    assets: 600,
+                    max_shares_burned: i128::MAX,
+                },
+            )
+        });
+        assert_eq!(withdraw, Err(crate::error::ContractError::KernelError));
+
+        let redeem = env.as_contract(&contract_id, || {
+            execute_command(
+                &env,
+                &VaultCommand::AtomicRedeem {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&receiver),
+                    operator: sdk_text(&owner),
+                    shares: 600,
+                    min_assets_out: 0,
+                },
+            )
+        });
+        assert_eq!(redeem, Err(crate::error::ContractError::KernelError));
+
+        let asset_client = soroban_sdk::token::Client::new(&env, &asset);
+        let share_client = soroban_sdk::token::Client::new(&env, &share);
+        assert_eq!(asset_client.balance(&receiver), 0);
+        assert_eq!(asset_client.balance(&contract_id), 500);
+        assert_eq!(share_client.balance(&owner), 1_500);
+    }
+
+    #[test]
     fn test_phase1_deposit_with_min_resource_probe() {
         use soroban_sdk::testutils::Address as _;
         use soroban_sdk::token::StellarAssetClient;
@@ -2473,9 +2679,7 @@ mod contract_tests {
                 )
             })
             .expect("deposit_with_min should succeed");
-        let VaultCommandResult::I128(minted) = minted else {
-            panic!("expected i128 result")
-        };
+        let minted = decode_deposit_receipt(&minted).shares_out;
         let resources = env.cost_estimate().resources();
 
         std::println!(
@@ -2552,31 +2756,34 @@ mod contract_tests {
         asset_admin_client.mint(&owner, &deposit_assets);
 
         env.as_contract(&contract_id, || {
+            let deposit_receipt = execute_command(
+                &env,
+                &VaultCommand::DepositWithMin {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    assets: deposit_assets,
+                    min_shares_out: 0,
+                },
+            )
+            .unwrap();
             assert_eq!(
-                execute_command(
-                    &env,
-                    &VaultCommand::DepositWithMin {
-                        owner: sdk_text(&owner),
-                        receiver: sdk_text(&owner),
-                        assets: deposit_assets,
-                        min_shares_out: 0,
-                    },
-                )
-                .unwrap(),
-                VaultCommandResult::I128(deposit_assets)
+                decode_deposit_receipt(&deposit_receipt).shares_out,
+                deposit_assets
             );
+
+            let request_receipt = execute_command(
+                &env,
+                &VaultCommand::RequestWithdraw {
+                    owner: sdk_text(&owner),
+                    receiver: sdk_text(&owner),
+                    shares: deposit_assets,
+                    min_assets_out: 0,
+                },
+            )
+            .unwrap();
             assert_eq!(
-                execute_command(
-                    &env,
-                    &VaultCommand::RequestWithdraw {
-                        owner: sdk_text(&owner),
-                        receiver: sdk_text(&owner),
-                        shares: deposit_assets,
-                        min_assets_out: 0,
-                    },
-                )
-                .unwrap(),
-                VaultCommandResult::U64(0)
+                decode_request_withdraw_receipt(&request_receipt).request_id,
+                0
             );
         });
 
@@ -2590,6 +2797,7 @@ mod contract_tests {
                 .unwrap()
                 .expect("initialized vault state");
             state.idle_assets = MIN_WITHDRAWAL_ASSETS.saturating_sub(1);
+            state.external_assets = (deposit_assets as u128).saturating_sub(state.idle_assets);
             state.total_assets = state.idle_assets.saturating_add(state.external_assets);
             storage.save_state(&state).unwrap();
         });
@@ -2646,17 +2854,15 @@ mod contract_tests {
         });
 
         env.as_contract(&contract_id, || {
-            assert_eq!(
-                execute_command(
-                    &env,
-                    &VaultCommand::AbortWithdrawing {
-                        caller: sdk_text(&curator),
-                        op_id,
-                    },
-                )
-                .unwrap(),
-                VaultCommandResult::Unit
-            );
+            let receipt = execute_command(
+                &env,
+                &VaultCommand::AbortWithdrawing {
+                    caller: sdk_text(&curator),
+                    op_id,
+                },
+            )
+            .unwrap();
+            assert_eq!(decode_empty_receipt(&receipt), EmptyReceipt);
         });
 
         env.as_contract(&contract_id, || {
@@ -2749,20 +2955,28 @@ mod contract_tests {
         });
 
         env.as_contract(&contract_id, || {
+            let receipt = execute_command(
+                &env,
+                &VaultCommand::ExecuteWithdraw {
+                    caller: sdk_text(&curator),
+                },
+            )
+            .unwrap();
             assert_eq!(
-                execute_command(
-                    &env,
-                    &VaultCommand::ExecuteWithdraw {
-                        caller: sdk_text(&curator),
+                decode_execute_withdraw_receipt(&receipt),
+                ExecuteWithdrawReceipt::Completed {
+                    request_id: 0,
+                    owner: ReceiptAddress::try_from(sdk_text(&owner)).expect("valid owner"),
+                    receiver: ReceiptAddress::try_from(sdk_text(&owner)).expect("valid receiver"),
+                    assets_out: deposit_assets as u128,
+                    shares_burned: deposit_assets as u128,
+                    status: ExecuteWithdrawStatus {
+                        op_state_before: OpState::Idle.kind_code(),
+                        op_state_after: OpState::Idle.kind_code(),
+                        assets_transferred: deposit_assets as u128,
+                        events_emitted: 3,
                     },
-                )
-                .unwrap(),
-                VaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
-                    op_state_before: OpState::Idle.kind_code(),
-                    op_state_after: OpState::Idle.kind_code(),
-                    assets_transferred: deposit_assets as u128,
-                    events_emitted: 3,
-                })
+                }
             );
         });
     }
@@ -3104,7 +3318,7 @@ mod effects_tests {
     }
 
     #[test]
-    fn test_emit_event_publishes_compact_payload_without_address_mapping() {
+    fn test_emit_event_publishes_typed_contract_event_without_address_mapping() {
         use templar_vault_kernel::effects::KernelEvent;
 
         let env = test_env();
@@ -3129,22 +3343,6 @@ mod effects_tests {
 
         let events = env.events().all().filter_by_contract(&contract_id);
         assert_eq!(events.events().len(), 1);
-    }
-
-    #[test]
-    fn kernel_event_payload_starts_with_codec_version_then_event_tag() {
-        use crate::effects::{encode_kernel_event, KERNEL_EVENT_CODEC_VERSION};
-        use templar_vault_kernel::effects::KernelEvent;
-
-        let payload = encode_kernel_event(&KernelEvent::DepositProcessed {
-            owner: templar_vault_kernel::Address([1u8; 32]),
-            receiver: templar_vault_kernel::Address([2u8; 32]),
-            assets_in: 3,
-            shares_out: 4,
-        });
-
-        assert_eq!(payload[0], KERNEL_EVENT_CODEC_VERSION);
-        assert_eq!(payload[1], 10);
     }
 }
 

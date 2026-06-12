@@ -4,6 +4,8 @@ members = [
     "common",
     "gateway/*",
     "contract/market",
+    "contract/proxy-4626-soroban",
+    "contract/proxy-curator-soroban",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
@@ -104,6 +106,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+secrecy = "0.10.3"
 serde_json_canonicalizer = "0.3.2"
 sqlx = { version = "0.8", features = [
     "chrono",
@@ -174,7 +177,7 @@ redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-unwrap_used = "allow"
+unwrap_used = "deny"
 expect_used = "warn"
 large_digit_groups = "warn"
 wildcard_imports = "allow"

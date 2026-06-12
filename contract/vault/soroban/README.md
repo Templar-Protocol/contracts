@@ -29,7 +29,7 @@ graph TB
         AUTH["RbacAuth / Soroban auth\nrequire_auth() + ActionKind policy"]
         STORAGE["SorobanStorage\nversioned state blob\nTTL extension + migrate gate"]
         ADDR["kernel_address_from_sdk()\nSHA256(domain || strkey)"]
-EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\npostcard kernel events"]
+EFFECTS["SorobanEffectInterpreter\nshare + asset token effects\ntyped kernel events"]
 
         ENTRY --> CVAULT
         CVAULT --> AUTH
@@ -56,9 +56,10 @@ sequenceDiagram
     participant Interp as SorobanEffectInterpreter
     participant Storage as SorobanStorage
 
-    Caller->>Entry: invoke deposit / withdraw / admin action
-    Entry->>Entry: require_auth()
+    Caller->>Entry: invoke deposit / atomic withdraw / queued action
+    Entry->>Entry: require_auth() for deposit/request/execute callers
     Entry->>Vault: load bootstrap + map addresses
+    Note over Entry,Vault: atomic_withdraw_impl / atomic_redeem_impl delegate operator auth to the vault/share-token path
     Vault->>Storage: load versioned state / config
     Vault->>Vault: authorize(ActionKind, caller)
     Vault->>Kernel: apply_action(...)
@@ -105,9 +106,42 @@ the post-deposit anchor is written, so deposit principal cannot erase already ac
 
 ### Soroban-Specific Withdrawal Path
 
+The vault intentionally exposes two withdrawal modes:
+
+- `withdraw` / `redeem` are ERC-4626-style atomic exits from idle liquidity only. They never
+  enqueue work, never pull from adapters, and fail if the requested assets exceed `idle_assets`.
+  Accordingly, the `proxy_view` `maxWithdraw` and `maxRedeem` values are bounded by idle assets
+  and can be `0` even when the owner has shares backed by market-deployed assets. This is the
+  immediate idle-liquidity exit path when sufficient idle liquidity is available.
+- `request_withdraw` is the async path for positions that may require allocator/keeper work.
+  `execute_withdraw` advances the queue only when the head request is cooled down and fully
+  covered by idle assets; otherwise it fails atomically and leaves the request queued.
+
+The async queue is not a strict FIFO fairness boundary against atomic exits. It coordinates
+cooldowns, escrow, fixed asset claims, and allocator-driven liquidity recovery, but it does not
+reserve idle assets for queued requests while the vault remains idle. A later holder can still use
+atomic `withdraw` / `redeem` against currently idle liquidity before an allocator executes the
+queued head. This mirrors the Morpho-style model where immediate idle-liquidity exits are primary
+and queued or forced-liquidity paths are recovery/coordination mechanisms rather than global
+priority locks.
+
+`request_withdraw` converts the escrowed shares into a fixed `expected_assets` claim at request
+time. Execution later pays that stored claim rather than repricing the shares. This protects the
+queued withdrawer's requested slippage bound, but it also means later NAV declines are absorbed by
+the remaining share supply rather than by the already-queued request. This is an intentional
+accounting tradeoff of the queued path and should be considered when setting withdrawal cooldowns,
+allocator response processes, and adapter risk limits.
+
+There is no user-callable cancellation path for queued withdrawals in this version. A queued user
+can exit only when the request is executed, skipped by policy as a zero/restricted request, or
+handled by an authorized recovery action such as `AbortWithdrawing` after execution has entered a
+recoverable withdrawal state. Adding `cancel_withdraw(request_id)` is deferred because it needs
+explicit FIFO, escrow refund, restriction, pause, and queue-removal semantics.
+
 ```mermaid
 sequenceDiagram
     actor User
+    actor Keeper as Allocator/Keeper
     participant Contract as SorobanVaultContract
     participant Vault as CuratorVault
     participant Kernel as apply_action()
@@ -121,37 +155,64 @@ sequenceDiagram
     Vault->>Share: transfer owner shares into escrow
     Contract-->>User: request_id
 
-    User->>Contract: execute_withdraw(caller)
+    Keeper->>Contract: execute_withdraw(caller)
     Contract->>Vault: execute_withdraw(...)
+    Vault->>Vault: authorize ActionKind::ExecuteWithdraw
     Vault->>Kernel: ExecuteWithdraw
-    alt idle assets are sufficient
+    alt queue head is cooled down and fully idle-funded
         Vault->>Vault: complete_withdrawal_from_idle()
         Vault->>Asset: transfer assets to receiver
         Vault->>Kernel: SettlePayout
         Vault->>Share: burn escrow shares / refund remainder
-    else more liquidity must be freed
-        Note over Vault: allocator path updates market principals\nvia allocation + rebalance actions
+    else liquidity must be freed first
+        Note over Vault: transaction fails atomically; no partial payout is made\nallocator path must free liquidity before retry
     end
-    Contract-->>User: ok
+    Contract-->>Keeper: ok
 ```
 
-The typed `execute_withdraw` entrypoint keeps returning `Result<(), _>` for
-the stable contract ABI. The generic `execute(payload)` command path returns
-`VaultCommandResult::ExecuteWithdrawStatus` for
-`VaultCommand::ExecuteWithdraw`, with:
+`execute_withdraw` is not a public user exit. The Soroban entrypoint requires the caller's
+signature and the vault then authorizes the caller under `ActionKind::ExecuteWithdraw`, which is
+the allocator policy class in the default RBAC policy. Ordinary users use atomic `withdraw` /
+`redeem` for idle liquidity or `request_withdraw` for the queued path.
 
-- `op_state_before` and `op_state_after`: kernel operation-state codes
-  (`0 = Idle`, `1 = Allocating`, `2 = Withdrawing`, `3 = Refreshing`,
-  `4 = Payout`).
-- `assets_transferred`: assets paid to receivers during this command.
-- `events_emitted`: kernel/runtime events emitted while processing the command.
+The typed entrypoints keep returning their stable contract ABI values. The generic
+`execute(payload)` command path returns compact typed receipt bytes:
 
-Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity
-error as a signal to free market liquidity before retrying. A successful
-command with `assets_transferred == 0` and a non-idle `op_state_after` should
-be alerted as an unexpected no-progress withdrawal state. The A-002 fix is
-intended to reject that zero-progress transition before it is persisted, but the
-structured result keeps automation from relying on a bare `Unit` success.
+| Command | Receipt |
+|---|---|
+| `DepositWithMin` | `DepositReceipt { shares_out: i128 }` |
+| `RequestWithdraw` | `RequestWithdrawReceipt { request_id: u64, shares_escrowed: i128 }` |
+| `ExecuteWithdraw` | `ExecuteWithdrawReceipt` |
+| `AtomicWithdraw`, `AtomicRedeem`, `Allocate`, `RefreshMarkets` | `I128Receipt { value: i128 }` |
+| `AbortWithdrawing`, `RefreshFees`, `ResyncIdleBalance`, `CancelMigration`, `ExtendTtl` | `EmptyReceipt` |
+
+`VaultCommand::ExecuteWithdraw` returns `ExecuteWithdrawReceipt` with:
+
+- tag `0`: `ExecuteWithdrawReceipt::NoPayout { status }`.
+- tag `1`: `ExecuteWithdrawReceipt::Completed { request_id, owner, receiver, assets_out,
+  shares_burned, status }`, where `assets_out` and `shares_burned` are unsigned asset/share
+  amounts.
+
+Both receipt variants include `status`, which carries `op_state_before`, `op_state_after`,
+`assets_transferred`, and `events_emitted` for keeper diagnostics.
+
+Keepers should treat a failed `ExecuteWithdraw` with the kernel low-liquidity error as a signal to
+free market liquidity before retrying. The error is intentionally compact and does not carry
+`needed` / `available` amounts; automation should derive the head request's `expected_assets` from
+the indexed `WithdrawalRequested` event stream and compare it with the current idle assets exposed
+by `proxy_view` before choosing how much liquidity to free. A `NoPayout` receipt means no request
+settled and should be handled as a signal to free liquidity and retry once the head can be covered.
+A `Completed` receipt with `assets_out == 0` is an unexpected no-progress state and should be
+alerted. The A-002 fix is intended to reject zero-progress transitions before they are persisted,
+so automation should not rely on a bare `Unit` success from the typed entrypoint.
+
+Finishing an allocation does not advance the withdrawal queue. `FinishAllocating` returns the vault
+to idle and leaves any queued requests untouched, even when the queue head is cooled down and fully
+idle-funded. This keeps allocator redeployment explicit: freed liquidity can be supplied elsewhere,
+used by atomic `withdraw` / `redeem`, or paid to a queued request only when an allocator/keeper
+separately calls `execute_withdraw`. Off-chain indexers and reconciliation jobs should treat
+`execute_withdraw` and the emitted withdrawal / payout events as the settlement trigger for the
+async queue.
 
 If withdrawal execution enters `Withdrawing` and cannot progress because idle
 liquidity remains below the kernel minimum, an allocator-emergency actor can
@@ -187,7 +248,7 @@ Subsequent entries skip this (~3-4 min first time).
 **Without devenv:**
 
 ```
-./scripts/install-stellar-cli.sh
+../../../script/soroban/install-stellar-cli.sh
 ```
 
 The script installs Rust 1.92 (via rustup) and builds the CLI. The optimized
@@ -235,18 +296,17 @@ After deployment, register the adapter as a vault market before allocation.
 
 ## Deployment Artifact
 
-The Soroban justfile builds two runtime artifacts:
+The Soroban justfile deploys the optimized runtime artifact directly:
 
-- `templar_soroban_runtime.wasm` with Stellar optimizer output and contractspec metadata
-- `templar_soroban_runtime.deploy.wasm` with contractspec metadata stripped for deployment and
-  size-budget checks
+- `templar_soroban_runtime.wasm` with Stellar optimizer output, contractspec metadata, and
+  contract metadata used by explorer build-info/source-attestation flows
 
 Useful commands:
 
 - `wasm-path` -> default runtime artifact, currently `templar_soroban_runtime.wasm`
 - `optimized-wasm-path` -> explicit optimized artifact path
-- `deploy-wasm-path` -> contractspec-stripped deploy artifact path used for deployment and size verification
-- `size-budget-check` -> verifies `templar_soroban_runtime.deploy.wasm <= 131072` bytes
+- `deploy-wasm-path` -> deploy artifact path used for deployment and size verification
+- `size-budget-check` -> verifies `templar_soroban_runtime.wasm <= 131072` bytes
 
 ## State Size and Operational Limits
 
@@ -262,6 +322,30 @@ Useful commands:
 - TVL growth by itself does not significantly increase serialized state size.
 - Risk comes from queue backlog plus unusually large in-flight plans.
 - If state would exceed Soroban storage write limits, storage save paths return a typed runtime storage error before the host storage write.
+
+## Runtime TTL and Keeper Responsibility
+
+Soroban contract data is not permanent. Vault deployments must include an ops/keeper job that
+periodically calls the permissionless `VaultCommand::ExtendTtl` path through `execute(payload)`.
+Do not rely on a curator remembering to do this manually.
+
+The runtime TTL keeper renews the vault contract's own storage, not every external contract or
+every user-owned entry elsewhere. In particular, one successful vault runtime TTL call renews:
+
+- runtime instance storage;
+- the canonical `StateBlob`, including any paged blob entries;
+- policy and restriction blobs: `PolicyLocks`, `PolicySupplyQueue`, `PolicyMarkets`,
+  `PolicyPrincipals`, `PolicyCapGroups`, and `Restrictions`, including their paged entries;
+- withdrawal queue pages currently referenced by the state header;
+- runtime address-book mappings referenced by pending withdrawals, active withdrawal/payout
+  operation state, and fee recipients.
+
+Normal state-saving vault paths also refresh runtime storage TTL, but a quiet vault can still
+approach archival. Schedule the keeper on cadence well before the TTL threshold. Related contracts
+need their own TTL maintenance: share token, governance, adapters, proxy contracts, and oracle
+contracts do not inherit the vault runtime's TTL renewal. Vault governance and the 4626 proxy
+each have their own permissionless `extend_ttl()` entrypoint for config/proposal-state
+maintenance.
 
 ## Parity Tests
 

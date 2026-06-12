@@ -47,6 +47,12 @@ jobs:
           SQLX_OFFLINE: true
         run: |
           cargo clippy --all-features --workspace --tests \
+            --exclude templar-proxy-oracle-soroban-common \
+            --exclude templar-proxy-oracle-soroban-contract \
+            --exclude templar-proxy-oracle-soroban-governance-common \
+            --exclude templar-proxy-oracle-soroban-governance-contract \
+            --exclude templar-proxy-oracle-soroban-integration-tests \
+            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
             --exclude templar-soroban-blend-adapter \
             --exclude templar-soroban-governance \
             --exclude templar-soroban-runtime \
@@ -73,6 +79,12 @@ jobs:
           SQLX_OFFLINE: true
         run: |
           cargo clippy --all-features --tests \
+            -p templar-proxy-oracle-soroban-common \
+            -p templar-proxy-oracle-soroban-contract \
+            -p templar-proxy-oracle-soroban-governance-common \
+            -p templar-proxy-oracle-soroban-governance-contract \
+            -p templar-proxy-oracle-soroban-integration-tests \
+            -p templar-proxy-oracle-soroban-sep40-adapter-contract \
             -p templar-soroban-blend-adapter \
             -p templar-soroban-governance \
             -p templar-soroban-runtime \
@@ -83,8 +95,11 @@ jobs:
   soroban:
     name: Soroban
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
+      - name: Refresh apt package metadata
+        run: sudo apt-get update
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -106,19 +121,28 @@ jobs:
           SQLX_OFFLINE: true
         run: |
           cargo nextest run \
+            -p templar-proxy-oracle-soroban-common \
+            -p templar-proxy-oracle-soroban-contract \
+            -p templar-proxy-oracle-soroban-governance-common \
+            -p templar-proxy-oracle-soroban-governance-contract \
+            -p templar-proxy-oracle-soroban-integration-tests \
+            -p templar-proxy-oracle-soroban-sep40-adapter-contract \
             -p templar-soroban-runtime \
             -p templar-soroban-governance \
             -p templar-soroban-share-token \
             -p templar-soroban-blend-adapter
 
       - name: Install packages
-        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
+        run: sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
 
       - name: Install stellar CLI
-        run: contract/vault/soroban/scripts/install-stellar-cli.sh
+        run: script/soroban/install-stellar-cli.sh
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
+
+      - name: Enforce proxy-oracle Soroban size budgets
+        run: just -f contract/proxy-oracle/soroban/justfile size-check
 
       # Curator primitives feature matrix (Soroban-related)
       - name: Check curator-primitives (default)
@@ -135,61 +159,6 @@ jobs:
 
       - name: Test curator-primitives (boundary)
         run: cargo test -p templar-curator-primitives --no-default-features --features boundary-test,std
-
-  soroban-proxy-oracle:
-    name: Soroban Proxy Oracle
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-
-      - uses: ./.github/actions/rust
-        with:
-          targets: wasm32-unknown-unknown,wasm32v1-none
-
-      - name: Install tools
-        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
-        with:
-          tool: just,nextest
-
-      - name: Run proxy-oracle Soroban runtime tests
-        run: cargo nextest run -p templar-proxy-oracle-soroban-contract
-
-      - name: Run proxy-oracle Soroban governance tests
-        run: cargo nextest run -p templar-proxy-oracle-soroban-governance-contract
-
-      - name: Run proxy-oracle Soroban SEP-40 adapter tests
-        run: cargo nextest run -p templar-proxy-oracle-soroban-sep40-adapter-contract
-
-      - name: Install packages
-        run: sudo apt install libdbus-1-dev libudev-dev pkg-config
-
-      - name: Install stellar CLI
-        run: contract/vault/soroban/scripts/install-stellar-cli.sh
-
-      - name: Build and optimize proxy-oracle Soroban WASMs
-        run: just -f contract/proxy-oracle/soroban/justfile optimize
-
-      - name: Enforce proxy-oracle Soroban size budget (runtime)
-        run: |
-          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
-            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_contract.optimized.wasm \
-            --max-bytes 131072
-
-      - name: Enforce proxy-oracle Soroban size budget (governance)
-        run: |
-          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
-            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_governance_contract.optimized.wasm \
-            --max-bytes 131072
-
-      - name: Enforce proxy-oracle Soroban size budget (sep40-adapter)
-        run: |
-          python3 contract/proxy-oracle/soroban/scripts/check_wasm_budget.py \
-            --wasm target/proxy-oracle-soroban/wasm/templar_proxy_oracle_soroban_sep40_adapter_contract.optimized.wasm \
-            --max-bytes 32768
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
@@ -341,6 +310,12 @@ jobs:
           # Soroban crates require their dedicated toolchain and are tested in the
           # Soroban job. Keep the default workspace test pass on rust-toolchain.toml.
           ./script/test.sh --workspace \
+            --exclude templar-proxy-oracle-soroban-common \
+            --exclude templar-proxy-oracle-soroban-contract \
+            --exclude templar-proxy-oracle-soroban-governance-common \
+            --exclude templar-proxy-oracle-soroban-governance-contract \
+            --exclude templar-proxy-oracle-soroban-integration-tests \
+            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
             --exclude templar-soroban-blend-adapter \
             --exclude templar-soroban-governance \
             --exclude templar-soroban-runtime \
@@ -413,6 +388,12 @@ jobs:
           # Soroban crates are tested in the dedicated Soroban job with their
           # newer toolchain; exclude them from the default 1.86 coverage build.
           cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov \
+            --exclude templar-proxy-oracle-soroban-common \
+            --exclude templar-proxy-oracle-soroban-contract \
+            --exclude templar-proxy-oracle-soroban-governance-common \
+            --exclude templar-proxy-oracle-soroban-governance-contract \
+            --exclude templar-proxy-oracle-soroban-integration-tests \
+            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
             --exclude templar-soroban-blend-adapter \
             --exclude templar-soroban-governance \
             --exclude templar-soroban-runtime \
@@ -436,7 +417,7 @@ jobs:
           df -h
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe
+        uses: codecov/codecov-action@v7.0.0
         with:
           files: coverage.lcov
           flags: unittests

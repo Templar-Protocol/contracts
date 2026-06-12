@@ -72,6 +72,7 @@ pub enum PayoutOutcome {
 pub struct IdlePayoutPlan {
     pub op_id: u64,
     pub request_id: u64,
+    pub owner: Address,
     pub receiver: Address,
     pub assets_out: u128,
     pub burn_shares: u128,
@@ -948,11 +949,7 @@ fn classify_withdrawal_head(
         WithdrawalHeadOutcome::CoolingDown {
             requested_at_ns: head.requested_at_ns,
         }
-    } else if !has_actionable_withdrawal_liquidity(
-        head.expected_assets,
-        available_assets,
-        config.min_withdrawal_assets,
-    ) {
+    } else if !has_actionable_withdrawal_liquidity(head.expected_assets, available_assets) {
         WithdrawalHeadOutcome::InsufficientLiquidity
     } else {
         WithdrawalHeadOutcome::Ready
@@ -960,13 +957,8 @@ fn classify_withdrawal_head(
 }
 
 #[inline]
-fn has_actionable_withdrawal_liquidity(
-    expected_assets: u128,
-    available_assets: u128,
-    min_withdrawal_assets: u128,
-) -> bool {
+fn has_actionable_withdrawal_liquidity(expected_assets: u128, available_assets: u128) -> bool {
     available_assets >= expected_assets
-        || (available_assets > 0 && available_assets >= min_withdrawal_assets)
 }
 
 #[inline]
@@ -1389,41 +1381,18 @@ fn handle_begin_allocating(
     Ok(KernelResult::new(state, result.effects))
 }
 
-/// Finish an allocation, optionally chaining into a pending withdrawal.
+/// Finish an allocation without advancing the withdrawal queue.
 #[cfg(any(feature = "action-allocation-lifecycle", test))]
 fn handle_finish_allocating(
     mut state: VaultState,
-    config: &VaultConfig,
-    restrictions: Option<&Restrictions>,
-    self_id: &Address,
+    _config: &VaultConfig,
+    _restrictions: Option<&Restrictions>,
+    _self_id: &Address,
     op_id: u64,
-    now_ns: TimestampNs,
+    _now_ns: TimestampNs,
 ) -> Result<KernelResult, KernelError> {
-    let mut skipped_effects = Vec::new();
-
-    let pending_req = if is_globally_paused(config, restrictions) {
-        None
-    } else {
-        match next_withdrawal_queue_outcome(
-            &mut state,
-            config,
-            restrictions,
-            self_id,
-            now_ns,
-            &mut skipped_effects,
-        )? {
-            WithdrawalQueueOutcome::Ready(request) => Some(request),
-            WithdrawalQueueOutcome::None
-            | WithdrawalQueueOutcome::CoolingDown { .. }
-            | WithdrawalQueueOutcome::InsufficientLiquidity => None,
-        }
-    };
-
-    let transition = complete_allocation(mem::take(&mut state.op_state), op_id, pending_req);
-    let mut result = apply_transition_result(state, transition)?;
-    skipped_effects.append(&mut result.effects);
-    result.effects = skipped_effects;
-    Ok(result)
+    let transition = complete_allocation(mem::take(&mut state.op_state), op_id, None);
+    apply_transition_result(state, transition)
 }
 
 #[cfg(any(feature = "action-sync-external", test))]
@@ -1910,18 +1879,15 @@ mod planning {
         }
 
         let available_assets = state.idle_assets;
-        if !has_actionable_withdrawal_liquidity(
-            request_expected,
-            available_assets,
-            min_withdrawal_assets,
-        ) {
+        let _ = min_withdrawal_assets;
+        if !has_actionable_withdrawal_liquidity(request_expected, available_assets) {
             return Err(KernelError::from(
                 InvalidStateCode::WithdrawalLiquidityBelowMinimum,
             ));
         }
 
         let Some(settlement) =
-            compute_idle_settlement(request_escrow, request_expected, available_assets)
+            compute_idle_settlement(request_escrow, request_expected, state.idle_assets)
         else {
             return Err(KernelError::from(
                 InvalidStateCode::WithdrawalLiquidityBelowMinimum,
@@ -1937,6 +1903,7 @@ mod planning {
         Ok(IdlePayoutPlan {
             op_id: withdrawing.op_id,
             request_id: withdrawing.request_id,
+            owner: withdrawing.owner,
             receiver: withdrawing.receiver,
             assets_out: settlement.assets_out,
             burn_shares: settlement.settlement.to_burn,

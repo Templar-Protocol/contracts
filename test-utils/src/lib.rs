@@ -1,3 +1,8 @@
+#![allow(
+    clippy::unwrap_used,
+    reason = "test harness helpers intentionally fail fast on setup and assertion errors"
+)]
+
 use std::{num::NonZero, path::Path, str::FromStr};
 
 use crate::controller::vault::{UnifiedVaultController, VaultController};

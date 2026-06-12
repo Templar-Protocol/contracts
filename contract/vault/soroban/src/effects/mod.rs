@@ -1,13 +1,11 @@
 //! Effect interpreter for kernel effects on Soroban.
 
-use soroban_sdk::{symbol_short, token::StellarAssetClient, Address, Bytes, Env};
+use soroban_sdk::{contractevent, token::StellarAssetClient, Address, BytesN, Env};
 use templar_vault_kernel::effects::{KernelEffect, KernelEvent, WithdrawalSkipReason};
 use templar_vault_kernel::{AddressBook, TimestampNs};
 
 use crate::convert::u128_to_i128_effect;
 use crate::error::RuntimeError;
-
-pub(crate) const KERNEL_EVENT_CODEC_VERSION: u8 = 1;
 
 /// Short helper to convert u128 to i128 for event / effect amounts.
 #[inline]
@@ -15,103 +13,216 @@ pub(crate) fn to_i128_event(value: u128) -> Result<i128, RuntimeError> {
     u128_to_i128_effect(value, "event amount overflow")
 }
 
-#[inline]
-fn event_push_u8(out: &mut alloc::vec::Vec<u8>, value: u8) {
-    out.push(value);
-}
-
-#[inline]
-fn event_push_bool(out: &mut alloc::vec::Vec<u8>, value: bool) {
-    out.push(u8::from(value));
-}
-
-#[inline]
-fn event_push_u32(out: &mut alloc::vec::Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-#[inline]
-fn event_push_u64(out: &mut alloc::vec::Vec<u8>, value: u64) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-#[inline]
-fn event_push_u128(out: &mut alloc::vec::Vec<u8>, value: u128) {
-    out.extend_from_slice(&value.to_le_bytes());
-}
-
-#[inline]
-fn event_push_address(out: &mut alloc::vec::Vec<u8>, value: &templar_vault_kernel::Address) {
-    out.extend_from_slice(value.as_bytes());
-}
-
 #[inline(never)]
-pub(crate) fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
-    let mut payload = alloc::vec::Vec::new();
-    event_push_u8(&mut payload, KERNEL_EVENT_CODEC_VERSION);
+fn event_address(env: &Env, value: &templar_vault_kernel::Address) -> BytesN<32> {
+    BytesN::from_array(env, value.as_bytes())
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AllocationStartedEvent {
+    pub op_id: u64,
+    pub total: u128,
+    pub plan_len: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AllocationStepFailedEvent {
+    pub op_id: u64,
+    pub index: u32,
+    pub remaining: u128,
+    pub total_allocated: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AllocationCompletedEvent {
+    pub op_id: u64,
+    pub has_withdrawal: bool,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalStartedEvent {
+    pub op_id: u64,
+    pub amount: u128,
+    pub escrow_shares: u128,
+    pub owner: BytesN<32>,
+    pub receiver: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalCollectedEvent {
+    pub op_id: u64,
+    pub burn_shares: u128,
+    pub collected: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalStoppedEvent {
+    pub op_id: u64,
+    pub escrow_shares: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalSkippedEvent {
+    pub id: u64,
+    pub owner: BytesN<32>,
+    pub receiver: BytesN<32>,
+    pub escrow_shares: u128,
+    pub expected_assets: u128,
+    pub reason: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct RefreshStartedEvent {
+    pub op_id: u64,
+    pub plan_len: u32,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct RefreshCompletedEvent {
+    pub op_id: u64,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct PayoutCompletedEvent {
+    pub op_id: u64,
+    pub success: bool,
+    pub burn_shares: u128,
+    pub refund_shares: u128,
+    pub amount: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct DepositProcessedEvent {
+    pub owner: BytesN<32>,
+    pub receiver: BytesN<32>,
+    pub assets_in: u128,
+    pub shares_out: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct AtomicWithdrawProcessedEvent {
+    pub owner: BytesN<32>,
+    pub receiver: BytesN<32>,
+    pub shares_burned: u128,
+    pub assets_out: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct WithdrawalRequestedEvent {
+    pub id: u64,
+    pub owner: BytesN<32>,
+    pub receiver: BytesN<32>,
+    pub shares: u128,
+    pub expected_assets: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct ExternalAssetsSyncedEvent {
+    pub op_id: u64,
+    pub new_external_assets: u128,
+    pub total_assets: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct FeesRefreshedEvent {
+    pub now_ns: u64,
+    pub total_assets: u128,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct PauseUpdatedEvent {
+    pub paused: bool,
+}
+
+#[contractevent]
+#[derive(Clone)]
+pub struct EmergencyResetCompletedEvent {
+    pub op_id: u64,
+    pub from_state: u32,
+}
+
+/// Publish a KernelEvent as typed Soroban contract events.
+#[inline(never)]
+pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
     match event {
         KernelEvent::AllocationStarted {
             op_id,
             total,
             plan_len,
-        } => {
-            event_push_u8(&mut payload, 0);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u128(&mut payload, *total);
-            event_push_u32(&mut payload, *plan_len);
+        } => AllocationStartedEvent {
+            op_id: *op_id,
+            total: *total,
+            plan_len: *plan_len,
         }
+        .publish(env),
         KernelEvent::AllocationStepFailed {
             op_id,
             index,
             remaining,
             total_allocated,
-        } => {
-            event_push_u8(&mut payload, 1);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u32(&mut payload, *index);
-            event_push_u128(&mut payload, *remaining);
-            event_push_u128(&mut payload, *total_allocated);
+        } => AllocationStepFailedEvent {
+            op_id: *op_id,
+            index: *index,
+            remaining: *remaining,
+            total_allocated: *total_allocated,
         }
+        .publish(env),
         KernelEvent::AllocationCompleted {
             op_id,
             has_withdrawal,
-        } => {
-            event_push_u8(&mut payload, 2);
-            event_push_u64(&mut payload, *op_id);
-            event_push_bool(&mut payload, *has_withdrawal);
+        } => AllocationCompletedEvent {
+            op_id: *op_id,
+            has_withdrawal: *has_withdrawal,
         }
+        .publish(env),
         KernelEvent::WithdrawalStarted {
             op_id,
             amount,
             escrow_shares,
             owner,
             receiver,
-        } => {
-            event_push_u8(&mut payload, 3);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u128(&mut payload, *amount);
-            event_push_u128(&mut payload, *escrow_shares);
-            event_push_address(&mut payload, owner);
-            event_push_address(&mut payload, receiver);
+        } => WithdrawalStartedEvent {
+            op_id: *op_id,
+            amount: *amount,
+            escrow_shares: *escrow_shares,
+            owner: event_address(env, owner),
+            receiver: event_address(env, receiver),
         }
+        .publish(env),
         KernelEvent::WithdrawalCollected {
             op_id,
             burn_shares,
             collected,
-        } => {
-            event_push_u8(&mut payload, 4);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u128(&mut payload, *burn_shares);
-            event_push_u128(&mut payload, *collected);
+        } => WithdrawalCollectedEvent {
+            op_id: *op_id,
+            burn_shares: *burn_shares,
+            collected: *collected,
         }
+        .publish(env),
         KernelEvent::WithdrawalStopped {
             op_id,
             escrow_shares,
-        } => {
-            event_push_u8(&mut payload, 5);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u128(&mut payload, *escrow_shares);
+        } => WithdrawalStoppedEvent {
+            op_id: *op_id,
+            escrow_shares: *escrow_shares,
         }
+        .publish(env),
         KernelEvent::WithdrawalSkipped {
             id,
             owner,
@@ -119,29 +230,25 @@ pub(crate) fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
             escrow_shares,
             expected_assets,
             reason,
-        } => {
-            event_push_u8(&mut payload, 6);
-            event_push_u64(&mut payload, *id);
-            event_push_address(&mut payload, owner);
-            event_push_address(&mut payload, receiver);
-            event_push_u128(&mut payload, *escrow_shares);
-            event_push_u128(&mut payload, *expected_assets);
-            event_push_u8(
-                &mut payload,
-                match reason {
-                    WithdrawalSkipReason::ZeroExpectedAssets => 0,
-                    WithdrawalSkipReason::Restricted => 1,
-                },
-            );
+        } => WithdrawalSkippedEvent {
+            id: *id,
+            owner: event_address(env, owner),
+            receiver: event_address(env, receiver),
+            escrow_shares: *escrow_shares,
+            expected_assets: *expected_assets,
+            reason: match reason {
+                WithdrawalSkipReason::ZeroExpectedAssets => 0,
+                WithdrawalSkipReason::Restricted => 1,
+            },
         }
-        KernelEvent::RefreshStarted { op_id, plan_len } => {
-            event_push_u8(&mut payload, 7);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u32(&mut payload, *plan_len);
+        .publish(env),
+        KernelEvent::RefreshStarted { op_id, plan_len } => RefreshStartedEvent {
+            op_id: *op_id,
+            plan_len: *plan_len,
         }
+        .publish(env),
         KernelEvent::RefreshCompleted { op_id } => {
-            event_push_u8(&mut payload, 8);
-            event_push_u64(&mut payload, *op_id);
+            RefreshCompletedEvent { op_id: *op_id }.publish(env)
         }
         KernelEvent::PayoutCompleted {
             op_id,
@@ -149,95 +256,79 @@ pub(crate) fn encode_kernel_event(event: &KernelEvent) -> alloc::vec::Vec<u8> {
             burn_shares,
             refund_shares,
             amount,
-        } => {
-            event_push_u8(&mut payload, 9);
-            event_push_u64(&mut payload, *op_id);
-            event_push_bool(&mut payload, *success);
-            event_push_u128(&mut payload, *burn_shares);
-            event_push_u128(&mut payload, *refund_shares);
-            event_push_u128(&mut payload, *amount);
+        } => PayoutCompletedEvent {
+            op_id: *op_id,
+            success: *success,
+            burn_shares: *burn_shares,
+            refund_shares: *refund_shares,
+            amount: *amount,
         }
+        .publish(env),
         KernelEvent::DepositProcessed {
             owner,
             receiver,
             assets_in,
             shares_out,
-        } => {
-            event_push_u8(&mut payload, 10);
-            event_push_address(&mut payload, owner);
-            event_push_address(&mut payload, receiver);
-            event_push_u128(&mut payload, *assets_in);
-            event_push_u128(&mut payload, *shares_out);
+        } => DepositProcessedEvent {
+            owner: event_address(env, owner),
+            receiver: event_address(env, receiver),
+            assets_in: *assets_in,
+            shares_out: *shares_out,
         }
+        .publish(env),
         KernelEvent::AtomicWithdrawProcessed {
             owner,
             receiver,
             shares_burned,
             assets_out,
-        } => {
-            event_push_u8(&mut payload, 11);
-            event_push_address(&mut payload, owner);
-            event_push_address(&mut payload, receiver);
-            event_push_u128(&mut payload, *shares_burned);
-            event_push_u128(&mut payload, *assets_out);
+        } => AtomicWithdrawProcessedEvent {
+            owner: event_address(env, owner),
+            receiver: event_address(env, receiver),
+            shares_burned: *shares_burned,
+            assets_out: *assets_out,
         }
+        .publish(env),
         KernelEvent::WithdrawalRequested {
             id,
             owner,
             receiver,
             shares,
             expected_assets,
-        } => {
-            event_push_u8(&mut payload, 12);
-            event_push_u64(&mut payload, *id);
-            event_push_address(&mut payload, owner);
-            event_push_address(&mut payload, receiver);
-            event_push_u128(&mut payload, *shares);
-            event_push_u128(&mut payload, *expected_assets);
+        } => WithdrawalRequestedEvent {
+            id: *id,
+            owner: event_address(env, owner),
+            receiver: event_address(env, receiver),
+            shares: *shares,
+            expected_assets: *expected_assets,
         }
+        .publish(env),
         KernelEvent::ExternalAssetsSynced {
             op_id,
             new_external_assets,
             total_assets,
-        } => {
-            event_push_u8(&mut payload, 13);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u128(&mut payload, *new_external_assets);
-            event_push_u128(&mut payload, *total_assets);
+        } => ExternalAssetsSyncedEvent {
+            op_id: *op_id,
+            new_external_assets: *new_external_assets,
+            total_assets: *total_assets,
         }
+        .publish(env),
         KernelEvent::FeesRefreshed {
             now_ns,
             total_assets,
-        } => {
-            event_push_u8(&mut payload, 14);
-            event_push_u64(&mut payload, *now_ns);
-            event_push_u128(&mut payload, *total_assets);
+        } => FeesRefreshedEvent {
+            now_ns: *now_ns,
+            total_assets: *total_assets,
         }
-        KernelEvent::PauseUpdated { paused } => {
-            event_push_u8(&mut payload, 15);
-            event_push_bool(&mut payload, *paused);
-        }
+        .publish(env),
+        KernelEvent::PauseUpdated { paused } => PauseUpdatedEvent { paused: *paused }.publish(env),
         KernelEvent::EmergencyResetCompleted { op_id, from_state } => {
-            event_push_u8(&mut payload, 16);
-            event_push_u64(&mut payload, *op_id);
-            event_push_u32(&mut payload, *from_state);
+            EmergencyResetCompletedEvent {
+                op_id: *op_id,
+                from_state: *from_state,
+            }
+            .publish(env)
         }
     }
-    payload
-}
-
-/// Publish a KernelEvent via compact custom serialization as a raw Soroban event.
-///
-/// Uses a single `symbol_short!("kernel")` topic with a versioned `Bytes`
-/// payload. Byte 0 is the codec version; byte 1 is the event tag. This avoids
-/// `#[contractevent]` spec bloat while keeping the same event data available to
-/// indexers.
-#[inline(never)]
-#[allow(deprecated)] // intentionally avoiding #[contractevent] to reduce WASM spec size
-pub fn publish_kernel_event(env: &Env, event: &KernelEvent) -> Result<(), RuntimeError> {
-    let payload = encode_kernel_event(event);
-    env.events()
-        .publish((symbol_short!("kernel"),), Bytes::from_slice(env, &payload));
     Ok(())
 }
 

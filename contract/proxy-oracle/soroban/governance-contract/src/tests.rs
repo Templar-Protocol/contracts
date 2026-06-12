@@ -2,7 +2,9 @@ use super::*;
 
 use alloc::vec;
 use alloc::vec::Vec as StdVec;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger, LedgerInfo};
+use soroban_sdk::testutils::{
+    storage::Persistent as _, Address as _, Events as _, Ledger, LedgerInfo,
+};
 use soroban_sdk::{Bytes, BytesN, Event, Symbol};
 use templar_primitives::Decimal;
 use templar_proxy_oracle_soroban_common::{
@@ -187,7 +189,7 @@ fn event_submit_accept_revoke_handoff_and_ttl_topics_payloads_are_exact() {
     );
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::extend_ttl(env.clone(), admin.clone()).unwrap();
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
     });
     assert_eq!(
         governance_events(&env, &governance_id),
@@ -611,16 +613,44 @@ fn revoke_unblocks_later_proposal() {
 // ── TTL tests ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn ttl_governance_extend_requires_admin_and_emits_event() {
-    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
+fn ttl_governance_extend_is_permissionless_and_emits_event() {
+    let (env, _admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(0);
 
     env.as_contract(&governance_id, || {
-        ProxyOracleGovernance::extend_ttl(env.clone(), admin.clone()).unwrap();
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
     });
     assert_eq!(
         governance_events(&env, &governance_id),
         vec![TtlExtended {}.to_xdr(&env, &governance_id)]
     );
+}
+
+#[test]
+fn ttl_governance_extend_renews_active_proposals() {
+    let (env, admin, _proxy_id, governance_id, _proxy) = setup_with_ttl(10);
+    let asset = Asset::Other(Symbol::new(&env, "BTC"));
+    let proposal_id = submit_now(
+        &env,
+        &governance_id,
+        &admin,
+        GovernanceAction::RemoveProxy(asset),
+    );
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        sequence_number: 2_592_100,
+        max_entry_ttl: 3_110_400,
+        ..Default::default()
+    });
+
+    let key = DataKey::Proposal(proposal_id);
+    let ttl_before = env.as_contract(&governance_id, || env.storage().persistent().get_ttl(&key));
+    env.as_contract(&governance_id, || {
+        ProxyOracleGovernance::extend_ttl(env.clone()).unwrap();
+    });
+    let ttl_after = env.as_contract(&governance_id, || env.storage().persistent().get_ttl(&key));
+
+    assert!(ttl_after > ttl_before);
 }
 
 // ── missing_config tests ──────────────────────────────────────────────────────

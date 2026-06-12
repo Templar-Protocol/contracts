@@ -57,7 +57,8 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | **Sentinel** | `initialize()` or `execute_governance` (governance) | Emergency pause/unpause and time-sensitive guardian actions. Distinct from curator — stored in `VaultDataKey::Sentinel` and loaded into RBAC as `Role::Sentinel`. |
 | **Allocator** | Curator (via RBAC config) | Allocate supply/withdraw, refresh markets. **Note**: In current Soroban production, no separate allocator is wired — curator key is used for all allocator actions. |
 | **Guardian** | Curator (via RBAC config) | Pause/unpause vault. **Note**: Same as allocator — no separate guardian wired in production. |
-| **User** | Any signed account | Deposit, request withdrawal, execute withdrawal. Subject to restrictions (whitelist/blacklist/pause). |
+| **User** | Any signed account | Deposit, request async withdrawal, or atomically withdraw/redeem idle assets. Subject to restrictions (whitelist/blacklist/pause). |
+| **Keeper/Allocator** | Curator-configured operational account | Execute queued withdrawals after cooldown once enough assets are idle; allocate/withdraw from markets to make liquidity available. |
 
 ### High-Level Dataflow
 
@@ -80,8 +81,8 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
                   │                              │                                  │
                   │    ┌─────────────────────────┴───────────────────────────────┐  │
                   │    │              Kernel State Machine (kernel crate)         │  │
-                  │    │  Deposit · RequestWithdraw · ExecuteWithdraw            │  │
-                  │    │  BeginAllocating · FinishAllocating                     │  │
+                  │    │  Deposit · AtomicWithdraw/Redeem · RequestWithdraw      │  │
+                  │    │  ExecuteWithdraw · Begin/FinishAllocating               │  │
                   │    │  BeginRefreshing · FinishRefreshing · Pause             │  │
                   │    │  Fee math · Share accounting · Queue management         │  │
                   │    └────────────┬──────────────────────┬────────────────────┘  │
@@ -97,11 +98,11 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
           ┌────────────────────────┼────────────────────────────┼───────────────┐
           │                        │                            │               │
     ┌─────┴──────┐  ┌─────────────┴──────────┐  ┌──────────────┴──────┐  ┌─────┴──────┐
-     │   Users     │  │   Governance           │  │   Curator           │  │  Adapters   │
+     │   Users     │  │   Governance           │  │ Curator/Allocator   │  │  Adapters   │
      │ deposit     │  │ execute_governance     │  │ allocate_supply     │  │ supply()    │
-     │ withdraw    │  │ (payload)              │  │ allocate_withdraw   │  │ withdraw()  │
+     │ withdraw    │  │ (payload)              │  │ execute_withdraw    │  │ withdraw()  │
      │ redeem      │  │ upgrade                │  │ refresh_markets     │  │ total_assets│
-     │ request_wd  │  │ migrate                │  │                     │  │             │
+     │ request_wd  │  │ migrate                │  │ finish_allocating   │  │             │
      └────────────┘  │ abdicate               │  └─────────────────────┘
                       └────────────────────────┘
 ```
@@ -112,7 +113,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 |---|---|---|---|---|
 | I1 | User → `deposit_with_min` | Yes | `require_auth(owner)` | User ↔ Vault, Vault ↔ Asset Token, Vault ↔ Share Token |
 | I2 | User → `request_withdraw` | Yes | `require_auth(owner)` | User ↔ Vault, Vault ↔ Share Token (escrow) |
-| I3 | User → `execute_withdraw` | Yes | `require_auth(caller)` | User ↔ Vault, Vault ↔ Asset Token, Vault ↔ Share Token |
+| I3 | Allocator/Keeper → `execute_withdraw` | Yes | `require_auth(caller)` + RBAC Allocator | Keeper ↔ Vault, Vault ↔ Asset Token, Vault ↔ Share Token |
 | I4 | User → `withdraw` / `redeem` (SEP-41) | Yes | `require_auth(operator+owner)` | User ↔ Vault, Vault ↔ Asset Token, Vault ↔ Share Token |
 | I5 | Curator → `allocate_supply` | Yes | `require_auth(caller)` + RBAC Allocator | Vault ↔ Asset Token, Vault ↔ Adapter |
 | I6 | Curator → `allocate_withdraw` | Yes | `require_auth(caller)` + RBAC Allocator | Vault ↔ Adapter, Vault ↔ Asset Token |
@@ -167,13 +168,13 @@ governance timelocks. Interactions: I8, I19–I22. |
 | | **Tamper.9** — Governance abdication now operates on `GovernanceActionKind` rather than free-form
 strings. A mismatch between the kind used in `abdicate()` and the kind derived from a submitted
 action would leave the action unblocked. Interaction: I24. |
-| **Repudiation** | **Repudiate.1** — Operators deny executing sensitive actions. Kernel state transitions emit `KernelEvent` envelopes, and pause/unpause actions (dispatched via `execute_governance`) emit OZ Pausable events. However, many privileged operations are auditable via transaction history. Interactions: I1–I7, I19. |
+| **Repudiation** | **Repudiate.1** — Operators deny executing sensitive actions. Kernel state transitions emit typed Soroban contract events, and pause/unpause actions (dispatched via `execute_governance`) emit OZ Pausable events. However, many privileged operations are auditable via transaction history. Interactions: I1–I7, I19. |
 | | **Repudiate.2** — Some privileged/governance operations still rely primarily on tx-level observability where structured events are sparse or lightweight. Interactions: I5, I6, I8–I15. |
 | | **Repudiate.3** — New governance actions (sentinel change, skim recipient change, abdication, skim execution) should emit structured events for auditability. Without events, irreversible actions like abdication are harder to detect and audit. Interactions: I20–I24. |
 | **Information Disclosure** | **Info.1** — No confidentiality assumptions exist for contract storage or events; this is expected on-chain transparency. All state is publicly readable. Interaction: I18. |
 | | **Info.2** — `config()` exposes the governance contract address. `fee_info()` exposes fee anchor details and fee WAD values. This metadata could aid targeted social engineering or phishing attacks against key holders. Interaction: I18. |
 | | **Info.3** — `withdraw_status()` and `queue_tail()` expose withdrawal queue internals (next pending ID, active withdrawal op, current request ID). Observable queue state could enable front-running of large withdrawals or MEV-style extraction. Interaction: I18. |
-| **Denial of Service** | **DoS.1** — Withdrawal progression depends on allocator/keeper execution by design for queued flows; this is an accepted operational liveness assumption. Interactions: I3, I5, I6. |
+| **Denial of Service** | **DoS.1** — Withdrawal progression depends on allocator/keeper execution by design for queued flows; this is an accepted operational liveness assumption. Queued withdrawals have no user-callable cancellation path in this version, so if the head cannot be funded from idle assets, users depend on allocator liquidity, queue execution, policy skip handling, or authorized recovery rather than a self-service exit from escrow. Interactions: I2, I3, I5, I6. |
 | | **DoS.2** — `upgrade()` enables migration state via OpenZeppelin's `enable_migration`, which blocks vault operations until `migrate()` or `cancel_migration()` completes. If governance is unavailable, migration can stall operational liveness. Interactions: I13, I14, I15. |
 | | **DoS.3** — Adapter revert in `supply()`/`withdraw()` fails that allocation operation and primarily impacts the affected market lane (not global solvency). Interactions: I5, I6. |
 | | **DoS.4** — Large postcard state remains a theoretical resource-limit risk, but current queue sizing analysis indicates practical headroom under expected usage. Interactions: I1–I7. |
@@ -186,7 +187,7 @@ Interaction: I24. |
 | | **DoS.8** — `skim(token)` fails if the skim recipient address cannot receive the token (e.g., missing trustline on Stellar classic). This blocks recovery of that specific token but does not affect vault operations. Interaction: I22. |
 | **Elevation of Privilege** | **Elevation.1** — Role mapping or configuration errors could grant unintended powers. Interactions: I1–I15. |
 | | **Elevation.2** — Role separation is available in-code, but deployments can still collapse duties by leaving guardian/allocator/sentinel sets empty or reusing one key across roles. Interactions: I5–I7, I19, I20. |
-| | **Elevation.3** — SEP-41 `withdraw()` and `redeem()` bypass the withdrawal queue entirely via `atomic_withdraw_internal()`, directly debiting `idle_assets` and burning shares. While limited to idle assets and requiring the vault to be in `Idle` state, this is an alternate withdrawal path not subject to queue ordering or cooldown. Interaction: I4. |
+| | **Elevation.3** — SEP-41 `withdraw()` and `redeem()` bypass the withdrawal queue entirely via the atomic withdrawal path, directly debiting `idle_assets` and burning shares. They never enqueue work or pull from adapters. While limited to idle assets and requiring the vault to be in `Idle` state, this is the primary idle-liquidity exit path and is intentionally not subject to async queue ordering or cooldown. The async `request_withdraw` path separately fixes `expected_assets` at request time; later share-price declines are absorbed by the remaining share supply rather than repricing the queued request downward. This is an intentional queued-withdrawal accounting policy, but it can favor queued withdrawers over remaining depositors after losses. Interactions: I2, I3, I4. |
 | | **Elevation.4** — Governance controls curator appointment, fees, caps/restrictions, adapters, sentinel, skim recipient, and upgrade/migration entrypoints. A single governance key compromise grants broad vault control. Interactions: I8–I15, I19–I24. |
 | | **Elevation.5** — Skim recipient, once set via governance, receives all non-asset/non-share token balances when `skim()` is called. If the recipient is set to a malicious address, airdrop/reward tokens intended for vault depositors are redirected. Interaction: I21, I22. |
 | | **Elevation.6** — The hard-coded `ESCROW_ADDRESS = [0u8; 32]` is mapped to the vault's own contract address during bootstrap. If any code path treats escrow as a distinct entity, it could cause address confusion or accounting drift. Interactions: I1–I3. |
@@ -212,7 +213,7 @@ Interaction: I24. |
 `GovernanceAction` to a canonical `GovernanceActionKind`. `abdicate()` and `require_not_abdicated()`
 both operate on the same kind, preventing typo-based bypasses. **Tamper.9.R.2** — The governance
 contract rejects submission of actions whose kind has been abdicated before queuing them. |
-| **Repudiation** | **Repudiate.1.R.1** — Actions require signed caller auth. Kernel state transitions emit `KernelEvent` envelopes via `publish_kernel_event`. OZ Pausable events emitted for pause/unpause. **Repudiate.1.R.2** — Maintain off-chain indexing/audit trails keyed by `op_id`, caller address, and timestamps. |
+| **Repudiation** | **Repudiate.1.R.1** — Actions require signed caller auth. Kernel state transitions emit typed Soroban contract events via `publish_kernel_event`. OZ Pausable events emitted for pause/unpause. **Repudiate.1.R.2** — Maintain off-chain indexing/audit trails keyed by `op_id`, caller address, and timestamps. |
 | | **Repudiate.2.R.1** — ✅ **Implemented**: Admin/allocation events are emitted for high-impact
 privileged operations dispatched through `execute_governance(payload)` (curator, governance,
 fees, restrictions, adapter allowlist, sentinel, guardian, caps, skim, pause, etc.) and for
@@ -236,7 +237,7 @@ emit admin events via the existing `emit_admin_event()` pattern. |
 | **Elevation of Privilege** | **Elevation.1.R.1** — Centralized action authorization via `ActionKind` → `allowed_roles_for_action()` in curator-primitives. **Elevation.1.R.2** — Preserve strict role review on new entrypoints, especially those that perform external calls after state transitions. **Elevation.1.R.3** — Keep governance-only setters and adapter allowlisting explicit and test-covered. |
 | | **Elevation.2.R.1** — Accepted design decision for initial deployment: single curator key simplifies operations. **Elevation.2.R.2** — ✅ **Implemented**: Separate guardian, allocator, and sentinel address sets stored in persistent storage (`VaultDataKey::Guardians`, `VaultDataKey::Allocators`, `VaultDataKey::Sentinel`). Loaded in `load_vault_bootstrap()` via `rbac_config.add_role()`. **Elevation.2.R.3** — ✅ **Implemented**: Role separation is enabled through
 `execute_governance(payload)` payloads that update guardian, allocator, and sentinel addresses. |
-| | **Elevation.3.R.1** — Atomic withdrawals require vault to be in `Idle` state, sufficient `idle_assets`, and are capped to idle balance. **Elevation.3.R.2** — `refresh_fees_for_atomic()` is called before atomic withdrawals to ensure fees are current. **Elevation.3.R.3** — Document the atomic withdrawal path clearly in user-facing documentation as an intentional feature for immediate withdrawal from idle assets. |
+| | **Elevation.3.R.1** — Atomic withdrawals require vault to be in `Idle` state, sufficient `idle_assets`, and are capped to idle balance. **Elevation.3.R.2** — `refresh_fees_for_atomic()` is called before atomic withdrawals to ensure fees are current. **Elevation.3.R.3** — Document the atomic withdrawal path clearly in user-facing documentation as an intentional feature for immediate withdrawal from idle assets, distinct from async `request_withdraw`. **Elevation.3.R.4** — Document that queued withdrawals become fixed asset claims at request time. Keep withdrawal cooldowns, adapter exposure limits, and allocator response procedures conservative enough that queued requests are not routinely exposed to stale NAV. A future cancellation path must specify whether cancellation is allowed during pauses/restrictions and how escrowed shares re-enter the share supply without violating FIFO assumptions. |
 | | **Elevation.4.R.1** — Require governance to be a multisig or DAO contract (enforced: `require_contract_address` in `set_governance`). **Elevation.4.R.2** — ✅ **Implemented**: `soroban/governance` contract enforces timelocks on all high-impact actions (fees, caps, sentinel, guardian, curator, restrictions, adapter changes, skim, upgrade, migrate, cancel migration). Decision functions from `curator-primitives` determine whether changes are immediate or timelocked based on direction (increase vs decrease). **Elevation.4.R.3** — Monitor all governance transactions with alerting. |
 | | **Elevation.5.R.1** — ✅ **Implemented**: `skim()` explicitly rejects the asset token and share token, preventing drainage of vault-critical balances. **Elevation.5.R.2** — Skim recipient and skim execution are both timelocked governance actions (`SetSkimRecipient` and `Skim`). **Elevation.5.R.3** — Operational: governance should set skim recipient to a treasury/multisig, not an individual key. |
 | | **Elevation.6.R.1** — `ESCROW_ADDRESS = [0u8; 32]` is mapped to the vault's own contract address, ensuring escrow operations (share transfers during withdrawal) route correctly. **Elevation.6.R.2** — The escrow mapping is set during vault bootstrap and is consistent across all invocations. No additional remediation needed. |

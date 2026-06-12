@@ -1,0 +1,39 @@
+[package]
+name = "templar-soroban-vault-cli"
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tmplr-soroban-vault"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clap_complete = "4.5"
+clap_mangen = "0.2"
+dirs.workspace = true
+hex.workspace = true
+indicatif = "0.18.4"
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+soroban-client = "0.5.5"
+stellar-strkey.workspace = true
+templar-curator-proxy-soroban = { path = "../../contract/proxy-curator-soroban" }
+templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
+templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml = "0.8"
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3.13"
+
+[lints]
+workspace = true
