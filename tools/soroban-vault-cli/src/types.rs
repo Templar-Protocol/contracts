@@ -1,0 +1,605 @@
+use std::{fmt, str::FromStr};
+
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
+use templar_soroban_governance::{
+    FeeParams, GovernanceActionKind, RestrictionMode, SupplyQueueProposalEntry, TimelockKind,
+};
+use templar_soroban_shared_types::strkey;
+
+pub struct SourceAccount(SecretString);
+
+impl SourceAccount {
+    #[must_use]
+    pub fn as_secret_str(&self) -> &str {
+        self.0.expose_secret()
+    }
+
+    #[must_use]
+    pub fn clone_secret(&self) -> String {
+        self.as_secret_str().to_string()
+    }
+
+    #[must_use]
+    pub fn public_address(&self) -> Option<String> {
+        let value = self.as_secret_str();
+        if value.starts_with('G') || value.starts_with('M') {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    }
+}
+
+impl Clone for SourceAccount {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl FromStr for SourceAccount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if looks_like_secret_source_account(value) {
+            return Err(
+                "do not pass secret keys or seed phrases via --source-account; use Stellar keystore/default identity or STELLAR_ACCOUNT"
+                    .to_string(),
+            );
+        }
+        Ok(Self(SecretString::from(value.to_string())))
+    }
+}
+
+impl fmt::Debug for SourceAccount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SourceAccount(<redacted>)")
+    }
+}
+
+impl fmt::Display for SourceAccount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+impl PartialEq for SourceAccount {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_secret_str() == other.as_secret_str()
+    }
+}
+
+impl Eq for SourceAccount {}
+
+fn looks_like_secret_source_account(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.split_whitespace().count() > 1
+        || (trimmed.starts_with('S')
+            && trimmed.len() >= 56
+            && trimmed.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecimalAmount(String);
+
+impl DecimalAmount {
+    pub fn to_raw(&self, decimals: u32) -> Result<i128, String> {
+        decimal_to_raw(&self.0, decimals)
+    }
+}
+
+impl FromStr for DecimalAmount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        validate_decimal_amount(value)?;
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl fmt::Display for DecimalAmount {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ShareDecimalsArg {
+    Manifest,
+    Explicit(u32),
+}
+
+impl FromStr for ShareDecimalsArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "manifest" {
+            return Ok(Self::Manifest);
+        }
+        let decimals = value
+            .parse::<u32>()
+            .map_err(|_| "expected `manifest` or a decimal count".to_string())?;
+        if decimals > 38 {
+            return Err("decimal count must be <= 38".to_string());
+        }
+        Ok(Self::Explicit(decimals))
+    }
+}
+
+impl fmt::Display for ShareDecimalsArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manifest => formatter.write_str("manifest"),
+            Self::Explicit(decimals) => write!(formatter, "{decimals}"),
+        }
+    }
+}
+
+fn validate_decimal_amount(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("amount cannot be empty".to_string());
+    }
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    if unsigned.is_empty() {
+        return Err("amount must include digits".to_string());
+    }
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next();
+    if parts.next().is_some() {
+        return Err("amount must contain at most one decimal point".to_string());
+    }
+    if whole.is_empty() && fraction.is_none_or(str::is_empty) {
+        return Err("amount must include digits".to_string());
+    }
+    if !whole.chars().all(|c| c.is_ascii_digit()) {
+        return Err("amount whole part must contain only digits".to_string());
+    }
+    if let Some(fraction) = fraction {
+        if !fraction.chars().all(|c| c.is_ascii_digit()) {
+            return Err("amount fractional part must contain only digits".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn decimal_to_raw(value: &str, decimals: u32) -> Result<i128, String> {
+    if decimals > 38 {
+        return Err("decimal count must be <= 38".to_string());
+    }
+    let decimals =
+        usize::try_from(decimals).map_err(|_| "decimal count does not fit usize".to_string())?;
+    let negative = value.starts_with('-');
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let mut parts = unsigned.split('.');
+    let whole = parts.next().unwrap_or_default();
+    let fraction = parts.next().unwrap_or_default();
+    if fraction.len() > decimals {
+        return Err(format!(
+            "amount {value} has more fractional digits than decimals={decimals}"
+        ));
+    }
+    let scale = 10_i128
+        .checked_pow(
+            u32::try_from(decimals).map_err(|_| "decimal count does not fit u32".to_string())?,
+        )
+        .ok_or_else(|| "decimal scale overflow".to_string())?;
+    let whole_raw = if whole.is_empty() {
+        0
+    } else {
+        whole
+            .parse::<i128>()
+            .map_err(|_| "amount whole part overflows i128".to_string())?
+            .checked_mul(scale)
+            .ok_or_else(|| "amount overflows i128".to_string())?
+    };
+    let mut padded_fraction = fraction.to_string();
+    padded_fraction.extend(std::iter::repeat_n('0', decimals - fraction.len()));
+    let fraction_raw = if padded_fraction.is_empty() {
+        0
+    } else {
+        padded_fraction
+            .parse::<i128>()
+            .map_err(|_| "amount fractional part overflows i128".to_string())?
+    };
+    let raw = whole_raw
+        .checked_add(fraction_raw)
+        .ok_or_else(|| "amount overflows i128".to_string())?;
+    if negative {
+        raw.checked_neg()
+            .ok_or_else(|| "amount overflows i128".to_string())
+    } else {
+        Ok(raw)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct AddressStr(String);
+
+impl AddressStr {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl FromStr for AddressStr {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        strkey::validate_address_strkey(value.as_bytes())
+            .map_err(|_| format!("invalid Soroban account/contract address: {value}"))?;
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl fmt::Display for AddressStr {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct WasmHash(String);
+
+impl WasmHash {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for WasmHash {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.trim_start_matches("0x").to_ascii_lowercase();
+        if value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit()) {
+            Ok(Self(value))
+        } else {
+            Err("expected a 32-byte hex WASM hash".to_string())
+        }
+    }
+}
+
+impl fmt::Display for WasmHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct GovernanceActionKindArg(pub GovernanceActionKind);
+
+impl FromStr for GovernanceActionKindArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = normalize_variant(value);
+        let kind = match normalized.as_str() {
+            "admin" => GovernanceActionKind::Admin,
+            "pause" | "paused" => GovernanceActionKind::Pause,
+            "curator" => GovernanceActionKind::Curator,
+            "governance" => GovernanceActionKind::Governance,
+            "supplyqueue" => GovernanceActionKind::SupplyQueue,
+            "fees" => GovernanceActionKind::Fees,
+            "restrictions" => GovernanceActionKind::Restrictions,
+            "sentinel" => GovernanceActionKind::Sentinel,
+            "allocators" => GovernanceActionKind::Allocators,
+            "allowedadapters" => GovernanceActionKind::AllowedAdapters,
+            "cap" => GovernanceActionKind::Cap,
+            "marketremoval" => GovernanceActionKind::MarketRemoval,
+            "capgroup" => GovernanceActionKind::CapGroup,
+            "skim" => GovernanceActionKind::Skim,
+            "upgrade" => GovernanceActionKind::Upgrade,
+            "migrate" | "migration" => GovernanceActionKind::Migrate,
+            "cancelmigration" => GovernanceActionKind::CancelMigration,
+            "timelockconfig" => GovernanceActionKind::TimelockConfig,
+            "other" => GovernanceActionKind::Other,
+            "withdrawalcooldown" => GovernanceActionKind::WithdrawalCooldown,
+            "idleresynccooldown" => GovernanceActionKind::IdleResyncCooldown,
+            _ => return Err(format!("unknown governance action kind: {value}")),
+        };
+        Ok(Self(kind))
+    }
+}
+
+impl fmt::Display for GovernanceActionKindArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            GovernanceActionKind::Admin => "Admin",
+            GovernanceActionKind::Pause => "Pause",
+            GovernanceActionKind::Curator => "Curator",
+            GovernanceActionKind::Governance => "Governance",
+            GovernanceActionKind::SupplyQueue => "SupplyQueue",
+            GovernanceActionKind::Fees => "Fees",
+            GovernanceActionKind::Restrictions => "Restrictions",
+            GovernanceActionKind::Sentinel => "Sentinel",
+            GovernanceActionKind::Allocators => "Allocators",
+            GovernanceActionKind::AllowedAdapters => "AllowedAdapters",
+            GovernanceActionKind::Cap => "Cap",
+            GovernanceActionKind::MarketRemoval => "MarketRemoval",
+            GovernanceActionKind::CapGroup => "CapGroup",
+            GovernanceActionKind::Skim => "Skim",
+            GovernanceActionKind::Upgrade => "Upgrade",
+            GovernanceActionKind::Migrate => "Migrate",
+            GovernanceActionKind::CancelMigration => "CancelMigration",
+            GovernanceActionKind::TimelockConfig => "TimelockConfig",
+            GovernanceActionKind::Other => "Other",
+            GovernanceActionKind::WithdrawalCooldown => "WithdrawalCooldown",
+            GovernanceActionKind::IdleResyncCooldown => "IdleResyncCooldown",
+        })
+    }
+}
+
+impl fmt::Debug for GovernanceActionKindArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct TimelockKindArg(pub TimelockKind);
+
+impl FromStr for TimelockKindArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = normalize_variant(value);
+        let kind = match normalized.as_str() {
+            "admin" => TimelockKind::Admin,
+            "pause" => TimelockKind::Pause,
+            "curator" => TimelockKind::Curator,
+            "governance" => TimelockKind::Governance,
+            "supplyqueue" => TimelockKind::SupplyQueue,
+            "fees" => TimelockKind::Fees,
+            "restrictions" => TimelockKind::Restrictions,
+            "sentinel" => TimelockKind::Sentinel,
+            "allocators" => TimelockKind::Allocators,
+            "allowedadapters" => TimelockKind::AllowedAdapters,
+            "cap" => TimelockKind::Cap,
+            "marketremoval" => TimelockKind::MarketRemoval,
+            "capgroup" => TimelockKind::CapGroup,
+            "skim" => TimelockKind::Skim,
+            "upgrade" => TimelockKind::Upgrade,
+            "migration" => TimelockKind::Migration,
+            "timelockconfig" => TimelockKind::TimelockConfig,
+            "other" => TimelockKind::Other,
+            _ => return Err(format!("unknown timelock kind: {value}")),
+        };
+        Ok(Self(kind))
+    }
+}
+
+impl fmt::Display for TimelockKindArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            TimelockKind::Admin => "Admin",
+            TimelockKind::Pause => "Pause",
+            TimelockKind::Curator => "Curator",
+            TimelockKind::Governance => "Governance",
+            TimelockKind::SupplyQueue => "SupplyQueue",
+            TimelockKind::Fees => "Fees",
+            TimelockKind::Restrictions => "Restrictions",
+            TimelockKind::Sentinel => "Sentinel",
+            TimelockKind::Allocators => "Allocators",
+            TimelockKind::AllowedAdapters => "AllowedAdapters",
+            TimelockKind::Cap => "Cap",
+            TimelockKind::MarketRemoval => "MarketRemoval",
+            TimelockKind::CapGroup => "CapGroup",
+            TimelockKind::Skim => "Skim",
+            TimelockKind::Upgrade => "Upgrade",
+            TimelockKind::Migration => "Migration",
+            TimelockKind::TimelockConfig => "TimelockConfig",
+            TimelockKind::Other => "Other",
+        })
+    }
+}
+
+impl fmt::Debug for TimelockKindArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct RestrictionModeArg(pub RestrictionMode);
+
+impl RestrictionModeArg {
+    #[must_use]
+    pub fn as_u32(self) -> u32 {
+        match self.0 {
+            RestrictionMode::None => 0,
+            RestrictionMode::Blacklist => 1,
+            RestrictionMode::Whitelist => 2,
+        }
+    }
+}
+
+impl FromStr for RestrictionModeArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = normalize_variant(value);
+        let mode = match normalized.as_str() {
+            "none" => RestrictionMode::None,
+            "blacklist" => RestrictionMode::Blacklist,
+            "whitelist" => RestrictionMode::Whitelist,
+            _ => return Err(format!("unknown restriction mode: {value}")),
+        };
+        Ok(Self(mode))
+    }
+}
+
+impl fmt::Display for RestrictionModeArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.0 {
+            RestrictionMode::None => "None",
+            RestrictionMode::Blacklist => "Blacklist",
+            RestrictionMode::Whitelist => "Whitelist",
+        })
+    }
+}
+
+impl fmt::Debug for RestrictionModeArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SupplyQueueEntryArg {
+    pub target_id: u32,
+    pub adapter: AddressStr,
+}
+
+impl SupplyQueueEntryArg {
+    #[must_use]
+    pub fn contract_type_name() -> &'static str {
+        std::any::type_name::<SupplyQueueProposalEntry>()
+    }
+}
+
+impl FromStr for SupplyQueueEntryArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (target_id, adapter) = value
+            .split_once(':')
+            .ok_or_else(|| "expected target_id:adapter_address".to_string())?;
+        let target_id = target_id
+            .parse::<u32>()
+            .map_err(|err| format!("invalid target id: {err}"))?;
+        let adapter = adapter.parse::<AddressStr>()?;
+        Ok(Self { target_id, adapter })
+    }
+}
+
+impl fmt::Display for SupplyQueueEntryArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.target_id, self.adapter)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct FeeParamsArg {
+    pub performance_fee_wad: i128,
+    pub performance_recipient: AddressStr,
+    pub management_fee_wad: i128,
+    pub management_recipient: AddressStr,
+    pub max_growth_rate_wad: Option<i128>,
+}
+
+impl FeeParamsArg {
+    #[must_use]
+    pub fn contract_type_name() -> &'static str {
+        std::any::type_name::<FeeParams>()
+    }
+}
+
+fn normalize_variant(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| *c != '-' && *c != '_' && !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ACCOUNT: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
+    const CONTRACT: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
+
+    #[test]
+    fn address_str_validates_strkeys() {
+        assert!(ACCOUNT.parse::<AddressStr>().is_ok());
+        assert!(CONTRACT.parse::<AddressStr>().is_ok());
+        assert!("not-an-address".parse::<AddressStr>().is_err());
+    }
+
+    #[test]
+    fn source_account_debug_display_redacts_inner_value() {
+        let source = ACCOUNT.parse::<SourceAccount>().expect("source");
+
+        assert_eq!(source.to_string(), "<redacted>");
+        assert!(!format!("{source:?}").contains(ACCOUNT));
+        assert_eq!(source.public_address().as_deref(), Some(ACCOUNT));
+    }
+
+    #[test]
+    fn source_account_non_public_alias_is_not_recorded_as_public_address() {
+        let source = "operator-alias".parse::<SourceAccount>().expect("source");
+
+        assert_eq!(source.public_address(), None);
+    }
+
+    #[test]
+    fn decimal_amount_converts_to_raw_units() {
+        assert_eq!(
+            "1.25"
+                .parse::<DecimalAmount>()
+                .expect("amount")
+                .to_raw(7)
+                .expect("raw"),
+            12_500_000
+        );
+        assert_eq!(
+            "-0.5"
+                .parse::<DecimalAmount>()
+                .expect("amount")
+                .to_raw(7)
+                .expect("raw"),
+            -5_000_000
+        );
+        assert!("1.234"
+            .parse::<DecimalAmount>()
+            .expect("amount")
+            .to_raw(2)
+            .is_err());
+    }
+
+    #[test]
+    fn supply_queue_entry_is_typed_and_references_contract_type() {
+        let entry = format!("7:{CONTRACT}")
+            .parse::<SupplyQueueEntryArg>()
+            .expect("entry");
+        assert_eq!(entry.target_id, 7);
+        assert!(SupplyQueueEntryArg::contract_type_name().contains("SupplyQueueProposalEntry"));
+    }
+
+    #[test]
+    fn parses_governance_kinds_without_free_form_strings() {
+        assert!(matches!(
+            "cancel-migration"
+                .parse::<GovernanceActionKindArg>()
+                .expect("kind")
+                .0,
+            GovernanceActionKind::CancelMigration
+        ));
+        assert!(matches!(
+            "supply_queue".parse::<TimelockKindArg>().expect("kind").0,
+            TimelockKind::SupplyQueue
+        ));
+    }
+
+    #[test]
+    fn parses_restriction_mode_from_contract_enum() {
+        let mode = "white-list"
+            .parse::<RestrictionModeArg>()
+            .expect("restriction mode");
+        assert_eq!(mode.as_u32(), 2);
+        assert!("allow".parse::<RestrictionModeArg>().is_err());
+    }
+
+    #[test]
+    fn fee_params_arg_references_contract_type() {
+        assert!(FeeParamsArg::contract_type_name().contains("FeeParams"));
+    }
+}

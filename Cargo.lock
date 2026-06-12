@@ -2243,6 +2243,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2259,6 +2268,16 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "clap_mangen"
+version = "0.2.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e30ffc187e2e3aeafcd1c6e2aa416e29739454c0ccaa419226d5ecd181f2d78"
+dependencies = [
+ "clap",
+ "roff",
+]
 
 [[package]]
 name = "cmov"
@@ -7969,6 +7988,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "roff"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8453,6 +8478,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]
@@ -12204,8 +12238,7 @@ dependencies = [
 [[package]]
 name = "stellar-contract-utils"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acd8001a84e189032af6d8d17355a923d98ea97917064d6e6003ff3e5accb0f5"
+source = "git+https://github.com/Templar-Protocol/stellar-contracts?rev=f9d7cee755ee09cd43f6978eecf7ea8156e32a86#f9d7cee755ee09cd43f6978eecf7ea8156e32a86"
 dependencies = [
  "soroban-sdk",
 ]
@@ -12561,6 +12594,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-4626-proxy-soroban"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-curator-primitives",
+ "templar-soroban-governance",
+ "templar-soroban-runtime",
+ "templar-soroban-shared-types",
+ "templar-vault-kernel",
+]
+
+[[package]]
 name = "templar-accumulator"
 version = "0.1.0"
 dependencies = [
@@ -12623,6 +12668,16 @@ dependencies = [
  "templar-vault-kernel",
  "templar-vault-macros",
  "typed-builder",
+]
+
+[[package]]
+name = "templar-curator-proxy-soroban"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "templar-soroban-governance",
+ "templar-soroban-runtime",
+ "templar-soroban-shared-types",
 ]
 
 [[package]]
@@ -13114,6 +13169,34 @@ dependencies = [
  "postcard",
  "serde",
  "soroban-sdk",
+]
+
+[[package]]
+name = "templar-soroban-vault-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "dirs 6.0.0",
+ "hex",
+ "indicatif",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "soroban-client",
+ "stellar-strkey 0.0.16",
+ "tempfile",
+ "templar-curator-proxy-soroban",
+ "templar-soroban-governance",
+ "templar-soroban-shared-types",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]

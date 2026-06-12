@@ -30,6 +30,7 @@ The proposal state machine is shared with NEAR via the `no_std` `templar-proxy-o
 Each adapter is independently `Ownable` and tracks one **immutable** `(parent_oracle, asset)` pair — to repoint either, deploy a new adapter. Owner entrypoints:
 
 - `set_metadata(decimals, resolution, base)` — replace the SEP-40 metadata triple; emits `MetadataUpdated`. `decimals ≤ 18`, `resolution ≠ 0`.
+- `extend_ttl()` — permissionless instance-storage maintenance for adapter config.
 - `config() -> Option<Config>` — the full `{ parent_oracle, asset, decimals, resolution, base }`.
 - `upgrade(new_wasm_hash, operator)` — owner-gated wasm swap.
 
@@ -41,7 +42,10 @@ SEP-40 `PriceFeedTrait` reads dispatch to the parent's `aggregated_latest` / `ag
 - `refresh(assets)` is the only source-IO path; all reads are storage-only.
 - Manage breakers with the governed `add_breaker` / `remove_breaker` / `rearm` / `set_enforced`. Inert params (zero thresholds/streaks/lookback) are rejected.
 - Manual-trip metadata is event-only, capped at 1024 bytes, not stored in breaker state.
-- Call `extend_ttl()` on the runtime and governance contracts on a cadence to avoid storage eviction.
+- Schedule an ops/keeper job for Soroban TTL maintenance; do not rely on curators to remember this manually.
+- Runtime `extend_ttl()` is permissionless and renews runtime instance storage plus every registered asset's persistent `Assets`, `Proxy`, `Breakers`, `Cache`, and `History` entries.
+- Governance `extend_ttl()` is permissionless and renews governance instance state plus active persistent proposal bodies.
+- SEP-40 adapter `extend_ttl()` is permissionless and renews adapter instance config. Adapter reads also refresh instance TTL when the remaining TTL is below threshold.
 - Keep optimized WASMs within budget: runtime & governance ≤ 128 KiB, adapter ≤ 32 KiB. Recheck after ABI/event changes.
 
 ## Known limits

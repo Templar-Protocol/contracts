@@ -23,17 +23,17 @@ use templar_soroban_runtime::{
     Storage, // Import the trait
 };
 use templar_soroban_shared_types::{
-    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
-    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
-    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
-    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, GovernanceCommand, VaultCommand,
+    GOVERNANCE_CONFIG_KIND_ALLOCATORS, GOVERNANCE_CONFIG_KIND_CURATOR,
+    GOVERNANCE_CONFIG_KIND_SENTINEL, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+    GOVERNANCE_POLICY_KIND_CAP, GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
     GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
 };
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
     effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
     AllocationPlanEntry, FeeAccrualAnchor, FeeSlot, FeesSpec, KernelAction, Number, OpState,
-    VaultConfig, VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
+    Restrictions, VaultConfig, VaultState, Wad, MAX_PENDING, MIN_WITHDRAWAL_ASSETS,
 };
 use templar_vault_kernel::{
     state::op_state::RefreshingState,
@@ -100,7 +100,9 @@ fn user_addr() -> Address {
 struct SorobanContractFixture {
     env: Env,
     contract_id: soroban_sdk::Address,
+    curator: soroban_sdk::Address,
     asset_token: soroban_sdk::Address,
+    share_token: soroban_sdk::Address,
 }
 
 struct VaultProxy<'a> {
@@ -209,21 +211,30 @@ impl<'a> VaultProxy<'a> {
     fn execute(
         &self,
         command: &VaultCommand,
-    ) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+    ) -> Result<Bytes, templar_soroban_runtime::ContractError> {
         let payload = Bytes::from_slice(self.env, &command.encode());
-        let result = SorobanVaultContract::execute(self.env.clone(), payload)?;
-        VaultCommandResult::decode(&result.to_alloc_vec())
-            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+        SorobanVaultContract::execute(self.env.clone(), payload)
     }
 
     fn execute_unit(
         &self,
         command: &VaultCommand,
     ) -> Result<(), templar_soroban_runtime::ContractError> {
-        match self.execute(command)? {
-            VaultCommandResult::Unit => Ok(()),
-            _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
-        }
+        let bytes = self.execute(command)?;
+        EmptyReceipt::decode(&bytes.to_alloc_vec())
+            .map(|_| ())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+    }
+
+    fn execute_withdraw(
+        &self,
+        caller: &soroban_sdk::Address,
+    ) -> Result<ExecuteWithdrawReceipt, templar_soroban_runtime::ContractError> {
+        let bytes = self.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_wire(caller),
+        })?;
+        ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
     }
 
     fn execute_governance_unit(
@@ -259,10 +270,10 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
     env.as_contract(&contract_id, || {
         SorobanVaultContract::initialize(
             env.clone(),
-            curator,
+            curator.clone(),
             governance,
             asset.clone(),
-            share,
+            share.clone(),
             0,
             0,
         )
@@ -272,7 +283,9 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
     SorobanContractFixture {
         env,
         contract_id,
+        curator,
         asset_token: asset,
+        share_token: share,
     }
 }
 
@@ -908,13 +921,20 @@ fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
 }
 
 #[rstest]
-fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exists(
+fn soroban_contract_proxy_view_reports_owner_idle_atomic_limits(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let share_token = soroban_contract_fixture.share_token;
     let proxy = VaultProxy::new(&env);
     let owner = soroban_sdk::Address::generate(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let share_admin_client = StellarAssetClient::new(&env, &share_token);
+
+    asset_admin_client.mint(&contract_id, &1_000);
+    share_admin_client.mint(&owner, &600);
 
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
@@ -927,8 +947,8 @@ fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exist
             })
             .expect("save state");
 
-        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 0);
-        assert_eq!(proxy.max_redeem(owner).unwrap(), 0);
+        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 600);
+        assert_eq!(proxy.max_redeem(owner).unwrap(), 600);
     });
 }
 
@@ -1199,6 +1219,170 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
             caller: sdk_wire(&user),
         });
         assert!(result.is_err());
+    });
+}
+
+#[rstest]
+fn soroban_contract_execute_withdraw_decodes_completed_receipt(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let curator = soroban_contract_fixture.curator;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let owner = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    asset_admin_client.mint(&owner, &deposit_assets);
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                assets: deposit_assets,
+                min_shares_out: 0,
+            })
+            .unwrap();
+        proxy
+            .execute(&VaultCommand::RequestWithdraw {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                shares: deposit_assets,
+                min_assets_out: 0,
+            })
+            .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let receipt = env.as_contract(&contract_id, || {
+        proxy
+            .execute_withdraw(&curator)
+            .expect("execute withdraw should return a typed receipt")
+    });
+    let ExecuteWithdrawReceipt::Completed {
+        request_id,
+        owner: receipt_owner,
+        receiver,
+        assets_out,
+        shares_burned,
+        ..
+    } = receipt
+    else {
+        panic!("execute withdraw should complete the queued withdrawal");
+    };
+
+    assert_eq!(request_id, 0);
+    assert_eq!(receipt_owner.as_str(), sdk_wire(&owner));
+    assert_eq!(receiver.as_str(), sdk_wire(&owner));
+    assert_eq!(assets_out, deposit_assets as u128);
+    assert_eq!(shares_burned, deposit_assets as u128);
+
+    env.as_contract(&contract_id, || {
+        let state = SorobanStorage::new(&env)
+            .load_state()
+            .unwrap()
+            .expect("state should remain persisted");
+        assert!(state.withdraw_queue.is_empty());
+        assert!(state
+            .withdraw_queue
+            .iter()
+            .all(|(queued_request_id, _)| queued_request_id != request_id));
+    });
+}
+
+#[rstest]
+fn soroban_contract_execute_withdraw_decodes_no_payout_receipt(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let curator = soroban_contract_fixture.curator;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let owner = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let deposit_assets = (MIN_WITHDRAWAL_ASSETS.saturating_mul(2)) as i128;
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 1,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    asset_admin_client.mint(&owner, &deposit_assets);
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                assets: deposit_assets,
+                min_shares_out: 0,
+            })
+            .unwrap();
+        proxy
+            .execute(&VaultCommand::RequestWithdraw {
+                owner: sdk_wire(&owner),
+                receiver: sdk_wire(&owner),
+                shares: deposit_assets,
+                min_assets_out: 0,
+            })
+            .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        let state = storage
+            .load_state()
+            .unwrap()
+            .expect("withdraw request should persist state");
+        let (_, pending) = state
+            .withdraw_queue
+            .head()
+            .expect("withdraw request should be queued");
+        Storage::save_restrictions(
+            &mut storage,
+            &Some(Restrictions::blacklist(vec![pending.owner])),
+        )
+        .unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS / 1_000_000_000 + 3,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let receipt = env.as_contract(&contract_id, || {
+        proxy
+            .execute_withdraw(&curator)
+            .expect("execute withdraw should return a typed receipt")
+    });
+    let ExecuteWithdrawReceipt::NoPayout { status } = receipt else {
+        panic!("execute withdraw should skip the restricted request without payout");
+    };
+
+    assert_eq!(status.op_state_before, OpState::Idle.kind_code());
+    assert_eq!(status.op_state_after, OpState::Idle.kind_code());
+    assert_eq!(status.assets_transferred, 0);
+    assert_eq!(status.events_emitted, 1);
+
+    env.as_contract(&contract_id, || {
+        let state = SorobanStorage::new(&env)
+            .load_state()
+            .unwrap()
+            .expect("state should remain persisted");
+        assert!(state.withdraw_queue.is_empty());
     });
 }
 
@@ -2332,9 +2516,9 @@ fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
             .unwrap()
     });
 
-    let VaultCommandResult::I128(minted_shares) = minted else {
-        panic!("deposit should return minted shares");
-    };
+    let minted_shares = DepositReceipt::decode(&minted.to_alloc_vec())
+        .expect("deposit should return a deposit receipt")
+        .shares_out;
 
     assert!(
         (1..=62).contains(&minted_shares),

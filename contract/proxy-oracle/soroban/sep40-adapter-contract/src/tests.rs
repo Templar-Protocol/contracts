@@ -6,7 +6,7 @@ extern crate std;
 use super::*;
 
 use soroban_sdk::{
-    testutils::{Address as _, Events as _, Ledger, LedgerInfo},
+    testutils::{storage::Instance as _, Address as _, Events as _, Ledger, LedgerInfo},
     Address, Env, Event, Symbol,
 };
 use templar_proxy_oracle_soroban_common::{Asset as CommonAsset, NormalizedPrice};
@@ -79,6 +79,7 @@ struct Fixture {
     env: Env,
     owner: Address,
     parent_id: Address,
+    adapter_id: Address,
     parent: MockParentClient<'static>,
     adapter: Sep40AdapterClient<'static>,
     asset: CommonAsset,
@@ -107,6 +108,7 @@ fn fixture(decimals: u32, resolution: u32) -> Fixture {
         env,
         owner,
         parent_id,
+        adapter_id,
         parent,
         adapter,
         asset,
@@ -126,6 +128,45 @@ fn constructor_persists_fields_and_owner() {
     assert_eq!(config.parent_oracle, f.parent_id);
     assert_eq!(config.asset, f.asset);
     assert_eq!(f.adapter.get_owner(), Some(f.owner));
+}
+
+#[test]
+fn extend_ttl_and_reads_refresh_config() {
+    let f = fixture(8, 1);
+
+    f.env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        sequence_number: 2_592_100,
+        max_entry_ttl: 3_110_400,
+        ..Default::default()
+    });
+    let ttl_before = f
+        .env
+        .as_contract(&f.adapter_id, || f.env.storage().instance().get_ttl());
+
+    f.adapter.extend_ttl();
+    let ttl_after_extend = f
+        .env
+        .as_contract(&f.adapter_id, || f.env.storage().instance().get_ttl());
+    assert!(ttl_after_extend > ttl_before);
+
+    f.env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        sequence_number: 5_184_101,
+        max_entry_ttl: 3_110_400,
+        ..Default::default()
+    });
+    let ttl_before_read = f
+        .env
+        .as_contract(&f.adapter_id, || f.env.storage().instance().get_ttl());
+    assert_eq!(f.adapter.decimals(), 8);
+    let ttl_after_read = f
+        .env
+        .as_contract(&f.adapter_id, || f.env.storage().instance().get_ttl());
+
+    assert!(ttl_after_read > ttl_before_read);
 }
 
 #[test]

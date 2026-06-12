@@ -2,7 +2,11 @@
 
 extern crate alloc;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::{fmt, str::FromStr};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CodecError {
@@ -10,6 +14,275 @@ pub enum CodecError {
     InvalidUtf8,
     InvalidTag,
     InvalidEncoding,
+}
+
+pub const VAULT_ERR_INVALID_INPUT: u32 = 3;
+pub const VAULT_ERR_ALREADY_INITIALIZED: u32 = 8;
+
+pub mod strkey {
+    use super::CodecError;
+
+    const STRKEY_LEN: usize = 56;
+    const BINARY_LEN: usize = 35;
+    const ACCOUNT_VERSION: u8 = 6 << 3;
+    const CONTRACT_VERSION: u8 = 2 << 3;
+
+    pub fn validate_address_strkey(bytes: &[u8]) -> Result<(), CodecError> {
+        if bytes.len() != STRKEY_LEN {
+            return Err(CodecError::InvalidEncoding);
+        }
+
+        let mut out = [0u8; BINARY_LEN];
+        let mut buffer = 0u16;
+        let mut bits = 0u8;
+        let mut cursor = 0usize;
+        for byte in bytes {
+            let value = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'2'..=b'7' => byte - b'2' + 26,
+                _ => return Err(CodecError::InvalidEncoding),
+            };
+            buffer = (buffer << 5) | u16::from(value);
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                if cursor >= BINARY_LEN {
+                    return Err(CodecError::InvalidEncoding);
+                }
+                out[cursor] = (buffer >> bits) as u8;
+                cursor += 1;
+                buffer &= (1u16 << bits) - 1;
+            }
+        }
+
+        if cursor != BINARY_LEN
+            || bits != 0
+            || (out[0] != ACCOUNT_VERSION && out[0] != CONTRACT_VERSION)
+        {
+            return Err(CodecError::InvalidEncoding);
+        }
+
+        let expected = u16::from_le_bytes([out[BINARY_LEN - 2], out[BINARY_LEN - 1]]);
+        let actual = crc16_xmodem(&out[..BINARY_LEN - 2]);
+        if expected != actual {
+            return Err(CodecError::InvalidEncoding);
+        }
+
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn crc16_xmodem(bytes: &[u8]) -> u16 {
+        let mut crc = 0u16;
+        for byte in bytes {
+            crc ^= u16::from(*byte) << 8;
+            for _ in 0..8 {
+                if crc & 0x8000 == 0 {
+                    crc <<= 1;
+                } else {
+                    crc = (crc << 1) ^ 0x1021;
+                }
+            }
+        }
+        crc
+    }
+}
+
+pub type ProxyAddressesView = (
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+    soroban_sdk::Address,
+);
+pub type ProxyVirtualOffsetsView = (i128, i128, bool);
+pub type ProxyTotalsView = (i128, i128, i128, i128);
+pub type ProxyFeesView = (i128, u64, i128, i128, i128);
+pub type ProxyCoreView = (
+    ProxyAddressesView,
+    ProxyVirtualOffsetsView,
+    ProxyTotalsView,
+    ProxyFeesView,
+);
+pub type ProxyCapGroupView = (soroban_sdk::String, i128, i128);
+pub type ProxyPolicyView = (soroban_sdk::Vec<u32>, soroban_sdk::Vec<ProxyCapGroupView>);
+pub type ProxyPreviewView = (i128, i128, i128, i128, i128, i128, i128, i128);
+pub type ProxyViewResponse = (ProxyCoreView, ProxyPolicyView, ProxyPreviewView);
+
+#[derive(Clone)]
+pub struct ProxyAddressesFields {
+    pub curator: soroban_sdk::Address,
+    pub governance: soroban_sdk::Address,
+    pub asset_token: soroban_sdk::Address,
+    pub share_token: soroban_sdk::Address,
+}
+
+#[derive(Clone)]
+pub struct ProxyVirtualOffsetsFields {
+    pub virtual_shares: i128,
+    pub virtual_assets: i128,
+    pub paused: bool,
+}
+
+#[derive(Clone)]
+pub struct ProxyTotalsFields {
+    pub total_shares: i128,
+    pub idle_assets: i128,
+    pub external_assets: i128,
+    pub total_assets: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyFeesFields {
+    pub fee_total_assets: i128,
+    pub fee_timestamp_ns: u64,
+    pub management_fee_wad: i128,
+    pub performance_fee_wad: i128,
+    pub max_total_assets_growth_rate_wad: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyCoreFields {
+    pub addresses: ProxyAddressesFields,
+    pub virtual_offsets: ProxyVirtualOffsetsFields,
+    pub totals: ProxyTotalsFields,
+    pub fees: ProxyFeesFields,
+}
+
+#[derive(Clone)]
+pub struct ProxyPolicyFields {
+    pub supply_queue: soroban_sdk::Vec<u32>,
+    pub cap_groups: soroban_sdk::Vec<ProxyCapGroupView>,
+}
+
+#[derive(Clone)]
+pub struct ProxyPreviewFields {
+    pub convert_to_shares: i128,
+    pub convert_to_assets: i128,
+    pub max_deposit: i128,
+    pub max_mint: i128,
+    pub max_withdraw: i128,
+    pub max_redeem: i128,
+    pub preview_mint_assets: i128,
+    pub preview_withdraw_shares: i128,
+}
+
+#[derive(Clone)]
+pub struct ProxyViewFields {
+    pub core: ProxyCoreFields,
+    pub policy: ProxyPolicyFields,
+    pub preview: ProxyPreviewFields,
+}
+
+impl From<ProxyAddressesView> for ProxyAddressesFields {
+    fn from(value: ProxyAddressesView) -> Self {
+        let (curator, governance, asset_token, share_token) = value;
+        Self {
+            curator,
+            governance,
+            asset_token,
+            share_token,
+        }
+    }
+}
+
+impl From<ProxyVirtualOffsetsView> for ProxyVirtualOffsetsFields {
+    fn from(value: ProxyVirtualOffsetsView) -> Self {
+        let (virtual_shares, virtual_assets, paused) = value;
+        Self {
+            virtual_shares,
+            virtual_assets,
+            paused,
+        }
+    }
+}
+
+impl From<ProxyTotalsView> for ProxyTotalsFields {
+    fn from(value: ProxyTotalsView) -> Self {
+        let (total_shares, idle_assets, external_assets, total_assets) = value;
+        Self {
+            total_shares,
+            idle_assets,
+            external_assets,
+            total_assets,
+        }
+    }
+}
+
+impl From<ProxyFeesView> for ProxyFeesFields {
+    fn from(value: ProxyFeesView) -> Self {
+        let (
+            fee_total_assets,
+            fee_timestamp_ns,
+            management_fee_wad,
+            performance_fee_wad,
+            max_total_assets_growth_rate_wad,
+        ) = value;
+        Self {
+            fee_total_assets,
+            fee_timestamp_ns,
+            management_fee_wad,
+            performance_fee_wad,
+            max_total_assets_growth_rate_wad,
+        }
+    }
+}
+
+impl From<ProxyCoreView> for ProxyCoreFields {
+    fn from(value: ProxyCoreView) -> Self {
+        let (addresses, virtual_offsets, totals, fees) = value;
+        Self {
+            addresses: addresses.into(),
+            virtual_offsets: virtual_offsets.into(),
+            totals: totals.into(),
+            fees: fees.into(),
+        }
+    }
+}
+
+impl From<ProxyPolicyView> for ProxyPolicyFields {
+    fn from(value: ProxyPolicyView) -> Self {
+        let (supply_queue, cap_groups) = value;
+        Self {
+            supply_queue,
+            cap_groups,
+        }
+    }
+}
+
+impl From<ProxyPreviewView> for ProxyPreviewFields {
+    fn from(value: ProxyPreviewView) -> Self {
+        let (
+            convert_to_shares,
+            convert_to_assets,
+            max_deposit,
+            max_mint,
+            max_withdraw,
+            max_redeem,
+            preview_mint_assets,
+            preview_withdraw_shares,
+        ) = value;
+        Self {
+            convert_to_shares,
+            convert_to_assets,
+            max_deposit,
+            max_mint,
+            max_withdraw,
+            max_redeem,
+            preview_mint_assets,
+            preview_withdraw_shares,
+        }
+    }
+}
+
+impl From<ProxyViewResponse> for ProxyViewFields {
+    fn from(value: ProxyViewResponse) -> Self {
+        let (core, policy, preview) = value;
+        Self {
+            core: core.into(),
+            policy: policy.into(),
+            preview: preview.into(),
+        }
+    }
 }
 
 fn push_u8(out: &mut Vec<u8>, value: u8) {
@@ -244,6 +517,20 @@ pub enum VaultCommand {
         markets: Vec<u32>,
     },
     RefreshFees,
+    AtomicWithdraw {
+        owner: String,
+        receiver: String,
+        operator: String,
+        assets: i128,
+        max_shares_burned: i128,
+    },
+    AtomicRedeem {
+        owner: String,
+        receiver: String,
+        operator: String,
+        shares: i128,
+        min_assets_out: i128,
+    },
     ResyncIdleBalance,
     CancelMigration {
         caller: String,
@@ -277,11 +564,71 @@ pub enum GovernanceCommand {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VaultCommandResult {
-    Unit,
-    I128(i128),
-    U64(u64),
-    ExecuteWithdrawStatus(ExecuteWithdrawStatus),
+pub struct DepositReceipt {
+    pub shares_out: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestWithdrawReceipt {
+    pub request_id: u64,
+    pub shares_escrowed: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptAddress(String);
+
+impl ReceiptAddress {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl TryFrom<String> for ReceiptAddress {
+    type Error = CodecError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        strkey::validate_address_strkey(value.as_bytes())?;
+        Ok(Self(value))
+    }
+}
+
+impl FromStr for ReceiptAddress {
+    type Err = CodecError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_from(value.to_string())
+    }
+}
+
+impl fmt::Display for ReceiptAddress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl serde::Serialize for ReceiptAddress {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReceiptAddress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::try_from(value).map_err(|_| serde::de::Error::custom("invalid receipt address"))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,6 +638,29 @@ pub struct ExecuteWithdrawStatus {
     pub assets_transferred: u128,
     pub events_emitted: u32,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecuteWithdrawReceipt {
+    NoPayout {
+        status: ExecuteWithdrawStatus,
+    },
+    Completed {
+        request_id: u64,
+        owner: ReceiptAddress,
+        receiver: ReceiptAddress,
+        assets_out: u128,
+        shares_burned: u128,
+        status: ExecuteWithdrawStatus,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct I128Receipt {
+    pub value: i128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmptyReceipt;
 
 pub const GOVERNANCE_CONFIG_KIND_CURATOR: u32 = 0;
 pub const GOVERNANCE_CONFIG_KIND_GOVERNANCE: u32 = 1;
@@ -371,6 +741,34 @@ impl VaultCommand {
                 push_u32_vec(&mut out, markets);
             }
             Self::RefreshFees => push_u8(&mut out, 5),
+            Self::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                assets,
+                max_shares_burned,
+            } => {
+                push_u8(&mut out, 6);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *assets);
+                push_i128(&mut out, *max_shares_burned);
+            }
+            Self::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+            } => {
+                push_u8(&mut out, 7);
+                push_string(&mut out, owner);
+                push_string(&mut out, receiver);
+                push_string(&mut out, operator);
+                push_i128(&mut out, *shares);
+                push_i128(&mut out, *min_assets_out);
+            }
             Self::ResyncIdleBalance => push_u8(&mut out, 8),
             Self::CancelMigration { caller } => {
                 push_u8(&mut out, 9);
@@ -418,6 +816,20 @@ impl VaultCommand {
                 markets: read_u32_vec(bytes, &mut cursor)?,
             }),
             5 => Ok(Self::RefreshFees),
+            6 => Ok(Self::AtomicWithdraw {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                assets: read_i128(bytes, &mut cursor)?,
+                max_shares_burned: read_i128(bytes, &mut cursor)?,
+            }),
+            7 => Ok(Self::AtomicRedeem {
+                owner: read_string(bytes, &mut cursor)?,
+                receiver: read_string(bytes, &mut cursor)?,
+                operator: read_string(bytes, &mut cursor)?,
+                shares: read_i128(bytes, &mut cursor)?,
+                min_assets_out: read_i128(bytes, &mut cursor)?,
+            }),
             8 => Ok(Self::ResyncIdleBalance),
             9 => Ok(Self::CancelMigration {
                 caller: read_string(bytes, &mut cursor)?,
@@ -510,22 +922,79 @@ impl GovernanceCommand {
     }
 }
 
-impl VaultCommandResult {
+impl DepositReceipt {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
+        push_u8(&mut out, 0);
+        push_i128(&mut out, self.shares_out);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 0 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            shares_out: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl RequestWithdrawReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 1);
+        push_u64(&mut out, self.request_id);
+        push_i128(&mut out, self.shares_escrowed);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 1 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            request_id: read_u64(bytes, &mut cursor)?,
+            shares_escrowed: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl ExecuteWithdrawReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 2);
         match self {
-            Self::Unit => push_u8(&mut out, 0),
-            Self::I128(value) => {
+            Self::NoPayout { status } => {
+                push_u8(&mut out, 0);
+                push_u32(&mut out, status.op_state_before);
+                push_u32(&mut out, status.op_state_after);
+                push_u128(&mut out, status.assets_transferred);
+                push_u32(&mut out, status.events_emitted);
+            }
+            Self::Completed {
+                request_id,
+                owner,
+                receiver,
+                assets_out,
+                shares_burned,
+                status,
+            } => {
                 push_u8(&mut out, 1);
-                push_i128(&mut out, *value);
-            }
-            Self::U64(value) => {
-                push_u8(&mut out, 2);
-                push_u64(&mut out, *value);
-            }
-            Self::ExecuteWithdrawStatus(status) => {
-                push_u8(&mut out, 3);
+                push_u64(&mut out, *request_id);
+                push_string(&mut out, owner.as_str());
+                push_string(&mut out, receiver.as_str());
+                push_u128(&mut out, *assets_out);
+                push_u128(&mut out, *shares_burned);
                 push_u32(&mut out, status.op_state_before);
                 push_u32(&mut out, status.op_state_after);
                 push_u128(&mut out, status.assets_transferred);
@@ -537,20 +1006,83 @@ impl VaultCommandResult {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
         let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 2 {
+            return Err(CodecError::InvalidTag);
+        }
         let result = match read_u8(bytes, &mut cursor)? {
-            0 => Ok(Self::Unit),
-            1 => Ok(Self::I128(read_i128(bytes, &mut cursor)?)),
-            2 => Ok(Self::U64(read_u64(bytes, &mut cursor)?)),
-            3 => Ok(Self::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
-                op_state_before: read_u32(bytes, &mut cursor)?,
-                op_state_after: read_u32(bytes, &mut cursor)?,
-                assets_transferred: read_u128(bytes, &mut cursor)?,
-                events_emitted: read_u32(bytes, &mut cursor)?,
-            })),
-            _ => Err(CodecError::InvalidTag),
-        }?;
+            0 => Self::NoPayout {
+                status: ExecuteWithdrawStatus {
+                    op_state_before: read_u32(bytes, &mut cursor)?,
+                    op_state_after: read_u32(bytes, &mut cursor)?,
+                    assets_transferred: read_u128(bytes, &mut cursor)?,
+                    events_emitted: read_u32(bytes, &mut cursor)?,
+                },
+            },
+            1 => {
+                let request_id = read_u64(bytes, &mut cursor)?;
+                let owner = ReceiptAddress::try_from(read_string(bytes, &mut cursor)?)?;
+                let receiver = ReceiptAddress::try_from(read_string(bytes, &mut cursor)?)?;
+                let assets_out = read_u128(bytes, &mut cursor)?;
+                let shares_burned = read_u128(bytes, &mut cursor)?;
+                let status = ExecuteWithdrawStatus {
+                    op_state_before: read_u32(bytes, &mut cursor)?,
+                    op_state_after: read_u32(bytes, &mut cursor)?,
+                    assets_transferred: read_u128(bytes, &mut cursor)?,
+                    events_emitted: read_u32(bytes, &mut cursor)?,
+                };
+                Self::Completed {
+                    request_id,
+                    owner,
+                    receiver,
+                    assets_out,
+                    shares_burned,
+                    status,
+                }
+            }
+            _ => return Err(CodecError::InvalidTag),
+        };
         ensure_finished(bytes, cursor)?;
         Ok(result)
+    }
+}
+
+impl I128Receipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 3);
+        push_i128(&mut out, self.value);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 3 {
+            return Err(CodecError::InvalidTag);
+        }
+        let result = Self {
+            value: read_i128(bytes, &mut cursor)?,
+        };
+        ensure_finished(bytes, cursor)?;
+        Ok(result)
+    }
+}
+
+impl EmptyReceipt {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_u8(&mut out, 4);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, CodecError> {
+        let mut cursor = 0usize;
+        if read_u8(bytes, &mut cursor)? != 4 {
+            return Err(CodecError::InvalidTag);
+        }
+        ensure_finished(bytes, cursor)?;
+        Ok(Self)
     }
 }
 
@@ -558,6 +1090,19 @@ impl VaultCommandResult {
 mod tests {
     use super::*;
     use alloc::{string::String, vec};
+    use soroban_sdk::{Address, Env, String as SdkString, Vec as SdkVec};
+
+    fn sdk_address(env: &Env) -> Address {
+        Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        )
+    }
+
+    fn receipt_address() -> ReceiptAddress {
+        ReceiptAddress::from_str("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+            .expect("valid receipt address")
+    }
 
     #[test]
     fn vault_command_roundtrip_representative() {
@@ -567,6 +1112,20 @@ mod tests {
                 receiver: String::from("receiver"),
                 assets: 100,
                 min_shares_out: 1,
+            },
+            VaultCommand::AtomicWithdraw {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                assets: 100,
+                max_shares_burned: 101,
+            },
+            VaultCommand::AtomicRedeem {
+                owner: String::from("owner"),
+                receiver: String::from("receiver"),
+                operator: String::from("operator"),
+                shares: 100,
+                min_assets_out: 99,
             },
             VaultCommand::ResyncIdleBalance,
             VaultCommand::RefreshFees,
@@ -596,6 +1155,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn vault_command_decode_rejects_trailing_bytes() {
+        let mut encoded = VaultCommand::AtomicWithdraw {
+            owner: String::from("owner"),
+            receiver: String::from("receiver"),
+            operator: String::from("operator"),
+            assets: 100,
+            max_shares_burned: 101,
+        }
+        .encode();
+        encoded.push(0xFF);
+
+        assert_eq!(
+            VaultCommand::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
     #[test]
     fn governance_command_roundtrip_representative() {
         let commands = vec![
@@ -770,16 +1346,199 @@ mod tests {
     }
 
     #[test]
-    fn vault_command_result_roundtrip_execute_withdraw_status() {
-        let result = VaultCommandResult::ExecuteWithdrawStatus(ExecuteWithdrawStatus {
+    fn command_receipts_roundtrip_representative() {
+        let status = ExecuteWithdrawStatus {
             op_state_before: 0,
             op_state_after: 2,
             assets_transferred: 1_000,
             events_emitted: 3,
-        });
+        };
 
-        let encoded = result.encode();
-        let decoded = VaultCommandResult::decode(&encoded).expect("decode command result");
-        assert_eq!(decoded, result);
+        let deposit = DepositReceipt { shares_out: 12 };
+        assert_eq!(
+            DepositReceipt::decode(&deposit.encode()).expect("decode deposit receipt"),
+            deposit
+        );
+
+        let request = RequestWithdrawReceipt {
+            request_id: 7,
+            shares_escrowed: 34,
+        };
+        assert_eq!(
+            RequestWithdrawReceipt::decode(&request.encode()).expect("decode request receipt"),
+            request
+        );
+
+        let completed = ExecuteWithdrawReceipt::Completed {
+            request_id: 7,
+            owner: receipt_address(),
+            receiver: receipt_address(),
+            assets_out: 21,
+            shares_burned: 34,
+            status,
+        };
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&completed.encode()).expect("decode completed receipt"),
+            completed
+        );
+
+        let no_payout = ExecuteWithdrawReceipt::NoPayout { status };
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&no_payout.encode()).expect("decode no-payout receipt"),
+            no_payout
+        );
+
+        let scalar = I128Receipt { value: -5 };
+        assert_eq!(
+            I128Receipt::decode(&scalar.encode()).expect("decode scalar receipt"),
+            scalar
+        );
+
+        assert_eq!(
+            EmptyReceipt::decode(&EmptyReceipt.encode()).expect("decode empty receipt"),
+            EmptyReceipt
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_trailing_bytes() {
+        let mut encoded = RequestWithdrawReceipt {
+            request_id: 1,
+            shares_escrowed: 2,
+        }
+        .encode();
+        encoded.push(0);
+
+        assert_eq!(
+            RequestWithdrawReceipt::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_wrong_tags() {
+        let encoded = I128Receipt { value: 1 }.encode();
+
+        assert_eq!(
+            DepositReceipt::decode(&encoded),
+            Err(CodecError::InvalidTag)
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_execute_withdraw_wrong_inner_tag() {
+        let status = ExecuteWithdrawStatus {
+            op_state_before: 0,
+            op_state_after: 0,
+            assets_transferred: 0,
+            events_emitted: 0,
+        };
+        let mut encoded = ExecuteWithdrawReceipt::NoPayout { status }.encode();
+        encoded[1] = 0xFE;
+
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&encoded),
+            Err(CodecError::InvalidTag)
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_truncated_execute_withdraw_completed() {
+        let status = ExecuteWithdrawStatus {
+            op_state_before: 0,
+            op_state_after: 2,
+            assets_transferred: 21,
+            events_emitted: 3,
+        };
+        let mut encoded = ExecuteWithdrawReceipt::Completed {
+            request_id: 7,
+            owner: receipt_address(),
+            receiver: receipt_address(),
+            assets_out: 21,
+            shares_burned: 34,
+            status,
+        }
+        .encode();
+        encoded.truncate(encoded.len() - 1);
+
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&encoded),
+            Err(CodecError::Truncated)
+        );
+    }
+
+    #[test]
+    fn command_receipt_decoders_reject_invalid_execute_withdraw_completed_address() {
+        let status = ExecuteWithdrawStatus {
+            op_state_before: 0,
+            op_state_after: 2,
+            assets_transferred: 21,
+            events_emitted: 3,
+        };
+        let mut encoded = ExecuteWithdrawReceipt::Completed {
+            request_id: 7,
+            owner: receipt_address(),
+            receiver: receipt_address(),
+            assets_out: 21,
+            shares_burned: 34,
+            status,
+        }
+        .encode();
+        encoded[14] = b'!';
+
+        assert_eq!(
+            ExecuteWithdrawReceipt::decode(&encoded),
+            Err(CodecError::InvalidEncoding)
+        );
+    }
+
+    #[test]
+    fn proxy_view_fields_map_wire_tuple_positions() {
+        let env = Env::default();
+        let address = sdk_address(&env);
+        let mut queue = SdkVec::new(&env);
+        queue.push_back(7);
+        let group_id = SdkString::from_str(&env, "senior");
+        let mut groups = SdkVec::new(&env);
+        groups.push_back((group_id.clone(), 8, 9));
+
+        let fields = ProxyViewFields::from((
+            (
+                (
+                    address.clone(),
+                    address.clone(),
+                    address.clone(),
+                    address.clone(),
+                ),
+                (10, 11, true),
+                (20, 21, 22, 23),
+                (30, 31, 32, 33, 34),
+            ),
+            (queue.clone(), groups.clone()),
+            (40, 41, 42, 43, 44, 45, 46, 47),
+        ));
+
+        assert_eq!(fields.core.virtual_offsets.virtual_shares, 10);
+        assert_eq!(fields.core.virtual_offsets.virtual_assets, 11);
+        assert!(fields.core.virtual_offsets.paused);
+        assert_eq!(fields.core.totals.total_shares, 20);
+        assert_eq!(fields.core.totals.idle_assets, 21);
+        assert_eq!(fields.core.totals.external_assets, 22);
+        assert_eq!(fields.core.totals.total_assets, 23);
+        assert_eq!(fields.core.fees.fee_total_assets, 30);
+        assert_eq!(fields.core.fees.fee_timestamp_ns, 31);
+        assert_eq!(fields.core.fees.management_fee_wad, 32);
+        assert_eq!(fields.core.fees.performance_fee_wad, 33);
+        assert_eq!(fields.core.fees.max_total_assets_growth_rate_wad, 34);
+        assert!(fields.policy.supply_queue == queue);
+        assert!(fields.policy.cap_groups == groups);
+        assert_eq!(fields.preview.convert_to_shares, 40);
+        assert_eq!(fields.preview.convert_to_assets, 41);
+        assert_eq!(fields.preview.max_deposit, 42);
+        assert_eq!(fields.preview.max_mint, 43);
+        assert_eq!(fields.preview.max_withdraw, 44);
+        assert_eq!(fields.preview.max_redeem, 45);
+        assert_eq!(fields.preview.preview_mint_assets, 46);
+        assert_eq!(fields.preview.preview_withdraw_shares, 47);
     }
 }

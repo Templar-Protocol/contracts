@@ -8,7 +8,7 @@ set dotenv-load := false
 #   1. just setup              # Build, configure network, create & fund identity
 #   2. just deploy-all         # Deploy vault + share token + governance + test token, initialize
 #   3. just demo-deposit       # Deposit test tokens
-#   4. just demo-withdraw      # Request and execute withdrawal
+#   4. just demo-withdraw      # Atomic idle withdrawal, or request async withdrawal
 #
 # WITH BLEND INTEGRATION (for yield):
 #   1. just setup
@@ -39,11 +39,12 @@ set dotenv-load := false
 # =============================================================================
 
 root := justfile_directory() + "/../../.."
+shared_scripts_dir := root + "/script/soroban"
 wasm_dir := root + "/target/wasm32-unknown-unknown/release-soroban"
 debug_wasm := root + "/target/wasm32-unknown-unknown/debug/templar_soroban_runtime.wasm"
 wasm_analysis_dir := root + "/target/wasm-analysis"
 optimized_wasm := wasm_dir + "/templar_soroban_runtime.wasm"
-deploy_wasm := wasm_dir + "/templar_soroban_runtime.deploy.wasm"
+deploy_wasm := optimized_wasm
 remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-prefix /home/common/.cargo/registry/src=/cargo-registry --remap-path-prefix /nix/store=/nix-store"
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
@@ -100,7 +101,7 @@ deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter depl
 _optimize-wasm package wasm_path:
 	@if ! command -v stellar >/dev/null 2>&1; then \
 		echo "Error: stellar CLI not found. Install with:"; \
-		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
+		echo "  {{shared_scripts_dir}}/install-stellar-cli.sh"; \
 		exit 1; \
 	fi
 	@if ! RUSTUP_TOOLCHAIN="{{soroban_rust_toolchain}}" CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }{{remap_rustflags}}" stellar contract build --manifest-path "{{root}}/Cargo.toml" --package "{{package}}" --optimize --out-dir "{{wasm_dir}}"; then \
@@ -115,16 +116,13 @@ build:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-runtime "{{wasm_dir}}/templar_soroban_runtime.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-governance "{{wasm_dir}}/templar_soroban_governance.wasm"
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-share-token "{{wasm_dir}}/templar_soroban_share_token.wasm"
-	@python3 "{{justfile_directory()}}/scripts/strip_contractspec.py" \
-		--input "{{optimized_wasm}}" --output "{{deploy_wasm}}"
-	@echo "✓ Built optimized: {{optimized_wasm}}"
-	@echo "✓ Built deploy:    {{deploy_wasm}}"
+	@echo "✓ Built runtime/deploy: {{deploy_wasm}}"
 	@echo "✓ Built governance: {{governance_wasm}}"
 	@echo "✓ Built share token: {{share_token_wasm}}"
 
 # Enforce Soroban vault deploy WASM size budget (default: 128 KiB).
 size-budget-check max_bytes="131072": build
-	@python3 "{{justfile_directory()}}/scripts/check_wasm_budget.py" \
+	@python3 "{{shared_scripts_dir}}/check_wasm_budget.py" \
 		--wasm "{{deploy_wasm}}" \
 		--max-bytes "{{max_bytes}}"
 
@@ -137,7 +135,7 @@ build-blend-adapter:
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
-	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
+	@SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }{{remap_rustflags}}" cargo check \
 		--manifest-path "{{root}}/Cargo.toml" \
 		--target wasm32-unknown-unknown \
 		-p templar-4626-proxy-soroban
@@ -177,7 +175,7 @@ wasm-analyze rows="250" lines="120":
 	else \
 		stellar contract optimize --wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" >/dev/null 2>&1; \
 	fi
-	@python3 "{{justfile_directory()}}/scripts/print_wasm_sizes.py" \
+	@python3 "{{shared_scripts_dir}}/print_wasm_sizes.py" \
 		--wasm "{{wasm_dir}}/templar_soroban_runtime.wasm" \
 		--optimized "{{optimized_wasm}}"
 	@just -f "{{justfile_directory()}}/justfile" wasm-analyze-print all "{{lines}}"
@@ -199,7 +197,7 @@ wasm-path:
 optimized-wasm-path:
 	@echo "{{optimized_wasm}}"
 
-# Print the deploy (spec-stripped) WASM path.
+# Print the deploy WASM path.
 deploy-wasm-path:
 	@echo "{{deploy_wasm}}"
 
@@ -226,7 +224,7 @@ network-init:
 	passphrase="${SOROBAN_NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"; \
 	if ! command -v stellar >/dev/null 2>&1; then \
 		echo "Error: stellar CLI not found. Install with:"; \
-		echo "  {{justfile_directory()}}/scripts/install-stellar-cli.sh"; \
+		echo "  {{shared_scripts_dir}}/install-stellar-cli.sh"; \
 		exit 1; \
 	fi; \
 	echo "Configuring network: $network"; \
@@ -726,7 +724,7 @@ demo-deposit:
 # WITHDRAWAL OPERATIONS
 # =============================================================================
 
-# Request a withdrawal (queues for execution).
+# Request an async withdrawal (queues shares; does not pull adapter liquidity itself).
 # Usage: just request-withdraw <owner> <receiver> <shares> [min_assets_out]
 request-withdraw owner receiver shares min_assets_out="0":
 	@echo "Requesting withdrawal of {{shares}} shares..."
@@ -743,7 +741,7 @@ request-withdraw-self shares min_assets_out="0":
 	echo "Requesting withdrawal of {{shares}} shares to self ($addr)..."; \
 	just request-withdraw "$addr" "$addr" "{{shares}}" "{{min_assets_out}}"
 
-# Execute the next pending withdrawal.
+# Execute the next pending withdrawal. This is keeper/allocator progression.
 execute-withdraw:
 	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
 	echo "Executing pending withdrawal..."; \
@@ -757,21 +755,35 @@ abort-withdrawing op_id:
 	just vault-execute abort-withdrawing --caller "$addr" --op-id "{{op_id}}"
 	@echo "✓ Withdrawal abort submitted"
 
-# Demo: Request withdrawal of 500 shares and execute.
+# Demo: Request withdrawal of 500 shares and try to execute if cooldown and idle funding allow it.
 demo-withdraw:
 	@echo "=== WITHDRAWAL DEMO ==="
 	@echo "Step 1: Request withdrawal"
 	@just request-withdraw-self 500000
 	@echo ""
 	@echo "Step 2: Execute withdrawal"
-	@just execute-withdraw
+	@if just execute-withdraw; then \
+		echo "execute_withdraw completed"; \
+	else \
+		echo "execute_withdraw pending (cooldown or insufficient idle); retry later."; \
+	fi
 	@echo ""
 	@just vault-state
 
-# Atomic withdraw/redeem is not exposed by the current vault ABI.
-withdraw:
-	@echo "Atomic withdraw is not available in the current Soroban vault ABI."
-	@echo "Use: just request-withdraw-self <shares> && just execute-withdraw"
+# Atomic withdraw (ERC-4626-style immediate exit; idle assets only, never queues).
+# Usage: just withdraw <assets> <receiver> <owner> [max_shares_burned]
+withdraw assets receiver owner max_shares_burned="":
+	@echo "Atomic withdrawal of {{assets}} assets..."
+	@addr="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	max_shares="{{max_shares_burned}}"; \
+	if [ -z "$max_shares" ]; then max_shares="{{assets}}"; fi; \
+	just vault-execute atomic-withdraw \
+		--owner "{{owner}}" \
+		--operator "$addr" \
+		--assets "{{assets}}" \
+		--receiver "{{receiver}}" \
+		--max-shares-burned "$max_shares"
+	@echo "✓ Withdrawal complete"
 
 # =============================================================================
 # ALLOCATOR OPERATIONS (Privileged)
@@ -1178,6 +1190,7 @@ help:
 	@echo "  just deposit-self <assets> [min_shares]"
 	@echo ""
 	@echo "WITHDRAWALS:"
+	@echo "  just withdraw <assets> <receiver> <owner> [max_shares]"
 	@echo "  just request-withdraw <owner> <receiver> <shares> [min_assets]"
 	@echo "  just request-withdraw-self <shares> [min_assets]"
 	@echo "  just execute-withdraw"

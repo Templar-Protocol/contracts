@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://templar-protocol.invalid/soroban-vault-cli/output.schema.json",
+  "title": "Templar Soroban Vault CLI output envelope",
+  "type": "object",
+  "required": ["type", "ok", "network", "manifest", "commands", "tx_hashes", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "message",
+        "command",
+        "status",
+        "env",
+        "extend_ttl",
+        "reconcile",
+        "doctor",
+        "plan",
+        "governance_queue",
+        "governance_explain",
+        "governance_accept_ready",
+        "error"
+      ]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "network": {
+      "type": "string"
+    },
+    "manifest": {
+      "type": "string"
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tx_hashes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data": true,
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "missing_manifest_contract",
+            "mainnet_guard",
+            "secret_in_argv",
+            "invalid_args",
+            "command_failed"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": ["data"],
+        "not": {
+          "required": ["error"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "ok": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": ["error"],
+        "not": {
+          "required": ["data"]
+        }
+      }
+    }
+  ]
+}

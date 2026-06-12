@@ -11,10 +11,10 @@ The Soroban vault runtime deploy artifact must remain at or below `128 KiB` (`13
 
 The check measures:
 
-- `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.deploy.wasm`
+- `target/wasm32-unknown-unknown/release-soroban/templar_soroban_runtime.wasm`
 
-The justfile also emits `templar_soroban_runtime.optimized.wasm`, but the `.deploy.wasm` file is
-the contractspec-stripped artifact used for deployment and budget enforcement.
+The deploy artifact keeps contractspec metadata so the Stellar CLI can invoke public entrypoints
+directly and explorer build-info/source-attestation tooling can inspect the deployed WASM.
 
 ## Why this exists
 
@@ -35,8 +35,8 @@ size is a release gate for every runtime-facing change.
 ## When the check fails
 
 1. Measure current artifact size from CI output.
-2. Run `just -f contract/vault/soroban/justfile build` and confirm raw, optimized, and deploy
-   artifact sizes.
+2. Run `just -f contract/vault/soroban/justfile build` and confirm the optimized deploy artifact
+   size.
 3. Run `just -f contract/vault/soroban/justfile wasm-analyze 250 120` when source-level cause is
    not obvious.
 4. Use commit-level or hunk-level size bisection in clean worktrees.

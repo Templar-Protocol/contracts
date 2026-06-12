@@ -3,6 +3,8 @@ resolver = "3"
 members = [
     "common",
     "contract/market",
+    "contract/proxy-4626-soroban",
+    "contract/proxy-curator-soroban",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
@@ -91,6 +93,7 @@ rstest = { version = "0.24" }
 schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+secrecy = "0.10.3"
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
@@ -129,6 +132,17 @@ zeroize = "1.8.2"
 stellar-contract-utils = { version = "0.7.1", default-features = false }
 stellar-tokens = { version = "0.7.1", default-features = false }
 
+# Rust 1.86 compatibility shim. Upstream stellar-contract-utils 0.7.1 calls
+# `u32::is_multiple_of` (stabilized in Rust 1.87) in src/crypto/merkle.rs, which
+# fails to build on our pinned toolchain (1.86 — the ceiling NEAR's reproducible
+# builds support). This points at a one-commit fork of the upstream `v0.7.1` tag
+# that replaces the two call sites with the identical `% 2 == 0`. The redirect
+# applies transitively (e.g. stellar-tokens). Audit the delta with:
+#   git diff v0.7.1 f9d7cee  # on Templar-Protocol/stellar-contracts
+# Drop this once the change is upstreamed and released.
+[patch.crates-io]
+stellar-contract-utils = { git = "https://github.com/Templar-Protocol/stellar-contracts", rev = "f9d7cee755ee09cd43f6978eecf7ea8156e32a86" }
+
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 must_use_candidate = "allow"
@@ -137,7 +151,7 @@ redundant_closure_for_method_calls = "allow"
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-unwrap_used = "allow"
+unwrap_used = "deny"
 expect_used = "warn"
 large_digit_groups = "warn"
 wildcard_imports = "allow"

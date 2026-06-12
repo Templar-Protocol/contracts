@@ -29,8 +29,8 @@ pub use events::{
 
 use engine::{effective_ttl, execute_action, now, require_authorized};
 use storage::{
-    load_header, load_proposal, proposal_from_kernel, proposal_to_kernel, remove_proposal,
-    save_header, save_proposal, DataKey, KernelGovernance,
+    extend_active_proposal_ttls, load_header, load_proposal, proposal_from_kernel,
+    proposal_to_kernel, remove_proposal, save_header, save_proposal, DataKey, KernelGovernance,
 };
 
 const MAX_PENDING_PROPOSALS: u32 = 64;
@@ -196,12 +196,9 @@ impl ProxyOracleGovernance {
             .ok_or(GovernanceError::MissingConfig)
     }
 
-    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), GovernanceError> {
-        caller.require_auth();
-        if !roles::has_role(&env, &caller, Role::Admin) {
-            return Err(GovernanceError::Unauthorized);
-        }
+    pub fn extend_ttl(env: Env) -> Result<(), GovernanceError> {
         extend_instance_ttl(&env);
+        extend_active_proposal_ttls(&env, &load_header(&env)?);
         TtlExtended {}.publish(&env);
         Ok(())
     }

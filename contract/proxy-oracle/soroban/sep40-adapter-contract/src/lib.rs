@@ -130,7 +130,12 @@ impl Sep40Adapter {
         Ok(())
     }
 
+    pub fn extend_ttl(env: Env) {
+        extend_instance_ttl(&env);
+    }
+
     pub fn config(env: Env) -> Option<Config> {
+        extend_instance_ttl(&env);
         env.storage().instance().get(&CONFIG)
     }
 }
@@ -209,6 +214,7 @@ impl PriceFeedTrait for Sep40Adapter {
 
 #[allow(clippy::expect_used)]
 fn load_config(env: &Env) -> Config {
+    extend_instance_ttl(env);
     env.storage().instance().get(&CONFIG).expect("CONFIG")
 }
 
