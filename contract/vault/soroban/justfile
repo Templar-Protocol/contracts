@@ -34,7 +34,9 @@ set dotenv-load := false
 #   SOROBAN_VIRTUAL_ASSETS   Initial virtual assets offset (default: 0)
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
-#   SOROBAN_ADAPTER_ADMIN    Blend adapter admin contract (default: governance, then vault)
+#   SOROBAN_ADAPTER_ADMIN    Adapter admin contract/address (default: governance, then vault)
+#   CUSTODIAL_ADAPTER_ID     Deployed custodial adapter contract ID
+#   CUSTODIAL_ADDRESS        Custodian/multisig receiving allocated funds
 #
 # =============================================================================
 
@@ -49,6 +51,7 @@ remap_rustflags := "--remap-path-prefix " + root + "=/workspace --remap-path-pre
 soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
+custodial_adapter_wasm := wasm_dir + "/templar_soroban_custodial_adapter.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
@@ -82,6 +85,7 @@ deploy-all: _ensure-setup build deploy-test-token deploy deploy-share-token depl
 	@echo ""
 	@echo "Run: just demo-deposit"
 	@echo "For Blend integration: just deploy-blend-adapter"
+	@echo "For custodial integration: just deploy-custodial-adapter <custodian>"
 
 # Deploy everything including Blend adapter for yield strategies.
 # NOTE: Blend integration requires allowed-adapter and supply-queue governance after deployment.
@@ -89,6 +93,15 @@ deploy-all-with-blend pool_address: _ensure-setup build build-blend-adapter depl
 	@just deploy-blend-adapter "{{pool_address}}"
 	@echo ""
 	@echo "✓ Full deployment with Blend adapter complete!"
+	@echo "NOTE: Run set-allowed-adapters and set-supply-queue before allocation."
+	@just status
+
+# Deploy everything including custodial adapter for offchain-managed market routing.
+# NOTE: Custodial integration requires allowed-adapter and supply-queue governance after deployment.
+deploy-all-with-custodial custodian: _ensure-setup build build-custodial-adapter deploy-test-token deploy deploy-share-token deploy-governance init
+	@just deploy-custodial-adapter "{{custodian}}"
+	@echo ""
+	@echo "✓ Full deployment with custodial adapter complete!"
 	@echo "NOTE: Run set-allowed-adapters and set-supply-queue before allocation."
 	@just status
 
@@ -132,6 +145,12 @@ build-blend-adapter:
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-blend-adapter "{{wasm_dir}}/templar_soroban_blend_adapter.wasm"
 	@echo "✓ Built: {{blend_adapter_wasm}}"
 
+# Build and optimize the custodial adapter WASM.
+build-custodial-adapter:
+	@echo "Building custodial adapter WASM..."
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-custodial-adapter "{{wasm_dir}}/templar_soroban_custodial_adapter.wasm"
+	@echo "✓ Built: {{custodial_adapter_wasm}}"
+
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
@@ -141,8 +160,8 @@ check-4626-proxy:
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
-# Build all WASMs (vault + governance + share token + blend adapter).
-build-all: build build-blend-adapter
+# Build all WASMs (vault + governance + share token + adapters).
+build-all: build build-blend-adapter build-custodial-adapter
 	@echo "✓ All contracts built"
 
 # Build debug WASM, emit twiggy reports, and print them.
@@ -204,6 +223,10 @@ deploy-wasm-path:
 # Print the Blend adapter WASM path.
 blend-adapter-wasm-path:
 	@echo "{{blend_adapter_wasm}}"
+
+# Print the custodial adapter WASM path.
+custodial-adapter-wasm-path:
+	@echo "{{custodial_adapter_wasm}}"
 
 # Print the governance WASM path.
 governance-wasm-path:
@@ -536,6 +559,101 @@ deploy-blend-adapter pool_address:
 	mkdir -p "{{state_dir}}"; \
 	echo "$adapter_id" > "{{state_dir}}/blend_adapter_id"; \
 	echo "{{pool_address}}" > "{{state_dir}}/blend_pool_id"
+
+# Deploy the custodial adapter contract.
+# Requires: vault must be deployed first, custodian is the multisig/address receiving allocated funds.
+deploy-custodial-adapter custodian:
+	@wasm="${CUSTODIAL_ADAPTER_WASM:-{{custodial_adapter_wasm}}}"; \
+	if [ ! -f "$wasm" ]; then \
+		echo "Error: custodial adapter WASM not found at $wasm"; \
+		echo "Run: just build-custodial-adapter"; \
+		exit 1; \
+	fi; \
+	vault_id="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; \
+	if [ -z "$vault_id" ]; then \
+		echo "Error: Vault not deployed. Run 'just deploy' first."; \
+		exit 1; \
+	fi; \
+	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$vault_id"; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying custodial adapter..."; \
+	echo "  Admin:     $admin"; \
+	echo "  Vault:     $vault_id"; \
+	echo "  Custodian: {{custodian}}"; \
+	adapter_id=$(stellar contract deploy \
+		--wasm "$wasm" \
+		--network "$network" \
+		--source-account "$source" \
+		-- \
+		--admin "$admin" \
+		--vault "$vault_id" \
+		--custodian "{{custodian}}"); \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: deploy failed — no adapter ID returned"; \
+		exit 1; \
+	fi; \
+	echo "✓ Custodial adapter deployed: $adapter_id"; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$adapter_id" > "{{state_dir}}/custodial_adapter_id"; \
+	echo "{{custodian}}" > "{{state_dir}}/custodial_address"
+
+# Invoke a function on the custodial adapter contract.
+custodial-invoke *args:
+	@adapter_id="${CUSTODIAL_ADAPTER_ID:-$(cat {{state_dir}}/custodial_adapter_id 2>/dev/null)}"; \
+	if [ -z "$adapter_id" ]; then \
+		echo "Error: custodial adapter not deployed."; \
+		exit 1; \
+	fi; \
+	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	stellar contract invoke \
+		--id "$adapter_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- {{args}}
+
+# Get custodial adapter admin.
+custodial-adapter-admin:
+	@just custodial-invoke admin
+
+# Get custodial adapter's configured vault.
+custodial-adapter-vault:
+	@just custodial-invoke vault
+
+# Get custodial adapter's configured custodian.
+custodial-adapter-custodian:
+	@just custodial-invoke custodian
+
+# Get reported assets for the underlying asset token via custodial adapter.
+custodial-adapter-total-assets asset_address:
+	@just custodial-invoke total_assets --asset "{{asset_address}}"
+
+# Set reported assets for an offchain-managed position.
+# caller must be the configured admin, vault, or custodian and must authorize the call.
+custodial-adapter-set-reported-assets caller asset_address amount:
+	@just custodial-invoke set_reported_assets \
+		--caller "{{caller}}" \
+		--asset "{{asset_address}}" \
+		--amount "{{amount}}"
+
+# Show custodial adapter status.
+custodial-adapter-status:
+	@echo "=== Custodial Adapter Status ==="
+	@adapter_id="$(cat {{state_dir}}/custodial_adapter_id 2>/dev/null || echo 'not deployed')"; \
+	echo "Adapter ID: $adapter_id"
+	@if [ -f "{{state_dir}}/custodial_adapter_id" ]; then \
+		echo "Admin:     $(just custodial-invoke admin 2>/dev/null || echo 'error')"; \
+		echo "Vault:     $(just custodial-invoke vault 2>/dev/null || echo 'error')"; \
+		echo "Custodian: $(just custodial-invoke custodian 2>/dev/null || echo 'error')"; \
+		asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
+		if [ -n "$asset" ]; then \
+			echo "Reported:  $(just custodial-invoke total_assets --asset "$asset" 2>/dev/null || echo 'error')"; \
+		fi; \
+	fi
 
 # Invoke a function on the Blend adapter contract.
 blend-invoke *args:
@@ -1096,6 +1214,8 @@ status:
 	@echo "Admin:         $(cat {{state_dir}}/admin_address 2>/dev/null || echo 'not set')"
 	@echo "Blend Adapter: $(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo 'not deployed')"
 	@echo "Blend Pool:    $(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo 'not set')"
+	@echo "Custodial Adapter: $(cat {{state_dir}}/custodial_adapter_id 2>/dev/null || echo 'not deployed')"
+	@echo "Custodian:     $(cat {{state_dir}}/custodial_address 2>/dev/null || echo 'not set')"
 	@echo ""
 	@if [ -f "{{state_dir}}/vault_id" ]; then \
 		echo "Vault state:"; \
@@ -1128,6 +1248,8 @@ export-env:
 	@echo "SOROBAN_ADMIN=$(cat {{state_dir}}/admin_address 2>/dev/null || echo '')"
 	@echo "BLEND_ADAPTER_ID=$(cat {{state_dir}}/blend_adapter_id 2>/dev/null || echo '')"
 	@echo "BLEND_POOL_ID=$(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo '')"
+	@echo "CUSTODIAL_ADAPTER_ID=$(cat {{state_dir}}/custodial_adapter_id 2>/dev/null || echo '')"
+	@echo "CUSTODIAL_ADDRESS=$(cat {{state_dir}}/custodial_address 2>/dev/null || echo '')"
 
 # Internal: Ensure setup is complete.
 _ensure-setup:
@@ -1150,6 +1272,7 @@ help:
 	@echo "  just setup                    Full setup (build, network, keys, fund)"
 	@echo "  just deploy-all               Deploy vault + share token + governance + test token, initialize"
 	@echo "  just deploy-all-with-blend <pool>  Deploy with Blend adapter"
+	@echo "  just deploy-all-with-custodial <custodian>  Deploy with custodial adapter"
 	@echo "  just demo-deposit             Run deposit demonstration"
 	@echo "  just demo-withdraw            Run withdrawal demonstration"
 	@echo "  just demo-e2e-full            Run full e2e flow"
@@ -1157,6 +1280,7 @@ help:
 	@echo "BUILD:"
 	@echo "  just build                    Build vault WASM"
 	@echo "  just build-blend-adapter      Build Blend adapter WASM"
+	@echo "  just build-custodial-adapter  Build custodial adapter WASM"
 	@echo "  just build-all                Build all WASMs"
 	@echo "  just wasm-analyze [rows]      Generate twiggy analysis reports"
 	@echo "  just wasm-analyze-print [report] [lines]  Print analysis reports"
@@ -1184,6 +1308,12 @@ help:
 	@echo "  just fund-adapter <amount>       Transfer tokens to adapter (manual)"
 	@echo "  just blend-adapter-set-admin <admin_contract>"
 	@echo "  just demo-e2e-blend              Full Blend integration e2e"
+	@echo ""
+	@echo "CUSTODIAL ADAPTER:"
+	@echo "  just deploy-custodial-adapter <custodian>  Deploy adapter for offchain custody route"
+	@echo "  just custodial-adapter-status              Show adapter status"
+	@echo "  just custodial-adapter-total-assets <asset>  Query reported position"
+	@echo "  just custodial-adapter-set-reported-assets <caller> <asset> <amount>"
 	@echo ""
 	@echo "DEPOSITS:"
 	@echo "  just deposit <owner> <receiver> <assets> [min_shares]"
