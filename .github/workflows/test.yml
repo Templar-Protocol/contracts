@@ -46,51 +46,10 @@ jobs:
         env:
           SQLX_OFFLINE: true
         run: |
-          cargo clippy --all-features --workspace --tests \
-            --exclude templar-proxy-oracle-soroban-common \
-            --exclude templar-proxy-oracle-soroban-contract \
-            --exclude templar-proxy-oracle-soroban-governance-common \
-            --exclude templar-proxy-oracle-soroban-governance-contract \
-            --exclude templar-proxy-oracle-soroban-integration-tests \
-            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
-            --exclude templar-soroban-blend-adapter \
-            --exclude templar-soroban-governance \
-            --exclude templar-soroban-runtime \
-            --exclude templar-soroban-share-token \
-            --exclude templar-soroban-shared-types \
-            -- -D warnings
-
-  soroban-code-linter:
-    name: Soroban Code Linter
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-        with:
-          persist-credentials: false
-      - name: Install Soroban lint Rust toolchain
-        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e
-        with:
-          targets: wasm32-unknown-unknown,wasm32v1-none
-          components: clippy
-      - name: Run Soroban cargo clippy
-        env:
-          RUSTUP_TOOLCHAIN: 1.89.0
-          SQLX_OFFLINE: true
-        run: |
-          cargo clippy --all-features --tests \
-            -p templar-proxy-oracle-soroban-common \
-            -p templar-proxy-oracle-soroban-contract \
-            -p templar-proxy-oracle-soroban-governance-common \
-            -p templar-proxy-oracle-soroban-governance-contract \
-            -p templar-proxy-oracle-soroban-integration-tests \
-            -p templar-proxy-oracle-soroban-sep40-adapter-contract \
-            -p templar-soroban-blend-adapter \
-            -p templar-soroban-governance \
-            -p templar-soroban-runtime \
-            -p templar-soroban-share-token \
-            -p templar-soroban-shared-types \
-            -- -D warnings
+          # The Soroban crates build on the default 1.86 toolchain via the
+          # stellar-contract-utils [patch.crates-io] (root Cargo.toml), so they
+          # are linted here with the rest of the workspace — no separate job.
+          cargo clippy --all-features --workspace --tests -- -D warnings
 
   soroban:
     name: Soroban
@@ -105,6 +64,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The Soroban toolchain is still required here: `stellar contract build`
+      # (size-budget checks) targets wasm32v1-none. Host unit tests for these
+      # crates now run in the main `test` job on 1.86 via the
+      # stellar-contract-utils [patch.crates-io], so there is no separate
+      # Soroban test/clippy pass.
       - name: Install Soroban Rust toolchain
         uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e
         with:
@@ -113,24 +77,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: just,nextest
-
-      - name: Run Soroban contract tests
-        env:
-          RUSTUP_TOOLCHAIN: 1.89.0
-          SQLX_OFFLINE: true
-        run: |
-          cargo nextest run \
-            -p templar-proxy-oracle-soroban-common \
-            -p templar-proxy-oracle-soroban-contract \
-            -p templar-proxy-oracle-soroban-governance-common \
-            -p templar-proxy-oracle-soroban-governance-contract \
-            -p templar-proxy-oracle-soroban-integration-tests \
-            -p templar-proxy-oracle-soroban-sep40-adapter-contract \
-            -p templar-soroban-runtime \
-            -p templar-soroban-governance \
-            -p templar-soroban-share-token \
-            -p templar-soroban-blend-adapter
+          tool: just
 
       - name: Install packages
         run: sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
@@ -307,20 +254,11 @@ jobs:
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
         run: |
-          # Soroban crates require their dedicated toolchain and are tested in the
-          # Soroban job. Keep the default workspace test pass on rust-toolchain.toml.
-          ./script/test.sh --workspace \
-            --exclude templar-proxy-oracle-soroban-common \
-            --exclude templar-proxy-oracle-soroban-contract \
-            --exclude templar-proxy-oracle-soroban-governance-common \
-            --exclude templar-proxy-oracle-soroban-governance-contract \
-            --exclude templar-proxy-oracle-soroban-integration-tests \
-            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
-            --exclude templar-soroban-blend-adapter \
-            --exclude templar-soroban-governance \
-            --exclude templar-soroban-runtime \
-            --exclude templar-soroban-share-token \
-            --exclude templar-soroban-shared-types
+          # The whole workspace — Soroban crates included — builds on the 1.86
+          # toolchain via the stellar-contract-utils [patch.crates-io], so the
+          # default test pass covers everything. (The Soroban job still builds
+          # the optimized wasm for size budgets on its own toolchain.)
+          ./script/test.sh --workspace
 
       - name: Cleanup Docker resources
         if: always()
@@ -385,20 +323,10 @@ jobs:
           CARGO_TERM_COLOR: always
         run: |
           # --lib: unit tests only (excludes slow WASM integration tests).
-          # Soroban crates are tested in the dedicated Soroban job with their
-          # newer toolchain; exclude them from the default 1.86 coverage build.
-          cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov \
-            --exclude templar-proxy-oracle-soroban-common \
-            --exclude templar-proxy-oracle-soroban-contract \
-            --exclude templar-proxy-oracle-soroban-governance-common \
-            --exclude templar-proxy-oracle-soroban-governance-contract \
-            --exclude templar-proxy-oracle-soroban-integration-tests \
-            --exclude templar-proxy-oracle-soroban-sep40-adapter-contract \
-            --exclude templar-soroban-blend-adapter \
-            --exclude templar-soroban-governance \
-            --exclude templar-soroban-runtime \
-            --exclude templar-soroban-share-token \
-            --exclude templar-soroban-shared-types
+          # Soroban crates build on 1.86 via the stellar-contract-utils
+          # [patch.crates-io], so they are covered here with the rest of the
+          # workspace.
+          cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov
 
           # Aggressive cleanup to free disk space
           echo "Cleaning up build artifacts..."
