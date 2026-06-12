@@ -701,7 +701,7 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
         queue.depth,
         templar_common::asset::BorrowAssetAmount::zero()
     );
-    assert_eq!(last_yield, templar_common::number::Decimal::ZERO);
+    assert_eq!(last_yield, templar_common::Decimal::ZERO);
     assert!(static_yield.accumulator.is_none());
     assert_eq!(
         metrics.borrowed,

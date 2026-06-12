@@ -2,9 +2,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::{
     pyth::{self, OracleResponse, PriceIdentifier},
-    redstone, OracleRequest,
+    redstone,
 };
 use templar_gateway_macros::read_method_spec;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -1,9 +1,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_common::{
-    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
-};
+use templar_common::Nanoseconds;
 use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetNextIdParams {

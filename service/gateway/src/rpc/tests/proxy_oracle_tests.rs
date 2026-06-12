@@ -35,7 +35,7 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
             },
         })
         .await?;
-    assert_eq!(ttl.ttl_ns, templar_common::time::Nanoseconds::zero());
+    assert_eq!(ttl.ttl_ns, templar_common::Nanoseconds::zero());
     let count = stack
         .controller
         .request::<proxy_oracle_governance::GetCount>(&ReadRequest {
@@ -59,13 +59,14 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
     assert!(list.proxies.is_empty());
 
     let price_id = templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]);
-    let proxy = templar_common::oracle::proxy::Proxy::median_low([
-        templar_common::oracle::OracleRequest::pyth(
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(
             "pyth.near".parse().expect("valid oracle id"),
             templar_common::oracle::pyth::PriceIdentifier([0xbb; 32]),
         )
-        .into(),
-    ]);
+        .into()],
+        FreshnessFilter::empty(),
+    );
 
     let _ = stack
         .controller
@@ -75,7 +76,7 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: oracle_id.clone(),
                 id: 0,
-                operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
                     id: price_id,
                     proxy: Some(proxy.clone()),
                 },
@@ -194,8 +195,9 @@ async fn proxy_oracle_endpoints_work_against_sandbox() -> Result<()> {
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
                 id: 1,
-                operation: templar_common::oracle::proxy::governance::Operation::SetActionTtl {
-                    new_ttl: templar_common::time::Nanoseconds::from_secs(1),
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetActionTtl {
+                    kind: templar_proxy_oracle_near_governance_common::OperationKind::SetProxy,
+                    new_ttl: templar_common::Nanoseconds::from_secs(1),
                 },
             },
         })

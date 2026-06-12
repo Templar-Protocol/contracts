@@ -18,6 +18,7 @@ templar-common.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-runtime.workspace = true
 templar-gateway-types.workspace = true
+templar-proxy-oracle-near-common.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true
 tokio.workspace = true

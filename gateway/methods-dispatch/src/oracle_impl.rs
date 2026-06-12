@@ -3,14 +3,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use near_account_id::AccountId;
-use templar_common::number::Decimal;
 use templar_common::oracle::{
-    price_transformer,
-    proxy::{self, Source},
     pyth::{self, PriceIdentifier},
-    redstone, OracleRequest,
+    redstone,
 };
-use templar_common::time::Nanoseconds;
+use templar_common::{Decimal, Nanoseconds};
 use templar_gateway_core::{
     client::{
         lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs,
@@ -24,6 +21,12 @@ use templar_gateway_methods_spec::oracle::{
     ResolvePriceResult, ResolvePrices, ResolvePricesResult, ResolvedPrice,
 };
 use templar_gateway_types::{contract::ContractKind, MethodSpec};
+use templar_proxy_oracle_kernel::proxy;
+use templar_proxy_oracle_kernel::proxy::aggregator::method::Aggregate;
+use templar_proxy_oracle_near_common::convert;
+use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_common::price_transformer;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 use crate::Dispatch;
 
@@ -148,7 +151,7 @@ async fn get_proxy<C: HasNearClient>(
     ctx: &C,
     oracle_id: AccountId,
     id: PriceIdentifier,
-) -> GatewayResult<Option<proxy::Proxy>> {
+) -> GatewayResult<Option<proxy::Proxy<Source>>> {
     ctx.near_client()
         .proxy_oracle(oracle_id)
         .cached_get_proxy(GetProxyArgs { id })
@@ -202,11 +205,10 @@ async fn resolve_dependencies<C: HasNearClient>(
                 GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
             })?;
             let requests = proxy
-                .entries
-                .into_iter()
-                .map(|entry| match entry.source {
-                    Source::Request(request) => request,
-                    Source::Transformer(transformer) => transformer.request,
+                .sources()
+                .map(|source| match source {
+                    Source::Request(request) => request.clone(),
+                    Source::Transformer(transformer) => transformer.request.clone(),
                 })
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -267,15 +269,19 @@ async fn resolve_price<C: HasNearClient>(
                 GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
             })?;
             let mut prices = vec![];
-            for entry in &proxy.entries {
-                if let Some(price) = resolve_proxy_entry_price(ctx, inputs, entry, max_age).await? {
-                    prices.push((price, entry.weight));
-                }
+            for source in proxy.sources() {
+                let price = resolve_proxy_entry_price(ctx, inputs, source, max_age)
+                    .await?
+                    .as_ref()
+                    .and_then(convert::pyth_price_try_to_kernel);
+                prices.push(price);
             }
             Ok(proxy
                 .aggregator
-                .aggregate(&prices, system_time())
-                .map(Into::into))
+                .aggregate(prices)
+                .ok()
+                .as_ref()
+                .and_then(convert::pyth_price_try_from_kernel))
         }
     }
 }
@@ -329,15 +335,19 @@ async fn get_price_onchain<C: HasNearClient>(
                 GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
             })?;
             let mut prices = vec![];
-            for entry in &proxy.entries {
-                if let Some(price) = resolve_proxy_entry_price_onchain(ctx, entry, max_age).await? {
-                    prices.push((price, entry.weight));
-                }
+            for source in proxy.sources() {
+                let price = resolve_proxy_entry_price_onchain(ctx, source, max_age)
+                    .await?
+                    .as_ref()
+                    .and_then(convert::pyth_price_try_to_kernel);
+                prices.push(price);
             }
             Ok(proxy
                 .aggregator
-                .aggregate(&prices, system_time())
-                .map(Into::into))
+                .aggregate(prices)
+                .ok()
+                .as_ref()
+                .and_then(convert::pyth_price_try_from_kernel))
         }
     }
 }
@@ -345,10 +355,10 @@ async fn get_price_onchain<C: HasNearClient>(
 async fn resolve_proxy_entry_price<C: HasNearClient>(
     ctx: &C,
     inputs: &ResolutionInputs,
-    entry: &proxy::Entry,
+    source: &Source,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    match &entry.source {
+    match source {
         Source::Request(request) => Ok(fetch_oracle_request(inputs, request.clone(), max_age)),
         Source::Transformer(transformer) => {
             let Some(price) = fetch_oracle_request(inputs, transformer.request.clone(), max_age)
@@ -363,10 +373,10 @@ async fn resolve_proxy_entry_price<C: HasNearClient>(
 
 async fn resolve_proxy_entry_price_onchain<C: HasNearClient>(
     ctx: &C,
-    entry: &proxy::Entry,
+    source: &Source,
     max_age: Nanoseconds,
 ) -> GatewayResult<Option<pyth::Price>> {
-    match &entry.source {
+    match source {
         Source::Request(request) => {
             fetch_oracle_request_onchain(ctx, request.clone(), max_age).await
         }
@@ -444,7 +454,7 @@ async fn fetch_oracle_request_onchain<C: HasNearClient>(
 }
 
 fn validate_price_age(price: pyth::Price, max_age: Nanoseconds) -> Option<pyth::Price> {
-    let publish_time = Nanoseconds::try_from_pyth(price.publish_time)?;
+    let publish_time = price.publish_time.try_into_time()?;
     let now = system_time();
     if now >= publish_time && now.saturating_sub(publish_time) > max_age {
         return None;

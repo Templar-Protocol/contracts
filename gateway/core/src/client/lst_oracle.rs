@@ -1,6 +1,7 @@
 use moka::sync::Cache;
 use near_account_id::AccountId;
-use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 use crate::client::{
     cache::{config_cache, immutable_cache, load_cached},

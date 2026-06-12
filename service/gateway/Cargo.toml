@@ -42,6 +42,9 @@ templar-common.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-testing.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true
 wiremock.workspace = true

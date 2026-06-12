@@ -19,6 +19,8 @@ templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-types.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
+templar-proxy-oracle-near-common.workspace = true
 templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true

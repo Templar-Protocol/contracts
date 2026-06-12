@@ -1,7 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_common::oracle::{proxy::Proxy, pyth::PriceIdentifier};
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::read_method_spec;
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::input::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListProxiesParams {
@@ -28,7 +30,7 @@ pub struct GetProxyParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetProxyResult {
-    pub proxy: Option<Proxy>,
+    pub proxy: Option<Proxy<Source>>,
 }
 
 read_method_spec!(

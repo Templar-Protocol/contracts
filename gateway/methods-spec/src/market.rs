@@ -8,11 +8,11 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount},
     borrow::{BorrowPosition, BorrowStatus},
     market::{BorrowAssetMetrics, HarvestYieldMode, MarketConfiguration},
-    number::Decimal,
     oracle::pyth::OracleResponse,
     snapshot::Snapshot,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
+    Decimal,
 };
 use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::{common::Pagination, primitive::PublicKey, NearToken};

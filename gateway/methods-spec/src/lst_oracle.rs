@@ -1,9 +1,10 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_common::oracle::{price_transformer::PriceTransformer, pyth::PriceIdentifier};
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::read_method_spec;
 use templar_gateway_types::common::Pagination;
+use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetOracleIdParams {

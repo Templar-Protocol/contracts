@@ -1,13 +1,9 @@
 use moka::sync::Cache;
 use near_account_id::AccountId;
-use templar_common::{
-    governance::Proposal,
-    oracle::{
-        proxy::{governance::Operation, Proxy},
-        pyth::PriceIdentifier,
-    },
-    time::Nanoseconds,
-};
+use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
 
 use crate::client::{
     cache::{config_cache, load_cached},
@@ -21,7 +17,7 @@ const PROXY_DEFINITION_CACHE_CAPACITY: u64 = 4_096;
 
 #[derive(Clone)]
 pub(crate) struct ProxyOracleClientCaches {
-    pub definition: Cache<ProxyDefinitionCacheKey, std::sync::Arc<Option<Proxy>>>,
+    pub definition: Cache<ProxyDefinitionCacheKey, std::sync::Arc<Option<Proxy<Source>>>>,
 }
 
 impl ProxyOracleClientCaches {
@@ -93,7 +89,7 @@ impl ProxyOracleClient<'_> {
     pub async fn cached_get_proxy(
         &self,
         args: GetProxyArgs,
-    ) -> crate::GatewayResult<Option<Proxy>> {
+    ) -> crate::GatewayResult<Option<Proxy<Source>>> {
         load_cached(
             &self.inner.cache().proxy_oracle.definition,
             ProxyDefinitionCacheKey {
@@ -111,7 +107,7 @@ impl ProxyOracleClient<'_> {
 
     contract_views! {
         pub fn list_proxies(ListProxiesArgs) -> Vec<PriceIdentifier>;
-        pub fn get_proxy(GetProxyArgs) -> Option<Proxy>;
+        pub fn get_proxy(GetProxyArgs) -> Option<Proxy<Source>>;
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
         pub fn gov_next_id(()) -> u32;
         pub fn gov_ttl_ns(()) -> Nanoseconds;

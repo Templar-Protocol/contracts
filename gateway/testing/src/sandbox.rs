@@ -6,14 +6,12 @@ use near_sandbox::Sandbox;
 use near_token::NearToken;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
-    oracle::{
-        price_transformer::PriceTransformer, pyth::PriceIdentifier,
-        redstone::config as redstone_config,
-    },
+    oracle::{pyth::PriceIdentifier, redstone::config as redstone_config},
 };
 use templar_gateway_core::NearClient;
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::ManagedAccountId;
+use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},

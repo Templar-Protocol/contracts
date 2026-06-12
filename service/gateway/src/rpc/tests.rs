@@ -30,14 +30,11 @@ use jsonrpsee::server::{ServerBuilder, ServerHandle};
 use near_sdk::json_types::{I64, U64};
 use templar_common::market::DepositMsg;
 use templar_common::oracle::{
-    price_transformer::{self, PriceTransformer},
-    proxy::Proxy,
     pyth::{PriceIdentifier, PythTimestamp},
     redstone::FeedData,
-    OracleRequest,
 };
 use templar_common::primitive_types::U256;
-use templar_common::time::Nanoseconds;
+use templar_common::Nanoseconds;
 use templar_gateway_core::GatewayContext;
 use templar_gateway_methods_spec::{
     account, contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
@@ -54,6 +51,9 @@ use templar_gateway_types::{
     common::{ContractArgs, ReadRequest, WriteRequest},
     Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::price_transformer::{self, PriceTransformer};
+use templar_proxy_oracle_near_common::request::OracleRequest;
 use templar_universal_account::{
     authentication::with_raw_string::WithRawString,
     authentication::Payload,

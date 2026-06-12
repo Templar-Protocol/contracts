@@ -2,11 +2,7 @@ use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use near_account_id::AccountId;
-use templar_common::oracle::{
-    proxy::{self, Source},
-    pyth::PriceIdentifier,
-    redstone, OracleRequest,
-};
+use templar_common::oracle::{pyth::PriceIdentifier, redstone};
 use templar_gateway_core::{
     client::{lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs},
     plan_pyth_update, plan_redstone_write_prices, query_contract_kind, GatewayError, GatewayResult,
@@ -15,6 +11,9 @@ use templar_gateway_core::{
 use templar_gateway_methods_spec::oracle::OracleContractKind;
 use templar_gateway_oracle_updates_spec::oracle::{UpdatePrices, UpdatePyth, UpdateRedStone};
 use templar_gateway_types::{ContractKind, MethodSpec};
+use templar_proxy_oracle_kernel::proxy;
+use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 use crate::{Dispatch, ProvidesPythSource, ProvidesRedStoneSource};
 
@@ -169,7 +168,7 @@ async fn get_proxy<C: HasNearClient>(
     ctx: &C,
     oracle_id: AccountId,
     id: PriceIdentifier,
-) -> GatewayResult<Option<proxy::Proxy>> {
+) -> GatewayResult<Option<proxy::Proxy<Source>>> {
     ctx.near_client()
         .proxy_oracle(oracle_id)
         .cached_get_proxy(GetProxyArgs { id })
@@ -223,11 +222,10 @@ async fn resolve_dependencies<C: HasNearClient>(
                 GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
             })?;
             let requests = proxy
-                .entries
-                .into_iter()
-                .map(|entry| match entry.source {
-                    Source::Request(request) => request,
-                    Source::Transformer(transformer) => transformer.request,
+                .sources()
+                .map(|source| match source {
+                    Source::Request(request) => request.clone(),
+                    Source::Transformer(transformer) => transformer.request.clone(),
                 })
                 .collect::<BTreeSet<_>>()
                 .into_iter()

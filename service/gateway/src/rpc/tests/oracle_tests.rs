@@ -102,13 +102,16 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
-                operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
                     id: proxy_direct_id,
-                    proxy: Some(Proxy::median_low([OracleRequest::pyth(
-                        direct_oracle_id.clone(),
-                        test_utils::DEFAULT_BORROW_PRICE_ID,
-                    )
-                    .into()])),
+                    proxy: Some(Proxy::median_low(
+                        [OracleRequest::pyth(
+                            direct_oracle_id.clone(),
+                            test_utils::DEFAULT_BORROW_PRICE_ID,
+                        )
+                        .into()],
+                        FreshnessFilter::empty(),
+                    )),
                 },
             },
         })
@@ -133,13 +136,12 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
-                operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
                     id: proxy_redstone_id,
-                    proxy: Some(Proxy::median_low([OracleRequest::redstone(
-                        redstone_oracle_id.clone(),
-                        "BTC",
-                    )
-                    .into()])),
+                    proxy: Some(Proxy::median_low(
+                        [OracleRequest::redstone(redstone_oracle_id.clone(), "BTC").into()],
+                        FreshnessFilter::empty(),
+                    )),
                 },
             },
         })
@@ -256,13 +258,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 0,
-                operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
                     id: proxy_direct_id,
-                    proxy: Some(Proxy::median_low([OracleRequest::pyth(
-                        direct_oracle_id.clone(),
-                        direct_price_id,
-                    )
-                    .into()])),
+                    proxy: Some(Proxy::median_low(
+                        [OracleRequest::pyth(direct_oracle_id.clone(), direct_price_id).into()],
+                        FreshnessFilter::empty(),
+                    )),
                 },
             },
         })
@@ -287,13 +288,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
             body: proxy_oracle_governance::CreateBody {
                 oracle_id: proxy_oracle_id.clone(),
                 id: 1,
-                operation: templar_common::oracle::proxy::governance::Operation::SetProxy {
+                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
                     id: proxy_redstone_id,
-                    proxy: Some(Proxy::median_low([OracleRequest::redstone(
-                        direct_oracle_id.clone(),
-                        "BTC",
-                    )
-                    .into()])),
+                    proxy: Some(Proxy::median_low(
+                        [OracleRequest::redstone(direct_oracle_id.clone(), "BTC").into()],
+                        FreshnessFilter::empty(),
+                    )),
                 },
             },
         })
