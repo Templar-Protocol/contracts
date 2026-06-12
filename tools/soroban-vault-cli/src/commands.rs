@@ -445,7 +445,7 @@ fn manifest_writable_check(path: &Path) -> DoctorCheck {
 
 fn artifact_doctor_checks(cli: &Cli) -> Vec<DoctorCheck> {
     let workspace_manifest = cli.workspace_path.join("Cargo.toml");
-    ArtifactSpec::stack_artifacts(true)
+    ArtifactSpec::stack_artifacts(true, true)
         .into_iter()
         .map(|spec| {
             let wasm_path = spec.wasm_path(&cli.workspace_path);
@@ -593,9 +593,17 @@ impl DeploymentProgress {
     }
 }
 
-fn stack_progress_steps(include_blend: bool, blend_pool_count: usize) -> u64 {
-    let artifact_steps = ArtifactSpec::stack_artifacts(include_blend).len();
-    u64::try_from(artifact_steps + 9 + usize::from(blend_pool_count > 0)).unwrap_or(u64::MAX)
+fn stack_progress_steps(
+    include_blend: bool,
+    include_custodial: bool,
+    blend_pool_count: usize,
+    custodian_count: usize,
+) -> u64 {
+    let artifact_steps = ArtifactSpec::stack_artifacts(include_blend, include_custodial).len();
+    u64::try_from(
+        artifact_steps + 9 + usize::from(blend_pool_count > 0) + usize::from(custodian_count > 0),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 #[allow(
@@ -618,12 +626,18 @@ fn deploy_stack<E: CommandExecutor>(
     };
 
     let include_blend = !args.blend_pools.is_empty();
+    let include_custodial = !args.custodians.is_empty();
     let progress = DeploymentProgress::stack(
         cli,
-        stack_progress_steps(include_blend, args.blend_pools.len()),
+        stack_progress_steps(
+            include_blend,
+            include_custodial,
+            args.blend_pools.len(),
+            args.custodians.len(),
+        ),
     );
     let mut wasm_hashes = BTreeMap::new();
-    for spec in ArtifactSpec::stack_artifacts(include_blend) {
+    for spec in ArtifactSpec::stack_artifacts(include_blend, include_custodial) {
         let hash = progress.step(format!("WASM {} upload/reuse", spec.key), || {
             let hash = ensure_uploaded(stellar, manifest, &cli.workspace_path, spec, args.build)?;
             checkpoint_manifest(cli, manifest)?;
@@ -823,6 +837,22 @@ fn deploy_stack<E: CommandExecutor>(
             )
         })?
     };
+    let custodial_adapters = if args.custodians.is_empty() {
+        custodial_adapter_statuses(manifest)
+    } else {
+        progress.step("Custodial adapters deploy/reuse", || {
+            append_custodial_adapters(
+                cli,
+                stellar,
+                manifest,
+                &wasm_hashes["custodial_adapter"],
+                &governance,
+                &vault,
+                &args.custodians,
+                args.force_new,
+            )
+        })?
+    };
     progress.finish();
 
     Ok(Response::Status(StatusResponse {
@@ -834,6 +864,7 @@ fn deploy_stack<E: CommandExecutor>(
         proxy_4626: Some(proxy_4626),
         curator_proxy: Some(curator_proxy),
         blend_adapters,
+        custodial_adapters,
     }))
 }
 
@@ -1192,6 +1223,30 @@ fn verify_component_wiring<E: CommandExecutor>(
                 )?);
             }
         }
+        key if key.starts_with("custodial_adapter") => {
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "vault",
+                contract_id(manifest, "vault"),
+            )?);
+            if let Some(custodian) = record.constructor_args.get("custodian") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "custodian",
+                    Some(custodian),
+                )?);
+            }
+            if let Some(admin) = record.constructor_args.get("admin") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "admin",
+                    Some(admin),
+                )?);
+            }
+        }
         _ => {}
     }
     Ok(checks)
@@ -1249,8 +1304,8 @@ fn deploy_adapters<E: CommandExecutor>(
     args: &crate::cli::DeployAdaptersArgs,
 ) -> anyhow::Result<Response> {
     anyhow::ensure!(
-        !args.blend_pools.is_empty(),
-        "deploy adapters requires at least one --blend-pool"
+        !args.blend_pools.is_empty() || !args.custodians.is_empty(),
+        "deploy adapters requires at least one --blend-pool or --custodian"
     );
 
     record_imported_contract_if_provided(cli, manifest, "vault", args.vault.as_ref())?;
@@ -1264,24 +1319,50 @@ fn deploy_adapters<E: CommandExecutor>(
 
     let vault = required_contract(manifest, "vault")?.to_string();
     let governance = required_contract(manifest, "governance")?.to_string();
-    let wasm_hash = ensure_uploaded(
-        stellar,
-        manifest,
-        &cli.workspace_path,
-        ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
-        args.build,
-    )?;
-    checkpoint_manifest(cli, manifest)?;
-    let blend_adapters = append_blend_adapters(
-        cli,
-        stellar,
-        manifest,
-        &wasm_hash,
-        &governance,
-        &vault,
-        &args.blend_pools,
-        args.force_new,
-    )?;
+    let blend_adapters = if args.blend_pools.is_empty() {
+        blend_adapter_statuses(manifest)
+    } else {
+        let wasm_hash = ensure_uploaded(
+            stellar,
+            manifest,
+            &cli.workspace_path,
+            ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
+            args.build,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        append_blend_adapters(
+            cli,
+            stellar,
+            manifest,
+            &wasm_hash,
+            &governance,
+            &vault,
+            &args.blend_pools,
+            args.force_new,
+        )?
+    };
+    let custodial_adapters = if args.custodians.is_empty() {
+        custodial_adapter_statuses(manifest)
+    } else {
+        let wasm_hash = ensure_uploaded(
+            stellar,
+            manifest,
+            &cli.workspace_path,
+            ArtifactSpec::from_name(crate::cli::ArtifactName::CustodialAdapter),
+            args.build,
+        )?;
+        checkpoint_manifest(cli, manifest)?;
+        append_custodial_adapters(
+            cli,
+            stellar,
+            manifest,
+            &wasm_hash,
+            &governance,
+            &vault,
+            &args.custodians,
+            args.force_new,
+        )?
+    };
 
     Ok(Response::Status(StatusResponse {
         network: manifest.network.clone(),
@@ -1292,6 +1373,7 @@ fn deploy_adapters<E: CommandExecutor>(
         proxy_4626: contract_id(manifest, "proxy_4626").map(ToString::to_string),
         curator_proxy: contract_id(manifest, "curator_proxy").map(ToString::to_string),
         blend_adapters,
+        custodial_adapters,
     }))
 }
 
@@ -1325,7 +1407,8 @@ fn deploy_stack_plan(
     );
 
     let include_blend = !args.blend_pools.is_empty();
-    for spec in ArtifactSpec::stack_artifacts(include_blend) {
+    let include_custodial = !args.custodians.is_empty();
+    for spec in ArtifactSpec::stack_artifacts(include_blend, include_custodial) {
         plan.wasm.push(wasm_plan(cli, manifest, spec, args.build)?);
     }
 
@@ -1385,6 +1468,29 @@ fn deploy_stack_plan(
             ));
         }
     }
+    for custodian in &args.custodians {
+        if !args.force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: format!("custodial adapter for custodian {custodian}"),
+                contract_id: custodial_adapter_by_custodian(manifest, custodian)
+                    .map(ToString::to_string),
+                reason: "adapter for custodian is already recorded in manifest".to_string(),
+            });
+        } else {
+            plan.contracts_to_deploy.push(PlanContract {
+                key: next_custodial_adapter_key(manifest),
+                contract_id: None,
+                reason: format!("new adapter for custodian {custodian}"),
+            });
+            plan.manifest_mutations.push(format!(
+                "record new custodial adapter for custodian {custodian}"
+            ));
+            plan.stellar_commands.push(stellar_command_shape(
+                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian>",
+                true,
+            ));
+        }
+    }
     plan.manifest_mutations
         .push("mark initialized contracts after successful initialize calls".to_string());
     Ok(plan)
@@ -1397,12 +1503,22 @@ fn deploy_adapters_plan(
 ) -> anyhow::Result<PlanResponse> {
     let mut plan = PlanResponse::new("deploy adapters", &cli.network);
     plan.required_signers.push(default_source_label());
-    plan.wasm.push(wasm_plan(
-        cli,
-        manifest,
-        ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
-        args.build,
-    )?);
+    if !args.blend_pools.is_empty() {
+        plan.wasm.push(wasm_plan(
+            cli,
+            manifest,
+            ArtifactSpec::from_name(crate::cli::ArtifactName::BlendAdapter),
+            args.build,
+        )?);
+    }
+    if !args.custodians.is_empty() {
+        plan.wasm.push(wasm_plan(
+            cli,
+            manifest,
+            ArtifactSpec::from_name(crate::cli::ArtifactName::CustodialAdapter),
+            args.build,
+        )?);
+    }
 
     for (key, provided) in [
         ("vault", args.vault.as_ref()),
@@ -1442,6 +1558,29 @@ fn deploy_adapters_plan(
                 .push(format!("record new Blend adapter for pool {pool}"));
             plan.stellar_commands.push(stellar_command_shape(
                 "contract deploy --wasm-hash <blend_adapter_hash> -- --admin <governance> --vault <vault> --pool <pool>",
+                true,
+            ));
+        }
+    }
+    for custodian in &args.custodians {
+        if !args.force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
+            plan.contracts_to_reuse.push(PlanContract {
+                key: format!("custodial adapter for custodian {custodian}"),
+                contract_id: custodial_adapter_by_custodian(manifest, custodian)
+                    .map(ToString::to_string),
+                reason: "adapter for custodian is already recorded in manifest".to_string(),
+            });
+        } else {
+            plan.contracts_to_deploy.push(PlanContract {
+                key: next_custodial_adapter_key(manifest),
+                contract_id: None,
+                reason: format!("new adapter for custodian {custodian}"),
+            });
+            plan.manifest_mutations.push(format!(
+                "record new custodial adapter for custodian {custodian}"
+            ));
+            plan.stellar_commands.push(stellar_command_shape(
+                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian>",
                 true,
             ));
         }
@@ -1619,6 +1758,54 @@ fn append_blend_adapters<E: CommandExecutor>(
         checkpoint_manifest(cli, manifest)?;
     }
     Ok(blend_adapter_statuses(manifest))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "adapter deployment needs both manifest checkpoint context and constructor inputs"
+)]
+fn append_custodial_adapters<E: CommandExecutor>(
+    cli: &Cli,
+    stellar: &Stellar<'_, E>,
+    manifest: &mut Manifest,
+    wasm_hash: &str,
+    governance: &str,
+    vault: &str,
+    custodians: &[AddressStr],
+    force_new: bool,
+) -> anyhow::Result<Vec<CustodialAdapterStatus>> {
+    for custodian in custodians {
+        if !force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
+            continue;
+        }
+        let key = next_custodial_adapter_key(manifest);
+        let adapter = deploy_contract_if_needed(
+            cli,
+            stellar,
+            manifest,
+            &key,
+            wasm_hash,
+            vec![
+                "--admin".to_string(),
+                governance.to_string(),
+                "--vault".to_string(),
+                vault.to_string(),
+                "--custodian".to_string(),
+                custodian.to_string(),
+            ],
+            map_args([
+                ("admin", governance),
+                ("vault", vault),
+                ("custodian", custodian.as_str()),
+            ]),
+            force_new,
+        )?;
+        if let Some(record) = manifest.contracts.get_mut(&key) {
+            record.contract_id = adapter;
+        }
+        checkpoint_manifest(cli, manifest)?;
+    }
+    Ok(custodial_adapter_statuses(manifest))
 }
 
 fn record_imported_contract_if_provided(
@@ -3067,6 +3254,7 @@ fn run_extend_ttl<E: CommandExecutor>(
 
     let caller = if contract_id(manifest, "share_token").is_some()
         || !blend_adapter_statuses(manifest).is_empty()
+        || !custodial_adapter_statuses(manifest).is_empty()
     {
         Some(resolve_extend_ttl_caller(stellar, ttl_args)?)
     } else {
@@ -3084,6 +3272,21 @@ fn run_extend_ttl<E: CommandExecutor>(
     let adapters = blend_adapter_statuses(manifest);
     if adapters.is_empty() {
         skipped.push("blend_adapters".to_string());
+    } else {
+        let caller = caller.as_ref().context("missing TTL caller")?;
+        for adapter in adapters {
+            stellar.invoke(
+                &adapter.contract_id,
+                "extend_ttl",
+                args([("--caller", caller.as_str())]),
+            )?;
+            extended.push(adapter.key);
+        }
+    }
+
+    let adapters = custodial_adapter_statuses(manifest);
+    if adapters.is_empty() {
+        skipped.push("custodial_adapters".to_string());
     } else {
         let caller = caller.as_ref().context("missing TTL caller")?;
         for adapter in adapters {
@@ -3250,6 +3453,46 @@ fn blend_adapter_by_pool<'a>(manifest: &'a Manifest, pool: &AddressStr) -> Optio
         .map(|(_, record)| record.contract_id.as_str())
 }
 
+fn custodial_adapter_key(index: usize) -> String {
+    format!("custodial_adapter_{index}")
+}
+
+fn next_custodial_adapter_key(manifest: &Manifest) -> String {
+    custodial_adapter_key(next_custodial_adapter_index(manifest))
+}
+
+fn next_custodial_adapter_index(manifest: &Manifest) -> usize {
+    let highest_index = manifest
+        .contracts
+        .keys()
+        .filter_map(|key| {
+            if key == "custodial_adapter" {
+                Some(0)
+            } else {
+                custodial_adapter_index(key)
+            }
+        })
+        .max();
+    highest_index.map_or(0, |index| index + 1)
+}
+
+fn custodial_adapter_by_custodian<'a>(
+    manifest: &'a Manifest,
+    custodian: &AddressStr,
+) -> Option<&'a str> {
+    manifest
+        .contracts
+        .iter()
+        .find(|(key, record)| {
+            is_custodial_adapter_key(key)
+                && record
+                    .constructor_args
+                    .get("custodian")
+                    .is_some_and(|value| value == custodian.as_str())
+        })
+        .map(|(_, record)| record.contract_id.as_str())
+}
+
 fn selected_blend_adapter<'a>(
     manifest: &'a Manifest,
     args: &AdapterArgs,
@@ -3280,6 +3523,14 @@ fn is_blend_adapter_key(key: &str) -> bool {
 
 fn blend_adapter_index(key: &str) -> Option<usize> {
     key.strip_prefix("blend_adapter_")?.parse().ok()
+}
+
+fn is_custodial_adapter_key(key: &str) -> bool {
+    key == "custodial_adapter" || custodial_adapter_index(key).is_some()
+}
+
+fn custodial_adapter_index(key: &str) -> Option<usize> {
+    key.strip_prefix("custodial_adapter_")?.parse().ok()
 }
 
 fn args<const N: usize>(items: [(&str, &str); N]) -> Vec<String> {
@@ -3326,6 +3577,7 @@ fn status_response(manifest: &Manifest) -> StatusResponse {
         proxy_4626: contract_id(manifest, "proxy_4626").map(ToString::to_string),
         curator_proxy: contract_id(manifest, "curator_proxy").map(ToString::to_string),
         blend_adapters: blend_adapter_statuses(manifest),
+        custodial_adapters: custodial_adapter_statuses(manifest),
     }
 }
 
@@ -3362,6 +3614,39 @@ fn blend_adapter_statuses(manifest: &Manifest) -> Vec<BlendAdapterStatus> {
     adapters
 }
 
+fn custodial_adapter_statuses(manifest: &Manifest) -> Vec<CustodialAdapterStatus> {
+    let mut adapters = manifest
+        .contracts
+        .iter()
+        .filter_map(|(key, record)| {
+            let index = custodial_adapter_index(key)?;
+            Some((
+                index,
+                CustodialAdapterStatus {
+                    key: key.clone(),
+                    contract_id: record.contract_id.clone(),
+                    custodian: record.constructor_args.get("custodian").cloned(),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    adapters.sort_by_key(|(index, _)| *index);
+    let mut adapters = adapters
+        .into_iter()
+        .map(|(_, status)| status)
+        .collect::<Vec<_>>();
+    if adapters.is_empty() {
+        if let Some(record) = manifest.contracts.get("custodial_adapter") {
+            adapters.push(CustodialAdapterStatus {
+                key: "custodial_adapter".to_string(),
+                contract_id: record.contract_id.clone(),
+                custodian: record.constructor_args.get("custodian").cloned(),
+            });
+        }
+    }
+    adapters
+}
+
 fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
     let mut values = vec![("SOROBAN_NETWORK".to_string(), manifest.network.clone())];
     for (env, key) in [
@@ -3386,6 +3671,24 @@ fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
         ));
         if let Some(pool) = adapter.pool {
             values.push((format!("BLEND_POOL_{index}_ID"), pool));
+        }
+    }
+    for (index, adapter) in custodial_adapter_statuses(manifest).into_iter().enumerate() {
+        if index == 0 {
+            values.push((
+                "CUSTODIAL_ADAPTER_ID".to_string(),
+                adapter.contract_id.clone(),
+            ));
+        }
+        values.push((
+            format!("CUSTODIAL_ADAPTER_{index}_ID"),
+            adapter.contract_id.clone(),
+        ));
+        if let Some(custodian) = adapter.custodian {
+            if index == 0 {
+                values.push(("CUSTODIAL_ADDRESS".to_string(), custodian.clone()));
+            }
+            values.push((format!("CUSTODIAL_{index}_ADDRESS"), custodian));
         }
     }
     values
@@ -3433,6 +3736,23 @@ fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
                             .pool
                             .as_ref()
                             .map_or_else(String::new, |pool| format!(" (pool {pool})"))
+                    );
+                }
+            }
+            if status.custodial_adapters.is_empty() {
+                println!("Custodial Adapters: not deployed");
+            } else {
+                for adapter in &status.custodial_adapters {
+                    println!(
+                        "Custodial Adapter {}: {}{}",
+                        adapter.key,
+                        adapter.contract_id,
+                        adapter
+                            .custodian
+                            .as_ref()
+                            .map_or_else(String::new, |custodian| {
+                                format!(" (custodian {custodian})")
+                            })
                     );
                 }
             }
@@ -3844,6 +4164,7 @@ struct StatusResponse {
     proxy_4626: Option<String>,
     curator_proxy: Option<String>,
     blend_adapters: Vec<BlendAdapterStatus>,
+    custodial_adapters: Vec<CustodialAdapterStatus>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3851,6 +4172,13 @@ struct BlendAdapterStatus {
     key: String,
     contract_id: String,
     pool: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CustodialAdapterStatus {
+    key: String,
+    contract_id: String,
+    custodian: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4585,6 +4913,7 @@ mod tests {
                         CONTRACT.parse().expect("existing pool"),
                         ACCOUNT.parse().expect("new pool"),
                     ],
+                    custodians: Vec::new(),
                     build: false,
                     force_new: false,
                 }),
@@ -4615,6 +4944,68 @@ mod tests {
     }
 
     #[test]
+    fn deploy_adapters_appends_custodial_adapter_to_existing_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_custodial_wasm(dir.path());
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("governance".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("asset_token".to_string(), imported_record(CONTRACT));
+        manifest.save(&state).expect("save manifest");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
+                    vault: None,
+                    governance: None,
+                    asset_token: None,
+                    blend_pools: Vec::new(),
+                    custodians: vec![ACCOUNT.parse().expect("custodian")],
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy custodial adapter");
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let adapter = loaded
+            .contracts
+            .get("custodial_adapter_0")
+            .expect("appended custodial adapter");
+        assert_eq!(
+            adapter
+                .constructor_args
+                .get("custodian")
+                .map(String::as_str),
+            Some(ACCOUNT)
+        );
+        assert_eq!(
+            adapter.constructor_args.get("vault").map(String::as_str),
+            Some(CONTRACT)
+        );
+        assert_eq!(
+            adapter.constructor_args.get("admin").map(String::as_str),
+            Some(CONTRACT)
+        );
+        let adapter_deploys = submitted_calls(&executor.calls())
+            .iter()
+            .filter(|(_, args)| args.iter().any(|arg| arg == "--custodian"))
+            .count();
+        assert_eq!(adapter_deploys, 1);
+    }
+
+    #[test]
     fn dry_run_deploy_adapters_does_not_execute_or_write_manifest() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_blend_wasm(dir.path());
@@ -4630,6 +5021,7 @@ mod tests {
                     governance: None,
                     asset_token: None,
                     blend_pools: vec![CONTRACT.parse().expect("pool")],
+                    custodians: Vec::new(),
                     build: false,
                     force_new: false,
                 }),
@@ -4666,6 +5058,7 @@ mod tests {
                         share_symbol: "tvSHARE".to_string(),
                         share_decimals: 7,
                         blend_pools: vec![CONTRACT.parse().expect("pool")],
+                        custodians: Vec::new(),
                         build: false,
                         force_new: false,
                     })),
@@ -4702,6 +5095,10 @@ mod tests {
         manifest
             .contracts
             .insert("blend_adapter_0".to_string(), imported_record("CADAPTER0"));
+        manifest.contracts.insert(
+            "custodial_adapter_0".to_string(),
+            imported_record("CCUSTODIAL0"),
+        );
         manifest.save(&state).expect("save manifest");
         let cli = base_cli(
             state,
@@ -4714,7 +5111,7 @@ mod tests {
         run(&cli, &executor).expect("extend ttl");
 
         let calls = submitted_calls(&executor.calls());
-        assert_eq!(calls.len(), 6);
+        assert_eq!(calls.len(), 7);
         assert!(calls.iter().any(|(_, args)| args
             .windows(2)
             .any(|pair| pair == ["--id", "CVAULT"])
@@ -4725,6 +5122,7 @@ mod tests {
             "CCURATORPROXY",
             "CSHARE",
             "CADAPTER0",
+            "CCUSTODIAL0",
         ] {
             assert!(calls.iter().any(|(_, args)| args
                 .windows(2)
@@ -4982,6 +5380,7 @@ mod tests {
                         CONTRACT.parse().expect("first pool"),
                         ACCOUNT.parse().expect("second pool"),
                     ],
+                    custodians: Vec::new(),
                     build: false,
                     force_new: false,
                 })),
@@ -4998,6 +5397,60 @@ mod tests {
             .filter(|(_, args)| args.iter().any(|arg| arg == "--pool"))
             .count();
         assert_eq!(adapter_deploys, 2);
+    }
+
+    #[test]
+    fn deploy_stack_deploys_one_custodial_adapter_per_custodian() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest.save(&state).expect("save manifest");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(DeployStackArgs {
+                    admin: Some(ACCOUNT.parse().expect("admin")),
+                    asset_token: Some(CONTRACT.parse().expect("asset token")),
+                    governance_timelock_ns: Some(1_000),
+                    virtual_shares: 0,
+                    virtual_assets: 0,
+                    share_name: "Templar Vault Share".to_string(),
+                    share_symbol: "tvSHARE".to_string(),
+                    share_decimals: 7,
+                    blend_pools: Vec::new(),
+                    custodians: vec![ACCOUNT.parse().expect("custodian")],
+                    build: false,
+                    force_new: false,
+                })),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy stack");
+
+        let calls = submitted_calls(&executor.calls());
+        let adapter_deploys = calls
+            .iter()
+            .filter(|(_, args)| args.iter().any(|arg| arg == "--custodian"))
+            .count();
+        assert_eq!(adapter_deploys, 1);
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        assert_eq!(
+            loaded
+                .contracts
+                .get("custodial_adapter_0")
+                .expect("custodial adapter")
+                .constructor_args
+                .get("custodian")
+                .map(String::as_str),
+            Some(ACCOUNT)
+        );
     }
 
     #[test]
@@ -5018,6 +5471,7 @@ mod tests {
                     share_symbol: "tvSHARE".to_string(),
                     share_decimals: 7,
                     blend_pools: Vec::new(),
+                    custodians: Vec::new(),
                     build: false,
                     force_new: false,
                 })),
@@ -5174,6 +5628,7 @@ mod tests {
                     share_symbol: "tvSHARE".to_string(),
                     share_decimals: 7,
                     blend_pools: Vec::new(),
+                    custodians: Vec::new(),
                     build: false,
                     force_new: false,
                 })),
@@ -5294,6 +5749,7 @@ mod tests {
             ArtifactName::Governance,
             ArtifactName::ShareToken,
             ArtifactName::BlendAdapter,
+            ArtifactName::CustodialAdapter,
             ArtifactName::Proxy4626,
             ArtifactName::CuratorProxy,
         ] {
@@ -5307,5 +5763,11 @@ mod tests {
         let path = ArtifactSpec::from_name(ArtifactName::BlendAdapter).wasm_path(root);
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(path, "blend").expect("write wasm");
+    }
+
+    fn write_fake_custodial_wasm(root: &std::path::Path) {
+        let path = ArtifactSpec::from_name(ArtifactName::CustodialAdapter).wasm_path(root);
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(path, "custodial").expect("write wasm");
     }
 }
