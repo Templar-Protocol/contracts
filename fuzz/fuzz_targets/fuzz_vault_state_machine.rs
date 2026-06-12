@@ -23,10 +23,10 @@
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use templar_vault_kernel::{
-    allocation_step_callback, complete_allocation, payout_complete, refresh_step_callback,
-    start_allocation, start_refresh, start_withdrawal, stop_withdrawal, withdrawal_collected,
-    withdrawal_settled, withdrawal_step_callback, Address, AllocationPlanEntry, OpState,
-    WithdrawalRequest,
+    allocation_step_callback, complete_allocation, complete_refresh, payout_complete,
+    refresh_step_callback, start_allocation, start_refresh, start_withdrawal, stop_withdrawal,
+    withdrawal_collected, withdrawal_settled, withdrawal_step_callback, Address,
+    AllocationPlanEntry, OpState, WithdrawalRequest,
 };
 
 const MAX_ACTIONS: usize = 32;
@@ -83,6 +83,9 @@ enum Action {
         plan: Vec<u32>,
     },
     RefreshStepCallback {
+        op_id: u64,
+    },
+    CompleteRefresh {
         op_id: u64,
     },
     PayoutComplete {
@@ -160,7 +163,9 @@ fn action_precondition_kind_ok(action: &Action, state: &OpState) -> bool {
         | Action::WithdrawalCollected { .. }
         | Action::WithdrawalSettled { .. }
         | Action::StopWithdrawal { .. } => matches!(state, OpState::Withdrawing(_)),
-        Action::RefreshStepCallback { .. } => matches!(state, OpState::Refreshing(_)),
+        Action::RefreshStepCallback { .. } | Action::CompleteRefresh { .. } => {
+            matches!(state, OpState::Refreshing(_))
+        }
         Action::PayoutComplete { .. } => matches!(state, OpState::Payout(_)),
     }
 }
@@ -180,6 +185,7 @@ fn action_op_id(action: &Action) -> u64 {
         | Action::StopWithdrawal { op_id, .. }
         | Action::StartRefresh { op_id, .. }
         | Action::RefreshStepCallback { op_id, .. }
+        | Action::CompleteRefresh { op_id, .. }
         | Action::PayoutComplete { op_id, .. } => *op_id,
     }
 }
@@ -265,6 +271,7 @@ fuzz_target!(|scenario: Scenario| {
                 start_refresh(state.clone(), bounded, op_id)
             }
             Action::RefreshStepCallback { op_id } => refresh_step_callback(state.clone(), op_id),
+            Action::CompleteRefresh { op_id } => complete_refresh(state.clone(), op_id),
             Action::PayoutComplete {
                 op_id,
                 success,
