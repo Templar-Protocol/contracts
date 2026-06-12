@@ -62,25 +62,30 @@ and RPC later reports success, the CLI treats the transaction as confirmed and r
 Pass `--blend-pool` once per Blend pool to deploy one adapter per pool. The manifest stores these
 as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, new pools are
 appended and pools already present in the manifest are left unchanged unless `--force-new` is set.
+Pass `--custodian` once per custodian or multisig address to deploy custodial adapters in the same
+flow. The manifest stores these as `custodial_adapter_0`, `custodial_adapter_1`, and so on, with
+the `admin`, `vault`, and `custodian` constructor args recorded for reconciliation and status.
 
 ```sh
 tmplr-soroban-vault deploy stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --blend-pool CPOOL2...
+  --blend-pool CPOOL2... \
+  --custodian G...
 ```
 
 To add adapters later without redeploying the stack, use `deploy adapters`. If the manifest already
-contains `vault` and `governance`, only the Blend adapter WASM and new adapter instances are touched.
-For imported deployments, pass the existing contract ids once and the CLI records them in the
-manifest before appending adapters.
+contains `vault` and `governance`, only the requested adapter WASM and new adapter instances are
+touched. For imported deployments, pass the existing contract ids once and the CLI records them in
+the manifest before appending adapters.
 
 ```sh
 tmplr-soroban-vault deploy adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --asset-token CASSET... \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --custodian G...
 ```
 
 Use `deploy plan` to inspect reuse, upload, deploy, and manifest decisions without network writes or
@@ -89,12 +94,14 @@ manifest changes:
 ```sh
 tmplr-soroban-vault deploy plan stack \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --custodian G...
 
 tmplr-soroban-vault deploy plan adapters \
   --vault CVAULT... \
   --governance CGOV... \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --custodian G...
 ```
 
 Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
@@ -106,7 +113,8 @@ tmplr-soroban-vault reconcile --skip-view-verification --json
 tmplr-soroban-vault deploy repair --json
 tmplr-soroban-vault deploy resume \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --custodian G...
 ```
 
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
@@ -279,9 +287,11 @@ tmplr-soroban-vault export-env
 
 `export-env` emits `BLEND_ADAPTER_ID` for the first adapter for compatibility, plus indexed
 `BLEND_ADAPTER_0_ID`, `BLEND_ADAPTER_1_ID`, and matching `BLEND_POOL_0_ID` values when pool
+constructor args are known. Custodial adapters use the same pattern with `CUSTODIAL_ADAPTER_ID`,
+`CUSTODIAL_ADAPTER_0_ID`, and matching `CUSTODIAL_ADDRESS` / `CUSTODIAL_0_ADDRESS` values when
 constructor args are known.
 
 `extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
 `extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter
-`extend_ttl --caller`. Manifest contracts without an explicit deployment-wide TTL entrypoint, such
-as the asset token, are reported as skipped.
+or custodial adapter `extend_ttl --caller`. Manifest contracts without an explicit deployment-wide
+TTL entrypoint, such as the asset token, are reported as skipped.
