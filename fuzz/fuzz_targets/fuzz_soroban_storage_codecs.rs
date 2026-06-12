@@ -5,7 +5,8 @@
 )]
 
 // MUTATION-CHECK (P5): in `contract/vault/soroban/src/storage/mod.rs`, change
-// one encoder to drop a field (e.g. omit `push_u128(amount)` in
+// one encoder to drop a field (e.g. omit `push_u128(withdrawal.escrow_shares)`
+// in `encode_withdraw_queue_page`, or `push_u128(amount)` in
 // `encode_supply_queue`) or change a `push_u32` width. Then the corresponding
 // `decode(encode(x)) == x` round-trip assertion below must fire.
 
@@ -51,8 +52,8 @@ struct StorageCodecInput {
     cap_group_entries: Vec<CapGroupEntry>,
     lease_entries: Vec<(u32, u64, Option<u64>, u64, u64, u64)>,
     withdraw_entries: Vec<WithdrawEntry>,
-    // Starting id for the withdraw queue, so ids span non-zero values and cross
-    // `WITHDRAW_QUEUE_PAGE_SIZE` page boundaries (exercises the V2 paged codec).
+    // Starting id for the withdraw queue, so the serialized ids span non-zero
+    // values (the id is part of the withdraw-queue page wire format).
     withdraw_base_id: u64,
     op_tag: u8,
     refresh_plan: Vec<u32>,
@@ -294,9 +295,9 @@ fuzz_target!(|input: StorageCodecInput| {
     let cap_groups_bytes = fuzz_api::encode_cap_groups_bytes(&cap_groups);
     let decoded_cap_groups =
         fuzz_api::decode_cap_groups_bytes(&cap_groups_bytes).expect("cap groups roundtrip");
-    // `CapGroupRecord` has no `PartialEq`; compare per entry. `CapGroup` is
-    // `PartialEq`, and `relative_cap` round-trips exactly because it was built
-    // from a `u128` (see `build_cap_groups`).
+    // Whole-record equality (`CapGroupRecord: PartialEq`) so a newly added
+    // field is covered automatically. `relative_cap` round-trips exactly
+    // because it was built from a `u128` (see `build_cap_groups`).
     assert_eq!(
         decoded_cap_groups.len(),
         cap_groups.len(),
@@ -306,11 +307,7 @@ fuzz_target!(|input: StorageCodecInput| {
         let decoded = decoded_cap_groups
             .get(id)
             .expect("cap groups: id missing after roundtrip");
-        assert_eq!(decoded.cap, record.cap, "cap groups: cap changed");
-        assert_eq!(
-            decoded.principal, record.principal,
-            "cap groups: principal changed",
-        );
+        assert_eq!(decoded, record, "cap groups: record changed");
     }
 
     let leases = build_leases(&input);
@@ -326,9 +323,18 @@ fuzz_target!(|input: StorageCodecInput| {
     let decoded_state = fuzz_api::decode_state_blob_bytes(&state_bytes).expect("state roundtrip");
     assert_eq!(decoded_state, state);
 
-    // Production V2 paged format: header blob + per-page withdraw-queue codecs,
-    // reassembled via `compose_state_from_header`.
-    let decoded_paged =
-        fuzz_api::roundtrip_state_paged_bytes(&state).expect("paged state roundtrip");
-    assert_eq!(decoded_paged, state);
+    // Production V2 paged format: the withdraw-queue page codec is the
+    // variable-length, fund-critical part (the per-page header/compose
+    // *orchestration* is exercised against a real Env by the soroban crate's
+    // `property_tests.rs`, so it isn't re-implemented here). A built queue holds
+    // <= MAX_COLLECTION_LEN entries, comfortably within one page.
+    let page_entries: Vec<(u64, templar_vault_kernel::PendingWithdrawal)> = state
+        .withdraw_queue
+        .iter()
+        .map(|(id, withdrawal)| (id, withdrawal.clone()))
+        .collect();
+    let page_bytes = fuzz_api::encode_withdraw_queue_page_bytes(&page_entries);
+    let decoded_page =
+        fuzz_api::decode_withdraw_queue_page_bytes(&page_bytes).expect("withdraw page roundtrip");
+    assert_eq!(decoded_page, page_entries);
 });

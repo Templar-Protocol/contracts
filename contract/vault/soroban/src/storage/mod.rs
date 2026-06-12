@@ -796,7 +796,7 @@ fn decode_withdraw_queue_header(
     Ok(header)
 }
 
-fn encode_withdraw_queue_page<'a>(
+pub(crate) fn encode_withdraw_queue_page<'a>(
     entries: impl IntoIterator<Item = (u64, &'a PendingWithdrawal)>,
 ) -> Vec<u8> {
     let entries: Vec<_> = entries.into_iter().collect();
@@ -813,7 +813,9 @@ fn encode_withdraw_queue_page<'a>(
     out
 }
 
-fn decode_withdraw_queue_page(bytes: &[u8]) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
+pub(crate) fn decode_withdraw_queue_page(
+    bytes: &[u8],
+) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {
@@ -1067,48 +1069,6 @@ fn compose_state_from_header(
         withdraw_queue,
         next_op_id: header.next_op_id,
     })
-}
-
-/// Round-trip a `VaultState` through the production V2 paged state codecs — the
-/// header blob plus each withdraw-queue page — exactly as `save_state` encodes
-/// and `load_state` decodes them, but in memory (no Env-backed persistence).
-///
-/// Exposed to the fuzz harness via [`crate::test_utils::fuzz_api`] so the format
-/// the contract actually persists is covered: the legacy monolithic V1 blob
-/// (`encode_state_blob`/`decode_state_blob`) is retained only for regression and
-/// is no longer the production path.
-#[cfg(any(test, feature = "testutils"))]
-pub(crate) fn roundtrip_state_paged(state: &VaultState) -> Result<VaultState, RuntimeError> {
-    let header_blob = encode_state_header_blob(state);
-    let header = decode_state_header_blob(&header_blob)?;
-
-    // Split the queue into pages and decode each one back, mirroring
-    // `save_withdraw_queue_pages` / `load_withdraw_queue_pages` page-by-page but
-    // without the Env key-value layer. The header carries the queue cursors.
-    let next_withdraw_to_execute = header.withdraw_queue.next_withdraw_to_execute;
-    let next_pending_withdrawal_id = header.withdraw_queue.next_pending_withdrawal_id;
-    let mut entries: Vec<(u64, PendingWithdrawal)> = Vec::new();
-    if let Some((first_page, last_page)) = queue_page_range(&state.withdraw_queue) {
-        for page in first_page..=last_page {
-            let page_entries = state
-                .withdraw_queue
-                .iter()
-                .filter(|(id, _)| queue_page_id(*id) == page)
-                .collect::<Vec<_>>();
-            if page_entries.is_empty() {
-                continue;
-            }
-            let encoded = encode_withdraw_queue_page(page_entries);
-            entries.extend(decode_withdraw_queue_page(&encoded)?);
-        }
-    }
-
-    let withdraw_queue = WithdrawQueue::with_state(
-        entries,
-        next_withdraw_to_execute,
-        next_pending_withdrawal_id,
-    );
-    compose_state_from_header(header, withdraw_queue)
 }
 
 pub(crate) fn compose_policy_state(
