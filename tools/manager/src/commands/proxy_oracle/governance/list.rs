@@ -3,9 +3,8 @@ use std::io::Write;
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::{
-    governance::Proposal, oracle::proxy::governance::Operation, time::Nanoseconds,
-};
+use templar_common::Nanoseconds;
+use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
 use templar_tools_common::near;
 
 use crate::{
@@ -36,7 +35,8 @@ pub struct ListProposals {
 impl ListProposals {
     #[tracing::instrument(skip_all, name = "governance_list", fields(oracle_id = %self.oracle_id))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let ids: Vec<u32> = near::view(&ctx.near, &self.oracle_id, "gov_list", json!({})).await?;
+        let ids: Vec<u32> =
+            near::view(&ctx.near, &self.oracle_id, "list_proposals", json!({})).await?;
 
         #[allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
         let now = Nanoseconds::from_ms(
@@ -49,8 +49,13 @@ impl ListProposals {
         let mut proposals = Vec::new();
 
         for id in &ids {
-            let proposal: Option<Proposal<Operation>> =
-                near::view(&ctx.near, &self.oracle_id, "gov_get", json!({ "id": id })).await?;
+            let proposal: Option<Proposal<Operation>> = near::view(
+                &ctx.near,
+                &self.oracle_id,
+                "get_proposal",
+                json!({ "id": id }),
+            )
+            .await?;
 
             let Some(proposal) = proposal else {
                 continue;
@@ -88,7 +93,7 @@ impl OutputStyle for ProposalListOutput {
 
         writeln!(
             out,
-            "  {:>4}  {:<12}  {:<44}  {:>10}",
+            "  {:>4}  {:<28}  {:<44}  {:>10}",
             style("ID").bold(),
             style("Operation").bold(),
             style("Created By").bold(),
@@ -98,7 +103,16 @@ impl OutputStyle for ProposalListOutput {
         for item in &self.proposals {
             let operation_name = match &item.proposal.operation {
                 Operation::SetProxy { .. } => "SetProxy",
+                Operation::ConfigureCircuitBreakers { .. } => "ConfigureCircuitBreakers",
+                Operation::AddCircuitBreaker { .. } => "AddCircuitBreaker",
+                Operation::RemoveCircuitBreaker { .. } => "RemoveCircuitBreaker",
+                Operation::SetManualTrip { .. } => "SetManualTrip",
+                Operation::Rearm { .. } => "Rearm",
+                Operation::SetEnforced { .. } => "SetEnforced",
                 Operation::SetActionTtl { .. } => "SetActionTtl",
+                Operation::SetRole { .. } => "SetRole",
+                Operation::AdminUpgrade { .. } => "AdminUpgrade",
+                Operation::AdminFunctionCall { .. } => "AdminFunctionCall",
             };
 
             let status = if item.executable {
@@ -109,7 +123,7 @@ impl OutputStyle for ProposalListOutput {
 
             writeln!(
                 out,
-                "  {:>4}  {:<12}  {:<44}  {:>10}",
+                "  {:>4}  {:<28}  {:<44}  {:>10}",
                 style(item.id).bold(),
                 operation_name,
                 item.proposal.created_by,

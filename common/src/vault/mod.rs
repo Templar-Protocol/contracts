@@ -2,6 +2,7 @@ use std::num::NonZeroU8;
 
 use derive_more::{Display, From, Into};
 
+use crate::vault::wad::Wad;
 use crate::{
     asset::{BorrowAsset, FungibleAsset},
     supply::SupplyPosition,
@@ -19,7 +20,6 @@ pub use templar_vault_kernel::state::op_state::{
     AllocatingState, IdleState, OpState, PayoutState, RefreshingState, TargetId, WithdrawingState,
 };
 pub use templar_vault_kernel::types::{ActualIdx, ExpectedIdx, TimestampNs};
-use templar_vault_kernel::Wad;
 
 pub use event::{
     AllocationPositionIssueKind, Event, PositionReportOutcome, QueueAction, QueueStatus, Reason,
@@ -34,6 +34,7 @@ pub mod gas;
 pub mod lock;
 pub mod params;
 pub mod restrictions;
+pub mod wad;
 
 pub use errors::Error;
 pub use gas::*;
@@ -53,17 +54,17 @@ pub mod prelude {
     pub use super::gas::*;
     pub use super::params::*;
     pub use super::restrictions::*;
+    pub use super::wad::{
+        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
+        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+    };
+    pub use super::wad::{Number, WIDE};
     pub use super::{
         require_at_least, storage_bytes_for_account_id, ActualIdx, AllocationDelta, AllocationPlan,
         AllocationWeights, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Delta,
         DepositMsg, Error, EscrowSettlement, ExpectedIdx, Fee, FeeAccrualAnchor, Fees,
         IdleBalanceDelta, IdleResyncOutcome, Locker, MarketConfiguration, MarketId,
         PendingWithdrawal, RealAssetsReport, ResyncIdleReport, TimestampNs, VaultConfiguration,
-    };
-    pub use templar_vault_kernel::math::number::{Number, WIDE};
-    pub use templar_vault_kernel::{
-        compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor,
-        mul_wad_floor, Wad, MAX_FEE_WAD, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
     };
 }
 
@@ -86,7 +87,7 @@ pub struct RealAssetsReport {
 pub enum IdleResyncOutcome {
     /// Resync succeeded.
     Ok,
-    /// ft_balance_of call failed.
+    /// `ft_balance_of` call failed.
     BalanceReadFailed,
     /// Vault not in expected state.
     UnexpectedState,
@@ -229,7 +230,7 @@ impl From<Fees<U128>> for Fees<Wad> {
 pub struct VaultConfiguration {
     /// The account that owns this vault.
     pub owner: AccountId,
-    /// The account that can submit allocation plans. See [AllocationMode].
+    /// The account that can submit allocation plans. See [`AllocationMode`].
     pub curator: AccountId,
     /// The emergency role that can cancel withdrawals and trigger deallocations.
     pub sentinel: AccountId,
@@ -253,7 +254,7 @@ pub struct VaultConfiguration {
     pub refresh_cooldown_ns: Option<U64>,
     /// Optional cooldown (ns) between `idle_resync` calls; defaults to 120 seconds when `None`.
     pub idle_resync_cooldown_ns: Option<U64>,
-    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 24 hours when `None`.
+    /// Optional cooldown (ns) before a withdrawal can be executed; defaults to 1 hour when `None`.
     pub withdrawal_cooldown_ns: Option<U64>,
 }
 
@@ -382,9 +383,9 @@ pub struct FeeAccrualAnchor {
 #[cfg(test)]
 mod tests {
     use super::{Fee, Fees, MarketId};
+    use crate::vault::wad::Wad;
     use near_sdk::json_types::U128;
     use near_sdk::AccountId;
-    use templar_vault_kernel::Wad;
 
     #[test]
     fn market_id_try_from_u64_accepts_u32_range() {

@@ -7,9 +7,9 @@ use templar_common::{
     fee::{Fee, TimeBasedFee},
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, ValidAmountRange, YieldWeights},
-    number::Decimal,
     oracle::pyth::PriceIdentifier,
     time_chunk::TimeChunkConfiguration,
+    Decimal,
 };
 
 #[derive(Debug, Clone)]

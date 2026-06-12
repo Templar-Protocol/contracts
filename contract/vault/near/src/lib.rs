@@ -38,10 +38,6 @@ use templar_common::{
     market::ext_market,
     panic_with_message,
     vault::{
-        prelude::{
-            compute_fee_shares, compute_fee_shares_from_assets, MAX_MANAGEMENT_FEE_WAD,
-            MAX_PERFORMANCE_FEE_WAD,
-        },
         require_at_least, AllocatingState, AllocationDelta, AllocationPlan, CapGroupId,
         CapGroupRecord, Error, Event, FeeAccrualAnchor, Fees, IdleBalanceDelta,
         MarketConfiguration, MarketId, OpState, PayoutState, PendingWithdrawal, QueueAction,
@@ -53,22 +49,85 @@ use templar_common::{
     },
 };
 pub use templar_curator_primitives::rbac::Role;
+use templar_curator_primitives::PayoutRecoveryEvidence;
 use templar_curator_primitives::{
     determine_recovery_action, PendingValue, RecoveryContext, RecoveryProgress,
 };
 use templar_vault_kernel::actions::apply_action;
+use templar_vault_kernel::math::wad::Wad as KernelWad;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::state::queue::{
     compute_idle_settlement, is_past_cooldown, DEFAULT_COOLDOWN_NS,
 };
-use templar_vault_kernel::{Address, KernelAction, PayoutOutcome, TimestampNs};
+use templar_vault_kernel::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_ceil, mul_div_floor, Address,
+    KernelAction, PayoutOutcome, TimestampNs, Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD,
+};
 
 const DEFAULT_REFRESH_COOLDOWN_NS: u64 = 30_000_000_000; // 30 seconds
 const DEFAULT_IDLE_RESYNC_COOLDOWN_NS: u64 = 120_000_000_000;
 const ERR_WITHDRAW_DURING_IDLE_RESYNC: &str = "Cannot withdraw/redeem during idle resync";
 const ERR_MISSING_WITHDRAWAL_QUEUE_ADDRESS: &str = "Missing address mapping for withdrawal queue";
 
-pub use templar_common::vault::prelude::{mul_div_ceil, mul_div_floor, Number, Wad};
+pub use templar_vault_kernel::math::number::Number;
+
+type BoundaryWad = templar_common::vault::wad::Wad;
+
+fn kernel_wad_from_boundary(value: BoundaryWad) -> KernelWad {
+    KernelWad::from(u128::from(value))
+}
+
+fn boundary_wad_from_kernel(value: KernelWad) -> BoundaryWad {
+    BoundaryWad::from(u128::from(value))
+}
+
+fn kernel_fees_from_boundary(fees: Fees<BoundaryWad>) -> Fees<KernelWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: kernel_wad_from_boundary(fees.performance.fee),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: kernel_wad_from_boundary(fees.management.fee),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(kernel_wad_from_boundary),
+    }
+}
+
+fn boundary_fees_from_kernel(fees: Fees<KernelWad>) -> Fees<BoundaryWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: boundary_wad_from_kernel(fees.performance.fee),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: boundary_wad_from_kernel(fees.management.fee),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(boundary_wad_from_kernel),
+    }
+}
+
+fn kernel_fees_from_u128(fees: Fees<U128>) -> Fees<KernelWad> {
+    Fees {
+        performance: templar_common::vault::Fee {
+            fee: KernelWad::from(fees.performance.fee.0),
+            recipient: fees.performance.recipient,
+        },
+        management: templar_common::vault::Fee {
+            fee: KernelWad::from(fees.management.fee.0),
+            recipient: fees.management.recipient,
+        },
+        max_total_assets_growth_rate: fees
+            .max_total_assets_growth_rate
+            .map(|rate| KernelWad::from(rate.0)),
+    }
+}
 
 pub mod aum;
 pub(crate) mod convert;
@@ -260,6 +319,8 @@ impl Contract {
             (MIN_TIMELOCK_NS..=MAX_TIMELOCK_NS).contains(&initial_timelock_ns.0),
             "timelock bounds"
         );
+
+        let fees = kernel_fees_from_boundary(fees);
 
         require!(
             fees.management.fee <= Wad::from(MAX_MANAGEMENT_FEE_WAD),
@@ -526,7 +587,11 @@ impl Contract {
             }));
         }
 
-        self.market_execution_lock.lock(market);
+        let lease = self.market_execution_lock.lock(
+            market,
+            op_id.0,
+            u64::MAX.saturating_sub(env::block_timestamp()),
+        );
 
         PromiseOrValue::Promise(
             ext_ft_core::ext(self.underlying_asset.contract_id().into())
@@ -539,6 +604,7 @@ impl Contract {
                         .execute_withdraw_01_execute_withdraw_fetch_position(
                             op_id.into(),
                             market,
+                            lease.fencing_token.0.into(),
                             batch_limit,
                         ),
                 ),
@@ -557,8 +623,8 @@ impl Contract {
     ///
     /// Implementation details:
     /// - Uses `OpState::Allocating` as a generic in-flight guard for this rebalance op.
-    /// - Locks the target market index in `market_execution_lock` to serialize the underlying
-    ///   market call.
+    /// - Acquires a fenced market lease in `market_execution_lock` before the underlying
+    ///   market call and enforces the lease token across callback settlement.
     ///
     /// Expects that a supply withdrawal request for this vault already exists in the given
     /// `market` and is ready to be executed.
@@ -591,7 +657,11 @@ impl Contract {
         let principal = self.principal_of(market_id);
         require!(principal > 0, "No principal to withdraw");
 
-        self.market_execution_lock.lock(market_id);
+        let lease = self.market_execution_lock.lock(
+            market_id,
+            op_id,
+            u64::MAX.saturating_sub(env::block_timestamp()),
+        );
 
         // Use Allocating as a generic in-flight guard for this rebalancing op.
         self.next_op_id = op_id.saturating_add(1);
@@ -613,6 +683,7 @@ impl Contract {
                         .rebalance_withdraw_01_execute_withdraw_fetch_position(
                             op_id,
                             market_id,
+                            lease.fencing_token.0.into(),
                             batch_limit,
                             U128(principal),
                         ),
@@ -630,20 +701,30 @@ impl Contract {
         plan.sort_unstable();
         plan.dedup();
 
+        if plan.is_empty() {
+            let report = idle.build_real_assets_report();
+            return PromiseOrValue::Value(report);
+        }
+
         let now = env::block_timestamp();
-        let refresh_plan = {
+        let refresh_execution_plan = {
             let targets: Vec<u32> = plan.iter().map(IntoTargetId::into_target_id).collect();
-            templar_curator_primitives::policy::target_set::build_refresh_plan_from_targets(
+            let refresh_timing =
+                templar_curator_primitives::policy::refresh_plan::RefreshTiming::new(
+                    idle.refresh_cooldown_ns.into(),
+                    (idle.last_refresh_ns != 0).then_some(idle.last_refresh_ns.into()),
+                );
+
+            templar_curator_primitives::policy::refresh_plan::refresh_execution_plan(
                 &targets,
-                idle.refresh_cooldown_ns,
-                idle.last_refresh_ns,
+                refresh_timing,
             )
             .unwrap_or_else(|_| panic_with_message("Invalid refresh plan"))
         };
-        refresh_plan
-            .check_cooldown(now)
+        let (refresh_plan, refresh_throttle) = refresh_execution_plan.into_parts();
+        let _refresh_throttle = refresh_throttle
+            .try_acquire(TimestampNs(now))
             .unwrap_or_else(|_| panic_with_message("Refresh throttled"));
-        idle.last_refresh_ns = now;
 
         let op_id = idle.next_op_id;
         idle.next_op_id = idle.next_op_id.saturating_add(1);
@@ -655,7 +736,7 @@ impl Contract {
         }
         .emit();
 
-        let kernel_plan = refresh_plan.to_target_list();
+        let kernel_plan = refresh_plan.into_targets();
         let kernel_state = idle.kernel_state_mirror();
         let kernel_config = idle.kernel_config_mirror();
         let kernel_restrictions = idle.kernel_restrictions_mirror();
@@ -748,15 +829,30 @@ impl Contract {
     /// - If Withdrawing: refunds escrowed shares to the owner and dequeues the pending request.
     /// - If in Payout: re-syncs idle_balance with the underlying FT balance,
     ///   refunds escrowed shares to the owner, and dequeues the pending request.
-    /// - Clears withdraw state and market execution locks and returns the vault to Idle.
+    /// - Clears withdraw state and market execution leases and returns the vault to Idle.
     pub fn unbrick(&mut self) -> PromiseOrValue<()> {
         crate::auth::require_action(crate::auth::ActionKind::AbortWithdrawing);
 
         let kernel_state = self.op_state.clone();
         let now = env::block_timestamp();
         let context = RecoveryContext::forced(now);
-        let progress = RecoveryProgress::new(now);
-        let Some(action) = determine_recovery_action(&kernel_state, &context, &progress) else {
+        let progress = match &kernel_state {
+            OpState::Allocating(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Withdrawing(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Refreshing(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Payout(state) => RecoveryProgress::new(state.op_id, now),
+            OpState::Idle => return PromiseOrValue::Value(()),
+        };
+        let payout_evidence = match &kernel_state {
+            OpState::Payout(state) => Some(PayoutRecoveryEvidence::Failure {
+                restore_idle: state.amount,
+            }),
+            _ => None,
+        };
+        let Some(action) =
+            determine_recovery_action(&kernel_state, &context, &progress, payout_evidence)
+                .unwrap_or_else(|_| panic_with_message("Recovery planning failed"))
+        else {
             return PromiseOrValue::Value(());
         };
 
@@ -805,7 +901,7 @@ impl Contract {
                 .emit();
 
                 match outcome {
-                    PayoutOutcome::Success { .. } => {
+                    PayoutOutcome::Success => {
                         let (receiver, amount) = match &self.op_state {
                             OpState::Payout(s) => (s.receiver, s.amount),
                             _ => return PromiseOrValue::Value(()),
@@ -818,7 +914,7 @@ impl Contract {
                         );
                         PromiseOrValue::Value(())
                     }
-                    PayoutOutcome::Failure { .. } => {
+                    PayoutOutcome::Failure => {
                         // Treat stuck payout as failure, but re-sync idle_balance using
                         // the actual underlying FT balance held by the vault account.
                         PromiseOrValue::Promise(
@@ -966,7 +1062,7 @@ impl Contract {
             sentinel: role_member(&Role::Sentinel, "Sentinel"),
             underlying_token: self.underlying_asset.clone(),
             initial_timelock_ns: u64::from(self.governance_timelocks.timelock_config_ns).into(),
-            fees: self.fees.clone(),
+            fees: boundary_fees_from_kernel(self.fees.clone()),
             skim_recipient: self.skim_recipient.clone(),
             name: meta.name,
             symbol: meta.symbol,
@@ -1012,7 +1108,7 @@ impl Contract {
     }
 
     pub fn get_fees(&self) -> Fees<U128> {
-        self.fees.clone().into()
+        boundary_fees_from_kernel(self.fees.clone()).into()
     }
 
     /// Returns a best-effort estimate of the maximum additional amount that can be deposited
@@ -1143,14 +1239,14 @@ impl Contract {
         }
     }
 
-    /// Returns `true` if any market execution lock is currently held.
+    /// Returns `true` if any market execution lease is currently held.
     ///
     /// This is a coarse signal that a withdrawal or allocator-only
     /// rebalance is in-flight against at least one market.
     pub fn has_pending_market_withdrawal(&self) -> bool {
         self.market_execution_lock
             .inner()
-            .active_count(env::block_timestamp())
+            .active_len(TimestampNs(env::block_timestamp()))
             > 0
     }
 
@@ -2004,10 +2100,10 @@ impl Contract {
         }
 
         {
+            use templar_curator_primitives::find_first_duplicate;
+
             let ids: Vec<u32> = route.iter().map(IntoTargetId::into_target_id).collect();
-            if let Some(dup) =
-                templar_curator_primitives::policy::target_set::find_duplicate_target_id(&ids)
-            {
+            if let Some(dup) = find_first_duplicate(&ids) {
                 use crate::convert::IntoMarketId;
                 panic_with_message(&format!(
                     "Duplicate market in withdraw route: {}",
@@ -2028,6 +2124,7 @@ impl Contract {
 
         let request = templar_vault_kernel::transitions::WithdrawalRequest {
             op_id,
+            request_id: self.withdraw_queue.next_withdraw_to_execute,
             amount,
             receiver: account_id_to_address(receiver),
             owner: account_id_to_address(owner),
@@ -2053,6 +2150,7 @@ impl Contract {
     fn pay_or_signal_next_withdraw(&mut self) -> PromiseOrValue<()> {
         let OpState::Withdrawing(WithdrawingState {
             op_id,
+            request_id: _,
             index,
             remaining,
             receiver,
@@ -2151,10 +2249,13 @@ impl Contract {
         burn_shares: u128,
     ) -> PromiseOrValue<()> {
         let receiver_account = self.resolve_account(receiver);
-        let withdrawing = unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
+        let withdrawing: crate::op_guard::OpGuard<'_, crate::op_guard::WithdrawingSpec> =
+            unwrap_or_return!(crate::impl_callbacks::or_stop(self, op_id));
+        let request_id = withdrawing.state().request_id;
 
         let mut payout = withdrawing.into_payout(PayoutState {
             op_id,
+            request_id,
             receiver: *receiver,
             amount,
             owner: *owner,
@@ -2236,6 +2337,7 @@ impl Contract {
 
         if index as usize >= plan.len() {
             let report = self.build_real_assets_report();
+            self.last_refresh_ns = u64::from(report.refreshed_at);
             Event::RefreshCompleted {
                 op_id: op_id.into(),
                 markets: plan.into_iter().map(MarketId::from).collect(),

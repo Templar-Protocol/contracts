@@ -61,7 +61,15 @@ mod postcard_serde_impl {
         where
             S: Serializer,
         {
-            Serialize::serialize(&self.0, serializer)
+            #[cfg(feature = "soroban")]
+            {
+                self.0.serialize(serializer)
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                Serialize::serialize(&self.0, serializer)
+            }
         }
     }
 
@@ -70,7 +78,15 @@ mod postcard_serde_impl {
         where
             D: Deserializer<'de>,
         {
-            <Number as Deserialize>::deserialize(deserializer).map(Wad)
+            #[cfg(feature = "soroban")]
+            {
+                u128::deserialize(deserializer).map(|value| Wad(Number::from(value)))
+            }
+
+            #[cfg(not(feature = "soroban"))]
+            {
+                <Number as Deserialize>::deserialize(deserializer).map(Wad)
+            }
         }
     }
 }
@@ -179,7 +195,7 @@ impl Wad {
     #[inline]
     #[must_use]
     pub fn apply_floored(self, amount: Number) -> Number {
-        Number::mul_div_floor(amount, self.0, Number::from(Self::SCALE))
+        mul_wad_floor(amount, self)
     }
 }
 
@@ -260,7 +276,7 @@ pub fn compute_fee_shares_from_assets(
 #[inline]
 #[must_use]
 pub fn mul_wad_floor(x: Number, y: Wad) -> Number {
-    y.apply_floored(x)
+    Number::mul_div_floor(x, y.0, Number::from(Wad::SCALE))
 }
 
 /// Multiplies and divides with flooring: floor(x * y / denom).
@@ -287,7 +303,10 @@ pub const YEAR_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
 /// to the max rate if configured.
 ///
 /// When `max_rate` is `Some`, limits the effective total_assets to
-/// `anchor_total_assets * (1 + max_rate * elapsed / YEAR)`.
+/// `anchor_total_assets * (1 + max_rate * elapsed / YEAR)`. If the anchor
+/// asset value is zero, any positive current assets are treated as uncapped
+/// zero-anchor growth and excluded from fee accrual until the anchor is
+/// advanced by the caller.
 #[inline]
 #[must_use]
 pub fn total_assets_for_fee_accrual(
@@ -300,11 +319,11 @@ pub fn total_assets_for_fee_accrual(
     let Some(max_rate) = max_rate else {
         return cur_total_assets;
     };
-    if cur_total_assets <= anchor_total_assets
-        || anchor_total_assets == 0
-        || now_ns < anchor_timestamp_ns
-    {
+    if cur_total_assets <= anchor_total_assets || now_ns < anchor_timestamp_ns {
         return cur_total_assets;
+    }
+    if anchor_total_assets == 0 {
+        return 0;
     }
     let elapsed_ns = now_ns - anchor_timestamp_ns;
     if elapsed_ns == 0 {

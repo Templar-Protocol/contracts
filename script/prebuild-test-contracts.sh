@@ -27,10 +27,13 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/contract/redstone-adapter"
 cargo near build non-reproducible-wasm 1>&2
 
-cd "$ROOT_DIR/contract/lst-oracle"
+cd "$ROOT_DIR/contract/proxy-oracle/near/lst-contract"
 cargo near build non-reproducible-wasm 1>&2
 
-cd "$ROOT_DIR/contract/proxy-oracle"
+cd "$ROOT_DIR/contract/proxy-oracle/near/contract"
+cargo near build non-reproducible-wasm 1>&2
+
+cd "$ROOT_DIR/contract/proxy-oracle/near/governance-contract"
 cargo near build non-reproducible-wasm 1>&2
 
 cd "$ROOT_DIR/contract/universal-account"

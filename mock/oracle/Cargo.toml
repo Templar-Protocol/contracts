@@ -15,3 +15,4 @@ near-sdk.workspace = true
 near-contract-standards.workspace = true
 primitive-types.workspace = true
 templar-common.workspace = true
+templar-primitives = { workspace = true, features = ["near"] }

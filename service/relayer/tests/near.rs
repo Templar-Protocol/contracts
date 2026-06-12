@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use near_jsonrpc_client::JsonRpcClient;
 use near_workspaces::{network::Sandbox, Worker};
-use templar_common::oracle::{
-    price_transformer::{self, PriceTransformer, ProxyPriceTransformer},
-    proxy::{Proxy, Source},
-    pyth::PriceIdentifier,
-    OracleRequest,
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
+    price_transformer::{self, PriceTransformer},
+    request::OracleRequest,
 };
 use templar_relayer::client::near::{Near, ResolvePriceIdentifierError};
 use test_utils::{
@@ -102,26 +103,28 @@ async fn transformer_resolution(#[future(awt)] worker: Worker<Sandbox>) {
     );
 
     // Test proxy contract too
-    let proxy_borrow = Proxy::median_low([OracleRequest::pyth(
-        price_oracle.id().to_owned(),
-        DEFAULT_BORROW_PRICE_ID,
-    )
-    .into()]);
+    let proxy_borrow = Proxy::median_low(
+        [OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID).into()],
+        FreshnessFilter::empty(),
+    );
     let proxy_borrow_id = PriceIdentifier([0x01_u8; 32]);
 
     proxy_oracle
-        .set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
+        .admin_set_proxy(proxy_oracle.account(), proxy_borrow_id, Some(proxy_borrow))
         .await;
 
-    let transform_borrow = Proxy::median_low([Source::Transformer(ProxyPriceTransformer::lst(
-        OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
-        24,
-        price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
-    ))]);
+    let transform_borrow = Proxy::median_low(
+        [Source::Transformer(ProxyPriceTransformer::lst(
+            OracleRequest::pyth(price_oracle.id().to_owned(), DEFAULT_BORROW_PRICE_ID),
+            24,
+            price_transformer::Call::new_simple(borrow_asset.id(), "redemption_rate"),
+        ))],
+        FreshnessFilter::empty(),
+    );
     let transform_borrow_id = PriceIdentifier([0x02_u8; 32]);
 
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             transform_borrow_id,
             Some(transform_borrow.clone()),

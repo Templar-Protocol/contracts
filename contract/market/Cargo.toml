@@ -33,6 +33,7 @@ near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 near-contract-standards.workspace = true
 templar-common.workspace = true
+templar-primitives = { workspace = true, features = ["near"] }
 
 [dev-dependencies]
 itertools.workspace = true
@@ -41,6 +42,8 @@ near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
+templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-near-common.workspace = true
 templar-relayer = { path = "../../service/relayer" }
 
 [lints]

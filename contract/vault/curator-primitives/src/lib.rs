@@ -24,8 +24,8 @@ pub mod recovery;
 pub mod utils;
 
 pub use auth::{
-    boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter, AuthError,
-    AuthPolicyClass, AuthResult,
+    allowed_while_paused, boundary_policy_class, canonical_policy_class, ActionKind, AuthAdapter,
+    AuthError, AuthPolicyClass, AuthResult,
 };
 pub use rbac::{RbacAuth, RbacConfig, Role, RoleAssignment};
 
@@ -38,29 +38,38 @@ pub use policy::{
         set_cap_group_record_absolute_cap, set_cap_group_record_relative_cap,
     },
     cooldown::{Cooldown, CooldownError},
-    market_lock::{validate_lock_expiry, MarketLock, MarketLockSet},
-    refresh_plan::{RefreshPlan, RefreshPlanError},
+    market_lock::{
+        AcquireLeaseError, FencingError, FencingToken, LeaseDurationNs, LeaseOwner, MarketLease,
+        MarketLeaseRegistry, ReleaseLeaseError,
+    },
+    refresh_plan::{
+        build_stale_refresh_plan, refresh_execution_plan, RefreshExecutionPlan, RefreshPlan,
+        RefreshPlanError, RefreshTargetStatus, RefreshThrottle, RefreshTiming,
+    },
     state::{MarketConfig, PolicyState},
     supply_queue::{SupplyQueue, SupplyQueueEntry, SupplyQueueError},
     target_set::{
-        build_refresh_plan_from_targets, build_withdraw_plan_from_target_principals,
-        find_duplicate_target_id, find_first_duplicate, find_locked_targets, get_locked_targets,
-        has_unique_items, is_target_locked, validate_no_duplicate_targets,
+        build_refresh_plan_from_targets, build_withdraw_capacity_pairs_from_target_principals,
+        find_first_duplicate, has_unique_items,
     },
-    withdraw_route::{WithdrawRoute, WithdrawRouteEntry, WithdrawRouteError},
+    withdraw_route::{
+        withdraw_plan_from_principals, WithdrawPlanEntry, WithdrawRoute, WithdrawRouteEntry,
+        WithdrawRouteError,
+    },
 };
 
 #[cfg(feature = "recovery")]
 pub use recovery::{
-    determine_recovery_action, handle_allocation_failure, handle_payout_failure,
-    handle_payout_failure_default, handle_refresh_failure, handle_withdrawal_failure,
-    RecoveryContext, RecoveryOutcome, RecoveryProgress,
+    compute_payout_failure_outcome, compute_payout_success_outcome, compute_recovery_stats,
+    compute_settlement_shares, determine_recovery_action, plan_allocation_recovery,
+    plan_payout_recovery, plan_refresh_recovery, plan_withdrawal_recovery, PayoutRecoveryEvidence,
+    RecoveryContext, RecoveryError, RecoveryOutcome, RecoveryPolicy, RecoveryProgress,
 };
 
 pub use governance::{
     timelock_config_decision, FeeChangeDecision, FeeChangeError, FeeConfig, MembershipChangeError,
-    PendingQueue, PendingQueueError, PendingValue, Restrictions, TimelockConfigError,
-    TimelockDecision,
+    MembershipChangeKind, PendingActions, PendingValue, Restrictions, ScheduledPending,
+    TakePending, TimelockConfigError, TimelockDecision,
 };
 pub use utils::{nonnegative_i128_to_u128, seconds_to_nanoseconds, u128_to_i128_checked};
 

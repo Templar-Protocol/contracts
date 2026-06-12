@@ -12,10 +12,13 @@ use crate::{
 
 use near_contract_standards::fungible_token::core::ext_ft_core;
 use near_sdk::{
-    env, json_types::U128, AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
+    env,
+    json_types::{U128, U64},
+    AccountId, Gas, NearToken, Promise, PromiseError, PromiseOrValue,
 };
 use near_sdk_contract_tools::ft::{Nep141Burn, Nep141Transfer};
 
+use crate::policy::FencingToken;
 use templar_common::{
     guard::GuardSpec,
     market::ext_market,
@@ -58,6 +61,17 @@ where
     });
 
     Ok(guard)
+}
+
+fn is_stale_market_callback(
+    contract: &Contract,
+    market: MarketId,
+    op_id: u64,
+    fencing_token: U64,
+) -> bool {
+    !contract
+        .market_execution_lock
+        .has_current_lease(market, op_id, FencingToken(fencing_token.0))
 }
 
 /// State machine:
@@ -228,7 +242,11 @@ impl Contract {
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
         if did_create.is_ok() {
-            self.market_execution_lock.lock(market);
+            self.market_execution_lock.lock(
+                market,
+                op_id,
+                u64::MAX.saturating_sub(env::block_timestamp()),
+            );
         } else {
             Event::CreateWithdrawalFailed {
                 op_id: op_id.into(),
@@ -269,8 +287,12 @@ impl Contract {
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
         market: MarketId,
+        fencing_token: U64,
         batch_limit: Option<u32>,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
         let Ok(before_balance) = before_balance else {
@@ -293,6 +315,7 @@ impl Contract {
                     .execute_withdraw_02_reconcile_position(
                         op_id,
                         market,
+                        fencing_token,
                         U128(principal),
                         before_balance,
                     ),
@@ -315,9 +338,13 @@ impl Contract {
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
         op_id: u64,
         market: MarketId,
+        fencing_token: U64,
         principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let _ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
         let reported_principal: u128 = match position {
@@ -370,6 +397,7 @@ impl Contract {
                         .execute_withdraw_03_settle(
                             op_id,
                             market,
+                            fencing_token,
                             principal,
                             U128(reported_principal),
                             before_balance,
@@ -385,10 +413,14 @@ impl Contract {
         #[callback_result] after_balance: Result<U128, PromiseError>,
         op_id: u64,
         market: MarketId,
+        fencing_token: U64,
         before_principal: U128,
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let ctx = unwrap_or_return!(self.withdraw_ctx_and_market_or_exit(op_id, market));
 
         let Ok(after_balance) = after_balance else {
@@ -431,7 +463,8 @@ impl Contract {
             Ordering::Equal => {}
         }
 
-        self.market_execution_lock.unlock(market);
+        self.market_execution_lock
+            .unlock(market, op_id, FencingToken(fencing_token.0));
 
         // Reconcile remaining/collected based on credited inflow only
         let WithdrawReconciliation {
@@ -508,13 +541,21 @@ impl Contract {
         #[callback_result] before_balance: Result<U128, PromiseError>,
         op_id: u64,
         market_id: MarketId,
+        fencing_token: U64,
         batch_limit: Option<u32>,
         before_principal: U128,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market_id, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
 
         let Ok(before_balance) = before_balance else {
-            allocating.market_execution_lock.unlock(market_id);
+            allocating.market_execution_lock.unlock(
+                market_id,
+                op_id,
+                FencingToken(fencing_token.0),
+            );
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -539,6 +580,7 @@ impl Contract {
                     .rebalance_withdraw_02_reconcile_position(
                         op_id,
                         market_id,
+                        fencing_token,
                         before_principal,
                         before_balance,
                     ),
@@ -552,9 +594,13 @@ impl Contract {
         #[callback_result] position: Result<Option<SupplyPosition>, PromiseError>,
         op_id: u64,
         market_id: MarketId,
+        fencing_token: U64,
         before_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market_id, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
 
         let reported_principal: u128 = match position {
@@ -562,7 +608,11 @@ impl Contract {
             // Treat missing position as zero - market has no funds for us
             Ok(None) => 0,
             Err(_) => {
-                allocating.market_execution_lock.unlock(market_id);
+                allocating.market_execution_lock.unlock(
+                    market_id,
+                    op_id,
+                    FencingToken(fencing_token.0),
+                );
                 let _idle = allocating.into_idle();
                 Event::RebalanceWithdrawStopped {
                     op_id: op_id.into(),
@@ -584,6 +634,7 @@ impl Contract {
                         .rebalance_withdraw_03_settle(
                             op_id,
                             market_id,
+                            fencing_token,
                             before_principal,
                             U128(reported_principal),
                             before_balance,
@@ -598,14 +649,22 @@ impl Contract {
         #[callback_result] after_balance: Result<U128, PromiseError>,
         op_id: u64,
         market_id: MarketId,
+        fencing_token: U64,
         before_principal: U128,
         reported_principal: U128,
         before_balance: U128,
     ) -> PromiseOrValue<()> {
+        if is_stale_market_callback(self, market_id, op_id, fencing_token) {
+            return PromiseOrValue::Value(());
+        }
         let mut allocating = unwrap_or_return!(or_stop::<AllocatingSpec>(self, op_id));
 
         let Ok(after_balance) = after_balance else {
-            allocating.market_execution_lock.unlock(market_id);
+            allocating.market_execution_lock.unlock(
+                market_id,
+                op_id,
+                FencingToken(fencing_token.0),
+            );
             let _idle = allocating.into_idle();
             Event::RebalanceWithdrawStopped {
                 op_id: op_id.into(),
@@ -624,7 +683,9 @@ impl Contract {
             before_balance,
         );
 
-        allocating.market_execution_lock.unlock(market_id);
+        allocating
+            .market_execution_lock
+            .unlock(market_id, op_id, FencingToken(fencing_token.0));
 
         let _idle = allocating.into_idle();
         Event::RebalanceWithdrawCompleted {
@@ -648,6 +709,7 @@ impl Contract {
 
         let PayoutState {
             op_id,
+            request_id: _,
             receiver,
             amount,
             owner,
@@ -857,6 +919,7 @@ impl Contract {
 
         if next_index as usize >= next_plan.len() {
             let report = self.build_real_assets_report();
+            self.last_refresh_ns = u64::from(report.refreshed_at);
             Event::RefreshCompleted {
                 op_id: op_id.into(),
                 markets: next_plan.into_iter().map(MarketId::from).collect(),

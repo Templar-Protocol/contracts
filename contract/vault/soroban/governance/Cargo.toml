@@ -15,10 +15,11 @@ default = []
 testutils = ["soroban-sdk/testutils"]
 
 [dependencies]
-soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+soroban-sdk = { version = "25.3.0", features = ["alloc", "experimental_spec_shaking_v2"] }
 templar-curator-primitives = { path = "../../curator-primitives" }
 templar-vault-kernel = { path = "../../kernel" }
 templar-soroban-shared-types = { path = "../shared-types" }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
-soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimental_spec_shaking_v2"] }

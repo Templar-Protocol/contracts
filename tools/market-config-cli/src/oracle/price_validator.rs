@@ -4,9 +4,9 @@ use near_sdk::AccountId;
 use reqwest::{Client, Url};
 use serde::Deserialize;
 use serde_json::json;
-use templar_common::number::Decimal;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::utils::Network;
+use templar_common::Decimal;
 
 pub struct PriceValidator {
     client: JsonRpcClient,

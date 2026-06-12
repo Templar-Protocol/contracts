@@ -39,7 +39,7 @@ graph TB
             CVAULT["CuratorVault<S, A, E>\nexecutor orchestration"]
             STORAGE["SorobanStorage\nversioned state blob\nTTL extension + migration gate"]
             RBAC["RbacAuth / Soroban auth wiring"]
-            INTERP["SorobanEffectInterpreter\nSEP-41 + token transfers\npostcard kernel events"]
+INTERP["SorobanEffectInterpreter\nSEP-41 + token transfers\npostcard kernel events"]
             ADDR["kernel_address_from_sdk()\nSHA256(domain || strkey)"]
 
             ENTRY --> CVAULT
@@ -82,7 +82,7 @@ sequenceDiagram
     Vault->>Effects: execute_effects()
     Effects->>Asset: transfer / transfer_from
     Effects->>Share: mint / burn / transfer
-    Effects-->>Contract: emit postcard kernel event(s)
+Effects-->>Contract: emit postcard kernel event(s)
     Contract-->>Caller: result
 ```
 
@@ -163,7 +163,6 @@ graph TD
     AllocEmergency["AllocatorEmergency\nAbortAllocating\nAbortWithdrawing\nAbortRefreshing"]
     Curator["Curator\nPolicyAdmin\nManualReconcile\nEmergencyReset"]
 
-    Curator --> Sentinel
     Curator --> Allocator
     Sentinel --> AllocEmergency
     Allocator --> AllocEmergency

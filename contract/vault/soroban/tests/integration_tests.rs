@@ -6,19 +6,29 @@ use rstest::{fixture, rstest};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Env,
+    Address as SdkAddress, Bytes, Env,
 };
+use std::string::String as AllocString;
+use templar_curator_primitives::policy::state::MarketConfig;
+use templar_soroban_governance::{GovernanceError, SorobanVaultGovernanceContract};
 use templar_soroban_runtime::{
-    contract::{ContractConfig, CuratorVault, SorobanVaultContract},
+    contract::{
+        ContractConfig, CuratorVault, SorobanVaultContract, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
+    },
     rbac::{RbacAuth, RbacConfig, Role},
-    storage::{SorobanStorage, VersionedState},
+    storage::SorobanStorage,
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
     EffectContext,
     EffectInterpreter,
     Storage, // Import the trait
 };
-use templar_soroban_shared_types::GovernanceConfigKind;
-use templar_vault_kernel::state::queue::DEFAULT_COOLDOWN_NS;
+use templar_soroban_shared_types::{
+    GovernanceCommand, VaultCommand, VaultCommandResult, GOVERNANCE_CONFIG_KIND_ALLOCATORS,
+    GOVERNANCE_CONFIG_KIND_CURATOR, GOVERNANCE_CONFIG_KIND_SENTINEL,
+    GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_POLICY_KIND_CAP,
+    GOVERNANCE_POLICY_KIND_FEES, GOVERNANCE_POLICY_KIND_PAUSED,
+    GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+};
 use templar_vault_kernel::{
     apply_action, compute_fee_shares_from_assets, compute_management_fee_shares,
     effects::KernelEffect, total_assets_for_fee_accrual, Address, AllocatingState,
@@ -37,6 +47,10 @@ use templar_vault_kernel::{
 mod common;
 use common::{MockInterpreter, TestPermissiveAuth};
 
+fn sdk_wire(address: &soroban_sdk::Address) -> AllocString {
+    AllocString::from_utf8(address.to_string().to_bytes().to_alloc_vec()).expect("valid address")
+}
+
 type ProxyCoreView = (
     (
         soroban_sdk::Address,
@@ -46,7 +60,7 @@ type ProxyCoreView = (
     ),
     (i128, i128, bool),
     (i128, i128, i128, i128),
-    (i128, u64, i128, i128),
+    (i128, u64, i128, i128, i128),
 );
 type ProxyPolicyView = (
     soroban_sdk::Vec<u32>,
@@ -61,7 +75,6 @@ fn test_config() -> ContractConfig {
     ContractConfig::new(
         Address([1u8; 32]),       // curator
         Address([9u8; 32]),       // vault_address
-        vec![Address([2u8; 32])], // guardians
         vec![Address([3u8; 32])], // allocators
         Address([4u8; 32]),       // asset_address
         Address([5u8; 32]),       // share_address
@@ -87,6 +100,7 @@ fn user_addr() -> Address {
 struct SorobanContractFixture {
     env: Env,
     contract_id: soroban_sdk::Address,
+    asset_token: soroban_sdk::Address,
 }
 
 struct VaultProxy<'a> {
@@ -163,6 +177,64 @@ impl<'a> VaultProxy<'a> {
             .2
              .7)
     }
+
+    fn max_deposit(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .2)
+    }
+
+    fn max_mint(&self) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self
+            .view(soroban_sdk::Address::generate(self.env), 0, 0)?
+            .2
+             .3)
+    }
+
+    fn max_withdraw(
+        &self,
+        owner: soroban_sdk::Address,
+    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self.view(owner, 0, 0)?.2 .4)
+    }
+
+    fn max_redeem(
+        &self,
+        owner: soroban_sdk::Address,
+    ) -> Result<i128, templar_soroban_runtime::ContractError> {
+        Ok(self.view(owner, 0, 0)?.2 .5)
+    }
+
+    fn execute(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<VaultCommandResult, templar_soroban_runtime::ContractError> {
+        let payload = Bytes::from_slice(self.env, &command.encode());
+        let result = SorobanVaultContract::execute(self.env.clone(), payload)?;
+        VaultCommandResult::decode(&result.to_alloc_vec())
+            .map_err(|_| templar_soroban_runtime::ContractError::InvalidInput)
+    }
+
+    fn execute_unit(
+        &self,
+        command: &VaultCommand,
+    ) -> Result<(), templar_soroban_runtime::ContractError> {
+        match self.execute(command)? {
+            VaultCommandResult::Unit => Ok(()),
+            _ => Err(templar_soroban_runtime::ContractError::InvalidInput),
+        }
+    }
+
+    fn execute_governance_unit(
+        &self,
+        caller: &soroban_sdk::Address,
+        command: &GovernanceCommand,
+    ) -> Result<(), templar_soroban_runtime::ContractError> {
+        let payload = Bytes::from_slice(self.env, &command.encode());
+        SorobanVaultContract::execute_governance(self.env.clone(), caller.clone(), payload)?;
+        Ok(())
+    }
 }
 
 #[fixture]
@@ -179,13 +251,150 @@ fn soroban_contract_fixture() -> SorobanContractFixture {
     let share = env
         .register_stellar_asset_contract_v2(contract_id.clone())
         .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::initialize(env.clone(), curator.clone(), curator, asset, share, 0, 0)
-            .unwrap();
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator,
+            governance,
+            asset.clone(),
+            share,
+            0,
+            0,
+        )
+        .unwrap();
     });
 
-    SorobanContractFixture { env, contract_id }
+    SorobanContractFixture {
+        env,
+        contract_id,
+        asset_token: asset,
+    }
+}
+
+#[test]
+fn runtime_initialize_rejects_non_contract_governance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let vault = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = SdkAddress::from_str(
+        &env,
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    );
+    let asset = env
+        .register_stellar_asset_contract_v2(soroban_sdk::Address::generate(&env))
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(vault.clone())
+        .address();
+
+    let result = env.as_contract(&vault, || {
+        SorobanVaultContract::initialize(env.clone(), curator, governance, asset, share, 0, 0)
+    });
+
+    assert_eq!(
+        result,
+        Err(templar_soroban_runtime::ContractError::InvalidInput)
+    );
+}
+
+#[rstest]
+#[case(GOVERNANCE_CONFIG_KIND_CURATOR, true)]
+#[case(GOVERNANCE_CONFIG_KIND_SENTINEL, true)]
+#[case(GOVERNANCE_CONFIG_KIND_ALLOCATORS, false)]
+fn runtime_governance_config_rejects_sac_role_addresses(
+    #[case] kind: u32,
+    #[case] primary_role: bool,
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let contract_role = env
+        .register_stellar_asset_contract_v2(contract_id.clone())
+        .address();
+
+    env.as_contract(&contract_id, || {
+        let governance = proxy.governance().unwrap();
+        let many = if primary_role {
+            None
+        } else {
+            Some(std::vec![sdk_wire(&contract_role)])
+        };
+        let command = GovernanceCommand::SetGovernanceConfig {
+            kind,
+            primary: primary_role.then(|| sdk_wire(&contract_role)),
+            many,
+            value_a: None,
+            value_b: None,
+        };
+        assert_eq!(
+            proxy.execute_governance_unit(&governance, &command),
+            Err(templar_soroban_runtime::ContractError::InvalidInput)
+        );
+    });
+}
+
+#[rstest]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_SUPPLY_QUEUE,
+        target_ids: Some(vec![0]),
+        mode: Some(0),
+        accounts: None,
+        market_id: None,
+        cap_group_id: None,
+        value: None,
+        value_b: None,
+        value_c: None,
+    }
+)]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_CAP,
+        target_ids: None,
+        mode: None,
+        accounts: None,
+        market_id: Some(0),
+        cap_group_id: None,
+        value: Some(1_000),
+        value_b: Some(1),
+        value_c: None,
+    }
+)]
+#[case(
+    GovernanceCommand::SetGovernancePolicy {
+        kind: GOVERNANCE_POLICY_KIND_PAUSED,
+        target_ids: None,
+        mode: Some(1),
+        accounts: None,
+        market_id: Some(0),
+        cap_group_id: None,
+        value: None,
+        value_b: None,
+        value_c: None,
+    }
+)]
+fn runtime_governance_policy_rejects_irrelevant_fields(
+    #[case] command: GovernanceCommand,
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.as_contract(&contract_id, || {
+        let governance = proxy.governance().unwrap();
+        assert_eq!(
+            proxy.execute_governance_unit(&governance, &command),
+            Err(templar_soroban_runtime::ContractError::InvalidInput)
+        );
+    });
 }
 
 #[rstest]
@@ -208,7 +417,7 @@ fn preview_kernel_config(paused: bool, virtual_shares: u128, virtual_assets: u12
     VaultConfig {
         fees: FeesSpec::zero(),
         min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-        withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+        withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
         max_pending_withdrawals: MAX_PENDING as u32,
         paused,
         virtual_shares,
@@ -302,14 +511,15 @@ fn soroban_contract_preview_deposit_matches_kernel(
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
     let assets_in = 500u128;
     let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
 
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let empty_state = VaultState::default();
-        let versioned = VersionedState::new(empty_state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&empty_state).unwrap();
 
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
         let minted = mint_shares_from_deposit(empty_state, assets_in, 0, 0);
@@ -324,10 +534,18 @@ fn soroban_contract_preview_deposit_matches_kernel(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
+    });
+    asset_admin_client.mint(&contract_id, &10_000);
 
+    env.as_contract(&contract_id, || {
         let preview = proxy.preview_deposit(assets_in as i128).unwrap();
+        let state = VaultState {
+            total_assets: 10_000,
+            total_shares: 8_000,
+            idle_assets: 10_000,
+            ..Default::default()
+        };
         let minted = mint_shares_from_deposit(state, assets_in, 0, 0);
         assert_eq!(preview as u128, minted);
     });
@@ -339,23 +557,27 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
     let assets_in = 500u128;
     let virtual_shares = 123u128;
     let virtual_assets = 456u128;
     let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
 
     env.as_contract(&contract_id, || {
         let governance = proxy.governance().unwrap();
-        SorobanVaultContract::set_governance_config(
-            env.clone(),
-            governance,
-            GovernanceConfigKind::VirtualOffsets,
-            None,
-            None,
-            Some(virtual_shares as i128),
-            Some(virtual_assets as i128),
-        )
-        .unwrap();
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernanceConfig {
+                    kind: GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
+                    primary: None,
+                    many: None,
+                    value_a: Some(virtual_shares as i128),
+                    value_b: Some(virtual_assets as i128),
+                },
+            )
+            .unwrap();
 
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -364,17 +586,156 @@ fn soroban_contract_preview_deposit_uses_configured_virtual_offsets(
             idle_assets: 10_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
-
-        let preview = proxy.preview_deposit(assets_in as i128).unwrap();
-        let minted = mint_shares_from_deposit(state, assets_in, virtual_shares, virtual_assets);
-        assert_eq!(preview as u128, minted);
+        storage.save_state(&state).unwrap();
 
         let stored_offsets = proxy.virtual_offsets().unwrap();
         assert_eq!(
             stored_offsets,
             (virtual_shares as i128, virtual_assets as i128)
+        );
+    });
+    asset_admin_client.mint(&contract_id, &10_000);
+
+    env.as_contract(&contract_id, || {
+        let preview = proxy.preview_deposit(assets_in as i128).unwrap();
+        let state = VaultState {
+            total_assets: 10_000,
+            total_shares: 8_000,
+            idle_assets: 10_000,
+            ..Default::default()
+        };
+        let minted = mint_shares_from_deposit(state, assets_in, virtual_shares, virtual_assets);
+        assert_eq!(preview as u128, minted);
+    });
+}
+
+#[test]
+fn governance_routes_upgrade_migrate_and_cancel_migration_to_real_vault() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let vault = env.register(SorobanVaultContract, ());
+    let admin = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset = env
+        .register_stellar_asset_contract_v2(asset_admin)
+        .address();
+    let share = env
+        .register_stellar_asset_contract_v2(vault.clone())
+        .address();
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&admin, &vault, &(5_000_000_000u64)),
+    );
+    let wasm_hash = env.deployer().upload_contract_wasm(Bytes::new(&env));
+
+    env.as_contract(&vault, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            admin.clone(),
+            governance.clone(),
+            asset,
+            share,
+            0,
+            0,
+        )
+        .unwrap();
+    });
+
+    let upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 106,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), upgrade_id).unwrap();
+    });
+
+    let migrate_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_migrate(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 112,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), migrate_id).unwrap();
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    let second_upgrade_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_upgrade(
+            env.clone(),
+            admin.clone(),
+            wasm_hash.clone(),
+        )
+        .unwrap()
+    });
+    env.ledger().set(LedgerInfo {
+        timestamp: 206,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), second_upgrade_id)
+            .unwrap();
+    });
+
+    let cancel_id = env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::submit_cancel_migration(env.clone(), admin.clone()).unwrap()
+    });
+    assert_eq!(
+        env.as_contract(&governance, || {
+            SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id)
+        }),
+        Err(GovernanceError::ProposalNotMature)
+    );
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 212,
+        protocol_version: 25,
+        ..Default::default()
+    });
+    env.as_contract(&governance, || {
+        SorobanVaultGovernanceContract::accept(env.clone(), admin.clone(), cancel_id).unwrap();
+    });
+
+    env.as_contract(&vault, || {
+        assert_eq!(
+            SorobanVaultContract::migrate(env.clone(), governance.clone()),
+            Err(templar_soroban_runtime::ContractError::InvalidState)
         );
     });
 }
@@ -385,7 +746,9 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
     let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
 
     env.ledger().set(LedgerInfo {
         timestamp: 100,
@@ -399,10 +762,15 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             FeeSlot::new(Wad::one() / 5, Address([2u8; 32])),
             None,
         );
-        let bytes = postcard::to_allocvec(&fees).expect("fees serialize");
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
         env.storage().instance().set(
             &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
-            &bytes,
+            &Bytes::from_slice(&env, &bytes),
         );
 
         let mut storage = SorobanStorage::new(&env);
@@ -413,21 +781,33 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
             fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state.clone()))
-            .unwrap();
+        storage.save_state(&state).unwrap();
+    });
+    asset_admin_client.mint(&contract_id, &1_500);
 
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 10, Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 5, Address([2u8; 32])),
+            None,
+        );
         let config = VaultConfig {
             fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
+            withdrawal_cooldown_ns: SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS,
             max_pending_withdrawals: MAX_PENDING as u32,
             paused: false,
             virtual_shares: 0,
             virtual_assets: 0,
         };
+        let state = VaultState {
+            total_assets: 1_500,
+            total_shares: 1_000,
+            idle_assets: 1_500,
+            fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
+            ..Default::default()
+        };
         let expected_state = fee_aware_preview_state(&env, state, &config);
-
         let preview_deposit = proxy.preview_deposit(1_000).unwrap();
         let preview_withdraw = proxy.preview_withdraw(1_000).unwrap();
         let preview_redeem = proxy.preview_redeem(800).unwrap();
@@ -448,12 +828,309 @@ fn soroban_contract_previews_simulate_configured_fee_accrual(
 }
 
 #[rstest]
-fn soroban_contract_preview_withdraw_matches_kernel(
+fn soroban_contract_proxy_view_does_not_inflate_from_zero_fee_anchor(
     soroban_contract_fixture: SorobanContractFixture,
 ) {
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 2, Address([1u8; 32])),
+            FeeSlot::new(Wad::zero(), Address([2u8; 32])),
+            None,
+        );
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 1_000,
+                fee_anchor: FeeAccrualAnchor::new(0, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        let total_shares = proxy.view(owner, 0, 0).unwrap().0 .2 .0;
+        assert_eq!(total_shares, 1_000);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_rejects_overlarge_fee_anchor(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 0,
+                external_assets: 1_000,
+                fee_anchor: FeeAccrualAnchor::new(
+                    i128::MAX as u128 + 1,
+                    templar_vault_kernel::TimestampNs(123),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.view(owner, 0, 0),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_reports_zero_atomic_limits_until_atomic_abi_exists(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_000,
+                total_shares: 1_000,
+                idle_assets: 1_000,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(proxy.max_withdraw(owner.clone()).unwrap(), 0);
+        assert_eq!(proxy.max_redeem(owner).unwrap(), 0);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_reports_fee_growth_cap(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+    let owner = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::one() / 5, Address([1u8; 32])),
+            FeeSlot::new(Wad::one() / 10, Address([2u8; 32])),
+            Some(Wad::one() / 20),
+        );
+        let mut bytes = Vec::with_capacity(113);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(1);
+        bytes.extend_from_slice(
+            &fees
+                .max_total_assets_growth_rate
+                .expect("growth cap configured")
+                .as_u128_trunc()
+                .to_le_bytes(),
+        );
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let fee_info = proxy.view(owner, 0, 0).unwrap().0 .3;
+        assert_eq!(fee_info.4, (Wad::one() / 20).as_u128_trunc() as i128);
+    });
+}
+
+#[rstest]
+fn soroban_contract_proxy_view_max_deposit_and_mint_respect_opposite_headroom(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.as_contract(&contract_id, || {
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 2,
+                total_shares: 1,
+                idle_assets: 2,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(proxy.max_deposit().unwrap(), i128::MAX);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+
+        storage
+            .save_state(&VaultState {
+                total_assets: 1,
+                total_shares: 2,
+                idle_assets: 1,
+                ..Default::default()
+            })
+            .expect("save state");
+
+        let expected_max_deposit = (((i128::MAX as u128) * 2) / 3) as i128;
+        assert_eq!(proxy.max_deposit().unwrap(), expected_max_deposit);
+        assert_eq!(proxy.max_mint().unwrap(), i128::MAX);
+    });
+}
+
+#[rstest]
+fn soroban_contract_fee_aware_preview_fails_on_supply_overflow(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let proxy = VaultProxy::new(&env);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        let fees = FeesSpec::new(
+            FeeSlot::new(Wad::zero(), Address([1u8; 32])),
+            FeeSlot::new(Wad::one(), Address([2u8; 32])),
+            None,
+        );
+        let mut bytes = Vec::with_capacity(97);
+        bytes.extend_from_slice(&fees.performance.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.performance.recipient.as_bytes());
+        bytes.extend_from_slice(&fees.management.fee_wad.as_u128_trunc().to_le_bytes());
+        bytes.extend_from_slice(fees.management.recipient.as_bytes());
+        bytes.push(0);
+        env.storage().instance().set(
+            &templar_soroban_runtime::contract::VaultDataKey::FeesSpec,
+            &Bytes::from_slice(&env, &bytes),
+        );
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: u128::MAX,
+                total_shares: u128::MAX,
+                idle_assets: u128::MAX,
+                fee_anchor: FeeAccrualAnchor::new(1, templar_vault_kernel::TimestampNs(1)),
+                ..Default::default()
+            })
+            .expect("save state");
+
+        assert_eq!(
+            proxy.preview_deposit(1),
+            Err(templar_soroban_runtime::ContractError::ConversionOverflow)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_refresh_fees_command_updates_anchor() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let proxy = VaultProxy::new(&env);
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 1_500,
+                total_shares: 1_000,
+                idle_assets: 1_500,
+                fee_anchor: FeeAccrualAnchor::new(1_000, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &1500);
+
+    env.as_contract(&contract_id, || {
+        let storage = SorobanStorage::new(&env);
+        proxy.execute_unit(&VaultCommand::RefreshFees).unwrap();
+
+        let stored_state = storage
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.fee_anchor.total_assets, 1_500);
+        assert_eq!(
+            stored_state.fee_anchor.timestamp_ns,
+            templar_vault_kernel::TimestampNs(100_000_000_000)
+        );
+    });
+}
+
+#[rstest]
+fn soroban_contract_preview_withdraw_matches_kernel(
+    soroban_contract_fixture: SorobanContractFixture,
+) {
+    let env = soroban_contract_fixture.env;
+    let contract_id = soroban_contract_fixture.contract_id;
+    let asset_token = soroban_contract_fixture.asset_token;
+    let proxy = VaultProxy::new(&env);
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
     env.as_contract(&contract_id, || {
         let mut storage = SorobanStorage::new(&env);
         let state = VaultState {
@@ -462,9 +1139,11 @@ fn soroban_contract_preview_withdraw_matches_kernel(
             idle_assets: 20_000,
             ..Default::default()
         };
-        let versioned = VersionedState::new(state.clone());
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
+    });
+    asset_admin_client.mint(&contract_id, &20_000);
 
+    env.as_contract(&contract_id, || {
         let assets_in: i128 = 1000;
         let shares_burned = proxy.preview_withdraw(assets_in).unwrap();
         assert_eq!(shares_burned, 601);
@@ -482,9 +1161,12 @@ fn soroban_contract_execute_withdraw_queue_empty_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_wire(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -496,6 +1178,7 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
     let env = soroban_contract_fixture.env;
     let contract_id = soroban_contract_fixture.contract_id;
     let user = soroban_sdk::Address::generate(&env);
+    let proxy = VaultProxy::new(&env);
 
     env.as_contract(&contract_id, || {
         let state = VaultState {
@@ -508,12 +1191,13 @@ fn soroban_contract_execute_withdraw_non_idle_errors(
             ..Default::default()
         };
         let mut storage = SorobanStorage::new(&env);
-        let versioned = VersionedState::new(state);
-        storage.save_state(&versioned).unwrap();
+        storage.save_state(&state).unwrap();
     });
 
     env.as_contract(&contract_id, || {
-        let result = SorobanVaultContract::execute_withdraw(env.clone(), user);
+        let result = proxy.execute(&VaultCommand::ExecuteWithdraw {
+            caller: sdk_wire(&user),
+        });
         assert!(result.is_err());
     });
 }
@@ -528,6 +1212,18 @@ fn create_test_vault() -> TestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -546,12 +1242,14 @@ fn create_rbac_vault() -> RbacVault {
     let mut vault = CuratorVault::new(
         test_config(),
         MemoryStorage::new(),
-        RbacAuth {
-            config: rbac_config,
-        },
+        RbacAuth::new(rbac_config),
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -630,6 +1328,15 @@ fn test_allocation_flow_basic(mut vault: TestVault) {
 
     let allocator = allocator_addr();
     let user = user_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().idle_assets, 10000);
@@ -759,6 +1466,11 @@ fn test_rbac_curator_can_do_everything(mut rbac_vault: RbacVault) {
 
     let curator = curator_addr();
 
+    rbac_vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     rbac_vault.deposit(curator, curator, 10000, 0, 100).unwrap();
 
     rbac_vault
@@ -800,7 +1512,7 @@ fn test_restrictions_blacklist_blocks_deposit(mut rbac_vault: RbacVault) {
     let user = user_addr();
 
     rbac_vault
-        .set_restrictions(sentinel, Some(Restrictions::Blacklist(vec![user])))
+        .set_restrictions(sentinel, Some(Restrictions::blacklist(vec![user])))
         .unwrap();
 
     let result = rbac_vault.deposit(user, user, 1000, 0, 100);
@@ -817,8 +1529,8 @@ fn test_state_persists_after_deposit(mut vault: TestVault) {
 
     // Verify storage was updated
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.total_assets, 1000);
-    assert_eq!(stored.state.total_shares, 1000);
+    assert_eq!(stored.total_assets, 1000);
+    assert_eq!(stored.total_shares, 1000);
 }
 
 #[rstest]
@@ -841,8 +1553,8 @@ fn test_state_persists_after_allocation(mut vault: TestVault) {
         .unwrap();
 
     let stored = vault.storage.load_state().unwrap().unwrap();
-    assert_eq!(stored.state.external_assets, 5000);
-    assert!(stored.state.op_state.is_idle());
+    assert_eq!(stored.external_assets, 5000);
+    assert!(stored.op_state.is_idle());
 }
 
 // Effect Execution Tests
@@ -873,6 +1585,15 @@ fn test_full_flow_deposit_allocate_refresh(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
@@ -1009,7 +1730,7 @@ fn test_execute_withdraw_in_idle_state(mut vault: TestVault) {
     vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
 
     // Execute withdraw in idle state
-    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let result = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(result.is_ok());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1022,12 +1743,12 @@ fn test_execute_withdraw_respects_cooldown(mut vault: TestVault) {
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     vault.request_withdraw(user, user, 1000, 0, 0).unwrap();
 
-    let early = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS - 1);
+    let early = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS - 1);
     assert!(early.is_err());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(!vault.state().unwrap().withdraw_queue.is_empty());
 
-    let ok = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let ok = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(ok.is_ok());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
 }
@@ -1064,6 +1785,11 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
     assert_eq!(vault.state().unwrap().total_assets, 10000);
     assert_eq!(vault.state().unwrap().total_shares, 10000);
@@ -1085,7 +1811,7 @@ fn test_full_flow_deposit_allocate_refresh_withdraw(mut vault: TestVault) {
     let result = vault.request_withdraw(user, user, 4000, 0, 0).unwrap();
     assert!(result.shares_escrowed > 0);
 
-    let result = vault.execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1);
+    let result = vault.execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1);
     assert!(result.is_ok());
     assert!(vault.state().unwrap().op_state.is_idle());
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1098,11 +1824,16 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
 
     vault.request_withdraw(user, user, 2_000, 0, 101).unwrap();
     vault
-        .execute_withdraw(user, 101 + DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, 101 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1133,7 +1864,7 @@ fn test_happy_path_like_near_sequence(mut vault: TestVault) {
 
     vault.request_withdraw(user, user, 3_000, 0, 400).unwrap();
     vault
-        .execute_withdraw(user, 400 + DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, 400 + SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     assert!(vault.state().unwrap().withdraw_queue.is_empty());
@@ -1163,7 +1894,7 @@ fn test_withdraw_queue_orders_and_dequeues(mut vault: TestVault) {
     assert_eq!(pending.escrow_shares, 1000);
 
     vault
-        .execute_withdraw(user, DEFAULT_COOLDOWN_NS + 1)
+        .execute_withdraw(user, SOROBAN_DEFAULT_WITHDRAWAL_COOLDOWN_NS + 1)
         .unwrap();
 
     let (next_id, next_pending) = vault
@@ -1232,6 +1963,19 @@ fn test_allocation_multiple_markets(mut vault: TestVault) {
     let user = user_addr();
     let allocator = allocator_addr();
 
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(1, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(2, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
+
     vault.deposit(user, user, 10000, 0, 100).unwrap();
 
     vault
@@ -1272,6 +2016,11 @@ fn test_allocate_withdraw_uses_allocation_lifecycle(mut vault: TestVault) {
 
     let user = user_addr();
     let allocator = allocator_addr();
+
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
 
     vault.deposit(user, user, 10_000, 0, 100).unwrap();
     let supply_result = vault
@@ -1485,6 +2234,7 @@ fn test_withdrawal_transition_flow_reaches_idle(
 
     let request = WithdrawalRequest {
         op_id,
+        request_id: 7,
         amount: 150,
         receiver: Address([6u8; 32]),
         owner: Address([5u8; 32]),
@@ -1524,12 +2274,90 @@ fn test_refresh_state_roundtrip() {
     assert!(matches!(result.new_state, OpState::Refreshing(_)));
 }
 #[rstest]
-fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
+fn soroban_contract_deposit_after_donation_cannot_capture_surplus() {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register(SorobanVaultContract, ());
-    let governance = soroban_sdk::Address::generate(&env);
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let depositor = soroban_sdk::Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: 500,
+                total_shares: 500,
+                idle_assets: 500,
+                fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &500);
+    asset_admin_client.mint(&contract_id, &300);
+    asset_admin_client.mint(&depositor, &100);
+
+    let proxy = VaultProxy::new(&env);
+    let minted = env.as_contract(&contract_id, || {
+        proxy
+            .execute(&VaultCommand::DepositWithMin {
+                owner: sdk_wire(&depositor),
+                receiver: sdk_wire(&depositor),
+                assets: 100,
+                min_shares_out: 0,
+            })
+            .unwrap()
+    });
+
+    let VaultCommandResult::I128(minted_shares) = minted else {
+        panic!("deposit should return minted shares");
+    };
+
+    assert!(
+        (1..=62).contains(&minted_shares),
+        "deposit minted {minted_shares} shares outside expected post-donation bounds"
+    );
+}
+
+#[rstest]
+fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
     let asset_admin = soroban_sdk::Address::generate(&env);
     let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
     let asset_token = asset_sac.address();
@@ -1557,9 +2385,7 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
             fee_anchor: FeeAccrualAnchor::new(500, templar_vault_kernel::TimestampNs(0)),
             ..Default::default()
         };
-        storage
-            .save_state(&VersionedState::new(state))
-            .expect("save state");
+        storage.save_state(&state).expect("save state");
     });
 
     asset_admin_client.mint(&contract_id, &500);
@@ -1583,13 +2409,23 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
         env.as_contract(&contract_id, || proxy.total_assets().unwrap());
     let (total_shares_after, idle_assets_after, external_assets_after) =
         env.as_contract(&contract_id, || proxy.snapshot().unwrap());
-    assert_eq!(total_assets_after_donation, total_assets_before);
-    assert_eq!(idle_assets_after, 500);
+    assert_eq!(total_assets_after_donation, 800);
+    assert_eq!(idle_assets_after, 800);
     assert_eq!(total_shares_after, 500);
     assert_eq!(external_assets_after, 0);
+    env.as_contract(&contract_id, || {
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.total_assets, 500);
+        assert_eq!(stored_state.idle_assets, 500);
+    });
 
     env.as_contract(&contract_id, || {
-        SorobanVaultContract::resync_idle_balance(env.clone()).unwrap();
+        proxy
+            .execute_unit(&VaultCommand::ResyncIdleBalance)
+            .unwrap();
     });
 
     let total_assets_final = env.as_contract(&contract_id, || proxy.total_assets().unwrap());
@@ -1599,7 +2435,160 @@ fn soroban_contract_resync_idle_balance_fixes_donation_accounting() {
     assert_eq!(idle_assets_final, 800);
     assert_eq!(total_shares_final, 500);
     assert_eq!(external_assets_final, 0);
+    env.as_contract(&contract_id, || {
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.total_assets, 800);
+        assert_eq!(stored_state.idle_assets, 800);
+        assert_eq!(stored_state.fee_anchor.total_assets, 800);
+        assert_eq!(
+            stored_state.fee_anchor.timestamp_ns,
+            templar_vault_kernel::TimestampNs(100_000_000_000)
+        );
+    });
+}
 
-    let anchor_total_assets = env.as_contract(&contract_id, || proxy.total_assets().unwrap());
-    assert_eq!(anchor_total_assets, 800);
+#[rstest]
+fn soroban_contract_resync_idle_balance_anchors_fee_refresh_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set(LedgerInfo {
+        timestamp: 100,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let contract_id = env.register(SorobanVaultContract, ());
+    let curator = soroban_sdk::Address::generate(&env);
+    let governance = env.register(
+        SorobanVaultGovernanceContract,
+        (&curator, &contract_id, &(0u64)),
+    );
+    let management_recipient = soroban_sdk::Address::generate(&env);
+    let performance_recipient = soroban_sdk::Address::generate(&env);
+    let asset_admin = soroban_sdk::Address::generate(&env);
+    let asset_sac = env.register_stellar_asset_contract_v2(asset_admin.clone());
+    let asset_token = asset_sac.address();
+    let share_sac = env.register_stellar_asset_contract_v2(contract_id.clone());
+    let share_token = share_sac.address();
+    let asset_admin_client = StellarAssetClient::new(&env, &asset_token);
+    let share_client = soroban_sdk::token::Client::new(&env, &share_token);
+    let proxy = VaultProxy::new(&env);
+
+    const STARTING_ASSETS: u128 = 1_000_000_000_000;
+    const DONATED_ASSETS: u128 = 100_000_000_000;
+    const RESYNC_NS: u64 = 100_000_000_000;
+    const REFRESH_NS: u64 = 200_000_000_000;
+    let refreshed_assets = STARTING_ASSETS + DONATED_ASSETS;
+    let management_fee_wad = Wad::one() / 20;
+
+    env.as_contract(&contract_id, || {
+        SorobanVaultContract::initialize(
+            env.clone(),
+            curator.clone(),
+            governance.clone(),
+            asset_token.clone(),
+            share_token.clone(),
+            0,
+            0,
+        )
+        .unwrap();
+
+        let mut storage = SorobanStorage::new(&env);
+        storage
+            .save_state(&VaultState {
+                total_assets: STARTING_ASSETS,
+                total_shares: STARTING_ASSETS,
+                idle_assets: STARTING_ASSETS,
+                fee_anchor: FeeAccrualAnchor::new(
+                    STARTING_ASSETS,
+                    templar_vault_kernel::TimestampNs(0),
+                ),
+                ..Default::default()
+            })
+            .expect("save state");
+    });
+
+    asset_admin_client.mint(&contract_id, &(refreshed_assets as i128));
+
+    env.as_contract(&contract_id, || {
+        proxy
+            .execute_governance_unit(
+                &governance,
+                &GovernanceCommand::SetGovernancePolicy {
+                    kind: GOVERNANCE_POLICY_KIND_FEES,
+                    target_ids: None,
+                    mode: None,
+                    accounts: Some(vec![
+                        sdk_wire(&performance_recipient),
+                        sdk_wire(&management_recipient),
+                    ]),
+                    market_id: None,
+                    cap_group_id: None,
+                    value: Some(0),
+                    value_b: Some(management_fee_wad.as_u128_trunc() as i128),
+                    value_c: None,
+                },
+            )
+            .unwrap();
+        proxy
+            .execute_unit(&VaultCommand::ResyncIdleBalance)
+            .unwrap();
+
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(stored_state.total_assets, refreshed_assets);
+        assert_eq!(
+            stored_state.fee_anchor,
+            FeeAccrualAnchor::new(
+                refreshed_assets,
+                templar_vault_kernel::TimestampNs(RESYNC_NS)
+            )
+        );
+    });
+
+    env.ledger().set(LedgerInfo {
+        timestamp: 200,
+        protocol_version: 25,
+        ..Default::default()
+    });
+
+    let expected_management_shares = compute_management_fee_shares(
+        refreshed_assets,
+        refreshed_assets,
+        STARTING_ASSETS,
+        management_fee_wad,
+        RESYNC_NS,
+        REFRESH_NS,
+    )
+    .as_u128_saturating();
+
+    env.as_contract(&contract_id, || {
+        proxy.execute_unit(&VaultCommand::RefreshFees).unwrap();
+
+        let stored_state = SorobanStorage::new(&env)
+            .load_state()
+            .expect("load state")
+            .expect("state present");
+        assert_eq!(
+            stored_state.total_shares,
+            STARTING_ASSETS + expected_management_shares
+        );
+        assert_eq!(
+            share_client.balance(&management_recipient),
+            expected_management_shares as i128
+        );
+        assert_eq!(share_client.balance(&performance_recipient), 0);
+        assert_eq!(
+            stored_state.fee_anchor,
+            FeeAccrualAnchor::new(
+                refreshed_assets,
+                templar_vault_kernel::TimestampNs(REFRESH_NS)
+            )
+        );
+    });
 }

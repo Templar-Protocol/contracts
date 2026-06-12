@@ -7,8 +7,8 @@ use rstest::rstest;
 use templar_common::vault::prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
-    number::Decimal,
     vault::{AllocationDelta, Delta},
+    Decimal,
 };
 
 #[rstest]

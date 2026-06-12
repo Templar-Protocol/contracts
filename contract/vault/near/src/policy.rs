@@ -6,14 +6,17 @@ use crate::convert::IntoTargetId;
 use near_sdk::{env, near};
 use std::ops::{Deref, DerefMut};
 use templar_common::vault::{Event, MarketId};
+use templar_vault_kernel::TimestampNs;
 
 pub use templar_curator_primitives::policy::{
     cap_group::{
         CapGroup, CapGroupError, CapGroupId as PrimitiveCapGroupId,
         CapGroupRecord as PrimitiveCapGroupRecord,
     },
-    market_lock::{MarketLock, MarketLockSet},
-    refresh_plan::{RefreshPlan as PrimitiveRefreshPlan, RefreshPlanError},
+    market_lock::{FencingToken, LeaseDurationNs, LeaseOwner, MarketLease, MarketLeaseRegistry},
+    refresh_plan::{
+        RefreshPlan as PrimitiveRefreshPlan, RefreshPlanError, RefreshTargetStatus, RefreshThrottle,
+    },
     supply_queue::{SupplyQueue as PrimitiveSupplyQueue, SupplyQueueEntry, SupplyQueueError},
     withdraw_route::{
         build_withdraw_route, build_withdraw_route_with_liquidity,
@@ -21,7 +24,7 @@ pub use templar_curator_primitives::policy::{
     },
 };
 
-pub const ERR_MARKET_LOCKED: &str = "Market is locked";
+pub const ERR_MARKET_LEASED: &str = "Market is leased";
 
 macro_rules! define_market_id_vec_wrapper {
     ($name:ident) => {
@@ -63,23 +66,40 @@ define_market_id_vec_wrapper!(SupplyQueue);
 // NEAR wrapper for the curator withdraw route (preserves Vec<MarketId> layout).
 define_market_id_vec_wrapper!(WithdrawRoute);
 
-/// NEAR wrapper for market execution locks (backed by curator MarketLockSet).
+/// NEAR wrapper for market execution leases backed by curator MarketLeaseRegistry.
 #[near(serializers = [borsh, serde])]
 #[derive(Clone, Default)]
 pub struct MarketExecutionLock {
-    inner: MarketLockSet,
+    inner: MarketLeaseRegistry,
 }
 
 impl MarketExecutionLock {
-    fn acquire_lock_or_panic(set: &MarketLockSet, market: MarketId, now_ns: u64) -> MarketLockSet {
-        let lock = MarketLock::new(market.into_target_id(), now_ns);
-        set.acquire(lock, now_ns)
-            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LOCKED))
+    fn lease_owner(op_id: u64) -> LeaseOwner {
+        LeaseOwner(op_id)
     }
 
-    pub fn lock(&mut self, market: MarketId) {
+    fn acquire_lease_or_panic(
+        registry: &MarketLeaseRegistry,
+        market: MarketId,
+        op_id: u64,
+        ttl_ns: u64,
+        now_ns: u64,
+    ) -> (MarketLeaseRegistry, MarketLease) {
+        registry
+            .try_acquire(
+                market.into_target_id(),
+                Self::lease_owner(op_id),
+                Some(op_id),
+                TimestampNs(now_ns),
+                LeaseDurationNs(ttl_ns),
+            )
+            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED))
+    }
+
+    pub fn lock(&mut self, market: MarketId, op_id: u64, ttl_ns: u64) -> MarketLease {
         let now = env::block_timestamp();
-        let new_set = Self::acquire_lock_or_panic(&self.inner, market, now);
+        let (next_registry, lease) =
+            Self::acquire_lease_or_panic(&self.inner, market, op_id, ttl_ns, now);
 
         Event::LockChange {
             is_locked: true,
@@ -87,16 +107,21 @@ impl MarketExecutionLock {
         }
         .emit();
 
-        self.inner = new_set;
+        self.inner = next_registry;
+        lease
     }
 
-    pub fn unlock(&mut self, market: MarketId) {
+    pub fn unlock(&mut self, market: MarketId, op_id: u64, token: FencingToken) {
+        self.inner = self
+            .inner
+            .release_if_owned_with_token(market.into_target_id(), &Self::lease_owner(op_id), token)
+            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
+
         Event::LockChange {
             is_locked: false,
             market,
         }
         .emit();
-        self.inner = self.inner.release(market.into_target_id());
     }
 
     pub fn clear(&mut self) {
@@ -105,19 +130,65 @@ impl MarketExecutionLock {
 
     pub fn is_locked(&self, market: MarketId) -> bool {
         self.inner
-            .is_locked(market.into_target_id(), env::block_timestamp())
+            .is_leased(market.into_target_id(), TimestampNs(env::block_timestamp()))
     }
 
-    pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
-        let mut set = MarketLockSet::default();
-        for market in markets {
-            set = Self::acquire_lock_or_panic(&set, market, locked_at_ns);
-        }
-        Self { inner: set }
+    pub fn assert_current(&self, market: MarketId, lease: &MarketLease) {
+        self.assert_current_token(market, lease.fencing_token);
+    }
+
+    pub fn assert_current_token(&self, market: MarketId, token: FencingToken) {
+        self.inner
+            .assert_token_current(
+                market.into_target_id(),
+                token,
+                TimestampNs(env::block_timestamp()),
+            )
+            .unwrap_or_else(|_| env::panic_str(ERR_MARKET_LEASED));
     }
 
     #[must_use]
-    pub fn inner(&self) -> &MarketLockSet {
+    pub fn is_current_token(&self, market: MarketId, token: FencingToken) -> bool {
+        self.inner
+            .assert_token_current(
+                market.into_target_id(),
+                token,
+                TimestampNs(env::block_timestamp()),
+            )
+            .is_ok()
+    }
+
+    #[must_use]
+    pub fn has_current_lease(&self, market: MarketId, op_id: u64, token: FencingToken) -> bool {
+        self.inner
+            .get_active(market.into_target_id(), TimestampNs(env::block_timestamp()))
+            .is_some_and(|lease| lease.op_id == Some(op_id) && lease.fencing_token == token)
+    }
+
+    #[must_use]
+    pub fn has_active_lease(&self, market: MarketId) -> bool {
+        self.inner
+            .is_leased(market.into_target_id(), TimestampNs(env::block_timestamp()))
+    }
+
+    pub fn from_markets(markets: Vec<MarketId>, locked_at_ns: u64) -> Self {
+        let mut registry = MarketLeaseRegistry::default();
+        for (index, market) in markets.into_iter().enumerate() {
+            let op_id = u64::try_from(index).unwrap_or(u64::MAX).saturating_add(1);
+            let (next_registry, _) = Self::acquire_lease_or_panic(
+                &registry,
+                market,
+                op_id,
+                u64::MAX.saturating_sub(locked_at_ns),
+                locked_at_ns,
+            );
+            registry = next_registry;
+        }
+        Self { inner: registry }
+    }
+
+    #[must_use]
+    pub fn inner(&self) -> &MarketLeaseRegistry {
         &self.inner
     }
 }

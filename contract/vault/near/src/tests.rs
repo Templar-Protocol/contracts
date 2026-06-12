@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::convert::account_id_to_address;
+use crate::governance::Gate;
 use crate::governance::Timelocks;
 use crate::impl_callbacks::reconcile_supply_outcome;
 use crate::impl_callbacks::WithdrawReconciliation;
@@ -19,7 +20,10 @@ use near_sdk::test_utils::accounts;
 use near_sdk::NearToken;
 use near_sdk::PromiseOrValue;
 use near_sdk::PromiseResult;
-use near_sdk::{json_types::U128, AccountId};
+use near_sdk::{
+    json_types::{U128, U64},
+    AccountId,
+};
 use near_sdk_contract_tools::ft::Nep141 as _;
 use near_sdk_contract_tools::ft::Nep141Controller as _;
 use near_sdk_contract_tools::mt::Nep245Receiver as _;
@@ -29,10 +33,6 @@ use rstest::{fixture, rstest};
 use templar_common::asset::FungibleAsset;
 // Import NEAR-specific math types for share math
 use templar_common::supply::SupplyPosition;
-use templar_common::vault::prelude::{
-    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
-    MAX_PERFORMANCE_FEE_WAD,
-};
 use templar_common::vault::AllocationDelta;
 use templar_common::vault::Delta;
 use templar_common::vault::DepositMsg;
@@ -44,10 +44,14 @@ use templar_common::vault::PayoutState;
 use templar_common::vault::PendingWithdrawal;
 use templar_common::vault::{
     AllocatingState, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
-    IdleResyncOutcome, MarketConfiguration, MarketId, RestrictionReason, Restrictions,
+    IdleResyncOutcome, MarketConfiguration, MarketId, Reason, RestrictionReason, Restrictions,
     WithdrawingState, MAX_TIMELOCK_NS, YEAR_NS,
 };
 use templar_vault_kernel::TimestampNs;
+use templar_vault_kernel::{
+    compute_fee_shares, compute_fee_shares_from_assets, mul_div_floor, Wad, MAX_MANAGEMENT_FEE_WAD,
+    MAX_PERFORMANCE_FEE_WAD,
+};
 
 #[fixture]
 fn vault_id() -> AccountId {
@@ -119,6 +123,11 @@ fn cap_group_record(cap: u128, relative_cap: Wad, principal: u128) -> CapGroupRe
             .build(),
         principal,
     }
+}
+
+fn lock_market_for_callback(c: &mut Contract, market_id: MarketId, op_id: u64) -> U64 {
+    let lease = c.market_execution_lock.lock(market_id, op_id, u64::MAX / 2);
+    U64(lease.fencing_token.0)
 }
 
 fn cap_group_relative_cap(record: &CapGroupRecord) -> Wad {
@@ -221,10 +230,12 @@ proptest! {
     #[test]
     fn paused_restricts_all_accounts(account in any::<u32>().prop_map(mk)) {
         let r = Restrictions::Paused;
-        let actor = account_id_to_address(&account);
-        let self_id = account_id_to_address(&mk(0));
-        let out = r.is_restricted(&actor, &self_id);
-        prop_assert_eq!(out, Some(RestrictionReason::Paused));
+        let mut gate = Gate::new(Some(r));
+        gate.paused = true;
+        let actor = account;
+
+        let out = std::panic::catch_unwind(|| gate.enforce_policy(actor.as_ref()));
+        prop_assert!(out.is_err());
     }
 
     #[test]
@@ -236,8 +247,9 @@ proptest! {
         let kernel_list = set.iter().map(account_id_to_address).collect();
         let r = Restrictions::Blacklist(kernel_list);
         let actor = account_id_to_address(&account);
-        let self_id = account_id_to_address(&mk(0));
-        let out = r.is_restricted(&actor, &self_id);
+        let out = r
+            .to_kernel_mode()
+            .and_then(|policy| policy.is_restricted(&actor));
 
         if set.contains(&account) {
             prop_assert_eq!(out, Some(RestrictionReason::Blacklisted));
@@ -256,9 +268,11 @@ proptest! {
         let r = Restrictions::Whitelist(kernel_list);
         let actor = account_id_to_address(&account);
         let self_id = account_id_to_address(&mk(0));
-        let out = r.is_restricted(&actor, &self_id);
+        let out = r
+            .to_kernel_mode()
+            .and_then(|policy| policy.is_restricted_allowing_self(&actor, &self_id));
 
-        if set.contains(&account) {
+        if set.contains(&account) || account == mk(0) {
             prop_assert_eq!(out, None);
         } else {
             prop_assert_eq!(out, Some(RestrictionReason::NotWhitelisted));
@@ -348,6 +362,7 @@ fn prop_address_book_rebuilds_to_live_queue_and_op_state() {
 
                 c.set_op_state(OpState::Withdrawing(WithdrawingState {
                     op_id: 7,
+                    request_id: 7,
                     index: 0,
                     remaining,
                     collected: 0,
@@ -445,9 +460,9 @@ fn prop_get_max_deposit_matches_bruteforce() {
                 }
 
                 let group_ids = [
-                    CapGroupId("prop-group-0".to_string()),
-                    CapGroupId("prop-group-1".to_string()),
-                    CapGroupId("prop-group-2".to_string()),
+                    CapGroupId::try_from("prop-group-0".to_string()).unwrap(),
+                    CapGroupId::try_from("prop-group-1".to_string()).unwrap(),
+                    CapGroupId::try_from("prop-group-2".to_string()).unwrap(),
                 ];
 
                 let mut group_principal = [0u128; 3];
@@ -614,6 +629,7 @@ fn payout_success_burns_only_proportional_escrow_and_refunds_remainder(c_vault_e
     );
     c.set_op_state(OpState::Payout(PayoutState {
         op_id,
+        request_id: op_id,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -1056,6 +1072,7 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 1,
+        request_id: 1,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(9)),
@@ -1073,11 +1090,13 @@ fn withdraw_under_credit_emits_inflow_mismatch_and_clamps() {
     let after_balance_val = after_balance.as_ref().unwrap().0;
     let _inflow = after_balance_val.saturating_sub(before_balance.0);
     let reported_principal = U128(100); // principal_delta = 900 >> inflow
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 1);
 
     let res = c.execute_withdraw_03_settle(
         after_balance,
         1,
         market_id,
+        fencing_token,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1141,6 +1160,7 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 2,
+        request_id: 2,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(10)),
@@ -1155,11 +1175,13 @@ fn withdraw_over_credit_emits_overpay_and_clamps_to_requested() {
     let after_balance = Ok(U128(1_000_200)); // inflow = 200
     let after_balance_val = after_balance.as_ref().unwrap().0;
     let reported_principal = U128(850); // principal_delta = 150
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 2);
 
     let res = c.execute_withdraw_03_settle(
         after_balance,
         2,
         market_id,
+        fencing_token,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1203,6 +1225,7 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 300,
         receiver: account_id_to_address(&mk(11)),
@@ -1216,11 +1239,13 @@ fn withdraw_idle_balance_resyncs_on_external_deposit() {
     let before_balance = U128(1_000);
     let after_balance = Ok(U128(1_150));
     let reported_principal = U128(before_principal);
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 42);
 
     let res = c.execute_withdraw_03_settle(
         after_balance,
         42,
         market_id,
+        fencing_token,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1266,6 +1291,7 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 43,
+        request_id: 43,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(12)),
@@ -1280,11 +1306,13 @@ fn withdraw_over_credit_triggers_payout_with_capped_amount() {
     let after_balance = Ok(U128(1_000_000 + inflow));
     let after_balance_val = after_balance.as_ref().unwrap().0;
     let reported_principal = U128(before_principal);
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 43);
 
     let res = c.execute_withdraw_03_settle(
         after_balance,
         43,
         market_id,
+        fencing_token,
         U128(before_principal),
         reported_principal,
         before_balance,
@@ -1354,6 +1382,7 @@ fn withdraw_balance_read_failure_stops_operation() {
     let op_id = 9;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: 0,
         index: 0,
         remaining: 200,
         receiver: account_id_to_address(&receiver),
@@ -1361,11 +1390,13 @@ fn withdraw_balance_read_failure_stops_operation() {
         owner: account_id_to_address(&owner),
         escrow_shares: 100,
     });
+    let fencing_token = lock_market_for_callback(&mut c, market_id, op_id);
 
     let res = c.execute_withdraw_03_settle(
         Err(near_sdk::PromiseError::Failed),
         op_id,
         market_id,
+        fencing_token,
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -1405,11 +1436,13 @@ fn rebalance_resyncs_idle_on_external_deposit() {
 
     let before_balance = U128(1_000);
     let after_balance = Ok(U128(1_150));
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 7);
 
     let res = c.rebalance_withdraw_03_settle(
         after_balance,
         7,
         market_id,
+        fencing_token,
         U128(before_principal),
         U128(before_principal),
         before_balance,
@@ -1444,7 +1477,7 @@ fn rebalance_balance_read_failure_stops_operation() {
 
     let op_id = 11;
 
-    c.market_execution_lock.lock(market_id);
+    let lease = c.market_execution_lock.lock(market_id, op_id, u64::MAX / 2);
     c.op_state = OpState::Allocating(AllocatingState {
         op_id,
         index: 0,
@@ -1456,6 +1489,7 @@ fn rebalance_balance_read_failure_stops_operation() {
         Err(near_sdk::PromiseError::Failed),
         op_id,
         market_id,
+        U64(lease.fencing_token.0),
         U128(before_principal),
         U128(before_principal),
         U128(1_000),
@@ -1476,6 +1510,69 @@ fn rebalance_balance_read_failure_stops_operation() {
         "expected rebalance stop event with balance read failed reason"
     );
 }
+
+#[test]
+fn stale_withdraw_callback_without_lease_is_noop() {
+    let vault_id = mk(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market_id = c.insert_market_for_tests(mk(8015), MarketConfiguration::default(), 600);
+    let op_id = 12;
+    c.withdraw_route = vec![market_id].into();
+    c.op_state = OpState::Withdrawing(WithdrawingState {
+        op_id,
+        request_id: op_id,
+        index: 0,
+        remaining: 100,
+        receiver: account_id_to_address(&mk(44)),
+        collected: 0,
+        owner: account_id_to_address(&mk(45)),
+        escrow_shares: 10,
+    });
+
+    let before_state = c.op_state.clone();
+    let res = c.execute_withdraw_01_execute_withdraw_fetch_position(
+        Ok(U128(1_000)),
+        op_id,
+        market_id,
+        U64(999),
+        None,
+    );
+
+    assert!(matches!(res, PromiseOrValue::Value(())));
+    assert_eq!(c.op_state, before_state);
+}
+
+#[test]
+fn stale_rebalance_callback_checks_lease_before_op_state() {
+    let vault_id = mk(0);
+    setup_env(&vault_id, &vault_id, vec![]);
+    let mut c = new_test_contract(&vault_id);
+
+    let market_id = c.insert_market_for_tests(mk(8016), MarketConfiguration::default(), 600);
+    let op_id = 20;
+    c.op_state = OpState::Allocating(AllocatingState {
+        op_id,
+        index: 0,
+        remaining: 0,
+        plan: vec![],
+    });
+
+    let before_state = c.op_state.clone();
+    let res = c.rebalance_withdraw_01_execute_withdraw_fetch_position(
+        Ok(U128(1_000)),
+        op_id,
+        market_id,
+        U64(999),
+        None,
+        U128(600),
+    );
+
+    assert!(matches!(res, PromiseOrValue::Value(())));
+    assert_eq!(c.op_state, before_state);
+}
+
 #[rstest(
     assets,
     shares,
@@ -1526,14 +1623,17 @@ fn refresh_markets_updates_principals_and_emits_events() {
     let op_id = c.next_op_id;
     let _ = c.refresh_markets(vec![]);
     assert!(matches!(c.op_state, OpState::Refreshing(_)));
+    assert_eq!(c.last_refresh_ns, 0);
 
     let pos1 = SupplyPosition::new(0);
     let _ = c.refresh_01_settle(Ok(Some(pos1)), m1_id, op_id, 0, U128(10));
+    assert_eq!(c.last_refresh_ns, 0);
 
     let pos2 = SupplyPosition::new(0);
     let res = c.refresh_01_settle(Ok(Some(pos2)), m2_id, op_id, 1, U128(20));
     if let PromiseOrValue::Value(report) = res {
         assert_eq!(report.total_assets, c.get_total_assets());
+        assert_eq!(c.last_refresh_ns, u64::from(report.refreshed_at));
     }
     assert!(matches!(c.op_state, OpState::Idle));
 
@@ -1643,6 +1743,83 @@ fn refresh_markets_throttles_without_time_advance() {
         Some(near_sdk::Gas::from_tgas(300)),
     );
     c.refresh_markets(vec![market_id]).detach();
+}
+
+#[test]
+fn refresh_markets_does_not_consume_cooldown_before_completion() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        None,
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let market_id = c.insert_market_for_tests(mk(7004), MarketConfiguration::default(), 0);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let op_id = c.next_op_id;
+    let _ = c.refresh_markets(vec![market_id]);
+    assert_eq!(c.last_refresh_ns, 0);
+
+    let ignored = c.refresh_01_settle(
+        Ok(Some(SupplyPosition::new(0))),
+        market_id,
+        op_id,
+        99,
+        U128(0),
+    );
+    assert!(matches!(ignored, PromiseOrValue::Value(_)));
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.last_refresh_ns, 0);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let _ = c.refresh_markets(vec![market_id]);
+    assert!(matches!(c.op_state, OpState::Refreshing(_)));
+}
+
+#[test]
+fn refresh_markets_with_no_targets_does_not_consume_cooldown_or_op_id() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+
+    set_ctx_with_gas(
+        &vault_id,
+        &vault_id,
+        Some(crate::DEFAULT_REFRESH_COOLDOWN_NS.saturating_add(1)),
+        None,
+        Some(near_sdk::Gas::from_tgas(300)),
+    );
+
+    let last_refresh_before = c.last_refresh_ns;
+    let next_op_id_before = c.next_op_id;
+    let result = c.refresh_markets(vec![]);
+
+    let PromiseOrValue::Value(report) = result else {
+        panic!("expected immediate refresh completion");
+    };
+
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.last_refresh_ns, last_refresh_before);
+    assert_eq!(c.next_op_id, next_op_id_before);
+    assert_eq!(report.total_assets, c.get_total_assets());
 }
 
 #[test]
@@ -2405,7 +2582,10 @@ fn restrictions_pause_is_immediate_for_sentinel(owner_env: OwnerEnv) {
     set_ctx(&vault_id, &sentinel, None, None);
     contract.set_restrictions(Some(Restrictions::Paused));
 
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 0);
 }
 
@@ -2415,16 +2595,22 @@ fn restrictions_unpause_is_timelocked(owner_env: OwnerEnv) {
 
     // Emergency pause applies immediately.
     contract.set_restrictions(Some(Restrictions::Paused));
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
 
     // Unpause is a relax, so it must be timelocked.
     contract.set_restrictions(None);
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 1);
 
     contract.accept_restrictions();
 
-    assert_eq!(contract.get_restrictions(), None);
+    assert!(contract.get_restrictions().is_none());
     assert_eq!(contract.governance_timelocks.pending_len(), 0);
 }
 
@@ -2443,7 +2629,10 @@ fn restrictions_unpause_by_sentinel_is_timelocked(owner_env: OwnerEnv) {
 
     contract.set_restrictions(None);
 
-    assert_eq!(contract.get_restrictions(), Some(Restrictions::Paused));
+    assert!(matches!(
+        contract.get_restrictions(),
+        Some(Restrictions::Paused)
+    ));
     assert_eq!(contract.governance_timelocks.pending_len(), 1);
 }
 
@@ -2471,7 +2660,7 @@ fn init_rejects_management_fee_above_cap(vault_id: AccountId) {
         fee_recipient,
     );
 
-    cfg.fees.management.fee = Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
+    cfg.fees.management.fee = templar_common::vault::wad::Wad::from(MAX_MANAGEMENT_FEE_WAD + 1);
 
     let _ = Contract::new(cfg);
 }
@@ -2500,7 +2689,7 @@ fn init_rejects_performance_fee_above_cap(vault_id: AccountId) {
         fee_recipient,
     );
 
-    cfg.fees.performance.fee = Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
+    cfg.fees.performance.fee = templar_common::vault::wad::Wad::from(MAX_PERFORMANCE_FEE_WAD + 1);
 
     let _ = Contract::new(cfg);
 }
@@ -2879,7 +3068,7 @@ fn cap_group_limits_total_room() {
     setup_env(&vault_id, &vault_id, vec![]);
     let mut c = new_test_contract(&vault_id);
 
-    let group = CapGroupId("group-a".to_string());
+    let group = CapGroupId::try_from("group-a".to_string()).unwrap();
     c.cap_groups
         .insert(group.clone(), cap_group_record(150, Wad::one(), 0));
 
@@ -2907,8 +3096,8 @@ fn cap_group_relative_caps_scale_with_aum() {
 
     let half = Wad::one() / 2;
 
-    let group_a = CapGroupId("group-ra".to_string());
-    let group_b = CapGroupId("group-rb".to_string());
+    let group_a = CapGroupId::try_from("group-ra".to_string()).unwrap();
+    let group_b = CapGroupId::try_from("group-rb".to_string()).unwrap();
 
     c.cap_groups
         .insert(group_a.clone(), cap_group_record(10_000, half, 0));
@@ -2958,7 +3147,7 @@ fn cap_group_refunds_when_saturated() {
     let asset: AccountId = c.underlying_asset.contract_id().into();
     setup_env(&vault_id, &asset, vec![]);
 
-    let group = CapGroupId("group-b".to_string());
+    let group = CapGroupId::try_from("group-b".to_string()).unwrap();
     c.cap_groups
         .insert(group.clone(), cap_group_record(50, Wad::one(), 0));
 
@@ -3551,16 +3740,16 @@ fn cap_group_membership_moves_principal() {
         TimestampNs::ZERO,
     );
 
-    let group_a = CapGroupId("ga".to_string());
-    let group_b = CapGroupId("gb".to_string());
+    let group_a = CapGroupId::try_from("ga".to_string()).unwrap();
+    let group_b = CapGroupId::try_from("gb".to_string()).unwrap();
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_a.clone(),
-        new_cap: 200,
+        new_cap: Some(200),
     });
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group_b.clone(),
-        new_cap: 300,
+        new_cap: Some(300),
     });
 
     let market = mk(9400);
@@ -3613,11 +3802,11 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         TimestampNs::ZERO,
     );
 
-    let group = CapGroupId("gr".to_string());
+    let group = CapGroupId::try_from("gr".to_string()).unwrap();
 
     c.submit_cap_group_update(CapGroupUpdate::SetCap {
         cap_group_id: group.clone(),
-        new_cap: 1_000,
+        new_cap: Some(1_000),
     });
 
     assert_eq!(
@@ -3628,7 +3817,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
     let half = Wad::one() / 2;
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
         cap_group_id: group.clone(),
-        new_relative_cap_wad: u128::from(half),
+        new_relative_cap: Some(half),
     });
 
     assert_eq!(
@@ -3642,7 +3831,7 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
 
     c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
         cap_group_id: group.clone(),
-        new_relative_cap_wad: u128::from(Wad::one()),
+        new_relative_cap: Some(Wad::one()),
     });
 
     assert!(
@@ -3663,6 +3852,37 @@ fn governance_cap_group_relative_cap_decrease_immediate_increase_timelocked() {
         cap_group_relative_cap(c.cap_groups.get(&group).expect("group must exist")),
         Wad::one(),
     );
+}
+
+#[test]
+fn governance_cap_group_relative_cap_clear_event_uses_null() {
+    let vault_id = accounts(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    setup_env(&vault_id, &owner, vec![]);
+
+    c.governance_timelocks = Timelocks::new(
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+        TimestampNs::ZERO,
+    );
+
+    let group = CapGroupId::try_from("gr".to_string()).unwrap();
+    c.cap_groups
+        .insert(group.clone(), cap_group_record(1_000, Wad::one() / 2, 0));
+    c.submit_cap_group_update(CapGroupUpdate::SetRelativeCap {
+        cap_group_id: group,
+        new_relative_cap: None,
+    });
+    c.accept_cap_group_update(CapGroupUpdateKey::SetRelativeCap {
+        cap_group_id: CapGroupId::try_from("gr".to_string()).unwrap(),
+    });
+
+    let logs = near_sdk::test_utils::get_logs().join("\n");
+    assert!(logs.contains("\"event\":\"cap_group_relative_cap_raise_submitted\""));
+    assert!(logs.contains("\"event\":\"cap_group_relative_cap_set\""));
+    assert!(logs.contains("\"new_relative_cap\":null"));
 }
 
 #[test]
@@ -3966,6 +4186,7 @@ fn after_exec_withdraw_read_none_to_payout(
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 60,
         receiver: account_id_to_address(&mk(9)),
@@ -3975,11 +4196,13 @@ fn after_exec_withdraw_read_none_to_payout(
     });
     c.remember_account_mapping(account_id_to_address(&mk(1)), mk(1));
     c.remember_account_mapping(account_id_to_address(&mk(9)), mk(9));
+    let fencing_token = lock_market_for_callback(&mut c, market_id, op_id);
 
     let res = c.execute_withdraw_02_reconcile_position(
         Ok(None),
         op_id,
         market_id,
+        fencing_token,
         U128(principal),
         U128(0),
     );
@@ -3992,6 +4215,7 @@ fn after_exec_withdraw_read_none_to_payout(
         Ok(U128(principal)),
         op_id,
         market_id,
+        fencing_token,
         U128(principal),
         U128(0),
         U128(0),
@@ -4077,6 +4301,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 99,
+        request_id: 99,
         index: 0,
         remaining: need,
         receiver: account_id_to_address(&mk(9)),
@@ -4084,6 +4309,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         owner: account_id_to_address(&mk(1)),
         escrow_shares: 0,
     });
+    let fencing_token = lock_market_for_callback(&mut c, market_id, 99);
 
     c.insert_pending_withdrawal_for_tests(
         0,
@@ -4100,6 +4326,7 @@ fn prop_after_exec_withdraw_read_err_no_change(before: u128, need: u128, collect
         Err(near_sdk::PromiseError::Failed),
         99,
         market_id,
+        fencing_token,
         U128(before),
         U128(0),
     );
@@ -4143,6 +4370,7 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: real_op,
+        request_id: real_op,
         index: real_idx,
         remaining: 1,
         receiver: account_id_to_address(&mk(9)),
@@ -4168,20 +4396,27 @@ fn prop_after_exec_withdraw_read_requires_current_state(pass_op: bool, pass_inde
     } else {
         MarketId(market_id.0.saturating_add(1))
     };
+    let fencing_token = lock_market_for_callback(&mut c, market_id, real_op);
 
-    let r =
-        c.execute_withdraw_02_reconcile_position(Ok(None), call_op, call_market, U128(10), U128(0));
+    let r = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        call_op,
+        call_market,
+        fencing_token,
+        U128(10),
+        U128(0),
+    );
     if let (true, true) = (pass_op, pass_index) {
         assert!(
             !matches!(c.op_state, OpState::Idle),
             "Valid callback should not immediately stop"
         );
     } else {
-        // Any mismatch should stop and go Idle
+        // Stale or mismatched callbacks are ignored before touching op_state.
         if let PromiseOrValue::Value(()) = r {}
         assert!(
-            matches!(c.op_state, OpState::Idle),
-            "Mismatched callback must stop and go Idle"
+            matches!(c.op_state, OpState::Withdrawing(_)),
+            "Mismatched callback must leave the current operation untouched"
         );
     }
 }
@@ -4201,6 +4436,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let index = 0;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 0,
         receiver: account_id_to_address(&mk(9)),
@@ -4222,10 +4458,17 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
     let supply_before = c.total_supply();
     let vault_before = c.balance_of(&near_sdk::env::current_account_id());
     let owner_before = c.balance_of(&owner);
+    let fencing_token = lock_market_for_callback(&mut c, market_id, op_id);
 
     // Read result with need=0 ensures credited=0; triggers refund branch
-    let res =
-        c.execute_withdraw_02_reconcile_position(Ok(None), op_id, market_id, U128(0), U128(0));
+    let res = c.execute_withdraw_02_reconcile_position(
+        Ok(None),
+        op_id,
+        market_id,
+        fencing_token,
+        U128(0),
+        U128(0),
+    );
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to proceed to balance settlement"),
@@ -4235,6 +4478,7 @@ fn refund_path_consistency(#[with(vault_id(), vec![(mk(8), 0, true, 10, false)])
         Ok(U128(0)), // no inflow observed
         op_id,
         market_id,
+        fencing_token,
         U128(0), // before_principal
         U128(0), // new_principal reported
         U128(0), // before_balance
@@ -4307,6 +4551,7 @@ fn ctx_withdrawing_ok_and_err() {
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 7,
+        request_id: 7,
         index: 1,
         remaining: 50,
         receiver: account_id_to_address(&recv),
@@ -4420,6 +4665,7 @@ fn after_create_withdraw_req_success_returns_promise(
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 21,
+        request_id: 21,
         index: 0,
         remaining: 60,
         receiver: account_id_to_address(&receiver),
@@ -4480,6 +4726,7 @@ fn after_exec_withdraw_req_returns_promise(
     let op_id = 33;
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index: 0,
         remaining: 5,
         receiver: account_id_to_address(&mk(9)),
@@ -4487,9 +4734,15 @@ fn after_exec_withdraw_req_returns_promise(
         owner: account_id_to_address(&mk(1)),
         escrow_shares: 0,
     });
+    let fencing_token = lock_market_for_callback(&mut c, market_id, op_id);
 
-    let res =
-        c.execute_withdraw_01_execute_withdraw_fetch_position(Ok(U128(1)), op_id, market_id, None);
+    let res = c.execute_withdraw_01_execute_withdraw_fetch_position(
+        Ok(U128(1)),
+        op_id,
+        market_id,
+        fencing_token,
+        None,
+    );
     match res {
         PromiseOrValue::Promise(_) => {}
         _ => panic!("Expected Promise to read supply position after exec"),
@@ -4520,6 +4773,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
 
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id,
+        request_id: op_id,
         index,
         remaining: 10,
         receiver: account_id_to_address(&receiver),
@@ -4529,11 +4783,13 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     });
     c.remember_account_mapping(account_id_to_address(&owner), owner.clone());
     c.remember_account_mapping(account_id_to_address(&receiver), receiver.clone());
+    let fencing_token = lock_market_for_callback(&mut c, m1, op_id);
 
     let res = c.execute_withdraw_02_reconcile_position(
         Ok(None),
         op_id,
         m1,
+        fencing_token,
         U128(0),
         U128(before_balance),
     );
@@ -4550,6 +4806,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
         Ok(U128(record_principal)), // after_balance
         op_id,
         m1,
+        fencing_token,
         U128(record_principal), // before_principal
         U128(0),
         U128(before_balance),
@@ -4559,6 +4816,7 @@ fn after_exec_withdraw_read_instant_payout_when_remaining_0(
     match &c.op_state {
         OpState::Payout(PayoutState {
             op_id,
+            request_id: _,
             receiver: r,
             amount,
             owner: o,
@@ -4669,6 +4927,7 @@ fn stop_and_exit_payout_refunds_and_idle(mut c: Contract, owner: AccountId, rece
     // Enter Payout with non-zero escrow
     c.op_state = OpState::Payout(PayoutState {
         op_id: 123,
+        request_id: 123,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -4740,11 +4999,12 @@ fn stop_and_exit_payout_reconcile_ignores_mismatched_op_id(
 
     let market = MarketId(999);
     c.withdraw_route = vec![market].into();
-    c.market_execution_lock.lock(market);
+    c.market_execution_lock.lock(market, 2, u64::MAX / 2);
 
     c.idle_balance = 123;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 2,
+        request_id: 2,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -4814,6 +5074,7 @@ fn stop_and_exit_payout_zero_escrow_just_idle(
     let amount = 1;
     c.op_state = OpState::Payout(PayoutState {
         op_id: 7,
+        request_id: 7,
         receiver: account_id_to_address(&receiver),
         amount,
         owner: account_id_to_address(&owner),
@@ -4882,6 +5143,7 @@ fn unbrick_withdrawing_refunds_and_dequeues() {
     c.withdraw_route = vec![MarketId(1001)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 1,
         receiver: account_id_to_address(&receiver),
@@ -5015,6 +5277,85 @@ fn unbrick_noop_when_not_withdrawing() {
 }
 
 #[test]
+fn unbrick_payout_reaches_recovery_path() {
+    let vault_id = mk(0);
+    let mut c = new_test_contract(&vault_id);
+    let owner = c.own_get_owner().unwrap();
+    let receiver = mk(29);
+    setup_env(&vault_id, &owner, vec![]);
+
+    let escrow: u128 = 10;
+    c.deposit_unchecked(&near_sdk::env::current_account_id(), escrow)
+        .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+    let head_before = c.queue_tail();
+    c.insert_pending_withdrawal_for_tests(
+        head_before,
+        PendingWithdrawal {
+            owner: owner.clone(),
+            receiver: receiver.clone(),
+            escrow_shares: escrow,
+            expected_assets: 1,
+            requested_at: 0,
+        },
+    );
+
+    c.op_state = OpState::Payout(PayoutState {
+        op_id: 88,
+        request_id: 88,
+        receiver: account_id_to_address(&receiver),
+        amount: 1,
+        owner: account_id_to_address(&owner),
+        escrow_shares: escrow,
+        burn_shares: escrow,
+    });
+
+    let len_before = c.pending_withdrawals_len();
+    let vault_before = c.balance_of(&near_sdk::env::current_account_id());
+    let owner_before = c.balance_of(&owner);
+    let supply_before = c.total_supply();
+    let idle_before = c.idle_balance;
+
+    let res = c.unbrick();
+    match res {
+        PromiseOrValue::Promise(_) => {}
+        _ => panic!("Expected Promise(_) from payout unbrick"),
+    }
+
+    assert!(matches!(
+        c.op_state,
+        OpState::Payout(PayoutState { op_id: 88, .. })
+    ));
+    assert_eq!(c.pending_withdrawals_len(), len_before);
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before
+    );
+    assert_eq!(c.balance_of(&owner), owner_before);
+    assert_eq!(c.total_supply(), supply_before);
+    assert_eq!(c.withdraw_queue.next_withdraw_to_execute, head_before);
+
+    let callback = c.stop_and_exit_payout_01_reconcile(
+        Ok(U128(idle_before)),
+        88,
+        Some(Reason::Other("unbrick_payout".to_string())),
+    );
+    assert!(matches!(callback, PromiseOrValue::Value(())));
+    assert!(matches!(c.op_state, OpState::Idle));
+    assert_eq!(c.pending_withdrawals_len(), len_before.saturating_sub(1));
+    assert_eq!(
+        c.balance_of(&near_sdk::env::current_account_id()),
+        vault_before.saturating_sub(escrow)
+    );
+    assert_eq!(c.balance_of(&owner), owner_before.saturating_add(escrow));
+    assert_eq!(c.total_supply(), supply_before);
+    assert_eq!(
+        c.withdraw_queue.next_withdraw_to_execute,
+        head_before.saturating_add(1)
+    );
+}
+
+#[test]
 fn sentinel_can_unbrick_withdrawing_state() {
     let vault_id = mk(0);
     let mut c = new_test_contract(&vault_id);
@@ -5041,6 +5382,7 @@ fn sentinel_can_unbrick_withdrawing_state() {
     c.withdraw_route = vec![MarketId(1901)].into();
     c.op_state = OpState::Withdrawing(WithdrawingState {
         op_id: 77,
+        request_id: 77,
         index: 0,
         remaining: 1,
         receiver: account_id_to_address(&receiver),
@@ -5696,6 +6038,7 @@ fn address_book_keeps_live_withdrawing_addresses_off_queue() {
 
     c.set_op_state(OpState::Withdrawing(WithdrawingState {
         op_id: 42,
+        request_id: 42,
         index: 0,
         remaining: 5,
         collected: 0,

@@ -3,11 +3,9 @@ use std::io::Write;
 use console::style;
 use near_sdk::serde_json::json;
 use near_sdk::AccountId;
-use templar_common::oracle::{
-    proxy::{Entry, Proxy, Source},
-    pyth::PriceIdentifier,
-    OracleRequest,
-};
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_proxy_oracle_kernel::proxy::{Aggregator, Proxy, WeightedSource};
+use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use templar_tools_common::near;
 
 use super::CliPriceIdentifier;
@@ -32,7 +30,7 @@ impl GetProxy {
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
         let price_id: PriceIdentifier = self.price_id.into();
 
-        let proxy: Option<Proxy> = near::view(
+        let proxy: Option<Proxy<Source>> = near::view(
             &ctx.near,
             &self.oracle_id,
             "get_proxy",
@@ -47,39 +45,92 @@ impl GetProxy {
     }
 }
 
-impl OutputStyle for Proxy {
+impl OutputStyle for Proxy<Source> {
     fn fmt_human(&self, out: &mut dyn Write) -> anyhow::Result<()> {
-        writeln!(
-            out,
-            "{}: {:?}",
-            style("Aggregator").bold(),
-            self.aggregator.method
-        )?;
-        if let Some(max_age) = self.aggregator.filter.max_age {
-            writeln!(out, "  {}: {max_age}", style("max_age").dim())?;
+        let aggregator_name = self.aggregator.name();
+
+        writeln!(out, "{}: {aggregator_name}", style("Aggregator").bold())?;
+
+        if let Some(max_age_ns) = self.freshness_filter.max_age_ns {
+            writeln!(out, "  {}: {max_age_ns}", style("max_age_ns").dim())?;
         }
-        if let Some(max_clock_drift) = self.aggregator.filter.max_clock_drift {
+
+        if let Some(max_clock_drift_ns) = self.freshness_filter.max_clock_drift_ns {
             writeln!(
                 out,
-                "  {}: {max_clock_drift}",
-                style("max_clock_drift").dim()
+                "  {}: {max_clock_drift_ns}",
+                style("max_clock_drift_ns").dim()
             )?;
         }
-        if let Some(min_sources) = self.aggregator.filter.min_sources {
-            writeln!(out, "  {}: {min_sources}", style("min_sources").dim())?;
+
+        match &self.aggregator {
+            Aggregator::MedianLow(proxy) => {
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    style("min_sources").dim(),
+                    proxy.min_sources
+                )?;
+            }
+            Aggregator::MedianHigh(proxy) => {
+                writeln!(
+                    out,
+                    "  {}: {}",
+                    style("min_sources").dim(),
+                    proxy.min_sources
+                )?;
+            }
+            Aggregator::Priority(_) => {}
         }
 
         writeln!(out)?;
-        writeln!(out, "{} ({}):", style("Entries").bold(), self.entries.len())?;
-        for (index, entry) in self.entries.iter().enumerate() {
-            write_entry(out, index, entry)?;
+
+        match &self.aggregator {
+            Aggregator::MedianLow(proxy) => {
+                writeln!(
+                    out,
+                    "{} ({}):",
+                    style("Entries").bold(),
+                    proxy.sources.len()
+                )?;
+                for (index, entry) in proxy.sources.iter().enumerate() {
+                    write_weighted_entry(out, index, entry)?;
+                }
+            }
+            Aggregator::MedianHigh(proxy) => {
+                writeln!(
+                    out,
+                    "{} ({}):",
+                    style("Entries").bold(),
+                    proxy.sources.len()
+                )?;
+                for (index, entry) in proxy.sources.iter().enumerate() {
+                    write_weighted_entry(out, index, entry)?;
+                }
+            }
+            Aggregator::Priority(proxy) => {
+                writeln!(
+                    out,
+                    "{} ({}):",
+                    style("Entries").bold(),
+                    proxy.sources.len()
+                )?;
+                for (index, source) in proxy.sources.iter().enumerate() {
+                    writeln!(out, "  {}", style(format!("[{index}]")).bold())?;
+                    write_source(out, "    ", source)?;
+                }
+            }
         }
 
         Ok(())
     }
 }
 
-fn write_entry(out: &mut dyn Write, index: usize, entry: &Entry) -> anyhow::Result<()> {
+fn write_weighted_entry(
+    out: &mut dyn Write,
+    index: usize,
+    entry: &WeightedSource<Source>,
+) -> anyhow::Result<()> {
     writeln!(
         out,
         "  {} {}={}",
@@ -87,25 +138,31 @@ fn write_entry(out: &mut dyn Write, index: usize, entry: &Entry) -> anyhow::Resu
         style("weight").dim(),
         entry.weight,
     )?;
-    match &entry.source {
-        Source::Request(request) => {
-            write_oracle_request(out, "    ", request)?;
-        }
-        Source::Transformer(t) => {
-            writeln!(out, "    {}", style("Transformer").cyan())?;
-            write_oracle_request(out, "      ", &t.request)?;
+    write_source(out, "    ", &entry.source)
+}
+
+fn write_source(out: &mut dyn Write, indent: &str, source: &Source) -> anyhow::Result<()> {
+    match source {
+        Source::Request(request) => write_oracle_request(out, indent, request),
+        Source::Transformer(transformer) => {
+            writeln!(out, "{indent}{}", style("Transformer").cyan())?;
+            write_oracle_request(out, &format!("{indent}  "), &transformer.request)?;
             writeln!(
                 out,
-                "      {}: {}.{}",
+                "{indent}  {}: {}.{}",
                 style("call").dim(),
-                t.call.account_id,
-                t.call.method_name,
+                transformer.call.account_id,
+                transformer.call.method_name,
             )?;
-            writeln!(out, "      {}: {:?}", style("action").dim(), t.action)?;
+            writeln!(
+                out,
+                "{indent}  {}: {:?}",
+                style("action").dim(),
+                transformer.action,
+            )?;
+            Ok(())
         }
     }
-
-    Ok(())
 }
 
 fn write_oracle_request(

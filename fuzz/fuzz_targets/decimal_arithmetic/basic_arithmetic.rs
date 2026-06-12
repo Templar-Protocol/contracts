@@ -1,11 +1,11 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use templar_common::number::Decimal;
+use templar_common::Decimal;
 
 fuzz_target!(|data: (u128, u128, u128)| {
     let (a, b, c) = data;
-    
+
     let dec_a = Decimal::from(a);
     let dec_b = Decimal::from(b);
     let dec_c = Decimal::from(c);
@@ -23,7 +23,7 @@ fuzz_target!(|data: (u128, u128, u128)| {
         mut_sub -= dec_b;
     }
 
-    // Multiplication operations  
+    // Multiplication operations
     let _ = dec_a * dec_b;
     let _ = dec_a * dec_b * dec_c;
     let mut mut_mul = dec_a;

@@ -53,6 +53,7 @@ Use this section as an execution checklist: read the local docs first, preserve 
 ## Working Norms
 
 - Prefer small, targeted changes over broad refactors.
+- Never fully delete and recreate an existing file when editing. Apply small, in-place patches that preserve unaffected content.
 - Do not revert unrelated user changes in the worktree.
 - Treat `common` changes as high-impact: they often affect multiple contracts and tests.
 - Keep event/schema changes deliberate. If a public event or JSON payload changes, check versioning and downstream compatibility.

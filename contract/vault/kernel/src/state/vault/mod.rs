@@ -18,7 +18,7 @@ pub const MAX_PENDING: usize = 1024;
 /// Stores the total assets and timestamp at which fees were last accrued.
 /// Used to calculate time-weighted management fees and performance fees
 /// based on AUM growth.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FeeAccrualAnchor {
     pub total_assets: u128,
@@ -45,6 +45,12 @@ impl FeeAccrualAnchor {
     }
 
     #[inline]
+    #[must_use]
+    pub const fn is_uninitialized(self) -> bool {
+        self.total_assets == 0 && self.timestamp_ns.as_u64() == 0
+    }
+
+    #[inline]
     pub fn update(&mut self, total_assets: u128, timestamp_ns: TimestampNs) {
         self.total_assets = total_assets;
         self.timestamp_ns = timestamp_ns;
@@ -66,7 +72,7 @@ impl Default for FeeAccrualAnchor {
 /// Fee recipients are 32-byte addresses. Executors are responsible for mapping
 /// chain-native account identifiers (e.g., NEAR AccountId, Soroban Address) to
 /// this canonical 32-byte format, typically using a SHA256 hash.
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct VaultConfig {
     pub fees: FeesSpec,
@@ -99,7 +105,7 @@ impl VaultConfig {
 /// - `withdraw_queue.check_invariants()`
 /// - `next_op_id` is monotonically increasing
 /// - Operations can only proceed when `op_state` allows them
-#[templar_vault_macros::vault_derive(borsh, serde, postcard)]
+#[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct VaultState {
     pub total_assets: u128,
@@ -137,9 +143,10 @@ impl VaultState {
         external_assets: u128,
         timestamp_ns: TimestampNs,
     ) -> Self {
-        let computed_total = idle_assets
-            .checked_add(external_assets)
-            .expect("total_assets invariant overflow: idle + external");
+        let computed_total = crate::unwrap_abort!(
+            idle_assets.checked_add(external_assets),
+            crate::abort::OVERFLOW,
+        );
         assert!(total_assets == computed_total);
         Self {
             total_assets,
@@ -171,7 +178,8 @@ impl VaultState {
     #[inline]
     pub fn allocate_op_id(&mut self) -> u64 {
         let id = self.next_op_id;
-        self.next_op_id = self.next_op_id.checked_add(1).expect("op_id overflow");
+        self.next_op_id =
+            crate::unwrap_abort!(self.next_op_id.checked_add(1), crate::abort::OVERFLOW,);
         id
     }
 
@@ -195,10 +203,10 @@ impl VaultState {
     /// to restore the fundamental accounting invariant.
     #[inline]
     pub fn sync_total_assets(&mut self) {
-        self.total_assets = self
-            .idle_assets
-            .checked_add(self.external_assets)
-            .expect("total_assets overflow: idle + external");
+        self.total_assets = crate::unwrap_abort!(
+            self.idle_assets.checked_add(self.external_assets),
+            crate::abort::OVERFLOW,
+        );
     }
 
     /// Add `amount` back to idle assets and recompute totals.
@@ -207,7 +215,8 @@ impl VaultState {
     /// in-flight assets are returned to idle.
     #[inline]
     pub fn restore_to_idle(&mut self, amount: u128) {
-        self.idle_assets = self.idle_assets.checked_add(amount).unwrap();
+        self.idle_assets =
+            crate::unwrap_abort!(self.idle_assets.checked_add(amount), crate::abort::OVERFLOW,);
         self.sync_total_assets();
     }
 }
@@ -223,13 +232,13 @@ mod tests {
     use super::VaultState;
 
     #[test]
-    #[should_panic(expected = "total_assets invariant overflow: idle + external")]
+    #[should_panic]
     fn with_initial_panics_on_overflowed_component_sum() {
         let _ = VaultState::with_initial(u128::MAX, 0, u128::MAX, 1, crate::TimestampNs(0));
     }
 
     #[test]
-    #[should_panic(expected = "op_id overflow")]
+    #[should_panic]
     fn allocate_op_id_panics_on_overflow() {
         let mut state = VaultState::new();
         state.next_op_id = u64::MAX;
@@ -238,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "total_assets overflow: idle + external")]
+    #[should_panic]
     fn sync_total_assets_panics_on_overflow() {
         let mut state = VaultState::new();
         state.idle_assets = u128::MAX;

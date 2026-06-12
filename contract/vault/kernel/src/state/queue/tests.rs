@@ -189,6 +189,22 @@ fn pending_withdrawals_from_iter_rejects_duplicate_ids() {
 }
 
 #[test]
+#[should_panic(expected = "pending withdrawal entries must be sorted by unique id")]
+fn pending_withdrawals_from_sorted_entries_rejects_duplicate_ids() {
+    let withdrawal = make_withdrawal(1, 100, 1000);
+    let _pending =
+        PendingWithdrawals::from_sorted_entries(vec![(7, withdrawal.clone()), (7, withdrawal)]);
+}
+
+#[test]
+#[should_panic(expected = "pending withdrawal entries must be sorted by unique id")]
+fn pending_withdrawals_from_sorted_entries_rejects_unsorted_ids() {
+    let withdrawal = make_withdrawal(1, 100, 1000);
+    let _pending =
+        PendingWithdrawals::from_sorted_entries(vec![(8, withdrawal.clone()), (7, withdrawal)]);
+}
+
+#[test]
 fn test_compute_full_withdrawal() {
     let w = make_withdrawal(1, 100, 1000);
 
@@ -912,11 +928,7 @@ proptest! {
         let settlement = compute_settlement(escrow_shares, expected_assets, actual_assets);
 
         let expected_burn = (escrow_shares * actual_assets) / expected_assets;
-        let diff = if settlement.to_burn > expected_burn {
-            settlement.to_burn - expected_burn
-        } else {
-            expected_burn - settlement.to_burn
-        };
+        let diff = settlement.to_burn.abs_diff(expected_burn);
 
         prop_assert!(diff <= 1, "burn not proportional: expected ~{}, got {}", expected_burn, settlement.to_burn);
     }
@@ -1391,7 +1403,7 @@ proptest! {
 }
 
 #[test]
-#[should_panic(expected = "cached_total_escrow underflow")]
+#[should_panic]
 fn dequeue_panics_on_cached_escrow_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();
@@ -1411,7 +1423,7 @@ fn dequeue_panics_on_cached_escrow_underflow() {
 }
 
 #[test]
-#[should_panic(expected = "cached_total_expected underflow")]
+#[should_panic]
 fn dequeue_panics_on_cached_expected_underflow() {
     use alloc::collections::BTreeMap;
     let mut pending = BTreeMap::new();

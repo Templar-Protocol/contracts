@@ -2,6 +2,8 @@ use super::helpers::{
     contract_error, invalid_state_error, kernel_address_from_sdk, require_signed,
 };
 use super::*;
+use templar_curator_primitives::policy::state::PolicyStateError;
+use templar_vault_kernel::abort;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 
 #[derive(Clone, Copy)]
@@ -29,23 +31,6 @@ struct RefreshPlanDecision {
 #[derive(Clone, Copy)]
 struct RefreshCompletionSnapshot {
     markets_refreshed: u32,
-}
-
-#[derive(Clone, Copy)]
-struct RefreshedPosition {
-    market: TargetId,
-    total_assets: u128,
-}
-
-impl RefreshedPosition {
-    #[inline]
-    #[must_use]
-    const fn new(market: TargetId, total_assets: u128) -> Self {
-        Self {
-            market,
-            total_assets,
-        }
-    }
 }
 
 pub struct CuratorVault<S, A, E>
@@ -87,10 +72,7 @@ where
 
     #[inline(never)]
     pub fn load_state(&mut self) -> Result<(), RuntimeError> {
-        self.state = Some(match self.storage.load_state()? {
-            Some(versioned) => versioned.state,
-            None => VaultState::default(),
-        });
+        self.state = Some((self.storage.load_state()?).unwrap_or_default());
         self.paused = self.storage.load_paused()?;
         self.policy_state = self
             .storage
@@ -112,9 +94,8 @@ where
 
     pub fn save_state(&mut self) -> Result<(), RuntimeError> {
         if let Some(state) = self.state.take() {
-            let versioned = VersionedState::new(state);
-            let result = self.storage.save_state(&versioned);
-            self.state = Some(versioned.state);
+            let result = self.storage.save_state(&state);
+            self.state = Some(state);
             result
         } else {
             Ok(())
@@ -139,7 +120,7 @@ where
     pub fn state(&self) -> Result<&VaultState, RuntimeError> {
         match self.state.as_ref() {
             Some(state) => Ok(state),
-            None => Err(RuntimeError::storage_error("vault state not loaded")),
+            None => Err(RuntimeError::storage_error("")),
         }
     }
 
@@ -147,7 +128,7 @@ where
     pub fn state_mut(&mut self) -> Result<&mut VaultState, RuntimeError> {
         match self.state.as_mut() {
             Some(state) => Ok(state),
-            None => Err(RuntimeError::storage_error("vault state not loaded")),
+            None => Err(RuntimeError::storage_error("")),
         }
     }
 
@@ -164,9 +145,7 @@ where
         let vault_sdk = env.current_contract_address();
         let vault_kernel = kernel_address_from_sdk(env, &vault_sdk);
         if vault_kernel != self.config.vault_address {
-            return Err(RuntimeError::contract_error(
-                "vault address mismatch for effect mapping",
-            ));
+            return Err(RuntimeError::contract_error("address mismatch"));
         }
         self.register_address(vault_kernel, vault_sdk)?;
         Ok(())
@@ -186,8 +165,8 @@ where
         VaultConfig {
             fees: self.config.fees,
             min_withdrawal_assets: MIN_WITHDRAWAL_ASSETS,
-            withdrawal_cooldown_ns: DEFAULT_COOLDOWN_NS,
-            max_pending_withdrawals: MAX_PENDING as u32,
+            withdrawal_cooldown_ns: self.config.withdrawal_cooldown_ns,
+            max_pending_withdrawals: SOROBAN_MAX_PENDING_WITHDRAWALS,
             paused: self.paused,
             virtual_shares: self.config.virtual_shares,
             virtual_assets: self.config.virtual_assets,
@@ -200,12 +179,22 @@ where
         action: KernelAction,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
+        let (_, summary) = self.apply_kernel_action_result(action, now_ns)?;
+        Ok(summary)
+    }
+
+    #[inline(never)]
+    fn apply_kernel_action_result(
+        &mut self,
+        action: KernelAction,
+        now_ns: u64,
+    ) -> Result<(KernelResult, EffectSummary), RuntimeError> {
         let config = self.kernel_config();
         let restrictions = self.restrictions.as_ref();
         let state = self
             .state
             .take()
-            .ok_or_else(|| RuntimeError::storage_error("vault state not loaded"))?;
+            .ok_or_else(|| RuntimeError::storage_error(""))?;
         let result = match transition_to_runtime(apply_action(
             state.clone(),
             &config,
@@ -223,9 +212,9 @@ where
         let ctx = self.effect_context(now_ns);
         self.ensure_effect_addresses_mapped(&result.effects, &ctx)?;
         let summary = self.interpreter.execute_effects(&result.effects, &ctx)?;
-        self.state = Some(result.state);
+        self.state = Some(result.state.clone());
         self.save_state()?;
-        Ok(summary)
+        Ok((result, summary))
     }
 
     #[inline(never)]
@@ -283,10 +272,10 @@ where
     ) -> Result<DepositResult, RuntimeError> {
         self.authorize(ActionKind::Deposit, caller)?;
         if self.paused {
-            return Err(contract_error("vault is paused"));
+            return Err(contract_error("paused"));
         }
 
-        let summary = self.apply_kernel_action(
+        let (kernel_result, _) = self.apply_kernel_action_result(
             KernelAction::Deposit {
                 owner: caller,
                 receiver,
@@ -296,10 +285,23 @@ where
             },
             now_ns,
         )?;
+        let shares_minted = kernel_result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::EmitEvent {
+                    event:
+                        templar_vault_kernel::effects::KernelEvent::DepositProcessed {
+                            shares_out, ..
+                        },
+                } => Some(*shares_out),
+                _ => None,
+            })
+            .unwrap_or(0);
 
         let state = self.state()?;
         Ok(DepositResult {
-            shares_minted: summary.shares_minted,
+            shares_minted,
             total_shares: state.total_shares,
             total_assets: state.total_assets,
         })
@@ -331,7 +333,7 @@ where
 
         let state = self.state()?;
         if state.total_shares == 0 {
-            return Err(contract_error("no shares in vault"));
+            return Err(contract_error("no shares"));
         }
 
         let request_id = state.withdraw_queue.next_pending_withdrawal_id;
@@ -353,6 +355,17 @@ where
     }
 
     #[inline(never)]
+    pub fn refresh_fees(&mut self, now_ns: u64) -> Result<(), RuntimeError> {
+        self.apply_kernel_action(
+            KernelAction::RefreshFees {
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )?;
+        Ok(())
+    }
+
+    #[inline(never)]
     pub fn execute_withdraw(
         &mut self,
         caller: Address,
@@ -365,9 +378,7 @@ where
         {
             let op_state = &self.state()?.op_state;
             if !op_state.is_idle() && !op_state.is_withdrawing() {
-                return Err(contract_error(
-                    "vault not in idle or withdrawing state for withdrawal",
-                ));
+                return Err(contract_error("not idle or withdrawing"));
             }
         }
         if self.state()?.op_state.is_idle() {
@@ -388,6 +399,17 @@ where
         Ok(summary)
     }
 
+    #[inline(never)]
+    pub fn abort_withdrawing(
+        &mut self,
+        caller: Address,
+        op_id: u64,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.authorize(ActionKind::AbortWithdrawing, caller)?;
+        self.apply_kernel_action(KernelAction::abort_withdrawing(op_id), now_ns)
+    }
+
     /// Map vault + caller SDK address to kernel address.
     pub fn map_caller(&mut self, env: &Env, caller: &SdkAddress) -> Result<Address, RuntimeError> {
         self.ensure_vault_mapped(env)?;
@@ -400,36 +422,42 @@ where
         receiver: &SdkAddress,
         owner: &SdkAddress,
         operator: &SdkAddress,
-    ) -> Result<(Address, Address, Address, u64), RuntimeError> {
+    ) -> Result<(Address, Address, Address, u64, EffectSummary), RuntimeError> {
         require_signed(operator);
         self.ensure_vault_mapped(env)?;
         let owner_kernel = self.register_sdk_address(env, owner)?;
         let receiver_kernel = self.register_sdk_address(env, receiver)?;
         let operator_kernel = self.register_sdk_address(env, operator)?;
-        let now_ns = ledger_timestamp_ns(env)
-            .map_err(|_| RuntimeError::invalid_input("timestamp overflow"))?;
+        let now_ns = ledger_timestamp_ns(env).map_err(|_| RuntimeError::invalid_input(""))?;
 
+        let mut summary = EffectSummary::new();
         let fees_active = !self.config.fees.management.fee_wad.is_zero()
             || !self.config.fees.performance.fee_wad.is_zero();
         if fees_active && now_ns > self.state()?.fee_anchor.timestamp_ns.as_u64() {
-            let _ = self.apply_kernel_action(
+            summary.merge(self.apply_kernel_action(
                 KernelAction::RefreshFees {
                     now_ns: TimestampNs(now_ns),
                 },
                 now_ns,
-            )?;
+            )?);
         }
 
-        Ok((owner_kernel, receiver_kernel, operator_kernel, now_ns))
+        Ok((
+            owner_kernel,
+            receiver_kernel,
+            operator_kernel,
+            now_ns,
+            summary,
+        ))
     }
 
-    fn atomic_payout(
+    fn atomic_withdraw_effects(
         &mut self,
         owner: Address,
         receiver: Address,
         operator: Address,
-        amount: u128,
-        kind: AtomicPayoutKind,
+        assets_out: u128,
+        max_shares_burned: u128,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
         self.apply_kernel_action(
@@ -437,8 +465,30 @@ where
                 owner,
                 receiver,
                 operator,
-                amount,
-                kind,
+                assets_out,
+                max_shares_burned,
+                now_ns: TimestampNs(now_ns),
+            },
+            now_ns,
+        )
+    }
+
+    fn atomic_redeem_effects(
+        &mut self,
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        shares: u128,
+        min_assets_out: u128,
+        now_ns: u64,
+    ) -> Result<EffectSummary, RuntimeError> {
+        self.apply_kernel_action(
+            KernelAction::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
                 now_ns: TimestampNs(now_ns),
             },
             now_ns,
@@ -450,26 +500,27 @@ where
         &mut self,
         env: &Env,
         assets: i128,
+        max_shares_burned: i128,
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
         if assets <= 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let burned = self.atomic_payout(
+        summary.merge(self.atomic_withdraw_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
-            to_u128(assets).map_err(|_| RuntimeError::invalid_input("invalid assets"))?,
-            AtomicPayoutKind::Withdraw,
+            to_u128(assets).map_err(|_| RuntimeError::invalid_input(""))?,
+            to_u128(max_shares_burned).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?;
-        to_i128(burned.shares_burned).map_err(|_| RuntimeError::invalid_input("burn overflow"))
+        )?);
+        to_i128(summary.shares_burned).map_err(|_| RuntimeError::invalid_input(""))
     }
 
     #[inline(never)]
@@ -477,27 +528,27 @@ where
         &mut self,
         env: &Env,
         shares: i128,
+        min_assets_out: i128,
         receiver: SdkAddress,
         owner: SdkAddress,
         operator: SdkAddress,
     ) -> Result<i128, RuntimeError> {
         if shares <= 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
-        let (owner_kernel, receiver_kernel, operator_kernel, now_ns) =
+        let (owner_kernel, receiver_kernel, operator_kernel, now_ns, mut summary) =
             self.prepare_atomic_call(env, &receiver, &owner, &operator)?;
 
-        let summary = self.atomic_payout(
+        summary.merge(self.atomic_redeem_effects(
             owner_kernel,
             receiver_kernel,
             operator_kernel,
-            to_u128(shares).map_err(|_| RuntimeError::invalid_input("invalid shares"))?,
-            AtomicPayoutKind::Redeem,
+            to_u128(shares).map_err(|_| RuntimeError::invalid_input(""))?,
+            to_u128(min_assets_out).map_err(|_| RuntimeError::invalid_input(""))?,
             now_ns,
-        )?;
-        to_i128(summary.assets_transferred)
-            .map_err(|_| RuntimeError::invalid_input("asset overflow"))
+        )?);
+        to_i128(summary.assets_transferred).map_err(|_| RuntimeError::invalid_input(""))
     }
 
     #[inline(never)]
@@ -505,23 +556,12 @@ where
         &mut self,
         now_ns: u64,
     ) -> Result<EffectSummary, RuntimeError> {
-        let Some(idle_payout) = transition_to_runtime(plan_idle_payout(self.state()?))? else {
-            return Ok(EffectSummary::new());
-        };
+        let min_withdrawal_assets = self.kernel_config().min_withdrawal_assets;
+        let idle_payout =
+            transition_to_runtime(plan_idle_payout(self.state()?, min_withdrawal_assets))?;
 
         let assets_out = idle_payout.assets_out;
-        if assets_out == 0 {
-            return Ok(EffectSummary::new());
-        }
-        let burn_shares = match idle_payout.outcome {
-            PayoutOutcome::Success {
-                burn_shares,
-                refund_shares: _,
-            } => burn_shares,
-            PayoutOutcome::Failure { .. } => {
-                return Err(contract_error("idle payout planning must succeed"));
-            }
-        };
+        let burn_shares = idle_payout.burn_shares;
         let op_id = idle_payout.op_id;
 
         let collected = {
@@ -546,7 +586,7 @@ where
         summary.merge(transfer_summary);
 
         let settle_summary = self.apply_kernel_action(
-            KernelAction::settle_payout(op_id, idle_payout.outcome),
+            KernelAction::settle_payout(op_id, PayoutOutcome::Success),
             now_ns,
         )?;
         summary.merge(settle_summary);
@@ -598,6 +638,7 @@ where
                 let observed_total_assets = self
                     .policy_state()
                     .principal_for(delta.market)
+                    .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?
                     .checked_add(delta.amount)
                     .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
 
@@ -652,7 +693,7 @@ where
     #[inline]
     fn require_positive_allocation_amount(amount: u128) -> Result<(), RuntimeError> {
         if amount == 0 {
-            return Err(RuntimeError::invalid_input("amount must be > 0"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         Ok(())
@@ -685,11 +726,11 @@ where
     ) -> Result<RefreshPlanDecision, RuntimeError> {
         let markets = self
             .policy_state
-            .locks
-            .build_refresh_plan_with_locks(plan, current_ns);
+            .leases()
+            .excluding_leased_targets(plan, TimestampNs(current_ns));
 
         if markets.is_empty() {
-            return Err(RuntimeError::invalid_input("empty refresh plan"));
+            return Err(RuntimeError::invalid_input(""));
         }
 
         Ok(RefreshPlanDecision { markets })
@@ -716,24 +757,6 @@ where
             markets_refreshed,
             new_external_assets,
         }
-    }
-
-    #[inline]
-    fn classify_refreshed_positions(
-        refreshed_positions: &[(TargetId, u128)],
-    ) -> Vec<RefreshedPosition> {
-        refreshed_positions
-            .iter()
-            .map(|&(market, total_assets)| RefreshedPosition::new(market, total_assets))
-            .collect()
-    }
-
-    fn apply_refreshed_positions(&mut self, refreshed_positions: &[RefreshedPosition]) {
-        let policy = self.policy_state_mut();
-        for position in refreshed_positions {
-            policy.set_principal(position.market, position.total_assets);
-        }
-        policy.refresh_cap_group_principals();
     }
 
     pub(crate) fn begin_allocation_internal(
@@ -770,8 +793,55 @@ where
 
     fn update_market_principal(&mut self, market: TargetId, principal: u128) {
         let policy = self.policy_state_mut();
-        policy.set_principal(market, principal);
-        policy.refresh_cap_group_principals();
+        policy
+            .set_principal(market, principal)
+            .unwrap_or_else(|_| abort!("market principal failed"));
+    }
+
+    fn set_policy_principal(
+        policy: &mut PolicyState,
+        market: TargetId,
+        principal: u128,
+        message: &'static str,
+    ) -> Result<(), RuntimeError> {
+        policy
+            .set_principal(market, principal)
+            .map_err(|_| invalid_state_error(message))
+    }
+
+    fn validate_supply_observation(
+        policy: &PolicyState,
+        market: TargetId,
+        observed_total_assets: u128,
+        supply_amount: u128,
+    ) -> Result<(), RuntimeError> {
+        let previous_principal = policy
+            .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on supply"))?;
+        let max_principal = previous_principal
+            .checked_add(supply_amount)
+            .ok_or_else(|| invalid_state_error("principal overflow on supply"))?;
+        if observed_total_assets < previous_principal || observed_total_assets > max_principal {
+            return Err(invalid_state_error("supply observation out of bounds"));
+        }
+        Ok(())
+    }
+
+    fn validate_refresh_observation(
+        policy: &PolicyState,
+        market: TargetId,
+        observed_total_assets: u128,
+    ) -> Result<(), RuntimeError> {
+        let cap = policy
+            .market_config(market)
+            .ok_or_else(|| invalid_state_error("unknown refreshed market"))?
+            .cap;
+        if observed_total_assets > cap {
+            return Err(invalid_state_error(
+                "refresh observation exceeds market cap",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn complete_supply_allocation(
@@ -782,14 +852,35 @@ where
         op_id: u64,
         now_ns: u64,
     ) -> Result<u128, RuntimeError> {
-        self.update_market_principal(market, observed_total_assets);
-        let new_external = self.sync_external_assets(
-            caller,
-            op_id,
-            self.policy_state().external_assets(),
-            now_ns,
+        let allocation = self
+            .state()?
+            .op_state
+            .as_allocating()
+            .ok_or_else(|| invalid_state_error(""))?;
+        let current_step = allocation
+            .plan
+            .get(allocation.index as usize)
+            .ok_or_else(|| invalid_state_error("allocation step missing"))?;
+        if current_step.target_id != market {
+            return Err(RuntimeError::invalid_input(""));
+        }
+        Self::validate_supply_observation(
+            self.policy_state(),
+            market,
+            observed_total_assets,
+            current_step.amount,
         )?;
+        let mut staged_policy = self.policy_state.clone();
+        Self::set_policy_principal(
+            &mut staged_policy,
+            market,
+            observed_total_assets,
+            "market principal failed",
+        )?;
+        let new_external_assets = staged_policy.external_assets()?;
+        let new_external = self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         self.finish_allocation_internal(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
     }
@@ -805,6 +896,7 @@ where
         let next_principal = self
             .policy_state()
             .principal_for(market)
+            .ok_or_else(|| invalid_state_error("unknown market principal on withdraw"))?
             .checked_sub(realized_amount)
             .ok_or_else(|| invalid_state_error("principal underflow on withdraw"))?;
         self.update_market_principal(market, next_principal);
@@ -812,6 +904,49 @@ where
         self.finish_allocation_internal(caller, op_id, now_ns)?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(new_external)
+    }
+
+    #[inline]
+    fn classify_refreshed_positions(
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Vec<(TargetId, u128)> {
+        refreshed_positions.to_vec()
+    }
+
+    fn validate_refreshed_positions_against_plan(
+        &self,
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Result<(), RuntimeError> {
+        let refreshing = self
+            .state()?
+            .op_state
+            .as_refreshing()
+            .ok_or_else(|| invalid_state_error(""))?;
+
+        for (market, _) in refreshed_positions {
+            if !refreshing.plan.contains(market) {
+                return Err(RuntimeError::invalid_input(""));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn stage_refreshed_positions(
+        &self,
+        refreshed_positions: &[(TargetId, u128)],
+    ) -> Result<PolicyState, RuntimeError> {
+        let mut policy = self.policy_state.clone();
+        for &(market, total_assets) in refreshed_positions {
+            Self::validate_refresh_observation(&policy, market, total_assets)?;
+            Self::set_policy_principal(
+                &mut policy,
+                market,
+                total_assets,
+                "refresh principal failed",
+            )?;
+        }
+        Ok(policy)
     }
 
     pub(crate) fn complete_refresh_with_positions(
@@ -822,10 +957,12 @@ where
         now_ns: u64,
     ) -> Result<RefreshResult, RuntimeError> {
         let refreshed_positions = Self::classify_refreshed_positions(refreshed_positions);
-        self.apply_refreshed_positions(&refreshed_positions);
-        let new_external_assets = self.policy_state().external_assets();
+        self.validate_refreshed_positions_against_plan(&refreshed_positions)?;
+        let staged_policy = self.stage_refreshed_positions(&refreshed_positions)?;
+        let new_external_assets = staged_policy.external_assets()?;
         self.sync_external_assets(caller, op_id, new_external_assets, now_ns)?;
         let result = self.finish_refreshing(caller, op_id, now_ns)?;
+        self.policy_state = staged_policy;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(result)
     }
@@ -945,7 +1082,7 @@ where
 
     pub fn get_cap_groups(&self) -> Vec<(CapGroupId, CapGroupRecord)> {
         self.policy_state
-            .cap_groups
+            .cap_groups()
             .iter()
             .map(|(id, rec)| (id.clone(), rec.clone()))
             .collect()
@@ -983,9 +1120,26 @@ where
         target_ids: Vec<TargetId>,
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.set_supply_queue_authorized(target_ids)
+    }
 
+    pub fn set_supply_queue_authorized(
+        &mut self,
+        target_ids: Vec<TargetId>,
+    ) -> Result<(), RuntimeError> {
         let mut entries = Vec::with_capacity(target_ids.len());
         for target_id in target_ids {
+            let config = self
+                .policy_state
+                .market_config(target_id)
+                .ok_or_else(|| RuntimeError::invalid_input(""))?;
+            if !config.enabled {
+                return Err(RuntimeError::invalid_input(""));
+            }
+            if config.cap == 0 {
+                return Err(RuntimeError::invalid_input(""));
+            }
+
             if entries
                 .iter()
                 .any(|entry: &SupplyQueueEntry| entry.target_id == target_id)
@@ -994,10 +1148,17 @@ where
                     "duplicate market in supply queue",
                 ));
             }
-            entries.push(SupplyQueueEntry::new(target_id, 1));
+            entries.push(
+                SupplyQueueEntry::new(target_id, 1).map_err(|_| RuntimeError::invalid_input(""))?,
+            );
         }
 
-        self.policy_state.supply_queue = SupplyQueue::from(entries);
+        self.policy_state
+            .replace_supply_queue(
+                SupplyQueue::try_from_entries(entries, None)
+                    .map_err(|_| RuntimeError::invalid_input(""))?,
+            )
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1010,19 +1171,47 @@ where
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
-        let current_cap = self.policy_state.markets.get(&market_id).map(|m| m.cap);
+        let current_cap = self.policy_state.market_config(market_id).map(|m| m.cap);
         let decision = TimelockDecision::from_cap_change(current_cap, new_cap)
-            .map_err(|_| RuntimeError::invalid_input("cap unchanged"))?;
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         if matches!(decision, TimelockDecision::Timelocked) {
             return Err(RuntimeError::invalid_input(
                 "cap increase or new market requires timelock",
             ));
         }
 
-        let Some(config) = self.policy_state.markets.get_mut(&market_id) else {
-            return Err(RuntimeError::invalid_input("market not found"));
-        };
-        config.cap = new_cap;
+        self.policy_state
+            .set_market_cap(market_id, new_cap)
+            .map_err(|_| RuntimeError::invalid_input(""))?;
+
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
+    pub fn apply_governance_cap(
+        &mut self,
+        caller: Address,
+        market_id: TargetId,
+        new_cap: u128,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_cap_authorized(market_id, new_cap)
+    }
+
+    pub fn apply_governance_cap_authorized(
+        &mut self,
+        market_id: TargetId,
+        new_cap: u128,
+    ) -> Result<(), RuntimeError> {
+        if self.policy_state.market_config(market_id).is_some() {
+            self.policy_state
+                .set_market_cap(market_id, new_cap)
+                .map_err(|_| RuntimeError::invalid_input(""))?;
+        } else {
+            self.policy_state
+                .set_market_config(market_id, MarketConfig::new(true, new_cap, None))
+                .map_err(|_| RuntimeError::invalid_input(""))?;
+        }
 
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
@@ -1035,9 +1224,9 @@ where
     ) -> Result<(), RuntimeError> {
         self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
 
-        let principal = self.policy_state.principal_for(market_id);
-        let Some(config) = self.policy_state.markets.get_mut(&market_id) else {
-            return Err(RuntimeError::invalid_input("market not found"));
+        let principal = self.policy_state.principal_for(market_id).unwrap_or(0);
+        let Some(config) = self.policy_state.market_config(market_id) else {
+            return Err(RuntimeError::invalid_input(""));
         };
         if config.cap > 0 {
             return Err(RuntimeError::invalid_input(
@@ -1045,7 +1234,7 @@ where
             ));
         }
         if !config.enabled {
-            return Err(RuntimeError::invalid_input("market already removed"));
+            return Err(RuntimeError::invalid_input(""));
         }
         if TimelockDecision::from_requires_timelock(principal > 0).requires_timelock() {
             return Err(RuntimeError::invalid_input(
@@ -1053,7 +1242,46 @@ where
             ));
         }
 
-        config.enabled = false;
+        let _ = self
+            .policy_state
+            .remove_market(market_id)
+            .map_err(|_| RuntimeError::invalid_input(""))?;
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
+    pub fn apply_governance_remove_market(
+        &mut self,
+        caller: Address,
+        market_id: TargetId,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_remove_market_authorized(market_id)
+    }
+
+    pub fn apply_governance_remove_market_authorized(
+        &mut self,
+        market_id: TargetId,
+    ) -> Result<(), RuntimeError> {
+        let Some(config) = self.policy_state.market_config(market_id) else {
+            return Err(RuntimeError::invalid_input(""));
+        };
+        let principal = self.policy_state.principal_for(market_id).unwrap_or(0);
+        if config.cap > 0 {
+            return Err(RuntimeError::invalid_input(
+                "cannot remove market with non-zero cap",
+            ));
+        }
+        if principal > 0 {
+            return Err(RuntimeError::invalid_input(
+                "cannot remove market with non-zero principal",
+            ));
+        }
+
+        let _ = self
+            .policy_state
+            .remove_market(market_id)
+            .map_err(|_| RuntimeError::invalid_input(""))?;
         self.storage.save_policy_state(&self.policy_state)?;
         Ok(())
     }
@@ -1073,85 +1301,109 @@ where
             } => {
                 let current = self
                     .policy_state
-                    .cap_groups
-                    .get(&cap_group_id)
-                    .and_then(|record| record.cap.absolute_cap.map(NonZeroU128::get));
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.absolute_cap());
                 let decision = TimelockDecision::from_cap_group_cap_change(current, new_cap)
-                    .map_err(|_| RuntimeError::invalid_input("cap group cap unchanged"))?;
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
-                        "cap group cap increase requires timelock",
+                        "cap increase requires timelock",
                     ));
                 }
 
-                let record = self
-                    .policy_state
-                    .cap_groups
-                    .get_mut(&cap_group_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("cap group not found"))?;
-                record.cap.absolute_cap = NonZeroU128::new(new_cap);
+                self.policy_state
+                    .set_cap_group_absolute_cap(cap_group_id, new_cap);
             }
             CapGroupUpdate::SetRelativeCap {
                 cap_group_id,
-                new_relative_cap_wad,
+                new_relative_cap,
             } => {
-                let proposed = Wad::from(new_relative_cap_wad);
+                let proposed = new_relative_cap;
                 let current = self
                     .policy_state
-                    .cap_groups
-                    .get(&cap_group_id)
-                    .and_then(|record| record.cap.relative_cap);
+                    .cap_group(&cap_group_id)
+                    .and_then(|record| record.cap.relative_cap());
                 let decision = TimelockDecision::from_relative_cap_change(current, proposed)
-                    .map_err(|_| {
-                        RuntimeError::invalid_input("invalid cap group relative cap change")
-                    })?;
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
                 if matches!(decision, TimelockDecision::Timelocked) {
                     return Err(RuntimeError::invalid_input(
-                        "cap group relative cap increase requires timelock",
+                        "cap increase requires timelock",
                     ));
                 }
 
-                let record = self
-                    .policy_state
-                    .cap_groups
-                    .get_mut(&cap_group_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("cap group not found"))?;
-                record.cap.relative_cap = if proposed.is_zero() {
-                    None
-                } else {
-                    Some(proposed)
-                };
+                self.policy_state
+                    .set_cap_group_relative_cap(cap_group_id, proposed);
             }
             CapGroupUpdate::SetMembership {
                 market_id,
                 cap_group_id,
             } => {
-                let changed = {
-                    let market = self
-                        .policy_state
-                        .markets
-                        .get(&market_id)
-                        .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
-                    market.cap_group_id != cap_group_id
-                };
-                let _decision = TimelockDecision::from_membership_change(changed)
-                    .map_err(|_| RuntimeError::invalid_input("membership unchanged"))?;
-
-                if let Some(group_id) = cap_group_id.as_ref() {
-                    if !self.policy_state.cap_groups.contains_key(group_id) {
-                        self.policy_state
-                            .cap_groups
-                            .insert(group_id.clone(), CapGroupRecord::default());
-                    }
-                }
-
                 let market = self
                     .policy_state
-                    .markets
-                    .get_mut(&market_id)
-                    .ok_or_else(|| RuntimeError::invalid_input("market not found"))?;
-                market.cap_group_id = cap_group_id;
-                self.policy_state.refresh_cap_group_principals();
+                    .market_config(market_id)
+                    .ok_or_else(|| RuntimeError::invalid_input(""))?;
+                let _decision = TimelockDecision::from_membership_assignment_change(
+                    market.cap_group_id.as_ref(),
+                    cap_group_id.as_ref(),
+                )
+                .map_err(|_| RuntimeError::invalid_input(""))?;
+
+                self.policy_state
+                    .set_market_cap_group(market_id, cap_group_id)
+                    .map_err(|error| match error {
+                        PolicyStateError::UnknownCapGroup { .. }
+                        | PolicyStateError::CapGroupInUse { .. }
+                        | PolicyStateError::UnknownMarket { .. }
+                        | PolicyStateError::PrincipalOverflow { .. }
+                        | PolicyStateError::InvalidSupplyQueue { .. }
+                        | PolicyStateError::SupplyQueueUnknownMarket { .. }
+                        | PolicyStateError::SupplyQueueDisabledMarket { .. }
+                        | PolicyStateError::SupplyQueueUnauthorizedMarket { .. } => {
+                            RuntimeError::invalid_input("")
+                        }
+                    })?;
+            }
+        }
+
+        self.storage.save_policy_state(&self.policy_state)?;
+        Ok(())
+    }
+
+    pub fn apply_governance_cap_group_update(
+        &mut self,
+        caller: Address,
+        update: CapGroupUpdate,
+    ) -> Result<(), RuntimeError> {
+        self.auth.authorize(ActionKind::PolicyAdmin, caller, None)?;
+        self.apply_governance_cap_group_update_authorized(update)
+    }
+
+    pub fn apply_governance_cap_group_update_authorized(
+        &mut self,
+        update: CapGroupUpdate,
+    ) -> Result<(), RuntimeError> {
+        match update {
+            CapGroupUpdate::SetCap {
+                cap_group_id,
+                new_cap,
+            } => {
+                self.policy_state
+                    .set_cap_group_absolute_cap(cap_group_id, new_cap);
+            }
+            CapGroupUpdate::SetRelativeCap {
+                cap_group_id,
+                new_relative_cap,
+            } => {
+                self.policy_state
+                    .set_cap_group_relative_cap(cap_group_id, new_relative_cap);
+            }
+            CapGroupUpdate::SetMembership {
+                market_id,
+                cap_group_id,
+            } => {
+                self.policy_state
+                    .set_market_cap_group(market_id, cap_group_id)
+                    .map_err(|_| RuntimeError::invalid_input(""))?;
             }
         }
 
@@ -1161,8 +1413,8 @@ where
 
     pub fn supply_queue_targets(&self) -> Vec<TargetId> {
         self.policy_state
-            .supply_queue
-            .entries
+            .supply_queue()
+            .entries()
             .iter()
             .map(|entry| entry.target_id)
             .collect()

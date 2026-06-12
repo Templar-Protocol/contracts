@@ -1,14 +1,15 @@
 use std::marker::PhantomData;
 
 use primitive_types::U256;
+use templar_primitives::number::Decimal;
 
 use crate::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAssetAmount},
-    number::Decimal,
     oracle::pyth,
 };
 
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_field_names)]
 pub struct Price<T: AssetClass> {
     _asset: PhantomData<T>,
     price: u128,
@@ -193,8 +194,7 @@ impl Valuation {
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
-
-    use crate::dec;
+    use templar_primitives::dec;
 
     use super::*;
 

@@ -5,9 +5,9 @@ use libfuzzer_sys::fuzz_target;
 use near_sdk::json_types::U64;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    number::Decimal,
     snapshot::Snapshot,
     time_chunk::TimeChunk,
+    Decimal,
 };
 
 #[derive(Arbitrary, Debug)]

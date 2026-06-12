@@ -22,7 +22,7 @@
 //! - TransferShares effects are generated for withdrawals
 
 use proptest::prelude::*;
-
+use templar_curator_primitives::policy::state::MarketConfig;
 use templar_soroban_runtime::{
     contract::{AllocationDelta, ContractConfig, CuratorVault, Delta},
     test_utils::{begin_allocating, finish_allocating, MemoryStorage},
@@ -46,7 +46,6 @@ fn prop_test_config() -> ContractConfig {
     ContractConfig::new(
         Address([1u8; 32]),       // curator
         Address([9u8; 32]),       // vault_address
-        vec![Address([2u8; 32])], // guardians
         vec![Address([3u8; 32])], // allocators
         Address([4u8; 32]),       // asset_address
         Address([5u8; 32]),       // share_address
@@ -63,6 +62,10 @@ fn create_prop_test_vault() -> PropTestVault {
         MockInterpreter::new(),
     );
     vault.load_state().unwrap();
+    vault
+        .policy_state_mut()
+        .set_market_config(0, MarketConfig::new(true, i128::MAX as u128, None))
+        .unwrap();
     vault
 }
 
@@ -523,14 +526,11 @@ proptest! {
         prop_assert_eq!(state.total_assets, state.idle_assets + state.external_assets);
     }
 
-    /// Property 20: External assets growth reflected in total_assets
-    ///
-    /// When external assets grow (adapter reports higher balance) and
-    /// refresh_markets picks it up, total_assets should increase.
+    /// Property 20: A plain refresh with the legacy mock interpreter leaves
+    /// externally managed balances unchanged.
     #[test]
-    fn prop_external_growth_increases_total(
+    fn prop_refresh_preserves_external_assets_without_reported_growth(
         deposit_amount in 1_000_000u128..=1_000_000_000u128,
-        _growth in 1u128..=100_000_000u128,
     ) {
         let mut vault = create_prop_test_vault();
         let user = user_addr();
@@ -539,15 +539,23 @@ proptest! {
         vault.deposit(user, user, deposit_amount, 0, 100).unwrap();
 
         let supply_amount = deposit_amount / 2;
-        vault.allocate(allocator, &AllocationDelta::Supply(Delta { market: 0, amount: supply_amount })).unwrap();
+        prop_assume!(supply_amount > 0);
+        vault.allocate(
+            allocator,
+            &AllocationDelta::Supply(Delta {
+                market: 0,
+                amount: supply_amount,
+            }),
+        )
+        .unwrap();
 
         let total_before = vault.state().unwrap().total_assets;
+        vault.refresh_markets(allocator, vec![0], 1_000).unwrap();
+        let state = vault.state().unwrap();
 
-        vault.refresh_markets(allocator, vec![0], 1000).unwrap();
-
-        let total_after = vault.state().unwrap().total_assets;
-
-        prop_assert_eq!(total_after, total_before);
+        prop_assert_eq!(state.external_assets, supply_amount);
+        prop_assert_eq!(state.total_assets, total_before);
+        prop_assert_eq!(state.total_assets, state.idle_assets + state.external_assets);
     }
 }
 

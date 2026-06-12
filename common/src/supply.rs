@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{json_types::U64, near, require, AccountId};
+use templar_primitives::number::Decimal;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -8,7 +9,6 @@ use crate::{
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
     market::{Market, Withdrawal},
-    number::Decimal,
     YEAR_PER_MS,
 };
 

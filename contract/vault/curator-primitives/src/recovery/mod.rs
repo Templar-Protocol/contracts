@@ -1,66 +1,83 @@
-//! Recovery logic for handling failed or stuck operations.
+//! Recovery planning for failed or stuck vault operations.
 //!
-//! This module provides pure functions for determining and executing recovery
-//! actions when vault operations fail or get stuck in unexpected states.
-//!
-//! # Recovery Actions
-//!
-//! - `KernelAction::AbortAllocating`: Cancel an allocation operation and return to Idle
-//! - `KernelAction::AbortWithdrawing`: Cancel a withdrawal operation and refund escrow
-//! - `KernelAction::AbortRefreshing`: Cancel a refresh operation and return to Idle
-//! - `KernelAction::SettlePayout`: Complete a payout operation (success or failure path)
-//!
-//! # Design Principles
-//!
-//! 1. Recovery is deterministic based on state and provided timing context
-//! 2. All recovery paths ensure escrow shares are properly handled
-//! 3. Recovery should be safe to retry
+//! This module only derives recovery actions from explicit state and evidence.
+//! It does not execute those actions, and it does not invent payout outcomes when
+//! the available information is incomplete.
 
 use alloc::string::String;
 use templar_vault_kernel::{
-    settle_proportional, AllocatingState, EscrowEntry, EscrowSettlement, KernelAction, OpState,
+    settle_proportional_raw, AllocatingState, EscrowSettlement, KernelAction, OpState,
     PayoutOutcome, PayoutState, RefreshingState, WithdrawingState,
 };
 use typed_builder::TypedBuilder;
 
-/// Context for determining recovery actions.
+/// Recovery eligibility policy.
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, PartialEq, Eq)]
+pub enum RecoveryPolicy {
+    /// Never plan recovery automatically.
+    Disabled,
+    /// Plan recovery after a period of inactivity, with an optional total-age cap.
+    AfterInactivity {
+        inactivity_threshold_ns: u64,
+        max_total_age_ns: Option<u64>,
+    },
+    /// Plan recovery immediately regardless of progress timestamps.
+    Force,
+}
+
+/// Context for determining whether recovery is eligible.
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct RecoveryContext {
     /// Current timestamp in nanoseconds.
     pub current_ns: u64,
-    /// Maximum time an operation can be in progress before considered stuck.
-    /// A value of `0` means "no delay" (treat as immediately eligible).
-    #[builder(default)]
-    pub stuck_threshold_ns: u64,
-    /// Whether to force recovery even if not stuck.
-    #[builder(default)]
-    pub force_recovery: bool,
+    /// Recovery policy to apply.
+    #[builder(default = RecoveryPolicy::Disabled)]
+    pub policy: RecoveryPolicy,
 }
 
 impl RecoveryContext {
+    #[must_use]
     pub fn new(current_ns: u64) -> Self {
         Self {
             current_ns,
-            stuck_threshold_ns: 0,
-            force_recovery: false,
+            policy: RecoveryPolicy::Disabled,
         }
     }
 
-    pub fn with_stuck_threshold(current_ns: u64, stuck_threshold_ns: u64) -> Self {
+    #[must_use]
+    pub fn after_inactivity(current_ns: u64, inactivity_threshold_ns: u64) -> Self {
         Self {
             current_ns,
-            stuck_threshold_ns,
-            force_recovery: false,
+            policy: RecoveryPolicy::AfterInactivity {
+                inactivity_threshold_ns,
+                max_total_age_ns: None,
+            },
         }
     }
 
+    #[must_use]
+    pub fn after_inactivity_with_max_age(
+        current_ns: u64,
+        inactivity_threshold_ns: u64,
+        max_total_age_ns: u64,
+    ) -> Self {
+        Self {
+            current_ns,
+            policy: RecoveryPolicy::AfterInactivity {
+                inactivity_threshold_ns,
+                max_total_age_ns: Some(max_total_age_ns),
+            },
+        }
+    }
+
+    #[must_use]
     pub fn forced(current_ns: u64) -> Self {
         Self {
             current_ns,
-            stuck_threshold_ns: 0,
-            force_recovery: true,
+            policy: RecoveryPolicy::Force,
         }
     }
 }
@@ -71,11 +88,13 @@ impl Default for RecoveryContext {
     }
 }
 
-/// Progress timestamps for an in-flight operation.
+/// Progress timestamps for a specific in-flight operation.
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, PartialEq, Eq, TypedBuilder)]
 #[builder(field_defaults(setter(into)))]
 pub struct RecoveryProgress {
+    /// Operation id that these progress timestamps belong to.
+    pub op_id: u64,
     /// Timestamp when the operation started.
     pub started_at_ns: u64,
     /// Timestamp of the last forward progress (may equal started_at_ns).
@@ -83,51 +102,86 @@ pub struct RecoveryProgress {
 }
 
 impl RecoveryProgress {
-    pub const fn new(started_at_ns: u64) -> Self {
+    #[must_use]
+    pub const fn new(op_id: u64, started_at_ns: u64) -> Self {
         Self {
+            op_id,
             started_at_ns,
             last_progress_ns: started_at_ns,
         }
     }
 
-    pub const fn with_last_progress(started_at_ns: u64, last_progress_ns: u64) -> Self {
+    #[must_use]
+    pub const fn with_last_progress(op_id: u64, started_at_ns: u64, last_progress_ns: u64) -> Self {
         Self {
+            op_id,
             started_at_ns,
             last_progress_ns,
         }
     }
 }
 
-/// Outcome of a recovery operation.
+/// Evidence required to settle a payout during recovery.
+#[templar_vault_macros::vault_derive]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PayoutRecoveryEvidence {
+    /// The payout transfer failed and the provided idle amount must be restored.
+    Failure { restore_idle: u128 },
+    /// The payout transfer succeeded for the provided collected amount.
+    Success { collected_amount: u128 },
+}
+
+/// Recovery planning error.
+#[templar_vault_macros::vault_derive(borsh, serde)]
+#[derive(Clone, PartialEq, Eq)]
+pub enum RecoveryError {
+    UnknownPayoutState {
+        op_id: u64,
+    },
+    ProgressOpMismatch {
+        expected_op_id: u64,
+        progress_op_id: u64,
+    },
+    InvalidProgressTimestamps {
+        started_at_ns: u64,
+        last_progress_ns: u64,
+        current_ns: u64,
+    },
+    ExpectedAmountZero {
+        escrow_shares: u128,
+        collected_amount: u128,
+    },
+    CollectedExceedsExpected {
+        expected_amount: u128,
+        collected_amount: u128,
+    },
+    InvalidPayoutEvidence,
+}
+
+/// Result of planning a recovery operation.
 #[templar_vault_macros::vault_derive(borsh, serde)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     pub action: KernelAction,
-    pub success: bool,
+    pub planned: bool,
     pub message: Option<String>,
 }
 
 impl RecoveryOutcome {
-    pub fn success(action: KernelAction) -> Self {
+    #[must_use]
+    pub fn planned(action: KernelAction) -> Self {
         Self {
             action,
-            success: true,
+            planned: true,
             message: None,
         }
     }
 
-    pub fn success_with_message(action: KernelAction, message: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn planned_with_message(action: KernelAction, message: impl Into<String>) -> Self {
         Self {
             action,
-            success: true,
-            message: Some(message.into()),
-        }
-    }
-
-    pub fn failure(action: KernelAction, message: impl Into<String>) -> Self {
-        Self {
-            action,
-            success: false,
+            planned: true,
             message: Some(message.into()),
         }
     }
@@ -138,128 +192,126 @@ pub fn determine_recovery_action(
     state: &OpState,
     context: &RecoveryContext,
     progress: &RecoveryProgress,
-) -> Option<KernelAction> {
-    if matches!(state, OpState::Idle) {
-        return None;
-    }
+    payout_evidence: Option<PayoutRecoveryEvidence>,
+) -> Result<Option<KernelAction>, RecoveryError> {
+    let Some(op_id) = state_op_id(state) else {
+        return Ok(None);
+    };
+
+    validate_progress(op_id, context.current_ns, progress)?;
 
     if !is_recovery_eligible(context, progress) {
-        return None;
+        return Ok(None);
     }
 
     match state {
-        OpState::Allocating(alloc) => Some(abort_allocating_action(alloc)),
-        OpState::Withdrawing(withdraw) => Some(abort_withdrawing_action(withdraw)),
-        OpState::Refreshing(refresh) => Some(abort_refreshing_action(refresh)),
-        OpState::Payout(payout) => Some(settle_payout_failure_action(payout, payout.amount)),
-        OpState::Idle => None,
+        OpState::Allocating(alloc) => Ok(Some(abort_allocating_action(alloc))),
+        OpState::Withdrawing(withdraw) => Ok(Some(abort_withdrawing_action(withdraw))),
+        OpState::Refreshing(refresh) => Ok(Some(abort_refreshing_action(refresh))),
+        OpState::Payout(payout) => payout_evidence
+            .ok_or(RecoveryError::UnknownPayoutState {
+                op_id: payout.op_id,
+            })
+            .and_then(|evidence| settle_payout_action(payout, evidence).map(Some)),
+        OpState::Idle => Ok(None),
     }
 }
 
-/// Handle a failed allocation operation.
-pub fn handle_allocation_failure(
+/// Plan recovery for a failed allocation operation.
+#[must_use]
+pub fn plan_allocation_recovery(
     state: &AllocatingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    recovery_success_with_message(abort_allocating_action(state), failure_reason)
+    RecoveryOutcome::planned_with_message(abort_allocating_action(state), failure_reason)
 }
 
-/// Handle a failed withdrawal operation.
-pub fn handle_withdrawal_failure(
+/// Plan recovery for a failed withdrawal operation.
+#[must_use]
+pub fn plan_withdrawal_recovery(
     state: &WithdrawingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    recovery_success_with_message(abort_withdrawing_action(state), failure_reason)
+    RecoveryOutcome::planned_with_message(abort_withdrawing_action(state), failure_reason)
 }
 
-/// Handle a failed refresh operation.
-pub fn handle_refresh_failure(
+/// Plan recovery for a failed refresh operation.
+#[must_use]
+pub fn plan_refresh_recovery(
     state: &RefreshingState,
     failure_reason: impl Into<String>,
 ) -> RecoveryOutcome {
-    recovery_success_with_message(abort_refreshing_action(state), failure_reason)
+    RecoveryOutcome::planned_with_message(abort_refreshing_action(state), failure_reason)
 }
 
-/// Handle a failed payout operation.
-pub fn handle_payout_failure(
+/// Plan recovery for a payout using explicit outcome evidence.
+pub fn plan_payout_recovery(
     state: &PayoutState,
-    restore_idle: u128,
+    evidence: PayoutRecoveryEvidence,
     failure_reason: impl Into<String>,
-) -> RecoveryOutcome {
-    recovery_success_with_message(
-        settle_payout_failure_action(state, restore_idle),
-        failure_reason,
-    )
-}
-
-/// Handle a failed payout operation using the payout amount as the idle restore value.
-pub fn handle_payout_failure_default(
-    state: &PayoutState,
-    failure_reason: impl Into<String>,
-) -> RecoveryOutcome {
-    handle_payout_failure(state, state.amount, failure_reason)
+) -> Result<RecoveryOutcome, RecoveryError> {
+    settle_payout_action(state, evidence)
+        .map(|action| RecoveryOutcome::planned_with_message(action, failure_reason))
 }
 
 /// Compute the shares to burn and refund based on collected vs expected amounts.
-///
-/// If the full withdrawal amount was collected, burn all escrow shares.
-/// If partial, compute proportionally.
 pub fn compute_settlement_shares(
     escrow_shares: u128,
     expected_amount: u128,
     collected_amount: u128,
-) -> EscrowSettlement {
-    if expected_amount == 0 || escrow_shares == 0 {
-        return EscrowSettlement::refund_all(escrow_shares);
+) -> Result<EscrowSettlement, RecoveryError> {
+    if escrow_shares == 0 {
+        return Ok(EscrowSettlement::refund_all(0));
     }
 
-    if collected_amount >= expected_amount {
-        return EscrowSettlement::burn_all(escrow_shares);
-    }
-
-    settle_proportional(
-        &EscrowEntry::new(
-            templar_vault_kernel::Address([0u8; 32]),
+    if expected_amount == 0 {
+        return Err(RecoveryError::ExpectedAmountZero {
             escrow_shares,
-            templar_vault_kernel::TimestampNs(0),
+            collected_amount,
+        });
+    }
+
+    if collected_amount > expected_amount {
+        return Err(RecoveryError::CollectedExceedsExpected {
             expected_amount,
-        ),
+            collected_amount,
+        });
+    }
+
+    Ok(settle_proportional_raw(
+        escrow_shares,
+        expected_amount,
         collected_amount,
-    )
+    ))
 }
 
 /// Compute a success payout outcome from escrow and collected amounts.
-///
-/// This maps recovery math into kernel `PayoutOutcome::Success`.
-#[must_use]
 pub fn compute_payout_success_outcome(
     escrow_shares: u128,
     expected_amount: u128,
     collected_amount: u128,
-) -> PayoutOutcome {
-    let EscrowSettlement {
-        to_burn: burn_shares,
-        refund: refund_shares,
-    } = compute_settlement_shares(escrow_shares, expected_amount, collected_amount);
-
-    PayoutOutcome::Success {
-        burn_shares,
-        refund_shares,
+) -> Result<PayoutOutcome, RecoveryError> {
+    compute_settlement_shares(escrow_shares, expected_amount, collected_amount)?;
+    if collected_amount != expected_amount {
+        return Err(RecoveryError::InvalidPayoutEvidence);
     }
+    Ok(PayoutOutcome::Success)
 }
 
 /// Compute a failure payout outcome from escrow shares and idle restore amount.
-#[must_use]
-pub fn compute_payout_failure_outcome(escrow_shares: u128, restore_idle: u128) -> PayoutOutcome {
-    PayoutOutcome::Failure {
-        restore_idle,
-        refund_shares: escrow_shares,
+pub fn compute_payout_failure_outcome(
+    escrow_shares: u128,
+    payout_amount: u128,
+    restore_idle: u128,
+) -> Result<PayoutOutcome, RecoveryError> {
+    let _ = escrow_shares;
+    if restore_idle != 0 && restore_idle != payout_amount {
+        return Err(RecoveryError::InvalidPayoutEvidence);
     }
+    Ok(PayoutOutcome::Failure)
 }
 
 /// Compute recovery statistics from the current state.
-///
-/// Provides useful metrics for monitoring and debugging recovery operations.
 #[templar_vault_macros::vault_derive]
 #[derive(Clone, Copy, Default)]
 pub struct RecoveryStats {
@@ -275,11 +327,9 @@ pub struct RecoveryStats {
     pub escrow_shares: u128,
 }
 
-/// Compute recovery statistics from the current state.
 pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
     match state {
         OpState::Idle => RecoveryStats::default(),
-
         OpState::Allocating(alloc) => {
             let completed_targets = (alloc.index as usize).min(alloc.plan.len());
             RecoveryStats {
@@ -289,7 +339,6 @@ pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
                 ..RecoveryStats::default()
             }
         }
-
         OpState::Withdrawing(withdraw) => RecoveryStats {
             completed_targets: withdraw.index as usize,
             collected_amount: withdraw.collected,
@@ -297,7 +346,6 @@ pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
             escrow_shares: withdraw.escrow_shares,
             ..RecoveryStats::default()
         },
-
         OpState::Refreshing(refresh) => {
             let completed_targets = (refresh.index as usize).min(refresh.plan.len());
             RecoveryStats {
@@ -306,7 +354,6 @@ pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
                 ..RecoveryStats::default()
             }
         }
-
         OpState::Payout(payout) => RecoveryStats {
             collected_amount: payout.amount,
             escrow_shares: payout.escrow_shares,
@@ -315,47 +362,84 @@ pub fn compute_recovery_stats(state: &OpState) -> RecoveryStats {
     }
 }
 
-fn recovery_success_with_message(
-    action: KernelAction,
-    message: impl Into<String>,
-) -> RecoveryOutcome {
-    RecoveryOutcome::success_with_message(action, message)
+fn validate_progress(
+    expected_op_id: u64,
+    current_ns: u64,
+    progress: &RecoveryProgress,
+) -> Result<(), RecoveryError> {
+    if progress.op_id != expected_op_id {
+        return Err(RecoveryError::ProgressOpMismatch {
+            expected_op_id,
+            progress_op_id: progress.op_id,
+        });
+    }
+
+    if progress.started_at_ns > progress.last_progress_ns || progress.last_progress_ns > current_ns
+    {
+        return Err(RecoveryError::InvalidProgressTimestamps {
+            started_at_ns: progress.started_at_ns,
+            last_progress_ns: progress.last_progress_ns,
+            current_ns,
+        });
+    }
+
+    Ok(())
 }
 
 fn is_recovery_eligible(context: &RecoveryContext, progress: &RecoveryProgress) -> bool {
-    if context.force_recovery {
-        return true;
-    }
+    match &context.policy {
+        RecoveryPolicy::Disabled => false,
+        RecoveryPolicy::Force => true,
+        RecoveryPolicy::AfterInactivity {
+            inactivity_threshold_ns,
+            max_total_age_ns,
+        } => {
+            let inactive_for_ns = context.current_ns.saturating_sub(progress.last_progress_ns);
+            let total_age_ns = context.current_ns.saturating_sub(progress.started_at_ns);
 
-    let threshold = context.stuck_threshold_ns;
-    if threshold == 0 {
-        return true;
+            inactive_for_ns >= *inactivity_threshold_ns
+                || max_total_age_ns.is_some_and(|max_total_age_ns| total_age_ns >= max_total_age_ns)
+        }
     }
+}
 
-    context.current_ns.saturating_sub(progress.last_progress_ns) >= threshold
+fn state_op_id(state: &OpState) -> Option<u64> {
+    match state {
+        OpState::Idle => None,
+        OpState::Allocating(state) => Some(state.op_id),
+        OpState::Withdrawing(state) => Some(state.op_id),
+        OpState::Refreshing(state) => Some(state.op_id),
+        OpState::Payout(state) => Some(state.op_id),
+    }
 }
 
 fn abort_allocating_action(state: &AllocatingState) -> KernelAction {
-    KernelAction::AbortAllocating {
-        op_id: state.op_id,
-        restore_idle: state.remaining,
-    }
+    KernelAction::AbortAllocating { op_id: state.op_id }
 }
 
 fn abort_withdrawing_action(state: &WithdrawingState) -> KernelAction {
-    KernelAction::AbortWithdrawing {
-        op_id: state.op_id,
-        refund_shares: state.escrow_shares,
-    }
+    KernelAction::AbortWithdrawing { op_id: state.op_id }
 }
 
 fn abort_refreshing_action(state: &RefreshingState) -> KernelAction {
     KernelAction::AbortRefreshing { op_id: state.op_id }
 }
 
-fn settle_payout_failure_action(state: &PayoutState, restore_idle: u128) -> KernelAction {
-    KernelAction::SettlePayout {
+fn settle_payout_action(
+    state: &PayoutState,
+    evidence: PayoutRecoveryEvidence,
+) -> Result<KernelAction, RecoveryError> {
+    let outcome = match evidence {
+        PayoutRecoveryEvidence::Failure { restore_idle } => {
+            compute_payout_failure_outcome(state.escrow_shares, state.amount, restore_idle)?
+        }
+        PayoutRecoveryEvidence::Success { collected_amount } => {
+            compute_payout_success_outcome(state.escrow_shares, state.amount, collected_amount)?
+        }
+    };
+
+    Ok(KernelAction::SettlePayout {
         op_id: state.op_id,
-        outcome: compute_payout_failure_outcome(state.escrow_shares, restore_idle),
-    }
+        outcome,
+    })
 }

@@ -20,7 +20,7 @@ use std::{
 use futures::{StreamExt, TryStreamExt};
 use near_crypto::Signer;
 use near_jsonrpc_client::{
-    errors::JsonRpcError,
+    errors::{JsonRpcError, JsonRpcServerError},
     methods::{
         query::{RpcQueryError, RpcQueryRequest},
         send_tx::RpcSendTransactionRequest,
@@ -66,6 +66,28 @@ pub enum RpcError {
     /// No outcome for transaction
     #[error("No outcome for transaction: {0}")]
     NoOutcome(String),
+}
+
+impl RpcError {
+    pub fn is_method_not_found(&self) -> bool {
+        fn has_error_token(vm_error: &str, token: &str) -> bool {
+            vm_error
+                .trim()
+                .to_lowercase()
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .any(|part| part == token)
+        }
+
+        // NEAR currently exposes this as an unstructured VM error string; switch
+        // to a structured field if the RPC API starts returning one.
+        matches!(
+            self,
+            Self::ViewMethodError(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+                RpcQueryError::ContractExecutionError { vm_error, .. }
+            ))) if has_error_token(vm_error, "methodnotfound")
+                || has_error_token(vm_error, "methodresolveerror")
+        )
+    }
 }
 
 /// Error types for application-level operations

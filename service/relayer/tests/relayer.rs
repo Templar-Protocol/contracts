@@ -30,12 +30,16 @@ use tokio::sync::watch;
 
 use templar_common::{
     oracle::{
-        price_transformer::{self, ProxyPriceTransformer},
-        proxy::{Proxy, Source},
         pyth::{self, PriceIdentifier, PythTimestamp},
-        redstone, OracleRequest,
+        redstone,
     },
     registry::DeployMode,
+};
+use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
+    price_transformer,
+    request::OracleRequest,
 };
 use templar_relayer::{
     app::{args, App, Configuration},
@@ -290,7 +294,8 @@ fn fresh_price(price: i64) -> pyth::Price {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64;
+        .as_secs()
+        .saturating_sub(1) as i64;
 
     pyth::Price {
         price: price.into(),
@@ -357,10 +362,10 @@ async fn set_proxy(
     source: impl Into<Source>,
 ) {
     proxy_oracle
-        .set_proxy(
+        .admin_set_proxy(
             proxy_oracle.account(),
             price_id,
-            Some(Proxy::median_low([source.into()])),
+            Some(Proxy::median_low([source.into()], FreshnessFilter::empty())),
         )
         .await;
 }
@@ -683,7 +688,7 @@ pub async fn market_prices_returns_none_for_missing_asset_price(
 pub async fn market_prices_returns_proxy_intermediate_prices(
     #[future(awt)] mut init_test: InitTest,
 ) {
-    let (market, _proxy_oracle, pyth_oracle) = init_test.market_proxy_pyth().await;
+    let (market, proxy_oracle, pyth_oracle) = init_test.market_proxy_pyth().await;
     let InitTest { app, .. } = init_test;
 
     set_pyth_price(
@@ -699,6 +704,25 @@ pub async fn market_prices_returns_proxy_intermediate_prices(
     )
     .await;
 
+    proxy_oracle
+        .update_prices(
+            proxy_oracle.account(),
+            vec![DEFAULT_COLLATERAL_PRICE_ID, DEFAULT_BORROW_PRICE_ID],
+        )
+        .await;
+    let direct_proxy_prices = proxy_oracle
+        .list_ema_prices_no_older_than(
+            proxy_oracle.account(),
+            vec![DEFAULT_COLLATERAL_PRICE_ID, DEFAULT_BORROW_PRICE_ID],
+            60u32,
+        )
+        .await;
+    assert!(direct_proxy_prices
+        .get(&DEFAULT_COLLATERAL_PRICE_ID)
+        .is_some_and(|p| p.is_some()));
+    assert!(direct_proxy_prices
+        .get(&DEFAULT_BORROW_PRICE_ID)
+        .is_some_and(|p| p.is_some()));
     let response = templar_relayer::route::get_market_prices::get_market_prices(
         State(app),
         Query(GetMarketPricesRequest {

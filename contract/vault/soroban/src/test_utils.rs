@@ -3,21 +3,95 @@ use crate::contract::helpers::transition_to_runtime;
 use crate::contract::CuratorVault;
 use crate::effects::{AddressRegistrar, EffectInterpreter, EffectSummary};
 use crate::error::RuntimeError;
-use crate::storage::{compose_policy_state, Storage, StorageVersion, VersionedState};
+use crate::storage::{
+    compose_policy_state, decode_cap_groups, decode_markets, decode_policy_locks,
+    decode_principals, decode_restrictions, decode_state_blob, decode_supply_queue,
+    encode_cap_groups, encode_markets, encode_policy_locks, encode_principals, encode_restrictions,
+    encode_state_blob, encode_supply_queue, Storage,
+};
 use alloc::vec::Vec;
 use core::mem;
 use soroban_sdk::{Address as SdkAddress, Bytes, Env};
 use templar_curator_primitives::policy::cap_group::{CapGroupId, CapGroupRecord};
-use templar_curator_primitives::policy::market_lock::MarketLockSet;
+use templar_curator_primitives::policy::market_lock::MarketLeaseRegistry;
 use templar_curator_primitives::policy::state::{MarketConfig, OrderedMap};
 use templar_curator_primitives::policy::supply_queue::SupplyQueue;
 use templar_curator_primitives::PolicyState;
 use templar_vault_kernel::state::op_state::AllocationPlanEntry;
 use templar_vault_kernel::{
     complete_allocation, start_allocation, Address, AddressBook, AssetId, Restrictions, TargetId,
+    TimestampNs,
 };
 
 pub type AttemptId = u64;
+
+pub mod fuzz_api {
+    use super::*;
+
+    pub fn encode_restrictions_bytes(value: &Restrictions) -> Vec<u8> {
+        encode_restrictions(value)
+    }
+
+    pub fn decode_restrictions_bytes(bytes: &[u8]) -> Result<Restrictions, RuntimeError> {
+        decode_restrictions(bytes)
+    }
+
+    pub fn encode_supply_queue_bytes(value: &SupplyQueue) -> Vec<u8> {
+        encode_supply_queue(value)
+    }
+
+    pub fn decode_supply_queue_bytes(bytes: &[u8]) -> Result<SupplyQueue, RuntimeError> {
+        decode_supply_queue(bytes)
+    }
+
+    pub fn encode_markets_bytes(value: &OrderedMap<TargetId, MarketConfig>) -> Vec<u8> {
+        encode_markets(value)
+    }
+
+    pub fn decode_markets_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<TargetId, MarketConfig>, RuntimeError> {
+        decode_markets(bytes)
+    }
+
+    pub fn encode_cap_groups_bytes(value: &OrderedMap<CapGroupId, CapGroupRecord>) -> Vec<u8> {
+        encode_cap_groups(value)
+    }
+
+    pub fn decode_cap_groups_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<CapGroupId, CapGroupRecord>, RuntimeError> {
+        decode_cap_groups(bytes)
+    }
+
+    pub fn encode_principals_bytes(value: &OrderedMap<TargetId, u128>) -> Vec<u8> {
+        encode_principals(value)
+    }
+
+    pub fn decode_principals_bytes(
+        bytes: &[u8],
+    ) -> Result<OrderedMap<TargetId, u128>, RuntimeError> {
+        decode_principals(bytes)
+    }
+
+    pub fn encode_policy_locks_bytes(value: &MarketLeaseRegistry) -> Vec<u8> {
+        encode_policy_locks(value)
+    }
+
+    pub fn decode_policy_locks_bytes(bytes: &[u8]) -> Result<MarketLeaseRegistry, RuntimeError> {
+        decode_policy_locks(bytes)
+    }
+
+    pub fn encode_state_blob_bytes(value: &templar_vault_kernel::VaultState) -> Vec<u8> {
+        encode_state_blob(value)
+    }
+
+    pub fn decode_state_blob_bytes(
+        bytes: &[u8],
+    ) -> Result<templar_vault_kernel::VaultState, RuntimeError> {
+        decode_state_blob(bytes)
+    }
+}
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -85,10 +159,10 @@ impl From<MarketRef> for (TargetId, AssetId) {
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Default)]
 pub struct MemoryStorage {
-    state: Option<VersionedState>,
+    state: Option<templar_vault_kernel::VaultState>,
     initialized: bool,
     paused: bool,
-    policy_locks: Option<MarketLockSet>,
+    policy_locks: Option<MarketLeaseRegistry>,
     policy_supply_queue: Option<SupplyQueue>,
     policy_markets: Option<OrderedMap<TargetId, MarketConfig>>,
     policy_principals: Option<OrderedMap<TargetId, u128>>,
@@ -106,7 +180,7 @@ impl MemoryStorage {
 
     #[inline]
     #[must_use]
-    pub fn with_state(state: VersionedState) -> Self {
+    pub fn with_state(state: templar_vault_kernel::VaultState) -> Self {
         Self {
             state: Some(state),
             initialized: true,
@@ -123,7 +197,7 @@ impl MemoryStorage {
 
     #[inline]
     #[must_use]
-    pub fn get_state(&self) -> Option<&VersionedState> {
+    pub fn get_state(&self) -> Option<&templar_vault_kernel::VaultState> {
         self.state.as_ref()
     }
 
@@ -142,11 +216,11 @@ impl MemoryStorage {
 }
 
 impl Storage for MemoryStorage {
-    fn load_state(&self) -> Result<Option<VersionedState>, RuntimeError> {
+    fn load_state(&self) -> Result<Option<templar_vault_kernel::VaultState>, RuntimeError> {
         Ok(self.state.clone())
     }
 
-    fn save_state(&mut self, state: &VersionedState) -> Result<(), RuntimeError> {
+    fn save_state(&mut self, state: &templar_vault_kernel::VaultState) -> Result<(), RuntimeError> {
         self.state = Some(state.clone());
         self.initialized = true;
         Ok(())
@@ -154,13 +228,6 @@ impl Storage for MemoryStorage {
 
     fn is_initialized(&self) -> bool {
         self.initialized
-    }
-
-    fn get_version(&self) -> Result<StorageVersion, RuntimeError> {
-        self.state
-            .as_ref()
-            .map(|s| s.version)
-            .ok_or_else(|| RuntimeError::storage_error("state not initialized"))
     }
 
     fn load_paused(&self) -> Result<bool, RuntimeError> {
@@ -173,21 +240,21 @@ impl Storage for MemoryStorage {
     }
 
     fn load_policy_state(&self) -> Result<Option<PolicyState>, RuntimeError> {
-        Ok(compose_policy_state(
+        compose_policy_state(
             self.policy_markets.clone(),
             self.policy_principals.clone(),
             self.policy_cap_groups.clone(),
             self.policy_locks.clone(),
             self.policy_supply_queue.clone(),
-        ))
+        )
     }
 
     fn save_policy_state(&mut self, state: &PolicyState) -> Result<(), RuntimeError> {
-        self.policy_locks = Some(state.locks.clone());
-        self.policy_supply_queue = Some(state.supply_queue.clone());
-        self.policy_markets = Some(state.markets.clone());
-        self.policy_principals = Some(state.principals.clone());
-        self.policy_cap_groups = Some(state.cap_groups.clone());
+        self.policy_locks = Some(state.leases().clone());
+        self.policy_supply_queue = Some(state.supply_queue().clone());
+        self.policy_markets = Some(state.markets().clone());
+        self.policy_principals = Some(state.principals().clone());
+        self.policy_cap_groups = Some(state.cap_groups().clone());
         Ok(())
     }
 
@@ -222,21 +289,25 @@ struct TestAllocationDecision {
     total_allocated: u128,
 }
 
-fn classify_test_allocation<S, A, E>(
+fn build_partial_allocation_plan_excluding_leased<S, A, E>(
     vault: &CuratorVault<S, A, E>,
     plan: &[(TargetId, u128)],
-    current_ns: u64,
+    now_ns: TimestampNs,
 ) -> TestAllocationDecision
 where
     S: Storage,
     A: AuthAdapter,
     E: EffectInterpreter + AddressRegistrar,
 {
-    let filtered_plan = vault
-        .policy_state()
-        .locks
-        .filter_allocation_plan(plan, current_ns)
-        .into_iter()
+    let filtered_plan = plan
+        .iter()
+        .copied()
+        .filter(|(target_id, _)| {
+            vault
+                .policy_state()
+                .leases()
+                .is_unleased(*target_id, now_ns)
+        })
         .map(|(target_id, amount)| AllocationPlanEntry::new(target_id, amount))
         .collect::<Vec<_>>();
     let total_allocated = filtered_plan.iter().map(|entry| entry.amount).sum();
@@ -258,7 +329,8 @@ where
     A: AuthAdapter,
     E: EffectInterpreter + AddressRegistrar,
 {
-    let decision = classify_test_allocation(vault, &plan, current_ns);
+    let decision =
+        build_partial_allocation_plan_excluding_leased(vault, &plan, TimestampNs(current_ns));
     vault.authorize(ActionKind::BeginAllocating, caller)?;
     let op_id = {
         let state = vault.state_mut()?;

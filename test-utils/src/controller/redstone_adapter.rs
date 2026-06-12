@@ -7,9 +7,10 @@ use near_sdk::{
 };
 use near_workspaces::{Account, Contract};
 use templar_common::{
-    oracle::redstone::{config::Config, FeedData, FeedId, GetPrices, Role, SerializableU256},
-    time::Nanoseconds,
+    oracle::redstone::{config::Config, FeedData, FeedId, GetPrices, Role},
+    Nanoseconds,
 };
+use templar_primitives::strnum::SU256;
 use tokio::sync::OnceCell;
 
 use crate::{define, get_contract};
@@ -72,7 +73,7 @@ pub trait RedStoneAdapterInterface: ContractController {
         #[view] fn get_config() -> Config;
         #[view] fn unique_signer_threshold() -> U64;
         #[view] fn get_prices(feed_ids: Vec<FeedId>, payload: Base64VecU8) -> GetPrices;
-        #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SerializableU256>;
+        #[view] fn read_prices(feed_ids: Vec<FeedId>) -> HashMap<FeedId, SU256>;
         #[view] fn read_timestamp(feed_id: FeedId) -> Option<Nanoseconds>;
         #[view] fn read_price_data_for_feed(feed_id: FeedId) -> Option<FeedData>;
         #[view] fn read_price_data(feed_ids: Vec<FeedId>) -> HashMap<FeedId, FeedData>;

@@ -13,8 +13,7 @@ use crate::{
 use near_sdk::AccountId;
 
 use templar_common::{
-    borrow::BorrowPosition, market::MarketConfiguration, number::Decimal,
-    oracle::pyth::OracleResponse,
+    borrow::BorrowPosition, market::MarketConfiguration, oracle::pyth::OracleResponse, Decimal,
 };
 
 pub struct Analyzer {

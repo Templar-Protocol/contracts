@@ -15,7 +15,7 @@ impl DeploymentSpec for DeployProxyOracle {
     type ArgsLoader = EmptyArgsLoader;
     type Version = ();
 
-    const PACKAGE_ID: &'static str = "templar-proxy-oracle-contract";
+    const PACKAGE_ID: &'static str = "templar-proxy-oracle-near-contract";
 }
 
 impl DeployProxyOracle {

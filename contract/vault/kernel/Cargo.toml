@@ -58,6 +58,7 @@ schemars = { version = "0.8", optional = true }
 
 [dev-dependencies]
 proptest = "1.4"
+serde_json.workspace = true
 # Enable all action handlers for integration tests.
 # The `test` cfg only applies to unit tests in src/, not integration tests in tests/.
 templar-vault-kernel = { path = ".", features = ["all-actions"] }

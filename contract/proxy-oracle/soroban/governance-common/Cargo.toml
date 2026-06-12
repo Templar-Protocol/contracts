@@ -1,0 +1,22 @@
+[package]
+name = "templar-proxy-oracle-soroban-governance-common"
+license.workspace = true
+repository.workspace = true
+edition.workspace = true
+version = "0.1.0"
+
+[lib]
+crate-type = ["rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+soroban-sdk = { version = "25.0.1", features = ["alloc"] }
+templar-primitives = { path = "../../../../primitives", default-features = false }
+templar-proxy-oracle-governance-kernel.workspace = true
+templar-proxy-oracle-soroban-common = { path = "../common" }
+
+[dev-dependencies]
+soroban-sdk = { version = "25.0.1", features = ["testutils", "alloc"] }
+
+[lints]
+workspace = true

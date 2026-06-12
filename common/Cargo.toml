@@ -17,8 +17,9 @@ near-sdk = { workspace = true, default-features = false }
 primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
 schemars.workspace = true
-templar-vault-kernel.workspace = true
 templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["borsh", "serde", "std", "borsh-schema", "schemars"] }
+templar-primitives = { workspace = true, features = ["near", "redstone"] }
+templar-vault-kernel.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

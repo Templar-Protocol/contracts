@@ -2,6 +2,7 @@ use near_sdk::{
     collections::{LookupMap, UnorderedMap},
     env, near, AccountId, BorshStorageKey, IntoStorageKey,
 };
+use templar_primitives::number::Decimal;
 
 use crate::{
     accumulator::{AccumulationRecord, Accumulator},
@@ -11,7 +12,6 @@ use crate::{
     event::MarketEvent,
     incoming_deposit::IncomingDeposit,
     market::MarketConfiguration,
-    number::Decimal,
     snapshot::Snapshot,
     supply::{SupplyPosition, SupplyPositionGuard, SupplyPositionRef},
     time_chunk::TimeChunk,
@@ -251,7 +251,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> Option<SupplyPositionGuard> {
+    ) -> Option<SupplyPositionGuard<'_>> {
         self.supply_positions
             .get(&account_id)
             .map(|position| SupplyPositionGuard::new(self, account_id, position))
@@ -261,7 +261,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> SupplyPositionGuard {
+    ) -> SupplyPositionGuard<'_> {
         let position = self
             .supply_positions
             .get(&account_id)
@@ -292,7 +292,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> Option<BorrowPositionGuard> {
+    ) -> Option<BorrowPositionGuard<'_>> {
         self.borrow_positions
             .get(&account_id)
             .map(|position| BorrowPositionGuard::new(self, account_id, position))
@@ -302,7 +302,7 @@ impl Market {
         &mut self,
         _proof: SnapshotProof,
         account_id: AccountId,
-    ) -> BorrowPositionGuard {
+    ) -> BorrowPositionGuard<'_> {
         let position = self
             .borrow_positions
             .get(&account_id)
@@ -432,11 +432,11 @@ fn usage_ratio(active: BorrowAssetAmount, borrowed: BorrowAssetAmount) -> Decima
 #[cfg(test)]
 mod tests {
     use near_sdk::{test_utils::*, testing_env, VMContext};
+    use templar_primitives::dec;
 
     use crate::{
         asset::FungibleAsset,
         borrow::InitialBorrow,
-        dec,
         fee::{Fee, TimeBasedFee},
         interest_rate_strategy::InterestRateStrategy,
         market::{PriceOracleConfiguration, Withdrawal, YieldWeights},

@@ -9,7 +9,9 @@
 //! block liquidation operations. A bounded semaphore limits in-flight
 //! notifications to prevent unbounded task growth.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use near_sdk::serde_json::json;
 use reqwest::Client;
@@ -52,6 +54,20 @@ pub type SharedNotifier = Arc<Notifier>;
 /// Maximum number of in-flight Telegram notifications.
 const MAX_INFLIGHT_NOTIFICATIONS: usize = 10;
 
+/// Default cooldown (in hours) for repeated identical failure notifications.
+/// Shared source of truth used by both the runtime default and the CLI/env default.
+pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS: u64 = 24;
+
+/// Default cooldown for repeated identical failure notifications.
+///
+/// Same (market, borrower, `error_kind`) within this window is suppressed.
+pub const DEFAULT_FAILURE_NOTIFY_COOLDOWN: Duration =
+    Duration::from_secs(DEFAULT_FAILURE_NOTIFY_COOLDOWN_HOURS * 60 * 60);
+
+/// Dedup key for failure notifications. Stable across rounds for the same
+/// (market, borrower, error class).
+type DedupKey = (String, String, crate::NotificationKind);
+
 /// Liquidator event notifier.
 ///
 /// When Telegram is configured, sends HTML-formatted messages via
@@ -62,6 +78,11 @@ pub struct Notifier {
     telegram: Option<TelegramConfig>,
     client: Client,
     semaphore: Arc<Semaphore>,
+    /// Last-sent time for each (market, borrower, `error_kind`) — suppresses
+    /// repeat alerts within `failure_cooldown`. Cleared per-borrower when a
+    /// liquidation succeeds.
+    failure_dedup: Mutex<HashMap<DedupKey, Instant>>,
+    failure_cooldown: Duration,
 }
 
 /// Escape HTML special characters in dynamic values so they don't break
@@ -194,10 +215,17 @@ fn format_scan_recovered_message(market: &str, prev_failures: u32) -> String {
 impl Notifier {
     /// Creates a new notifier. Pass `None` to disable notifications.
     pub fn new(telegram: Option<TelegramConfig>) -> Self {
+        Self::with_cooldown(telegram, DEFAULT_FAILURE_NOTIFY_COOLDOWN)
+    }
+
+    /// Creates a notifier with a custom failure-notification cooldown.
+    pub fn with_cooldown(telegram: Option<TelegramConfig>, failure_cooldown: Duration) -> Self {
         Self {
             telegram,
             client: Client::new(),
             semaphore: Arc::new(Semaphore::new(MAX_INFLIGHT_NOTIFICATIONS)),
+            failure_dedup: Mutex::new(HashMap::new()),
+            failure_cooldown,
         }
     }
 
@@ -230,8 +258,80 @@ impl Notifier {
     }
 
     /// Notify about a failed liquidation attempt.
-    pub fn notify_liquidation_failed(self: &Arc<Self>, market: &str, borrower: &str, error: &str) {
-        self.spawn_send(format_liquidation_failed_message(market, borrower, error));
+    ///
+    /// Repeated alerts for the same `(market, borrower, error_kind)` are
+    /// suppressed within the configured cooldown window.
+    ///
+    /// The dedup entry is recorded only when the send is actually accepted
+    /// by the in-flight semaphore; if the message is dropped due to overload,
+    /// the entry is rolled back so the next call can retry.
+    pub fn notify_liquidation_failed(
+        self: &Arc<Self>,
+        market: &str,
+        borrower: &str,
+        error_kind: crate::NotificationKind,
+        error: &str,
+    ) {
+        if !self.should_send_failure(market, borrower, error_kind) {
+            tracing::debug!(
+                market,
+                borrower,
+                error_kind = %error_kind,
+                "Liquidation failure notification suppressed by dedup"
+            );
+            return;
+        }
+        let queued = self.spawn_send(format_liquidation_failed_message(market, borrower, error));
+        if !queued {
+            self.rollback_failure_dedup(market, borrower, error_kind);
+        }
+    }
+
+    /// Removes a specific dedup entry. Used to roll back when `spawn_send`
+    /// could not queue the message.
+    fn rollback_failure_dedup(
+        &self,
+        market: &str,
+        borrower: &str,
+        error_kind: crate::NotificationKind,
+    ) {
+        if let Ok(mut dedup) = self.failure_dedup.lock() {
+            dedup.remove(&(market.to_string(), borrower.to_string(), error_kind));
+        }
+    }
+
+    /// Clears suppression state for a borrower so the next failure (of any
+    /// kind) fires a fresh notification. Call this on successful liquidation
+    /// or when the position becomes healthy.
+    pub fn clear_failure_dedup_for(&self, market: &str, borrower: &str) {
+        if let Ok(mut dedup) = self.failure_dedup.lock() {
+            dedup.retain(|(m, b, _), _| !(m == market && b == borrower));
+        }
+    }
+
+    /// Returns `true` if the (market, borrower, kind) tuple is outside the
+    /// cooldown window, and records the send time. Garbage-collects stale
+    /// entries opportunistically.
+    fn should_send_failure(
+        &self,
+        market: &str,
+        borrower: &str,
+        kind: crate::NotificationKind,
+    ) -> bool {
+        let Ok(mut dedup) = self.failure_dedup.lock() else {
+            // Poisoned mutex — fall through and send rather than block alerts.
+            return true;
+        };
+        let now = Instant::now();
+        dedup.retain(|_, last| now.duration_since(*last) < self.failure_cooldown);
+        let key = (market.to_string(), borrower.to_string(), kind);
+        match dedup.get(&key) {
+            Some(last) if now.duration_since(*last) < self.failure_cooldown => false,
+            _ => {
+                dedup.insert(key, now);
+                true
+            }
+        }
     }
 
     /// Notify about a swap failure after liquidation.
@@ -274,21 +374,25 @@ impl Notifier {
     // ── Internal ────────────────────────────────────────────────────────────
 
     /// Spawns the send on a background task so callers never block.
-    /// Uses a semaphore to bound in-flight notifications; drops the
-    /// message if all permits are taken.
-    fn spawn_send(self: &Arc<Self>, message: String) {
+    ///
+    /// Returns `true` if the message was queued (or notifications are
+    /// disabled, which is a configured no-op), and `false` only when the
+    /// semaphore was full and the message was dropped due to overload.
+    /// Callers that own dedup state can use the `false` return to roll back.
+    fn spawn_send(self: &Arc<Self>, message: String) -> bool {
         if self.telegram.is_none() {
-            return;
+            return true;
         }
         let Ok(permit) = Arc::clone(&self.semaphore).try_acquire_owned() else {
             tracing::warn!("Notification dropped — too many in-flight messages");
-            return;
+            return false;
         };
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.send(&message).await;
             drop(permit);
         });
+        true
     }
 
     /// Sends an HTML message to the configured Telegram chat.
@@ -530,12 +634,77 @@ mod tests {
         assert!(msg.contains("After 5 consecutive failures"));
     }
 
+    use crate::NotificationKind;
+
+    const K1: NotificationKind = NotificationKind::ExcessiveLiquidation;
+    const K2: NotificationKind = NotificationKind::OfferTooLow;
+
+    #[test]
+    fn test_failure_dedup_suppresses_repeats_same_kind() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(!notifier.should_send_failure("m", "b", K1));
+        assert!(!notifier.should_send_failure("m", "b", K1));
+    }
+
+    #[test]
+    fn test_failure_dedup_allows_different_kinds() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
+    }
+
+    #[test]
+    fn test_failure_dedup_separates_borrowers() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        assert!(notifier.should_send_failure("m", "b1", K1));
+        assert!(notifier.should_send_failure("m", "b2", K1));
+    }
+
+    #[test]
+    fn test_failure_dedup_separates_markets() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        assert!(notifier.should_send_failure("m1", "b", K1));
+        assert!(notifier.should_send_failure("m2", "b", K1));
+    }
+
+    #[test]
+    fn test_failure_dedup_resets_after_cooldown() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_millis(10));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(notifier.should_send_failure("m", "b", K1));
+    }
+
+    #[test]
+    fn test_clear_failure_dedup_for_releases_borrower() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
+        assert!(notifier.should_send_failure("m", "b2", K1));
+        notifier.clear_failure_dedup_for("m", "b");
+        // b can fire again for k1 and k2
+        assert!(notifier.should_send_failure("m", "b", K1));
+        assert!(notifier.should_send_failure("m", "b", K2));
+        // b2 is unaffected
+        assert!(!notifier.should_send_failure("m", "b2", K1));
+    }
+
+    #[test]
+    fn test_rollback_failure_dedup_removes_entry() {
+        let notifier = Notifier::with_cooldown(None, Duration::from_secs(60));
+        // Record an entry, then roll it back; the next call should send again.
+        assert!(notifier.should_send_failure("m", "b", K1));
+        notifier.rollback_failure_dedup("m", "b", K1);
+        assert!(notifier.should_send_failure("m", "b", K1));
+    }
+
     #[test]
     fn test_spawn_send_noop_when_disabled() {
         let notifier = Arc::new(Notifier::new(None));
         // Should not panic or spawn anything
         notifier.notify_liquidation("m", "b", "1", "2", "3", None, false);
-        notifier.notify_liquidation_failed("m", "b", "err");
+        notifier.notify_liquidation_failed("m", "b", K1, "err");
         notifier.notify_swap_failed("m", "a", "b", "1", "err");
         notifier.notify_swap_unsupported("m", "a", "b", "1");
         notifier.notify_scan_failures("m", 2, "err");

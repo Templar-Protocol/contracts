@@ -8,9 +8,7 @@ use market_config_cli::{
 };
 use near_sdk::AccountId;
 use std::{path::PathBuf, str::FromStr};
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy, number::Decimal, utils::Network,
-};
+use templar_common::{interest_rate_strategy::InterestRateStrategy, utils::Network, Decimal};
 
 /// # Errors
 pub fn prompt_network(network: Option<Network>, theme: &ColorfulTheme) -> CliResult<Network> {
