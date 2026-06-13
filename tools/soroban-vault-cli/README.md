@@ -120,6 +120,251 @@ tmplr-soroban-vault deploy resume \
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
 WASM hashes accepted by governance upgrade commands must be 32-byte hex values.
 
+## Curator Role Models
+
+The CLI uses the contract name `governance admin` for the address that controls the governance
+contract, but operationally that address can represent several curator models. It can be a single
+operator key, a multisig contract, or a governance contract controlled by an external process. A new
+stack uses `--admin` as both the governance admin and the initial vault curator. After deployment,
+governance proposals can split that into separate curator, sentinel, and allocator identities.
+
+Common role terms:
+
+- `governance admin`: the address passed as `--admin` on governance commands. It submits and accepts
+  governance proposals. For multisig governance, this is the multisig contract address.
+- `vault curator`: the runtime curator address. It starts as the deployment `--admin` and can be
+  changed with `governance submit-set-curator`.
+- `sentinel`: an emergency backstop configured with `governance submit-set-sentinel`. It can only
+  take protective actions such as pausing or tightening restrictions; governance admin is still
+  required to relax or unpause.
+- `allocator`: one or more addresses configured with `governance submit-set-allocators`. Allocators
+  run market allocation and refresh operations. The vault curator is always authorized as an
+  allocator too.
+- `adapter`: a market route such as a Blend adapter or custodial adapter. The governance admin must
+  allow adapters and place them into the typed supply queue before allocations can route through
+  them.
+
+For timelocked deployments, submit commands create proposals and `accept-ready` accepts them only
+after the relevant timelock has elapsed. Use `governance queue` and `governance explain` to inspect
+pending proposal ids and readiness.
+
+### Single Curator
+
+Use this model when one operational address controls governance and day-to-day allocation. This is
+the simplest testnet or custodial setup.
+
+```sh
+tmplr-soroban-vault deploy stack \
+  --admin GCURATOR... \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CPOOL...
+
+tmplr-soroban-vault governance submit-set-allowed-adapters \
+  --admin GCURATOR... \
+  --adapters CBLENDADAPTER...
+tmplr-soroban-vault governance accept-ready --admin GCURATOR... --kind allowed-adapters
+
+tmplr-soroban-vault governance submit-set-supply-queue \
+  --admin GCURATOR... \
+  --entry 0:CBLENDADAPTER...
+tmplr-soroban-vault governance accept-ready --admin GCURATOR... --kind supply-queue
+
+tmplr-soroban-vault curator allocate-supply \
+  --caller GCURATOR... \
+  --market 0 \
+  --amount 1.25 \
+  --asset-decimals 7
+```
+
+For zero-timelock local deployments, the curator convenience commands can submit and immediately
+accept adapter setup:
+
+```sh
+tmplr-soroban-vault curator set-allowed-adapters \
+  --admin GCURATOR... \
+  --adapters CBLENDADAPTER... \
+  --auto-accept
+tmplr-soroban-vault curator set-supply-queue \
+  --admin GCURATOR... \
+  --entry 0:CBLENDADAPTER... \
+  --auto-accept
+```
+
+### Multisig Governance Curator
+
+Use this model when the curator is decentralized and governance actions are controlled by a multisig
+or governance contract. Deploy with the multisig as `--admin`; the CLI treats that address as the
+governance caller, while the Stellar source account supplies the transaction envelope.
+
+```sh
+tmplr-soroban-vault deploy stack \
+  --admin CMULTISIG... \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CPOOL...
+
+tmplr-soroban-vault governance plan-submit-set-supply-queue \
+  --admin CMULTISIG... \
+  --entry 0:CBLENDADAPTER...
+```
+
+When the multisig can authorize the child invocation directly, submit and accept through the CLI:
+
+```sh
+tmplr-soroban-vault governance submit-set-allowed-adapters \
+  --admin CMULTISIG... \
+  --adapters CBLENDADAPTER...
+tmplr-soroban-vault governance queue --kind allowed-adapters
+tmplr-soroban-vault governance accept-ready --admin CMULTISIG... --kind allowed-adapters
+```
+
+If the multisig requires a separate proposal flow, use the `plan-*`, `queue`, `explain`, and
+`pending` commands to prepare and audit the intended action, then submit the equivalent invocation
+through the multisig workflow.
+
+### Curator With Sentinel
+
+Use this model when a separate emergency key or contract can pause the vault or tighten transfer
+restrictions, while normal governance remains with the governance admin.
+
+```sh
+tmplr-soroban-vault governance submit-set-sentinel \
+  --admin GCURATOR_OR_MULTISIG... \
+  --sentinel GSENTINEL...
+tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG... --kind sentinel
+```
+
+Governance-admin pause and restriction changes use the normal timelocked proposal path:
+
+```sh
+tmplr-soroban-vault governance submit-set-paused \
+  --admin GCURATOR_OR_MULTISIG... \
+  --paused true
+tmplr-soroban-vault governance submit-set-restrictions \
+  --admin GCURATOR_OR_MULTISIG... \
+  --mode blacklist \
+  --accounts GACCOUNT...
+```
+
+Sentinel emergency actions are immediate governance-contract entrypoints. They bypass the proposal
+queue and are intentionally one-way: the sentinel can pause or tighten restrictions, but cannot
+unpause or relax restrictions. Use `stellar contract invoke` with the same network/profile
+environment as the vault CLI:
+
+```sh
+stellar contract invoke \
+  --id "$SOROBAN_GOVERNANCE" \
+  --source-account sentinel \
+  -- set_paused \
+  --caller GSENTINEL... \
+  --paused true
+
+stellar contract invoke \
+  --id "$SOROBAN_GOVERNANCE" \
+  --source-account sentinel \
+  -- set_restrictions \
+  --caller GSENTINEL... \
+  --mode 1 \
+  --accounts '["GACCOUNT..."]'
+```
+
+The governance admin restores normal operation:
+
+```sh
+tmplr-soroban-vault governance submit-set-paused \
+  --admin GCURATOR_OR_MULTISIG... \
+  --paused false
+tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG... --kind pause
+```
+
+### Curator With Allocators
+
+Use this model when governance is retained by the curator or multisig, but allocation execution is
+delegated to one or more hot or automated addresses. Configure allocators through governance, then
+use the allocator address as the `--caller` for market operations.
+
+```sh
+tmplr-soroban-vault governance submit-set-allocators \
+  --admin GCURATOR_OR_MULTISIG... \
+  --allocators GALLOCATOR1...,GALLOCATOR2...
+tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG... --kind allocators
+
+tmplr-soroban-vault curator refresh-markets \
+  --caller GALLOCATOR1... \
+  --markets 0,1
+tmplr-soroban-vault curator allocate-supply \
+  --caller GALLOCATOR1... \
+  --market 0 \
+  --amount 100 \
+  --asset-decimals 7
+tmplr-soroban-vault curator allocate-withdraw \
+  --caller GALLOCATOR1... \
+  --market 0 \
+  --amount 25 \
+  --asset-decimals 7
+```
+
+### Curator With Sentinel And Allocators
+
+Use this model for a more separated production setup: governance admin or multisig controls policy,
+allocator keys execute routine market operations, and a sentinel key or contract handles emergency
+pause/restriction tightening.
+
+```sh
+tmplr-soroban-vault deploy stack \
+  --admin GCURATOR_OR_MULTISIG... \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CPOOL... \
+  --custodian GCUSTODIAN...
+
+tmplr-soroban-vault governance submit-set-sentinel \
+  --admin GCURATOR_OR_MULTISIG... \
+  --sentinel GSENTINEL...
+tmplr-soroban-vault governance submit-set-allocators \
+  --admin GCURATOR_OR_MULTISIG... \
+  --allocators GALLOCATOR1...,GALLOCATOR2...
+tmplr-soroban-vault governance submit-set-allowed-adapters \
+  --admin GCURATOR_OR_MULTISIG... \
+  --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+tmplr-soroban-vault governance submit-set-supply-queue \
+  --admin GCURATOR_OR_MULTISIG... \
+  --entry 0:CBLENDADAPTER... \
+  --entry 1:CCUSTODIALADAPTER...
+
+tmplr-soroban-vault governance queue
+tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG...
+```
+
+After setup, allocators operate the supply queue and sentinel handles emergencies:
+
+```sh
+tmplr-soroban-vault curator allocate-supply \
+  --caller GALLOCATOR1... \
+  --market 1 \
+  --amount 1000 \
+  --asset-decimals 7
+
+stellar contract invoke \
+  --id "$SOROBAN_GOVERNANCE" \
+  --source-account sentinel \
+  -- set_paused \
+  --caller GSENTINEL... \
+  --paused true
+```
+
+For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
+then allow the deployed adapter and add it to the supply queue before allocating to it. The
+custodian, adapter admin, or vault can explicitly report market NAV on the adapter:
+
+```sh
+stellar contract invoke \
+  --id "$CUSTODIAL_ADAPTER_ID" \
+  --source-account custodian \
+  -- set_reported_assets \
+  --caller GCUSTODIAN... \
+  --asset CASSET... \
+  --amount 1000000000
+```
+
 ## Safety
 
 - Mainnet write commands require `--allow-mainnet-write`.
