@@ -83,6 +83,9 @@ impl CustodialAdapterContract {
     }
 
     /// Pause or unpause new vault allocation and reported-NAV update operations.
+    ///
+    /// While paused, vault and custodian report updates are blocked. The admin
+    /// may still call `set_reported_assets` to correct NAV during recovery.
     #[allow(deprecated)]
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
@@ -116,6 +119,7 @@ impl CustodialAdapterContract {
         require_vault(&env, &caller)?;
         require_positive(amount)?;
         require_asset(&env, &asset)?;
+        let next_report_nonce = next_report_nonce(&env, &asset)?;
 
         let reported = load_reported_assets(&env, &asset);
         let next = reported
@@ -127,6 +131,7 @@ impl CustodialAdapterContract {
         transfer_exact(&token, &adapter, &custodian, amount)?;
 
         store_reported_assets(&env, &asset, next);
+        store_report_nonce(&env, &asset, next_report_nonce);
 
         env.events()
             .publish((symbol_short!("supply"), asset, custodian), amount);
@@ -151,6 +156,7 @@ impl CustodialAdapterContract {
         require_vault(&env, &caller)?;
         require_positive(amount)?;
         require_asset(&env, &asset)?;
+        let next_report_nonce = next_report_nonce(&env, &asset)?;
 
         let adapter = env.current_contract_address();
         let token = soroban_sdk::token::Client::new(&env, &asset);
@@ -160,6 +166,7 @@ impl CustodialAdapterContract {
         let vault = get_vault(&env)?;
         transfer_exact(&token, &adapter, &vault, amount)?;
         store_reported_assets(&env, &asset, next_reported);
+        store_report_nonce(&env, &asset, next_report_nonce);
 
         env.events()
             .publish((symbol_short!("withdraw"), asset), amount);
@@ -180,6 +187,7 @@ impl CustodialAdapterContract {
         require_vault(&env, &caller)?;
         require_positive(amount)?;
         require_asset(&env, &asset)?;
+        let next_report_nonce = next_report_nonce(&env, &asset)?;
 
         let adapter = env.current_contract_address();
         let token = soroban_sdk::token::Client::new(&env, &asset);
@@ -189,6 +197,7 @@ impl CustodialAdapterContract {
         let vault = get_vault(&env)?;
         transfer_exact(&token, &adapter, &vault, actual)?;
         store_reported_assets(&env, &asset, next_reported);
+        store_report_nonce(&env, &asset, next_report_nonce);
 
         env.events()
             .publish((symbol_short!("withdraw"), asset), actual);
@@ -216,6 +225,11 @@ impl CustodialAdapterContract {
     /// keeps reporting usable when the admin is a governance contract. The
     /// amount must represent total route NAV not yet released to the vault, not
     /// only the offchain remainder when returned idle liquidity is pending.
+    /// `report_nonce` must be exactly one greater than the current report
+    /// nonce; every successful NAV mutation advances this same revision.
+    ///
+    /// Pause blocks vault and custodian reporting, but intentionally leaves an
+    /// admin recovery path for emergency NAV correction.
     #[allow(deprecated)]
     pub fn set_reported_assets(
         env: Env,
@@ -234,7 +248,8 @@ impl CustodialAdapterContract {
         if load_reported_assets(&env, &asset) != expected_current {
             return Err(AdapterError::InvalidInput);
         }
-        if report_nonce <= load_report_nonce(&env, &asset) {
+        let next_report_nonce = next_report_nonce(&env, &asset)?;
+        if report_nonce != next_report_nonce {
             return Err(AdapterError::InvalidInput);
         }
         store_reported_assets(&env, &asset, amount);
@@ -454,6 +469,12 @@ fn load_report_nonce(env: &Env, asset: &Address) -> u64 {
         .instance()
         .get(&DataKey::ReportNonce(asset.clone()))
         .unwrap_or(0)
+}
+
+fn next_report_nonce(env: &Env, asset: &Address) -> Result<u64, AdapterError> {
+    load_report_nonce(env, asset)
+        .checked_add(1)
+        .ok_or(AdapterError::ArithmeticOverflow)
 }
 
 fn store_reported_assets(env: &Env, asset: &Address, amount: i128) {
@@ -1113,6 +1134,49 @@ mod tests {
     }
 
     #[test]
+    fn nav_mutations_advance_report_nonce_exactly_once() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, custodian, asset) = setup_adapter(&env);
+        let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&contract_id, &100);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 0);
+
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::supply(env.clone(), vault.clone(), asset.clone(), 100)
+                .unwrap();
+        });
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 1);
+
+        asset_admin.mint(&custodian, &50);
+        soroban_sdk::token::Client::new(&env, &asset)
+            .mock_all_auths()
+            .transfer(&custodian, &contract_id, &50);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::progress_withdrawal(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    20,
+                )
+                .unwrap(),
+                20
+            );
+        });
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 2);
+
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::withdraw(env.clone(), vault.clone(), asset.clone(), 10)
+                .unwrap();
+        });
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 3);
+
+        set_reported_assets_for(&env, &contract_id, vault, asset.clone(), 80);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 4);
+    }
+
+    #[test]
     fn set_reported_assets_requires_admin_vault_or_custodian() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1475,16 +1539,20 @@ mod tests {
         env.as_contract(&asset, || {
             FeeToken::mint(env.clone(), contract_id.clone(), 100);
         });
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                CustodialAdapterContract::supply(env.clone(), vault, asset.clone(), 40),
-                Err(AdapterError::InvalidInput)
-            );
-            assert_eq!(
-                CustodialAdapterContract::total_assets(env.clone(), asset.clone()),
-                0
-            );
-        });
+        assert_eq!(token_balance(&env, &asset, &contract_id), 100);
+        assert_eq!(token_balance(&env, &asset, &custodian), 0);
+
+        let args: soroban_sdk::Vec<soroban_sdk::Val> = (&vault, &asset, &40i128).into_val(&env);
+        let result = env.try_invoke_contract::<(), AdapterError>(
+            &contract_id,
+            &Symbol::new(&env, "supply"),
+            args,
+        );
+        assert_eq!(result, Err(Ok(AdapterError::InvalidInput)));
+        assert_eq!(reported_assets(&env, &contract_id, &asset), 0);
+        assert_eq!(token_balance(&env, &asset, &contract_id), 100);
+        assert_eq!(token_balance(&env, &asset, &custodian), 0);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 0);
     }
 
     #[test]
@@ -1615,6 +1683,7 @@ mod tests {
             );
         });
         assert_eq!(reported_assets(&env, &contract_id, &asset), 600);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 2);
 
         env.as_contract(&contract_id, || {
             assert_eq!(
@@ -1643,18 +1712,31 @@ mod tests {
             );
         });
         env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    600,
+                    650,
+                    u64::MAX,
+                ),
+                Err(AdapterError::InvalidInput)
+            );
+        });
+        env.as_contract(&contract_id, || {
             CustodialAdapterContract::set_reported_assets(
                 env.clone(),
                 vault.clone(),
                 asset.clone(),
                 600,
                 650,
-                2,
+                3,
             )
             .unwrap();
         });
         assert_eq!(reported_assets(&env, &contract_id, &asset), 650);
-        assert_eq!(report_nonce(&env, &contract_id, &asset), 2);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 3);
     }
 
     #[test]

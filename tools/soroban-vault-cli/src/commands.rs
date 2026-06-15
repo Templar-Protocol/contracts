@@ -1483,29 +1483,7 @@ fn deploy_stack_plan(
             ));
         }
     }
-    for custodian in &args.custodians {
-        if !args.force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
-            plan.contracts_to_reuse.push(PlanContract {
-                key: format!("custodial adapter for custodian {custodian}"),
-                contract_id: custodial_adapter_by_custodian(manifest, custodian)
-                    .map(ToString::to_string),
-                reason: "adapter for custodian is already recorded in manifest".to_string(),
-            });
-        } else {
-            plan.contracts_to_deploy.push(PlanContract {
-                key: next_custodial_adapter_key(manifest),
-                contract_id: None,
-                reason: format!("new adapter for custodian {custodian}"),
-            });
-            plan.manifest_mutations.push(format!(
-                "record new custodial adapter for custodian {custodian}"
-            ));
-            plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian> --asset <asset_token>",
-                true,
-            ));
-        }
-    }
+    plan_custodial_adapters(&mut plan, manifest, &args.custodians, args.force_new);
     plan.manifest_mutations
         .push("mark initialized contracts after successful initialize calls".to_string());
     Ok(plan)
@@ -1582,8 +1560,23 @@ fn deploy_adapters_plan(
             ));
         }
     }
-    for custodian in &args.custodians {
-        if !args.force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
+    plan_custodial_adapters(&mut plan, manifest, &args.custodians, args.force_new);
+    Ok(plan)
+}
+
+fn plan_custodial_adapters(
+    plan: &mut PlanResponse,
+    manifest: &Manifest,
+    custodians: &[AddressStr],
+    force_new: bool,
+) {
+    let mut next_custodial_index = next_custodial_adapter_index(manifest);
+    let mut planned_custodians = BTreeSet::new();
+    for custodian in custodians {
+        if !planned_custodians.insert(custodian.as_str().to_string()) {
+            continue;
+        }
+        if !force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
             plan.contracts_to_reuse.push(PlanContract {
                 key: format!("custodial adapter for custodian {custodian}"),
                 contract_id: custodial_adapter_by_custodian(manifest, custodian)
@@ -1592,10 +1585,11 @@ fn deploy_adapters_plan(
             });
         } else {
             plan.contracts_to_deploy.push(PlanContract {
-                key: next_custodial_adapter_key(manifest),
+                key: custodial_adapter_key(next_custodial_index),
                 contract_id: None,
                 reason: format!("new adapter for custodian {custodian}"),
             });
+            next_custodial_index += 1;
             plan.manifest_mutations.push(format!(
                 "record new custodial adapter for custodian {custodian}"
             ));
@@ -1605,7 +1599,6 @@ fn deploy_adapters_plan(
             ));
         }
     }
-    Ok(plan)
 }
 
 fn push_contract_plan(plan: &mut PlanResponse, manifest: &Manifest, key: &str, force_new: bool) {
@@ -1795,7 +1788,11 @@ fn append_custodial_adapters<E: CommandExecutor>(
     custodians: &[AddressStr],
     force_new: bool,
 ) -> anyhow::Result<Vec<CustodialAdapterStatus>> {
+    let mut planned_custodians = BTreeSet::new();
     for custodian in custodians {
+        if !planned_custodians.insert(custodian.as_str().to_string()) {
+            continue;
+        }
         if !force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
             continue;
         }
@@ -3314,6 +3311,12 @@ fn run_extend_ttl<E: CommandExecutor>(
     } else {
         let caller = caller.as_ref().context("missing TTL caller")?;
         for adapter in adapters {
+            if let Some(skip_reason) =
+                custodial_ttl_skip_reason(manifest, &adapter.key, caller.as_str())
+            {
+                skipped.push(skip_reason);
+                continue;
+            }
             stellar.invoke(
                 &adapter.contract_id,
                 "extend_ttl",
@@ -3330,6 +3333,19 @@ fn run_extend_ttl<E: CommandExecutor>(
     }
 
     Ok(Response::ExtendTtl(ExtendTtlResponse { extended, skipped }))
+}
+
+fn custodial_ttl_skip_reason(manifest: &Manifest, key: &str, caller: &str) -> Option<String> {
+    let admin = custodial_adapter_admin(manifest, key)?;
+    if contract_id(manifest, "governance").is_some_and(|governance| governance == admin) {
+        return Some(format!(
+            "{key}: admin is governance; no direct custodial adapter TTL authorization path"
+        ));
+    }
+    if admin != caller {
+        return Some(format!("{key}: caller is not custodial adapter admin"));
+    }
+    None
 }
 
 fn resolve_extend_ttl_caller<E: CommandExecutor>(
@@ -3515,6 +3531,13 @@ fn custodial_adapter_by_custodian<'a>(
                     .is_some_and(|value| value == custodian.as_str())
         })
         .map(|(_, record)| record.contract_id.as_str())
+}
+
+fn custodial_adapter_admin<'a>(manifest: &'a Manifest, key: &str) -> Option<&'a str> {
+    manifest
+        .contracts
+        .get(key)
+        .and_then(|record| record.constructor_args.get("admin").map(String::as_str))
 }
 
 fn selected_blend_adapter<'a>(
@@ -3711,9 +3734,6 @@ fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
             adapter.contract_id.clone(),
         ));
         if let Some(custodian) = adapter.custodian {
-            if index == 0 {
-                values.push(("CUSTODIAL_ADDRESS".to_string(), custodian.clone()));
-            }
             values.push((format!("CUSTODIAL_{index}_ADDRESS"), custodian));
         }
         if let Some(asset) = adapter.asset {
@@ -4631,9 +4651,19 @@ mod tests {
                 initialized: true,
             },
         );
+        let mut custodial = imported_record("CCUSTODIAL0");
+        custodial.constructor_args = map_args([("custodian", ACCOUNT), ("asset", CONTRACT)]);
+        manifest
+            .contracts
+            .insert("custodial_adapter_0".to_string(), custodial);
         assert!(
             export_env(&manifest).contains(&("SOROBAN_CONTRACT_ID".to_string(), "CV".to_string()))
         );
+        assert!(export_env(&manifest)
+            .contains(&("CUSTODIAL_0_ADDRESS".to_string(), ACCOUNT.to_string())));
+        assert!(!export_env(&manifest)
+            .iter()
+            .any(|(key, _)| key == "CUSTODIAL_ADDRESS"));
     }
 
     #[test]
@@ -5001,7 +5031,10 @@ mod tests {
                     governance: None,
                     asset_token: None,
                     blend_pools: Vec::new(),
-                    custodians: vec![ACCOUNT.parse().expect("custodian")],
+                    custodians: vec![
+                        ACCOUNT.parse().expect("custodian"),
+                        ACCOUNT.parse().expect("duplicate custodian"),
+                    ],
                     build: false,
                     force_new: false,
                 }),
@@ -5013,6 +5046,7 @@ mod tests {
         run(&cli, &executor).expect("deploy custodial adapter");
 
         let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        assert!(!loaded.contracts.contains_key("custodial_adapter_1"));
         let adapter = loaded
             .contracts
             .get("custodial_adapter_0")
@@ -5118,6 +5152,56 @@ mod tests {
     }
 
     #[test]
+    fn deploy_plan_uses_unique_keys_for_multiple_custodians() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("governance".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("asset_token".to_string(), imported_record(CONTRACT));
+        let cli = base_cli(state, Commands::Status);
+        let plan = deploy_adapters_plan(
+            &cli,
+            &manifest,
+            &crate::cli::DeployAdaptersArgs {
+                vault: None,
+                governance: None,
+                asset_token: None,
+                blend_pools: Vec::new(),
+                custodians: vec![
+                    ACCOUNT.parse().expect("first custodian"),
+                    ACCOUNT.parse().expect("duplicate custodian"),
+                    CONTRACT.parse().expect("second custodian"),
+                ],
+                build: false,
+                force_new: false,
+            },
+        )
+        .expect("plan adapters");
+
+        let custodial_keys = plan
+            .contracts_to_deploy
+            .iter()
+            .filter_map(|contract| {
+                contract
+                    .key
+                    .starts_with("custodial_adapter_")
+                    .then_some(contract.key.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            custodial_keys,
+            vec!["custodial_adapter_0", "custodial_adapter_1"]
+        );
+    }
+
+    #[test]
     fn extend_ttl_runs_for_entire_ttl_capable_deployment_set() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
@@ -5139,7 +5223,10 @@ mod tests {
             .insert("blend_adapter_0".to_string(), imported_record("CADAPTER0"));
         manifest.contracts.insert(
             "custodial_adapter_0".to_string(),
-            imported_record("CCUSTODIAL0"),
+            ContractRecord {
+                constructor_args: map_args([("admin", ACCOUNT)]),
+                ..imported_record("CCUSTODIAL0")
+            },
         );
         manifest.save(&state).expect("save manifest");
         let cli = base_cli(
@@ -5174,6 +5261,42 @@ mod tests {
         assert!(!calls
             .iter()
             .any(|(_, args)| args.windows(2).any(|pair| pair == ["--id", "CASSET"])));
+    }
+
+    #[test]
+    fn extend_ttl_skips_governance_admin_custodial_adapter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("governance".to_string(), imported_record("CGOVERNANCE"));
+        manifest.contracts.insert(
+            "custodial_adapter_0".to_string(),
+            ContractRecord {
+                constructor_args: map_args([("admin", "CGOVERNANCE")]),
+                ..imported_record("CCUSTODIAL0")
+            },
+        );
+        manifest.save(&state).expect("save manifest");
+        let cli = base_cli(
+            state,
+            Commands::ExtendTtl(ExtendTtlArgs {
+                caller: Some(ACCOUNT.parse().expect("caller")),
+            }),
+        );
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("extend ttl");
+
+        let calls = submitted_calls(&executor.calls());
+        assert!(calls.iter().any(|(_, args)| args
+            .windows(2)
+            .any(|pair| pair == ["--id", "CGOVERNANCE"])
+            && args.iter().any(|arg| arg == "extend_ttl")));
+        assert!(!calls
+            .iter()
+            .any(|(_, args)| args.windows(2).any(|pair| pair == ["--id", "CCUSTODIAL0"])));
     }
 
     #[test]

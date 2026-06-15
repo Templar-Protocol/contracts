@@ -540,10 +540,14 @@ tmplr-soroban-vault export-env
 `export-env` emits `BLEND_ADAPTER_ID` for the first adapter for compatibility, plus indexed
 `BLEND_ADAPTER_0_ID`, `BLEND_ADAPTER_1_ID`, and matching `BLEND_POOL_0_ID` values when pool
 constructor args are known. Custodial adapters use the same pattern with `CUSTODIAL_ADAPTER_ID`,
-`CUSTODIAL_ADAPTER_0_ID`, matching `CUSTODIAL_ADDRESS` / `CUSTODIAL_0_ADDRESS`, and
-`CUSTODIAL_0_ASSET` values when constructor args are known.
+`CUSTODIAL_ADAPTER_0_ID`, matching indexed `CUSTODIAL_0_ADDRESS`, and `CUSTODIAL_0_ASSET` values
+when constructor args are known. The unindexed `CUSTODIAL_ADDRESS` name is reserved for explicit
+deploy input and is not emitted by `export-env`.
 
 `extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
 `extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter
-or custodial adapter `extend_ttl --caller`. Manifest contracts without an explicit deployment-wide
-TTL entrypoint, such as the asset token, are reported as skipped.
+`extend_ttl --caller`. Custodial adapters are extended only when the selected caller matches the
+recorded adapter admin; governance-admin custodial adapters are reported as skipped because the
+current governance contract does not expose an adapter TTL forwarding entrypoint. Manifest contracts
+without an explicit deployment-wide TTL entrypoint, such as the asset token, are reported as
+skipped.
