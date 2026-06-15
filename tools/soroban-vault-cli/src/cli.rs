@@ -1140,6 +1140,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_comma_delimited_custodians() {
+        let cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "stack",
+            "--admin",
+            ADMIN,
+            "--custodian",
+            &format!("{ADMIN},{POOL}"),
+        ])
+        .expect("parse cli");
+
+        match cli.command {
+            Commands::Deploy(args) => match args.command {
+                DeployCommand::Stack(stack) => {
+                    let custodians = stack
+                        .custodians
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                    assert_eq!(custodians, vec![ADMIN, POOL]);
+                }
+                DeployCommand::Plan(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Adapters(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
+            },
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
     fn parses_additive_adapter_deploy_flags() {
         let cli = Cli::try_parse_from([
             "tmplr-soroban-vault",
