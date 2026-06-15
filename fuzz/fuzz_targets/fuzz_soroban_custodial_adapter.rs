@@ -11,17 +11,17 @@ struct CustodialAdapterInput {
     requested: i128,
 }
 
-fn bounded_non_negative(value: i128) -> i128 {
-    value.saturating_abs() % 1_000_000_000_000_000_000
+fn bounded(value: i128) -> i128 {
+    value % 1_000_000_000_000_000_000
 }
 
 fuzz_target!(|input: CustodialAdapterInput| {
-    let reported = bounded_non_negative(input.reported);
-    let idle_balance = bounded_non_negative(input.idle_balance);
-    let requested = bounded_non_negative(input.requested);
+    let reported = bounded(input.reported);
+    let idle_balance = bounded(input.idle_balance);
+    let requested = bounded(input.requested);
     let result = simulate_progress_withdrawal(reported, idle_balance, requested);
 
-    if requested == 0 {
+    if requested <= 0 || reported < 0 || idle_balance < 0 {
         assert_eq!(result, Err(AdapterError::InvalidInput));
         return;
     }
