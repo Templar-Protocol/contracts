@@ -3737,12 +3737,9 @@ fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
     }
     match response {
         Response::Message { message } => println!("{message}"),
-        Response::Command { stdout, stderr } => {
+        Response::Command { stdout, stderr: _ } => {
             if !stdout.is_empty() {
                 println!("{stdout}");
-            }
-            if !stderr.is_empty() {
-                eprintln!("{stderr}");
             }
         }
         Response::Status(status) => {
