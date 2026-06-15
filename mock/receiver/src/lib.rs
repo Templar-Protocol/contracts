@@ -1,3 +1,9 @@
+// This mock implements the NEP token-receiver callbacks but ignores their
+// params. They are required to be taken by value (and are read by the
+// `#[near]`-generated wrappers), which trips `needless_pass_by_value` and
+// `used_underscore_binding`.
+#![allow(clippy::needless_pass_by_value, clippy::used_underscore_binding)]
+
 use near_sdk::{json_types::U128, near, AccountId, PanicOnDefault, PromiseOrValue};
 
 #[derive(PanicOnDefault)]
