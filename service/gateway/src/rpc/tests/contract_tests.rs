@@ -10,6 +10,13 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
     let registry_id = stack.harness.deploy_registry().await?;
     let (market_id, _) = stack.harness.deploy_market().await?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    let proxy_governance_id = stack
+        .harness
+        .deploy_governance_contract(
+            proxy_oracle_id.clone(),
+            stack.harness.proxy_oracle_signer_account_id.0.clone(),
+        )
+        .await?;
     let pyth_oracle_id = stack
         .harness
         .deploy_mock_oracle("kind-pyth.near".parse()?)
@@ -35,6 +42,10 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
     assert_eq!(
         kind_of(&stack, proxy_oracle_id).await?,
         ContractKind::ProxyOracle
+    );
+    assert_eq!(
+        kind_of(&stack, proxy_governance_id).await?,
+        ContractKind::ProxyGovernance
     );
     assert_eq!(
         kind_of(&stack, lst_oracle_id).await?,

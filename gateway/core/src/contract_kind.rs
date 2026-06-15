@@ -41,6 +41,9 @@ async fn detect_contract_kind<C: HasNearClient>(
     if try_proxy_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::ProxyOracle);
     }
+    if try_proxy_governance_kind(ctx, contract_id.clone()).await? {
+        return Ok(ContractKind::ProxyGovernance);
+    }
     if try_lst_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::LstOracle);
     }
@@ -99,6 +102,18 @@ async fn try_proxy_oracle_kind<C: HasNearClient>(
                 offset: None,
                 count: Some(1),
             })
+            .await,
+    )
+}
+
+async fn try_proxy_governance_kind<C: HasNearClient>(
+    ctx: &C,
+    contract_id: AccountId,
+) -> GatewayResult<bool> {
+    probe_kind(
+        ctx.near_client()
+            .proxy_governance(contract_id)
+            .next_proposal_id(())
             .await,
     )
 }

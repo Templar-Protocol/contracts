@@ -8,6 +8,7 @@ pub enum ContractKind {
     Registry,
     Market,
     ProxyOracle,
+    ProxyGovernance,
     LstOracle,
     UniversalAccount,
     RedstoneOracle,
