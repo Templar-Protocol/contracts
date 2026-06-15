@@ -1224,7 +1224,7 @@ fn verify_component_wiring<E: CommandExecutor>(
                 )?);
             }
         }
-        key if key.starts_with("custodial_adapter") => {
+        key if is_custodial_adapter_key(key) => {
             checks.push(view_equals_check(
                 stellar,
                 &record.contract_id,
@@ -3505,13 +3505,7 @@ fn next_custodial_adapter_index(manifest: &Manifest) -> usize {
     let highest_index = manifest
         .contracts
         .keys()
-        .filter_map(|key| {
-            if key == "custodial_adapter" {
-                Some(0)
-            } else {
-                custodial_adapter_index(key)
-            }
-        })
+        .filter_map(|key| custodial_adapter_index(key))
         .max();
     highest_index.map_or(0, |index| index + 1)
 }
@@ -3573,7 +3567,7 @@ fn blend_adapter_index(key: &str) -> Option<usize> {
 }
 
 fn is_custodial_adapter_key(key: &str) -> bool {
-    key == "custodial_adapter" || custodial_adapter_index(key).is_some()
+    custodial_adapter_index(key).is_some()
 }
 
 fn custodial_adapter_index(key: &str) -> Option<usize> {
@@ -3679,21 +3673,10 @@ fn custodial_adapter_statuses(manifest: &Manifest) -> Vec<CustodialAdapterStatus
         })
         .collect::<Vec<_>>();
     adapters.sort_by_key(|(index, _)| *index);
-    let mut adapters = adapters
+    adapters
         .into_iter()
         .map(|(_, status)| status)
-        .collect::<Vec<_>>();
-    if adapters.is_empty() {
-        if let Some(record) = manifest.contracts.get("custodial_adapter") {
-            adapters.push(CustodialAdapterStatus {
-                key: "custodial_adapter".to_string(),
-                contract_id: record.contract_id.clone(),
-                custodian: record.constructor_args.get("custodian").cloned(),
-                asset: record.constructor_args.get("asset").cloned(),
-            });
-        }
-    }
-    adapters
+        .collect::<Vec<_>>()
 }
 
 fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
@@ -4664,6 +4647,36 @@ mod tests {
         assert!(!export_env(&manifest)
             .iter()
             .any(|(key, _)| key == "CUSTODIAL_ADDRESS"));
+    }
+
+    #[test]
+    fn status_ignores_unindexed_custodial_adapter_record() {
+        let mut manifest = Manifest::new("testnet", None);
+        let mut unindexed = imported_record("CLEGACY");
+        unindexed.constructor_args = map_args([("custodian", ACCOUNT), ("asset", CONTRACT)]);
+        manifest
+            .contracts
+            .insert("custodial_adapter".to_string(), unindexed);
+
+        assert!(status_response(&manifest).custodial_adapters.is_empty());
+        assert!(!export_env(&manifest)
+            .iter()
+            .any(|(key, value)| key.starts_with("CUSTODIAL") || value == "CLEGACY"));
+
+        let mut indexed = imported_record("CCUSTODIAL0");
+        indexed.constructor_args = map_args([("custodian", ACCOUNT), ("asset", CONTRACT)]);
+        manifest
+            .contracts
+            .insert("custodial_adapter_0".to_string(), indexed);
+
+        let status = status_response(&manifest);
+        assert_eq!(status.custodial_adapters.len(), 1);
+        assert_eq!(status.custodial_adapters[0].key, "custodial_adapter_0");
+        assert_eq!(status.custodial_adapters[0].contract_id, "CCUSTODIAL0");
+        assert!(export_env(&manifest).contains(&(
+            "CUSTODIAL_ADAPTER_ID".to_string(),
+            "CCUSTODIAL0".to_string()
+        )));
     }
 
     #[test]
