@@ -1,154 +1,64 @@
+//! Fuzz `BorrowPosition` getters. Amounts capped at `u64` so the liability sum
+//! cannot trip the contract's intentional `u128` overflow check (P2:
+//! targeted bound). The boundary is fuzzed in `fuzz_borrow_overflow`, which is
+//! the P2 backstop.
+//!
+//! Assertions are restricted to properties a buggy implementation could
+//! actually violate (P2) — see comments per assertion.
+
 #![no_main]
 #![cfg(not(target_arch = "wasm32"))]
 
 use libfuzzer_sys::fuzz_target;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    borrow::{BorrowPosition, BorrowStatus, LiquidationReason},
+    borrow::BorrowPosition,
 };
 
-fuzz_target!(|data: (u32, u128, u128, u128, u128, u64, u8)| {
-    let (
-        snapshot_index,
-        collateral_amount,
-        principal_amount,
-        _fees_amount,
-        in_flight_amount,
-        timestamp_ms,
-        op_selector,
-    ) = data;
+// MUTATION-CHECK (P5): in `BorrowPosition::get_borrow_asset_principal`
+// (borrow.rs:92), drop the `+ self.borrow_asset_in_flight` term. Then the
+// `getter_principal == principal + in_flight` assertion below must fire.
 
-    // Create a new borrow position
-    let mut position = BorrowPosition::new(snapshot_index);
+fuzz_target!(|data: (u64, u64, u64)| {
+    let (collateral_amount, principal_amount, in_flight_amount) = data;
+    let (collateral_amount, principal_amount, in_flight_amount) = (
+        u128::from(collateral_amount),
+        u128::from(principal_amount),
+        u128::from(in_flight_amount),
+    );
 
-    // Test basic getters on empty position
-    let _ = position.get_borrow_asset_principal();
-    let _ = position.get_total_borrow_asset_liability();
-    let _ = position.get_total_collateral_amount();
-    let _ = !position.exists();
-    let _ = position.exists();
-
-    // Fuzz setting various amounts
+    let mut position = BorrowPosition::new(0);
     position.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
     position.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
     position.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
 
-    // Test getters with populated values
+    // `get_borrow_asset_principal` is documented to return principal + in_flight.
+    // A buggy implementation could drop one of the addends; this assert catches it.
+    let getter_principal = position.get_borrow_asset_principal();
+    assert_eq!(
+        getter_principal,
+        position.borrow_asset_principal + position.borrow_asset_in_flight,
+        "get_borrow_asset_principal must equal principal + in_flight",
+    );
+
+    // Total liability includes principal + in_flight + interest + fees. With
+    // interest/fees zero (fresh position), liability must equal principal +
+    // in_flight exactly — a buggy implementation that double-counted or
+    // dropped a term would fail.
     let liability = position.get_total_borrow_asset_liability();
-    let collateral = position.get_total_collateral_amount();
-    assert_eq!(collateral, position.collateral_asset_deposit);
-    let principal = position.get_borrow_asset_principal();
-    assert_eq!(principal, position.borrow_asset_principal);
+    assert_eq!(
+        liability,
+        position.borrow_asset_principal + position.borrow_asset_in_flight,
+        "fresh-position liability must equal principal + in_flight exactly",
+    );
 
-    // Test exists and can_be_removed logic
-    let exists = position.exists();
-    let can_remove = !position.exists();
+    // `exists()` is a tight bi-implication on the contributing fields.
+    let expected_exists = !position.collateral_asset_deposit.is_zero()
+        || !liability.is_zero()
+        || !position.collateral_asset_in_flight.is_zero();
+    assert_eq!(position.exists(), expected_exists);
 
-    // Invariants
-    if exists {
-        // If position exists, can_be_removed should consider the amounts
-        if position.collateral_asset_deposit.is_zero()
-            && liability.is_zero()
-            && position.borrow_asset_in_flight.is_zero()
-        {
-            assert!(
-                can_remove,
-                "Position should be removable when all amounts are zero"
-            );
-        }
-    }
-
-    // Test timestamp handling
-    if timestamp_ms > 0 {
-        position.started_at_block_timestamp_ms = Some(near_sdk::json_types::U64(timestamp_ms));
-    }
-
-    // Test different operations based on selector
-    match op_selector % 8 {
-        0 => {
-            // Test with zero amounts
-            let zero_pos = BorrowPosition::new(0);
-            assert!(!zero_pos.exists());
-            assert!(zero_pos.exists());
-            assert_eq!(
-                zero_pos.get_borrow_asset_principal(),
-                BorrowAssetAmount::zero()
-            );
-        }
-        1 => {
-            // Test with max snapshot index
-            let max_pos = BorrowPosition::new(u32::MAX);
-            let _ = max_pos.get_total_borrow_asset_liability();
-        }
-        2 => {
-            // Test collateral operations
-            let mut pos = BorrowPosition::new(snapshot_index);
-            pos.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
-            let total = pos.get_total_collateral_amount();
-            assert_eq!(total, pos.collateral_asset_deposit);
-        }
-        3 => {
-            // Test liquidation lock
-            let mut pos = BorrowPosition::new(snapshot_index);
-            pos.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
-            let total = pos.get_total_collateral_amount();
-            // Total should be sum of deposit and lock
-            let _ = total;
-        }
-        4 => {
-            // Test in-flight amounts
-            let mut pos = BorrowPosition::new(snapshot_index);
-            pos.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
-            pos.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
-            let liability = pos.get_total_borrow_asset_liability();
-            // Liability should include principal and in_flight
-            let _ = liability;
-        }
-        5 => {
-            // Test fees accumulation
-            let mut pos = BorrowPosition::new(snapshot_index);
-            pos.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
-            // Fees are part of liability
-            let liability = pos.get_total_borrow_asset_liability();
-            let _ = liability;
-        }
-        6 => {
-            // Test position with all amounts set
-            let mut pos = BorrowPosition::new(snapshot_index);
-            pos.collateral_asset_deposit = CollateralAssetAmount::new(collateral_amount);
-            pos.borrow_asset_principal = BorrowAssetAmount::new(principal_amount);
-            pos.borrow_asset_in_flight = BorrowAssetAmount::new(in_flight_amount);
-
-            let _ = pos.get_total_borrow_asset_liability();
-            let _ = pos.get_total_collateral_amount();
-            let _ = pos.exists();
-            let _ = !pos.exists();
-        }
-        _ => {
-            // Test edge cases with overflow scenarios
-            let mut pos = BorrowPosition::new(snapshot_index);
-
-            // Try to set amounts that might overflow when combined
-            pos.borrow_asset_principal = BorrowAssetAmount::new(u128::MAX / 3);
-            pos.borrow_asset_in_flight = BorrowAssetAmount::new(u128::MAX / 3);
-
-            // This might overflow - fuzzer should catch it
-            let _ = pos.get_total_borrow_asset_liability();
-        }
-    }
-
-    // Test clone and equality
+    // Clone equality.
     let cloned = position.clone();
     assert_eq!(position, cloned);
-
-    // Test BorrowStatus enum
-    let status_healthy = BorrowStatus::Healthy;
-    let status_maintenance = BorrowStatus::MaintenanceRequired;
-    let status_liquidation = BorrowStatus::Liquidation(LiquidationReason::Undercollateralization);
-    let status_liquidation_exp = BorrowStatus::Liquidation(LiquidationReason::Expiration);
-
-    // Test comparisons
-    let _ = status_healthy == status_maintenance;
-    let _ = status_liquidation == status_liquidation_exp;
-    let _ = status_healthy < status_maintenance;
 });

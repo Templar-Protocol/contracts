@@ -39,6 +39,12 @@ test = false
 bench = false
 
 [[bin]]
+name = "fuzz_borrow_overflow"
+path = "fuzz_targets/fuzz_borrow_overflow.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "fuzz_decimal_arithmetic"
 path = "fuzz_targets/fuzz_decimal_arithmetic.rs"
 test = false
@@ -63,20 +69,27 @@ test = false
 bench = false
 
 [[bin]]
+name = "fuzz_fee_math"
+path = "fuzz_targets/fuzz_fee_math.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "fuzz_liquidations"
 path = "fuzz_targets/fuzz_liquidations.rs"
 test = false
 bench = false
 
-[[bin]]
-name = "fuzz_liquidator_logic"
-path = "fuzz_targets/fuzz_liquidator_logic.rs"
-test = false
-bench = false
+# fuzz_liquidator_logic removed: it was a toy reimplementation testing only
+# harness arithmetic (P1). Its real counterpart is the off-chain
+# `ProfitabilityCalculator` in the `templar-liquidator` crate, which pulls a
+# full async stack (tokio/reqwest/jsonrpc) — not worth dragging into a
+# libFuzzer binary for an off-chain, non-fund-critical pure function. On-chain
+# liquidation amounts are covered by `fuzz_liquidations`. Tracked: ENG-344.
 
 [[bin]]
-name = "fuzz_liquidator_transactions"
-path = "fuzz_targets/fuzz_liquidator_transactions.rs"
+name = "fuzz_deposit_msg"
+path = "fuzz_targets/fuzz_deposit_msg.rs"
 test = false
 bench = false
 
@@ -85,11 +98,6 @@ name = "fuzz_market_creation"
 path = "fuzz_targets/fuzz_market_creation.rs"
 test = false
 bench = false
-
-# [[bin]]
-# name = "fuzz_market_state"
-# path = "fuzz_targets/fuzz_market_state.rs"
-# test = false
 
 [[bin]]
 name = "fuzz_price"
@@ -110,7 +118,31 @@ test = false
 bench = false
 
 [[bin]]
+name = "fuzz_supply_overflow"
+path = "fuzz_targets/fuzz_supply_overflow.rs"
+test = false
+bench = false
+
+[[bin]]
 name = "fuzz_soroban_storage_codecs"
 path = "fuzz_targets/fuzz_soroban_storage_codecs.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_vault_state_machine"
+path = "fuzz_targets/fuzz_vault_state_machine.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_accumulator"
+path = "fuzz_targets/fuzz_accumulator.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fuzz_snapshot"
+path = "fuzz_targets/fuzz_snapshot.rs"
 test = false
 bench = false

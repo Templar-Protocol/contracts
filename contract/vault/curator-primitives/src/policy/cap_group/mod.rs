@@ -216,6 +216,7 @@ impl CapGroup {
 
 /// Record tracking the state of a cap group.
 #[templar_vault_macros::vault_derive(borsh, borsh_schema, schemars, serde)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(PartialEq, Eq))]
 #[derive(Clone, Default)]
 pub struct CapGroupRecord {
     /// The cap group configuration.

@@ -796,7 +796,7 @@ fn decode_withdraw_queue_header(
     Ok(header)
 }
 
-fn encode_withdraw_queue_page<'a>(
+pub(crate) fn encode_withdraw_queue_page<'a>(
     entries: impl IntoIterator<Item = (u64, &'a PendingWithdrawal)>,
 ) -> Vec<u8> {
     let entries: Vec<_> = entries.into_iter().collect();
@@ -813,7 +813,9 @@ fn encode_withdraw_queue_page<'a>(
     out
 }
 
-fn decode_withdraw_queue_page(bytes: &[u8]) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
+pub(crate) fn decode_withdraw_queue_page(
+    bytes: &[u8],
+) -> Result<Vec<(u64, PendingWithdrawal)>, RuntimeError> {
     let mut cursor = 0usize;
     let count = read_u32(bytes, &mut cursor)? as usize;
     if count > WITHDRAW_QUEUE_PAGE_SIZE as usize {

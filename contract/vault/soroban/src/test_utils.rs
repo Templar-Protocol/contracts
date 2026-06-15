@@ -6,8 +6,9 @@ use crate::error::RuntimeError;
 use crate::storage::{
     compose_policy_state, decode_cap_groups, decode_markets, decode_policy_locks,
     decode_principals, decode_restrictions, decode_state_blob, decode_supply_queue,
-    encode_cap_groups, encode_markets, encode_policy_locks, encode_principals, encode_restrictions,
-    encode_state_blob, encode_supply_queue, Storage,
+    decode_withdraw_queue_page, encode_cap_groups, encode_markets, encode_policy_locks,
+    encode_principals, encode_restrictions, encode_state_blob, encode_supply_queue,
+    encode_withdraw_queue_page, Storage,
 };
 use alloc::vec::Vec;
 use core::mem;
@@ -90,6 +91,18 @@ pub mod fuzz_api {
         bytes: &[u8],
     ) -> Result<templar_vault_kernel::VaultState, RuntimeError> {
         decode_state_blob(bytes)
+    }
+
+    pub fn encode_withdraw_queue_page_bytes(
+        entries: &[(u64, templar_vault_kernel::PendingWithdrawal)],
+    ) -> Vec<u8> {
+        encode_withdraw_queue_page(entries.iter().map(|(id, withdrawal)| (*id, withdrawal)))
+    }
+
+    pub fn decode_withdraw_queue_page_bytes(
+        bytes: &[u8],
+    ) -> Result<Vec<(u64, templar_vault_kernel::PendingWithdrawal)>, RuntimeError> {
+        decode_withdraw_queue_page(bytes)
     }
 }
 
