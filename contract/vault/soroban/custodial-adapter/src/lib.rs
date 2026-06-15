@@ -1519,10 +1519,7 @@ mod tests {
             }));
             assert!(result.is_err());
             assert_eq!(reported_assets(&env, &contract_id, &asset), 10);
-            assert_eq!(
-                has_reported_assets_key(&env, &contract_id, &unsupported),
-                false
-            );
+            assert!(!has_reported_assets_key(&env, &contract_id, &unsupported));
         }
     }
 
