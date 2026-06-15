@@ -67,6 +67,14 @@ impl VaultCaller {
             (spender, from, amount).into_val(&env),
         );
     }
+
+    fn transfer(env: Env, token: Address, from: Address, to: MuxedAddress, amount: i128) {
+        env.invoke_contract::<()>(
+            &token,
+            &soroban_sdk::Symbol::new(&env, "transfer"),
+            (from, to, amount).into_val(&env),
+        );
+    }
 }
 
 fn setup() -> (Env, Address, Address, Address) {
@@ -481,6 +489,69 @@ fn share_token_whitelist_allows_only_listed_transfer_parties() {
         &token,
         &Symbol::new(&env, "transfer"),
         (&listed_from, MuxedAddress::from(unlisted.clone()), &1i128).into_val(&env),
+    );
+    assert_eq!(err, Err(Ok(ShareTokenError::Restricted)));
+}
+
+#[test]
+fn share_token_whitelist_allows_vault_authorized_escrow_to_vault() {
+    let (env, _admin, vault, token) = setup();
+    let listed_owner = Address::generate(&env);
+    let unlisted = Address::generate(&env);
+    let mut accounts = soroban_sdk::Vec::new(&env);
+    accounts.push_back(listed_owner.clone());
+
+    env.as_contract(&vault, || {
+        VaultCaller::set_restrictions(env.clone(), token.clone(), 2, accounts.clone());
+    });
+    env.mock_auths(&[]);
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "transfer"),
+        (&listed_owner, MuxedAddress::from(vault.clone()), &1i128).into_val(&env),
+    );
+    assert!(
+        matches!(err, Err(Err(_))),
+        "direct transfer without vault authorization must fail, got {err:?}"
+    );
+
+    env.mock_all_auths_allowing_non_root_auth();
+    env.as_contract(&vault, || {
+        VaultCaller::mint(env.clone(), token.clone(), listed_owner.clone(), 1000);
+        VaultCaller::set_restrictions(env.clone(), token.clone(), 2, accounts.clone());
+        VaultCaller::transfer(
+            env.clone(),
+            token.clone(),
+            listed_owner.clone(),
+            MuxedAddress::from(vault.clone()),
+            250,
+        );
+        VaultCaller::transfer(
+            env.clone(),
+            token.clone(),
+            vault.clone(),
+            MuxedAddress::from(listed_owner.clone()),
+            100,
+        );
+    });
+
+    let vault_balance: i128 = env.invoke_contract(
+        &token,
+        &Symbol::new(&env, "balance"),
+        (&vault,).into_val(&env),
+    );
+    assert_eq!(vault_balance, 150);
+    let owner_balance: i128 = env.invoke_contract(
+        &token,
+        &Symbol::new(&env, "balance"),
+        (&listed_owner,).into_val(&env),
+    );
+    assert_eq!(owner_balance, 850);
+
+    let err = env.try_invoke_contract::<(), ShareTokenError>(
+        &token,
+        &Symbol::new(&env, "transfer"),
+        (&listed_owner, MuxedAddress::from(unlisted.clone()), &1i128).into_val(&env),
     );
     assert_eq!(err, Err(Ok(ShareTokenError::Restricted)));
 }
