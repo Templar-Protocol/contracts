@@ -356,7 +356,9 @@ stellar contract invoke \
 For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
 then allow the deployed adapter and add it to the supply queue before allocating to it. Each
 custodial adapter is bound to the manifest asset token at deployment and rejects calls for any
-other asset. The custodian, adapter admin, or vault can explicitly report route NAV on the adapter:
+other asset. The custodian, adapter admin, or vault can explicitly report route NAV on the adapter.
+Reports include the current stored NAV and a monotonically increasing nonce so stale heartbeats
+cannot re-add assets that have already been released back to the vault:
 
 ```sh
 stellar contract invoke \
@@ -365,7 +367,9 @@ stellar contract invoke \
   -- set_reported_assets \
   --caller GCUSTODIAN... \
   --asset CASSET... \
-  --amount 1000000000
+  --expected_current 800000000 \
+  --amount 1000000000 \
+  --report_nonce 42
 ```
 
 ## Safety
