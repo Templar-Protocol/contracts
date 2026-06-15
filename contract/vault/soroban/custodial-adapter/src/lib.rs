@@ -24,6 +24,7 @@ enum DataKey {
     Asset,
     Paused,
     ReportedAssets(Address),
+    ReportNonce(Address),
 }
 
 #[contracterror]
@@ -63,6 +64,9 @@ impl CustodialAdapterContract {
         if admin == adapter
             || vault == adapter
             || asset == adapter
+            || asset == admin
+            || asset == vault
+            || asset == custodian
             || custodian == vault
             || custodian == adapter
         {
@@ -120,7 +124,7 @@ impl CustodialAdapterContract {
         let adapter = env.current_contract_address();
         let custodian = get_custodian(&env)?;
         let token = soroban_sdk::token::Client::new(&env, &asset);
-        token.transfer(&adapter, &custodian, &amount);
+        transfer_exact(&token, &adapter, &custodian, amount)?;
 
         store_reported_assets(&env, &asset, next);
 
@@ -154,7 +158,7 @@ impl CustodialAdapterContract {
         let reported = load_reported_assets(&env, &asset);
         let next_reported = exact_withdrawal_result(reported, idle_balance, amount)?;
         let vault = get_vault(&env)?;
-        token.transfer(&adapter, &vault, &amount);
+        transfer_exact(&token, &adapter, &vault, amount)?;
         store_reported_assets(&env, &asset, next_reported);
 
         env.events()
@@ -183,7 +187,7 @@ impl CustodialAdapterContract {
         let reported = load_reported_assets(&env, &asset);
         let (actual, next_reported) = withdrawal_result(reported, idle_balance, amount)?;
         let vault = get_vault(&env)?;
-        token.transfer(&adapter, &vault, &actual);
+        transfer_exact(&token, &adapter, &vault, actual)?;
         store_reported_assets(&env, &asset, next_reported);
 
         env.events()
@@ -217,16 +221,24 @@ impl CustodialAdapterContract {
         env: Env,
         caller: Address,
         asset: Address,
+        expected_current: i128,
         amount: i128,
+        report_nonce: u64,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        require_not_paused(&env)?;
-        require_reporter(&env, &caller)?;
+        require_report_update_authority(&env, &caller)?;
         require_asset(&env, &asset)?;
-        if amount < 0 {
+        if expected_current < 0 || amount < 0 {
+            return Err(AdapterError::InvalidInput);
+        }
+        if load_reported_assets(&env, &asset) != expected_current {
+            return Err(AdapterError::InvalidInput);
+        }
+        if report_nonce <= load_report_nonce(&env, &asset) {
             return Err(AdapterError::InvalidInput);
         }
         store_reported_assets(&env, &asset, amount);
+        store_report_nonce(&env, &asset, report_nonce);
         env.events()
             .publish((symbol_short!("report"), caller, asset), amount);
         Ok(())
@@ -255,6 +267,12 @@ impl CustodialAdapterContract {
     pub fn asset(env: Env) -> Result<Address, AdapterError> {
         extend_instance_ttl(&env);
         get_asset(&env)
+    }
+
+    pub fn report_nonce(env: Env, asset: Address) -> Result<u64, AdapterError> {
+        extend_instance_ttl(&env);
+        require_asset(&env, &asset)?;
+        Ok(load_report_nonce(&env, &asset))
     }
 
     /// Propose a new admin. The pending admin must accept in a separate call.
@@ -366,6 +384,29 @@ fn require_positive(amount: i128) -> Result<(), AdapterError> {
     }
 }
 
+fn transfer_exact(
+    token: &soroban_sdk::token::Client<'_>,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+) -> Result<(), AdapterError> {
+    let from_before = token.balance(from);
+    let to_before = token.balance(to);
+    token.transfer(from, to, &amount);
+    let from_after = token.balance(from);
+    let to_after = token.balance(to);
+    let debited = from_before
+        .checked_sub(from_after)
+        .ok_or(AdapterError::InvalidInput)?;
+    let credited = to_after
+        .checked_sub(to_before)
+        .ok_or(AdapterError::InvalidInput)?;
+    if debited != amount || credited != amount {
+        return Err(AdapterError::InvalidInput);
+    }
+    Ok(())
+}
+
 fn get_address(env: &Env, key: DataKey) -> Result<Address, AdapterError> {
     env.storage()
         .instance()
@@ -408,6 +449,13 @@ fn load_reported_assets(env: &Env, asset: &Address) -> i128 {
         .unwrap_or(0)
 }
 
+fn load_report_nonce(env: &Env, asset: &Address) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReportNonce(asset.clone()))
+        .unwrap_or(0)
+}
+
 fn store_reported_assets(env: &Env, asset: &Address, amount: i128) {
     let key = DataKey::ReportedAssets(asset.clone());
     if amount == 0 {
@@ -415,6 +463,12 @@ fn store_reported_assets(env: &Env, asset: &Address, amount: i128) {
     } else {
         env.storage().instance().set(&key, &amount);
     }
+}
+
+fn store_report_nonce(env: &Env, asset: &Address, nonce: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReportNonce(asset.clone()), &nonce);
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), AdapterError> {
@@ -445,12 +499,18 @@ fn require_admin_or_vault(env: &Env, caller: &Address) -> Result<(), AdapterErro
     Ok(())
 }
 
-fn require_reporter(env: &Env, caller: &Address) -> Result<(), AdapterError> {
+fn require_report_update_authority(env: &Env, caller: &Address) -> Result<(), AdapterError> {
     caller.require_auth();
     let admin = get_admin(env)?;
+    if caller == &admin {
+        return Ok(());
+    }
+    if is_paused(env) {
+        return Err(AdapterError::Paused);
+    }
     let vault = get_vault(env)?;
     let custodian = get_custodian(env)?;
-    if caller != &admin && caller != &vault && caller != &custodian {
+    if caller != &vault && caller != &custodian {
         return Err(AdapterError::Unauthorized);
     }
     Ok(())
@@ -538,8 +598,45 @@ mod tests {
     #[contractimpl]
     impl DummyContract {}
 
+    #[contract]
+    struct FeeToken;
+
+    #[contractimpl]
+    impl FeeToken {
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let current = Self::balance(env.clone(), to.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::ReportedAssets(to), &(current + amount));
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&DataKey::ReportedAssets(id))
+                .unwrap_or(0)
+        }
+
+        pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+            from.require_auth();
+            let from_balance = Self::balance(env.clone(), from.clone());
+            let to_balance = Self::balance(env.clone(), to.clone());
+            let credited = amount.saturating_sub(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::ReportedAssets(from), &(from_balance - amount));
+            env.storage()
+                .instance()
+                .set(&DataKey::ReportedAssets(to), &(to_balance + credited));
+        }
+    }
+
     fn register_dummy_contract(env: &Env) -> Address {
         env.register(DummyContract, ())
+    }
+
+    fn register_fee_token(env: &Env) -> Address {
+        env.register(FeeToken, ())
     }
 
     fn account_address(env: &Env) -> Address {
@@ -555,11 +652,18 @@ mod tests {
         let custodian = Address::generate(env);
         let asset_sac = env.register_stellar_asset_contract_v2(Address::generate(env));
         let asset = asset_sac.address();
-        let contract_id = env.register(
-            CustodialAdapterContract,
-            (&admin, &vault, &custodian, &asset),
-        );
+        let contract_id = setup_adapter_with(env, &admin, &vault, &custodian, &asset);
         (contract_id, admin, vault, custodian, asset)
+    }
+
+    fn setup_adapter_with(
+        env: &Env,
+        admin: &Address,
+        vault: &Address,
+        custodian: &Address,
+        asset: &Address,
+    ) -> Address {
+        env.register(CustodialAdapterContract, (admin, vault, custodian, asset))
     }
 
     fn token_balance(env: &Env, token: &Address, account: &Address) -> i128 {
@@ -569,6 +673,12 @@ mod tests {
     fn reported_assets(env: &Env, contract_id: &Address, asset: &Address) -> i128 {
         env.as_contract(contract_id, || {
             CustodialAdapterContract::total_assets(env.clone(), asset.clone())
+        })
+    }
+
+    fn report_nonce(env: &Env, contract_id: &Address, asset: &Address) -> u64 {
+        env.as_contract(contract_id, || {
+            CustodialAdapterContract::report_nonce(env.clone(), asset.clone()).unwrap()
         })
     }
 
@@ -587,9 +697,18 @@ mod tests {
         asset: Address,
         amount: i128,
     ) {
+        let expected_current = reported_assets(env, contract_id, &asset);
+        let report_nonce = report_nonce(env, contract_id, &asset) + 1;
         env.as_contract(contract_id, || {
-            CustodialAdapterContract::set_reported_assets(env.clone(), caller, asset, amount)
-                .unwrap();
+            CustodialAdapterContract::set_reported_assets(
+                env.clone(),
+                caller,
+                asset,
+                expected_current,
+                amount,
+                report_nonce,
+            )
+            .unwrap();
         });
     }
 
@@ -739,6 +858,30 @@ mod tests {
         }));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn constructor_rejects_asset_equal_to_role_addresses() {
+        let env = Env::default();
+        let admin = register_dummy_contract(&env);
+        let vault = register_dummy_contract(&env);
+        let custodian = register_dummy_contract(&env);
+        let asset = register_dummy_contract(&env);
+
+        for invalid_asset in [&admin, &vault, &custodian] {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                env.register(
+                    CustodialAdapterContract,
+                    (&admin, &vault, &custodian, invalid_asset),
+                );
+            }));
+            assert!(result.is_err());
+        }
+
+        env.register(
+            CustodialAdapterContract,
+            (&admin, &vault, &custodian, &asset),
+        );
     }
 
     #[test]
@@ -900,15 +1043,7 @@ mod tests {
         let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
         let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
         asset_admin.mint(&contract_id, &500);
-        env.as_contract(&contract_id, || {
-            CustodialAdapterContract::set_reported_assets(
-                env.clone(),
-                vault.clone(),
-                asset.clone(),
-                500,
-            )
-            .unwrap();
-        });
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 500);
 
         let args: soroban_sdk::Vec<soroban_sdk::Val> = (&vault, &asset, &300i128).into_val(&env);
         env.mock_auths(&[MockAuth {
@@ -942,15 +1077,7 @@ mod tests {
         env.mock_all_auths();
         let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
 
-        env.as_contract(&contract_id, || {
-            CustodialAdapterContract::set_reported_assets(
-                env.clone(),
-                vault.clone(),
-                asset.clone(),
-                1_000,
-            )
-            .unwrap();
-        });
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 1_000);
         env.as_contract(&contract_id, || {
             let result =
                 CustodialAdapterContract::progress_withdrawal(env.clone(), vault, asset, 100);
@@ -966,15 +1093,7 @@ mod tests {
         let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
         asset_admin.mint(&contract_id, &1_000);
 
-        env.as_contract(&contract_id, || {
-            CustodialAdapterContract::set_reported_assets(
-                env.clone(),
-                vault.clone(),
-                asset.clone(),
-                250,
-            )
-            .unwrap();
-        });
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 250);
         env.as_contract(&contract_id, || {
             let actual = CustodialAdapterContract::progress_withdrawal(
                 env.clone(),
@@ -1005,16 +1124,39 @@ mod tests {
                     env.clone(),
                     impostor,
                     asset.clone(),
+                    0,
+                    1,
                     1
                 ),
                 Err(AdapterError::Unauthorized)
             );
-            CustodialAdapterContract::set_reported_assets(env.clone(), admin, asset.clone(), 9)
-                .unwrap();
-            CustodialAdapterContract::set_reported_assets(env.clone(), vault, asset.clone(), 7)
-                .unwrap();
-            CustodialAdapterContract::set_reported_assets(env.clone(), custodian, asset.clone(), 5)
-                .unwrap();
+            CustodialAdapterContract::set_reported_assets(
+                env.clone(),
+                admin,
+                asset.clone(),
+                0,
+                9,
+                1,
+            )
+            .unwrap();
+            CustodialAdapterContract::set_reported_assets(
+                env.clone(),
+                vault,
+                asset.clone(),
+                9,
+                7,
+                2,
+            )
+            .unwrap();
+            CustodialAdapterContract::set_reported_assets(
+                env.clone(),
+                custodian,
+                asset.clone(),
+                7,
+                5,
+                3,
+            )
+            .unwrap();
             assert_eq!(
                 CustodialAdapterContract::total_assets(env.clone(), asset.clone()),
                 5
@@ -1061,7 +1203,7 @@ mod tests {
         });
         env.as_contract(&contract_id, || {
             assert_eq!(
-                CustodialAdapterContract::set_reported_assets(env.clone(), vault, asset, -1),
+                CustodialAdapterContract::set_reported_assets(env.clone(), vault, asset, 0, -1, 1),
                 Err(AdapterError::InvalidInput)
             );
         });
@@ -1104,6 +1246,8 @@ mod tests {
                     env.clone(),
                     Address::generate(&env),
                     asset.clone(),
+                    100,
+                    1,
                     1
                 ),
                 Err(AdapterError::Unauthorized)
@@ -1129,7 +1273,9 @@ mod tests {
                     env.clone(),
                     vault.clone(),
                     asset.clone(),
-                    -1
+                    100,
+                    -1,
+                    2
                 ),
                 Err(AdapterError::InvalidInput)
             );
@@ -1151,7 +1297,9 @@ mod tests {
                     env.clone(),
                     vault.clone(),
                     asset.clone(),
-                    1
+                    100,
+                    1,
+                    2
                 ),
                 Err(AdapterError::Paused)
             );
@@ -1235,7 +1383,9 @@ mod tests {
                         env.clone(),
                         vault.clone(),
                         unsupported.clone(),
-                        200
+                        0,
+                        200,
+                        1,
                     ),
                     Err(AdapterError::InvalidInput)
                 );
@@ -1313,6 +1463,31 @@ mod tests {
     }
 
     #[test]
+    fn fee_on_transfer_asset_is_rejected_without_accounting_change() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = account_address(&env);
+        let vault = register_dummy_contract(&env);
+        let custodian = Address::generate(&env);
+        let asset = register_fee_token(&env);
+        let contract_id = setup_adapter_with(&env, &admin, &vault, &custodian, &asset);
+
+        env.as_contract(&asset, || {
+            FeeToken::mint(env.clone(), contract_id.clone(), 100);
+        });
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::supply(env.clone(), vault, asset.clone(), 40),
+                Err(AdapterError::InvalidInput)
+            );
+            assert_eq!(
+                CustodialAdapterContract::total_assets(env.clone(), asset.clone()),
+                0
+            );
+        });
+    }
+
+    #[test]
     fn total_assets_is_reported_nav_not_idle_balance() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1342,7 +1517,7 @@ mod tests {
     fn pause_blocks_new_exposure_but_allows_returned_liquidity_settlement() {
         let env = Env::default();
         env.mock_all_auths();
-        let (contract_id, admin, vault, _custodian, asset) = setup_adapter(&env);
+        let (contract_id, admin, vault, custodian, asset) = setup_adapter(&env);
         let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
         asset_admin.mint(&contract_id, &50);
         set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 50);
@@ -1359,7 +1534,20 @@ mod tests {
                     env.clone(),
                     vault.clone(),
                     asset.clone(),
-                    60
+                    50,
+                    60,
+                    2,
+                ),
+                Err(AdapterError::Paused)
+            );
+            assert_eq!(
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    custodian.clone(),
+                    asset.clone(),
+                    50,
+                    60,
+                    2,
                 ),
                 Err(AdapterError::Paused)
             );
@@ -1389,10 +1577,84 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             assert_eq!(
-                CustodialAdapterContract::set_reported_assets(env.clone(), vault, asset, 30),
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    20,
+                    30,
+                    2,
+                ),
                 Err(AdapterError::Paused)
             );
         });
+        set_reported_assets_for(&env, &contract_id, admin, asset.clone(), 30);
+        assert_eq!(reported_assets(&env, &contract_id, &asset), 30);
+    }
+
+    #[test]
+    fn stale_or_replayed_absolute_reports_are_rejected_after_withdrawal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
+        let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
+        asset_admin.mint(&contract_id, &400);
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 1_000);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 1);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::progress_withdrawal(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    400,
+                )
+                .unwrap(),
+                400
+            );
+        });
+        assert_eq!(reported_assets(&env, &contract_id, &asset), 600);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    1_000,
+                    1_000,
+                    2,
+                ),
+                Err(AdapterError::InvalidInput)
+            );
+        });
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    600,
+                    650,
+                    1,
+                ),
+                Err(AdapterError::InvalidInput)
+            );
+        });
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::set_reported_assets(
+                env.clone(),
+                vault.clone(),
+                asset.clone(),
+                600,
+                650,
+                2,
+            )
+            .unwrap();
+        });
+        assert_eq!(reported_assets(&env, &contract_id, &asset), 650);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 2);
     }
 
     #[test]
@@ -1466,6 +1728,8 @@ mod tests {
                     env.clone(),
                     Address::generate(&env),
                     asset.clone(),
+                    0,
+                    1,
                     1
                 ),
                 Err(AdapterError::Unauthorized)

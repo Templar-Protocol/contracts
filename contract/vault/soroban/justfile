@@ -634,11 +634,13 @@ custodial-adapter-total-assets asset_address:
 
 # Set reported assets for an offchain-managed position.
 # caller must be the configured admin, vault, or custodian and must authorize the call.
-custodial-adapter-set-reported-assets caller asset_address amount:
+custodial-adapter-set-reported-assets caller asset_address expected_current amount report_nonce:
 	@just custodial-invoke set_reported_assets \
 		--caller "{{caller}}" \
 		--asset "{{asset_address}}" \
-		--amount "{{amount}}"
+		--expected_current "{{expected_current}}" \
+		--amount "{{amount}}" \
+		--report_nonce "{{report_nonce}}"
 
 # Show custodial adapter status.
 custodial-adapter-status:
@@ -1313,7 +1315,7 @@ help:
 	@echo "  just deploy-custodial-adapter <custodian>  Deploy adapter for offchain custody route"
 	@echo "  just custodial-adapter-status              Show adapter status"
 	@echo "  just custodial-adapter-total-assets <asset>  Query reported position"
-	@echo "  just custodial-adapter-set-reported-assets <caller> <asset> <amount>"
+	@echo "  just custodial-adapter-set-reported-assets <caller> <asset> <expected_current> <amount> <report_nonce>"
 	@echo ""
 	@echo "DEPOSITS:"
 	@echo "  just deposit <owner> <receiver> <assets> [min_shares]"

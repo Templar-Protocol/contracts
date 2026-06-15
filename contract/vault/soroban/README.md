@@ -304,7 +304,8 @@ unwinding, and returning liquidity to the adapter.
 Withdrawal settlement is deliberately narrow: `progress_withdrawal` only releases assets already
 returned to the adapter on Stellar. It does not initiate or prove a market exit. The adapter's
 `total_assets(asset)` value is explicit reported accounting, updated by vault allocation flow or by
-`set_reported_assets(caller, asset, amount)` from the configured admin, vault, or custodian.
+`set_reported_assets(caller, asset, expected_current, amount, report_nonce)` from the configured
+admin, vault, or custodian.
 Returned idle balances are not auto-counted as NAV because the adapter cannot prove their offchain
 source.
 
@@ -314,7 +315,7 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 - `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
-- `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <RAW_AMOUNT>`
+- `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
 
 After deployment, allow-list the adapter and configure the vault supply queue through governance
 before allocation. Treat the custodian and its offchain operating process as part of the vault's
