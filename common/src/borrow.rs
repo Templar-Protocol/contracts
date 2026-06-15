@@ -1049,4 +1049,50 @@ mod tests {
             CollateralAssetAmount::new(1_000_000_000_000_000_000_000_000)
         );
     }
+
+    // Backstop for `fuzz_borrow_overflow`: that target asserts correctness up
+    // to the boundary but cannot observe the abort itself (libfuzzer-sys
+    // aborts on panics before catch_unwind sees them). The contract's safety
+    // property — overflow on principal + in_flight aborts — is asserted here.
+    #[test]
+    #[should_panic(expected = "attempt to add with overflow")]
+    fn liability_overflow_aborts_on_principal_plus_in_flight() {
+        let mut position = BorrowPosition::new(0);
+        position.borrow_asset_principal = BorrowAssetAmount::new(u128::MAX);
+        position.borrow_asset_in_flight = BorrowAssetAmount::new(1);
+        let _ = position.get_total_borrow_asset_liability();
+    }
+
+    // Backstop for `fuzz_liquidations` (ENG-342). That target predicts and
+    // skips the `1 < cr < mcr` band when `mcr * (1 - spread) <= 1`, because the
+    // denominator `mcr * discount - 1` underflows there and libfuzzer-sys can't
+    // distinguish that abort from a real crash. The abort — the actual symptom
+    // of the tracked bug — is asserted here so the suppressed region is still
+    // pinned down. (`Decimal`'s U512 subtraction underflow panics with
+    // "arithmetic operation overflow", unlike a std-integer add.)
+    #[test]
+    #[should_panic(expected = "arithmetic operation overflow")]
+    fn liquidatable_collateral_denominator_underflow_aborts() {
+        use templar_primitives::dec;
+
+        use crate::oracle::pyth::PythTimestamp;
+
+        // Equal prices/decimals ⇒ cr is the pure amount ratio. collateral=102,
+        // liability=100 ⇒ cr=1.02, inside (1, mcr=1.05). With spread=0.1,
+        // discount=0.9 and mcr*discount=0.945 <= 1, so `mcr*discount - 1`
+        // underflows on unsigned `Decimal` subtraction.
+        let price = pyth::Price {
+            price: 1.into(),
+            conf: 0.into(),
+            expo: 0,
+            publish_time: PythTimestamp::from_secs(0),
+        };
+        let price_pair = PricePair::new(&price, 0, &price, 0).unwrap();
+
+        let mut position = BorrowPosition::new(0);
+        position.collateral_asset_deposit = CollateralAssetAmount::new(102);
+        position.borrow_asset_principal = BorrowAssetAmount::new(100);
+
+        let _ = position.liquidatable_collateral(&price_pair, dec!("1.05"), dec!("0.1"));
+    }
 }

@@ -1,0 +1,242 @@
+name: Fuzz
+
+on:
+  schedule:
+    # 03:00 UTC nightly. Runs against whatever's on `dev` at that time.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: "Seconds to fuzz each target (override)"
+        required: false
+        default: "300"
+      targets:
+        description: "Space-separated target names (empty = all)"
+        required: false
+        default: ""
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  list-targets:
+    name: List targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz
+        # Prebuilt binary (seconds) instead of `cargo install` (compiles from source).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - id: list
+        name: Build target matrix
+        working-directory: fuzz
+        env:
+          # Pass the dispatch input through the environment instead of
+          # interpolating it into the script, so shell-significant characters
+          # can't break parsing or inject commands.
+          REQUESTED_TARGETS: ${{ github.event.inputs.targets }}
+        run: |
+          # Default to every registered target; a manual run can restrict to a
+          # space-separated subset. Validate each requested token against the
+          # real target list so an unknown/crafted token can't reach the matrix.
+          requested="${REQUESTED_TARGETS:-}"
+          available="$(cargo +nightly fuzz list)"
+          if [[ -n "$requested" ]]; then
+            for target in $requested; do
+              grep -Fxq -- "$target" <<<"$available" || {
+                echo "Unknown fuzz target: $target" >&2
+                exit 1
+              }
+            done
+            targets="$requested"
+          else
+            targets="$available"
+          fi
+          json=$(printf '%s\n' $targets | jq -R . | jq -sc .)
+          echo "matrix=${json}" >> "$GITHUB_OUTPUT"
+          echo "Targets: ${json}"
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    needs: list-targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.list-targets.outputs.matrix) }}
+    env:
+      # 5 minutes per target on the nightly cadence. Override via workflow_dispatch.
+      DURATION_SECONDS: ${{ github.event.inputs.duration_seconds || '300' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        # Prebuilt binary (seconds) instead of `cargo install` (compiles from source).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # Cache the sanitizer build of the dependency tree + target dir so each
+      # nightly run doesn't recompile everything. Dedicated `shared-key` keeps it
+      # separate from the main test workflow's cache (fuzz builds use different,
+      # sanitizer RUSTFLAGS). Only the default branch writes the cache.
+      - name: Cache fuzz build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: "fuzz"
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+
+      # Persist the per-target corpus across nightly runs so coverage grows
+      # over time. Keyed on (target, ref). Restore-only fallback to any
+      # branch's corpus for the same target (helps PR branches inherit dev's
+      # corpus when triggered manually).
+      - name: Restore corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-
+            fuzz-corpus-${{ matrix.target }}-dev-
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run fuzz target
+        id: fuzz
+        working-directory: fuzz
+        run: |
+          mkdir -p corpus/${{ matrix.target }} artifacts/${{ matrix.target }}
+          # Pass the committed seed corpus (seeds/<target>) as a read-only extra
+          # corpus when it exists. libFuzzer writes new units to the FIRST dir
+          # (corpus/, cached), so seeds/ never grows from a CI run.
+          seed_arg=()
+          [ -d "seeds/${{ matrix.target }}" ] && seed_arg=("seeds/${{ matrix.target }}")
+          # `-rss_limit_mb=2048` matches workflow runner memory; some targets
+          # decode untrusted bytes and could otherwise OOM the runner.
+          set +e
+          cargo +nightly fuzz run "${{ matrix.target }}" \
+            "corpus/${{ matrix.target }}" "${seed_arg[@]}" \
+            -- \
+            -max_total_time="${DURATION_SECONDS}" \
+            -rss_limit_mb=2048 \
+            -print_final_stats=1 \
+            2>&1 | tee fuzz-output.log
+          status=$?
+          set -e
+          echo "exit_status=${status}" >> "$GITHUB_OUTPUT"
+          if [[ "$status" -ne 0 ]]; then
+            echo "Fuzz target ${{ matrix.target }} found a crash (exit ${status})."
+            exit "$status"
+          fi
+
+      - name: Save updated corpus
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/fuzz-output.log
+          if-no-files-found: warn
+          # The crash input + full log. This artifact is the only copy of the
+          # reproducer (it is intentionally not embedded in the public issue),
+          # so keep a long retention for triage.
+          retention-days: 90
+
+      - name: Collect crash input
+        id: crash
+        if: failure() && github.event_name == 'schedule'
+        working-directory: fuzz
+        run: |
+          # libFuzzer writes the reproducer to artifacts/<target>/crash-*.
+          crash=$(ls -t "artifacts/${{ matrix.target }}"/crash-* 2>/dev/null | head -1 || true)
+          if [[ -z "$crash" ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          size=$(stat -c%s "$crash")
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$crash")" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          # Deliberately not embedded here; leave the reproducer to the
+          # artifact. Handle fuzz findings with care.
+
+      - name: Open issue on crash
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        env:
+          TARGET: ${{ matrix.target }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          CRASH_NAME: ${{ steps.crash.outputs.name }}
+          CRASH_SIZE: ${{ steps.crash.outputs.size }}
+        with:
+          script: |
+            const { TARGET, RUN_URL, SHA, CRASH_NAME, CRASH_SIZE } = process.env;
+            const title = `Fuzz crash: ${TARGET}`;
+
+            // Dedupe: skip if an open fuzz-crash issue with this title exists.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'fuzz-crash',
+              per_page: 100,
+            });
+            if (existing.data.some((i) => i.title === title)) {
+              core.info('Open fuzz-crash issue already exists for this target — skipping.');
+              return;
+            }
+
+            const lines = [
+              `Nightly fuzzing found a crash in **${TARGET}**.`,
+              ``,
+              `- Workflow run: ${RUN_URL}`,
+              `- Commit: \`${SHA}\``,
+              `- Crash input: \`${CRASH_NAME || 'unknown'}\`${CRASH_SIZE ? ` (${CRASH_SIZE} bytes)` : ''}`,
+              ``,
+            ];
+
+            lines.push(
+              `Handle fuzz findings with care until triaged.`,
+              ``,
+              `Download the \`fuzz-crash-${TARGET}\` artifact (90-day retention)`,
+              `from the run above, then reproduce:`,
+              ``,
+              '```bash',
+              `cargo +nightly fuzz run ${TARGET} <path-to-crash-input>`,
+              '```',
+              ``,
+              `When fixing, commit the (minimized) input as a regression seed in`,
+              `\`fuzz/seeds/${TARGET}/\` as part of the fix — see \`fuzz/seeds/README.md\`.`,
+            );
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['fuzz-crash', 'security'],
+              body: lines.join('\n'),
+            });

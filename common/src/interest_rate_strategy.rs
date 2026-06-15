@@ -262,6 +262,22 @@ mod tests {
         assert!(s.at(Decimal::ONE).near_equal(dec!("0.0915")));
     }
 
+    // Backstop for `fuzz_decimals` (ENG-341): the harness predicts and skips
+    // the `base > optimal*(rate_2 - rate_1)` region because `Piecewise::new`
+    // computes `optimal*(rate_2 - rate_1) - base` as an unsigned `Decimal` and
+    // underflows there — and libfuzzer-sys can't tell that abort from a real
+    // crash. The abort, the symptom of the tracked bug, is asserted here so the
+    // suppressed region stays pinned. (U512 underflow panics with "arithmetic
+    // operation overflow".)
+    #[test]
+    // Match only the stable "overflow" substring, not the full toolchain- /
+    // backend-specific panic text (U512 emits "arithmetic operation overflow").
+    #[should_panic(expected = "overflow")]
+    fn piecewise_new_underflows_when_base_exceeds_cross_term() {
+        // optimal*(rate_2 - rate_1) = 0.9*(0.1 - 0.0) = 0.09; base = 0.5 > 0.09.
+        let _ = Piecewise::new(dec!("0.5"), dec!("0.9"), dec!("0.0"), dec!("0.1"));
+    }
+
     #[test]
     fn exponential2() {
         let s = Exponential2::new(dec!("0.005"), dec!("0.08"), dec!("6")).unwrap();

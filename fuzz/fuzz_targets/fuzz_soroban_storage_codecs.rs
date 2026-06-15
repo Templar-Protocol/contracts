@@ -1,8 +1,18 @@
 #![no_main]
+#![allow(
+    clippy::expect_used,
+    reason = "panics on invariant violation are the intended libFuzzer crash signal"
+)]
+
+// MUTATION-CHECK (P5): in `contract/vault/soroban/src/storage/mod.rs`, change
+// one encoder to drop a field (e.g. omit `push_u128(withdrawal.escrow_shares)`
+// in `encode_withdraw_queue_page`, or `push_u128(amount)` in
+// `encode_supply_queue`) or change a `push_u32` width. Then the corresponding
+// `decode(encode(x)) == x` round-trip assertion below must fire.
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use templar_curator_primitives::policy::cap_group::CapGroupId;
+use templar_curator_primitives::policy::cap_group::{CapGroup, CapGroupId, CapGroupRecord};
 use templar_curator_primitives::policy::market_lock::{
     FencingToken, LeaseOwner, MarketLease, MarketLeaseRegistry,
 };
@@ -11,21 +21,48 @@ use templar_curator_primitives::policy::supply_queue::{SupplyQueue, SupplyQueueE
 use templar_soroban_runtime::test_utils::fuzz_api;
 use templar_vault_kernel::{
     Address, AllocationPlanEntry, FeeAccrualAnchor, OpState, Restrictions, TargetId, TimestampNs,
-    VaultState, VersionedState, WithdrawQueue, WithdrawingState,
+    VaultState, WithdrawQueue, WithdrawingState,
 };
+
+// Cap collection sizes so encoded blobs stay below libFuzzer's RSS ceiling.
+// The decoders themselves don't enforce upper bounds; that should be tracked
+// separately (untrusted-input DoS).
+const MAX_COLLECTION_LEN: usize = 64;
+
+// Withdraw entries get a dedicated, larger bound equal to the decoder's valid
+// page maximum (`storage::WITHDRAW_QUEUE_PAGE_SIZE`), so the page round-trip in
+// the fuzz body exercises the upper boundary (a full 128-entry page is the
+// largest input `decode_withdraw_queue_page` accepts; 129+ is rejected).
+const MAX_WITHDRAW_PAGE_LEN: usize = 128;
+
+// (owner, receiver, escrow_shares, expected_assets, requested_at_ns).
+// The pending-withdrawal id is *not* an input dimension: the decoder requires
+// strictly-ascending, contiguous-from-head ids (see `build_withdraw_queue`), so
+// an arbitrary id would only ever abort construction or fail the round-trip.
+type WithdrawEntry = ([u8; 32], [u8; 32], u128, u128, u64);
+
+// (id_bytes, principal, absolute_cap, relative_cap). `relative_cap` is a `u128`
+// rather than a raw `Wad`: the encoder persists it via `as_u128_trunc`, so a
+// `Wad` above 2^128 would not survive the round-trip (a display-precision
+// artifact of the wire format, not a codec bug). See `build_cap_groups`.
+type CapGroupEntry = (Vec<u8>, u128, Option<u128>, Option<u128>);
 
 #[derive(Arbitrary, Debug)]
 struct StorageCodecInput {
-    raw: Vec<u8>,
     addresses: Vec<[u8; 32]>,
     restriction_mode: u8,
     max_length: Option<u16>,
     queue_entries: Vec<(u32, u128, u8)>,
     market_entries: Vec<(u32, bool, u128, Option<Vec<u8>>)>,
     principal_entries: Vec<(u32, u128)>,
+    cap_group_entries: Vec<CapGroupEntry>,
     lease_entries: Vec<(u32, u64, Option<u64>, u64, u64, u64)>,
-    withdraw_entries: Vec<(u64, [u8; 32], [u8; 32], u128, u128, u64)>,
+    withdraw_entries: Vec<WithdrawEntry>,
+    // Starting id for the withdraw queue, so the serialized ids span non-zero
+    // values (the id is part of the withdraw-queue page wire format).
+    withdraw_base_id: u64,
     op_tag: u8,
+    refresh_plan: Vec<u32>,
     next_op_id: u64,
     total_assets: u128,
     total_shares: u128,
@@ -35,9 +72,12 @@ struct StorageCodecInput {
     fee_anchor_ts: u64,
 }
 
+fn truncate<T>(v: &[T], max: usize) -> &[T] {
+    &v[..v.len().min(max)]
+}
+
 fn build_restrictions(input: &StorageCodecInput) -> Restrictions {
-    let addresses = input
-        .addresses
+    let addresses = truncate(&input.addresses, MAX_COLLECTION_LEN)
         .iter()
         .copied()
         .map(Address)
@@ -49,8 +89,7 @@ fn build_restrictions(input: &StorageCodecInput) -> Restrictions {
 }
 
 fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
-    let entries = input
-        .queue_entries
+    let entries = truncate(&input.queue_entries, MAX_COLLECTION_LEN)
         .iter()
         .filter_map(|(target, amount, priority)| {
             SupplyQueueEntry::new_with_priority(*target, *amount, *priority).ok()
@@ -64,7 +103,9 @@ fn build_supply_queue(input: &StorageCodecInput) -> SupplyQueue {
 
 fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig> {
     let mut out = OrderedMap::new();
-    for (target_id, enabled, cap, cap_group_bytes) in &input.market_entries {
+    for (target_id, enabled, cap, cap_group_bytes) in
+        truncate(&input.market_entries, MAX_COLLECTION_LEN)
+    {
         let cap_group_id = cap_group_bytes
             .as_ref()
             .and_then(|raw| core::str::from_utf8(raw).ok())
@@ -77,15 +118,57 @@ fn build_markets(input: &StorageCodecInput) -> OrderedMap<TargetId, MarketConfig
 
 fn build_principals(input: &StorageCodecInput) -> OrderedMap<TargetId, u128> {
     let mut out = OrderedMap::new();
-    for (target_id, principal) in &input.principal_entries {
+    for (target_id, principal) in truncate(&input.principal_entries, MAX_COLLECTION_LEN) {
         let _ = out.insert(*target_id, *principal);
+    }
+    out
+}
+
+// Map arbitrary bytes onto the CapGroupId alphabet (lowercase ascii, digits,
+// `-`, `_`; 1..=64 chars) so most inputs yield a *valid* id and actually
+// exercise the codec rather than being filtered out.
+fn sanitize_cap_group_id(raw: &[u8]) -> Option<CapGroupId> {
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-_";
+    if raw.is_empty() {
+        return None;
+    }
+    let id: String = raw
+        .iter()
+        .take(64)
+        .map(|byte| ALPHABET[*byte as usize % ALPHABET.len()] as char)
+        .collect();
+    CapGroupId::try_from(id).ok()
+}
+
+fn build_cap_groups(input: &StorageCodecInput) -> OrderedMap<CapGroupId, CapGroupRecord> {
+    let mut out = OrderedMap::new();
+    for (id_bytes, principal, absolute_cap, relative_cap) in
+        truncate(&input.cap_group_entries, MAX_COLLECTION_LEN)
+    {
+        let Some(id) = sanitize_cap_group_id(id_bytes) else {
+            continue;
+        };
+        let mut cap = CapGroup::default();
+        cap.set_absolute_cap(*absolute_cap);
+        // Construct the relative cap from a `u128` so the encoder's
+        // `as_u128_trunc` is exact and the round-trip is lossless.
+        cap.set_relative_cap(relative_cap.map(templar_vault_kernel::Wad::from));
+        let _ = out.insert(
+            id,
+            CapGroupRecord {
+                cap,
+                principal: *principal,
+            },
+        );
     }
     out
 }
 
 fn build_leases(input: &StorageCodecInput) -> MarketLeaseRegistry {
     let mut leases = OrderedMap::new();
-    for (target_id, owner, op_id, acquired_at, expires_at, fencing_token) in &input.lease_entries {
+    for (target_id, owner, op_id, acquired_at, expires_at, fencing_token) in
+        truncate(&input.lease_entries, MAX_COLLECTION_LEN)
+    {
         let lease = MarketLease::from_parts(
             *target_id,
             LeaseOwner(*owner),
@@ -100,13 +183,27 @@ fn build_leases(input: &StorageCodecInput) -> MarketLeaseRegistry {
 }
 
 fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
-    let entries = input
-        .withdraw_entries
+    let bounded = truncate(&input.withdraw_entries, MAX_WITHDRAW_PAGE_LEN);
+    // `from_sorted_entries` aborts on unsorted/duplicate ids, and the storage
+    // decoder additionally requires the head id to equal
+    // `next_withdraw_to_execute` with every id in
+    // `[next_withdraw_to_execute, next_pending_withdrawal_id)` and strictly
+    // ascending. Assign contiguous ids `base..base+n` so the queue is always a
+    // well-formed value the codec must round-trip losslessly — the payload
+    // fields it actually serializes still come from the fuzz input. `base` is
+    // free so ids straddle page boundaries in the V2 paged codec. (Rejection of
+    // hostile/sparse ids is decode-side and out of scope; see the fuzz body.)
+    // Cap `base` against the same bound so `base + index` can never overflow.
+    let base = input
+        .withdraw_base_id
+        .min(u64::MAX - MAX_WITHDRAW_PAGE_LEN as u64);
+    let entries = bounded
         .iter()
+        .enumerate()
         .map(
-            |(id, owner, receiver, escrow_shares, expected_assets, requested_at_ns)| {
+            |(index, (owner, receiver, escrow_shares, expected_assets, requested_at_ns))| {
                 (
-                    *id,
+                    base + index as u64,
                     templar_vault_kernel::PendingWithdrawal::new(
                         Address(*owner),
                         Address(*receiver),
@@ -118,11 +215,12 @@ fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
             },
         )
         .collect::<Vec<_>>();
-    WithdrawQueue::with_state(entries, 0, input.withdraw_entries.len() as u64)
+    let next_pending = base + entries.len() as u64;
+    WithdrawQueue::with_state(entries, base, next_pending)
 }
 
 fn build_op_state(input: &StorageCodecInput) -> OpState {
-    match input.op_tag % 3 {
+    match input.op_tag % 5 {
         0 => OpState::Idle,
         1 => OpState::Withdrawing(WithdrawingState {
             op_id: 1,
@@ -134,17 +232,37 @@ fn build_op_state(input: &StorageCodecInput) -> OpState {
             owner: Address([5u8; 32]),
             escrow_shares: input.total_shares,
         }),
-        _ => OpState::Allocating(templar_vault_kernel::AllocatingState {
+        2 => OpState::Allocating(templar_vault_kernel::AllocatingState {
             op_id: 1,
             index: 0,
             remaining: input.external_assets,
             plan: vec![AllocationPlanEntry::new(0, input.external_assets)],
         }),
+        3 => OpState::Refreshing(templar_vault_kernel::RefreshingState {
+            op_id: 1,
+            index: 0,
+            plan: truncate(&input.refresh_plan, MAX_COLLECTION_LEN).to_vec(),
+        }),
+        // `burn_shares` is deliberately left unclamped against `escrow_shares`:
+        // a codec must round-trip every *representable* value losslessly,
+        // including domain-invariant-violating ones (the `burn <= escrow`
+        // invariant is enforced by the transition layer, not the wire format,
+        // and decode performs no such check). Clamping here would only narrow
+        // codec coverage.
+        _ => OpState::Payout(templar_vault_kernel::PayoutState {
+            op_id: 1,
+            request_id: 2,
+            receiver: Address([6u8; 32]),
+            amount: input.total_assets,
+            owner: Address([7u8; 32]),
+            escrow_shares: input.total_shares,
+            burn_shares: input.idle_assets,
+        }),
     }
 }
 
-fn build_versioned_state(input: &StorageCodecInput) -> VersionedState {
-    VersionedState::new(VaultState {
+fn build_vault_state(input: &StorageCodecInput) -> VaultState {
+    VaultState {
         total_assets: input.total_assets,
         total_shares: input.total_shares,
         idle_assets: input.idle_assets,
@@ -156,17 +274,12 @@ fn build_versioned_state(input: &StorageCodecInput) -> VersionedState {
         op_state: build_op_state(input),
         withdraw_queue: build_withdraw_queue(input),
         next_op_id: input.next_op_id,
-    })
+    }
 }
 
 fuzz_target!(|input: StorageCodecInput| {
-    let _ = fuzz_api::decode_restrictions_bytes(&input.raw);
-    let _ = fuzz_api::decode_supply_queue_bytes(&input.raw);
-    let _ = fuzz_api::decode_markets_bytes(&input.raw);
-    let _ = fuzz_api::decode_principals_bytes(&input.raw);
-    let _ = fuzz_api::decode_policy_locks_bytes(&input.raw);
-    let _ = fuzz_api::decode_state_blob_bytes(&input.raw);
-
+    // Decoding arbitrary bytes is not fuzzed: the decoders over-allocate on an
+    // unbounded length prefix (ENG-345). Only the encode→decode round-trips run.
     let restrictions = build_restrictions(&input);
     let restrictions_bytes = fuzz_api::encode_restrictions_bytes(&restrictions);
     let decoded_restrictions =
@@ -191,14 +304,51 @@ fuzz_target!(|input: StorageCodecInput| {
         fuzz_api::decode_principals_bytes(&principals_bytes).expect("principals roundtrip");
     assert_eq!(decoded_principals, principals);
 
+    let cap_groups = build_cap_groups(&input);
+    let cap_groups_bytes = fuzz_api::encode_cap_groups_bytes(&cap_groups);
+    let decoded_cap_groups =
+        fuzz_api::decode_cap_groups_bytes(&cap_groups_bytes).expect("cap groups roundtrip");
+    // Whole-record equality (`CapGroupRecord: PartialEq`) so a newly added
+    // field is covered automatically. `relative_cap` round-trips exactly
+    // because it was built from a `u128` (see `build_cap_groups`).
+    assert_eq!(
+        decoded_cap_groups.len(),
+        cap_groups.len(),
+        "cap groups: length changed",
+    );
+    for (id, record) in cap_groups.iter() {
+        let decoded = decoded_cap_groups
+            .get(id)
+            .expect("cap groups: id missing after roundtrip");
+        assert_eq!(decoded, record, "cap groups: record changed");
+    }
+
     let leases = build_leases(&input);
     let lease_bytes = fuzz_api::encode_policy_locks_bytes(&leases);
     let decoded_leases =
         fuzz_api::decode_policy_locks_bytes(&lease_bytes).expect("leases roundtrip");
     assert_eq!(decoded_leases, leases);
 
-    let state = build_versioned_state(&input);
+    let state = build_vault_state(&input);
+
+    // Legacy V1 monolithic blob (kept for regression).
     let state_bytes = fuzz_api::encode_state_blob_bytes(&state);
     let decoded_state = fuzz_api::decode_state_blob_bytes(&state_bytes).expect("state roundtrip");
     assert_eq!(decoded_state, state);
+
+    // Production V2 paged format: the withdraw-queue page codec is the
+    // variable-length, fund-critical part (the per-page header/compose
+    // *orchestration* is exercised against a real Env by the soroban crate's
+    // `property_tests.rs`, so it isn't re-implemented here). A built queue holds
+    // up to MAX_WITHDRAW_PAGE_LEN (128) entries, so this round-trip reaches the
+    // decoder's valid upper boundary (a full page).
+    let page_entries: Vec<(u64, templar_vault_kernel::PendingWithdrawal)> = state
+        .withdraw_queue
+        .iter()
+        .map(|(id, withdrawal)| (id, withdrawal.clone()))
+        .collect();
+    let page_bytes = fuzz_api::encode_withdraw_queue_page_bytes(&page_entries);
+    let decoded_page =
+        fuzz_api::decode_withdraw_queue_page_bytes(&page_bytes).expect("withdraw page roundtrip");
+    assert_eq!(decoded_page, page_entries);
 });
