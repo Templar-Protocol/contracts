@@ -14,6 +14,9 @@ doctest = false
 default = []
 testutils = ["soroban-sdk/testutils"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
 soroban-sdk = { version = "25.3.0", features = ["experimental_spec_shaking_v2", "hazmat-address"] }
 stellar-contract-utils.workspace = true
