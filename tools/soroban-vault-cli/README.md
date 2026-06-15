@@ -64,7 +64,9 @@ as `blend_adapter_0`, `blend_adapter_1`, and so on. On an existing deployment, n
 appended and pools already present in the manifest are left unchanged unless `--force-new` is set.
 Pass `--custodian` once per custodian or multisig address to deploy custodial adapters in the same
 flow. The manifest stores these as `custodial_adapter_0`, `custodial_adapter_1`, and so on, with
-the `admin`, `vault`, and `custodian` constructor args recorded for reconciliation and status.
+the `admin`, `vault`, `custodian`, and bound `asset` constructor args recorded for reconciliation
+and status. Custodial adapters are single-asset; `deploy adapters --custodian ...` requires
+`asset_token` in the manifest or `--asset-token`.
 
 ```sh
 tmplr-soroban-vault deploy stack \
@@ -352,8 +354,9 @@ stellar contract invoke \
 ```
 
 For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
-then allow the deployed adapter and add it to the supply queue before allocating to it. The
-custodian, adapter admin, or vault can explicitly report market NAV on the adapter:
+then allow the deployed adapter and add it to the supply queue before allocating to it. Each
+custodial adapter is bound to the manifest asset token at deployment and rejects calls for any
+other asset. The custodian, adapter admin, or vault can explicitly report route NAV on the adapter:
 
 ```sh
 stellar contract invoke \
@@ -533,8 +536,8 @@ tmplr-soroban-vault export-env
 `export-env` emits `BLEND_ADAPTER_ID` for the first adapter for compatibility, plus indexed
 `BLEND_ADAPTER_0_ID`, `BLEND_ADAPTER_1_ID`, and matching `BLEND_POOL_0_ID` values when pool
 constructor args are known. Custodial adapters use the same pattern with `CUSTODIAL_ADAPTER_ID`,
-`CUSTODIAL_ADAPTER_0_ID`, and matching `CUSTODIAL_ADDRESS` / `CUSTODIAL_0_ADDRESS` values when
-constructor args are known.
+`CUSTODIAL_ADAPTER_0_ID`, matching `CUSTODIAL_ADDRESS` / `CUSTODIAL_0_ADDRESS`, and
+`CUSTODIAL_0_ASSET` values when constructor args are known.
 
 `extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
 `extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter

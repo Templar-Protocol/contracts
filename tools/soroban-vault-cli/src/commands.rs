@@ -848,6 +848,7 @@ fn deploy_stack<E: CommandExecutor>(
                 &wasm_hashes["custodial_adapter"],
                 &governance,
                 &vault,
+                &asset_token,
                 &args.custodians,
                 args.force_new,
             )
@@ -1230,6 +1231,12 @@ fn verify_component_wiring<E: CommandExecutor>(
                 "vault",
                 contract_id(manifest, "vault"),
             )?);
+            checks.push(view_equals_check(
+                stellar,
+                &record.contract_id,
+                "asset",
+                contract_id(manifest, "asset_token"),
+            )?);
             if let Some(custodian) = record.constructor_args.get("custodian") {
                 checks.push(view_equals_check(
                     stellar,
@@ -1319,6 +1326,11 @@ fn deploy_adapters<E: CommandExecutor>(
 
     let vault = required_contract(manifest, "vault")?.to_string();
     let governance = required_contract(manifest, "governance")?.to_string();
+    let asset_token = if args.custodians.is_empty() {
+        contract_id(manifest, "asset_token").map(ToString::to_string)
+    } else {
+        Some(required_contract(manifest, "asset_token")?.to_string())
+    };
     let blend_adapters = if args.blend_pools.is_empty() {
         blend_adapter_statuses(manifest)
     } else {
@@ -1359,6 +1371,9 @@ fn deploy_adapters<E: CommandExecutor>(
             &wasm_hash,
             &governance,
             &vault,
+            asset_token
+                .as_deref()
+                .context("custodial adapters require asset_token in manifest or --asset-token")?,
             &args.custodians,
             args.force_new,
         )?
@@ -1369,7 +1384,7 @@ fn deploy_adapters<E: CommandExecutor>(
         vault: Some(vault),
         share_token: contract_id(manifest, "share_token").map(ToString::to_string),
         governance: Some(governance),
-        asset_token: contract_id(manifest, "asset_token").map(ToString::to_string),
+        asset_token,
         proxy_4626: contract_id(manifest, "proxy_4626").map(ToString::to_string),
         curator_proxy: contract_id(manifest, "curator_proxy").map(ToString::to_string),
         blend_adapters,
@@ -1486,7 +1501,7 @@ fn deploy_stack_plan(
                 "record new custodial adapter for custodian {custodian}"
             ));
             plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian>",
+                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian> --asset <asset_token>",
                 true,
             ));
         }
@@ -1538,6 +1553,11 @@ fn deploy_adapters_plan(
             plan.warnings.push(format!(
                 "{key} is missing from manifest and must be passed for deploy adapters"
             ));
+        } else if !args.custodians.is_empty() {
+            plan.warnings.push(
+                "asset_token is missing from manifest and must be passed for custodial adapters"
+                    .to_string(),
+            );
         }
     }
 
@@ -1580,7 +1600,7 @@ fn deploy_adapters_plan(
                 "record new custodial adapter for custodian {custodian}"
             ));
             plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian>",
+                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian> --asset <asset_token>",
                 true,
             ));
         }
@@ -1771,6 +1791,7 @@ fn append_custodial_adapters<E: CommandExecutor>(
     wasm_hash: &str,
     governance: &str,
     vault: &str,
+    asset_token: &str,
     custodians: &[AddressStr],
     force_new: bool,
 ) -> anyhow::Result<Vec<CustodialAdapterStatus>> {
@@ -1792,11 +1813,14 @@ fn append_custodial_adapters<E: CommandExecutor>(
                 vault.to_string(),
                 "--custodian".to_string(),
                 custodian.to_string(),
+                "--asset".to_string(),
+                asset_token.to_string(),
             ],
             map_args([
                 ("admin", governance),
                 ("vault", vault),
                 ("custodian", custodian.as_str()),
+                ("asset", asset_token),
             ]),
             force_new,
         )?;
@@ -3626,6 +3650,7 @@ fn custodial_adapter_statuses(manifest: &Manifest) -> Vec<CustodialAdapterStatus
                     key: key.clone(),
                     contract_id: record.contract_id.clone(),
                     custodian: record.constructor_args.get("custodian").cloned(),
+                    asset: record.constructor_args.get("asset").cloned(),
                 },
             ))
         })
@@ -3641,6 +3666,7 @@ fn custodial_adapter_statuses(manifest: &Manifest) -> Vec<CustodialAdapterStatus
                 key: "custodial_adapter".to_string(),
                 contract_id: record.contract_id.clone(),
                 custodian: record.constructor_args.get("custodian").cloned(),
+                asset: record.constructor_args.get("asset").cloned(),
             });
         }
     }
@@ -3689,6 +3715,9 @@ fn export_env(manifest: &Manifest) -> Vec<(String, String)> {
                 values.push(("CUSTODIAL_ADDRESS".to_string(), custodian.clone()));
             }
             values.push((format!("CUSTODIAL_{index}_ADDRESS"), custodian));
+        }
+        if let Some(asset) = adapter.asset {
+            values.push((format!("CUSTODIAL_{index}_ASSET"), asset));
         }
     }
     values
@@ -3744,7 +3773,7 @@ fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
             } else {
                 for adapter in &status.custodial_adapters {
                     println!(
-                        "Custodial Adapter {}: {}{}",
+                        "Custodial Adapter {}: {}{}{}",
                         adapter.key,
                         adapter.contract_id,
                         adapter
@@ -3752,7 +3781,11 @@ fn print_response(response: &Response, cli: &Cli) -> anyhow::Result<()> {
                             .as_ref()
                             .map_or_else(String::new, |custodian| {
                                 format!(" (custodian {custodian})")
-                            })
+                            }),
+                        adapter
+                            .asset
+                            .as_ref()
+                            .map_or_else(String::new, |asset| format!(" (asset {asset})"))
                     );
                 }
             }
@@ -4179,6 +4212,7 @@ struct CustodialAdapterStatus {
     key: String,
     contract_id: String,
     custodian: Option<String>,
+    asset: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -4998,11 +5032,19 @@ mod tests {
             adapter.constructor_args.get("admin").map(String::as_str),
             Some(CONTRACT)
         );
-        let adapter_deploys = submitted_calls(&executor.calls())
+        assert_eq!(
+            adapter.constructor_args.get("asset").map(String::as_str),
+            Some(CONTRACT)
+        );
+        let calls = submitted_calls(&executor.calls());
+        let adapter_deploys = calls
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--custodian"))
             .count();
         assert_eq!(adapter_deploys, 1);
+        assert!(calls.iter().any(|(_, args)| args
+            .windows(2)
+            .any(|window| window[0] == "--asset" && window[1] == CONTRACT)));
     }
 
     #[test]
@@ -5451,6 +5493,19 @@ mod tests {
                 .map(String::as_str),
             Some(ACCOUNT)
         );
+        assert_eq!(
+            loaded
+                .contracts
+                .get("custodial_adapter_0")
+                .expect("custodial adapter")
+                .constructor_args
+                .get("asset")
+                .map(String::as_str),
+            Some(CONTRACT)
+        );
+        assert!(calls.iter().any(|(_, args)| args
+            .windows(2)
+            .any(|window| window[0] == "--asset" && window[1] == CONTRACT)));
     }
 
     #[test]
