@@ -28,15 +28,14 @@
     reason = "panics on invariant violation are the intended libFuzzer crash signal"
 )]
 
-use std::str::FromStr;
-
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use near_sdk::{serde_json, AccountId};
+use near_sdk::serde_json;
 use templar_common::{
     asset::CollateralAssetAmount,
     market::{DepositMsg, LiquidateMsg, RepayAccountMsg},
 };
+use templar_fuzz::ArbitraryAccountId;
 
 #[derive(Arbitrary, Debug)]
 struct Input<'a> {
@@ -44,23 +43,12 @@ struct Input<'a> {
     raw: &'a [u8],
     /// Selects which `DepositMsg` variant to build for the round-trip (oracle 2).
     variant: u8,
-    /// Account-name bytes for the variants that carry an `AccountId`.
-    account: &'a [u8],
+    /// The `AccountId` for variants that carry one — spans all four NEAR account
+    /// categories (implicit / named / eth-like / deterministic) so the
+    /// round-trip exercises the distinct validation paths.
+    account: ArbitraryAccountId,
     /// `Some` amount for `Liquidate`, or whole-position liquidation when `None`.
     amount: Option<u128>,
-}
-
-/// Build a valid NEAR `AccountId` from arbitrary bytes, or `None`.
-fn account_id_from(bytes: &[u8]) -> Option<AccountId> {
-    let name: String = String::from_utf8_lossy(bytes)
-        .chars()
-        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-' || *c == '_')
-        .take(48)
-        .collect();
-    if name.is_empty() {
-        return None;
-    }
-    AccountId::from_str(&format!("{name}.near")).ok()
 }
 
 fuzz_target!(|input: Input| {
@@ -74,11 +62,11 @@ fuzz_target!(|input: Input| {
         0 => DepositMsg::Supply,
         1 => DepositMsg::Collateralize,
         2 => DepositMsg::Repay,
-        3 => match account_id_from(input.account) {
+        3 => match input.account.into_account_id() {
             Some(account_id) => DepositMsg::RepayAccount(RepayAccountMsg { account_id }),
             None => return,
         },
-        _ => match account_id_from(input.account) {
+        _ => match input.account.into_account_id() {
             Some(account_id) => DepositMsg::Liquidate(LiquidateMsg {
                 account_id,
                 amount: input.amount.map(CollateralAssetAmount::new),

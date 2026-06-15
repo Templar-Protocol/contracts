@@ -29,6 +29,12 @@ use templar_vault_kernel::{
 // separately (untrusted-input DoS).
 const MAX_COLLECTION_LEN: usize = 64;
 
+// Withdraw entries get a dedicated, larger bound equal to the decoder's valid
+// page maximum (`storage::WITHDRAW_QUEUE_PAGE_SIZE`), so the page round-trip in
+// the fuzz body exercises the upper boundary (a full 128-entry page is the
+// largest input `decode_withdraw_queue_page` accepts; 129+ is rejected).
+const MAX_WITHDRAW_PAGE_LEN: usize = 128;
+
 // (owner, receiver, escrow_shares, expected_assets, requested_at_ns).
 // The pending-withdrawal id is *not* an input dimension: the decoder requires
 // strictly-ascending, contiguous-from-head ids (see `build_withdraw_queue`), so
@@ -177,7 +183,7 @@ fn build_leases(input: &StorageCodecInput) -> MarketLeaseRegistry {
 }
 
 fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
-    let bounded = truncate(&input.withdraw_entries, MAX_COLLECTION_LEN);
+    let bounded = truncate(&input.withdraw_entries, MAX_WITHDRAW_PAGE_LEN);
     // `from_sorted_entries` aborts on unsorted/duplicate ids, and the storage
     // decoder additionally requires the head id to equal
     // `next_withdraw_to_execute` with every id in
@@ -187,9 +193,10 @@ fn build_withdraw_queue(input: &StorageCodecInput) -> WithdrawQueue {
     // fields it actually serializes still come from the fuzz input. `base` is
     // free so ids straddle page boundaries in the V2 paged codec. (Rejection of
     // hostile/sparse ids is decode-side and out of scope; see the fuzz body.)
+    // Cap `base` against the same bound so `base + index` can never overflow.
     let base = input
         .withdraw_base_id
-        .min(u64::MAX - MAX_COLLECTION_LEN as u64);
+        .min(u64::MAX - MAX_WITHDRAW_PAGE_LEN as u64);
     let entries = bounded
         .iter()
         .enumerate()
@@ -236,6 +243,12 @@ fn build_op_state(input: &StorageCodecInput) -> OpState {
             index: 0,
             plan: truncate(&input.refresh_plan, MAX_COLLECTION_LEN).to_vec(),
         }),
+        // `burn_shares` is deliberately left unclamped against `escrow_shares`:
+        // a codec must round-trip every *representable* value losslessly,
+        // including domain-invariant-violating ones (the `burn <= escrow`
+        // invariant is enforced by the transition layer, not the wire format,
+        // and decode performs no such check). Clamping here would only narrow
+        // codec coverage.
         _ => OpState::Payout(templar_vault_kernel::PayoutState {
             op_id: 1,
             request_id: 2,
@@ -327,7 +340,8 @@ fuzz_target!(|input: StorageCodecInput| {
     // variable-length, fund-critical part (the per-page header/compose
     // *orchestration* is exercised against a real Env by the soroban crate's
     // `property_tests.rs`, so it isn't re-implemented here). A built queue holds
-    // <= MAX_COLLECTION_LEN entries, comfortably within one page.
+    // up to MAX_WITHDRAW_PAGE_LEN (128) entries, so this round-trip reaches the
+    // decoder's valid upper boundary (a full page).
     let page_entries: Vec<(u64, templar_vault_kernel::PendingWithdrawal)> = state
         .withdraw_queue
         .iter()

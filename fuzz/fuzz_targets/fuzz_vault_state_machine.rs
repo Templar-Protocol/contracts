@@ -88,6 +88,11 @@ enum Action {
     CompleteRefresh {
         op_id: u64,
     },
+    // `Payout` is reached via `withdrawal_collected` / `withdrawal_settled`
+    // (Withdrawing -> Payout once `remaining == 0`), so a sequence of
+    // StartWithdrawal -> WithdrawalStepCallback -> WithdrawalCollected leaves the
+    // machine in `Payout` and this action then exercises `payout_complete` on a
+    // valid state. (No `StartPayout`: production has no such direct transition.)
     PayoutComplete {
         op_id: u64,
         success: bool,
