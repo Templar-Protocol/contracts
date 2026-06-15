@@ -10,21 +10,21 @@
 //! 3. **Ethereum-like** — `0x` + 40 lowercase-hex chars.
 //! 4. **Deterministic** — `0s` + 40 lowercase-hex chars (global contracts).
 //!
-//! All four satisfy the same underlying validity rules (lowercase
-//! `[a-z0-9._-]`, length 2..=64, and — for named ids — no leading/trailing/
-//! consecutive separators within a `.`-separated part); the eth-like and
-//! deterministic forms are simply specific shapes inside the named charset.
-//! Construction is valid-by-design, so [`ArbitraryAccountId::into_account_id`]
-//! returns `Some` for the vast majority of inputs; it still routes through real
-//! `AccountId::from_str` validation, yielding `None` only for the rare edge
-//! (e.g. a candidate truncated below the 2-char minimum).
+//! Validity is **structural**, not checked at runtime: characters are drawn
+//! from a lowercase-alphanumeric type, separators only ever sit between
+//! non-empty segments, and a named account always begins with a mandatory
+//! two-character head segment — so every candidate satisfies NEAR's charset,
+//! separator, and 2-char-minimum rules by construction. The only runtime step
+//! is capping to the 64-char maximum, which preserves the leading head chars.
+//! [`ArbitraryAccountId::into_account_id`] therefore effectively always returns
+//! `Some`; it still routes through real `AccountId::from_str` as a backstop.
 
 use arbitrary::Arbitrary;
 use near_sdk::AccountId;
 use std::str::FromStr;
 
 /// Lowercase alphanumerics — the character class of a named-account *segment*
-/// (the maximal run between separators).
+/// (the maximal run between separators), and of the hex address forms.
 const ALNUM: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 
 /// A spread of real top-level account names / suffixes: suffix-less top-level
@@ -41,8 +41,8 @@ const KNOWN_SUFFIXES: &[&str] = &[
     "factory",
 ];
 
-/// An arbitrary, (almost-always) valid NEAR account id covering all four
-/// account categories. Convert with [`ArbitraryAccountId::into_account_id`].
+/// An arbitrary, valid NEAR account id covering all four account categories.
+/// Convert with [`ArbitraryAccountId::into_account_id`].
 #[derive(Arbitrary, Debug)]
 pub enum ArbitraryAccountId {
     /// Native implicit: exactly 64 lowercase-hex chars.
@@ -55,14 +55,37 @@ pub enum ArbitraryAccountId {
     Named(NamedAccount),
 }
 
-/// A named account: leading labels plus a trailing top-level suffix.
+/// A named account. The mandatory [`HeadSegment`] start is what guarantees the
+/// rendered id meets NEAR's 2-char minimum without any runtime padding.
 #[derive(Arbitrary, Debug)]
 pub struct NamedAccount {
-    /// Leading labels (each becomes one `.`-separated part); at least one part
-    /// is always emitted.
-    labels: Vec<Label>,
-    /// Trailing top-level suffix (or none, for a suffix-less top-level account).
-    suffix: Suffix,
+    /// The first label's leading segment (>= 2 chars by construction).
+    head: HeadSegment,
+    /// Remaining segments of the first label, each preceded by one separator.
+    first_label_rest: Vec<(Separator, Segment)>,
+    /// Additional `.`-separated labels after the first.
+    other_labels: Vec<Label>,
+    /// Trailing top-level suffix; `None` is a suffix-less top-level account
+    /// (e.g. `registrar`).
+    suffix: Option<Suffix>,
+}
+
+/// The first segment of a named account's first label: at least two
+/// alphanumeric characters. This is the structural proof that a named id is
+/// never shorter than NEAR's 2-char minimum — truncation to the 64-char max
+/// keeps these leading characters.
+#[derive(Arbitrary, Debug)]
+struct HeadSegment {
+    first: AlnumChar,
+    second: AlnumChar,
+    rest: Vec<AlnumChar>,
+}
+
+/// A maximal alphanumeric run (>= 1 char, no separators).
+#[derive(Arbitrary, Debug)]
+struct Segment {
+    first: AlnumChar,
+    rest: Vec<AlnumChar>,
 }
 
 /// One `.`-separated part: alphanumeric segments joined by single separators,
@@ -75,9 +98,9 @@ struct Label {
     rest: Vec<(Separator, Segment)>,
 }
 
-/// A maximal alphanumeric run (no separators).
+/// A lowercase-alphanumeric character (`a-z0-9`), valid-by-construction.
 #[derive(Arbitrary, Debug)]
-struct Segment(Vec<u8>);
+struct AlnumChar(u8);
 
 #[derive(Arbitrary, Debug)]
 enum Separator {
@@ -85,10 +108,10 @@ enum Separator {
     Underscore,
 }
 
+/// A trailing top-level suffix. Absence (a suffix-less top-level account) is
+/// represented by `Option::None` at the use site rather than a variant here.
 #[derive(Arbitrary, Debug)]
 enum Suffix {
-    /// Suffix-less top-level account (e.g. `registrar`).
-    None,
     /// One of [`KNOWN_SUFFIXES`].
     Known(u8),
     /// An arbitrary-derived suffix, so suffixes aren't limited to the known set.
@@ -96,15 +119,16 @@ enum Suffix {
 }
 
 impl ArbitraryAccountId {
-    /// Render to a real [`AccountId`], or `None` if the candidate fails
-    /// validation (rare; e.g. a named id truncated below 2 chars).
+    /// Render to a real [`AccountId`], or `None` if real validation rejects the
+    /// candidate. Construction is valid-by-design, so this is effectively
+    /// always `Some`.
     #[must_use]
     pub fn into_account_id(self) -> Option<AccountId> {
         AccountId::from_str(&self.to_candidate()).ok()
     }
 
-    /// The candidate string. Valid-by-construction except for the 2..=64 length
-    /// bound, which [`Self::into_account_id`] enforces via real validation.
+    /// The candidate string, valid-by-construction. Named ids are >= 2 chars
+    /// structurally (the head segment) and capped to <= 64 by [`cap_len`].
     fn to_candidate(&self) -> String {
         match self {
             Self::NativeImplicit(bytes) => to_hex(bytes),
@@ -117,20 +141,46 @@ impl ArbitraryAccountId {
 
 impl NamedAccount {
     fn render(&self) -> String {
-        let mut parts: Vec<String> = self.labels.iter().map(Label::render).collect();
-        if parts.is_empty() {
-            // Guarantee at least one non-empty part so the join never produces
-            // a leading/trailing dot.
-            parts.push("a".to_string());
+        // First label: the >= 2-char head, then any separator-joined segments.
+        let mut first_label = self.head.render();
+        for (sep, seg) in &self.first_label_rest {
+            first_label.push(sep.as_char());
+            first_label.push_str(&seg.render());
         }
+
+        let mut parts = vec![first_label];
+        parts.extend(self.other_labels.iter().map(Label::render));
         match &self.suffix {
-            Suffix::None => {}
-            Suffix::Known(i) => {
+            None => {}
+            Some(Suffix::Known(i)) => {
                 parts.push(KNOWN_SUFFIXES[*i as usize % KNOWN_SUFFIXES.len()].to_string());
             }
-            Suffix::Custom(label) => parts.push(label.render()),
+            Some(Suffix::Custom(label)) => parts.push(label.render()),
         }
         parts.join(".")
+    }
+}
+
+impl HeadSegment {
+    fn render(&self) -> String {
+        let mut out = String::new();
+        out.push(self.first.as_char());
+        out.push(self.second.as_char());
+        for c in &self.rest {
+            out.push(c.as_char());
+        }
+        out
+    }
+}
+
+impl Segment {
+    fn render(&self) -> String {
+        let mut out = String::new();
+        out.push(self.first.as_char());
+        for c in &self.rest {
+            out.push(c.as_char());
+        }
+        out
     }
 }
 
@@ -145,18 +195,9 @@ impl Label {
     }
 }
 
-impl Segment {
-    fn render(&self) -> String {
-        let mut out: String = self
-            .0
-            .iter()
-            .map(|b| ALNUM[*b as usize % ALNUM.len()] as char)
-            .collect();
-        if out.is_empty() {
-            // A segment must be non-empty for the surrounding label to be valid.
-            out.push('a');
-        }
-        out
+impl AlnumChar {
+    fn as_char(&self) -> char {
+        ALNUM[self.0 as usize % ALNUM.len()] as char
     }
 }
 
@@ -179,8 +220,10 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Cap a named candidate at the 64-char maximum, trimming any separator left
-/// dangling at the cut so the tail stays a valid label.
+/// Cap a named candidate at NEAR's 64-char maximum, trimming any separator left
+/// dangling at the cut so the tail stays a valid label. The candidate is >= 2
+/// chars by construction (its first label opens with a 2-char head segment) and
+/// truncation keeps those leading chars, so the result stays within 2..=64.
 fn cap_len(mut s: String) -> String {
     const MAX: usize = 64;
     if s.len() > MAX {
@@ -198,6 +241,13 @@ mod tests {
 
     fn valid(s: &str) -> bool {
         AccountId::from_str(s).is_ok()
+    }
+
+    fn seg(c: u8) -> Segment {
+        Segment {
+            first: AlnumChar(c),
+            rest: vec![],
+        }
     }
 
     #[test]
@@ -232,33 +282,60 @@ mod tests {
         assert!(!valid("Alice.near"), "uppercase");
     }
 
+    /// The whole point of the restructure: even the smallest representable
+    /// named account is a valid 2-char id, with no runtime padding.
+    #[test]
+    fn min_length_is_structural() {
+        let smallest = NamedAccount {
+            head: HeadSegment {
+                first: AlnumChar(0),
+                second: AlnumChar(0),
+                rest: vec![],
+            },
+            first_label_rest: vec![],
+            other_labels: vec![],
+            suffix: None,
+        };
+        let id = ArbitraryAccountId::Named(smallest).into_account_id();
+        assert_eq!(id.map(|a| a.to_string()).as_deref(), Some("aa"));
+    }
+
     #[test]
     fn renderers_are_valid_by_construction() {
-        // Empty segment falls back to a single alnum char.
-        assert_eq!(Segment(vec![]).render(), "a");
-        // A label with separators renders without leading/trailing/doubled seps.
-        let label = Label {
-            first: Segment(vec![0]),
-            rest: vec![
-                (Separator::Hyphen, Segment(vec![1])),
-                (Separator::Underscore, Segment(vec![2])),
-            ],
-        };
-        let rendered = label.render();
-        assert!(
-            valid(&format!("{rendered}.near")),
-            "rendered label: {rendered}"
-        );
-        // Over-long named candidates are capped to a valid <=64 id.
-        let long = NamedAccount {
-            labels: vec![Label {
-                first: Segment(vec![0; 200]),
+        // A segment is never empty.
+        assert_eq!(seg(0).render(), "a");
+
+        // Mixed separators across the first label and an extra `.`-part render
+        // to a valid id.
+        let mixed = NamedAccount {
+            head: HeadSegment {
+                first: AlnumChar(0),
+                second: AlnumChar(1),
                 rest: vec![],
+            },
+            first_label_rest: vec![(Separator::Hyphen, seg(2))],
+            other_labels: vec![Label {
+                first: seg(3),
+                rest: vec![(Separator::Underscore, seg(4))],
             }],
-            suffix: Suffix::Known(0),
+            suffix: Some(Suffix::Known(0)),
         };
-        let id = ArbitraryAccountId::Named(long).into_account_id();
-        assert!(id.is_some(), "capped long candidate should still validate");
-        assert!(id.unwrap().as_str().len() <= 64);
+        assert!(ArbitraryAccountId::Named(mixed).into_account_id().is_some());
+
+        // Over-long named candidates are capped to a valid id in 2..=64.
+        let long = NamedAccount {
+            head: HeadSegment {
+                first: AlnumChar(0),
+                second: AlnumChar(0),
+                rest: (0..200).map(|_| AlnumChar(0)).collect(),
+            },
+            first_label_rest: vec![],
+            other_labels: vec![],
+            suffix: Some(Suffix::Known(0)),
+        };
+        let id = ArbitraryAccountId::Named(long)
+            .into_account_id()
+            .expect("capped long candidate should still validate");
+        assert!((2..=64).contains(&id.to_string().len()));
     }
 }
