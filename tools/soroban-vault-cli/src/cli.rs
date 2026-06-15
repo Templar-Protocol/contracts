@@ -202,7 +202,7 @@ pub enum DeployCommand {
     Resume(Box<DeployStackArgs>),
     /// Print the safe repair/resume plan for the current manifest
     Repair(ReconcileArgs),
-    /// Add Blend adapters to an existing or imported vault deployment
+    /// Add Blend or custodial adapters to an existing or imported vault deployment
     Adapters(DeployAdaptersArgs),
     /// Upload or verify a single WASM artifact
     Wasm(DeployWasmArgs),
@@ -224,7 +224,7 @@ pub struct DeployPlanArgs {
 pub enum DeployPlanCommand {
     /// Plan a full vault stack deployment or reuse flow
     Stack(Box<DeployStackArgs>),
-    /// Plan appending Blend adapters to an existing or imported deployment
+    /// Plan appending Blend or custodial adapters to an existing or imported deployment
     Adapters(DeployAdaptersArgs),
 }
 
@@ -270,6 +270,10 @@ pub struct DeployStackArgs {
     #[arg(long = "blend-pool", env = "BLEND_POOL_ID", value_delimiter = ',')]
     pub blend_pools: Vec<AddressStr>,
 
+    /// Custodian or multisig address. Repeat the flag, or provide comma-separated CUSTODIAL_ADDRESS values, to deploy custodial adapters.
+    #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
+    pub custodians: Vec<AddressStr>,
+
     /// Rebuild missing artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub build: bool,
@@ -297,7 +301,11 @@ pub struct DeployAdaptersArgs {
     #[arg(long = "blend-pool", env = "BLEND_POOL_ID", value_delimiter = ',')]
     pub blend_pools: Vec<AddressStr>,
 
-    /// Rebuild the Blend adapter artifact before upload/deploy
+    /// Custodian or multisig address. Repeat the flag, or provide comma-separated CUSTODIAL_ADDRESS values, to append multiple custodial adapters.
+    #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
+    pub custodians: Vec<AddressStr>,
+
+    /// Rebuild adapter artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub build: bool,
 
@@ -323,6 +331,7 @@ pub enum ArtifactName {
     Governance,
     ShareToken,
     BlendAdapter,
+    CustodialAdapter,
     Proxy4626,
     CuratorProxy,
 }
@@ -1104,6 +1113,8 @@ mod tests {
             POOL,
             "--blend-pool",
             POOL,
+            "--custodian",
+            ADMIN,
         ])
         .expect("parse cli");
 
@@ -1116,6 +1127,40 @@ mod tests {
                     );
                     assert_eq!(stack.governance_timelock_ns, Some(1000));
                     assert_eq!(stack.blend_pools.len(), 2);
+                    assert_eq!(stack.custodians.len(), 1);
+                }
+                DeployCommand::Plan(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Adapters(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
+            },
+            _ => panic!("expected deploy command"),
+        }
+    }
+
+    #[test]
+    fn parses_comma_delimited_custodians() {
+        let cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "stack",
+            "--admin",
+            ADMIN,
+            "--custodian",
+            &format!("{ADMIN},{POOL}"),
+        ])
+        .expect("parse cli");
+
+        match cli.command {
+            Commands::Deploy(args) => match args.command {
+                DeployCommand::Stack(stack) => {
+                    let custodians = stack
+                        .custodians
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>();
+                    assert_eq!(custodians, vec![ADMIN, POOL]);
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Resume(_)
@@ -1141,6 +1186,8 @@ mod tests {
             POOL,
             "--blend-pool",
             POOL,
+            "--custodian",
+            ADMIN,
         ])
         .expect("parse cli");
 
@@ -1152,6 +1199,7 @@ mod tests {
                         Some(POOL)
                     );
                     assert_eq!(args.blend_pools.len(), 1);
+                    assert_eq!(args.custodians.len(), 1);
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Stack(_)
