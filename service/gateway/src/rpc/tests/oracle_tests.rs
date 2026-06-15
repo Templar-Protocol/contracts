@@ -94,68 +94,31 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
     let proxy_direct_id = PriceIdentifier([0x11; 32]);
     let proxy_redstone_id = PriceIdentifier([0x22; 32]);
 
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Create>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CreateBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 0,
-                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
-                    id: proxy_direct_id,
-                    proxy: Some(Proxy::median_low(
-                        [OracleRequest::pyth(
-                            direct_oracle_id.clone(),
-                            test_utils::DEFAULT_BORROW_PRICE_ID,
-                        )
-                        .into()],
-                        FreshnessFilter::empty(),
-                    )),
-                },
-            },
-        })
+    stack
+        .harness
+        .admin_set_proxy(
+            proxy_oracle_id.clone(),
+            proxy_direct_id,
+            Some(Proxy::median_low(
+                [OracleRequest::pyth(
+                    direct_oracle_id.clone(),
+                    test_utils::DEFAULT_BORROW_PRICE_ID,
+                )
+                .into()],
+                FreshnessFilter::empty(),
+            )),
+        )
         .await?;
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Execute>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::ExecuteBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 0,
-            },
-        })
-        .await?;
-
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Create>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CreateBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 1,
-                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
-                    id: proxy_redstone_id,
-                    proxy: Some(Proxy::median_low(
-                        [OracleRequest::redstone(redstone_oracle_id.clone(), "BTC").into()],
-                        FreshnessFilter::empty(),
-                    )),
-                },
-            },
-        })
-        .await?;
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Execute>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::ExecuteBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 1,
-            },
-        })
+    stack
+        .harness
+        .admin_set_proxy(
+            proxy_oracle_id.clone(),
+            proxy_redstone_id,
+            Some(Proxy::median_low(
+                [OracleRequest::redstone(redstone_oracle_id.clone(), "BTC").into()],
+                FreshnessFilter::empty(),
+            )),
+        )
         .await?;
 
     let update_result = stack
@@ -250,64 +213,27 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         )
         .await?;
 
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Create>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CreateBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 0,
-                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
-                    id: proxy_direct_id,
-                    proxy: Some(Proxy::median_low(
-                        [OracleRequest::pyth(direct_oracle_id.clone(), direct_price_id).into()],
-                        FreshnessFilter::empty(),
-                    )),
-                },
-            },
-        })
+    stack
+        .harness
+        .admin_set_proxy(
+            proxy_oracle_id.clone(),
+            proxy_direct_id,
+            Some(Proxy::median_low(
+                [OracleRequest::pyth(direct_oracle_id.clone(), direct_price_id).into()],
+                FreshnessFilter::empty(),
+            )),
+        )
         .await?;
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Execute>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::ExecuteBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 0,
-            },
-        })
-        .await?;
-
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Create>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::CreateBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 1,
-                operation: templar_proxy_oracle_near_governance_common::Operation::SetProxy {
-                    id: proxy_redstone_id,
-                    proxy: Some(Proxy::median_low(
-                        [OracleRequest::redstone(direct_oracle_id.clone(), "BTC").into()],
-                        FreshnessFilter::empty(),
-                    )),
-                },
-            },
-        })
-        .await?;
-    let _ = stack
-        .controller
-        .request::<proxy_oracle_governance::Execute>(&WriteRequest {
-            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
-            idempotency_key: None,
-            body: proxy_oracle_governance::ExecuteBody {
-                oracle_id: proxy_oracle_id.clone(),
-                id: 1,
-            },
-        })
+    stack
+        .harness
+        .admin_set_proxy(
+            proxy_oracle_id.clone(),
+            proxy_redstone_id,
+            Some(Proxy::median_low(
+                [OracleRequest::redstone(direct_oracle_id.clone(), "BTC").into()],
+                FreshnessFilter::empty(),
+            )),
+        )
         .await?;
 
     let direct = stack

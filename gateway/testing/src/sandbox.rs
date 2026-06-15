@@ -7,19 +7,24 @@ use near_token::NearToken;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     oracle::{pyth::PriceIdentifier, redstone::config as redstone_config},
+    Nanoseconds,
 };
 use templar_gateway_core::NearClient;
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::ManagedAccountId;
-use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::{
+    input::Source, price_transformer::PriceTransformer, state::legacy::v0,
+};
+use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
     market_configuration,
     test_signer::TestSigner,
-    FtController, MarketController, MockOracleController, ProxyOracleController,
-    ReceiverController, RedStoneAdapterController, RefFinanceController, RegistryController,
-    UniversalAccountController,
+    FtController, GovernanceContractController, MarketController, MockOracleController,
+    ProxyOracleController, ReceiverController, RedStoneAdapterController, RefFinanceController,
+    RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -291,6 +296,26 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
+    /// Deploy the legacy (`0.1.0`, pre-kernelization) proxy oracle wasm, whose
+    /// `get_proxy` returns the `v0::Proxy` shape and whose governance is built in.
+    pub async fn deploy_legacy_v0_proxy_oracle(&self) -> Result<AccountId> {
+        let account_id = self.proxy_oracle_signer_account_id.0.clone();
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize legacy proxy oracle deploy signer")?;
+
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            ProxyOracleController::wasm_v0().to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+
+        Ok(account_id)
+    }
+
     pub async fn deploy_mock_oracle(&self, account_id: AccountId) -> Result<AccountId> {
         let signer =
             create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
@@ -420,6 +445,189 @@ impl SandboxHarness {
             .await?
             .assert_success();
         Ok(())
+    }
+
+    /// Set a proxy definition directly via the owner-gated `admin_set_proxy`
+    /// (kernelized `>= 0.2.0` oracle). The oracle account is its own owner after
+    /// `deploy_proxy_oracle`, so it signs as itself.
+    pub async fn admin_set_proxy(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        proxy: Option<Proxy<Source>>,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize admin_set_proxy signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "admin_set_proxy",
+                serde_json::json!({ "id": price_identifier, "proxy": proxy }),
+            )
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
+    }
+
+    /// Deploy a governance contract for `oracle_id` (admin = `admin_id`, all TTLs
+    /// zero for immediate execution) and transfer oracle ownership to it, so the
+    /// governance contract can drive the oracle's `admin_*` methods. Consumes
+    /// governance proposal id `0` for the ownership handover. Returns the
+    /// governance contract account id.
+    pub async fn deploy_governance_contract(
+        &self,
+        oracle_id: AccountId,
+        admin_id: AccountId,
+    ) -> Result<AccountId> {
+        let governance_id: AccountId = "governance.near".parse()?;
+        let deploy_signer =
+            create_account_signer(&self.sandbox, &governance_id, NearToken::from_near(100)).await?;
+        deploy_contract(
+            &self.network,
+            governance_id.clone(),
+            deploy_signer,
+            GovernanceContractController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({
+                "proxy_oracle_id": oracle_id,
+                "admin_id": admin_id,
+                "ttls": zero_ttl_config(),
+            }),
+        )
+        .await?;
+
+        // Current owner (the oracle account) proposes the governance contract.
+        let owner_signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize ownership-transfer signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "own_propose_owner",
+                serde_json::json!({ "account_id": governance_id }),
+            )
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(50))
+            .with_signer(oracle_id.clone(), owner_signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        // Governance accepts ownership via an AdminFunctionCall proposal (id 0),
+        // which fires `own_accept_owner` on the oracle as the governance contract.
+        self.governance_admin_function_call(&governance_id, &admin_id, 0, "own_accept_owner")
+            .await?;
+
+        Ok(governance_id)
+    }
+
+    /// Create and immediately execute an `AdminFunctionCall` governance proposal
+    /// that calls `method_name` (no args, 1 yocto) on the proxy oracle.
+    async fn governance_admin_function_call(
+        &self,
+        governance_id: &AccountId,
+        admin_id: &AccountId,
+        proposal_id: u32,
+        method_name: &str,
+    ) -> Result<()> {
+        let operation = Operation::AdminFunctionCall {
+            method_name: method_name.to_string(),
+            args: near_sdk::json_types::Base64VecU8(b"{}".to_vec()),
+            attached_deposit: near_sdk::json_types::U128(1),
+            gas: near_sdk::Gas::from_tgas(50),
+        };
+        let admin_signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize governance admin signer")?;
+
+        Contract(governance_id.clone())
+            .call_function(
+                "create_proposal",
+                serde_json::json!({
+                    "id": proposal_id,
+                    "operation": operation,
+                    "requested_ttl": Nanoseconds::zero(),
+                }),
+            )
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(admin_id.clone(), admin_signer.clone())
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        Contract(governance_id.clone())
+            .call_function("execute_proposal", serde_json::json!({ "id": proposal_id }))
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(admin_id.clone(), admin_signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        Ok(())
+    }
+
+    /// Seed a proxy on a legacy (`< 0.2.0`) oracle, whose only path to set a
+    /// proxy is its built-in, owner-gated governance (`gov_create` + `gov_execute`
+    /// with a TTL of zero). The oracle account is its own owner.
+    pub async fn seed_legacy_v0_proxy(
+        &self,
+        oracle_id: AccountId,
+        price_identifier: PriceIdentifier,
+        proxy: v0::Proxy,
+    ) -> Result<()> {
+        let owner_signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize legacy proxy signer")?;
+        let operation = v0::Operation::SetProxy {
+            id: price_identifier,
+            proxy: Some(proxy),
+        };
+
+        Contract(oracle_id.clone())
+            .call_function(
+                "gov_create",
+                serde_json::json!({ "id": 0, "operation": operation }),
+            )
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id.clone(), owner_signer.clone())
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        Contract(oracle_id.clone())
+            .call_function("gov_execute", serde_json::json!({ "id": 0 }))
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, owner_signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
+        Ok(())
+    }
+}
+
+fn zero_ttl_config() -> TtlConfig {
+    let zero = Nanoseconds::zero();
+    TtlConfig {
+        set_proxy: zero,
+        configure_circuit_breakers: zero,
+        add_circuit_breaker: zero,
+        remove_circuit_breaker: zero,
+        set_manual_trip: zero,
+        rearm: zero,
+        set_enforced: zero,
+        set_action_ttl: zero,
+        set_role: zero,
+        admin_upgrade: zero,
+        admin_function_call: zero,
     }
 }
 

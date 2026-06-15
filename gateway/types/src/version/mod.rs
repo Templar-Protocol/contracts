@@ -1,7 +1,9 @@
 mod market_version;
+mod proxy_oracle_version;
 mod registry_version;
 
 pub use market_version::{Market, MarketVersion};
+pub use proxy_oracle_version::{ProxyOracle, ProxyOracleVersion};
 pub use registry_version::{Registry, RegistryVersion};
 
 type N = u64;

@@ -2,99 +2,99 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::{read_method_spec, write_method_spec};
-use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
+use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetNextIdParams {
-    pub oracle_id: near_account_id::AccountId,
+pub struct NextProposalIdParams {
+    pub governance_id: near_account_id::AccountId,
 }
-pub type GetNextIdResult = u32;
+pub type NextProposalIdResult = u32;
 read_method_spec!(
     /// Get the next governance proposal ID.
-    "proxyOracleGovernance.getNextId": GetNextId(GetNextIdParams) -> GetNextIdResult
+    "proxyOracleGovernance.nextProposalId": NextProposalId(NextProposalIdParams) -> NextProposalIdResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetTtlParams {
-    pub oracle_id: near_account_id::AccountId,
+pub struct ProposalCountParams {
+    pub governance_id: near_account_id::AccountId,
+}
+pub type ProposalCountResult = u32;
+read_method_spec!(
+    /// Get the count of active governance proposals.
+    "proxyOracleGovernance.proposalCount": ProposalCount(ProposalCountParams) -> ProposalCountResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetOperationTtlParams {
+    pub governance_id: near_account_id::AccountId,
+    pub kind: OperationKind,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetTtlResult {
+pub struct GetOperationTtlResult {
     pub ttl_ns: Nanoseconds,
 }
 read_method_spec!(
-    /// Get governance proposal TTL.
-    "proxyOracleGovernance.getTtl": GetTtl(GetTtlParams) -> GetTtlResult
+    /// Get the configured proposal TTL for an operation kind.
+    "proxyOracleGovernance.getOperationTtl": GetOperationTtl(GetOperationTtlParams) -> GetOperationTtlResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetCountParams {
-    pub oracle_id: near_account_id::AccountId,
-}
-pub type GetCountResult = u32;
-read_method_spec!(
-    /// Get governance proposal count.
-    "proxyOracleGovernance.getCount": GetCount(GetCountParams) -> GetCountResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListParams {
-    pub oracle_id: near_account_id::AccountId,
+pub struct ListProposalsParams {
+    pub governance_id: near_account_id::AccountId,
     pub offset: Option<u32>,
     pub count: Option<u32>,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListResult {
+pub struct ListProposalsResult {
     pub ids: Vec<u32>,
 }
 read_method_spec!(
-    /// List governance proposal IDs.
-    "proxyOracleGovernance.list": List(ListParams) -> ListResult
+    /// List active governance proposal IDs.
+    "proxyOracleGovernance.listProposals": ListProposals(ListProposalsParams) -> ListProposalsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetParams {
-    pub oracle_id: near_account_id::AccountId,
+pub struct GetProposalParams {
+    pub governance_id: near_account_id::AccountId,
     pub id: u32,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetResult {
+pub struct GetProposalResult {
     pub proposal: Option<Proposal<Operation>>,
 }
 read_method_spec!(
     /// Get a governance proposal.
-    "proxyOracleGovernance.get": Get(GetParams) -> GetResult
+    "proxyOracleGovernance.getProposal": GetProposal(GetProposalParams) -> GetProposalResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CreateBody {
-    pub oracle_id: near_account_id::AccountId,
+pub struct CreateProposalBody {
+    pub governance_id: near_account_id::AccountId,
     pub id: u32,
     pub operation: Operation,
+    pub requested_ttl: Nanoseconds,
 }
 write_method_spec!(
     /// Create a governance proposal.
-    "proxyOracleGovernance.create": Create(CreateBody)
+    "proxyOracleGovernance.createProposal": CreateProposal(CreateProposalBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CancelBody {
-    pub oracle_id: near_account_id::AccountId,
+pub struct CancelProposalBody {
+    pub governance_id: near_account_id::AccountId,
     pub id: u32,
 }
 write_method_spec!(
     /// Cancel a governance proposal.
-    "proxyOracleGovernance.cancel": Cancel(CancelBody)
+    "proxyOracleGovernance.cancelProposal": CancelProposal(CancelProposalBody)
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ExecuteBody {
-    pub oracle_id: near_account_id::AccountId,
+pub struct ExecuteProposalBody {
+    pub governance_id: near_account_id::AccountId,
     pub id: u32,
 }
 write_method_spec!(
     /// Execute a governance proposal.
-    "proxyOracleGovernance.execute": Execute(ExecuteBody)
+    "proxyOracleGovernance.executeProposal": ExecuteProposal(ExecuteProposalBody)
 );

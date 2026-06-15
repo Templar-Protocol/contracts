@@ -7,6 +7,7 @@ pub mod lst_oracle;
 pub mod macros;
 pub mod market;
 pub mod mt;
+pub mod proxy_governance;
 pub mod proxy_oracle;
 pub mod pyth_oracle;
 pub mod redstone_oracle;
@@ -29,6 +30,7 @@ use market::MarketClient;
 use mt::MtClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
+use proxy_governance::ProxyGovernanceClient;
 use proxy_oracle::ProxyOracleClient;
 use pyth_oracle::PythOracleClient;
 use redstone_oracle::RedStoneOracleClient;
@@ -163,6 +165,13 @@ impl NearClient {
 
     pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {
         ProxyOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn proxy_governance(&self, contract_id: AccountId) -> ProxyGovernanceClient<'_> {
+        ProxyGovernanceClient {
             inner: self,
             contract_id,
         }

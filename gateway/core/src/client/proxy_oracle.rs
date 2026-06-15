@@ -1,9 +1,9 @@
 use moka::sync::Cache;
 use near_account_id::AccountId;
-use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_gateway_types::ProxyOracle;
 use templar_proxy_oracle_kernel::proxy::Proxy;
-use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
+use templar_proxy_oracle_near_common::{input::Source, state::legacy::v0};
 
 use crate::client::{
     cache::{config_cache, load_cached},
@@ -63,24 +63,6 @@ pub struct PriceFeedExistsArgs {
     pub price_identifier: PriceIdentifier,
 }
 #[derive(serde::Serialize)]
-pub struct GovGetArgs {
-    pub id: u32,
-}
-#[derive(serde::Serialize)]
-pub struct GovCreateArgs {
-    pub id: u32,
-    pub operation: Operation,
-}
-#[derive(serde::Serialize)]
-pub struct GovActionArgs {
-    pub id: u32,
-}
-#[derive(serde::Serialize)]
-pub struct GovListArgs {
-    pub offset: Option<u32>,
-    pub count: Option<u32>,
-}
-#[derive(serde::Serialize)]
 pub struct OwnerProposeArgs {
     pub account_id: Option<near_account_id::AccountId>,
 }
@@ -105,23 +87,49 @@ impl ProxyOracleClient<'_> {
         .await
     }
 
+    /// Fetch a proxy definition, normalizing the legacy (`< 0.2.0`) `v0::Proxy`
+    /// shape into the unified `Proxy<Source>` so callers never see the
+    /// pre-kernel representation. The oracle version is read from the (cached)
+    /// NEP-330 `contract_source_metadata`.
+    pub async fn get_proxy(
+        &self,
+        args: GetProxyArgs,
+    ) -> crate::GatewayResult<Option<Proxy<Source>>> {
+        let version = self
+            .inner
+            .contract(self.contract_id.clone())
+            .version::<ProxyOracle>()
+            .await?;
+        let raw_args = serde_json::to_vec(&args)?;
+
+        if version.proxy_is_kernelized() {
+            crate::ReadNear::view_function(
+                self.inner,
+                self.contract_id.clone(),
+                "get_proxy",
+                raw_args,
+            )
+            .await
+        } else {
+            let legacy: Option<v0::Proxy> = crate::ReadNear::view_function(
+                self.inner,
+                self.contract_id.clone(),
+                "get_proxy",
+                raw_args,
+            )
+            .await?;
+            Ok(legacy.map(Proxy::from))
+        }
+    }
+
     contract_views! {
         pub fn list_proxies(ListProxiesArgs) -> Vec<PriceIdentifier>;
-        pub fn get_proxy(GetProxyArgs) -> Option<Proxy<Source>>;
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
-        pub fn gov_next_id(()) -> u32;
-        pub fn gov_ttl_ns(()) -> Nanoseconds;
-        pub fn gov_count(()) -> u32;
-        pub fn gov_list(GovListArgs) -> Vec<u32>;
-        pub fn gov_get(GovGetArgs) -> Option<Proposal<Operation>>;
         pub fn own_get_owner(()) -> Option<near_account_id::AccountId>;
         pub fn own_get_proposed_owner(()) -> Option<near_account_id::AccountId>;
     }
 
     contract_writes! {
-        pub fn gov_create(GovCreateArgs);
-        pub fn gov_cancel(GovActionArgs);
-        pub fn gov_execute(GovActionArgs);
         pub fn own_propose_owner(OwnerProposeArgs);
         pub fn own_accept_owner(());
         pub fn own_renounce_owner(());
