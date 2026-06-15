@@ -574,6 +574,11 @@ deploy-custodial-adapter custodian:
 		echo "Error: Vault not deployed. Run 'just deploy' first."; \
 		exit 1; \
 	fi; \
+	asset_token="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
+	if [ -z "$asset_token" ]; then \
+		echo "Error: No asset token. Run 'just deploy-test-token' first or set SOROBAN_ASSET_TOKEN"; \
+		exit 1; \
+	fi; \
 	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then \
 		admin="$vault_id"; \
@@ -584,6 +589,7 @@ deploy-custodial-adapter custodian:
 	echo "  Admin:     $admin"; \
 	echo "  Vault:     $vault_id"; \
 	echo "  Custodian: {{custodian}}"; \
+	echo "  Asset:     $asset_token"; \
 	adapter_id=$(stellar contract deploy \
 		--wasm "$wasm" \
 		--network "$network" \
@@ -591,7 +597,8 @@ deploy-custodial-adapter custodian:
 		-- \
 		--admin "$admin" \
 		--vault "$vault_id" \
-		--custodian "{{custodian}}"); \
+		--custodian "{{custodian}}" \
+		--asset "$asset_token"); \
 	if [ -z "$adapter_id" ]; then \
 		echo "Error: deploy failed — no adapter ID returned"; \
 		exit 1; \

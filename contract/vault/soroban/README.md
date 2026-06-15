@@ -307,7 +307,9 @@ returned to the adapter on Stellar. It does not initiate or prove a market exit.
 `set_reported_assets(caller, asset, expected_current, amount, report_nonce)` from the configured
 admin, vault, or custodian.
 Returned idle balances are not auto-counted as NAV because the adapter cannot prove their offchain
-source.
+source. When the adapter is paused, vault and custodian reports are blocked, but the adapter admin
+can still submit reported-NAV corrections for incident recovery. The `report_nonce` is an exact
+NAV revision and must increase by one from the current value.
 
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
@@ -316,6 +318,13 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 - `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
+
+### Custodial Runbook Checks
+
+Before production deployment, operators must verify the offchain custodial runbook because this
+route intentionally depends on custodian operations outside the vault contract. Confirm custodian
+key controls and signer recovery, the NAV reporting cadence and approval set, and the delayed
+liquidity incident procedure for cases where returned liquidity is slower than queued withdrawals.
 
 After deployment, allow-list the adapter and configure the vault supply queue through governance
 before allocation. Treat the custodian and its offchain operating process as part of the vault's
