@@ -319,6 +319,9 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 - `just custodial-adapter-status`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
 
+The custodial adapter's `extend_ttl()` entrypoint is permissionless because it only refreshes
+instance storage liveness and the transaction caller pays the Soroban resource cost.
+
 ### Custodial Runbook Checks
 
 Before production deployment, operators must verify the offchain custodial runbook because this

@@ -3275,7 +3275,6 @@ fn run_extend_ttl<E: CommandExecutor>(
 
     let caller = if contract_id(manifest, "share_token").is_some()
         || !blend_adapter_statuses(manifest).is_empty()
-        || !custodial_adapter_statuses(manifest).is_empty()
     {
         Some(resolve_extend_ttl_caller(stellar, ttl_args)?)
     } else {
@@ -3309,19 +3308,8 @@ fn run_extend_ttl<E: CommandExecutor>(
     if adapters.is_empty() {
         skipped.push("custodial_adapters".to_string());
     } else {
-        let caller = caller.as_ref().context("missing TTL caller")?;
         for adapter in adapters {
-            if let Some(skip_reason) =
-                custodial_ttl_skip_reason(manifest, &adapter.key, caller.as_str())
-            {
-                skipped.push(skip_reason);
-                continue;
-            }
-            stellar.invoke(
-                &adapter.contract_id,
-                "extend_ttl",
-                args([("--caller", caller.as_str())]),
-            )?;
+            stellar.invoke(&adapter.contract_id, "extend_ttl", Vec::new())?;
             extended.push(adapter.key);
         }
     }
@@ -3333,19 +3321,6 @@ fn run_extend_ttl<E: CommandExecutor>(
     }
 
     Ok(Response::ExtendTtl(ExtendTtlResponse { extended, skipped }))
-}
-
-fn custodial_ttl_skip_reason(manifest: &Manifest, key: &str, caller: &str) -> Option<String> {
-    let admin = custodial_adapter_admin(manifest, key)?;
-    if contract_id(manifest, "governance").is_some_and(|governance| governance == admin) {
-        return Some(format!(
-            "{key}: admin is governance; no direct custodial adapter TTL authorization path"
-        ));
-    }
-    if admin != caller {
-        return Some(format!("{key}: caller is not custodial adapter admin"));
-    }
-    None
 }
 
 fn resolve_extend_ttl_caller<E: CommandExecutor>(
@@ -3525,13 +3500,6 @@ fn custodial_adapter_by_custodian<'a>(
                     .is_some_and(|value| value == custodian.as_str())
         })
         .map(|(_, record)| record.contract_id.as_str())
-}
-
-fn custodial_adapter_admin<'a>(manifest: &'a Manifest, key: &str) -> Option<&'a str> {
-    manifest
-        .contracts
-        .get(key)
-        .and_then(|record| record.constructor_args.get("admin").map(String::as_str))
 }
 
 fn selected_blend_adapter<'a>(
@@ -5277,7 +5245,7 @@ mod tests {
     }
 
     #[test]
-    fn extend_ttl_skips_governance_admin_custodial_adapter() {
+    fn extend_ttl_runs_for_governance_admin_custodial_adapter() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
         let mut manifest = Manifest::new("testnet", None);
@@ -5307,9 +5275,11 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["--id", "CGOVERNANCE"])
             && args.iter().any(|arg| arg == "extend_ttl")));
-        assert!(!calls
-            .iter()
-            .any(|(_, args)| args.windows(2).any(|pair| pair == ["--id", "CCUSTODIAL0"])));
+        assert!(calls.iter().any(|(_, args)| args
+            .windows(2)
+            .any(|pair| pair == ["--id", "CCUSTODIAL0"])
+            && args.iter().any(|arg| arg == "extend_ttl")
+            && !args.iter().any(|arg| arg == "--caller")));
     }
 
     #[test]

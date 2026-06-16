@@ -12595,7 +12595,7 @@ dependencies = [
 
 [[package]]
 name = "templar-4626-proxy-soroban"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "soroban-sdk",
  "templar-curator-primitives",
@@ -12655,7 +12655,7 @@ dependencies = [
 
 [[package]]
 name = "templar-curator-primitives"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "borsh 1.6.1",
  "derive_more 1.0.0",
@@ -12672,7 +12672,7 @@ dependencies = [
 
 [[package]]
 name = "templar-curator-proxy-soroban"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "soroban-sdk",
  "templar-soroban-governance",
@@ -13117,7 +13117,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-blend-adapter"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blend-contract-sdk",
  "soroban-sdk",
@@ -13126,7 +13126,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-custodial-adapter"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
@@ -13135,7 +13135,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-governance"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "postcard",
  "soroban-sdk",
@@ -13146,7 +13146,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-runtime"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blend-contract-sdk",
  "derive_more 1.0.0",
@@ -13165,7 +13165,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-share-token"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "soroban-sdk",
  "stellar-contract-utils",
@@ -13174,7 +13174,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-shared-types"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "postcard",
  "serde",
@@ -13321,7 +13321,7 @@ dependencies = [
 
 [[package]]
 name = "templar-vault-kernel"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "borsh 1.6.1",
  "derive_more 1.0.0",
