@@ -2,7 +2,7 @@
 name = "templar-soroban-runtime"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
 
 [lib]

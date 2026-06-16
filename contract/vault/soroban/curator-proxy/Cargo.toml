@@ -2,7 +2,7 @@
 name = "templar-curator-proxy-soroban"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Typed Soroban curator operations proxy for Templar Protocol"
 
 [lib]

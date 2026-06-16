@@ -2,7 +2,7 @@
 name = "templar-curator-primitives"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Chain-agnostic curator policy and recovery primitives for Templar Protocol vaults"
 
 [lib]

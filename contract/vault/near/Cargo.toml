@@ -1,6 +1,6 @@
 [package]
 edition.workspace = true
-license.workspace = true
+license = "GPL-3.0-only"
 name = "templar-vault-contract"
 repository.workspace = true
 version.workspace = true

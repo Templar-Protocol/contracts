@@ -2,7 +2,7 @@
 name = "templar-soroban-share-token"
 version = "1.0.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 description = "Soroban vault share token with vault-controlled mint/burn and user-authorized transfers"
 
 [lib]
