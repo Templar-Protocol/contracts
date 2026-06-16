@@ -7,6 +7,27 @@ on:
         required: false
         default: false
         type: boolean
+      run_full_tests:
+        description: "Run full workspace integration tests"
+        required: false
+        default: true
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      run_coverage:
+        description: "Run coverage on this manual workflow"
+        required: false
+        default: false
+        type: boolean
+      run_full_tests:
+        description: "Run full workspace integration tests"
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Nightly full CI on the default branch.
+    - cron: "0 4 * * *"
+  merge_group:
   push:
     branches: [main, dev]
   pull_request:
@@ -18,9 +39,65 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: read
   id-token: write # Required for OIDC with Codecov
 
 jobs:
+  changes:
+    name: Change Detection
+    runs-on: ubuntu-latest
+    outputs:
+      near_integration: ${{ steps.filter.outputs.near_integration }}
+      soroban: ${{ steps.filter.outputs.soroban }}
+      feature_matrix: ${{ steps.filter.outputs.feature_matrix }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Detect changed surfaces
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            near_integration:
+              - '.config/nextest.toml'
+              - 'common/src/**'
+              - 'contract/market/src/**'
+              - 'contract/market/tests/**'
+              - 'contract/proxy-oracle/near/**/src/**'
+              - 'contract/proxy-oracle/near/**/tests/**'
+              - 'contract/redstone-adapter/src/**'
+              - 'contract/redstone-adapter/tests/**'
+              - 'contract/registry/src/**'
+              - 'contract/registry/tests/**'
+              - 'contract/universal-account/src/**'
+              - 'contract/universal-account/tests/**'
+              - 'contract/vault/near/src/**'
+              - 'contract/vault/near/tests/**'
+              - 'mock/**/src/**'
+              - 'script/prebuild-test-contracts.sh'
+              - 'script/test.sh'
+              - 'service/funding-bridge/src/**'
+              - 'service/funding-bridge/tests/**'
+              - 'service/relayer/migrations/**'
+              - 'service/relayer/src/**'
+              - 'service/relayer/tests/**'
+              - 'test-utils/src/**'
+              - 'tools/manager/src/**'
+              - 'tools/manager/tests/**'
+            soroban:
+              - 'contract/proxy-oracle/soroban/**'
+              - 'contract/vault/curator-primitives/**'
+              - 'contract/vault/soroban/**'
+              - 'script/soroban/**'
+              - 'tools/soroban-vault-cli/**'
+            feature_matrix:
+              - 'contract/proxy-oracle/governance-kernel/**'
+              - 'contract/proxy-oracle/kernel/**'
+              - 'primitives/**'
+
   code-formatting:
     name: Code Formatting
     runs-on: ubuntu-latest
@@ -46,15 +123,22 @@ jobs:
         env:
           SQLX_OFFLINE: true
         run: |
-          # The Soroban crates build on the default 1.86 toolchain via the
-          # stellar-contract-utils [patch.crates-io] (root Cargo.toml), so they
-          # are linted here with the rest of the workspace — no separate job.
           cargo clippy --all-features --workspace --tests -- -D warnings
 
   soroban:
     name: Soroban
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    needs: changes
+    timeout-minutes: 30
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
+        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
+        needs.changes.outputs.soroban == 'true'
+      }}
     steps:
       - name: Refresh apt package metadata
         run: sudo apt-get update
@@ -64,15 +148,13 @@ jobs:
         with:
           persist-credentials: false
 
-      # The Soroban toolchain is still required here: `stellar contract build`
-      # (size-budget checks) targets wasm32v1-none. Host unit tests for these
-      # crates now run in the main `test` job on 1.86 via the
-      # stellar-contract-utils [patch.crates-io], so there is no separate
-      # Soroban test/clippy pass.
-      - name: Install Soroban Rust toolchain
-        uses: dtolnay/rust-toolchain@193d6aa1dbbc28bd2c0a6b0e327cfdce68baaf6e
+      - name: Setup Rust
+        uses: ./.github/actions/rust
         with:
           targets: wasm32-unknown-unknown,wasm32v1-none
+
+      - name: Install Soroban build toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal --target wasm32-unknown-unknown --target wasm32v1-none
 
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
@@ -91,7 +173,6 @@ jobs:
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
 
-      # Curator primitives feature matrix (Soroban-related)
       - name: Check curator-primitives (default)
         run: cargo check -p templar-curator-primitives
 
@@ -110,12 +191,19 @@ jobs:
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
+        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
+        needs.changes.outputs.feature_matrix == 'true'
+      }}
     strategy:
       fail-fast: false
       matrix:
-        # Keep this as an explicit curated list rather than a Cartesian product.
-        # The crates need different commands, feature sets, and one row needs a
-        # wasm target, so include-rows stay clearer than generate-and-exclude.
         include:
           - name: primitives std
             package: templar-primitives
@@ -211,16 +299,63 @@ jobs:
 
           "${command[@]}"
 
-  tests:
-    name: Tests
-    timeout-minutes: 40
+  fast-tests:
+    name: Fast Tests
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - name: Free up disk space
         run: |
           echo "Disk space before cleanup:"
           df -h
-          # Remove unnecessary packages
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
+        with:
+          tool: nextest
+
+      - name: Run fast lib tests
+        env:
+          SQLX_OFFLINE: true
+          NEXTEST_PROFILE: ci
+          CARGO_TERM_COLOR: always
+          CARGO_INCREMENTAL: 0
+        run: cargo nextest run --workspace --lib
+
+  near-integration-tests:
+    name: NEAR / Workspace Integration Tests
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
+        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
+        needs.changes.outputs.near_integration == 'true'
+      }}
+    steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
@@ -245,20 +380,13 @@ jobs:
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
 
-      - name: Run tests
+      - name: Run full workspace tests
         env:
           SQLX_OFFLINE: true
-          # Use nextest CI profile with reduced parallelism
           NEXTEST_PROFILE: ci
-          # Optimize cargo build for faster compilation
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
-        run: |
-          # The whole workspace — Soroban crates included — builds on the 1.86
-          # toolchain via the stellar-contract-utils [patch.crates-io], so the
-          # default test pass covers everything. (The Soroban job still builds
-          # the optimized wasm for size budgets on its own toolchain.)
-          ./script/test.sh --workspace
+        run: ./script/test.sh --workspace
 
       - name: Cleanup Docker resources
         if: always()
@@ -270,31 +398,30 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    # Skip coverage when called from other workflows with skip_coverage=true
-    if: ${{ !inputs.skip_coverage }}
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        github.event_name == 'schedule' ||
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||
+        (github.event_name == 'workflow_call' && !inputs.skip_coverage)
+      }}
     steps:
       - name: Free up disk space
         run: |
           echo "Disk space before cleanup:"
           df -h
-
-          # Remove large pre-installed packages
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo rm -rf /opt/hostedtoolcache/CodeQL
           sudo rm -rf /usr/local/share/boost
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
-          # Remove unnecessary packages
           sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell mono-devel || true
           sudo apt-get autoremove -y
           sudo apt-get clean
-
-          # Clean Docker
           sudo docker image prune --all --force
           sudo docker system prune --all --volumes --force
-
           echo "Disk space after cleanup:"
           df -h
 
@@ -318,29 +445,17 @@ jobs:
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-Cinstrument-coverage"
           CARGO_BUILD_JOBS: 2
-          # Use nextest CI profile with optimized parallelism
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
         run: |
-          # --lib: unit tests only (excludes slow WASM integration tests).
-          # Soroban crates build on 1.86 via the stellar-contract-utils
-          # [patch.crates-io], so they are covered here with the rest of the
-          # workspace.
           cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov
 
-          # Aggressive cleanup to free disk space
           echo "Cleaning up build artifacts..."
           rm -rf target/llvm-cov-target/*/debug/deps/*.profraw 2>/dev/null || true
           rm -rf target/llvm-cov-target/*/debug/incremental 2>/dev/null || true
           rm -rf target/llvm-cov-target/*/debug/build 2>/dev/null || true
           rm -rf target/debug/incremental 2>/dev/null || true
           rm -rf target/debug/build 2>/dev/null || true
-
-          # Remove unnecessary cargo cache
-          rm -rf ~/.cargo/registry/index
-          rm -rf ~/.cargo/registry/cache
-          rm -rf ~/.cargo/git/db
-
           echo "Disk space after cleanup:"
           df -h
 
@@ -353,3 +468,102 @@ jobs:
           fail_ci_if_error: true
           verbose: true
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  full-required-gate:
+    name: Full Required Gate
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - changes
+      - code-formatting
+      - code-linter
+      - soroban
+      - feature-matrix
+      - fast-tests
+      - near-integration-tests
+      - coverage
+    steps:
+      - name: Evaluate required CI surface
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_FULL_TESTS: ${{ inputs.run_full_tests || 'false' }}
+          RUN_COVERAGE: ${{ inputs.run_coverage || 'false' }}
+          SKIP_COVERAGE: ${{ inputs.skip_coverage || 'false' }}
+          NEAR_CHANGED: ${{ needs.changes.outputs.near_integration }}
+          SOROBAN_CHANGED: ${{ needs.changes.outputs.soroban }}
+          FEATURE_MATRIX_CHANGED: ${{ needs.changes.outputs.feature_matrix }}
+          FORMAT_RESULT: ${{ needs['code-formatting'].result }}
+          LINTER_RESULT: ${{ needs['code-linter'].result }}
+          FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
+          NEAR_TEST_RESULT: ${{ needs['near-integration-tests'].result }}
+          SOROBAN_RESULT: ${{ needs.soroban.result }}
+          FEATURE_MATRIX_RESULT: ${{ needs['feature-matrix'].result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: |
+          set -euo pipefail
+
+          require_success() {
+            local name="$1"
+            local result="$2"
+            if [ "$result" != "success" ]; then
+              echo "::error::${name} result was ${result}, expected success"
+              exit 1
+            fi
+          }
+
+          fail_if_failed() {
+            local name="$1"
+            local result="$2"
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              echo "::error::${name} result was ${result}"
+              exit 1
+            fi
+          }
+
+          full_ci=false
+          coverage_required=false
+
+          case "$EVENT_NAME" in
+            push|schedule|merge_group)
+              full_ci=true
+              coverage_required=true
+              ;;
+            workflow_dispatch)
+              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
+              [ "$RUN_COVERAGE" = "true" ] && coverage_required=true
+              ;;
+            workflow_call)
+              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
+              [ "$SKIP_COVERAGE" != "true" ] && coverage_required=true
+              ;;
+          esac
+
+          require_success "Code Formatting" "$FORMAT_RESULT"
+          require_success "Code Linter" "$LINTER_RESULT"
+          require_success "Fast Tests" "$FAST_TEST_RESULT"
+
+          if [ "$full_ci" = "true" ] || [ "$NEAR_CHANGED" = "true" ]; then
+            require_success "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+          else
+            fail_if_failed "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+          fi
+
+          if [ "$full_ci" = "true" ] || [ "$SOROBAN_CHANGED" = "true" ]; then
+            require_success "Soroban" "$SOROBAN_RESULT"
+          else
+            fail_if_failed "Soroban" "$SOROBAN_RESULT"
+          fi
+
+          if [ "$full_ci" = "true" ] || [ "$FEATURE_MATRIX_CHANGED" = "true" ]; then
+            require_success "Feature Matrix" "$FEATURE_MATRIX_RESULT"
+          else
+            fail_if_failed "Feature Matrix" "$FEATURE_MATRIX_RESULT"
+          fi
+
+          if [ "$coverage_required" = "true" ]; then
+            require_success "Coverage" "$COVERAGE_RESULT"
+          else
+            fail_if_failed "Coverage" "$COVERAGE_RESULT"
+          fi
+
+          echo "Full required gate passed for ${EVENT_NAME}"
