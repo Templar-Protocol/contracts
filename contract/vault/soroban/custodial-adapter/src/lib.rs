@@ -318,10 +318,12 @@ impl CustodialAdapterContract {
         Ok(())
     }
 
-    /// Extend instance storage TTL (admin-only).
-    pub fn extend_ttl(env: Env, caller: Address) -> Result<(), AdapterError> {
+    /// Extend instance storage TTL.
+    ///
+    /// This is intentionally open: extending TTL is a liveness operation, and
+    /// the transaction caller pays the Soroban resource cost.
+    pub fn extend_ttl(env: Env) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        require_admin(&env, &caller)?;
         Ok(())
     }
 }
@@ -1759,7 +1761,7 @@ mod tests {
             );
         });
         env.as_contract(&contract_id, || {
-            CustodialAdapterContract::extend_ttl(env.clone(), new_admin).unwrap();
+            CustodialAdapterContract::extend_ttl(env.clone()).unwrap();
         });
     }
 
@@ -1821,12 +1823,6 @@ mod tests {
                     Address::generate(&env),
                     new_admin.clone()
                 ),
-                Err(AdapterError::Unauthorized)
-            );
-        });
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                CustodialAdapterContract::extend_ttl(env.clone(), Address::generate(&env)),
                 Err(AdapterError::Unauthorized)
             );
         });
@@ -1896,6 +1892,17 @@ mod tests {
                 CustodialAdapterContract::pending_admin(env.clone()),
                 Err(AdapterError::MissingConfig)
             );
+        });
+    }
+
+    #[test]
+    fn extend_ttl_is_open_liveness_maintenance() {
+        let env = Env::default();
+        env.mock_auths(&[]);
+        let (contract_id, _admin, _vault, _custodian, _asset) = setup_adapter(&env);
+
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::extend_ttl(env.clone()).unwrap();
         });
     }
 

@@ -546,8 +546,6 @@ deploy input and is not emitted by `export-env`.
 
 `extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
 `extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter
-`extend_ttl --caller`. Custodial adapters are extended only when the selected caller matches the
-recorded adapter admin; governance-admin custodial adapters are reported as skipped because the
-current governance contract does not expose an adapter TTL forwarding entrypoint. Manifest contracts
-without an explicit deployment-wide TTL entrypoint, such as the asset token, are reported as
-skipped.
+`extend_ttl --caller`. Custodial adapters use their permissionless `extend_ttl` entrypoint and do
+not require a caller argument. Manifest contracts without an explicit deployment-wide TTL entrypoint,
+such as the asset token, are reported as skipped.
