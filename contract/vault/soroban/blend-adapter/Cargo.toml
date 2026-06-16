@@ -1,6 +1,6 @@
 [package]
 name = "templar-soroban-blend-adapter"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Soroban adapter contract for Blend v2 pool integration"

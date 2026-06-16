@@ -3,8 +3,6 @@ resolver = "3"
 members = [
     "common",
     "contract/market",
-    "contract/proxy-4626-soroban",
-    "contract/proxy-curator-soroban",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
     "contract/proxy-oracle/near/common",
@@ -30,6 +28,8 @@ members = [
     "contract/vault/soroban/blend-adapter",
     "contract/vault/soroban/custodial-adapter",
     "contract/vault/soroban/governance",
+    "contract/vault/soroban/proxy-4626",
+    "contract/vault/soroban/curator-proxy",
     "contract/vault/soroban/share-token",
     "fuzz",
     "tools/*",

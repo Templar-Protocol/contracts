@@ -23,7 +23,7 @@ serde_json.workspace = true
 sha2.workspace = true
 soroban-client = "0.5.5"
 stellar-strkey.workspace = true
-templar-curator-proxy-soroban = { path = "../../contract/proxy-curator-soroban" }
+templar-curator-proxy-soroban = { path = "../../contract/vault/soroban/curator-proxy" }
 templar-soroban-governance = { path = "../../contract/vault/soroban/governance", default-features = false }
 templar-soroban-shared-types = { path = "../../contract/vault/soroban/shared-types" }
 tokio.workspace = true

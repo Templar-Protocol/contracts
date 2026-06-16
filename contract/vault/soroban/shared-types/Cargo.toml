@@ -1,6 +1,6 @@
 [package]
 name = "templar-soroban-shared-types"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
 description = "Shared Soroban ABI selector types for Templar vault contracts"
