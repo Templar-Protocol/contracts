@@ -12,8 +12,8 @@ the [adapter overview](../README.md).
   decode the solana envelope, check the carried public key is trusted and unexpired, verify the
   ed25519 signature over the payload, decode the (little-endian) payload, then apply the channel
   filter and freshness window.
-- `VerifyParams` — `trusted_signers`, `now_s`, `max_timestamp_delay_s`, `max_timestamp_ahead_s`,
-  `allowed_channel_id` (all seconds).
+- `VerifyParams` — `trusted_signers`, `now_s`, `max_timestamp_delay_s`, `max_timestamp_ahead_s`
+  (seconds), and `allowed_channel_id` (channel byte).
 - `VerifiedUpdate { signer: [u8; 32], channel_id, timestamp: Nanoseconds, feeds: Vec<ParsedFeed> }`;
   each `ParsedFeed` field is `None` when the property was absent (or carried Lazer's zero sentinel).
 

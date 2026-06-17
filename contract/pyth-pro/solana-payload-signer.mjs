@@ -49,6 +49,9 @@ function decodePayload(rawInput) {
   if (/^[0-9a-fA-F]+$/.test(input) && input.length % 2 === 0) {
     return Buffer.from(input, "hex");
   }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(input) || input.length % 4 !== 0) {
+    throw new Error("Input must be valid hex or base64");
+  }
   return Buffer.from(input, "base64");
 }
 

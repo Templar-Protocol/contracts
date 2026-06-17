@@ -34,6 +34,10 @@ const WS_URL =
 const CHANNEL = process.env.PYTH_PRO_CHANNEL ?? "fixed_rate@200ms";
 const OUT_DIR = process.env.PYTH_PRO_OUT ?? "payloads";
 const MAX_MESSAGES = Number.parseInt(process.env.MAX_MESSAGES ?? "5", 10);
+if (!Number.isInteger(MAX_MESSAGES) || MAX_MESSAGES <= 0) {
+  console.error("MAX_MESSAGES must be a positive integer.");
+  process.exit(1);
+}
 const FIELD_NAME = "solana";
 const PROPERTIES = [
   "price",

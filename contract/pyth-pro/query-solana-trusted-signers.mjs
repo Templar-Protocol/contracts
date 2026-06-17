@@ -67,16 +67,19 @@ function readTrustedSigner(data, offset, nowS) {
 }
 
 async function getStorageAccount() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
   const response = await fetch(RPC_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
       method: "getAccountInfo",
       params: [STORAGE_ACCOUNT, { encoding: "base64", commitment: "confirmed" }],
     }),
-  });
+  }).finally(() => clearTimeout(timeout));
   if (!response.ok) {
     throw new Error(`Solana RPC failed: ${response.status} ${response.statusText}`);
   }
