@@ -2510,6 +2510,12 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "convert_case"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
+
+[[package]]
+name = "convert_case"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb4a24b1aaf0fd0ce8b45161144d6f42cd91677fd5940fd431183eb023b3a2b8"
@@ -2971,6 +2977,19 @@ checksum = "67e77553c4162a157adbf834ebae5b415acbecbeafc7a74b0e886657506a7611"
 dependencies = [
  "proc-macro2",
  "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "derive_more"
+version = "0.99.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
+dependencies = [
+ "convert_case 0.4.0",
+ "proc-macro2",
+ "quote",
+ "rustc_version 0.4.1",
  "syn 2.0.117",
 ]
 
@@ -7381,6 +7400,21 @@ dependencies = [
  "bitflags 2.11.0",
  "memchr",
  "unicase",
+]
+
+[[package]]
+name = "pyth-lazer-protocol"
+version = "0.43.0"
+source = "git+https://github.com/Templar-Protocol/pyth-lazer-public?rev=10aebfd0075887e9784f9fb65ef28ddbadb57139#10aebfd0075887e9784f9fb65ef28ddbadb57139"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "derive_more 0.99.20",
+ "hex",
+ "rust_decimal",
+ "serde",
+ "strum 0.27.2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -12404,6 +12438,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "strum"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
+dependencies = [
+ "strum_macros 0.27.2",
+]
+
+[[package]]
 name = "strum_macros"
 version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12426,6 +12469,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
  "syn 2.0.117",
 ]
 
@@ -13034,6 +13089,34 @@ dependencies = [
  "templar-proxy-oracle-soroban-common",
  "templar-proxy-oracle-soroban-contract",
  "templar-proxy-oracle-soroban-sep40-adapter-contract",
+]
+
+[[package]]
+name = "templar-pyth-pro-adapter-contract"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "hex",
+ "near-sdk",
+ "near-sdk-contract-tools",
+ "pyth-lazer-protocol",
+ "templar-common",
+ "templar-pyth-pro-verifier",
+]
+
+[[package]]
+name = "templar-pyth-pro-verifier"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "byteorder",
+ "ed25519-dalek",
+ "pyth-lazer-protocol",
+ "rstest",
+ "templar-primitives",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

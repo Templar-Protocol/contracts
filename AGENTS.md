@@ -5,7 +5,7 @@ This repository is a Rust workspace for Templar Protocol smart contracts, servic
 ## Repository Layout
 
 - `common`: shared protocol logic used by contracts and tests
-- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `universal-account`, `lst-oracle`)
+- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `universal-account`, `lst-oracle`, `pyth-pro`)
 - `service`: standalone executables and off-chain services
 - `tools`: operator and developer CLIs
 - `test-utils`: shared test harness utilities
@@ -49,6 +49,12 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Why it matters: this service is an operational security boundary for delegated actions and universal-account flows.
   Watch for: allowed-method changes, nonce handling, gas settings, SQL query changes, storage-deposit behavior, and universal-account deployment/execution integration.
   Minimum verification: run the narrowest relevant `cargo test -p templar-relayer ...`; if SQL changes, update prepared queries as documented in the README.
+- `contract/pyth-pro` (`templar-pyth-pro-verifier` / `templar-pyth-pro-adapter-contract`)
+  Read first: `contract/pyth-pro/README.md`, `contract/pyth-pro/SPEC.md`, `contract/pyth-pro/TRUSTED_SIGNERS.md`.
+  Read/inspect: `contract/pyth-pro/verifier/src/verify.rs`, `contract/pyth-pro/contract/src/lib.rs`, `contract/pyth-pro/contract/src/views.rs`.
+  Why it matters: a drop-in `pyth-oracle.near` price oracle — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
+  Watch for: signer/trust/expiry + ed25519 checks, canonical-encoding (`NonCanonical`) rejection, the freshness window and per-feed monotonic anti-replay, confidence/EMA discipline, `SignerSet` invariants, and storage-fee/refund.
+  Minimum verification: `cargo test -p templar-pyth-pro-verifier -p templar-pyth-pro-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-pro-adapter-contract`.
 
 ## Working Norms
 
