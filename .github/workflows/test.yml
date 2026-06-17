@@ -49,6 +49,10 @@ jobs:
       near_integration: ${{ steps.filter.outputs.near_integration }}
       soroban: ${{ steps.filter.outputs.soroban }}
       feature_matrix: ${{ steps.filter.outputs.feature_matrix }}
+      run_near_integration: ${{ steps.plan.outputs.run_near_integration }}
+      run_soroban: ${{ steps.plan.outputs.run_soroban }}
+      run_feature_matrix: ${{ steps.plan.outputs.run_feature_matrix }}
+      run_coverage: ${{ steps.plan.outputs.run_coverage }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -100,6 +104,55 @@ jobs:
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
 
+      - name: Plan CI surface
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_FULL_TESTS: ${{ inputs.run_full_tests || 'false' }}
+          RUN_COVERAGE: ${{ inputs.run_coverage || 'false' }}
+          SKIP_COVERAGE: ${{ inputs.skip_coverage || 'false' }}
+          NEAR_CHANGED: ${{ steps.filter.outputs.near_integration }}
+          SOROBAN_CHANGED: ${{ steps.filter.outputs.soroban }}
+          FEATURE_MATRIX_CHANGED: ${{ steps.filter.outputs.feature_matrix }}
+        run: |
+          set -euo pipefail
+
+          full_ci=false
+          coverage_required=false
+
+          case "$EVENT_NAME" in
+            push|schedule|merge_group)
+              full_ci=true
+              coverage_required=true
+              ;;
+            pull_request)
+              # Direct PRs rely on change detection; full CI and coverage stay opt-in.
+              ;;
+            workflow_dispatch)
+              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
+              [ "$RUN_COVERAGE" = "true" ] && coverage_required=true
+              ;;
+            workflow_call)
+              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
+              [ "$SKIP_COVERAGE" != "true" ] && coverage_required=true
+              ;;
+          esac
+
+          run_near_integration="$full_ci"
+          run_soroban="$full_ci"
+          run_feature_matrix="$full_ci"
+
+          [ "$NEAR_CHANGED" = "true" ] && run_near_integration=true
+          [ "$SOROBAN_CHANGED" = "true" ] && run_soroban=true
+          [ "$FEATURE_MATRIX_CHANGED" = "true" ] && run_feature_matrix=true
+
+          {
+            echo "run_near_integration=${run_near_integration}"
+            echo "run_soroban=${run_soroban}"
+            echo "run_feature_matrix=${run_feature_matrix}"
+            echo "run_coverage=${coverage_required}"
+          } >> "$GITHUB_OUTPUT"
+
   code-formatting:
     name: Code Formatting
     runs-on: ubuntu-latest
@@ -132,15 +185,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     timeout-minutes: 30
-    if: >-
-      ${{
-        github.event_name == 'push' ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'merge_group' ||
-        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
-        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
-        needs.changes.outputs.soroban == 'true'
-      }}
+    if: ${{ needs.changes.outputs.run_soroban == 'true' }}
     steps:
       - name: Refresh apt package metadata
         run: sudo apt-get update
@@ -193,15 +238,7 @@ jobs:
     name: Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: changes
-    if: >-
-      ${{
-        github.event_name == 'push' ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'merge_group' ||
-        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
-        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
-        needs.changes.outputs.feature_matrix == 'true'
-      }}
+    if: ${{ needs.changes.outputs.run_feature_matrix == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -343,15 +380,7 @@ jobs:
     timeout-minutes: 40
     runs-on: ubuntu-latest
     needs: changes
-    if: >-
-      ${{
-        github.event_name == 'push' ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'merge_group' ||
-        (github.event_name == 'workflow_dispatch' && inputs.run_full_tests) ||
-        (github.event_name == 'workflow_call' && inputs.run_full_tests) ||
-        needs.changes.outputs.near_integration == 'true'
-      }}
+    if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
     steps:
       - name: Free up disk space
         run: |
@@ -398,18 +427,12 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    needs: changes
     timeout-minutes: 40
     permissions:
       contents: read
       id-token: write # Required for Codecov OIDC authentication
-    if: >-
-      ${{
-        github.event_name == 'push' ||
-        github.event_name == 'schedule' ||
-        github.event_name == 'merge_group' ||
-        (github.event_name == 'workflow_dispatch' && inputs.run_coverage) ||
-        (github.event_name == 'workflow_call' && !inputs.skip_coverage)
-      }}
+    if: ${{ needs.changes.outputs.run_coverage == 'true' }}
     steps:
       - name: Free up disk space
         run: |
@@ -489,13 +512,10 @@ jobs:
     steps:
       - name: Evaluate required CI surface
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          RUN_FULL_TESTS: ${{ inputs.run_full_tests || 'false' }}
-          RUN_COVERAGE: ${{ inputs.run_coverage || 'false' }}
-          SKIP_COVERAGE: ${{ inputs.skip_coverage || 'false' }}
-          NEAR_CHANGED: ${{ needs.changes.outputs.near_integration }}
-          SOROBAN_CHANGED: ${{ needs.changes.outputs.soroban }}
-          FEATURE_MATRIX_CHANGED: ${{ needs.changes.outputs.feature_matrix }}
+          NEAR_REQUIRED: ${{ needs.changes.outputs.run_near_integration }}
+          SOROBAN_REQUIRED: ${{ needs.changes.outputs.run_soroban }}
+          FEATURE_MATRIX_REQUIRED: ${{ needs.changes.outputs.run_feature_matrix }}
+          COVERAGE_REQUIRED: ${{ needs.changes.outputs.run_coverage }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           FORMAT_RESULT: ${{ needs['code-formatting'].result }}
           LINTER_RESULT: ${{ needs['code-linter'].result }}
@@ -525,51 +545,30 @@ jobs:
             fi
           }
 
-          full_ci=false
-          coverage_required=false
-
-          case "$EVENT_NAME" in
-            push|schedule|merge_group)
-              full_ci=true
-              coverage_required=true
-              ;;
-            pull_request)
-              # Direct PRs rely on change detection; full CI and coverage stay opt-in.
-              ;;
-            workflow_dispatch)
-              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
-              [ "$RUN_COVERAGE" = "true" ] && coverage_required=true
-              ;;
-            workflow_call)
-              [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
-              [ "$SKIP_COVERAGE" != "true" ] && coverage_required=true
-              ;;
-          esac
-
           require_success "Change Detection" "$CHANGES_RESULT"
           require_success "Code Formatting" "$FORMAT_RESULT"
           require_success "Code Linter" "$LINTER_RESULT"
           require_success "Fast Tests" "$FAST_TEST_RESULT"
 
-          if [ "$full_ci" = "true" ] || [ "$NEAR_CHANGED" = "true" ]; then
+          if [ "$NEAR_REQUIRED" = "true" ]; then
             require_success "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
           else
             fail_if_failed "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
           fi
 
-          if [ "$full_ci" = "true" ] || [ "$SOROBAN_CHANGED" = "true" ]; then
+          if [ "$SOROBAN_REQUIRED" = "true" ]; then
             require_success "Soroban" "$SOROBAN_RESULT"
           else
             fail_if_failed "Soroban" "$SOROBAN_RESULT"
           fi
 
-          if [ "$full_ci" = "true" ] || [ "$FEATURE_MATRIX_CHANGED" = "true" ]; then
+          if [ "$FEATURE_MATRIX_REQUIRED" = "true" ]; then
             require_success "Feature Matrix" "$FEATURE_MATRIX_RESULT"
           else
             fail_if_failed "Feature Matrix" "$FEATURE_MATRIX_RESULT"
           fi
 
-          if [ "$coverage_required" = "true" ]; then
+          if [ "$COVERAGE_REQUIRED" = "true" ]; then
             require_success "Coverage" "$COVERAGE_RESULT"
           else
             fail_if_failed "Coverage" "$COVERAGE_RESULT"
