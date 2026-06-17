@@ -27,12 +27,13 @@ impl ArtifactSpec {
             ArtifactName::Governance => Self::governance(),
             ArtifactName::ShareToken => Self::share_token(),
             ArtifactName::BlendAdapter => Self::blend_adapter(),
+            ArtifactName::CustodialAdapter => Self::custodial_adapter(),
             ArtifactName::Proxy4626 => Self::proxy_4626(),
             ArtifactName::CuratorProxy => Self::curator_proxy(),
         }
     }
 
-    pub fn stack_artifacts(include_blend: bool) -> Vec<Self> {
+    pub fn stack_artifacts(include_blend: bool, include_custodial: bool) -> Vec<Self> {
         let mut artifacts = vec![
             Self::vault(),
             Self::governance(),
@@ -42,6 +43,9 @@ impl ArtifactSpec {
         ];
         if include_blend {
             artifacts.push(Self::blend_adapter());
+        }
+        if include_custodial {
+            artifacts.push(Self::custodial_adapter());
         }
         artifacts
     }
@@ -82,6 +86,16 @@ impl ArtifactSpec {
             package: "templar-soroban-blend-adapter",
             wasm_relative_path:
                 "target/wasm32-unknown-unknown/release-soroban/templar_soroban_blend_adapter.wasm",
+            build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
+        }
+    }
+
+    const fn custodial_adapter() -> Self {
+        Self {
+            key: "custodial_adapter",
+            package: "templar-soroban-custodial-adapter",
+            wasm_relative_path:
+                "target/wasm32-unknown-unknown/release-soroban/templar_soroban_custodial_adapter.wasm",
             build_output_dir: "target/wasm32-unknown-unknown/release-soroban",
         }
     }
