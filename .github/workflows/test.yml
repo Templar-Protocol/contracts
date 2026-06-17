@@ -38,9 +38,8 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: read
-  pull-requests: read
-  id-token: write # Required for OIDC with Codecov
+  contents: read # Required to checkout repository contents
+  pull-requests: read # Required for path filtering on PR events
 
 jobs:
   changes:
@@ -57,7 +56,7 @@ jobs:
           persist-credentials: false
 
       - name: Detect changed surfaces
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590
         id: filter
         with:
           filters: |
@@ -88,8 +87,11 @@ jobs:
               - 'tools/manager/src/**'
               - 'tools/manager/tests/**'
             soroban:
+              - 'contract/proxy-oracle/governance-kernel/**'
+              - 'contract/proxy-oracle/kernel/**'
               - 'contract/proxy-oracle/soroban/**'
               - 'contract/vault/curator-primitives/**'
+              - 'contract/vault/kernel/**'
               - 'contract/vault/soroban/**'
               - 'script/soroban/**'
               - 'tools/soroban-vault-cli/**'
@@ -161,11 +163,10 @@ jobs:
         with:
           tool: just
 
-      - name: Install packages
-        run: sudo apt-get install -y libdbus-1-dev libudev-dev pkg-config
-
       - name: Install stellar CLI
-        run: script/soroban/install-stellar-cli.sh
+        uses: stellar/stellar-cli@60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc
+        with:
+          version: 26.0.0
 
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
@@ -398,6 +399,9 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write # Required for Codecov OIDC authentication
     if: >-
       ${{
         github.event_name == 'push' ||
@@ -492,6 +496,7 @@ jobs:
           NEAR_CHANGED: ${{ needs.changes.outputs.near_integration }}
           SOROBAN_CHANGED: ${{ needs.changes.outputs.soroban }}
           FEATURE_MATRIX_CHANGED: ${{ needs.changes.outputs.feature_matrix }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
           FORMAT_RESULT: ${{ needs['code-formatting'].result }}
           LINTER_RESULT: ${{ needs['code-linter'].result }}
           FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
@@ -528,6 +533,9 @@ jobs:
               full_ci=true
               coverage_required=true
               ;;
+            pull_request)
+              # Direct PRs rely on change detection; full CI and coverage stay opt-in.
+              ;;
             workflow_dispatch)
               [ "$RUN_FULL_TESTS" = "true" ] && full_ci=true
               [ "$RUN_COVERAGE" = "true" ] && coverage_required=true
@@ -538,6 +546,7 @@ jobs:
               ;;
           esac
 
+          require_success "Change Detection" "$CHANGES_RESULT"
           require_success "Code Formatting" "$FORMAT_RESULT"
           require_success "Code Linter" "$LINTER_RESULT"
           require_success "Fast Tests" "$FAST_TEST_RESULT"
