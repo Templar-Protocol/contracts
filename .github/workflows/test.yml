@@ -574,4 +574,4 @@ jobs:
             fail_if_failed "Coverage" "$COVERAGE_RESULT"
           fi
 
-          echo "Full required gate passed for ${EVENT_NAME}"
+          echo "Full required gate passed"
