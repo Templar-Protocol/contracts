@@ -21,8 +21,8 @@ impl Contract {
     }
 
     pub fn get_pools(&self, from_index: Option<u64>, limit: Option<u64>) -> Vec<PoolInfo> {
-        let from_index = from_index.unwrap_or(0) as usize;
-        let limit = limit.unwrap_or(u64::MAX) as usize;
+        let from_index = usize::try_from(from_index.unwrap_or(0)).unwrap_or(usize::MAX);
+        let limit = usize::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(usize::MAX);
         self.pools
             .iter()
             .skip(from_index)
