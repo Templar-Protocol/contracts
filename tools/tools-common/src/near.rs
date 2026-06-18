@@ -21,9 +21,8 @@ use near_sdk::{
     serde_json::{self},
     AccountId, Gas, NearToken,
 };
+use templar_gateway_types::Version;
 use tokio::time::sleep;
-
-use crate::version::Version;
 
 pub type Client = JsonRpcClient;
 

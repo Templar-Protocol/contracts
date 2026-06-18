@@ -1,4 +1,4 @@
-use templar_tools_common::version::RegistryVersion;
+use templar_gateway_types::RegistryVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},

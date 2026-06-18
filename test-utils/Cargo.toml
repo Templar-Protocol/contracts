@@ -11,7 +11,7 @@ ed25519-dalek.workspace = true
 hex-literal.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-sdk-contract-tools.workspace = true
-near-workspaces.workspace = true
+near-workspaces = { workspace = true, features = ["unstable"] }
 p256.workspace = true
 rstest.workspace = true
 serde.workspace = true

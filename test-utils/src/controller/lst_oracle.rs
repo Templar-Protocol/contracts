@@ -19,17 +19,20 @@ impl ContractController for LstOracleController {
 }
 
 impl LstOracleController {
-    pub async fn deploy(account: Account, oracle_id: AccountId) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| {
-                get_contract(
-                    "templar_lst_oracle_contract",
-                    "contract/proxy-oracle/near/lst-contract",
-                )
-            })
-            .await;
+        WASM.get_or_init(|| {
+            get_contract(
+                "templar_lst_oracle_contract",
+                "contract/proxy-oracle/near/lst-contract",
+            )
+        })
+        .await
+    }
+
+    pub async fn deploy(account: Account, oracle_id: AccountId) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract

@@ -2,8 +2,7 @@ use std::path::Path;
 
 use anyhow::Context;
 use sha2::Digest;
-
-use crate::version::Version;
+use templar_gateway_types::Version;
 
 fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
     cargo_metadata::MetadataCommand::new()

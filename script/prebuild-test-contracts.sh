@@ -12,6 +12,12 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/mock/mt"
 cargo near build non-reproducible-wasm 1>&2
 
+cd "$ROOT_DIR/mock/ref"
+cargo near build non-reproducible-wasm 1>&2
+
+cd "$ROOT_DIR/mock/receiver"
+cargo near build non-reproducible-wasm 1>&2
+
 cd "$ROOT_DIR/contract/registry"
 cargo near build non-reproducible-wasm 1>&2
 

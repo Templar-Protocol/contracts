@@ -1,0 +1,117 @@
+use near_openapi_types::TxExecutionStatus as NearTxExecutionStatus;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{IdempotencyKey, ManagedAccountId, NearToken, OperationRecord};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TxExecutionStatus {
+    None,
+    Included,
+    #[default]
+    ExecutedOptimistic,
+    IncludedFinal,
+    Executed,
+    Final,
+}
+
+impl From<TxExecutionStatus> for NearTxExecutionStatus {
+    fn from(value: TxExecutionStatus) -> Self {
+        match value {
+            TxExecutionStatus::None => Self::None,
+            TxExecutionStatus::Included => Self::Included,
+            TxExecutionStatus::ExecutedOptimistic => Self::ExecutedOptimistic,
+            TxExecutionStatus::IncludedFinal => Self::IncludedFinal,
+            TxExecutionStatus::Executed => Self::Executed,
+            TxExecutionStatus::Final => Self::Final,
+        }
+    }
+}
+
+impl From<NearTxExecutionStatus> for TxExecutionStatus {
+    fn from(value: NearTxExecutionStatus) -> Self {
+        match value {
+            NearTxExecutionStatus::None => Self::None,
+            NearTxExecutionStatus::Included => Self::Included,
+            NearTxExecutionStatus::ExecutedOptimistic => Self::ExecutedOptimistic,
+            NearTxExecutionStatus::IncludedFinal => Self::IncludedFinal,
+            NearTxExecutionStatus::Executed => Self::Executed,
+            NearTxExecutionStatus::Final => Self::Final,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+pub struct Pagination {
+    pub offset: Option<u32>,
+    #[serde(rename = "count", alias = "limit")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "encoding", content = "value", rename_all = "snake_case")]
+pub enum ContractArgs {
+    Json(serde_json::Value),
+    Raw(crate::Base64Bytes),
+}
+
+impl ContractArgs {
+    pub fn try_into_bytes(self) -> Result<Vec<u8>, serde_json::Error> {
+        match self {
+            Self::Json(value) => serde_json::to_vec(&value),
+            Self::Raw(bytes) => Ok(bytes.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ReadRequest<T> {
+    #[serde(flatten)]
+    pub params: T,
+}
+
+impl<T> ReadRequest<T> {
+    pub fn new(params: T) -> Self {
+        Self { params }
+    }
+}
+
+impl<T> From<T> for ReadRequest<T> {
+    fn from(params: T) -> Self {
+        Self { params }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WriteRequest<T> {
+    pub signer_account_id: ManagedAccountId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<IdempotencyKey>,
+    #[serde(flatten)]
+    pub body: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WriteOperationResult {
+    pub operation: OperationRecord,
+}
+
+impl From<OperationRecord> for WriteOperationResult {
+    fn from(operation: OperationRecord) -> Self {
+        Self { operation }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StorageBalanceBounds {
+    pub min: NearToken,
+    pub max: Option<NearToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StorageBalance {
+    pub total: NearToken,
+    pub available: NearToken,
+}

@@ -1,0 +1,43 @@
+[package]
+name = "templar-gateway-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+actix.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+hex.workspace = true
+moka.workspace = true
+near-account-id = { workspace = true, features = ["serde", "schemars"] }
+near-api.workspace = true
+near-contract-standards.workspace = true
+near-openapi-client.workspace = true
+near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
+serde.workspace = true
+serde_json_canonicalizer.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-gateway-types.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
+templar-universal-account.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
+near-sandbox.workspace = true
+near-token.workspace = true
+test-utils.workspace = true
+tokio.workspace = true

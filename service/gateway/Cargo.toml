@@ -1,0 +1,53 @@
+[package]
+name = "templar-gateway-service"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+actix.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+dirs.workspace = true
+dotenvy.workspace = true
+jsonrpsee = { workspace = true, features = ["server", "macros"] }
+near-account-id.workspace = true
+near-api.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+templar-gateway-core.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-oracle-updates-spec.workspace = true
+templar-gateway-oracle-updates-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-runtime.workspace = true
+templar-gateway-store.workspace = true
+templar-gateway-types.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+jsonrpsee = { workspace = true, features = ["server"] }
+near-sandbox.workspace = true
+near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
+near-token.workspace = true
+reqwest.workspace = true
+templar-common.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-testing.workspace = true
+templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
+templar-universal-account.workspace = true
+test-utils.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

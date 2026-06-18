@@ -13,7 +13,7 @@ hex.workspace = true
 k256.workspace = true
 near-contract-standards.workspace = true
 near-sdk-contract-tools.workspace = true
-near-sdk.workspace = true
+near-sdk = { workspace = true, default-features = false }
 primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
 schemars.workspace = true
@@ -38,5 +38,6 @@ workspace = true
 
 [features]
 default = []
+abi = ["near-sdk/abi"]
 non-contract-usage = ["near-sdk/non-contract-usage"]
 rpc = ["dep:clap", "dep:near-jsonrpc-client", "dep:near-primitives"]

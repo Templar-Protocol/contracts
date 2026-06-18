@@ -17,8 +17,8 @@ use templar_common::{
     asset::{BorrowAsset, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     market::MarketConfiguration,
 };
+use templar_gateway_types::MarketVersion;
 use templar_tools_common::near::{self, Function};
-use templar_tools_common::version::MarketVersion;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone, Debug)]

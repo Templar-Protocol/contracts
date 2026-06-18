@@ -24,12 +24,15 @@ impl ContractController for MockOracleController {
 impl RedStoneAdapterInterface for MockOracleController {}
 
 impl MockOracleController {
-    pub async fn deploy(account: Account) -> Self {
-        static WASM_MOCK_ORACLE: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM_MOCK_ORACLE
-            .get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
-            .await;
+        WASM.get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
+            .await
+    }
+
+    pub async fn deploy(account: Account) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract
@@ -47,8 +50,20 @@ impl MockOracleController {
         #[view]
         pub fn list_ema_prices_no_older_than(price_ids: Vec<PriceIdentifier>, age: u32) -> OracleResponse;
 
+        #[view]
+        pub fn list_ema_prices_unsafe(price_ids: Vec<PriceIdentifier>) -> OracleResponse;
+
+        #[view]
+        pub fn last_pyth_update_data() -> Option<String>;
+
+        #[view]
+        pub fn pyth_update_count() -> near_sdk::json_types::U64;
+
         #[call(exec)]
         pub fn set_pyth_price(price_identifier: PriceIdentifier, price: Option<pyth::Price>);
+
+        #[call(exec)]
+        pub fn update_price_feeds(data: String);
 
         #[call(exec)]
         pub fn set_redstone_price(feed_id: FeedId, data: Option<FeedData>);

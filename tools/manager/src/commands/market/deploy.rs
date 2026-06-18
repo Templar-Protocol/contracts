@@ -1,5 +1,5 @@
 use templar_common::market::MarketConfiguration;
-use templar_tools_common::version::MarketVersion;
+use templar_gateway_types::MarketVersion;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},

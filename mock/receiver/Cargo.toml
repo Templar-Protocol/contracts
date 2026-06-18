@@ -1,0 +1,17 @@
+[package]
+name = "mock-receiver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+getrandom.workspace = true
+near-contract-standards.workspace = true
+near-sdk.workspace = true
+
+[lints]
+workspace = true

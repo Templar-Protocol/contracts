@@ -24,12 +24,15 @@ impl ContractController for RegistryController {
 }
 
 impl RegistryController {
-    pub async fn new(account: Account) -> Self {
-        static WASM_REGISTRY: OnceCell<Vec<u8>> = OnceCell::const_new();
+    pub async fn wasm() -> &'static [u8] {
+        static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM_REGISTRY
-            .get_or_init(|| get_contract("templar_registry_contract", "contract/registry"))
-            .await;
+        WASM.get_or_init(|| get_contract("templar_registry_contract", "contract/registry"))
+            .await
+    }
+
+    pub async fn new(account: Account) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         // Registry account will be its own owner

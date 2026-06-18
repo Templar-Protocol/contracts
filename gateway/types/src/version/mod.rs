@@ -1,13 +1,28 @@
-mod registry_version;
-pub use registry_version::{Registry, RegistryVersion};
 mod market_version;
+mod proxy_oracle_version;
+mod registry_version;
+
 pub use market_version::{Market, MarketVersion};
+pub use proxy_oracle_version::{ProxyOracle, ProxyOracleVersion};
+pub use registry_version::{Registry, RegistryVersion};
 
 type N = u64;
 type Repr = (N, N, N);
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
 pub struct Version<T> {
+    #[serde(skip)]
+    #[schemars(skip)]
     _phantom: std::marker::PhantomData<T>,
     pub major: N,
     pub minor: N,

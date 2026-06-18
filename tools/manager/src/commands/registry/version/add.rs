@@ -2,10 +2,8 @@ use anyhow::Context;
 use clap::Args;
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
-use templar_tools_common::{
-    near::{self, Function},
-    version::RegistryVersion,
-};
+use templar_gateway_types::RegistryVersion;
+use templar_tools_common::near::{self, Function};
 
 use crate::{
     util::{ContractLoader, SignerArgs},

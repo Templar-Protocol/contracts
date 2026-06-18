@@ -5,11 +5,11 @@ use near_sdk::{
     json_types::{Base64VecU8, U64},
     near,
     store::LookupMap,
-    PanicOnDefault,
+    AccountId, PanicOnDefault,
 };
 use templar_common::oracle::{
     pyth::{Price, PriceIdentifier, Pyth},
-    redstone::{FeedData, FeedId, GetPrices, RedStoneContractInterface},
+    redstone::{config, Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, Role},
 };
 use templar_primitives::{time::Nanoseconds, SU256};
 
@@ -18,6 +18,10 @@ use templar_primitives::{time::Nanoseconds, SU256};
 pub struct Contract {
     redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
+    modify_roles: Vec<AccountId>,
+    trusted_updaters: Vec<AccountId>,
+    last_pyth_update_data: Option<String>,
+    pyth_update_count: u64,
 }
 
 #[near]
@@ -27,6 +31,38 @@ impl Contract {
         Self {
             redstone_prices: LookupMap::new(b"r"),
             pyth_prices: LookupMap::new(b"p"),
+            modify_roles: Vec::new(),
+            trusted_updaters: Vec::new(),
+            last_pyth_update_data: None,
+            pyth_update_count: 0,
+        }
+    }
+
+    pub fn get_config(&self) -> Config {
+        config::test()
+    }
+
+    pub fn list_role(&self, role: Role) -> Vec<AccountId> {
+        match role {
+            Role::ModifyRoles => self.modify_roles.clone(),
+            Role::TrustedUpdater => self.trusted_updaters.clone(),
+        }
+    }
+
+    #[payable]
+    pub fn set_role(&mut self, account_id: AccountId, role: Role, set: Option<bool>) {
+        let set = set.unwrap_or(true);
+        let entries = match role {
+            Role::ModifyRoles => &mut self.modify_roles,
+            Role::TrustedUpdater => &mut self.trusted_updaters,
+        };
+
+        if set {
+            if !entries.contains(&account_id) {
+                entries.push(account_id);
+            }
+        } else {
+            entries.retain(|entry| entry != &account_id);
         }
     }
 
@@ -45,12 +81,35 @@ impl Contract {
             self.pyth_prices.remove(&price_identifier);
         }
     }
+
+    #[payable]
+    pub fn update_price_feeds(&mut self, data: String) {
+        self.last_pyth_update_data = Some(data);
+        self.pyth_update_count += 1;
+    }
+
+    pub fn last_pyth_update_data(&self) -> Option<String> {
+        self.last_pyth_update_data.clone()
+    }
+
+    pub fn pyth_update_count(&self) -> U64 {
+        self.pyth_update_count.into()
+    }
 }
 
 #[near]
 impl Pyth for Contract {
     fn price_feed_exists(&self, price_identifier: PriceIdentifier) -> bool {
         self.pyth_prices.contains_key(&price_identifier)
+    }
+
+    fn list_ema_prices_no_older_than(
+        &self,
+        price_ids: Vec<PriceIdentifier>,
+        age: u64,
+    ) -> HashMap<PriceIdentifier, Option<Price>> {
+        let _ = age;
+        self.list_ema_prices_unsafe(price_ids)
     }
 
     fn list_ema_prices_unsafe(
@@ -62,15 +121,6 @@ impl Pyth for Contract {
             r.insert(price_id, self.pyth_prices.get(&price_id).cloned());
         }
         r
-    }
-
-    fn list_ema_prices_no_older_than(
-        &self,
-        price_ids: Vec<PriceIdentifier>,
-        age: u64,
-    ) -> HashMap<PriceIdentifier, Option<Price>> {
-        let _ = age;
-        self.list_ema_prices_unsafe(price_ids)
     }
 }
 
@@ -114,7 +164,17 @@ impl RedStoneContractInterface for Contract {
     }
 
     fn write_prices(&mut self, feed_ids: Vec<FeedId>, payload: Base64VecU8) {
-        env::abort()
+        let now = Nanoseconds::from_ms(env::block_timestamp_ms());
+        for feed_id in feed_ids {
+            self.redstone_prices.insert(
+                feed_id,
+                FeedData {
+                    price: primitive_types::U256::from((payload.0.len() as u128).max(1)).into(),
+                    package_timestamp: now,
+                    write_timestamp: now,
+                },
+            );
+        }
     }
 }
 

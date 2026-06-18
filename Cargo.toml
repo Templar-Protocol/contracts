@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "common",
+    "gateway/*",
     "contract/market",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
@@ -37,7 +38,8 @@ members = [
     "mock/*",
     "service/*",
     "test-utils",
-    "universal-account", "primitives",
+    "universal-account",
+    "primitives",
 ]
 
 [workspace.package]
@@ -47,6 +49,7 @@ edition = "2021"
 version = "1.2.1"
 
 [workspace.dependencies]
+actix = "0.13.5"
 alloy = { version = "1", default-features = false }
 alloy-primitives = { version = "1", default-features = false }
 anyhow = "1.0.102"
@@ -68,24 +71,34 @@ derive_more = { version = "1", default-features = false, features = [
     "display",
     "is_variant",
 ] }
+dotenvy = "0.15.7"
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4"
 itertools = "0.14.0"
+jsonrpsee = "0.26.0"
 k256 = "0.13.4"
 libfuzzer-sys = "0.4"
+moka = { version = "0.12.10", features = ["future", "sync"] }
 near-account-id = "2.6"
+near-api = "0.8.5"
+near-api-types = "0.8.5"
 near-chain-configs = "0.34.7"
 near-contract-standards = "5.25"
 near-crypto = "0.34.7"
+near-gas = "0.3.4"
 near-jsonrpc-client = "0.20.0"
 near-jsonrpc-primitives = "0.34.7"
+near-openapi-types = "0.8"
+near-openapi-client = "0.8.0"
 near-parameters = "0.34.7"
 near-primitives = "0.34.7"
 near-primitives-core = "0.34.7"
-near-sdk = { version = "5.25", features = ["unstable"] }
+near-sdk = { version = "5.25", default-features = false, features = ["unstable"] }
 near-sdk-contract-tools = "4.0.0"
-near-workspaces = { version = "0.22.1", features = ["unstable"] }
+near-sandbox = "0.3.9"
+near-token = "0.3.3"
+near-workspaces = "0.22.1"
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
 redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "3.1.0-pre1", default-features = false }
@@ -95,10 +108,32 @@ schemars = { version = "0.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 secrecy = "0.10.3"
+serde_json_canonicalizer = "0.3.2"
+sqlx = { version = "0.8", features = [
+    "chrono",
+    "runtime-tokio",
+    "tls-native-tls",
+    "postgres",
+    "derive",
+    "json",
+    "macros",
+    "migrate",
+    "uuid",
+] }
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-gateway-core = { path = "./gateway/core" }
+templar-gateway-macros = { path = "./gateway/macros" }
+templar-gateway-methods-dispatch = { path = "./gateway/methods-dispatch" }
+templar-gateway-methods-spec = { path = "./gateway/methods-spec" }
+templar-gateway-oracle-updates-dispatch = { path = "./gateway/oracle-updates-dispatch" }
+templar-gateway-oracle-updates-spec = { path = "./gateway/oracle-updates-spec" }
+templar-gateway-runtime = { path = "./gateway/runtime" }
+templar-gateway-store = { path = "./gateway/store" }
+templar-gateway-testing = { path = "./gateway/testing" }
+templar-gateway-types = { path = "./gateway/types" }
 templar-primitives = { path = "./primitives" }
 templar-proxy-oracle-governance-kernel = { path = "./contract/proxy-oracle/governance-kernel" }
 templar-proxy-oracle-kernel = { path = "./contract/proxy-oracle/kernel" }
@@ -127,6 +162,8 @@ tracing = "0.1.44"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uniffi = "0.31.0"
+url = "2.5"
+uuid = { version = "1", features = ["serde", "v4"] }
 wiremock = "0.5.22"
 zeroize = "1.8.2"
 

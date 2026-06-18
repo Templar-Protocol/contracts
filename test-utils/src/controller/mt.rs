@@ -18,12 +18,15 @@ impl ContractController for MtController {
 }
 
 impl MtController {
-    pub async fn deploy(account: Account) -> Self {
+    pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        let wasm = WASM
-            .get_or_init(|| get_contract("mock_mt", "mock/mt"))
-            .await;
+        WASM.get_or_init(|| get_contract("mock_mt", "mock/mt"))
+            .await
+    }
+
+    pub async fn deploy(account: Account) -> Self {
+        let wasm = Self::wasm().await;
 
         let contract = account.deploy(wasm).await.unwrap().unwrap();
         contract

@@ -17,6 +17,7 @@ near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 sha2.workspace = true
 templar-common.workspace = true
+templar-gateway-types.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
