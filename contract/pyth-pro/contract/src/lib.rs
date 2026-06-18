@@ -43,7 +43,10 @@ use crate::state::State;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct TrustedSigner {
-    #[serde(with = "hex::serde")]
+    #[serde(
+        serialize_with = "hex::serde::serialize",
+        deserialize_with = "hex::serde::deserialize"
+    )]
     pub public_key: [u8; 32],
     pub expires_at_s: u64,
 }
@@ -155,6 +158,54 @@ impl<'de> near_sdk::serde::Deserialize<'de> for SignerSet {
     ) -> Result<Self, D::Error> {
         let signers = Vec::<TrustedSigner>::deserialize(deserializer)?;
         Self::try_new(signers).map_err(near_sdk::serde::de::Error::custom)
+    }
+}
+
+// ABI schemas. `SignerSet` has hand-written Borsh/serde impls (transparent over `Vec<TrustedSigner>`,
+// validated on the way in), so the `#[near]` macro can't derive its schemas — and the `#[near]`
+// schema on `Config` recurses into this field under near-sdk's `abi` build. These impls are
+// unconditional (matching `templar-common`'s `Wad`/`Number`): they describe the wire form via
+// always-available primitives, so they need neither an `abi` feature gate nor `TrustedSigner`'s own
+// (abi-only) schemas.
+impl near_sdk::borsh::BorshSchema for SignerSet {
+    fn add_definitions_recursively(
+        definitions: &mut std::collections::BTreeMap<
+            near_sdk::borsh::schema::Declaration,
+            near_sdk::borsh::schema::Definition,
+        >,
+    ) {
+        // A `TrustedSigner` (`[u8; 32]` then `u64`) is Borsh-identical to that tuple, so the set is
+        // byte-for-byte a `Vec<([u8; 32], u64)>`.
+        <Vec<([u8; 32], u64)> as near_sdk::borsh::BorshSchema>::add_definitions_recursively(
+            definitions,
+        );
+    }
+
+    fn declaration() -> near_sdk::borsh::schema::Declaration {
+        <Vec<([u8; 32], u64)> as near_sdk::borsh::BorshSchema>::declaration()
+    }
+}
+
+impl schemars::JsonSchema for SignerSet {
+    fn schema_name() -> String {
+        "SignerSet".to_string()
+    }
+
+    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        // The JSON form is an array of `TrustedSigner` objects (`public_key` as a hex string). Mirror
+        // that with a schema-only DTO so this impl never needs `TrustedSigner: JsonSchema`.
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct TrustedSignerSchema {
+            #[schemars(with = "String")]
+            public_key: [u8; 32],
+            expires_at_s: u64,
+        }
+        <Vec<TrustedSignerSchema> as schemars::JsonSchema>::json_schema(generator)
+    }
+
+    fn is_referenceable() -> bool {
+        false
     }
 }
 
@@ -367,7 +418,10 @@ impl From<&verifier::ParsedFeed> for ParsedFeedView {
 #[near(serializers = [json])]
 pub struct VerifiedUpdateView {
     /// The trusted ed25519 signer public key (hex).
-    #[serde(with = "hex::serde")]
+    #[serde(
+        serialize_with = "hex::serde::serialize",
+        deserialize_with = "hex::serde::deserialize"
+    )]
     pub signer: [u8; 32],
     pub channel_id: u8,
     pub timestamp_ns: Nanoseconds,

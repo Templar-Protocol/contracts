@@ -15,6 +15,9 @@ getrandom.workspace = true
 hex.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
+# Direct (always-on, already in-tree via templar-common) so `SignerSet` can carry unconditional
+# `JsonSchema` impls — the contract's custom types need schemas under near-sdk's `abi` build.
+schemars.workspace = true
 templar-common.workspace = true
 templar-pyth-pro-verifier.workspace = true
 

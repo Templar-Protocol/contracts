@@ -13102,6 +13102,7 @@ dependencies = [
  "near-sdk",
  "near-sdk-contract-tools",
  "pyth-lazer-protocol",
+ "schemars 0.8.22",
  "templar-common",
  "templar-pyth-pro-verifier",
 ]
