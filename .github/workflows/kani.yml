@@ -1,0 +1,83 @@
+name: Kani
+
+on:
+  schedule:
+    # Nightly verification on the default branch.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - ".github/workflows/kani.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "common/**"
+      - "contract/universal-account/**"
+      - "contract/vault/kernel/**"
+      - "fuzz/fuzz_targets/fuzz_fee_math.rs"
+      - "test-utils/src/controller/universal_account.rs"
+      - "universal-account/**"
+
+concurrency:
+  group: kani-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  KANI_VERSION: "0.67.0"
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  universal-account:
+    name: Universal Account
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Universal Account Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: -p templar-universal-account
+
+  vault-kernel:
+    name: Vault Kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Vault Kernel Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: -p templar-vault-kernel
+
+  vault-kernel-sync-external:
+    name: Vault Kernel / Sync External
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Vault Kernel sync/rebalance Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: -p templar-vault-kernel --features action-sync-external
