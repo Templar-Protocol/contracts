@@ -566,6 +566,13 @@ pub enum CuratorCommand {
         #[arg(long, default_value_t = 7)]
         asset_decimals: u32,
     },
+    /// Abort a stale in-flight withdrawal operation and return the vault to idle.
+    AbortWithdrawing {
+        #[arg(long)]
+        caller: AddressStr,
+        #[arg(long)]
+        op_id: u64,
+    },
     /// Refresh one or more market ids through the vault command payload.
     RefreshMarkets {
         #[arg(long)]
