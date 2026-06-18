@@ -93,14 +93,27 @@ ws.on("open", () => {
 });
 
 ws.on("message", (data) => {
-  const message = JSON.parse(data.toString());
+  let message;
+  try {
+    message = JSON.parse(data.toString());
+  } catch (error) {
+    console.error("Skipping non-JSON WS frame:", error);
+    return;
+  }
   if (message.type !== "streamUpdated") {
     console.log(JSON.stringify(message, null, 2));
     return;
   }
   if (count >= MAX_MESSAGES) return;
   count += 1;
-  writePayloadFiles(count, message);
+  try {
+    writePayloadFiles(count, message);
+  } catch (error) {
+    console.error("Failed to write payload files:", error);
+    ws.close();
+    process.exitCode = 1;
+    return;
+  }
   console.log(`Wrote payload ${count}/${MAX_MESSAGES}`);
   if (count >= MAX_MESSAGES) ws.close();
 });

@@ -175,6 +175,7 @@ pub struct ConfigArgs {
     pub allowed_channel_id: Option<u8>,
     pub update_fee: NearToken,
     pub default_valid_time_period_s: u64,
+    pub max_feeds_per_update: u32,
 }
 
 /// Validated verification policy for incoming payloads. Built only via `Config::try_from` a
@@ -198,6 +199,14 @@ pub struct Config {
     /// `pyth-oracle.near`'s `valid_time_period`. The `*_no_older_than` / `*_unsafe` variants are
     /// unaffected.
     pub default_valid_time_period_s: u64,
+    /// Upper bound (must be non-zero) on how many feeds a single `update_price_feeds` call may
+    /// store. The emitted NEP-297 `UpdatePrices` event carries the full `FeedData` for every
+    /// updated feed, so an oversized signed bundle could otherwise push the receipt's total log
+    /// length past NEAR's limit and abort the call *after* verification + storage writes. Capping
+    /// the accepted feed count keeps the event (and the per-call work) bounded. Bundle size is set
+    /// by a trusted signer, not the caller, so this is a robustness guard rather than an anti-abuse
+    /// control.
+    pub max_feeds_per_update: u32,
 }
 
 impl TryFrom<ConfigArgs> for Config {
@@ -210,6 +219,9 @@ impl TryFrom<ConfigArgs> for Config {
         if args.default_valid_time_period_s == 0 {
             return Err("config: default_valid_time_period_s must be non-zero");
         }
+        if args.max_feeds_per_update == 0 {
+            return Err("config: max_feeds_per_update must be non-zero");
+        }
         Ok(Self {
             signers: SignerSet::try_new(args.signers)?,
             max_timestamp_delay_s: args.max_timestamp_delay_s,
@@ -217,6 +229,7 @@ impl TryFrom<ConfigArgs> for Config {
             allowed_channel_id: args.allowed_channel_id,
             update_fee: args.update_fee,
             default_valid_time_period_s: args.default_valid_time_period_s,
+            max_feeds_per_update: args.max_feeds_per_update,
         })
     }
 }
@@ -462,6 +475,15 @@ impl Contract {
 
         let update = self.verify(&payload.0, now);
 
+        // Reject oversized bundles up front (before any storage write) so the eventual NEP-297
+        // `UpdatePrices` log — which carries full `FeedData` per feed — stays within NEAR's
+        // total-log-length limit. `updated_feeds` only ever shrinks relative to `update.feeds`
+        // (some feeds skip on intrinsic-invalidity or anti-replay), so bounding the bundle bounds
+        // the event.
+        if update.feeds.len() as u64 > u64::from(self.config.max_feeds_per_update) {
+            env::panic_str("too many feeds in a single update");
+        }
+
         let mut updated_feeds = Vec::new();
         for feed in &update.feeds {
             // Intrinsic validity lives in `from_parsed`; `None` skips. Timestamps are already
@@ -541,5 +563,10 @@ impl Contract {
 /// positive confidence — we reject the ambiguous/invalid case rather than mold it into a
 /// precise-looking zero.
 fn require_confidence(confidence: Option<i64>) -> Option<u64> {
-    confidence.and_then(|value| u64::try_from(value).ok())
+    // Defense-in-depth: keep only strictly-positive confidences. Upstream `Price` is `NonZeroI64`,
+    // so a literal `Some(0)` should never reach here, but the explicit `> 0` filter means this
+    // never stores a zero confidence even if that invariant changes on a parser rev bump.
+    confidence
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|&value| value > 0)
 }

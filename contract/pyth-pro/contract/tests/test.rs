@@ -122,6 +122,7 @@ fn config() -> ConfigArgs {
         allowed_channel_id: Some(ChannelId::REAL_TIME.0),
         update_fee: NearToken::from_yoctonear(0),
         default_valid_time_period_s: 600,
+        max_feeds_per_update: 64,
     }
 }
 
@@ -487,6 +488,37 @@ fn duplicate_feed_id_in_payload_is_first_wins() {
 }
 
 #[test]
+#[should_panic(expected = "too many feeds in a single update")]
+fn update_exceeding_max_feeds_rejected() {
+    // A signed bundle carrying more feeds than `max_feeds_per_update` is rejected up front, before
+    // any storage write or event emission, so the NEP-297 `UpdatePrices` log stays bounded.
+    let mut contract = deploy_and_map_with(ConfigArgs {
+        max_feeds_per_update: 1,
+        ..config()
+    });
+
+    let feed = |id: u32, price: i64| PayloadFeedData {
+        feed_id: PriceFeedId(id),
+        properties: vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(1).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    };
+    let payload = sign(&PayloadData {
+        timestamp_us: TimestampUs::from_micros(NOW_S * 1_000_000),
+        channel_id: ChannelId::REAL_TIME,
+        feeds: vec![feed(FEED_ID, 111), feed(FEED_ID + 1, 222)],
+    });
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(payload));
+}
+
+#[test]
 fn negative_confidence_skips_feed() {
     let mut contract = deploy_and_map();
 
@@ -741,6 +773,19 @@ fn zero_default_validity_rejected() {
         owner(),
         ConfigArgs {
             default_valid_time_period_s: 0,
+            ..config()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_feeds_per_update must be non-zero")]
+fn zero_max_feeds_per_update_rejected() {
+    set_owner_context();
+    let _ = Contract::new(
+        owner(),
+        ConfigArgs {
+            max_feeds_per_update: 0,
             ..config()
         },
     );

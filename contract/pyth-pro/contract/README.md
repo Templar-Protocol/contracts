@@ -9,7 +9,8 @@ NEAR cdylib for the Pyth Pro adapter: stores verified prices and serves them thr
 Init / config:
 - `new(owner, config)` — `config`: `signers`, `max_timestamp_delay_s`, `max_timestamp_ahead_s`,
   `allowed_channel_id`, `update_fee` (a `NearToken`, default `0`), `default_valid_time_period_s`
-  (staleness window for the non-suffixed views).
+  (staleness window for the non-suffixed views), `max_feeds_per_update` (non-zero cap on feeds
+  accepted per `update_price_feeds` call, bounding the `UpdatePrices` event / log size).
 - `get_config()`.
 
 Owner-only (`admin_*`, `#[payable]`, 1 yocto):
@@ -24,10 +25,12 @@ Owner-only (`admin_*`, `#[payable]`, 1 yocto):
   storage-staking guard blocks withdrawing below the staked requirement).
 
 Permissionless write (`#[payable]`):
-- `update_price_feeds(payload: Base64VecU8)` — verify and store; emits `UpdatePrices`. A feed is
-  stored only with both a price and an exponent, only if its effective per-feed publish timestamp
-  strictly advances (anti-replay) and is not too far in the future, and EMA is stored only when the
-  payload actually carried it (never derived from spot). The caller must attach a deposit covering
+- `update_price_feeds(payload: Base64VecU8)` — verify and store; emits `UpdatePrices`. Bundles
+  carrying more than `config.max_feeds_per_update` feeds are rejected up front (keeps the emitted
+  event/log bounded). A feed is stored only with both a price and an exponent, only if its effective
+  per-feed publish timestamp strictly advances (anti-replay) and is not too far in the future, and
+  EMA is stored only when the payload actually carried it (never derived from spot). The caller must
+  attach a deposit covering
   the newly consumed storage plus `config.update_fee`; the excess is refunded. Updates that only
   overwrite known feeds consume no new storage, so with a zero fee they are effectively free.
 

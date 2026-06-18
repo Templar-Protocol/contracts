@@ -9,10 +9,13 @@ pub enum VerifyError {
     /// The inner price payload could not be decoded.
     #[error("failed to decode payload: {0}")]
     Payload(String),
-    /// The message or payload was not canonically encoded (e.g. trailing bytes), so it does not
-    /// re-serialize to the exact signed/received bytes.
-    #[error("message is not canonically encoded")]
-    NonCanonical,
+    /// Decoding the message or payload left trailing bytes — the cursor did not reach the end of
+    /// the input. This rejects trailing / non-exhaustive encodings only; it does **not**
+    /// re-serialize and byte-compare, so an in-band non-canonical encoding that still parses and
+    /// fully consumes its input is not caught here (any such mutation would instead fail the
+    /// ed25519 signature check, which is computed over the exact signed bytes).
+    #[error("message or payload has trailing bytes (non-exhaustive encoding)")]
+    TrailingBytes,
     /// The ed25519 signature did not verify against the carried public key.
     #[error("ed25519 signature verification failed")]
     Signature,

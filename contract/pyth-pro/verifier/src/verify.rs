@@ -81,7 +81,7 @@ pub fn verify_solana_update<C: Crypto>(
     let message = SolanaMessage::deserialize(&mut cursor)
         .map_err(|e| VerifyError::Envelope(e.to_string()))?;
     if cursor.position() != raw_message.len() as u64 {
-        return Err(VerifyError::NonCanonical);
+        return Err(VerifyError::TrailingBytes);
     }
 
     // The signer pubkey is carried in the envelope — trust it only if it's in the configured,
@@ -102,7 +102,7 @@ pub fn verify_solana_update<C: Crypto>(
     let data = PayloadData::deserialize::<byteorder::LE>(&mut payload_cursor)
         .map_err(|e| VerifyError::Payload(e.to_string()))?;
     if payload_cursor.position() != message.payload.len() as u64 {
-        return Err(VerifyError::NonCanonical);
+        return Err(VerifyError::TrailingBytes);
     }
 
     let channel_id = data.channel_id.0;
@@ -429,7 +429,7 @@ mod tests {
         let signers = [signer_for(&key, now_s + 1000)];
         assert_eq!(
             verify_solana_update(&TestCrypto, &raw, &params(&signers, now_s)),
-            Err(VerifyError::NonCanonical)
+            Err(VerifyError::TrailingBytes)
         );
     }
 
@@ -445,7 +445,7 @@ mod tests {
         let signers = [signer_for(&key, now_s + 1000)];
         assert_eq!(
             verify_solana_update(&TestCrypto, &raw, &params(&signers, now_s)),
-            Err(VerifyError::NonCanonical)
+            Err(VerifyError::TrailingBytes)
         );
     }
 
