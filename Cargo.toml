@@ -202,6 +202,9 @@ doc_markdown = "allow"
 result_large_err = "allow"
 ignore_without_reason = "allow"
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [profile.dev]
 incremental = true
 

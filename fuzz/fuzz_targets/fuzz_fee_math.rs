@@ -125,6 +125,35 @@ fuzz_target!(|input: FeeMathInput| {
     let amount = input.convert_amount;
     let cap = input.convert_cap;
     let err = InvalidStateCode::Unknown;
+    let max_cap = u128::MAX;
+
+    if let (Ok(floor), Ok(ceil)) = (
+        convert_to_shares_bounded(&state, &config, amount, max_cap, err),
+        convert_to_shares_ceil_bounded(&state, &config, amount, max_cap, err),
+    ) {
+        assert!(
+            floor <= ceil,
+            "convert_to_shares floor ({floor}) exceeded ceil ({ceil})",
+        );
+        assert!(
+            ceil <= floor.saturating_add(1),
+            "convert_to_shares ceil ({ceil}) was more than floor + 1 ({floor})",
+        );
+    }
+
+    if let (Ok(floor), Ok(ceil)) = (
+        convert_to_assets_bounded(&state, &config, amount, max_cap, err),
+        convert_to_assets_ceil_bounded(&state, &config, amount, max_cap, err),
+    ) {
+        assert!(
+            floor <= ceil,
+            "convert_to_assets floor ({floor}) exceeded ceil ({ceil})",
+        );
+        assert!(
+            ceil <= floor.saturating_add(1),
+            "convert_to_assets ceil ({ceil}) was more than floor + 1 ({floor})",
+        );
+    }
 
     if let Ok(v) = convert_to_shares_bounded(&state, &config, amount, cap, err) {
         assert!(v <= cap, "shares: bounded result exceeded cap");

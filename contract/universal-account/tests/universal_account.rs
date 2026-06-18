@@ -12,7 +12,7 @@ use templar_universal_account::{
     authentication::{with_raw_string::WithRawString, Payload},
     state,
     transaction::{FunctionCallAction, Transaction},
-    KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+    ExecuteArgs, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::{
     assert_all_outcomes_success,
@@ -142,6 +142,24 @@ async fn setup(
         ft,
         third_party,
     }
+}
+
+fn signed_mint_execute_args(
+    sk: &TestSigner,
+    ft: &FtController,
+    parameters: PayloadExecutionParameters,
+    amount: u128,
+) -> ExecuteArgs<Box<[Transaction]>> {
+    let payload = WithRawString::from_parsed(Payload::new(
+        parameters,
+        vec![Transaction {
+            receiver_id: ft.contract().id().clone(),
+            actions: vec![mint(amount).into()].into(),
+        }]
+        .into(),
+    ));
+
+    sk.execute_args(payload)
 }
 
 #[rstest]
@@ -419,4 +437,218 @@ async fn reuse_nonce(
     let execute_args = sk.execute_args(payload);
 
     uac.execute(&third_party, execute_args).await;
+}
+
+#[tokio::test]
+async fn failed_execute_does_not_consume_nonce_and_success_consumes_once() {
+    let worker = worker().await;
+    let sk = TestSigner::random_passkey();
+    let Setup {
+        uac,
+        ft,
+        third_party,
+    } = setup(&worker, &sk, false, ExecuteOnCreate::None).await;
+
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
+    assert_eq!(key_entry.nonce.0, 0);
+
+    let mut skipped_nonce = key_entry.clone();
+    skipped_nonce.nonce = U64(2);
+    let execute_args = signed_mint_execute_args(&sk, &ft, skipped_nonce, 100);
+
+    let result = third_party
+        .call(uac.contract().id(), "execute")
+        .args_json(json!({ "args": execute_args }))
+        .gas(near_sdk::Gas::from_tgas(300))
+        .transact()
+        .await
+        .unwrap();
+    assert!(
+        result.is_failure(),
+        "skipped nonce execution should fail: {:?}",
+        result.failures(),
+    );
+
+    let key_entry_after_failure = uac.get_key(sk.id()).await.unwrap();
+    assert_eq!(
+        key_entry_after_failure.nonce.0, 0,
+        "failed verification must roll back the pre-verification nonce increment",
+    );
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 0, "failed execution should not mint");
+
+    let execute_args =
+        signed_mint_execute_args(&sk, &ft, key_entry_after_failure.next_nonce(), 100);
+    let result = uac.execute(&third_party, execute_args).await;
+    assert_all_outcomes_success(&result);
+
+    let key_entry_after_success = uac.get_key(sk.id()).await.unwrap();
+    assert_eq!(
+        key_entry_after_success.nonce.0, 1,
+        "successful execution must consume exactly one nonce",
+    );
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 100, "successful execution should mint once");
+}
+
+#[tokio::test]
+async fn replayed_nonce_fails_without_reexecuting_payload() {
+    let worker = worker().await;
+    let sk = TestSigner::random_passkey();
+    let Setup {
+        uac,
+        ft,
+        third_party,
+    } = setup(&worker, &sk, false, ExecuteOnCreate::None).await;
+
+    let key_entry = uac.get_key(sk.id()).await.unwrap();
+    let execute_args = signed_mint_execute_args(&sk, &ft, key_entry.next_nonce(), 100);
+
+    let result = uac.execute(&third_party, execute_args.clone()).await;
+    assert_all_outcomes_success(&result);
+
+    let key_entry_after_success = uac.get_key(sk.id()).await.unwrap();
+    assert_eq!(
+        key_entry_after_success.nonce.0, 1,
+        "successful execution must consume the signed nonce",
+    );
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 100, "payload should execute once");
+
+    let result = third_party
+        .call(uac.contract().id(), "execute")
+        .args_json(json!({ "args": execute_args }))
+        .gas(near_sdk::Gas::from_tgas(300))
+        .transact()
+        .await
+        .unwrap();
+    assert!(
+        result.is_failure(),
+        "replayed nonce execution should fail: {:?}",
+        result.failures(),
+    );
+
+    let key_entry_after_replay = uac.get_key(sk.id()).await.unwrap();
+    assert_eq!(
+        key_entry_after_replay.nonce.0, 1,
+        "failed replay must not advance the nonce",
+    );
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 100, "replayed payload must not execute again");
+}
+
+#[tokio::test]
+async fn key_indexes_are_unique_across_remove_and_readd() {
+    let worker = worker().await;
+    let sk1 = TestSigner::random_passkey();
+    let sk2 = TestSigner::random_ed25519_raw();
+    let Setup { uac, .. } = setup(&worker, &sk1, false, ExecuteOnCreate::None).await;
+
+    let key1 = sk1.id();
+    let key2 = sk2.id();
+
+    let initial_entry = uac.get_key(key1.clone()).await.unwrap();
+    assert_eq!(initial_entry.index.0, 0);
+
+    let result = uac.add_key(uac.contract().as_account(), key2.clone()).await;
+    assert_all_outcomes_success(&result);
+    let second_entry = uac.get_key(key2.clone()).await.unwrap();
+    assert_eq!(second_entry.index.0, 1);
+
+    let result = uac
+        .remove_key(uac.contract().as_account(), key1.clone())
+        .await;
+    assert_all_outcomes_success(&result);
+    assert!(uac.get_key(key1.clone()).await.is_none());
+
+    let result = uac.add_key(uac.contract().as_account(), key1.clone()).await;
+    assert_all_outcomes_success(&result);
+    let readded_entry = uac.get_key(key1.clone()).await.unwrap();
+    assert_eq!(
+        readded_entry.index.0, 2,
+        "re-added keys must receive a fresh monotonic index",
+    );
+    assert_eq!(readded_entry.nonce.0, 0);
+
+    let keys = uac.list_keys(None, None).await;
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&key1));
+    assert!(keys.contains(&key2));
+}
+
+#[tokio::test]
+async fn cannot_remove_last_key() {
+    let worker = worker().await;
+    let sk = TestSigner::random_passkey();
+    let Setup { uac, .. } = setup(&worker, &sk, false, ExecuteOnCreate::None).await;
+
+    let result = uac
+        .contract()
+        .as_account()
+        .call(uac.contract().id(), "remove_key")
+        .args_json(json!({ "key": sk.id() }))
+        .gas(near_sdk::Gas::from_tgas(30))
+        .transact()
+        .await
+        .unwrap();
+    assert!(
+        result.is_failure(),
+        "last-key removal should fail: {:?}",
+        result.failures(),
+    );
+
+    let keys = uac.list_keys(None, None).await;
+    assert_eq!(keys, vec![sk.id()]);
+    assert!(uac.get_key(sk.id()).await.is_some());
+}
+
+#[tokio::test]
+async fn removed_key_cannot_execute_transaction() {
+    let worker = worker().await;
+    let removed_sk = TestSigner::random_passkey();
+    let retained_sk = TestSigner::random_ed25519_raw();
+    let Setup {
+        uac,
+        ft,
+        third_party,
+    } = setup(&worker, &removed_sk, false, ExecuteOnCreate::None).await;
+
+    let removed_key = removed_sk.id();
+    let retained_key = retained_sk.id();
+
+    let result = uac
+        .add_key(uac.contract().as_account(), retained_key.clone())
+        .await;
+    assert_all_outcomes_success(&result);
+
+    let removed_entry_before = uac.get_key(removed_key.clone()).await.unwrap();
+    let result = uac
+        .remove_key(uac.contract().as_account(), removed_key.clone())
+        .await;
+    assert_all_outcomes_success(&result);
+    assert!(uac.get_key(removed_key.clone()).await.is_none());
+
+    let execute_args =
+        signed_mint_execute_args(&removed_sk, &ft, removed_entry_before.next_nonce(), 100);
+    let result = third_party
+        .call(uac.contract().id(), "execute")
+        .args_json(json!({ "args": execute_args }))
+        .gas(near_sdk::Gas::from_tgas(300))
+        .transact()
+        .await
+        .unwrap();
+    assert!(
+        result.is_failure(),
+        "removed key execution should fail: {:?}",
+        result.failures(),
+    );
+
+    assert!(uac.get_key(removed_key).await.is_none());
+    let retained_entry = uac.get_key(retained_key).await.unwrap();
+    assert_eq!(
+        retained_entry.nonce.0, 0,
+        "failed removed-key execution must not affect retained key state",
+    );
+    let balance = ft.ft_balance_of(uac.contract.id()).await;
+    assert_eq!(balance.0, 0, "removed key payload must not execute");
 }
