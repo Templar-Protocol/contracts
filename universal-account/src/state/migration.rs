@@ -198,3 +198,64 @@ mod tests {
         assert_eq!(new.keys.len(), 1);
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use near_sdk::{json_types::U128, store::IterableMap};
+    use templar_common::versioned_state::StateTransformer;
+
+    use crate::KeyId;
+
+    use super::*;
+
+    #[kani::proof]
+    fn v0_migration_preserves_scalar_safety_state() {
+        let next_key_index = kani::any::<u64>();
+        let chain_id = kani::any::<u128>();
+        let old = state::V0 {
+            next_key_index,
+            keys: IterableMap::<KeyId, crate::KeyParameters>::new(b"k"),
+        };
+
+        let new = V0 {
+            chain_id: U128(chain_id),
+        }
+        .transform(old)
+        .unwrap();
+
+        assert_eq!(new.next_key_index, next_key_index);
+        assert_eq!(new.chain_id, chain_id);
+    }
+
+    #[kani::proof]
+    fn v1_migration_preserves_scalar_safety_state() {
+        let next_key_index = kani::any::<u64>();
+        let chain_id = kani::any::<u128>();
+        let old = state::V1 {
+            next_key_index,
+            keys: IterableMap::<KeyId, crate::KeyParameters>::new(b"k"),
+            chain_id,
+        };
+
+        let new = V1.transform(old).unwrap();
+
+        assert_eq!(new.next_key_index, next_key_index);
+        assert_eq!(new.chain_id, chain_id);
+    }
+
+    #[kani::proof]
+    fn unbrick_v1_migration_preserves_scalar_safety_state() {
+        let next_key_index = kani::any::<u64>();
+        let chain_id = kani::any::<u128>();
+        let old = state::V1 {
+            next_key_index,
+            keys: IterableMap::<KeyId, crate::KeyParameters>::new(b"k"),
+            chain_id,
+        };
+
+        let new = UnbrickV1.transform(old).unwrap();
+
+        assert_eq!(new.next_key_index, next_key_index);
+        assert_eq!(new.chain_id, chain_id);
+    }
+}
