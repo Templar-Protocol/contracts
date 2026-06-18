@@ -20,10 +20,11 @@ runs:
 
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       with:
-        save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' }}
+        save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         # Cache target directory but with smart cleanup
         cache-on-failure: false
-        # Add shared key to deduplicate cache across jobs
-        shared-key: "rust-cache"
-        # Only save cache from main/dev branches to reduce storage
+        # Keep caches reusable inside a job class. Do not include raw target or
+        # component input strings here: rust-cache rejects keys containing
+        # commas, and comma-separated target lists are common in this repo.
+        shared-key: "rust-${{ runner.os }}-${{ github.job }}"
         workspaces: ". -> target"
