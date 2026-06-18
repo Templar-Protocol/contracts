@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::{
-    asset::{AssetClass, FungibleAsset},
+    asset::{AssetClass, BorrowAssetAmount, FungibleAsset},
     market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
 };
 use templar_gateway_core::{
@@ -9,7 +9,7 @@ use templar_gateway_core::{
         market::{
             AccountIdArg, AccumulateStaticYieldArgs, AmountArg, ApplyInterestArgs, BatchLimitArg,
             GetBorrowPositionPendingInterestArgs, GetBorrowStatusArgs,
-            GetSupplyPositionPendingYieldArgs, HarvestYieldArgs,
+            GetSupplyPositionPendingYieldArgs, HarvestYieldArgs, StaticYieldRecord,
         },
         storage::{StorageBalanceBoundsView, StorageBalanceOfArgs, StorageDepositArgs},
         ContractWriteOptions,
@@ -262,7 +262,13 @@ impl<C: HasNearClient> DispatchRead<market::GetStaticYield, C> for Dispatch {
                 account_id: request.params.account_id,
             })
             .await
-            .map(|accumulator| market::GetStaticYieldResult { accumulator })
+            .map(|record| market::GetStaticYieldResult {
+                borrow_asset_total: record.as_ref().map_or_else(
+                    BorrowAssetAmount::zero,
+                    StaticYieldRecord::borrow_asset_total,
+                ),
+                accumulator: record.and_then(StaticYieldRecord::into_accumulator),
+            })
     }
 }
 

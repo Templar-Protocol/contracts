@@ -247,6 +247,11 @@ pub struct GetStaticYieldParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetStaticYieldResult {
+    /// Total accumulated static yield denominated in the borrow asset, computed
+    /// regardless of the market version's on-chain representation.
+    pub borrow_asset_total: BorrowAssetAmount,
+    /// The yield accumulator, present only for markets that expose it
+    /// (>= 1.1.0). `None` for legacy markets that report a split record.
     pub accumulator: Option<Accumulator<BorrowAsset>>,
 }
 
