@@ -15,35 +15,28 @@
 mod crypto;
 mod events;
 mod feed_map;
+mod state;
 mod views;
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use near_sdk::{
-    assert_one_yocto,
-    borsh::BorshSerialize,
-    env,
+    assert_one_yocto, env,
     json_types::{Base64VecU8, I64, U64},
-    near,
-    store::IterableMap,
-    AccountId, BorshStorageKey, NearToken, PanicOnDefault, Promise,
+    near, AccountId, Gas, NearToken, PanicOnDefault, Promise,
 };
 use near_sdk_contract_tools::{owner::Owner, utils::apply_storage_fee_and_refund, Owner};
 use templar_common::{
-    oracle::pyth::{Price, PriceIdentifier, PythTimestamp},
+    oracle::pyth::{Price, PythTimestamp},
+    versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
 use templar_pyth_pro_verifier as verifier;
 
 use crate::crypto::EnvCrypto;
 use crate::events::PythProEvent;
-
-#[derive(BorshSerialize, BorshStorageKey)]
-#[borsh(crate = "near_sdk::borsh")]
-enum StorageKey {
-    Feeds,
-    Ids,
-}
+use crate::state::State;
 
 /// A trusted Pyth Pro publisher: its 32-byte ed25519 public key (hex-encoded in JSON) and the
 /// unix-seconds instant after which its signatures are no longer accepted.
@@ -395,22 +388,39 @@ impl From<verifier::VerifiedUpdate> for VerifiedUpdateView {
 #[derive(Owner, PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    config: Config,
-    /// Latest data keyed by the natural Lazer `u32` feed id.
-    feeds: IterableMap<u32, FeedData>,
-    /// Mapping layer (see `feed_map`): consumer `PriceIdentifier` -> Lazer feed id.
-    ids: IterableMap<PriceIdentifier, u32>,
+    pub state: VersionedState<State>,
+}
+
+// Generates the private `migrate()` entrypoint (driven by `state::migration::Migration`) plus the
+// `get_stored_state_version` / `get_target_state_version` / `needs_migration` views.
+impl_versioned_state!(Contract, State, crate::state::migration::Migration);
+
+// The live fields (`config`, `feeds`, `ids`) live on `State`; deref so the rest of the contract can
+// keep reaching them as `self.config` / `self.feeds` / `self.ids`.
+impl Deref for Contract {
+    type Target = State;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for Contract {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 #[near]
 impl Contract {
+    /// Gas reserved for the batched `migrate` call in [`Self::admin_upgrade`].
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
+
     #[init]
     pub fn new(owner: AccountId, config: ConfigArgs) -> Self {
         let config = Config::try_from(config).unwrap_or_else(|e| env::panic_str(e));
         let mut contract = Self {
-            config,
-            feeds: IterableMap::new(StorageKey::Feeds),
-            ids: IterableMap::new(StorageKey::Ids),
+            state: State::new(config),
         };
         Owner::init(&mut contract, &owner);
         contract
@@ -459,6 +469,25 @@ impl Contract {
         Self::require_owner();
         // `require_owner` guarantees the predecessor is the owner.
         Promise::new(env::predecessor_account_id()).transfer(amount)
+    }
+
+    /// Atomically deploy new contract code and run its `migrate` in a single receipt: a failed
+    /// migration reverts the code deployment too. `migrate_args` is the JSON-encoded
+    /// [`state::migration::Migration`] selecting the state transform to apply (none exist at v1, so
+    /// this is the seam for future upgrades). The batched `migrate` is private — the runtime calls
+    /// it as this account, so only the owner-gated path here can trigger it.
+    #[payable]
+    pub fn admin_upgrade(&mut self, code: Base64VecU8, migrate_args: Base64VecU8) -> Promise {
+        assert_one_yocto();
+        Self::require_owner();
+        Promise::new(env::current_account_id())
+            .deploy_contract(code.0)
+            .function_call(
+                "migrate".to_string(),
+                migrate_args.0,
+                NearToken::from_yoctonear(0),
+                Self::GAS_FOR_MIGRATE,
+            )
     }
 
     /// Verify a Pyth Pro solana-format (ed25519) signed payload and store its feeds. Permissionless:

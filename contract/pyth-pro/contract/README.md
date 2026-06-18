@@ -23,6 +23,16 @@ Owner-only (`admin_*`, `#[payable]`, 1 yocto):
   an update after (re)mapping if that matters.
 - `admin_withdraw(amount: NearToken)` — send accrued fees/free balance to the owner (the runtime's
   storage-staking guard blocks withdrawing below the staked requirement).
+- `admin_upgrade(code: Base64VecU8, migrate_args: Base64VecU8)` — atomically deploy new contract
+  code and run its `migrate` in one receipt: a failed migration reverts the code deploy too.
+  `migrate_args` is the JSON-encoded migration selector. The contract launches at state version 1
+  with no migrations defined, so this is the seam for future version bumps; the batched `migrate` is
+  private (only the runtime, acting as this account, can call it).
+
+State versioning: persistent state is wrapped in `VersionedState` (launches at version 1). View
+helpers `get_stored_state_version()`, `get_target_state_version()`, and `needs_migration()` report
+the on-chain vs. code-target state version — `needs_migration()` is `false` on a fresh deploy and
+guards against accidental downgrades (a stored version newer than the code panics).
 
 Permissionless write (`#[payable]`):
 - `update_price_feeds(payload: Base64VecU8)` — verify and store; emits `UpdatePrices`. Bundles

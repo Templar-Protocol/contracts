@@ -13,6 +13,7 @@ use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadProperty
 use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::versioned_state::MigrateExternalInterface;
 
 use templar_pyth_pro_adapter_contract::{ConfigArgs, Contract, TrustedSigner};
 
@@ -695,6 +696,45 @@ fn owner_can_withdraw() {
     set_owner_context();
     // Owner withdrawal schedules a transfer without panicking.
     let _ = contract.admin_withdraw(NearToken::from_yoctonear(1));
+}
+
+#[test]
+#[should_panic(expected = "Owner only")]
+fn admin_upgrade_rejects_non_owner() {
+    let mut contract = deploy_and_map();
+
+    // 1 yocto attached so the failure is the owner gate, not the payable gate.
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("attacker.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+}
+
+#[test]
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn admin_upgrade_requires_one_yocto() {
+    let mut contract = deploy_and_map();
+
+    // Owner, but no deposit: the payable gate must reject before any deploy is scheduled.
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(owner())
+        .attached_deposit(NearToken::from_yoctonear(0))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+}
+
+#[test]
+fn fresh_deploy_is_at_state_version_one() {
+    let _contract = deploy_and_map();
+
+    // A fresh deploy stamps the on-chain state version, and target == stored, so no migration is
+    // pending. (`admin_upgrade`'s batched `migrate` is the seam for future version bumps.)
+    assert_eq!(Contract::get_target_state_version(), 1);
+    assert_eq!(Contract::get_stored_state_version(), 1);
+    assert!(!Contract::needs_migration());
 }
 
 // --- Config validation (W1) ---

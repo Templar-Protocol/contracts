@@ -34,6 +34,10 @@ macro_rules! impl_versioned_state {
             let args: $migrations = ::near_sdk::serde_json::from_slice(&input)
                 .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
+            // A contract may launch at its first state version with no migrations defined, making
+            // `$migrations` an uninhabited (empty) enum. The deserialize above then has type `!`
+            // (it can only panic), so this call is statically unreachable — expected, not a bug.
+            #[allow(unreachable_code)]
             $crate::versioned_state::Migrator::run(args);
         }
     };
