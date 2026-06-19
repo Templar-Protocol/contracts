@@ -124,6 +124,7 @@ sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
 templar-common = { path = "./common" }
+templar-gateway-client = { path = "./gateway/client" }
 templar-gateway-core = { path = "./gateway/core" }
 templar-gateway-macros = { path = "./gateway/macros" }
 templar-gateway-methods-dispatch = { path = "./gateway/methods-dispatch" }

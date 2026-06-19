@@ -1,0 +1,15 @@
+[package]
+name = "templar-gateway-client"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+near-api.workspace = true
+templar-gateway-core.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-types.workspace = true
+
+[lints]
+workspace = true
