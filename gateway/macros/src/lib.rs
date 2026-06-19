@@ -119,6 +119,7 @@ fn expand_method(
     request_ty: &proc_macro2::TokenStream,
     output_ty: &proc_macro2::TokenStream,
     method_kind: &proc_macro2::TokenStream,
+    binding: &proc_macro2::TokenStream,
 ) -> TokenStream {
     let doc = cleaned_doc_text(attrs);
     let summary = summary_from_doc(&doc);
@@ -143,6 +144,8 @@ fn expand_method(
             const DESCRIPTION: &'static str = #doc;
             const DEPRECATED: bool = #deprecated;
         }
+
+        #binding
     }
     .into()
 }
@@ -157,6 +160,12 @@ pub fn read_method_spec(input: TokenStream) -> TokenStream {
         output,
     } = parse_macro_input!(input as ReadMethodSpecInput);
 
+    let binding = quote! {
+        impl templar_gateway_types::ReadParams for #input {
+            type Spec = #ident;
+        }
+    };
+
     expand_method(
         &attrs,
         &rpc_method,
@@ -164,6 +173,7 @@ pub fn read_method_spec(input: TokenStream) -> TokenStream {
         &quote!(templar_gateway_types::common::ReadRequest<#input>),
         &quote!(#output),
         &quote!(templar_gateway_types::spec::MethodKind::Read),
+        &binding,
     )
 }
 
@@ -176,6 +186,12 @@ pub fn write_method_spec(input: TokenStream) -> TokenStream {
         input,
     } = parse_macro_input!(input as WriteMethodSpecInput);
 
+    let binding = quote! {
+        impl templar_gateway_types::WriteBody for #input {
+            type Spec = #ident;
+        }
+    };
+
     expand_method(
         &attrs,
         &rpc_method,
@@ -183,5 +199,6 @@ pub fn write_method_spec(input: TokenStream) -> TokenStream {
         &quote!(templar_gateway_types::common::WriteRequest<#input>),
         &quote!(templar_gateway_types::common::WriteOperationResult),
         &quote!(templar_gateway_types::spec::MethodKind::Write),
+        &binding,
     )
 }

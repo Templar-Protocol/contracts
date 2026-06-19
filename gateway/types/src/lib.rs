@@ -17,7 +17,7 @@ pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, NearGas,
     NearToken, U128,
 };
-pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
+pub use spec::{MethodKind, MethodSpec, ReadParams, RpcMethodMeta, WriteBody};
 pub use version::{
     Market, MarketVersion, ParseError as VersionParseError, ProxyOracle, ProxyOracleVersion,
     Registry, RegistryVersion, Version,
