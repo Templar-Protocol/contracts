@@ -13179,6 +13179,7 @@ dependencies = [
  "near-api",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
+ "templar-gateway-store",
  "templar-gateway-types",
 ]
 

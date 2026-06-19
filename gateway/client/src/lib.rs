@@ -3,41 +3,54 @@
 //! This is the lean sibling of [`templar_gateway_runtime`], which provides the
 //! actix actor frontend used by the long-running RPC service. Where the runtime
 //! wraps dispatch in an actor for bounded concurrency, this crate offers a plain
-//! call-it-yourself facade over the same [`templar_gateway_core`] kernel.
+//! call-it-yourself facade over the same [`templar_gateway_core`] kernel — and,
+//! crucially, **reuses** the kernel's [`OperationDriver`] for writes rather than
+//! re-implementing signing/submission, so direct-client writes get the same
+//! idempotency, multi-step finalization, and replay semantics as the RPC service.
 //!
-//! [`Client`] owns the read/plan context, signer set, and transaction executor.
-//! Its [`Client::read`] / [`Client::execute_as`] helpers take the operation type
-//! directly (the operation *is* its input), so call sites carry no turbofish, no
-//! request wrappers, and no method-name repetition. A [`SigningClient`] binds a
-//! default signing account for the common single-signer case:
+//! [`Client`] owns the read context plus an [`OperationDriver`] (signer set,
+//! executor, and an [`OperationStore`]). Its [`Client::read`] /
+//! [`Client::execute_as`] helpers take the operation type directly (the
+//! operation *is* its input), so call sites carry no turbofish, no request
+//! wrappers, and no method-name repetition. A [`SigningClient`] binds a default
+//! signing account for the common single-signer case:
 //!
 //! ```ignore
 //! let client = SigningClient::connect(network, account_id, secret_key)?;
 //!
 //! let config = client.read(market::GetConfiguration { market_id }).await?;
-//! let tx_hashes = client
+//! let result = client
 //!     .execute(market::WithdrawStaticYield { market_id, amount: None })
 //!     .await?;
 //! ```
+//!
+//! [`OperationStore`]: templar_gateway_core::OperationStore
 
-use std::{collections::HashMap, ops::Deref, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+    sync::Arc,
+};
 
 use near_api::{NetworkConfig, SecretKey, Signer};
 use templar_gateway_core::{
-    DispatchRead, ExecuteOperation, GatewayContext, GatewayError, GatewayResult,
-    NearOperationExecutor, NearTransactionSigner, OperationPlan, PlanWrite, SignTransaction,
+    DispatchRead, GatewayContext, GatewayError, GatewayResult, NearOperationExecutor,
+    NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite, SharedOperationStore,
 };
 use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
-    common::{TxExecutionStatus, WriteOperationResult, WriteRequest},
-    CryptoHash, ManagedAccountId, MethodSpec,
+    common::{WriteOperationResult, WriteRequest},
+    ManagedAccountId, MethodSpec,
 };
 
-/// Builder for [`Client`]. Takes the network once and accumulates signers,
-/// constructing the context, signer, and executor on [`build`](ClientBuilder::build).
+/// Builder for [`Client`]. Takes the network once, accumulates signers, and
+/// picks the [`OperationStore`](templar_gateway_core::OperationStore) backing
+/// idempotency/replay (an in-process [`MemoryStore`] by default).
 pub struct ClientBuilder {
     network: NetworkConfig,
     signers: HashMap<ManagedAccountId, Arc<Signer>>,
+    store: SharedOperationStore,
 }
 
 impl ClientBuilder {
@@ -60,12 +73,26 @@ impl ClientBuilder {
         Ok(self.signer(account_id, signer))
     }
 
-    /// Build the client, constructing the gateway context, signer, and executor.
+    /// Use a specific operation store (e.g. a durable `PostgresStore`) for
+    /// idempotency and replay. Defaults to an in-process [`MemoryStore`].
+    #[must_use]
+    pub fn store(mut self, store: SharedOperationStore) -> Self {
+        self.store = store;
+        self
+    }
+
+    /// Build the client, constructing the gateway context, signer, executor, and
+    /// store-backed operation driver.
     pub fn build(self) -> GatewayResult<Client> {
+        let context = GatewayContext::new(self.network.clone())?;
+        let signer_account_ids = self.signers.keys().cloned().collect();
+        let signer = NearTransactionSigner::new(self.network.clone(), self.signers);
+        let executor = NearOperationExecutor::new(self.network);
+        let driver = OperationDriver::new(self.store, Arc::new(signer), Arc::new(executor));
         Ok(Client {
-            context: GatewayContext::new(self.network.clone())?,
-            transaction_signer: NearTransactionSigner::new(self.network.clone(), self.signers),
-            operation_executor: NearOperationExecutor::new(self.network),
+            context,
+            driver,
+            signer_account_ids,
         })
     }
 }
@@ -73,13 +100,14 @@ impl ClientBuilder {
 /// A direct, in-process gateway client over the concrete [`Dispatch`].
 ///
 /// Reads need no signer; writes name the signing account explicitly via
-/// [`Client::execute_as`]. For the common single-signer case, bind a default
-/// account with [`Client::into_signing`] (or [`SigningClient::connect`]).
+/// [`Client::execute_as`] and run through the store-backed [`OperationDriver`].
+/// For the common single-signer case, bind a default account with
+/// [`Client::into_signing`] (or [`SigningClient::connect`]).
 #[derive(Clone)]
 pub struct Client {
     context: GatewayContext,
-    transaction_signer: NearTransactionSigner,
-    operation_executor: NearOperationExecutor,
+    driver: OperationDriver,
+    signer_account_ids: HashSet<ManagedAccountId>,
 }
 
 impl Client {
@@ -89,6 +117,7 @@ impl Client {
         ClientBuilder {
             network,
             signers: HashMap::new(),
+            store: Arc::new(MemoryStore::new()),
         }
     }
 
@@ -105,7 +134,7 @@ impl Client {
         account_id: impl Into<ManagedAccountId>,
     ) -> GatewayResult<SigningClient> {
         let signer_account_id = account_id.into();
-        if !self.transaction_signer.has_signer(&signer_account_id) {
+        if !self.signer_account_ids.contains(&signer_account_id) {
             return Err(GatewayError::UnsupportedSignerAccount(
                 signer_account_id.0.to_string(),
             ));
@@ -125,12 +154,13 @@ impl Client {
         <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
     }
 
-    /// Plan, sign, and submit a write operation signed by a specific account.
+    /// Plan and execute a write operation signed by a specific account, through
+    /// the store-backed driver (idempotency + finalization + replay).
     pub async fn execute_as<Op>(
         &self,
         signer_account_id: impl Into<ManagedAccountId>,
         op: Op,
-    ) -> GatewayResult<Vec<CryptoHash>>
+    ) -> GatewayResult<WriteOperationResult>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<Op, GatewayContext>,
@@ -144,28 +174,21 @@ impl Client {
     }
 
     /// Plan and execute a fully-specified write request (escape hatch for an
-    /// explicit signer account).
-    ///
-    /// This direct client is store-less, so it cannot honor an
-    /// `idempotency_key`; a request carrying one is rejected rather than having
-    /// the key silently ignored. Store-backed (idempotent, replayable) execution
-    /// is the job of the gateway service / a future store-backed client.
+    /// explicit signer account or idempotency key).
     pub async fn execute_request<S>(
         &self,
         request: WriteRequest<S>,
-    ) -> GatewayResult<Vec<CryptoHash>>
+    ) -> GatewayResult<WriteOperationResult>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
-        if request.idempotency_key.is_some() {
-            return Err(GatewayError::UnsupportedFeature(
-                "idempotency keys require a store-backed gateway client".to_owned(),
-            ));
-        }
         let plan =
-            <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await?;
-        self.execute_plan(plan).await
+            <Dispatch as PlanWrite<S, GatewayContext>>::plan(request.clone(), self.context.clone())
+                .await?;
+        self.driver
+            .complete_write(S::RPC_METHOD, request, plan)
+            .await
     }
 
     /// Plan a write request into the transactions required to fulfil it, without
@@ -176,37 +199,6 @@ impl Client {
         Dispatch: PlanWrite<S, GatewayContext>,
     {
         <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await
-    }
-
-    /// Sign and submit every step of an operation plan in order, returning the
-    /// hash of each submitted transaction. The result is empty when the plan is a
-    /// no-op (e.g. an idempotent write that needs no transactions). Fails if any
-    /// step does not succeed on-chain.
-    ///
-    /// Every step but the last is awaited to `Final` before the next (dependent)
-    /// step is signed, mirroring the store-backed driver, so multi-step writes
-    /// don't race on nonce/state.
-    pub async fn execute_plan(&self, plan: OperationPlan) -> GatewayResult<Vec<CryptoHash>> {
-        let step_count = plan.steps.len();
-        let mut hashes = Vec::with_capacity(step_count);
-        for (index, mut step) in plan.steps.into_iter().enumerate() {
-            if index + 1 < step_count {
-                step.wait_until = TxExecutionStatus::Final;
-            }
-            let prepared = self.transaction_signer.sign_transaction(step).await?;
-            let tx_hash = prepared.tx_hash;
-            let result = self
-                .operation_executor
-                .submit_transaction(prepared.signed_transaction, prepared.transaction.wait_until)
-                .await?;
-            if !result.is_success() {
-                return Err(GatewayError::NearTransaction(format!(
-                    "transaction {tx_hash} did not succeed"
-                )));
-            }
-            hashes.push(tx_hash);
-        }
-        Ok(hashes)
     }
 }
 
@@ -223,7 +215,8 @@ pub struct SigningClient {
 }
 
 impl SigningClient {
-    /// Connect a single-signer client for `account_id` from its secret key.
+    /// Connect a single-signer client for `account_id` from its secret key,
+    /// backed by an in-process [`MemoryStore`].
     pub fn connect(
         network: NetworkConfig,
         account_id: impl Into<ManagedAccountId>,
@@ -242,8 +235,8 @@ impl SigningClient {
         &self.signer_account_id
     }
 
-    /// Plan, sign, and submit a write operation signed by the bound account.
-    pub async fn execute<Op>(&self, op: Op) -> GatewayResult<Vec<CryptoHash>>
+    /// Plan and execute a write operation signed by the bound account.
+    pub async fn execute<Op>(&self, op: Op) -> GatewayResult<WriteOperationResult>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<Op, GatewayContext>,

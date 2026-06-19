@@ -243,21 +243,21 @@ pub async fn main() -> anyhow::Result<()> {
         }
 
         tracing::info!(%market_id, %yield_amount, "Withdrawing yield");
-        let transaction_hashes = match client
+        let result = match client
             .execute(market::WithdrawStaticYield {
                 market_id: market_id.clone(),
                 amount: None,
             })
             .await
         {
-            Ok(transaction_hashes) => transaction_hashes,
+            Ok(result) => result,
             Err(error) => {
                 tracing::error!(%market_id, %error, "Failed to withdraw static yield");
                 continue;
             }
         };
 
-        tracing::info!(%market_id, %yield_amount, ?transaction_hashes, "Successfully withdrew yield");
+        tracing::info!(%market_id, %yield_amount, operation_id = %result.operation.id.0, "Successfully withdrew yield");
 
         *accumulated_assets
             .entry(configuration.borrow_asset)
@@ -291,8 +291,8 @@ pub async fn main() -> anyhow::Result<()> {
             })
             .await
         {
-            Ok(transaction_hashes) => {
-                tracing::info!(%asset, %receiver_id, %amount, ?transaction_hashes, "Transferred to receiver");
+            Ok(result) => {
+                tracing::info!(%asset, %receiver_id, %amount, operation_id = %result.operation.id.0, "Transferred to receiver");
             }
             Err(error) => {
                 tracing::error!(%asset, %receiver_id, %amount, %error, "Failed to send tokens to receiver");

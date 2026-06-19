@@ -9,6 +9,7 @@ repository.workspace = true
 near-api.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
+templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
 
 [lints]
