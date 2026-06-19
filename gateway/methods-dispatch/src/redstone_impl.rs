@@ -8,17 +8,16 @@ use templar_gateway_core::{
     PlanWrite,
 };
 use templar_gateway_methods_spec::redstone;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::GetConfig, C> for Dispatch {
     async fn dispatch(
-        request: <redstone::GetConfig as MethodSpec>::Input,
+        request: redstone::GetConfig,
         ctx: C,
     ) -> GatewayResult<redstone::GetConfigResult> {
-        let params = request.params;
+        let params = request;
         let config = ctx
             .near_client()
             .redstone_oracle(params.oracle_id)
@@ -31,10 +30,10 @@ impl<C: HasNearClient> DispatchRead<redstone::GetConfig, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::ReadPriceData, C> for Dispatch {
     async fn dispatch(
-        request: <redstone::ReadPriceData as MethodSpec>::Input,
+        request: redstone::ReadPriceData,
         ctx: C,
     ) -> GatewayResult<redstone::ReadPriceDataResult> {
-        let params = request.params;
+        let params = request;
         let feed_ids = params.feed_ids;
         let response = ctx
             .near_client()
@@ -60,10 +59,10 @@ impl<C: HasNearClient> DispatchRead<redstone::ReadPriceData, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<redstone::ListRole, C> for Dispatch {
     async fn dispatch(
-        request: <redstone::ListRole as MethodSpec>::Input,
+        request: redstone::ListRole,
         ctx: C,
     ) -> GatewayResult<redstone::ListRoleResult> {
-        let params = request.params;
+        let params = request;
         let account_ids = ctx
             .near_client()
             .redstone_oracle(params.oracle_id)
@@ -78,7 +77,7 @@ impl<C: HasNearClient> DispatchRead<redstone::ListRole, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<redstone::SetRole, C> for Dispatch {
     async fn plan(
-        request: <redstone::SetRole as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<redstone::SetRole>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -101,7 +100,7 @@ impl<C: HasNearClient> PlanWrite<redstone::SetRole, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<redstone::WritePrices, C> for Dispatch {
     async fn plan(
-        request: <redstone::WritePrices as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<redstone::WritePrices>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;

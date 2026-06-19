@@ -102,11 +102,9 @@ pub struct GetPriceResult {
 
 /// Read multiple on-chain oracle prices.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "oracle.getPrices", output = GetPricesResult)]
+#[method(read = "oracle.getPrices", output = ResolvePricesResult)]
 pub struct GetPrices {
     pub oracle_id: near_account_id::AccountId,
     pub price_ids: Vec<PriceIdentifier>,
     pub age: u64,
 }
-
-pub type GetPricesResult = ResolvePricesResult;

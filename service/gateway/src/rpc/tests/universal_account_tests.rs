@@ -12,11 +12,9 @@ async fn universal_account_get_key_endpoint_works_against_sandbox() -> Result<()
 
     let result = stack
         .controller
-        .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKey {
-                account_id,
-                key: signer.id(),
-            },
+        .request::<universal_account::GetKey>(&universal_account::GetKey {
+            account_id,
+            key: signer.id(),
         })
         .await?;
 
@@ -33,11 +31,9 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
 
     let key = stack
         .controller
-        .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKey {
-                account_id: account_id.clone(),
-                key: signer.id(),
-            },
+        .request::<universal_account::GetKey>(&universal_account::GetKey {
+            account_id: account_id.clone(),
+            key: signer.id(),
         })
         .await?
         .parameters
@@ -80,14 +76,12 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
 
     let counter = stack
         .controller
-        .request::<contract::ViewFunction>(&ReadRequest {
-            params: contract::ViewFunction {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                method_name: ContractMethodName("get_counter".to_owned()),
-                args: ContractArgs::Json(serde_json::json!({
-                    "account_id": account_id,
-                })),
-            },
+        .request::<contract::ViewFunction>(&contract::ViewFunction {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            method_name: ContractMethodName("get_counter".to_owned()),
+            args: ContractArgs::Json(serde_json::json!({
+                "account_id": account_id,
+            })),
         })
         .await?;
 
@@ -135,11 +129,9 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
 
     let created_key = stack
         .controller
-        .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKey {
-                account_id: created_account_id,
-                key: signer.id(),
-            },
+        .request::<universal_account::GetKey>(&universal_account::GetKey {
+            account_id: created_account_id,
+            key: signer.id(),
         })
         .await?;
 

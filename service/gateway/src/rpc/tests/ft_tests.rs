@@ -48,13 +48,11 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
 
     let _ = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: tx_hash(&result),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&result),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
         })
         .await?;
 

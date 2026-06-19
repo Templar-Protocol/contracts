@@ -71,9 +71,7 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
 async fn kind_of(stack: &TestStack, contract_id: AccountId) -> Result<ContractKind> {
     Ok(stack
         .controller
-        .request::<contract::GetKind>(&ReadRequest {
-            params: contract::GetKind { contract_id },
-        })
+        .request::<contract::GetKind>(&contract::GetKind { contract_id })
         .await?
         .kind)
 }

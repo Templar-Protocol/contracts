@@ -15,21 +15,17 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let config = stack
         .controller
-        .request::<redstone::GetConfig>(&ReadRequest {
-            params: redstone::GetConfig {
-                oracle_id: oracle_id.clone(),
-            },
+        .request::<redstone::GetConfig>(&redstone::GetConfig {
+            oracle_id: oracle_id.clone(),
         })
         .await?;
     assert!(config.config.signer_count_threshold > 0);
 
     let prices = stack
         .controller
-        .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceData {
-                oracle_id: oracle_id.clone(),
-                feed_ids: vec!["BTC".into()],
-            },
+        .request::<redstone::ReadPriceData>(&redstone::ReadPriceData {
+            oracle_id: oracle_id.clone(),
+            feed_ids: vec!["BTC".into()],
         })
         .await?;
     assert_eq!(prices.entries.len(), 1);
@@ -54,11 +50,9 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let roles = stack
         .controller
-        .request::<redstone::ListRole>(&ReadRequest {
-            params: redstone::ListRole {
-                oracle_id: oracle_id.clone(),
-                role: redstone::RoleValue::TrustedUpdater,
-            },
+        .request::<redstone::ListRole>(&redstone::ListRole {
+            oracle_id: oracle_id.clone(),
+            role: redstone::RoleValue::TrustedUpdater,
         })
         .await?;
     assert_eq!(
@@ -85,11 +79,9 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let written = stack
         .controller
-        .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceData {
-                oracle_id,
-                feed_ids: vec!["ETH".into()],
-            },
+        .request::<redstone::ReadPriceData>(&redstone::ReadPriceData {
+            oracle_id,
+            feed_ids: vec!["ETH".into()],
         })
         .await?;
     assert_eq!(written.entries.len(), 1);

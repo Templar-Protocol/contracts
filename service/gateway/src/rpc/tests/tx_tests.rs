@@ -23,12 +23,10 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
 
     let counter = stack
         .controller
-        .request::<contract::ViewFunction>(&ReadRequest {
-            params: contract::ViewFunction {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                method_name: ContractMethodName("redemption_rate".to_owned()),
-                args: ContractArgs::Raw(Base64Bytes(Vec::new())),
-            },
+        .request::<contract::ViewFunction>(&contract::ViewFunction {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            method_name: ContractMethodName("redemption_rate".to_owned()),
+            args: ContractArgs::Raw(Base64Bytes(Vec::new())),
         })
         .await?;
 
@@ -87,10 +85,8 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
 
     let fetched = stack
         .controller
-        .request::<op::Get>(&ReadRequest {
-            params: op::Get {
-                operation_id: first.operation.id.clone(),
-            },
+        .request::<op::Get>(&op::Get {
+            operation_id: first.operation.id.clone(),
         })
         .await?;
 
@@ -151,11 +147,9 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
 
     let balance = stack
         .controller
-        .request::<ft::GetBalanceOf>(&ReadRequest {
-            params: ft::GetBalanceOf {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<ft::GetBalanceOf>(&ft::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
 
@@ -175,11 +169,9 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
 
     let storage_balance = stack
         .controller
-        .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOf {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
 
@@ -198,17 +190,15 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
 
     let deleted = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: CryptoHash(
-                    "11111111111111111111111111111111"
-                        .parse()
-                        .expect("valid dummy hash"),
-                ),
-                sender_account_id: stack.harness.cleanup_signer_account_id.0.clone(),
-                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::None),
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: CryptoHash(
+                "11111111111111111111111111111111"
+                    .parse()
+                    .expect("valid dummy hash"),
+            ),
+            sender_account_id: stack.harness.cleanup_signer_account_id.0.clone(),
+            wait_until: Some(templar_gateway_types::common::TxExecutionStatus::None),
+            encoding: tx::ValueEncoding::Json,
         })
         .await;
 
@@ -224,10 +214,8 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
 
     let before = stack
         .controller
-        .request::<account::Get>(&ReadRequest {
-            params: account::Get {
-                account_id: stack.harness.beneficiary_account_id.clone(),
-            },
+        .request::<account::Get>(&account::Get {
+            account_id: stack.harness.beneficiary_account_id.clone(),
         })
         .await?;
 
@@ -249,10 +237,8 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
 
     let after = stack
         .controller
-        .request::<account::Get>(&ReadRequest {
-            params: account::Get {
-                account_id: stack.harness.beneficiary_account_id.clone(),
-            },
+        .request::<account::Get>(&account::Get {
+            account_id: stack.harness.beneficiary_account_id.clone(),
         })
         .await?;
     assert!(after.amount > before.amount);
@@ -275,10 +261,8 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
 
     let cleanup_account = stack
         .controller
-        .request::<account::Get>(&ReadRequest {
-            params: account::Get {
-                account_id: stack.harness.cleanup_signer_account_id.0.clone(),
-            },
+        .request::<account::Get>(&account::Get {
+            account_id: stack.harness.cleanup_signer_account_id.0.clone(),
         })
         .await?;
     assert_ne!(

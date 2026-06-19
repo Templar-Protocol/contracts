@@ -6,19 +6,17 @@ use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Prop
 
 /// Get the next governance proposal ID.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "proxyOracleGovernance.nextProposalId", output = NextProposalIdResult)]
+#[method(read = "proxyOracleGovernance.nextProposalId", output = u32)]
 pub struct NextProposalId {
     pub governance_id: near_account_id::AccountId,
 }
-pub type NextProposalIdResult = u32;
 
 /// Get the count of active governance proposals.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "proxyOracleGovernance.proposalCount", output = ProposalCountResult)]
+#[method(read = "proxyOracleGovernance.proposalCount", output = u32)]
 pub struct ProposalCount {
     pub governance_id: near_account_id::AccountId,
 }
-pub type ProposalCountResult = u32;
 
 /// Get the configured proposal TTL for an operation kind.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

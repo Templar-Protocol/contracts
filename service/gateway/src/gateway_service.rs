@@ -10,7 +10,8 @@ use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
 };
 use templar_gateway_types::{
-    common::WriteOperationResult, ManagedAccountId, MethodSpec, OperationId, OperationRecord,
+    common::{WriteOperationResult, WriteRequest},
+    ManagedAccountId, MethodSpec, OperationId, OperationRecord,
 };
 use tokio::sync::Mutex;
 
@@ -81,7 +82,7 @@ where
 
     pub async fn request_read<Request, Impl>(
         &self,
-        params: Request::Input,
+        params: Request,
     ) -> GatewayResult<Request::Output>
     where
         Request: MethodSpec + 'static,
@@ -105,11 +106,10 @@ where
 
     pub async fn request_write<Request, Impl>(
         &self,
-        params: Request::Input,
+        params: WriteRequest<Request>,
     ) -> GatewayResult<Request::Output>
     where
         Request: MethodSpec<Output = WriteOperationResult> + 'static,
-        Request::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Request, ContextType>,
     {
         tracing::debug!(

@@ -215,11 +215,9 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
             .await?;
         let position = stack
             .controller
-            .request::<market::GetSupplyPosition>(&ReadRequest {
-                params: market::GetSupplyPosition {
-                    market_id: market_id.clone(),
-                    account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                },
+            .request::<market::GetSupplyPosition>(&market::GetSupplyPosition {
+                market_id: market_id.clone(),
+                account_id: stack.harness.gateway_signer_account_id.0.clone(),
             })
             .await?;
         if position
@@ -289,11 +287,9 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
 
     let borrow_position_before_liquidation = stack
         .controller
-        .request::<market::GetBorrowPosition>(&ReadRequest {
-            params: market::GetBorrowPosition {
-                market_id: market_id.clone(),
-                account_id: stack.harness.cleanup_signer_account_id.0.clone(),
-            },
+        .request::<market::GetBorrowPosition>(&market::GetBorrowPosition {
+            market_id: market_id.clone(),
+            account_id: stack.harness.cleanup_signer_account_id.0.clone(),
         })
         .await?
         .position
@@ -376,22 +372,20 @@ async fn market_composed_operations_work_against_sandbox() -> Result<()> {
 
     let supply_request = stack
         .controller
-        .request::<market::GetSupplyWithdrawalRequestStatus>(&ReadRequest {
-            params: market::GetSupplyWithdrawalRequestStatus {
+        .request::<market::GetSupplyWithdrawalRequestStatus>(
+            &market::GetSupplyWithdrawalRequestStatus {
                 market_id: market_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
-        })
+        )
         .await?;
     assert!(supply_request.status.is_none());
 
     let borrow_position = stack
         .controller
-        .request::<market::GetBorrowPosition>(&ReadRequest {
-            params: market::GetBorrowPosition {
-                market_id,
-                account_id: stack.harness.cleanup_signer_account_id.0.clone(),
-            },
+        .request::<market::GetBorrowPosition>(&market::GetBorrowPosition {
+            market_id,
+            account_id: stack.harness.cleanup_signer_account_id.0.clone(),
         })
         .await?;
     let borrow_position = borrow_position
@@ -414,20 +408,16 @@ async fn market_endpoints_work_against_sandbox() -> Result<()> {
 
     let returned_configuration = stack
         .controller
-        .request::<market::GetConfiguration>(&ReadRequest {
-            params: market::GetConfiguration {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetConfiguration>(&market::GetConfiguration {
+            market_id: market_id.clone(),
         })
         .await?;
 
     let borrow_positions = stack
         .controller
-        .request::<market::ListBorrowPositions>(&ReadRequest {
-            params: market::ListBorrowPositions {
-                market_id,
-                args: templar_gateway_types::common::Pagination::default(),
-            },
+        .request::<market::ListBorrowPositions>(&market::ListBorrowPositions {
+            market_id,
+            args: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
 
@@ -488,10 +478,8 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
 
     let returned_configuration = stack
         .controller
-        .request::<market::GetConfiguration>(&ReadRequest {
-            params: market::GetConfiguration {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetConfiguration>(&market::GetConfiguration {
+            market_id: market_id.clone(),
         })
         .await?;
     assert_eq!(returned_configuration, configuration);
@@ -510,11 +498,9 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
     ] {
         let storage_balance = stack
             .controller
-            .request::<storage::GetBalanceOf>(&ReadRequest {
-                params: storage::GetBalanceOf {
-                    contract_id,
-                    account_id: market_account_id.clone(),
-                },
+            .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+                contract_id,
+                account_id: market_account_id.clone(),
             })
             .await?;
         assert!(storage_balance.balance.is_some());
@@ -522,11 +508,9 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
 
     let deployment = stack
         .controller
-        .request::<registry::GetDeployment>(&ReadRequest {
-            params: registry::GetDeployment {
-                registry_id,
-                account_id: market_account_id,
-            },
+        .request::<registry::GetDeployment>(&registry::GetDeployment {
+            registry_id,
+            account_id: market_account_id,
         })
         .await?;
     assert!(deployment.deployment.is_some());
@@ -542,126 +526,104 @@ async fn market_extended_endpoints_work_against_sandbox() -> Result<()> {
 
     let _ = stack
         .controller
-        .request::<market::GetCurrentSnapshot>(&ReadRequest {
-            params: market::GetCurrentSnapshot {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetCurrentSnapshot>(&market::GetCurrentSnapshot {
+            market_id: market_id.clone(),
         })
         .await?;
     let finalized_len = stack
         .controller
-        .request::<market::GetFinalizedSnapshotsLen>(&ReadRequest {
-            params: market::GetFinalizedSnapshotsLen {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetFinalizedSnapshotsLen>(&market::GetFinalizedSnapshotsLen {
+            market_id: market_id.clone(),
         })
         .await?;
     let finalized = stack
         .controller
-        .request::<market::ListFinalizedSnapshots>(&ReadRequest {
-            params: market::ListFinalizedSnapshots {
-                market_id: market_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
-            },
+        .request::<market::ListFinalizedSnapshots>(&market::ListFinalizedSnapshots {
+            market_id: market_id.clone(),
+            args: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
     let metrics = stack
         .controller
-        .request::<market::GetBorrowAssetMetrics>(&ReadRequest {
-            params: market::GetBorrowAssetMetrics {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetBorrowAssetMetrics>(&market::GetBorrowAssetMetrics {
+            market_id: market_id.clone(),
         })
         .await?;
     let empty_borrow_position = stack
         .controller
-        .request::<market::GetBorrowPosition>(&ReadRequest {
-            params: market::GetBorrowPosition {
-                market_id: market_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<market::GetBorrowPosition>(&market::GetBorrowPosition {
+            market_id: market_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
     let empty_borrow_interest = stack
         .controller
-        .request::<market::GetBorrowPositionPendingInterest>(&ReadRequest {
-            params: market::GetBorrowPositionPendingInterest {
+        .request::<market::GetBorrowPositionPendingInterest>(
+            &market::GetBorrowPositionPendingInterest {
                 market_id: market_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 snapshot_limit: Some(1),
             },
-        })
+        )
         .await?;
     let empty_borrow_status = stack
         .controller
-        .request::<market::GetBorrowStatus>(&ReadRequest {
-            params: market::GetBorrowStatus {
-                market_id: market_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                oracle_response: templar_common::oracle::pyth::OracleResponse::new(),
-            },
+        .request::<market::GetBorrowStatus>(&market::GetBorrowStatus {
+            market_id: market_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            oracle_response: templar_common::oracle::pyth::OracleResponse::new(),
         })
         .await?;
     let supply_positions = stack
         .controller
-        .request::<market::ListSupplyPositions>(&ReadRequest {
-            params: market::ListSupplyPositions {
-                market_id: market_id.clone(),
-                args: templar_gateway_types::common::Pagination::default(),
-            },
+        .request::<market::ListSupplyPositions>(&market::ListSupplyPositions {
+            market_id: market_id.clone(),
+            args: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
     let empty_supply_position = stack
         .controller
-        .request::<market::GetSupplyPosition>(&ReadRequest {
-            params: market::GetSupplyPosition {
-                market_id: market_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<market::GetSupplyPosition>(&market::GetSupplyPosition {
+            market_id: market_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
     let empty_supply_yield = stack
         .controller
-        .request::<market::GetSupplyPositionPendingYield>(&ReadRequest {
-            params: market::GetSupplyPositionPendingYield {
-                market_id: market_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                snapshot_limit: Some(1),
-            },
+        .request::<market::GetSupplyPositionPendingYield>(&market::GetSupplyPositionPendingYield {
+            market_id: market_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            snapshot_limit: Some(1),
         })
         .await?;
     let empty_withdrawal_request = stack
         .controller
-        .request::<market::GetSupplyWithdrawalRequestStatus>(&ReadRequest {
-            params: market::GetSupplyWithdrawalRequestStatus {
+        .request::<market::GetSupplyWithdrawalRequestStatus>(
+            &market::GetSupplyWithdrawalRequestStatus {
                 market_id: market_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
-        })
+        )
         .await?;
     let queue = stack
         .controller
-        .request::<market::GetSupplyWithdrawalQueueStatus>(&ReadRequest {
-            params: market::GetSupplyWithdrawalQueueStatus {
+        .request::<market::GetSupplyWithdrawalQueueStatus>(
+            &market::GetSupplyWithdrawalQueueStatus {
                 market_id: market_id.clone(),
             },
-        })
+        )
         .await?;
     let last_yield = stack
         .controller
-        .request::<market::GetLastYieldRate>(&ReadRequest {
-            params: market::GetLastYieldRate {
-                market_id: market_id.clone(),
-            },
+        .request::<market::GetLastYieldRate>(&market::GetLastYieldRate {
+            market_id: market_id.clone(),
         })
         .await?;
     let static_yield = stack
         .controller
-        .request::<market::GetStaticYield>(&ReadRequest {
-            params: market::GetStaticYield {
-                market_id: market_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<market::GetStaticYield>(&market::GetStaticYield {
+            market_id: market_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
     let _ = stack

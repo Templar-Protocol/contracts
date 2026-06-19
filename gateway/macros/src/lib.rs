@@ -100,14 +100,13 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         Ok(())
     })?;
 
-    let (rpc_method, request_ty, output_ty, method_kind) = match (read_rpc, write_rpc) {
+    let (rpc_method, output_ty, method_kind) = match (read_rpc, write_rpc) {
         (Some(rpc), None) => {
             let output = output.ok_or_else(|| {
                 syn::Error::new_spanned(method_attr, "read methods require `output = <Type>`")
             })?;
             (
                 rpc,
-                quote!(templar_gateway_types::common::ReadRequest<#ident>),
                 quote!(#output),
                 quote!(templar_gateway_types::spec::MethodKind::Read),
             )
@@ -121,7 +120,6 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             }
             (
                 rpc,
-                quote!(templar_gateway_types::common::WriteRequest<#ident>),
                 quote!(templar_gateway_types::common::WriteOperationResult),
                 quote!(templar_gateway_types::spec::MethodKind::Write),
             )
@@ -149,7 +147,6 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     Ok(quote! {
         impl templar_gateway_types::MethodSpec for #ident {
-            type Input = #request_ty;
             type Output = #output_ty;
 
             const RPC_METHOD: &'static str = #rpc_method;

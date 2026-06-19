@@ -16,23 +16,19 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
 
     let unsafe_prices = stack
         .controller
-        .request::<pyth::ListEmaPricesUnsafe>(&ReadRequest {
-            params: pyth::ListEmaPricesUnsafe {
-                oracle_id: oracle_id.clone(),
-                price_ids: vec![price_id],
-            },
+        .request::<pyth::ListEmaPricesUnsafe>(&pyth::ListEmaPricesUnsafe {
+            oracle_id: oracle_id.clone(),
+            price_ids: vec![price_id],
         })
         .await?;
     assert_same_pyth_price_value(unsafe_prices.prices[0].price.clone(), &price);
 
     let bounded_prices = stack
         .controller
-        .request::<pyth::ListEmaPricesNoOlderThan>(&ReadRequest {
-            params: pyth::ListEmaPricesNoOlderThan {
-                oracle_id: oracle_id.clone(),
-                price_ids: vec![price_id],
-                age: 60,
-            },
+        .request::<pyth::ListEmaPricesNoOlderThan>(&pyth::ListEmaPricesNoOlderThan {
+            oracle_id: oracle_id.clone(),
+            price_ids: vec![price_id],
+            age: 60,
         })
         .await?;
     assert_same_pyth_price_value(bounded_prices.prices[0].price.clone(), &price);

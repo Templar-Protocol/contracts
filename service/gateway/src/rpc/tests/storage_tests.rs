@@ -8,11 +8,9 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let balance_before = stack
         .controller
-        .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOf {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
-            },
+        .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
 
@@ -34,11 +32,9 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let beneficiary_balance = stack
         .controller
-        .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOf {
-                contract_id: stack.harness.ft_contract_id.clone(),
-                account_id: stack.harness.beneficiary_account_id.clone(),
-            },
+        .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: stack.harness.beneficiary_account_id.clone(),
         })
         .await?;
 
@@ -46,13 +42,11 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let deposit_transaction = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: tx_hash(&beneficiary_deposit),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: None,
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&beneficiary_deposit),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: None,
+            encoding: tx::ValueEncoding::Json,
         })
         .await?;
 
@@ -79,13 +73,11 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let mint_status = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: tx_hash(&mint_transaction),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: None,
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&mint_transaction),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: None,
+            encoding: tx::ValueEncoding::Json,
         })
         .await?;
 
@@ -111,13 +103,11 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let transfer_result = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: tx_hash(&transfer_transaction),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: None,
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&transfer_transaction),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: None,
+            encoding: tx::ValueEncoding::Json,
         })
         .await?;
 
@@ -141,13 +131,11 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
 
     let unregister_result = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::Get {
-                tx_hash: tx_hash(&unregister_transaction),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: None,
-                encoding: tx::ValueEncoding::Base64,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&unregister_transaction),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: None,
+            encoding: tx::ValueEncoding::Base64,
         })
         .await?;
 

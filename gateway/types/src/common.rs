@@ -66,25 +66,6 @@ impl ContractArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-pub struct ReadRequest<T> {
-    #[serde(flatten)]
-    pub params: T,
-}
-
-impl<T> ReadRequest<T> {
-    pub fn new(params: T) -> Self {
-        Self { params }
-    }
-}
-
-impl<T> From<T> for ReadRequest<T> {
-    fn from(params: T) -> Self {
-        Self { params }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WriteRequest<T> {
     pub signer_account_id: ManagedAccountId,
     #[serde(default, skip_serializing_if = "Option::is_none")]

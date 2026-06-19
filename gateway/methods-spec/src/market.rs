@@ -19,12 +19,10 @@ use templar_gateway_types::{common::Pagination, primitive::PublicKey, NearToken}
 
 /// Get market configuration.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getConfiguration", output = GetConfigurationResult)]
+#[method(read = "market.getConfiguration", output = MarketConfiguration)]
 pub struct GetConfiguration {
     pub market_id: AccountId,
 }
-
-pub type GetConfigurationResult = MarketConfiguration;
 
 /// List borrow positions.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -42,21 +40,17 @@ pub struct ListBorrowPositionsResult {
 
 /// Get the current market snapshot.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getCurrentSnapshot", output = GetCurrentSnapshotResult)]
+#[method(read = "market.getCurrentSnapshot", output = Snapshot)]
 pub struct GetCurrentSnapshot {
     pub market_id: AccountId,
 }
 
-pub type GetCurrentSnapshotResult = Snapshot;
-
 /// Get finalized snapshot count.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getFinalizedSnapshotsLen", output = GetFinalizedSnapshotsLenResult)]
+#[method(read = "market.getFinalizedSnapshotsLen", output = u32)]
 pub struct GetFinalizedSnapshotsLen {
     pub market_id: AccountId,
 }
-
-pub type GetFinalizedSnapshotsLenResult = u32;
 
 /// List finalized snapshots.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -74,12 +68,10 @@ pub struct ListFinalizedSnapshotsResult {
 
 /// Get borrow asset metrics.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getBorrowAssetMetrics", output = GetBorrowAssetMetricsResult)]
+#[method(read = "market.getBorrowAssetMetrics", output = BorrowAssetMetrics)]
 pub struct GetBorrowAssetMetrics {
     pub market_id: AccountId,
 }
-
-pub type GetBorrowAssetMetricsResult = BorrowAssetMetrics;
 
 /// Get a borrow position.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -178,21 +170,17 @@ pub struct GetSupplyWithdrawalRequestStatusResult {
 
 /// Get supply withdrawal queue status.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getSupplyWithdrawalQueueStatus", output = GetSupplyWithdrawalQueueStatusResult)]
+#[method(read = "market.getSupplyWithdrawalQueueStatus", output = WithdrawalQueueStatus)]
 pub struct GetSupplyWithdrawalQueueStatus {
     pub market_id: AccountId,
 }
 
-pub type GetSupplyWithdrawalQueueStatusResult = WithdrawalQueueStatus;
-
 /// Get the last yield rate.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "market.getLastYieldRate", output = GetLastYieldRateResult)]
+#[method(read = "market.getLastYieldRate", output = Decimal)]
 pub struct GetLastYieldRate {
     pub market_id: AccountId,
 }
-
-pub type GetLastYieldRateResult = Decimal;
 
 /// Get accumulated static yield.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

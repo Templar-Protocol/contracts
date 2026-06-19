@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 const READ_ACTOR_NAME: &str = "read-actor";
 const READ_ACTOR_MAX_CONCURRENCY: usize = 64;
 
-pub struct RpcMessage<Spec: MethodSpec, Impl>(pub Spec::Input, pub PhantomData<Impl>);
+pub struct RpcMessage<Spec: MethodSpec, Impl>(pub Spec, pub PhantomData<Impl>);
 
 impl<Spec: MethodSpec, Impl> actix::Message for RpcMessage<Spec, Impl> {
     type Result = GatewayResult<Spec::Output>;

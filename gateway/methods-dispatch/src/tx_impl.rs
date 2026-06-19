@@ -6,23 +6,19 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
 };
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
-    async fn dispatch(
-        request: <tx::Get as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<tx::GetResult> {
+    async fn dispatch(request: tx::Get, ctx: C) -> GatewayResult<tx::GetResult> {
         let result = ctx
             .near_client()
             .chain()
             .get_transaction(
-                request.params.tx_hash.into(),
-                request.params.sender_account_id,
-                request.params.wait_until.unwrap_or_default().into(),
+                request.tx_hash.into(),
+                request.sender_account_id,
+                request.wait_until.unwrap_or_default().into(),
             )
             .await?;
 
@@ -36,7 +32,7 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             },
             total_gas_burnt: result.total_gas_burnt,
             logs: result.logs().into_iter().map(ToString::to_string).collect(),
-            return_value: match request.params.encoding {
+            return_value: match request.encoding {
                 tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
                 tx::ValueEncoding::Base64 => result
                     .raw_bytes()
@@ -50,7 +46,7 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::FunctionCall, C> for Dispatch {
     async fn plan(
-        request: <tx::FunctionCall as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<tx::FunctionCall>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         Ok(OperationPlan::single(PlannedTransaction {
@@ -70,7 +66,7 @@ impl<C: Send + 'static> PlanWrite<tx::FunctionCall, C> for Dispatch {
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::Transfer, C> for Dispatch {
     async fn plan(
-        request: <tx::Transfer as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<tx::Transfer>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         Ok(OperationPlan::single(PlannedTransaction {
@@ -87,7 +83,7 @@ impl<C: Send + 'static> PlanWrite<tx::Transfer, C> for Dispatch {
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::DeployContract, C> for Dispatch {
     async fn plan(
-        request: <tx::DeployContract as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<tx::DeployContract>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         Ok(OperationPlan::single(PlannedTransaction {
@@ -104,7 +100,7 @@ impl<C: Send + 'static> PlanWrite<tx::DeployContract, C> for Dispatch {
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
     async fn plan(
-        request: <tx::DeployAndInit as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<tx::DeployAndInit>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         Ok(OperationPlan::single(PlannedTransaction {

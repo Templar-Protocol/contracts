@@ -18,7 +18,7 @@ use templar_gateway_core::{
     PlannedTransaction,
 };
 use templar_gateway_methods_spec::{market, registry::Deploy};
-use templar_gateway_types::{ManagedAccountId, MethodSpec};
+use templar_gateway_types::ManagedAccountId;
 
 use crate::registry_impl::plan_deploy_from_registry;
 use crate::Dispatch;
@@ -31,11 +31,11 @@ struct MarketInitArgs {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetConfiguration, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetConfiguration as MethodSpec>::Input,
+        request: market::GetConfiguration,
         ctx: C,
-    ) -> GatewayResult<market::GetConfigurationResult> {
+    ) -> GatewayResult<MarketConfiguration> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_configuration(())
             .await
     }
@@ -44,11 +44,11 @@ impl<C: HasNearClient> DispatchRead<market::GetConfiguration, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetCurrentSnapshot, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetCurrentSnapshot as MethodSpec>::Input,
+        request: market::GetCurrentSnapshot,
         ctx: C,
-    ) -> GatewayResult<market::GetCurrentSnapshotResult> {
+    ) -> GatewayResult<templar_common::snapshot::Snapshot> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_current_snapshot(())
             .await
     }
@@ -56,12 +56,9 @@ impl<C: HasNearClient> DispatchRead<market::GetCurrentSnapshot, C> for Dispatch 
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetFinalizedSnapshotsLen, C> for Dispatch {
-    async fn dispatch(
-        request: <market::GetFinalizedSnapshotsLen as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<market::GetFinalizedSnapshotsLenResult> {
+    async fn dispatch(request: market::GetFinalizedSnapshotsLen, ctx: C) -> GatewayResult<u32> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_finalized_snapshots_len(())
             .await
     }
@@ -70,12 +67,12 @@ impl<C: HasNearClient> DispatchRead<market::GetFinalizedSnapshotsLen, C> for Dis
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::ListFinalizedSnapshots, C> for Dispatch {
     async fn dispatch(
-        request: <market::ListFinalizedSnapshots as MethodSpec>::Input,
+        request: market::ListFinalizedSnapshots,
         ctx: C,
     ) -> GatewayResult<market::ListFinalizedSnapshotsResult> {
         ctx.near_client()
-            .market(request.params.market_id)
-            .list_finalized_snapshots(request.params.args)
+            .market(request.market_id)
+            .list_finalized_snapshots(request.args)
             .await
             .map(|snapshots| market::ListFinalizedSnapshotsResult { snapshots })
     }
@@ -84,11 +81,11 @@ impl<C: HasNearClient> DispatchRead<market::ListFinalizedSnapshots, C> for Dispa
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetBorrowAssetMetrics, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetBorrowAssetMetrics as MethodSpec>::Input,
+        request: market::GetBorrowAssetMetrics,
         ctx: C,
-    ) -> GatewayResult<market::GetBorrowAssetMetricsResult> {
+    ) -> GatewayResult<templar_common::market::BorrowAssetMetrics> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_borrow_asset_metrics(())
             .await
     }
@@ -97,12 +94,12 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowAssetMetrics, C> for Dispat
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::ListBorrowPositions, C> for Dispatch {
     async fn dispatch(
-        request: <market::ListBorrowPositions as MethodSpec>::Input,
+        request: market::ListBorrowPositions,
         ctx: C,
     ) -> GatewayResult<market::ListBorrowPositionsResult> {
         ctx.near_client()
-            .market(request.params.market_id)
-            .list_borrow_positions(request.params.args)
+            .market(request.market_id)
+            .list_borrow_positions(request.args)
             .await
             .map(|positions| market::ListBorrowPositionsResult { positions })
     }
@@ -111,13 +108,13 @@ impl<C: HasNearClient> DispatchRead<market::ListBorrowPositions, C> for Dispatch
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetBorrowPosition, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetBorrowPosition as MethodSpec>::Input,
+        request: market::GetBorrowPosition,
         ctx: C,
     ) -> GatewayResult<market::GetBorrowPositionResult> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_borrow_position(AccountIdArg {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|position| market::GetBorrowPositionResult { position })
@@ -127,10 +124,10 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowPosition, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetBorrowPositionPendingInterest, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetBorrowPositionPendingInterest as MethodSpec>::Input,
+        request: market::GetBorrowPositionPendingInterest,
         ctx: C,
     ) -> GatewayResult<market::GetBorrowPositionPendingInterestResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .market(params.market_id)
             .get_borrow_position_pending_interest(GetBorrowPositionPendingInterestArgs {
@@ -145,10 +142,10 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowPositionPendingInterest, C>
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetBorrowStatus, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetBorrowStatus as MethodSpec>::Input,
+        request: market::GetBorrowStatus,
         ctx: C,
     ) -> GatewayResult<market::GetBorrowStatusResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .market(params.market_id)
             .get_borrow_status(GetBorrowStatusArgs {
@@ -163,12 +160,12 @@ impl<C: HasNearClient> DispatchRead<market::GetBorrowStatus, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::ListSupplyPositions, C> for Dispatch {
     async fn dispatch(
-        request: <market::ListSupplyPositions as MethodSpec>::Input,
+        request: market::ListSupplyPositions,
         ctx: C,
     ) -> GatewayResult<market::ListSupplyPositionsResult> {
         ctx.near_client()
-            .market(request.params.market_id)
-            .list_supply_positions(request.params.args)
+            .market(request.market_id)
+            .list_supply_positions(request.args)
             .await
             .map(|positions| market::ListSupplyPositionsResult { positions })
     }
@@ -177,13 +174,13 @@ impl<C: HasNearClient> DispatchRead<market::ListSupplyPositions, C> for Dispatch
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetSupplyPosition, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetSupplyPosition as MethodSpec>::Input,
+        request: market::GetSupplyPosition,
         ctx: C,
     ) -> GatewayResult<market::GetSupplyPositionResult> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_supply_position(AccountIdArg {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|position| market::GetSupplyPositionResult { position })
@@ -193,10 +190,10 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyPosition, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetSupplyPositionPendingYield, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetSupplyPositionPendingYield as MethodSpec>::Input,
+        request: market::GetSupplyPositionPendingYield,
         ctx: C,
     ) -> GatewayResult<market::GetSupplyPositionPendingYieldResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .market(params.market_id)
             .get_supply_position_pending_yield(GetSupplyPositionPendingYieldArgs {
@@ -211,13 +208,13 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyPositionPendingYield, C> fo
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetSupplyWithdrawalRequestStatus, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetSupplyWithdrawalRequestStatus as MethodSpec>::Input,
+        request: market::GetSupplyWithdrawalRequestStatus,
         ctx: C,
     ) -> GatewayResult<market::GetSupplyWithdrawalRequestStatusResult> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_supply_withdrawal_request_status(AccountIdArg {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|status| market::GetSupplyWithdrawalRequestStatusResult { status })
@@ -227,11 +224,11 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyWithdrawalRequestStatus, C>
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetSupplyWithdrawalQueueStatus, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetSupplyWithdrawalQueueStatus as MethodSpec>::Input,
+        request: market::GetSupplyWithdrawalQueueStatus,
         ctx: C,
-    ) -> GatewayResult<market::GetSupplyWithdrawalQueueStatusResult> {
+    ) -> GatewayResult<templar_common::withdrawal_queue::WithdrawalQueueStatus> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_supply_withdrawal_queue_status(())
             .await
     }
@@ -240,11 +237,11 @@ impl<C: HasNearClient> DispatchRead<market::GetSupplyWithdrawalQueueStatus, C> f
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetLastYieldRate, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetLastYieldRate as MethodSpec>::Input,
+        request: market::GetLastYieldRate,
         ctx: C,
-    ) -> GatewayResult<market::GetLastYieldRateResult> {
+    ) -> GatewayResult<templar_common::Decimal> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_last_yield_rate(())
             .await
     }
@@ -253,13 +250,13 @@ impl<C: HasNearClient> DispatchRead<market::GetLastYieldRate, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<market::GetStaticYield, C> for Dispatch {
     async fn dispatch(
-        request: <market::GetStaticYield as MethodSpec>::Input,
+        request: market::GetStaticYield,
         ctx: C,
     ) -> GatewayResult<market::GetStaticYieldResult> {
         ctx.near_client()
-            .market(request.params.market_id)
+            .market(request.market_id)
             .get_static_yield(AccountIdArg {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|record| market::GetStaticYieldResult {
@@ -275,7 +272,7 @@ impl<C: HasNearClient> DispatchRead<market::GetStaticYield, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::Borrow, C> for Dispatch {
     async fn plan(
-        request: <market::Borrow as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::Borrow>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -293,7 +290,7 @@ impl<C: HasNearClient> PlanWrite<market::Borrow, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
     async fn plan(
-        request: <market::Create as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::Create>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -346,7 +343,7 @@ impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
     async fn plan(
-        request: <market::Supply as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::Supply>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -397,7 +394,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::WithdrawCollateral, C> for Dispatch {
     async fn plan(
-        request: <market::WithdrawCollateral as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::WithdrawCollateral>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -415,7 +412,7 @@ impl<C: HasNearClient> PlanWrite<market::WithdrawCollateral, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::ApplyInterest, C> for Dispatch {
     async fn plan(
-        request: <market::ApplyInterest as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::ApplyInterest>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -435,7 +432,7 @@ impl<C: HasNearClient> PlanWrite<market::ApplyInterest, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::Repay, C> for Dispatch {
     async fn plan(
-        request: <market::Repay as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::Repay>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -478,7 +475,7 @@ impl<C: HasNearClient> PlanWrite<market::Repay, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::CreateSupplyWithdrawalRequest, C> for Dispatch {
     async fn plan(
-        request: <market::CreateSupplyWithdrawalRequest as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::CreateSupplyWithdrawalRequest>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -496,7 +493,7 @@ impl<C: HasNearClient> PlanWrite<market::CreateSupplyWithdrawalRequest, C> for D
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::CancelSupplyWithdrawalRequest, C> for Dispatch {
     async fn plan(
-        request: <market::CancelSupplyWithdrawalRequest as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::CancelSupplyWithdrawalRequest>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -512,7 +509,9 @@ impl<C: HasNearClient> PlanWrite<market::CancelSupplyWithdrawalRequest, C> for D
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::ExecuteNextSupplyWithdrawalRequest, C> for Dispatch {
     async fn plan(
-        request: <market::ExecuteNextSupplyWithdrawalRequest as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<
+            market::ExecuteNextSupplyWithdrawalRequest,
+        >,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -530,7 +529,7 @@ impl<C: HasNearClient> PlanWrite<market::ExecuteNextSupplyWithdrawalRequest, C> 
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::WithdrawSupply, C> for Dispatch {
     async fn plan(
-        request: <market::WithdrawSupply as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::WithdrawSupply>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -590,7 +589,7 @@ impl<C: HasNearClient> PlanWrite<market::WithdrawSupply, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::Liquidate, C> for Dispatch {
     async fn plan(
-        request: <market::Liquidate as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::Liquidate>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -646,7 +645,7 @@ impl<C: HasNearClient> PlanWrite<market::Liquidate, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::HarvestYield, C> for Dispatch {
     async fn plan(
-        request: <market::HarvestYield as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::HarvestYield>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -666,7 +665,7 @@ impl<C: HasNearClient> PlanWrite<market::HarvestYield, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::AccumulateStaticYield, C> for Dispatch {
     async fn plan(
-        request: <market::AccumulateStaticYield as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::AccumulateStaticYield>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -686,7 +685,7 @@ impl<C: HasNearClient> PlanWrite<market::AccumulateStaticYield, C> for Dispatch 
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<market::WithdrawStaticYield, C> for Dispatch {
     async fn plan(
-        request: <market::WithdrawStaticYield as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<market::WithdrawStaticYield>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()

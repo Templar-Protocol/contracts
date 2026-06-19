@@ -3,9 +3,7 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
     RpcModule,
 };
-use templar_gateway_core::{
-    DispatchRead, GatewayError, HasIdempotencyKey, HasNearClient, HasSignerAccountId, PlanWrite,
-};
+use templar_gateway_core::{DispatchRead, GatewayError, HasNearClient, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_methods_spec::{
     account, contract, ft, lst_oracle, market, mt, op, oracle, proxy_oracle,
@@ -16,7 +14,10 @@ use templar_gateway_oracle_updates_dispatch::{
     Dispatch as OracleUpdatesDispatch, ProvidesPythSource, ProvidesRedStoneSource,
 };
 use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
-use templar_gateway_types::{common::WriteOperationResult, MethodSpec};
+use templar_gateway_types::{
+    common::{WriteOperationResult, WriteRequest},
+    MethodSpec,
+};
 
 use crate::gateway_service::GatewayService;
 
@@ -45,13 +46,12 @@ impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextT
     fn register_write<Spec, Impl>(&mut self) -> Result<(), RegisterMethodError>
     where
         Spec: MethodSpec<Output = WriteOperationResult> + 'static,
-        Spec::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Spec, ContextType>,
     {
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {
-                let params: Spec::Input = params.parse()?;
+                let params: WriteRequest<Spec> = params.parse()?;
                 let result = service
                     .request_write::<Spec, Impl>(params)
                     .await
@@ -70,7 +70,7 @@ impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextT
         self.module.register_async_method(
             Spec::RPC_METHOD,
             move |params, service, _| async move {
-                let params: Spec::Input = params.parse()?;
+                let params: Spec = params.parse()?;
                 let result = service
                     .request_read::<Spec, Impl>(params)
                     .await
@@ -85,9 +85,9 @@ impl<ContextType: HasNearClient + std::marker::Unpin> GatewayRpcBuilder<ContextT
         self.module.register_async_method(
             op::Get::RPC_METHOD,
             move |params, service, _| async move {
-                let params: <op::Get as MethodSpec>::Input = params.parse()?;
+                let params: op::Get = params.parse()?;
                 let result = service
-                    .get_operation(&params.params.operation_id)
+                    .get_operation(&params.operation_id)
                     .await
                     .map_err(map_gateway_error)?;
                 RpcResult::Ok(op::GetResult { operation: result })

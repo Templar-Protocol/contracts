@@ -7,18 +7,17 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::NextProposalId, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_governance::NextProposalId as MethodSpec>::Input,
+        request: proxy_oracle_governance::NextProposalId,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::NextProposalIdResult> {
+    ) -> GatewayResult<u32> {
         ctx.near_client()
-            .proxy_governance(request.params.governance_id)
+            .proxy_governance(request.governance_id)
             .next_proposal_id(())
             .await
     }
@@ -27,11 +26,11 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::NextProposalId, C> 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ProposalCount, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_governance::ProposalCount as MethodSpec>::Input,
+        request: proxy_oracle_governance::ProposalCount,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::ProposalCountResult> {
+    ) -> GatewayResult<u32> {
         ctx.near_client()
-            .proxy_governance(request.params.governance_id)
+            .proxy_governance(request.governance_id)
             .proposal_count(())
             .await
     }
@@ -40,10 +39,10 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ProposalCount, C> f
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetOperationTtl, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_governance::GetOperationTtl as MethodSpec>::Input,
+        request: proxy_oracle_governance::GetOperationTtl,
         ctx: C,
     ) -> GatewayResult<proxy_oracle_governance::GetOperationTtlResult> {
-        let params = request.params;
+        let params = request;
         let ttl_ns = ctx
             .near_client()
             .proxy_governance(params.governance_id)
@@ -56,14 +55,14 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetOperationTtl, C>
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListProposals, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_governance::ListProposals as MethodSpec>::Input,
+        request: proxy_oracle_governance::ListProposals,
         ctx: C,
     ) -> GatewayResult<proxy_oracle_governance::ListProposalsResult> {
         ctx.near_client()
-            .proxy_governance(request.params.governance_id)
+            .proxy_governance(request.governance_id)
             .list_proposals(GovListArgs {
-                offset: request.params.offset,
-                count: request.params.count,
+                offset: request.offset,
+                count: request.count,
             })
             .await
             .map(|ids| proxy_oracle_governance::ListProposalsResult { ids })
@@ -73,10 +72,10 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ListProposals, C> f
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetProposal, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_governance::GetProposal as MethodSpec>::Input,
+        request: proxy_oracle_governance::GetProposal,
         ctx: C,
     ) -> GatewayResult<proxy_oracle_governance::GetProposalResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .proxy_governance(params.governance_id)
             .get_proposal(GovGetArgs { id: params.id })
@@ -88,7 +87,9 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetProposal, C> for
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_governance::CreateProposal as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<
+            proxy_oracle_governance::CreateProposal,
+        >,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -111,7 +112,9 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CancelProposal, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_governance::CancelProposal as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<
+            proxy_oracle_governance::CancelProposal,
+        >,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -130,7 +133,9 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CancelProposal, C> for
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_governance::ExecuteProposal as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<
+            proxy_oracle_governance::ExecuteProposal,
+        >,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;

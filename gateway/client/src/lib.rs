@@ -26,13 +26,12 @@ use std::{collections::HashMap, sync::Arc};
 
 use near_api::{NetworkConfig, SecretKey, Signer};
 use templar_gateway_core::{
-    DispatchRead, ExecuteOperation, GatewayContext, GatewayError, GatewayResult, HasIdempotencyKey,
-    HasSignerAccountId, NearOperationExecutor, NearTransactionSigner, OperationPlan, PlanWrite,
-    SignTransaction,
+    DispatchRead, ExecuteOperation, GatewayContext, GatewayError, GatewayResult,
+    NearOperationExecutor, NearTransactionSigner, OperationPlan, PlanWrite, SignTransaction,
 };
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_types::{
-    common::{ReadRequest, WriteOperationResult, WriteRequest},
+    common::{WriteOperationResult, WriteRequest},
     CryptoHash, ManagedAccountId, MethodSpec,
 };
 
@@ -119,21 +118,17 @@ impl Client {
     /// Dispatch a read operation, inferring the output type from the operation.
     pub async fn read<Op>(&self, op: Op) -> GatewayResult<Op::Output>
     where
-        Op: MethodSpec<Input = ReadRequest<Op>>,
+        Op: MethodSpec,
         Dispatch: DispatchRead<Op, GatewayContext>,
     {
-        <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(
-            ReadRequest::new(op),
-            self.context.clone(),
-        )
-        .await
+        <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
     }
 
     /// Plan, sign, and submit a write operation signed by the default signer.
     /// Errors if no default signer is configured.
     pub async fn execute<Op>(&self, op: Op) -> GatewayResult<CryptoHash>
     where
-        Op: MethodSpec<Input = WriteRequest<Op>, Output = WriteOperationResult>,
+        Op: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<Op, GatewayContext>,
     {
         let signer_account_id = self.default_signer.clone().ok_or_else(|| {
@@ -149,7 +144,7 @@ impl Client {
         op: Op,
     ) -> GatewayResult<CryptoHash>
     where
-        Op: MethodSpec<Input = WriteRequest<Op>, Output = WriteOperationResult>,
+        Op: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<Op, GatewayContext>,
     {
         self.execute_request::<Op>(WriteRequest {
@@ -162,10 +157,9 @@ impl Client {
 
     /// Plan and execute a fully-specified write request (escape hatch for
     /// explicit idempotency keys or signer accounts).
-    pub async fn execute_request<S>(&self, request: S::Input) -> GatewayResult<CryptoHash>
+    pub async fn execute_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<CryptoHash>
     where
         S: MethodSpec<Output = WriteOperationResult>,
-        S::Input: HasIdempotencyKey + HasSignerAccountId,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
         let plan =
@@ -175,10 +169,9 @@ impl Client {
 
     /// Plan a write request into the transactions required to fulfil it, without
     /// executing them.
-    pub async fn plan_request<S>(&self, request: S::Input) -> GatewayResult<OperationPlan>
+    pub async fn plan_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<OperationPlan>
     where
         S: MethodSpec<Output = WriteOperationResult>,
-        S::Input: HasIdempotencyKey + HasSignerAccountId,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
         <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await
