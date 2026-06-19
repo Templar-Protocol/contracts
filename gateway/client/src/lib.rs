@@ -183,11 +183,8 @@ impl Client {
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
-        let plan =
-            <Dispatch as PlanWrite<S, GatewayContext>>::plan(request.clone(), self.context.clone())
-                .await?;
         self.driver
-            .complete_write(S::RPC_METHOD, request, plan)
+            .plan_and_complete::<S, Dispatch, GatewayContext>(self.context.clone(), request)
             .await
     }
 

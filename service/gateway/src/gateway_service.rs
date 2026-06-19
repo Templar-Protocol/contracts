@@ -2,9 +2,8 @@ use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayResult, HasIdempotencyKey, HasNearClient,
-    HasSignerAccountId, NearOperationExecutor, NearTransactionSigner, OperationDriver, PlanWrite,
-    SharedOperationStore,
+    DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearOperationExecutor,
+    NearTransactionSigner, OperationDriver, PlanWrite, SharedOperationStore,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
@@ -112,21 +111,9 @@ where
         Request: MethodSpec<Output = WriteOperationResult> + 'static,
         Impl: PlanWrite<Request, ContextType>,
     {
-        tracing::debug!(
-            rpc_method = Request::RPC_METHOD,
-            signer_account_id = %params.signer_account_id().0,
-            has_idempotency_key = params.idempotency_key().is_some(),
-            "planning gateway write request"
-        );
-        let plan = Impl::plan(params.clone(), self.inner.context.clone()).await?;
-        tracing::debug!(
-            rpc_method = Request::RPC_METHOD,
-            step_count = plan.steps.len(),
-            "planned gateway write request"
-        );
         self.inner
             .driver
-            .complete_write(Request::RPC_METHOD, params, plan)
+            .plan_and_complete::<Request, Impl, ContextType>(self.inner.context.clone(), params)
             .await
     }
 }
