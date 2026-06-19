@@ -11,7 +11,7 @@ use near_api::{NetworkConfig, SecretKey};
 use templar_common::asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset};
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{contract, ft, market, registry, storage};
-use templar_gateway_types::{common::Pagination, MarketVersion, NearToken, U128};
+use templar_gateway_types::{common::Pagination, Market, MarketVersion, NearToken, U128};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone, Debug)]
@@ -82,9 +82,9 @@ async fn market_version(client: &Client, market_id: AccountId) -> anyhow::Result
             contract_id: market_id.clone(),
         })
         .await?;
-    MarketVersion::from_str(&version.version_string).with_context(|| {
+    version.parsed_as::<Market>().with_context(|| {
         format!(
-            "could not parse market version \"{}\" for {market_id}",
+            "market {market_id} reported an unparseable version \"{}\"",
             version.version_string
         )
     })

@@ -37,6 +37,24 @@ impl<T> Clone for Version<T> {
 
 impl<T> Copy for Version<T> {}
 
+impl<T> Version<T> {
+    /// Reinterpret this version under a different contract-kind tag.
+    ///
+    /// The numeric version is unchanged; only the phantom marker differs. This
+    /// is the consumer-side assertion "I know which contract this version came
+    /// from" — e.g. turning the kind-agnostic `Version<()>` that
+    /// `contract.getVersion` returns into a [`MarketVersion`].
+    #[must_use]
+    pub fn cast<U>(self) -> Version<U> {
+        Version {
+            _phantom: std::marker::PhantomData,
+            major: self.major,
+            minor: self.minor,
+            patch: self.patch,
+        }
+    }
+}
+
 impl<T> std::fmt::Display for Version<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)

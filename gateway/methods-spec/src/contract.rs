@@ -45,6 +45,15 @@ pub struct VersionResult {
     pub parsed: Option<templar_gateway_types::Version<()>>,
 }
 
+impl VersionResult {
+    /// The parsed version reinterpreted under a specific contract-kind tag (e.g.
+    /// `Market`), or `None` if the on-chain version string did not parse.
+    #[must_use]
+    pub fn parsed_as<T>(&self) -> Option<templar_gateway_types::Version<T>> {
+        self.parsed.map(|version| version.cast())
+    }
+}
+
 read_method_spec!(
     /// Read a contract version from NEP-330 metadata.
     "contract.getVersion": GetVersion(GetVersionParams) -> VersionResult
