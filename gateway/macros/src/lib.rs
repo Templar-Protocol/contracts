@@ -72,28 +72,40 @@ pub fn derive_method_spec(input: TokenStream) -> TokenStream {
 fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ident = &input.ident;
 
-    let method_attr = input
+    let mut method_attrs = input
         .attrs
         .iter()
-        .find(|attr| attr.path().is_ident("method"))
-        .ok_or_else(|| {
-            syn::Error::new_spanned(
-                ident,
-                "deriving `MethodSpec` requires a `#[method(read = \"..\", output = ..)]` \
-                 or `#[method(write = \"..\")]` attribute",
-            )
-        })?;
+        .filter(|attr| attr.path().is_ident("method"));
+    let method_attr = method_attrs.next().ok_or_else(|| {
+        syn::Error::new_spanned(
+            ident,
+            "deriving `MethodSpec` requires a `#[method(read = \"..\", output = ..)]` \
+             or `#[method(write = \"..\")]` attribute",
+        )
+    })?;
+    if let Some(duplicate) = method_attrs.next() {
+        return Err(syn::Error::new_spanned(
+            duplicate,
+            "duplicate `#[method(...)]` attribute",
+        ));
+    }
 
     let mut read_rpc: Option<LitStr> = None;
     let mut write_rpc: Option<LitStr> = None;
     let mut output: Option<Type> = None;
     method_attr.parse_nested_meta(|meta| {
         if meta.path.is_ident("read") {
-            read_rpc = Some(meta.value()?.parse()?);
+            if read_rpc.replace(meta.value()?.parse()?).is_some() {
+                return Err(meta.error("duplicate `read` entry"));
+            }
         } else if meta.path.is_ident("write") {
-            write_rpc = Some(meta.value()?.parse()?);
+            if write_rpc.replace(meta.value()?.parse()?).is_some() {
+                return Err(meta.error("duplicate `write` entry"));
+            }
         } else if meta.path.is_ident("output") {
-            output = Some(meta.value()?.parse()?);
+            if output.replace(meta.value()?.parse()?).is_some() {
+                return Err(meta.error("duplicate `output` entry"));
+            }
         } else {
             return Err(meta.error("expected `read`, `write`, or `output`"));
         }

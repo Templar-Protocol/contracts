@@ -29,7 +29,7 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_types::{
-    common::{WriteOperationResult, WriteRequest},
+    common::{TxExecutionStatus, WriteOperationResult, WriteRequest},
     CryptoHash, ManagedAccountId, MethodSpec,
 };
 
@@ -143,8 +143,13 @@ impl Client {
         .await
     }
 
-    /// Plan and execute a fully-specified write request (escape hatch for
-    /// explicit idempotency keys or signer accounts).
+    /// Plan and execute a fully-specified write request (escape hatch for an
+    /// explicit signer account).
+    ///
+    /// This direct client is store-less, so it cannot honor an
+    /// `idempotency_key`; a request carrying one is rejected rather than having
+    /// the key silently ignored. Store-backed (idempotent, replayable) execution
+    /// is the job of the gateway service / a future store-backed client.
     pub async fn execute_request<S>(
         &self,
         request: WriteRequest<S>,
@@ -153,6 +158,11 @@ impl Client {
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
+        if request.idempotency_key.is_some() {
+            return Err(GatewayError::UnsupportedFeature(
+                "idempotency keys require a store-backed gateway client".to_owned(),
+            ));
+        }
         let plan =
             <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await?;
         self.execute_plan(plan).await
@@ -172,9 +182,17 @@ impl Client {
     /// hash of each submitted transaction. The result is empty when the plan is a
     /// no-op (e.g. an idempotent write that needs no transactions). Fails if any
     /// step does not succeed on-chain.
+    ///
+    /// Every step but the last is awaited to `Final` before the next (dependent)
+    /// step is signed, mirroring the store-backed driver, so multi-step writes
+    /// don't race on nonce/state.
     pub async fn execute_plan(&self, plan: OperationPlan) -> GatewayResult<Vec<CryptoHash>> {
-        let mut hashes = Vec::with_capacity(plan.steps.len());
-        for step in plan.steps {
+        let step_count = plan.steps.len();
+        let mut hashes = Vec::with_capacity(step_count);
+        for (index, mut step) in plan.steps.into_iter().enumerate() {
+            if index + 1 < step_count {
+                step.wait_until = TxExecutionStatus::Final;
+            }
             let prepared = self.transaction_signer.sign_transaction(step).await?;
             let tx_hash = prepared.tx_hash;
             let result = self

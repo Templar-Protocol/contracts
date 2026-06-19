@@ -195,8 +195,8 @@ pub async fn main() -> anyhow::Result<()> {
             {
                 Ok(result) => result.balance,
                 Err(error) => {
-                    tracing::error!(%asset_contract, account_id = %args.account_id, %error, "Failed to fetch storage balance from asset contract that has a balance requirement");
-                    std::process::exit(1);
+                    tracing::error!(%asset_contract, account_id = %args.account_id, %error, "Failed to fetch storage balance from asset contract that has a balance requirement; skipping market");
+                    continue;
                 }
             };
 
