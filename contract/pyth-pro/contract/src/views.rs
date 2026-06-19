@@ -21,8 +21,14 @@ impl Contract {
     /// Whether `feed` is no older than `age_s` seconds relative to `now`. A future-dated
     /// `publish_time_ns` (possible within the ingestion skew tolerance) is never fresh — fail
     /// closed, matching the proxy-oracle cache.
+    ///
+    /// The age comparison runs at full nanosecond precision: `age_s` is widened to nanoseconds
+    /// rather than truncating the delta to whole seconds. Truncating would let a feed up to ~1s
+    /// older than `age_s` pass (e.g. a 1.9s-old feed against `age_s = 1`), silently serving stale
+    /// prices to consumers that rely on these views to enforce `price_maximum_age_s`.
     fn is_fresh(feed: &FeedData, now: Nanoseconds, age_s: u64) -> bool {
-        feed.publish_time_ns <= now && now.saturating_sub(feed.publish_time_ns).as_secs() <= age_s
+        feed.publish_time_ns <= now
+            && now.saturating_sub(feed.publish_time_ns) <= Nanoseconds::from_secs(age_s)
     }
 
     /// Project one feed to a [`Price`] via `project`, applying an optional freshness bound first.

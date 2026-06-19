@@ -270,6 +270,41 @@ fn non_suffixed_views_apply_default_validity() {
 }
 
 #[test]
+fn no_older_than_does_not_truncate_subsecond_age() {
+    // A feed 1.9s old must fail a 1s freshness bound. Truncating the ns delta to whole seconds
+    // (1.9s -> 1s) would leak ~1s of staleness past `age_s` — and the market/proxy flows rely on
+    // these views to enforce `price_maximum_age_s`.
+    let mut contract = deploy_and_map();
+
+    relayer_context(ample_deposit());
+    // `now` is NOW_S * 1e9 (set by relayer_context); publish 1.9s earlier.
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000 - 1_900_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    // 1s bound: a 1.9s-old feed is stale (no sub-second truncation).
+    assert!(contract.get_price_no_older_than(price_id(), 1).is_none());
+    assert!(contract
+        .list_ema_prices_no_older_than(vec![price_id()], 1)
+        .get(&price_id())
+        .unwrap()
+        .is_none());
+
+    // 2s bound: the same 1.9s-old feed is still fresh.
+    assert_eq!(
+        contract
+            .get_price_no_older_than(price_id(), 2)
+            .unwrap()
+            .price
+            .0,
+        123_456
+    );
+}
+
+#[test]
 fn stale_prices_are_filtered_by_age() {
     let mut contract = deploy_and_map();
 
