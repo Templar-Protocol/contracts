@@ -34,15 +34,6 @@ pub struct VersionResult {
     pub parsed: Option<templar_gateway_types::Version<()>>,
 }
 
-impl VersionResult {
-    /// The parsed version reinterpreted under a specific contract-kind tag (e.g.
-    /// `Market`), or `None` if the on-chain version string did not parse.
-    #[must_use]
-    pub fn parsed_as<T>(&self) -> Option<templar_gateway_types::Version<T>> {
-        self.parsed.map(|version| version.cast())
-    }
-}
-
 /// Identify the kind of deployed protocol contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "contract.getKind", output = GetKindResult)]

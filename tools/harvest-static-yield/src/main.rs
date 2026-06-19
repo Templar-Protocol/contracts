@@ -9,7 +9,7 @@ use clap::Parser;
 use near_account_id::AccountId;
 use near_api::{NetworkConfig, SecretKey};
 use templar_common::asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset};
-use templar_gateway_client::Client;
+use templar_gateway_client::{Client, SigningClient};
 use templar_gateway_methods_spec::{contract, ft, market, registry, storage};
 use templar_gateway_types::{common::Pagination, Market, MarketVersion, NearToken, U128};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -82,12 +82,15 @@ async fn market_version(client: &Client, market_id: AccountId) -> anyhow::Result
             contract_id: market_id.clone(),
         })
         .await?;
-    version.parsed_as::<Market>().with_context(|| {
-        format!(
-            "market {market_id} reported an unparseable version \"{}\"",
-            version.version_string
-        )
-    })
+    version
+        .parsed
+        .map(|version| version.cast::<Market>())
+        .with_context(|| {
+            format!(
+                "market {market_id} reported an unparseable version \"{}\"",
+                version.version_string
+            )
+        })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -123,9 +126,7 @@ pub async fn main() -> anyhow::Result<()> {
         rpc_url.parse().context("invalid RPC URL")?,
     );
 
-    let client = Client::builder(network)
-        .secret_key(args.account_id.clone(), args.secret_key.clone())?
-        .build()?;
+    let client = SigningClient::connect(network, args.account_id.clone(), args.secret_key.clone())?;
 
     let mut markets: HashSet<AccountId> = args.market_id.iter().cloned().collect();
 
@@ -242,21 +243,21 @@ pub async fn main() -> anyhow::Result<()> {
         }
 
         tracing::info!(%market_id, %yield_amount, "Withdrawing yield");
-        let transaction_hash = match client
+        let transaction_hashes = match client
             .execute(market::WithdrawStaticYield {
                 market_id: market_id.clone(),
                 amount: None,
             })
             .await
         {
-            Ok(transaction_hash) => transaction_hash,
+            Ok(transaction_hashes) => transaction_hashes,
             Err(error) => {
                 tracing::error!(%market_id, %error, "Failed to withdraw static yield");
                 continue;
             }
         };
 
-        tracing::info!(%market_id, %yield_amount, %transaction_hash, "Successfully withdrew yield");
+        tracing::info!(%market_id, %yield_amount, ?transaction_hashes, "Successfully withdrew yield");
 
         *accumulated_assets
             .entry(configuration.borrow_asset)
@@ -290,8 +291,8 @@ pub async fn main() -> anyhow::Result<()> {
             })
             .await
         {
-            Ok(transaction_hash) => {
-                tracing::info!(%asset, %receiver_id, %amount, %transaction_hash, "Transferred to receiver");
+            Ok(transaction_hashes) => {
+                tracing::info!(%asset, %receiver_id, %amount, ?transaction_hashes, "Transferred to receiver");
             }
             Err(error) => {
                 tracing::error!(%asset, %receiver_id, %amount, %error, "Failed to send tokens to receiver");

@@ -66,6 +66,12 @@ impl NearTransactionSigner {
         Self { network, signers }
     }
 
+    /// Whether a signer is registered for `signer_account_id`.
+    #[must_use]
+    pub fn has_signer(&self, signer_account_id: &ManagedAccountId) -> bool {
+        self.signers.contains_key(signer_account_id)
+    }
+
     fn signer_for(
         &self,
         signer_account_id: &ManagedAccountId,

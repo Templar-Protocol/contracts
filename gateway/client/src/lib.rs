@@ -5,24 +5,22 @@
 //! wraps dispatch in an actor for bounded concurrency, this crate offers a plain
 //! call-it-yourself facade over the same [`templar_gateway_core`] kernel.
 //!
-//! [`Client`] owns the whole "boilerplate triangle" — the read/plan context, the
-//! signer set, and the transaction executor — behind a single builder, and its
-//! [`Client::read`] / [`Client::execute`] helpers take the operation type
+//! [`Client`] owns the read/plan context, signer set, and transaction executor.
+//! Its [`Client::read`] / [`Client::execute_as`] helpers take the operation type
 //! directly (the operation *is* its input), so call sites carry no turbofish, no
-//! request wrappers, and no method-name repetition:
+//! request wrappers, and no method-name repetition. A [`SigningClient`] binds a
+//! default signing account for the common single-signer case:
 //!
 //! ```ignore
-//! let client = Client::builder(network)
-//!     .secret_key(account_id, secret_key)?
-//!     .build()?;
+//! let client = SigningClient::connect(network, account_id, secret_key)?;
 //!
 //! let config = client.read(market::GetConfiguration { market_id }).await?;
-//! let tx_hash = client
+//! let tx_hashes = client
 //!     .execute(market::WithdrawStaticYield { market_id, amount: None })
 //!     .await?;
 //! ```
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, ops::Deref, sync::Arc};
 
 use near_api::{NetworkConfig, SecretKey, Signer};
 use templar_gateway_core::{
@@ -40,19 +38,13 @@ use templar_gateway_types::{
 pub struct ClientBuilder {
     network: NetworkConfig,
     signers: HashMap<ManagedAccountId, Arc<Signer>>,
-    default_signer: Option<ManagedAccountId>,
 }
 
 impl ClientBuilder {
-    /// Register a pre-built signer for an account. The first signer registered
-    /// becomes the default used by [`Client::execute`] unless overridden with
-    /// [`default_signer`](Self::default_signer).
+    /// Register a pre-built signer for an account.
     #[must_use]
     pub fn signer(mut self, account_id: impl Into<ManagedAccountId>, signer: Arc<Signer>) -> Self {
-        let account_id = account_id.into();
-        self.default_signer
-            .get_or_insert_with(|| account_id.clone());
-        self.signers.insert(account_id, signer);
+        self.signers.insert(account_id.into(), signer);
         self
     }
 
@@ -68,35 +60,26 @@ impl ClientBuilder {
         Ok(self.signer(account_id, signer))
     }
 
-    /// Override which registered account signs [`Client::execute`] writes.
-    #[must_use]
-    pub fn default_signer(mut self, account_id: impl Into<ManagedAccountId>) -> Self {
-        self.default_signer = Some(account_id.into());
-        self
-    }
-
     /// Build the client, constructing the gateway context, signer, and executor.
     pub fn build(self) -> GatewayResult<Client> {
         Ok(Client {
             context: GatewayContext::new(self.network.clone())?,
             transaction_signer: NearTransactionSigner::new(self.network.clone(), self.signers),
             operation_executor: NearOperationExecutor::new(self.network),
-            default_signer: self.default_signer,
         })
     }
 }
 
 /// A direct, in-process gateway client over the concrete [`Dispatch`].
 ///
-/// Bundles everything an operation needs — the read/plan context plus the signer
-/// and executor used to submit planned transactions — and an optional default
-/// signing account for ergonomic writes.
+/// Reads need no signer; writes name the signing account explicitly via
+/// [`Client::execute_as`]. For the common single-signer case, bind a default
+/// account with [`Client::into_signing`] (or [`SigningClient::connect`]).
 #[derive(Clone)]
 pub struct Client {
     context: GatewayContext,
     transaction_signer: NearTransactionSigner,
     operation_executor: NearOperationExecutor,
-    default_signer: Option<ManagedAccountId>,
 }
 
 impl Client {
@@ -106,13 +89,31 @@ impl Client {
         ClientBuilder {
             network,
             signers: HashMap::new(),
-            default_signer: None,
         }
     }
 
     /// Build a read-only client (no signing capability).
     pub fn read_only(network: NetworkConfig) -> GatewayResult<Self> {
         Self::builder(network).build()
+    }
+
+    /// Bind a default signing account, yielding a [`SigningClient`] whose
+    /// `execute` needs no account argument. Errors if no signer is registered
+    /// for `account_id`.
+    pub fn into_signing(
+        self,
+        account_id: impl Into<ManagedAccountId>,
+    ) -> GatewayResult<SigningClient> {
+        let signer_account_id = account_id.into();
+        if !self.transaction_signer.has_signer(&signer_account_id) {
+            return Err(GatewayError::UnsupportedSignerAccount(
+                signer_account_id.0.to_string(),
+            ));
+        }
+        Ok(SigningClient {
+            client: self,
+            signer_account_id,
+        })
     }
 
     /// Dispatch a read operation, inferring the output type from the operation.
@@ -124,30 +125,17 @@ impl Client {
         <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
     }
 
-    /// Plan, sign, and submit a write operation signed by the default signer.
-    /// Errors if no default signer is configured.
-    pub async fn execute<Op>(&self, op: Op) -> GatewayResult<CryptoHash>
-    where
-        Op: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<Op, GatewayContext>,
-    {
-        let signer_account_id = self.default_signer.clone().ok_or_else(|| {
-            GatewayError::UnsupportedSignerAccount("no default signer configured".to_owned())
-        })?;
-        self.execute_as::<Op>(signer_account_id, op).await
-    }
-
     /// Plan, sign, and submit a write operation signed by a specific account.
     pub async fn execute_as<Op>(
         &self,
         signer_account_id: impl Into<ManagedAccountId>,
         op: Op,
-    ) -> GatewayResult<CryptoHash>
+    ) -> GatewayResult<Vec<CryptoHash>>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<Op, GatewayContext>,
     {
-        self.execute_request::<Op>(WriteRequest {
+        self.execute_request(WriteRequest {
             signer_account_id: signer_account_id.into(),
             idempotency_key: None,
             body: op,
@@ -157,7 +145,10 @@ impl Client {
 
     /// Plan and execute a fully-specified write request (escape hatch for
     /// explicit idempotency keys or signer accounts).
-    pub async fn execute_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<CryptoHash>
+    pub async fn execute_request<S>(
+        &self,
+        request: WriteRequest<S>,
+    ) -> GatewayResult<Vec<CryptoHash>>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
@@ -178,10 +169,11 @@ impl Client {
     }
 
     /// Sign and submit every step of an operation plan in order, returning the
-    /// hash of the final step. Fails if any step does not succeed on-chain, or
-    /// if the plan is empty.
-    pub async fn execute_plan(&self, plan: OperationPlan) -> GatewayResult<CryptoHash> {
-        let mut last_hash = None;
+    /// hash of each submitted transaction. The result is empty when the plan is a
+    /// no-op (e.g. an idempotent write that needs no transactions). Fails if any
+    /// step does not succeed on-chain.
+    pub async fn execute_plan(&self, plan: OperationPlan) -> GatewayResult<Vec<CryptoHash>> {
+        let mut hashes = Vec::with_capacity(plan.steps.len());
         for step in plan.steps {
             let prepared = self.transaction_signer.sign_transaction(step).await?;
             let tx_hash = prepared.tx_hash;
@@ -194,10 +186,60 @@ impl Client {
                     "transaction {tx_hash} did not succeed"
                 )));
             }
-            last_hash = Some(tx_hash);
+            hashes.push(tx_hash);
         }
-        last_hash.ok_or_else(|| {
-            GatewayError::NearTransaction("operation plan contained no steps".to_owned())
-        })
+        Ok(hashes)
+    }
+}
+
+/// A [`Client`] bound to a default signing account.
+///
+/// Constructing one guarantees a signer is registered for the account, so
+/// [`SigningClient::execute`] needs no account argument and cannot fail for a
+/// missing-signer reason. Derefs to the underlying [`Client`] for reads and
+/// explicit-signer writes.
+#[derive(Clone)]
+pub struct SigningClient {
+    client: Client,
+    signer_account_id: ManagedAccountId,
+}
+
+impl SigningClient {
+    /// Connect a single-signer client for `account_id` from its secret key.
+    pub fn connect(
+        network: NetworkConfig,
+        account_id: impl Into<ManagedAccountId>,
+        secret_key: SecretKey,
+    ) -> GatewayResult<Self> {
+        let account_id = account_id.into();
+        Client::builder(network)
+            .secret_key(account_id.clone(), secret_key)?
+            .build()?
+            .into_signing(account_id)
+    }
+
+    /// The bound signing account.
+    #[must_use]
+    pub fn account_id(&self) -> &ManagedAccountId {
+        &self.signer_account_id
+    }
+
+    /// Plan, sign, and submit a write operation signed by the bound account.
+    pub async fn execute<Op>(&self, op: Op) -> GatewayResult<Vec<CryptoHash>>
+    where
+        Op: MethodSpec<Output = WriteOperationResult>,
+        Dispatch: PlanWrite<Op, GatewayContext>,
+    {
+        self.client
+            .execute_as(self.signer_account_id.clone(), op)
+            .await
+    }
+}
+
+impl Deref for SigningClient {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        &self.client
     }
 }
