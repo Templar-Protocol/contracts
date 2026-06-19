@@ -10,7 +10,7 @@ use near_account_id::AccountId;
 use near_api::{NetworkConfig, SecretKey};
 use templar_common::asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset};
 use templar_gateway_client::{Client, SigningClient};
-use templar_gateway_methods_spec::{contract, ft, market, registry, storage};
+use templar_gateway_methods_spec::{contract, market, registry, storage, token};
 use templar_gateway_types::{common::Pagination, Market, MarketVersion, NearToken, U128};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -283,8 +283,8 @@ pub async fn main() -> anyhow::Result<()> {
     for (asset, amount) in accumulated_assets {
         tracing::info!(%asset, %receiver_id, %amount, "Sending yield");
         match client
-            .execute(ft::Transfer {
-                contract_id: asset.contract_id().to_owned(),
+            .execute(token::Transfer {
+                token: token::TokenReference::from(&asset),
                 receiver_id: receiver_id.clone(),
                 amount: U128(u128::from(amount)),
                 memo: None,

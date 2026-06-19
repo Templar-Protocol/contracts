@@ -1,6 +1,7 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::U128;
 
@@ -14,6 +15,19 @@ pub enum TokenReference {
         contract_id: AccountId,
         token_id: String,
     },
+}
+
+impl<T: AssetClass> From<&FungibleAsset<T>> for TokenReference {
+    fn from(asset: &FungibleAsset<T>) -> Self {
+        let contract_id = asset.contract_id().to_owned();
+        match asset.nep245_token_id() {
+            Some(token_id) => Self::Mt {
+                contract_id,
+                token_id: token_id.to_owned(),
+            },
+            None => Self::Ft { contract_id },
+        }
+    }
 }
 
 /// Get a token balance across supported standards.
