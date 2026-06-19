@@ -1,10 +1,12 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::read_method_spec;
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::U128;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// List pools from a Ref Finance exchange.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "refFinance.getPools", output = GetPoolsResult)]
 pub struct GetPools {
     pub exchange_id: AccountId,
     pub from_index: Option<u64>,
@@ -21,8 +23,3 @@ pub struct PoolInfo {
 pub struct GetPoolsResult {
     pub pools: Vec<PoolInfo>,
 }
-
-read_method_spec!(
-    /// List pools from a Ref Finance exchange.
-    "refFinance.getPools": GetPools -> GetPoolsResult
-);

@@ -2,10 +2,12 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::redstone::{Config, FeedData, FeedId, Role};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::Base64Bytes;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Get RedStone oracle config.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "redstone.getConfig", output = GetConfigResult)]
 pub struct GetConfig {
     pub oracle_id: AccountId,
 }
@@ -15,12 +17,9 @@ pub struct GetConfigResult {
     pub config: Config,
 }
 
-read_method_spec!(
-    /// Get RedStone oracle config.
-    "redstone.getConfig": GetConfig -> GetConfigResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Read RedStone price data.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "redstone.readPriceData", output = ReadPriceDataResult)]
 pub struct ReadPriceData {
     pub oracle_id: AccountId,
     pub feed_ids: Vec<FeedId>,
@@ -36,11 +35,6 @@ pub struct PriceDataEntry {
 pub struct ReadPriceDataResult {
     pub entries: Vec<PriceDataEntry>,
 }
-
-read_method_spec!(
-    /// Read RedStone price data.
-    "redstone.readPriceData": ReadPriceData -> ReadPriceDataResult
-);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -58,7 +52,9 @@ impl From<RoleValue> for Role {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// List accounts for a RedStone role.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "redstone.listRole", output = ListRoleResult)]
 pub struct ListRole {
     pub oracle_id: AccountId,
     pub role: RoleValue,
@@ -69,12 +65,9 @@ pub struct ListRoleResult {
     pub account_ids: Vec<AccountId>,
 }
 
-read_method_spec!(
-    /// List accounts for a RedStone role.
-    "redstone.listRole": ListRole -> ListRoleResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Update a RedStone role membership.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "redstone.setRole")]
 pub struct SetRole {
     pub oracle_id: AccountId,
     pub account_id: AccountId,
@@ -82,19 +75,11 @@ pub struct SetRole {
     pub set: bool,
 }
 
-write_method_spec!(
-    /// Update a RedStone role membership.
-    "redstone.setRole": SetRole
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Submit RedStone price payloads.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "redstone.writePrices")]
 pub struct WritePrices {
     pub oracle_id: AccountId,
     pub feed_ids: Vec<FeedId>,
     pub payload: Base64Bytes,
 }
-
-write_method_spec!(
-    /// Submit RedStone price payloads.
-    "redstone.writePrices": WritePrices
-);

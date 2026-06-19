@@ -2,11 +2,13 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::PriceIdentifier;
-use templar_gateway_macros::read_method_spec;
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::common::Pagination;
 use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Get the backing Pyth oracle for an LST oracle.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "lstOracle.getOracleId", output = GetOracleIdResult)]
 pub struct GetOracleId {
     pub oracle_id: AccountId,
 }
@@ -16,12 +18,9 @@ pub struct GetOracleIdResult {
     pub pyth_oracle_id: AccountId,
 }
 
-read_method_spec!(
-    /// Get the backing Pyth oracle for an LST oracle.
-    "lstOracle.getOracleId": GetOracleId -> GetOracleIdResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// List transformer price IDs on an LST oracle.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "lstOracle.listTransformers", output = ListTransformersResult)]
 pub struct ListTransformers {
     pub oracle_id: AccountId,
     #[serde(flatten)]
@@ -33,12 +32,9 @@ pub struct ListTransformersResult {
     pub price_ids: Vec<PriceIdentifier>,
 }
 
-read_method_spec!(
-    /// List transformer price IDs on an LST oracle.
-    "lstOracle.listTransformers": ListTransformers -> ListTransformersResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Get a transformer definition for a price ID.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "lstOracle.getTransformer", output = GetTransformerResult)]
 pub struct GetTransformer {
     pub oracle_id: AccountId,
     pub price_identifier: PriceIdentifier,
@@ -48,8 +44,3 @@ pub struct GetTransformer {
 pub struct GetTransformerResult {
     pub transformer: Option<PriceTransformer>,
 }
-
-read_method_spec!(
-    /// Get a transformer definition for a price ID.
-    "lstOracle.getTransformer": GetTransformer -> GetTransformerResult
-);

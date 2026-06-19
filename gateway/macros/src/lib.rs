@@ -1,65 +1,7 @@
 use proc_macro::TokenStream;
 
 use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::{
-    parse_macro_input, Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Result, Token, Type,
-};
-
-struct ReadMethodSpecInput {
-    attrs: Vec<Attribute>,
-    rpc_method: LitStr,
-    ident: Ident,
-    output: Type,
-}
-
-impl Parse for ReadMethodSpecInput {
-    fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let attrs = input.call(Attribute::parse_outer)?;
-        let rpc_method: LitStr = input.parse()?;
-        let _: Token![:] = input.parse()?;
-        let ident: Ident = input.parse()?;
-
-        let _: Token![->] = input.parse()?;
-        let output: Type = input.parse()?;
-
-        if input.peek(Token![,]) {
-            let _: Token![,] = input.parse()?;
-        }
-
-        Ok(Self {
-            attrs,
-            rpc_method,
-            ident,
-            output,
-        })
-    }
-}
-
-struct WriteMethodSpecInput {
-    attrs: Vec<Attribute>,
-    rpc_method: LitStr,
-    ident: Ident,
-}
-
-impl Parse for WriteMethodSpecInput {
-    fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let attrs = input.call(Attribute::parse_outer)?;
-        let rpc_method: LitStr = input.parse()?;
-        let _: Token![:] = input.parse()?;
-        let ident: Ident = input.parse()?;
-
-        if input.peek(Token![,]) {
-            let _: Token![,] = input.parse()?;
-        }
-
-        Ok(Self {
-            attrs,
-            rpc_method,
-            ident,
-        })
-    }
-}
+use syn::{parse_macro_input, Attribute, DeriveInput, Expr, ExprLit, Lit, LitStr, Meta, Type};
 
 fn cleaned_doc_text(attrs: &[Attribute]) -> String {
     let mut lines = Vec::new();
@@ -99,25 +41,113 @@ fn summary_from_doc(doc: &str) -> String {
         .join(" ")
 }
 
-/// Attach `MethodSpec` + `RpcMethodMeta` to a hand-written operation struct.
+/// Attach a gateway method spec to an operation struct.
 ///
-/// The operation struct *is* the method input — the macro wraps it in the
-/// transport request type (`ReadRequest`/`WriteRequest`) for the `Input`
-/// associated type. The struct itself is defined by the caller, so it keeps full
-/// control of its derives and field attributes.
-fn expand_method(
-    attrs: &[Attribute],
-    rpc_method: &LitStr,
-    ident: &Ident,
-    request_ty: &proc_macro2::TokenStream,
-    output_ty: &proc_macro2::TokenStream,
-    method_kind: &proc_macro2::TokenStream,
-) -> TokenStream {
-    let doc = cleaned_doc_text(attrs);
-    let summary = summary_from_doc(&doc);
-    let deprecated = attrs.iter().any(|attr| attr.path().is_ident("deprecated"));
+/// The operation struct *is* the method input. A `#[method(..)]` helper
+/// attribute declares the RPC method name and direction; the struct's own doc
+/// comment supplies the RPC summary/description:
+///
+/// ```ignore
+/// /// Get market configuration.
+/// #[derive(MethodSpec, Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// #[method(read = "market.getConfiguration", output = MarketConfiguration)]
+/// pub struct GetConfiguration { pub market_id: AccountId }
+///
+/// /// Withdraw static yield.
+/// #[derive(MethodSpec, Debug, Clone, Serialize, Deserialize, JsonSchema)]
+/// #[method(write = "market.withdrawStaticYield")]
+/// pub struct WithdrawStaticYield { /* .. */ }
+/// ```
+///
+/// Reads require `output = <Type>`; writes take no output (their output is
+/// always `WriteOperationResult`).
+#[proc_macro_derive(MethodSpec, attributes(method))]
+pub fn derive_method_spec(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
 
-    quote! {
+fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let ident = &input.ident;
+
+    let method_attr = input
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("method"))
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                ident,
+                "deriving `MethodSpec` requires a `#[method(read = \"..\", output = ..)]` \
+                 or `#[method(write = \"..\")]` attribute",
+            )
+        })?;
+
+    let mut read_rpc: Option<LitStr> = None;
+    let mut write_rpc: Option<LitStr> = None;
+    let mut output: Option<Type> = None;
+    method_attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("read") {
+            read_rpc = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("write") {
+            write_rpc = Some(meta.value()?.parse()?);
+        } else if meta.path.is_ident("output") {
+            output = Some(meta.value()?.parse()?);
+        } else {
+            return Err(meta.error("expected `read`, `write`, or `output`"));
+        }
+        Ok(())
+    })?;
+
+    let (rpc_method, request_ty, output_ty, method_kind) = match (read_rpc, write_rpc) {
+        (Some(rpc), None) => {
+            let output = output.ok_or_else(|| {
+                syn::Error::new_spanned(method_attr, "read methods require `output = <Type>`")
+            })?;
+            (
+                rpc,
+                quote!(templar_gateway_types::common::ReadRequest<#ident>),
+                quote!(#output),
+                quote!(templar_gateway_types::spec::MethodKind::Read),
+            )
+        }
+        (None, Some(rpc)) => {
+            if output.is_some() {
+                return Err(syn::Error::new_spanned(
+                    method_attr,
+                    "write methods do not take an `output` (it is always `WriteOperationResult`)",
+                ));
+            }
+            (
+                rpc,
+                quote!(templar_gateway_types::common::WriteRequest<#ident>),
+                quote!(templar_gateway_types::common::WriteOperationResult),
+                quote!(templar_gateway_types::spec::MethodKind::Write),
+            )
+        }
+        (Some(_), Some(_)) => {
+            return Err(syn::Error::new_spanned(
+                method_attr,
+                "specify exactly one of `read` or `write`",
+            ))
+        }
+        (None, None) => {
+            return Err(syn::Error::new_spanned(
+                method_attr,
+                "specify one of `read = \"..\"` or `write = \"..\"`",
+            ))
+        }
+    };
+
+    let doc = cleaned_doc_text(&input.attrs);
+    let summary = summary_from_doc(&doc);
+    let deprecated = input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("deprecated"));
+
+    Ok(quote! {
         impl templar_gateway_types::MethodSpec for #ident {
             type Input = #request_ty;
             type Output = #output_ty;
@@ -131,47 +161,5 @@ fn expand_method(
             const DESCRIPTION: &'static str = #doc;
             const DEPRECATED: bool = #deprecated;
         }
-    }
-    .into()
-}
-
-/// Attach a read method spec to an operation struct: `"rpc.method": OpType -> Output`.
-#[proc_macro]
-pub fn read_method_spec(input: TokenStream) -> TokenStream {
-    let ReadMethodSpecInput {
-        attrs,
-        rpc_method,
-        ident,
-        output,
-    } = parse_macro_input!(input as ReadMethodSpecInput);
-
-    expand_method(
-        &attrs,
-        &rpc_method,
-        &ident,
-        &quote!(templar_gateway_types::common::ReadRequest<#ident>),
-        &quote!(#output),
-        &quote!(templar_gateway_types::spec::MethodKind::Read),
-    )
-}
-
-/// Attach a write method spec to an operation struct: `"rpc.method": OpType`.
-///
-/// The output is always `WriteOperationResult`.
-#[proc_macro]
-pub fn write_method_spec(input: TokenStream) -> TokenStream {
-    let WriteMethodSpecInput {
-        attrs,
-        rpc_method,
-        ident,
-    } = parse_macro_input!(input as WriteMethodSpecInput);
-
-    expand_method(
-        &attrs,
-        &rpc_method,
-        &ident,
-        &quote!(templar_gateway_types::common::WriteRequest<#ident>),
-        &quote!(templar_gateway_types::common::WriteOperationResult),
-        &quote!(templar_gateway_types::spec::MethodKind::Write),
-    )
+    })
 }
