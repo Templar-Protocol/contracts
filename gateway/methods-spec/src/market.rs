@@ -190,14 +190,55 @@ pub struct GetStaticYield {
     pub account_id: AccountId,
 }
 
+/// A market account's static yield, across market versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StaticYield {
+    /// Markets >= 1.1.0 expose a yield accumulator.
+    Accumulator {
+        accumulator: Accumulator<BorrowAsset>,
+    },
+    /// Pre-1.1.0 markets report only the borrow-denominated total.
+    Legacy {
+        borrow_asset_total: BorrowAssetAmount,
+    },
+}
+
+impl StaticYield {
+    /// Total static yield denominated in the borrow asset.
+    #[must_use]
+    pub fn borrow_asset_total(&self) -> BorrowAssetAmount {
+        match self {
+            Self::Accumulator { accumulator } => accumulator.get_total(),
+            Self::Legacy { borrow_asset_total } => *borrow_asset_total,
+        }
+    }
+
+    /// The yield accumulator, if this market exposes one.
+    #[must_use]
+    pub fn accumulator(&self) -> Option<&Accumulator<BorrowAsset>> {
+        match self {
+            Self::Accumulator { accumulator } => Some(accumulator),
+            Self::Legacy { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetStaticYieldResult {
-    /// Total accumulated static yield denominated in the borrow asset, computed
-    /// regardless of the market version's on-chain representation.
-    pub borrow_asset_total: BorrowAssetAmount,
-    /// The yield accumulator, present only for markets that expose it
-    /// (>= 1.1.0). `None` for legacy markets that report a split record.
-    pub accumulator: Option<Accumulator<BorrowAsset>>,
+    /// The account's static yield record, or `None` if it has none.
+    pub record: Option<StaticYield>,
+}
+
+impl GetStaticYieldResult {
+    /// Total accumulated static yield denominated in the borrow asset (zero if
+    /// the account has no record).
+    #[must_use]
+    pub fn borrow_asset_total(&self) -> BorrowAssetAmount {
+        self.record
+            .as_ref()
+            .map_or_else(BorrowAssetAmount::zero, StaticYield::borrow_asset_total)
+    }
 }
 
 /// Borrow from a market.

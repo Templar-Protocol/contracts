@@ -230,7 +230,7 @@ pub async fn main() -> anyhow::Result<()> {
             })
             .await
         {
-            Ok(result) => result.borrow_asset_total,
+            Ok(result) => result.borrow_asset_total(),
             Err(error) => {
                 tracing::error!(%market_id, %error, "Failed to fetch static yield amount");
                 continue;

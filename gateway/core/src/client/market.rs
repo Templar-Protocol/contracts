@@ -109,24 +109,6 @@ pub enum StaticYieldRecord {
     Accumulator(Accumulator<BorrowAsset>),
 }
 
-impl StaticYieldRecord {
-    /// Total static yield denominated in the borrow asset, regardless of shape.
-    pub fn borrow_asset_total(&self) -> BorrowAssetAmount {
-        match self {
-            Self::Split { borrow_asset, .. } => *borrow_asset,
-            Self::Accumulator(accumulator) => accumulator.get_total(),
-        }
-    }
-
-    /// The underlying accumulator, if this market exposes one.
-    pub fn into_accumulator(self) -> Option<Accumulator<BorrowAsset>> {
-        match self {
-            Self::Accumulator(accumulator) => Some(accumulator),
-            Self::Split { .. } => None,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct MarketClient<'a> {
     pub(crate) inner: &'a NearClient,
