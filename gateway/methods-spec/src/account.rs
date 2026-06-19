@@ -5,7 +5,7 @@ use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::NearToken;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetParams {
+pub struct Get {
     pub account_id: AccountId,
 }
 
@@ -24,15 +24,15 @@ read_method_spec!(
     ///
     /// Returns balances, storage usage, and contract hash information for the
     /// requested account.
-    "account.get": Get(GetParams) -> GetResult
+    "account.get": Get -> GetResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct DeleteBody {
+pub struct Delete {
     pub beneficiary_id: AccountId,
 }
 
 write_method_spec!(
     /// Delete a managed account and send remaining funds to a beneficiary.
-    "account.delete": Delete(DeleteBody)
+    "account.delete": Delete
 );

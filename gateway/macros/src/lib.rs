@@ -3,15 +3,13 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parenthesized, parse_macro_input, Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Result,
-    Token, Type,
+    parse_macro_input, Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Result, Token, Type,
 };
 
 struct ReadMethodSpecInput {
     attrs: Vec<Attribute>,
     rpc_method: LitStr,
     ident: Ident,
-    input: Type,
     output: Type,
 }
 
@@ -21,10 +19,6 @@ impl Parse for ReadMethodSpecInput {
         let rpc_method: LitStr = input.parse()?;
         let _: Token![:] = input.parse()?;
         let ident: Ident = input.parse()?;
-
-        let input_content;
-        parenthesized!(input_content in input);
-        let input_ty: Type = input_content.parse()?;
 
         let _: Token![->] = input.parse()?;
         let output: Type = input.parse()?;
@@ -37,7 +31,6 @@ impl Parse for ReadMethodSpecInput {
             attrs,
             rpc_method,
             ident,
-            input: input_ty,
             output,
         })
     }
@@ -47,7 +40,6 @@ struct WriteMethodSpecInput {
     attrs: Vec<Attribute>,
     rpc_method: LitStr,
     ident: Ident,
-    input: Type,
 }
 
 impl Parse for WriteMethodSpecInput {
@@ -57,10 +49,6 @@ impl Parse for WriteMethodSpecInput {
         let _: Token![:] = input.parse()?;
         let ident: Ident = input.parse()?;
 
-        let input_content;
-        parenthesized!(input_content in input);
-        let input_ty: Type = input_content.parse()?;
-
         if input.peek(Token![,]) {
             let _: Token![,] = input.parse()?;
         }
@@ -69,7 +57,6 @@ impl Parse for WriteMethodSpecInput {
             attrs,
             rpc_method,
             ident,
-            input: input_ty,
         })
     }
 }
@@ -112,6 +99,12 @@ fn summary_from_doc(doc: &str) -> String {
         .join(" ")
 }
 
+/// Attach `MethodSpec` + `RpcMethodMeta` to a hand-written operation struct.
+///
+/// The operation struct *is* the method input — the macro wraps it in the
+/// transport request type (`ReadRequest`/`WriteRequest`) for the `Input`
+/// associated type. The struct itself is defined by the caller, so it keeps full
+/// control of its derives and field attributes.
 fn expand_method(
     attrs: &[Attribute],
     rpc_method: &LitStr,
@@ -119,18 +112,12 @@ fn expand_method(
     request_ty: &proc_macro2::TokenStream,
     output_ty: &proc_macro2::TokenStream,
     method_kind: &proc_macro2::TokenStream,
-    binding: &proc_macro2::TokenStream,
 ) -> TokenStream {
     let doc = cleaned_doc_text(attrs);
     let summary = summary_from_doc(&doc);
     let deprecated = attrs.iter().any(|attr| attr.path().is_ident("deprecated"));
 
     quote! {
-        #[doc = concat!("RPC method: `", #rpc_method, "`")]
-        #[doc = ""]
-        #(#attrs)*
-        pub struct #ident;
-
         impl templar_gateway_types::MethodSpec for #ident {
             type Input = #request_ty;
             type Output = #output_ty;
@@ -144,61 +131,47 @@ fn expand_method(
             const DESCRIPTION: &'static str = #doc;
             const DEPRECATED: bool = #deprecated;
         }
-
-        #binding
     }
     .into()
 }
 
+/// Attach a read method spec to an operation struct: `"rpc.method": OpType -> Output`.
 #[proc_macro]
 pub fn read_method_spec(input: TokenStream) -> TokenStream {
     let ReadMethodSpecInput {
         attrs,
         rpc_method,
         ident,
-        input,
         output,
     } = parse_macro_input!(input as ReadMethodSpecInput);
-
-    let binding = quote! {
-        impl templar_gateway_types::ReadParams for #input {
-            type Spec = #ident;
-        }
-    };
 
     expand_method(
         &attrs,
         &rpc_method,
         &ident,
-        &quote!(templar_gateway_types::common::ReadRequest<#input>),
+        &quote!(templar_gateway_types::common::ReadRequest<#ident>),
         &quote!(#output),
         &quote!(templar_gateway_types::spec::MethodKind::Read),
-        &binding,
     )
 }
 
+/// Attach a write method spec to an operation struct: `"rpc.method": OpType`.
+///
+/// The output is always `WriteOperationResult`.
 #[proc_macro]
 pub fn write_method_spec(input: TokenStream) -> TokenStream {
     let WriteMethodSpecInput {
         attrs,
         rpc_method,
         ident,
-        input,
     } = parse_macro_input!(input as WriteMethodSpecInput);
-
-    let binding = quote! {
-        impl templar_gateway_types::WriteBody for #input {
-            type Spec = #ident;
-        }
-    };
 
     expand_method(
         &attrs,
         &rpc_method,
         &ident,
-        &quote!(templar_gateway_types::common::WriteRequest<#input>),
+        &quote!(templar_gateway_types::common::WriteRequest<#ident>),
         &quote!(templar_gateway_types::common::WriteOperationResult),
         &quote!(templar_gateway_types::spec::MethodKind::Write),
-        &binding,
     )
 }

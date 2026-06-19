@@ -6,7 +6,7 @@ use templar_gateway_core::{
     },
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
-use templar_gateway_methods_spec::{registry::DeployBody, universal_account};
+use templar_gateway_methods_spec::{registry::Deploy, universal_account};
 use templar_gateway_types::MethodSpec;
 use templar_universal_account::InitArgs;
 
@@ -77,7 +77,7 @@ impl<C: HasNearClient> PlanWrite<universal_account::Create, C> for Dispatch {
         plan_deploy_from_registry(
             &ctx,
             request.signer_account_id,
-            DeployBody {
+            Deploy {
                 registry_id: body.registry_id,
                 name: body.account_name,
                 version_key: body.version_key,

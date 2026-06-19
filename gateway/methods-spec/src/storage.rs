@@ -5,7 +5,7 @@ use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::common::{StorageBalance, StorageBalanceBounds};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceBoundsParams {
+pub struct GetBalanceBounds {
     pub contract_id: AccountId,
 }
 
@@ -16,11 +16,11 @@ pub struct GetBalanceBoundsResult {
 
 read_method_spec!(
     /// Get storage balance bounds for a contract.
-    "storage.getBalanceBounds": GetBalanceBounds(GetBalanceBoundsParams) -> GetBalanceBoundsResult
+    "storage.getBalanceBounds": GetBalanceBounds -> GetBalanceBoundsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
 }
@@ -32,11 +32,11 @@ pub struct GetBalanceOfResult {
 
 read_method_spec!(
     /// Get storage balance for an account.
-    "storage.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
+    "storage.getBalanceOf": GetBalanceOf -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct DepositBody {
+pub struct Deposit {
     pub contract_id: AccountId,
     pub beneficiary_id: Option<AccountId>,
     #[serde(default)]
@@ -46,11 +46,11 @@ pub struct DepositBody {
 
 write_method_spec!(
     /// Deposit storage for an account.
-    "storage.deposit": Deposit(DepositBody)
+    "storage.deposit": Deposit
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct UnregisterBody {
+pub struct Unregister {
     pub contract_id: AccountId,
     #[serde(default)]
     pub force: bool,
@@ -58,11 +58,11 @@ pub struct UnregisterBody {
 
 write_method_spec!(
     /// Unregister storage for an account.
-    "storage.unregister": Unregister(UnregisterBody)
+    "storage.unregister": Unregister
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct EnsureDepositBody {
+pub struct EnsureDeposit {
     pub contract_id: AccountId,
     pub account_id: AccountId,
     pub mode: EnsureDepositMode,
@@ -78,5 +78,5 @@ pub enum EnsureDepositMode {
 
 write_method_spec!(
     /// Ensure an account has enough storage deposit.
-    "storage.ensureDeposit": EnsureDeposit(EnsureDepositBody)
+    "storage.ensureDeposit": EnsureDeposit
 );

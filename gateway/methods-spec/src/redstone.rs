@@ -6,7 +6,7 @@ use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::Base64Bytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetConfigParams {
+pub struct GetConfig {
     pub oracle_id: AccountId,
 }
 
@@ -17,11 +17,11 @@ pub struct GetConfigResult {
 
 read_method_spec!(
     /// Get RedStone oracle config.
-    "redstone.getConfig": GetConfig(GetConfigParams) -> GetConfigResult
+    "redstone.getConfig": GetConfig -> GetConfigResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ReadPriceDataParams {
+pub struct ReadPriceData {
     pub oracle_id: AccountId,
     pub feed_ids: Vec<FeedId>,
 }
@@ -39,7 +39,7 @@ pub struct ReadPriceDataResult {
 
 read_method_spec!(
     /// Read RedStone price data.
-    "redstone.readPriceData": ReadPriceData(ReadPriceDataParams) -> ReadPriceDataResult
+    "redstone.readPriceData": ReadPriceData -> ReadPriceDataResult
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -59,7 +59,7 @@ impl From<RoleValue> for Role {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListRoleParams {
+pub struct ListRole {
     pub oracle_id: AccountId,
     pub role: RoleValue,
 }
@@ -71,11 +71,11 @@ pub struct ListRoleResult {
 
 read_method_spec!(
     /// List accounts for a RedStone role.
-    "redstone.listRole": ListRole(ListRoleParams) -> ListRoleResult
+    "redstone.listRole": ListRole -> ListRoleResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SetRoleBody {
+pub struct SetRole {
     pub oracle_id: AccountId,
     pub account_id: AccountId,
     pub role: RoleValue,
@@ -84,11 +84,11 @@ pub struct SetRoleBody {
 
 write_method_spec!(
     /// Update a RedStone role membership.
-    "redstone.setRole": SetRole(SetRoleBody)
+    "redstone.setRole": SetRole
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WritePricesBody {
+pub struct WritePrices {
     pub oracle_id: AccountId,
     pub feed_ids: Vec<FeedId>,
     pub payload: Base64Bytes,
@@ -96,5 +96,5 @@ pub struct WritePricesBody {
 
 write_method_spec!(
     /// Submit RedStone price payloads.
-    "redstone.writePrices": WritePrices(WritePricesBody)
+    "redstone.writePrices": WritePrices
 );

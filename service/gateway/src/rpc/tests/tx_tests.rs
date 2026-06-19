@@ -9,7 +9,7 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -24,7 +24,7 @@ async fn tx_function_call_and_view_function_endpoints_work_against_sandbox() -> 
     let counter = stack
         .controller
         .request::<contract::ViewFunction>(&ReadRequest {
-            params: contract::ViewFunctionParams {
+            params: contract::ViewFunction {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("redemption_rate".to_owned()),
                 args: ContractArgs::Raw(Base64Bytes(Vec::new())),
@@ -52,7 +52,7 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
             idempotency_key: Some(templar_gateway_types::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -70,7 +70,7 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
             idempotency_key: Some(templar_gateway_types::IdempotencyKey(
                 "set-redemption-rate".to_owned(),
             )),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -88,7 +88,7 @@ async fn tx_function_call_idempotency_reuses_the_same_operation() -> Result<()> 
     let fetched = stack
         .controller
         .request::<op::Get>(&ReadRequest {
-            params: op::GetParams {
+            params: op::Get {
                 operation_id: first.operation.id.clone(),
             },
         })
@@ -111,7 +111,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::DepositBody {
+            body: storage::Deposit {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: Some(stack.harness.beneficiary_account_id.clone()),
                 registration_only: false,
@@ -125,7 +125,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({ "amount": "3" })),
@@ -140,7 +140,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<ft::Transfer>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: ft::TransferBody {
+            body: ft::Transfer {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
                 amount: templar_gateway_types::U128(3),
@@ -152,7 +152,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
     let balance = stack
         .controller
         .request::<ft::GetBalanceOf>(&ReadRequest {
-            params: ft::GetBalanceOfParams {
+            params: ft::GetBalanceOf {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
@@ -166,7 +166,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<storage::Unregister>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::UnregisterBody {
+            body: storage::Unregister {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 force: false,
             },
@@ -176,7 +176,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
     let storage_balance = stack
         .controller
         .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOfParams {
+            params: storage::GetBalanceOf {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
@@ -190,7 +190,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         .request::<account::Delete>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            body: account::DeleteBody {
+            body: account::Delete {
                 beneficiary_id: stack.harness.beneficiary_account_id.clone(),
             },
         })
@@ -199,7 +199,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
     let deleted = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: CryptoHash(
                     "11111111111111111111111111111111"
                         .parse()
@@ -225,7 +225,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
     let before = stack
         .controller
         .request::<account::Get>(&ReadRequest {
-            params: account::GetParams {
+            params: account::Get {
                 account_id: stack.harness.beneficiary_account_id.clone(),
             },
         })
@@ -236,7 +236,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::Transfer>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::TransferBody {
+            body: tx::Transfer {
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
                 amount: NearToken::from_yoctonear(1),
             },
@@ -250,7 +250,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
     let after = stack
         .controller
         .request::<account::Get>(&ReadRequest {
-            params: account::GetParams {
+            params: account::Get {
                 account_id: stack.harness.beneficiary_account_id.clone(),
             },
         })
@@ -262,7 +262,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::DeployContract>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::DeployContractBody {
+            body: tx::DeployContract {
                 account_id: stack.harness.cleanup_signer_account_id.0.clone(),
                 code: Base64Bytes(stack.harness.ft_wasm().await),
             },
@@ -276,7 +276,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
     let cleanup_account = stack
         .controller
         .request::<account::Get>(&ReadRequest {
-            params: account::GetParams {
+            params: account::Get {
                 account_id: stack.harness.cleanup_signer_account_id.0.clone(),
             },
         })
@@ -291,7 +291,7 @@ async fn tx_transfer_and_deploy_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::DeployAndInit>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::DeployAndInitBody {
+            body: tx::DeployAndInit {
                 account_id: stack.harness.proxy_oracle_signer_account_id.0.clone(),
                 code: Base64Bytes(stack.harness.ft_wasm().await),
                 method_name: ContractMethodName("new".to_owned()),

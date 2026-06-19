@@ -14,7 +14,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: mt_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -30,7 +30,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let balance = stack
         .controller
         .request::<mt::GetBalanceOf>(&ReadRequest {
-            params: mt::GetBalanceOfParams {
+            params: mt::GetBalanceOf {
                 contract_id: mt_contract_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 token_id: "mt_borrow".to_owned(),
@@ -42,7 +42,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let balances = stack
         .controller
         .request::<mt::GetBatchBalanceOf>(&ReadRequest {
-            params: mt::GetBatchBalanceOfParams {
+            params: mt::GetBatchBalanceOf {
                 contract_id: mt_contract_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 token_ids: vec!["mt_borrow".to_owned(), "mt_collateral".to_owned()],
@@ -58,7 +58,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let supply = stack
         .controller
         .request::<mt::GetSupply>(&ReadRequest {
-            params: mt::GetSupplyParams {
+            params: mt::GetSupply {
                 contract_id: mt_contract_id.clone(),
                 token_id: "mt_borrow".to_owned(),
             },
@@ -69,7 +69,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let supplies = stack
         .controller
         .request::<mt::GetBatchSupply>(&ReadRequest {
-            params: mt::GetBatchSupplyParams {
+            params: mt::GetBatchSupply {
                 contract_id: mt_contract_id.clone(),
                 token_ids: vec!["mt_borrow".to_owned(), "missing".to_owned()],
             },
@@ -86,7 +86,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
         .request::<mt::Transfer>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: mt::TransferBody {
+            body: mt::Transfer {
                 contract_id: mt_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
                 token_id: "mt_borrow".to_owned(),
@@ -106,7 +106,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
         .request::<mt::TransferCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: mt::TransferCallBody {
+            body: mt::TransferCall {
                 contract_id: mt_contract_id.clone(),
                 receiver_id: receiver_id.clone(),
                 token_id: "mt_borrow".to_owned(),
@@ -125,7 +125,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let _ = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: tx_hash(&transfer_call),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),

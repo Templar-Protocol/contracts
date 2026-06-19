@@ -16,7 +16,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
     let config = stack
         .controller
         .request::<redstone::GetConfig>(&ReadRequest {
-            params: redstone::GetConfigParams {
+            params: redstone::GetConfig {
                 oracle_id: oracle_id.clone(),
             },
         })
@@ -26,7 +26,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
     let prices = stack
         .controller
         .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceDataParams {
+            params: redstone::ReadPriceData {
                 oracle_id: oracle_id.clone(),
                 feed_ids: vec!["BTC".into()],
             },
@@ -39,7 +39,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .request::<redstone::SetRole>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: redstone::SetRoleBody {
+            body: redstone::SetRole {
                 oracle_id: oracle_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
                 role: redstone::RoleValue::TrustedUpdater,
@@ -55,7 +55,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
     let roles = stack
         .controller
         .request::<redstone::ListRole>(&ReadRequest {
-            params: redstone::ListRoleParams {
+            params: redstone::ListRole {
                 oracle_id: oracle_id.clone(),
                 role: redstone::RoleValue::TrustedUpdater,
             },
@@ -71,7 +71,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .request::<redstone::WritePrices>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: redstone::WritePricesBody {
+            body: redstone::WritePrices {
                 oracle_id: oracle_id.clone(),
                 feed_ids: vec!["ETH".into()],
                 payload: Base64Bytes(vec![1, 2, 3]),
@@ -86,7 +86,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
     let written = stack
         .controller
         .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceDataParams {
+            params: redstone::ReadPriceData {
                 oracle_id,
                 feed_ids: vec!["ETH".into()],
             },

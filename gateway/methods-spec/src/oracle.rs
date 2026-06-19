@@ -16,7 +16,7 @@ pub enum OracleContractKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetPriceResolutionDependenciesParams {
+pub struct GetPriceResolutionDependencies {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,
 }
@@ -29,9 +29,10 @@ pub struct GetPriceResolutionDependenciesResult {
 
 read_method_spec!(
     /// Get update dependencies for a price.
-    "oracle.getPriceResolutionDependencies": GetPriceResolutionDependencies(GetPriceResolutionDependenciesParams) -> GetPriceResolutionDependenciesResult
+    "oracle.getPriceResolutionDependencies": GetPriceResolutionDependencies -> GetPriceResolutionDependenciesResult
 );
 
+// Shared price inputs supplied to the resolve operations below.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PythOraclePrices {
     pub oracle_id: near_account_id::AccountId,
@@ -51,16 +52,7 @@ pub struct RedStoneOraclePrices {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ResolvePricesParams {
-    pub oracle_id: near_account_id::AccountId,
-    pub price_ids: Vec<PriceIdentifier>,
-    pub age: u64,
-    pub pyth: Vec<PythOraclePrices>,
-    pub redstone: Vec<RedStoneOraclePrices>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ResolvePriceParams {
+pub struct ResolvePrice {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,
     pub age: u64,
@@ -75,8 +67,17 @@ pub struct ResolvePriceResult {
 
 read_method_spec!(
     /// Resolve a single price from supplied inputs.
-    "oracle.resolvePrice": ResolvePrice(ResolvePriceParams) -> ResolvePriceResult
+    "oracle.resolvePrice": ResolvePrice -> ResolvePriceResult
 );
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ResolvePrices {
+    pub oracle_id: near_account_id::AccountId,
+    pub price_ids: Vec<PriceIdentifier>,
+    pub age: u64,
+    pub pyth: Vec<PythOraclePrices>,
+    pub redstone: Vec<RedStoneOraclePrices>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ResolvedPrice {
@@ -91,18 +92,11 @@ pub struct ResolvePricesResult {
 
 read_method_spec!(
     /// Resolve multiple prices from supplied inputs.
-    "oracle.resolvePrices": ResolvePrices(ResolvePricesParams) -> ResolvePricesResult
+    "oracle.resolvePrices": ResolvePrices -> ResolvePricesResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetPricesParams {
-    pub oracle_id: near_account_id::AccountId,
-    pub price_ids: Vec<PriceIdentifier>,
-    pub age: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetPriceParams {
+pub struct GetPrice {
     pub oracle_id: near_account_id::AccountId,
     pub price_id: PriceIdentifier,
     pub age: u64,
@@ -115,12 +109,19 @@ pub struct GetPriceResult {
 
 read_method_spec!(
     /// Read a single on-chain oracle price.
-    "oracle.getPrice": GetPrice(GetPriceParams) -> GetPriceResult
+    "oracle.getPrice": GetPrice -> GetPriceResult
 );
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetPrices {
+    pub oracle_id: near_account_id::AccountId,
+    pub price_ids: Vec<PriceIdentifier>,
+    pub age: u64,
+}
 
 pub type GetPricesResult = ResolvePricesResult;
 
 read_method_spec!(
     /// Read multiple on-chain oracle prices.
-    "oracle.getPrices": GetPrices(GetPricesParams) -> GetPricesResult
+    "oracle.getPrices": GetPrices -> GetPricesResult
 );

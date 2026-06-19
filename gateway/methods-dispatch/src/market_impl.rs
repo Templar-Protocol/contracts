@@ -17,7 +17,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
     PlannedTransaction,
 };
-use templar_gateway_methods_spec::{market, registry::DeployBody};
+use templar_gateway_methods_spec::{market, registry::Deploy};
 use templar_gateway_types::{ManagedAccountId, MethodSpec};
 
 use crate::registry_impl::plan_deploy_from_registry;
@@ -305,7 +305,7 @@ impl<C: HasNearClient> PlanWrite<market::Create, C> for Dispatch {
         let mut steps = plan_deploy_from_registry(
             &ctx,
             request.signer_account_id.clone(),
-            DeployBody {
+            Deploy {
                 registry_id: body.registry_id,
                 name: body.name,
                 version_key: body.version_key,

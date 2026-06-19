@@ -5,7 +5,7 @@ use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::U128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
 }
@@ -17,11 +17,11 @@ pub struct GetBalanceOfResult {
 
 read_method_spec!(
     /// Get a fungible token balance.
-    "ft.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
+    "ft.getBalanceOf": GetBalanceOf -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferBody {
+pub struct Transfer {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -31,11 +31,11 @@ pub struct TransferBody {
 
 write_method_spec!(
     /// Transfer fungible tokens.
-    "ft.transfer": Transfer(TransferBody)
+    "ft.transfer": Transfer
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferCallBody {
+pub struct TransferCall {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -46,5 +46,5 @@ pub struct TransferCallBody {
 
 write_method_spec!(
     /// Transfer fungible tokens and call the receiver.
-    "ft.transferCall": TransferCall(TransferCallBody)
+    "ft.transferCall": TransferCall
 );

@@ -72,7 +72,7 @@ async fn kind_of(stack: &TestStack, contract_id: AccountId) -> Result<ContractKi
     Ok(stack
         .controller
         .request::<contract::GetKind>(&ReadRequest {
-            params: contract::GetKindParams { contract_id },
+            params: contract::GetKind { contract_id },
         })
         .await?
         .kind)

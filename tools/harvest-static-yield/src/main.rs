@@ -78,7 +78,7 @@ struct Cli {
 
 async fn market_version(client: &Client, market_id: AccountId) -> anyhow::Result<MarketVersion> {
     let version = client
-        .read(contract::GetVersionParams {
+        .read(contract::GetVersion {
             contract_id: market_id.clone(),
         })
         .await?;
@@ -132,7 +132,7 @@ pub async fn main() -> anyhow::Result<()> {
     for registry in args.registry_id {
         tracing::info!(%registry, "Loading markets from registry");
         match client
-            .read(registry::ListDeploymentsParams {
+            .read(registry::ListDeployments {
                 registry_id: registry.clone(),
                 args: Pagination::default(),
             })
@@ -158,7 +158,7 @@ pub async fn main() -> anyhow::Result<()> {
 
         let (version, configuration) = tokio::join!(
             market_version(&client, market_id.clone()),
-            client.read(market::GetConfigurationParams {
+            client.read(market::GetConfiguration {
                 market_id: market_id.clone(),
             }),
         );
@@ -180,13 +180,13 @@ pub async fn main() -> anyhow::Result<()> {
         let asset_contract = configuration.borrow_asset.contract_id().to_owned();
         tracing::info!(%market_id, "Checking storage requirements");
         if let Ok(bounds) = client
-            .read(storage::GetBalanceBoundsParams {
+            .read(storage::GetBalanceBounds {
                 contract_id: asset_contract.clone(),
             })
             .await
         {
             let balance = match client
-                .read(storage::GetBalanceOfParams {
+                .read(storage::GetBalanceOf {
                     contract_id: asset_contract.clone(),
                     account_id: args.account_id.clone(),
                 })
@@ -210,7 +210,7 @@ pub async fn main() -> anyhow::Result<()> {
         if version.requires_static_yield_accumulation() {
             tracing::info!(%market_id, %version, "Running static yield accumulation");
             if let Err(error) = client
-                .execute(market::AccumulateStaticYieldBody {
+                .execute(market::AccumulateStaticYield {
                     market_id: market_id.clone(),
                     account_id: None,
                     snapshot_limit: None,
@@ -223,7 +223,7 @@ pub async fn main() -> anyhow::Result<()> {
         }
 
         let yield_amount = match client
-            .read(market::GetStaticYieldParams {
+            .read(market::GetStaticYield {
                 market_id: market_id.clone(),
                 account_id: args.account_id.clone(),
             })
@@ -243,7 +243,7 @@ pub async fn main() -> anyhow::Result<()> {
 
         tracing::info!(%market_id, %yield_amount, "Withdrawing yield");
         let transaction_hash = match client
-            .execute(market::WithdrawStaticYieldBody {
+            .execute(market::WithdrawStaticYield {
                 market_id: market_id.clone(),
                 amount: None,
             })
@@ -282,7 +282,7 @@ pub async fn main() -> anyhow::Result<()> {
     for (asset, amount) in accumulated_assets {
         tracing::info!(%asset, %receiver_id, %amount, "Sending yield");
         match client
-            .execute(ft::TransferBody {
+            .execute(ft::Transfer {
                 contract_id: asset.contract_id().to_owned(),
                 receiver_id: receiver_id.clone(),
                 amount: U128(u128::from(amount)),

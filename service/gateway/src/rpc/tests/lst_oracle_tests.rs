@@ -35,7 +35,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
     let get_oracle_id = stack
         .controller
         .request::<lst_oracle::GetOracleId>(&ReadRequest {
-            params: lst_oracle::GetOracleIdParams {
+            params: lst_oracle::GetOracleId {
                 oracle_id: lst_oracle_id.clone(),
             },
         })
@@ -45,7 +45,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
     let list = stack
         .controller
         .request::<lst_oracle::ListTransformers>(&ReadRequest {
-            params: lst_oracle::ListTransformersParams {
+            params: lst_oracle::ListTransformers {
                 oracle_id: lst_oracle_id.clone(),
                 pagination: templar_gateway_types::common::Pagination::default(),
             },
@@ -56,7 +56,7 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
     let get = stack
         .controller
         .request::<lst_oracle::GetTransformer>(&ReadRequest {
-            params: lst_oracle::GetTransformerParams {
+            params: lst_oracle::GetTransformer {
                 oracle_id: lst_oracle_id,
                 price_identifier: transformed_price_id,
             },

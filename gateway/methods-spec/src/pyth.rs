@@ -12,7 +12,7 @@ pub struct PriceEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListEmaPricesNoOlderThanParams {
+pub struct ListEmaPricesNoOlderThan {
     pub oracle_id: AccountId,
     pub price_ids: Vec<PriceIdentifier>,
     pub age: u64,
@@ -25,11 +25,11 @@ pub struct ListEmaPricesNoOlderThanResult {
 
 read_method_spec!(
     /// List EMA prices within an age limit.
-    "pyth.listEmaPricesNoOlderThan": ListEmaPricesNoOlderThan(ListEmaPricesNoOlderThanParams) -> ListEmaPricesNoOlderThanResult
+    "pyth.listEmaPricesNoOlderThan": ListEmaPricesNoOlderThan -> ListEmaPricesNoOlderThanResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListEmaPricesUnsafeParams {
+pub struct ListEmaPricesUnsafe {
     pub oracle_id: AccountId,
     pub price_ids: Vec<PriceIdentifier>,
 }
@@ -41,16 +41,16 @@ pub struct ListEmaPricesUnsafeResult {
 
 read_method_spec!(
     /// List EMA prices without an age limit.
-    "pyth.listEmaPricesUnsafe": ListEmaPricesUnsafe(ListEmaPricesUnsafeParams) -> ListEmaPricesUnsafeResult
+    "pyth.listEmaPricesUnsafe": ListEmaPricesUnsafe -> ListEmaPricesUnsafeResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct UpdatePriceFeedsBody {
+pub struct UpdatePriceFeeds {
     pub oracle_id: AccountId,
     pub data: Base64Bytes,
 }
 
 write_method_spec!(
     /// Submit raw Pyth update data.
-    "pyth.updatePriceFeeds": UpdatePriceFeeds(UpdatePriceFeedsBody)
+    "pyth.updatePriceFeeds": UpdatePriceFeeds
 );

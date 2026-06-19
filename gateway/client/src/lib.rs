@@ -7,18 +7,18 @@
 //!
 //! [`Client`] owns the whole "boilerplate triangle" — the read/plan context, the
 //! signer set, and the transaction executor — behind a single builder, and its
-//! [`Client::read`] / [`Client::execute`] helpers infer the gateway method from
-//! the params/body type alone, so call sites carry no turbofish, no request
-//! wrappers, and no method-name repetition:
+//! [`Client::read`] / [`Client::execute`] helpers take the operation type
+//! directly (the operation *is* its input), so call sites carry no turbofish, no
+//! request wrappers, and no method-name repetition:
 //!
 //! ```ignore
 //! let client = Client::builder(network)
 //!     .secret_key(account_id, secret_key)?
 //!     .build()?;
 //!
-//! let config = client.read(market::GetConfigurationParams { market_id }).await?;
+//! let config = client.read(market::GetConfiguration { market_id }).await?;
 //! let tx_hash = client
-//!     .execute(market::WithdrawStaticYieldBody { market_id, amount: None })
+//!     .execute(market::WithdrawStaticYield { market_id, amount: None })
 //!     .await?;
 //! ```
 
@@ -33,7 +33,7 @@ use templar_gateway_core::{
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_types::{
     common::{ReadRequest, WriteOperationResult, WriteRequest},
-    CryptoHash, ManagedAccountId, MethodSpec, ReadParams, WriteBody,
+    CryptoHash, ManagedAccountId, MethodSpec,
 };
 
 /// Builder for [`Client`]. Takes the network once and accumulates signers,
@@ -116,47 +116,46 @@ impl Client {
         Self::builder(network).build()
     }
 
-    /// Dispatch a read method, inferring the spec from its params type.
-    pub async fn read<P>(&self, params: P) -> GatewayResult<<P::Spec as MethodSpec>::Output>
+    /// Dispatch a read operation, inferring the output type from the operation.
+    pub async fn read<Op>(&self, op: Op) -> GatewayResult<Op::Output>
     where
-        P: ReadParams,
-        Dispatch: DispatchRead<P::Spec, GatewayContext>,
+        Op: MethodSpec<Input = ReadRequest<Op>>,
+        Dispatch: DispatchRead<Op, GatewayContext>,
     {
-        <Dispatch as DispatchRead<P::Spec, GatewayContext>>::dispatch(
-            ReadRequest::new(params),
+        <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(
+            ReadRequest::new(op),
             self.context.clone(),
         )
         .await
     }
 
-    /// Plan, sign, and submit a write signed by the default signer, inferring
-    /// the spec from its body type. Errors if no default signer is configured.
-    pub async fn execute<B>(&self, body: B) -> GatewayResult<CryptoHash>
+    /// Plan, sign, and submit a write operation signed by the default signer.
+    /// Errors if no default signer is configured.
+    pub async fn execute<Op>(&self, op: Op) -> GatewayResult<CryptoHash>
     where
-        B: WriteBody,
-        Dispatch: PlanWrite<B::Spec, GatewayContext>,
+        Op: MethodSpec<Input = WriteRequest<Op>, Output = WriteOperationResult>,
+        Dispatch: PlanWrite<Op, GatewayContext>,
     {
         let signer_account_id = self.default_signer.clone().ok_or_else(|| {
             GatewayError::UnsupportedSignerAccount("no default signer configured".to_owned())
         })?;
-        self.execute_as::<B>(signer_account_id, body).await
+        self.execute_as::<Op>(signer_account_id, op).await
     }
 
-    /// Plan, sign, and submit a write signed by a specific account, inferring
-    /// the spec from its body type.
-    pub async fn execute_as<B>(
+    /// Plan, sign, and submit a write operation signed by a specific account.
+    pub async fn execute_as<Op>(
         &self,
         signer_account_id: impl Into<ManagedAccountId>,
-        body: B,
+        op: Op,
     ) -> GatewayResult<CryptoHash>
     where
-        B: WriteBody,
-        Dispatch: PlanWrite<B::Spec, GatewayContext>,
+        Op: MethodSpec<Input = WriteRequest<Op>, Output = WriteOperationResult>,
+        Dispatch: PlanWrite<Op, GatewayContext>,
     {
-        self.execute_request::<B::Spec>(WriteRequest {
+        self.execute_request::<Op>(WriteRequest {
             signer_account_id: signer_account_id.into(),
             idempotency_key: None,
-            body,
+            body: op,
         })
         .await
     }

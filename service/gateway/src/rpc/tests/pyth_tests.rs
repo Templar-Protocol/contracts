@@ -17,7 +17,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
     let unsafe_prices = stack
         .controller
         .request::<pyth::ListEmaPricesUnsafe>(&ReadRequest {
-            params: pyth::ListEmaPricesUnsafeParams {
+            params: pyth::ListEmaPricesUnsafe {
                 oracle_id: oracle_id.clone(),
                 price_ids: vec![price_id],
             },
@@ -28,7 +28,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
     let bounded_prices = stack
         .controller
         .request::<pyth::ListEmaPricesNoOlderThan>(&ReadRequest {
-            params: pyth::ListEmaPricesNoOlderThanParams {
+            params: pyth::ListEmaPricesNoOlderThan {
                 oracle_id: oracle_id.clone(),
                 price_ids: vec![price_id],
                 age: 60,
@@ -42,7 +42,7 @@ async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
         .request::<pyth::UpdatePriceFeeds>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: pyth::UpdatePriceFeedsBody {
+            body: pyth::UpdatePriceFeeds {
                 oracle_id: oracle_id.clone(),
                 data: Base64Bytes(vec![0xca, 0xfe, 0xba, 0xbe]),
             },

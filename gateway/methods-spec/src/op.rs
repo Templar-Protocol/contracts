@@ -4,7 +4,7 @@ use templar_gateway_macros::read_method_spec;
 use templar_gateway_types::{OperationId, OperationRecord};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetParams {
+pub struct Get {
     pub operation_id: OperationId,
 }
 
@@ -15,5 +15,5 @@ pub struct GetResult {
 
 read_method_spec!(
     /// Look up a previously submitted operation by ID.
-    "op.get": Get(GetParams) -> GetResult
+    "op.get": Get -> GetResult
 );

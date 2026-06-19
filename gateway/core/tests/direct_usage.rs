@@ -44,7 +44,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
 
     let account = <Dispatch as DispatchRead<account::Get, GatewayContext>>::dispatch(
         ReadRequest {
-            params: account::GetParams {
+            params: account::Get {
                 account_id: signer_account_id.0.clone(),
             },
         },
@@ -62,7 +62,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
         WriteRequest {
             signer_account_id: signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({

@@ -18,7 +18,7 @@ use templar_gateway_macros::{read_method_spec, write_method_spec};
 use templar_gateway_types::{common::Pagination, primitive::PublicKey, NearToken};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetConfigurationParams {
+pub struct GetConfiguration {
     pub market_id: AccountId,
 }
 
@@ -26,11 +26,11 @@ pub type GetConfigurationResult = MarketConfiguration;
 
 read_method_spec!(
     /// Get market configuration.
-    "market.getConfiguration": GetConfiguration(GetConfigurationParams) -> GetConfigurationResult
+    "market.getConfiguration": GetConfiguration -> GetConfigurationResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListBorrowPositionsParams {
+pub struct ListBorrowPositions {
     pub market_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
@@ -43,11 +43,11 @@ pub struct ListBorrowPositionsResult {
 
 read_method_spec!(
     /// List borrow positions.
-    "market.listBorrowPositions": ListBorrowPositions(ListBorrowPositionsParams) -> ListBorrowPositionsResult
+    "market.listBorrowPositions": ListBorrowPositions -> ListBorrowPositionsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetCurrentSnapshotParams {
+pub struct GetCurrentSnapshot {
     pub market_id: AccountId,
 }
 
@@ -55,11 +55,11 @@ pub type GetCurrentSnapshotResult = Snapshot;
 
 read_method_spec!(
     /// Get the current market snapshot.
-    "market.getCurrentSnapshot": GetCurrentSnapshot(GetCurrentSnapshotParams) -> GetCurrentSnapshotResult
+    "market.getCurrentSnapshot": GetCurrentSnapshot -> GetCurrentSnapshotResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetFinalizedSnapshotsLenParams {
+pub struct GetFinalizedSnapshotsLen {
     pub market_id: AccountId,
 }
 
@@ -67,11 +67,11 @@ pub type GetFinalizedSnapshotsLenResult = u32;
 
 read_method_spec!(
     /// Get finalized snapshot count.
-    "market.getFinalizedSnapshotsLen": GetFinalizedSnapshotsLen(GetFinalizedSnapshotsLenParams) -> GetFinalizedSnapshotsLenResult
+    "market.getFinalizedSnapshotsLen": GetFinalizedSnapshotsLen -> GetFinalizedSnapshotsLenResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListFinalizedSnapshotsParams {
+pub struct ListFinalizedSnapshots {
     pub market_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
@@ -84,11 +84,11 @@ pub struct ListFinalizedSnapshotsResult {
 
 read_method_spec!(
     /// List finalized snapshots.
-    "market.listFinalizedSnapshots": ListFinalizedSnapshots(ListFinalizedSnapshotsParams) -> ListFinalizedSnapshotsResult
+    "market.listFinalizedSnapshots": ListFinalizedSnapshots -> ListFinalizedSnapshotsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBorrowAssetMetricsParams {
+pub struct GetBorrowAssetMetrics {
     pub market_id: AccountId,
 }
 
@@ -96,11 +96,11 @@ pub type GetBorrowAssetMetricsResult = BorrowAssetMetrics;
 
 read_method_spec!(
     /// Get borrow asset metrics.
-    "market.getBorrowAssetMetrics": GetBorrowAssetMetrics(GetBorrowAssetMetricsParams) -> GetBorrowAssetMetricsResult
+    "market.getBorrowAssetMetrics": GetBorrowAssetMetrics -> GetBorrowAssetMetricsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBorrowPositionParams {
+pub struct GetBorrowPosition {
     pub market_id: AccountId,
     pub account_id: AccountId,
 }
@@ -112,11 +112,11 @@ pub struct GetBorrowPositionResult {
 
 read_method_spec!(
     /// Get a borrow position.
-    "market.getBorrowPosition": GetBorrowPosition(GetBorrowPositionParams) -> GetBorrowPositionResult
+    "market.getBorrowPosition": GetBorrowPosition -> GetBorrowPositionResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBorrowPositionPendingInterestParams {
+pub struct GetBorrowPositionPendingInterest {
     pub market_id: AccountId,
     pub account_id: AccountId,
     pub snapshot_limit: Option<u32>,
@@ -129,11 +129,11 @@ pub struct GetBorrowPositionPendingInterestResult {
 
 read_method_spec!(
     /// Get pending borrow interest.
-    "market.getBorrowPositionPendingInterest": GetBorrowPositionPendingInterest(GetBorrowPositionPendingInterestParams) -> GetBorrowPositionPendingInterestResult
+    "market.getBorrowPositionPendingInterest": GetBorrowPositionPendingInterest -> GetBorrowPositionPendingInterestResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBorrowStatusParams {
+pub struct GetBorrowStatus {
     pub market_id: AccountId,
     pub account_id: AccountId,
     pub oracle_response: OracleResponse,
@@ -146,11 +146,11 @@ pub struct GetBorrowStatusResult {
 
 read_method_spec!(
     /// Get borrow status for an account.
-    "market.getBorrowStatus": GetBorrowStatus(GetBorrowStatusParams) -> GetBorrowStatusResult
+    "market.getBorrowStatus": GetBorrowStatus -> GetBorrowStatusResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListSupplyPositionsParams {
+pub struct ListSupplyPositions {
     pub market_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
@@ -163,11 +163,11 @@ pub struct ListSupplyPositionsResult {
 
 read_method_spec!(
     /// List supply positions.
-    "market.listSupplyPositions": ListSupplyPositions(ListSupplyPositionsParams) -> ListSupplyPositionsResult
+    "market.listSupplyPositions": ListSupplyPositions -> ListSupplyPositionsResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyPositionParams {
+pub struct GetSupplyPosition {
     pub market_id: AccountId,
     pub account_id: AccountId,
 }
@@ -179,11 +179,11 @@ pub struct GetSupplyPositionResult {
 
 read_method_spec!(
     /// Get a supply position.
-    "market.getSupplyPosition": GetSupplyPosition(GetSupplyPositionParams) -> GetSupplyPositionResult
+    "market.getSupplyPosition": GetSupplyPosition -> GetSupplyPositionResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyPositionPendingYieldParams {
+pub struct GetSupplyPositionPendingYield {
     pub market_id: AccountId,
     pub account_id: AccountId,
     pub snapshot_limit: Option<u32>,
@@ -196,11 +196,11 @@ pub struct GetSupplyPositionPendingYieldResult {
 
 read_method_spec!(
     /// Get pending supply yield.
-    "market.getSupplyPositionPendingYield": GetSupplyPositionPendingYield(GetSupplyPositionPendingYieldParams) -> GetSupplyPositionPendingYieldResult
+    "market.getSupplyPositionPendingYield": GetSupplyPositionPendingYield -> GetSupplyPositionPendingYieldResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyWithdrawalRequestStatusParams {
+pub struct GetSupplyWithdrawalRequestStatus {
     pub market_id: AccountId,
     pub account_id: AccountId,
 }
@@ -212,11 +212,11 @@ pub struct GetSupplyWithdrawalRequestStatusResult {
 
 read_method_spec!(
     /// Get supply withdrawal request status.
-    "market.getSupplyWithdrawalRequestStatus": GetSupplyWithdrawalRequestStatus(GetSupplyWithdrawalRequestStatusParams) -> GetSupplyWithdrawalRequestStatusResult
+    "market.getSupplyWithdrawalRequestStatus": GetSupplyWithdrawalRequestStatus -> GetSupplyWithdrawalRequestStatusResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyWithdrawalQueueStatusParams {
+pub struct GetSupplyWithdrawalQueueStatus {
     pub market_id: AccountId,
 }
 
@@ -224,11 +224,11 @@ pub type GetSupplyWithdrawalQueueStatusResult = WithdrawalQueueStatus;
 
 read_method_spec!(
     /// Get supply withdrawal queue status.
-    "market.getSupplyWithdrawalQueueStatus": GetSupplyWithdrawalQueueStatus(GetSupplyWithdrawalQueueStatusParams) -> GetSupplyWithdrawalQueueStatusResult
+    "market.getSupplyWithdrawalQueueStatus": GetSupplyWithdrawalQueueStatus -> GetSupplyWithdrawalQueueStatusResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetLastYieldRateParams {
+pub struct GetLastYieldRate {
     pub market_id: AccountId,
 }
 
@@ -236,11 +236,11 @@ pub type GetLastYieldRateResult = Decimal;
 
 read_method_spec!(
     /// Get the last yield rate.
-    "market.getLastYieldRate": GetLastYieldRate(GetLastYieldRateParams) -> GetLastYieldRateResult
+    "market.getLastYieldRate": GetLastYieldRate -> GetLastYieldRateResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetStaticYieldParams {
+pub struct GetStaticYield {
     pub market_id: AccountId,
     pub account_id: AccountId,
 }
@@ -257,21 +257,21 @@ pub struct GetStaticYieldResult {
 
 read_method_spec!(
     /// Get accumulated static yield.
-    "market.getStaticYield": GetStaticYield(GetStaticYieldParams) -> GetStaticYieldResult
+    "market.getStaticYield": GetStaticYield -> GetStaticYieldResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct BorrowBody {
+pub struct Borrow {
     pub market_id: AccountId,
     pub amount: BorrowAssetAmount,
 }
 write_method_spec!(
     /// Borrow from a market.
-    "market.borrow": Borrow(BorrowBody)
+    "market.borrow": Borrow
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CreateBody {
+pub struct Create {
     pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
@@ -282,93 +282,93 @@ pub struct CreateBody {
 }
 write_method_spec!(
     /// Create a market from the registry.
-    "market.create": Create(CreateBody)
+    "market.create": Create
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct SupplyBody {
+pub struct Supply {
     pub market_id: AccountId,
     pub amount: BorrowAssetAmount,
 }
 write_method_spec!(
     /// Supply assets to a market.
-    "market.supply": Supply(SupplyBody)
+    "market.supply": Supply
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WithdrawCollateralBody {
+pub struct WithdrawCollateral {
     pub market_id: AccountId,
     pub amount: CollateralAssetAmount,
 }
 write_method_spec!(
     /// Withdraw collateral from a market.
-    "market.withdrawCollateral": WithdrawCollateral(WithdrawCollateralBody)
+    "market.withdrawCollateral": WithdrawCollateral
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ApplyInterestBody {
+pub struct ApplyInterest {
     pub market_id: AccountId,
     pub account_id: Option<AccountId>,
     pub snapshot_limit: Option<u32>,
 }
 write_method_spec!(
     /// Apply interest to a market account.
-    "market.applyInterest": ApplyInterest(ApplyInterestBody)
+    "market.applyInterest": ApplyInterest
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RepayBody {
+pub struct Repay {
     pub market_id: AccountId,
     pub amount: BorrowAssetAmount,
     pub account_id: Option<AccountId>,
 }
 write_method_spec!(
     /// Repay borrowed assets.
-    "market.repay": Repay(RepayBody)
+    "market.repay": Repay
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CreateSupplyWithdrawalRequestBody {
+pub struct CreateSupplyWithdrawalRequest {
     pub market_id: AccountId,
     pub amount: BorrowAssetAmount,
 }
 write_method_spec!(
     /// Create a supply withdrawal request.
-    "market.createSupplyWithdrawalRequest": CreateSupplyWithdrawalRequest(CreateSupplyWithdrawalRequestBody)
+    "market.createSupplyWithdrawalRequest": CreateSupplyWithdrawalRequest
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CancelSupplyWithdrawalRequestBody {
+pub struct CancelSupplyWithdrawalRequest {
     pub market_id: AccountId,
 }
 write_method_spec!(
     /// Cancel a supply withdrawal request.
-    "market.cancelSupplyWithdrawalRequest": CancelSupplyWithdrawalRequest(CancelSupplyWithdrawalRequestBody)
+    "market.cancelSupplyWithdrawalRequest": CancelSupplyWithdrawalRequest
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ExecuteNextSupplyWithdrawalRequestBody {
+pub struct ExecuteNextSupplyWithdrawalRequest {
     pub market_id: AccountId,
     pub batch_limit: Option<u32>,
 }
 write_method_spec!(
     /// Execute the next supply withdrawal request.
-    "market.executeNextSupplyWithdrawalRequest": ExecuteNextSupplyWithdrawalRequest(ExecuteNextSupplyWithdrawalRequestBody)
+    "market.executeNextSupplyWithdrawalRequest": ExecuteNextSupplyWithdrawalRequest
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WithdrawSupplyBody {
+pub struct WithdrawSupply {
     pub market_id: AccountId,
     pub amount: BorrowAssetAmount,
     pub batch_limit: Option<u32>,
 }
 write_method_spec!(
     /// Withdraw supplied assets.
-    "market.withdrawSupply": WithdrawSupply(WithdrawSupplyBody)
+    "market.withdrawSupply": WithdrawSupply
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct LiquidateBody {
+pub struct Liquidate {
     pub market_id: AccountId,
     pub account_id: AccountId,
     pub liquidation_amount: BorrowAssetAmount,
@@ -376,37 +376,37 @@ pub struct LiquidateBody {
 }
 write_method_spec!(
     /// Liquidate an unhealthy account.
-    "market.liquidate": Liquidate(LiquidateBody)
+    "market.liquidate": Liquidate
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HarvestYieldBody {
+pub struct HarvestYield {
     pub market_id: AccountId,
     pub account_id: Option<AccountId>,
     pub mode: Option<HarvestYieldMode>,
 }
 write_method_spec!(
     /// Harvest market yield.
-    "market.harvestYield": HarvestYield(HarvestYieldBody)
+    "market.harvestYield": HarvestYield
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AccumulateStaticYieldBody {
+pub struct AccumulateStaticYield {
     pub market_id: AccountId,
     pub account_id: Option<AccountId>,
     pub snapshot_limit: Option<u32>,
 }
 write_method_spec!(
     /// Accumulate static yield.
-    "market.accumulateStaticYield": AccumulateStaticYield(AccumulateStaticYieldBody)
+    "market.accumulateStaticYield": AccumulateStaticYield
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct WithdrawStaticYieldBody {
+pub struct WithdrawStaticYield {
     pub market_id: AccountId,
     pub amount: Option<BorrowAssetAmount>,
 }
 write_method_spec!(
     /// Withdraw static yield.
-    "market.withdrawStaticYield": WithdrawStaticYield(WithdrawStaticYieldBody)
+    "market.withdrawStaticYield": WithdrawStaticYield
 );

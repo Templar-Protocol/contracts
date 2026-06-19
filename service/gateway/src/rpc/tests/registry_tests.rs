@@ -14,7 +14,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::AddVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            body: registry::AddVersionBody {
+            body: registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: version_key.clone(),
                 deploy_mode: templar_common::registry::DeployMode::Normal,
@@ -28,7 +28,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let versions = stack
         .controller
         .request::<registry::ListVersions>(&ReadRequest {
-            params: registry::ListVersionsParams {
+            params: registry::ListVersions {
                 registry_id: registry_id.clone(),
                 args: Pagination::default(),
             },
@@ -42,7 +42,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::Deploy>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            body: registry::DeployBody {
+            body: registry::Deploy {
                 registry_id: registry_id.clone(),
                 name: "deployed-ft".to_owned(),
                 version_key: version_key.clone(),
@@ -63,7 +63,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let deployment = stack
         .controller
         .request::<registry::GetDeployment>(&ReadRequest {
-            params: registry::GetDeploymentParams {
+            params: registry::GetDeployment {
                 registry_id: registry_id.clone(),
                 account_id: deployed_account_id.clone(),
             },
@@ -73,7 +73,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let deployments = stack
         .controller
         .request::<registry::ListDeployments>(&ReadRequest {
-            params: registry::ListDeploymentsParams {
+            params: registry::ListDeployments {
                 registry_id: registry_id.clone(),
                 args: Pagination::default(),
             },
@@ -83,7 +83,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let markets_only = stack
         .controller
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
-            params: registry::ListDeploymentsByKindParams {
+            params: registry::ListDeploymentsByKind {
                 registry_id: registry_id.clone(),
                 args: Pagination::default(),
                 kind: ContractKind::Market,
@@ -94,7 +94,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let unknown_only = stack
         .controller
         .request::<registry::ListDeploymentsByKind>(&ReadRequest {
-            params: registry::ListDeploymentsByKindParams {
+            params: registry::ListDeploymentsByKind {
                 registry_id: registry_id.clone(),
                 args: Pagination::default(),
                 kind: ContractKind::Unknown,
@@ -105,7 +105,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
     let version = stack
         .controller
         .request::<contract::GetVersion>(&ReadRequest {
-            params: contract::GetVersionParams {
+            params: contract::GetVersion {
                 contract_id: deployed_account_id,
             },
         })
@@ -116,7 +116,7 @@ async fn registry_endpoints_work_against_sandbox() -> Result<()> {
         .request::<registry::RemoveVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            body: registry::RemoveVersionBody {
+            body: registry::RemoveVersion {
                 registry_id: registry_id.clone(),
                 version_key: version_key.clone(),
             },

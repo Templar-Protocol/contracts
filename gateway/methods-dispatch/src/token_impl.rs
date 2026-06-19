@@ -44,7 +44,7 @@ impl<C: HasNearClient> PlanWrite<token::Transfer, C> for Dispatch {
         request: <token::Transfer as MethodSpec>::Input,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let token::TransferBody {
+        let token::Transfer {
             token,
             receiver_id,
             amount,
@@ -91,7 +91,7 @@ impl<C: HasNearClient> PlanWrite<token::TransferCall, C> for Dispatch {
         request: <token::TransferCall as MethodSpec>::Input,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let token::TransferCallBody {
+        let token::TransferCall {
             token,
             receiver_id,
             amount,

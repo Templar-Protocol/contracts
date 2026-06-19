@@ -17,7 +17,7 @@ pub enum TokenReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+pub struct GetBalanceOf {
     pub token: TokenReference,
     pub account_id: AccountId,
 }
@@ -29,11 +29,11 @@ pub struct GetBalanceOfResult {
 
 read_method_spec!(
     /// Get a token balance across supported standards.
-    "token.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
+    "token.getBalanceOf": GetBalanceOf -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferBody {
+pub struct Transfer {
     pub token: TokenReference,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -43,11 +43,11 @@ pub struct TransferBody {
 
 write_method_spec!(
     /// Transfer a token across supported standards.
-    "token.transfer": Transfer(TransferBody)
+    "token.transfer": Transfer
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferCallBody {
+pub struct TransferCall {
     pub token: TokenReference,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -58,5 +58,5 @@ pub struct TransferCallBody {
 
 write_method_spec!(
     /// Transfer a token and call the receiver.
-    "token.transferCall": TransferCall(TransferCallBody)
+    "token.transferCall": TransferCall
 );

@@ -11,7 +11,7 @@ pub struct MtApproval {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
     pub token_id: String,
@@ -24,11 +24,11 @@ pub struct GetBalanceOfResult {
 
 read_method_spec!(
     /// Get a multi-token balance.
-    "mt.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
+    "mt.getBalanceOf": GetBalanceOf -> GetBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBatchBalanceOfParams {
+pub struct GetBatchBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
     pub token_ids: Vec<String>,
@@ -47,11 +47,11 @@ pub struct GetBatchBalanceOfResult {
 
 read_method_spec!(
     /// Get multiple multi-token balances.
-    "mt.getBatchBalanceOf": GetBatchBalanceOf(GetBatchBalanceOfParams) -> GetBatchBalanceOfResult
+    "mt.getBatchBalanceOf": GetBatchBalanceOf -> GetBatchBalanceOfResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetSupplyParams {
+pub struct GetSupply {
     pub contract_id: AccountId,
     pub token_id: String,
 }
@@ -63,11 +63,11 @@ pub struct GetSupplyResult {
 
 read_method_spec!(
     /// Get total supply for a multi-token ID.
-    "mt.getSupply": GetSupply(GetSupplyParams) -> GetSupplyResult
+    "mt.getSupply": GetSupply -> GetSupplyResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBatchSupplyParams {
+pub struct GetBatchSupply {
     pub contract_id: AccountId,
     pub token_ids: Vec<String>,
 }
@@ -85,11 +85,11 @@ pub struct GetBatchSupplyResult {
 
 read_method_spec!(
     /// Get total supply for multiple multi-token IDs.
-    "mt.getBatchSupply": GetBatchSupply(GetBatchSupplyParams) -> GetBatchSupplyResult
+    "mt.getBatchSupply": GetBatchSupply -> GetBatchSupplyResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferBody {
+pub struct Transfer {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub token_id: String,
@@ -102,11 +102,11 @@ pub struct TransferBody {
 
 write_method_spec!(
     /// Transfer multi-tokens.
-    "mt.transfer": Transfer(TransferBody)
+    "mt.transfer": Transfer
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferCallBody {
+pub struct TransferCall {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub token_id: String,
@@ -120,5 +120,5 @@ pub struct TransferCallBody {
 
 write_method_spec!(
     /// Transfer multi-tokens and call the receiver.
-    "mt.transferCall": TransferCall(TransferCallBody)
+    "mt.transferCall": TransferCall
 );

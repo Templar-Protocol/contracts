@@ -7,7 +7,7 @@ use templar_gateway_types::common::Pagination;
 use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetOracleIdParams {
+pub struct GetOracleId {
     pub oracle_id: AccountId,
 }
 
@@ -18,11 +18,11 @@ pub struct GetOracleIdResult {
 
 read_method_spec!(
     /// Get the backing Pyth oracle for an LST oracle.
-    "lstOracle.getOracleId": GetOracleId(GetOracleIdParams) -> GetOracleIdResult
+    "lstOracle.getOracleId": GetOracleId -> GetOracleIdResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListTransformersParams {
+pub struct ListTransformers {
     pub oracle_id: AccountId,
     #[serde(flatten)]
     pub pagination: Pagination,
@@ -35,11 +35,11 @@ pub struct ListTransformersResult {
 
 read_method_spec!(
     /// List transformer price IDs on an LST oracle.
-    "lstOracle.listTransformers": ListTransformers(ListTransformersParams) -> ListTransformersResult
+    "lstOracle.listTransformers": ListTransformers -> ListTransformersResult
 );
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetTransformerParams {
+pub struct GetTransformer {
     pub oracle_id: AccountId,
     pub price_identifier: PriceIdentifier,
 }
@@ -51,5 +51,5 @@ pub struct GetTransformerResult {
 
 read_method_spec!(
     /// Get a transformer definition for a price ID.
-    "lstOracle.getTransformer": GetTransformer(GetTransformerParams) -> GetTransformerResult
+    "lstOracle.getTransformer": GetTransformer -> GetTransformerResult
 );

@@ -136,7 +136,7 @@ where
 pub async fn plan_deploy_from_registry<C: HasNearClient>(
     ctx: &C,
     signer_account_id: templar_gateway_types::ManagedAccountId,
-    body: registry::DeployBody,
+    body: registry::Deploy,
 ) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;
     let registry_version = ctx

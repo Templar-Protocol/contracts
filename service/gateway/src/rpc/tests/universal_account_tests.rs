@@ -13,7 +13,7 @@ async fn universal_account_get_key_endpoint_works_against_sandbox() -> Result<()
     let result = stack
         .controller
         .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKeyParams {
+            params: universal_account::GetKey {
                 account_id,
                 key: signer.id(),
             },
@@ -34,7 +34,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
     let key = stack
         .controller
         .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKeyParams {
+            params: universal_account::GetKey {
                 account_id: account_id.clone(),
                 key: signer.id(),
             },
@@ -71,7 +71,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<universal_account::Execute>(&WriteRequest {
             signer_account_id: stack.harness.universal_account_signer_account_id.clone(),
             idempotency_key: None,
-            body: universal_account::ExecuteBody {
+            body: universal_account::Execute {
                 account_id: account_id.clone(),
                 args: signer.execute_args(payload),
             },
@@ -81,7 +81,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
     let counter = stack
         .controller
         .request::<contract::ViewFunction>(&ReadRequest {
-            params: contract::ViewFunctionParams {
+            params: contract::ViewFunction {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("get_counter".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -99,7 +99,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<registry::AddVersion>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            body: registry::AddVersionBody {
+            body: registry::AddVersion {
                 registry_id: registry_id.clone(),
                 version_key: "ua@1.0.0".to_owned(),
                 deploy_mode: templar_common::registry::DeployMode::Normal,
@@ -114,7 +114,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
         .request::<universal_account::Create>(&WriteRequest {
             signer_account_id: stack.harness.registry_signer_account_id.clone(),
             idempotency_key: None,
-            body: universal_account::CreateBody {
+            body: universal_account::Create {
                 registry_id: registry_id.clone(),
                 account_name: "ua-created".to_owned(),
                 version_key: "ua@1.0.0".to_owned(),
@@ -136,7 +136,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
     let created_key = stack
         .controller
         .request::<universal_account::GetKey>(&ReadRequest {
-            params: universal_account::GetKeyParams {
+            params: universal_account::GetKey {
                 account_id: created_account_id,
                 key: signer.id(),
             },

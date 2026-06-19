@@ -129,7 +129,7 @@ async fn register_ft_account(
     let bounds = stack
         .controller
         .request::<storage::GetBalanceBounds>(&ReadRequest {
-            params: storage::GetBalanceBoundsParams {
+            params: storage::GetBalanceBounds {
                 contract_id: stack.harness.ft_contract_id.clone(),
             },
         })
@@ -140,7 +140,7 @@ async fn register_ft_account(
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::DepositBody {
+            body: storage::Deposit {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: Some(account_id),
                 registration_only: false,
@@ -234,7 +234,7 @@ async fn view_contract_json(
     Ok(stack
         .controller
         .request::<contract::ViewFunction>(&ReadRequest {
-            params: contract::ViewFunctionParams {
+            params: contract::ViewFunction {
                 contract_id,
                 method_name: ContractMethodName(method_name.to_owned()),
                 args: ContractArgs::Json(args),

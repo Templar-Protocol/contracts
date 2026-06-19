@@ -5,7 +5,7 @@ use templar_gateway_macros::read_method_spec;
 use templar_gateway_types::U128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetPoolsParams {
+pub struct GetPools {
     pub exchange_id: AccountId,
     pub from_index: Option<u64>,
     pub limit: Option<u64>,
@@ -24,5 +24,5 @@ pub struct GetPoolsResult {
 
 read_method_spec!(
     /// List pools from a Ref Finance exchange.
-    "refFinance.getPools": GetPools(GetPoolsParams) -> GetPoolsResult
+    "refFinance.getPools": GetPools -> GetPoolsResult
 );

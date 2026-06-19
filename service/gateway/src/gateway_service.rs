@@ -219,7 +219,7 @@ mod tests {
             .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
-                body: tx::FunctionCallBody {
+                body: tx::FunctionCall {
                     receiver_id: harness.ft_contract_id.clone(),
                     method_name: ContractMethodName("set_redemption_rate".to_owned()),
                     args: ContractArgs::Json(serde_json::json!({
@@ -235,7 +235,7 @@ mod tests {
             .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
-                body: tx::FunctionCallBody {
+                body: tx::FunctionCall {
                     receiver_id: harness.ft_contract_id.clone(),
                     method_name: ContractMethodName("set_redemption_rate".to_owned()),
                     args: ContractArgs::Json(serde_json::json!({
@@ -259,7 +259,7 @@ mod tests {
         let request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("recovery-key".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -313,7 +313,7 @@ mod tests {
         let first_request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("multi-step-sequence".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -326,7 +326,7 @@ mod tests {
         let second_request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("multi-step-sequence".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({

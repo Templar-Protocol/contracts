@@ -6,7 +6,7 @@ use templar_gateway_types::primitive::PublicKey;
 use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct GetKeyParams {
+pub struct GetKey {
     pub account_id: AccountId,
     pub key: KeyId,
 }
@@ -30,22 +30,22 @@ pub struct GetKeyResult {
 
 read_method_spec!(
     /// Get key parameters from a universal account.
-    "ua.getKey": GetKey(GetKeyParams) -> GetKeyResult
+    "ua.getKey": GetKey -> GetKeyResult
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ExecuteBody {
+pub struct Execute {
     pub account_id: AccountId,
     pub args: ExecuteArgs<Box<[Transaction]>>,
 }
 
 write_method_spec!(
     /// Execute a universal account payload.
-    "ua.execute": Execute(ExecuteBody)
+    "ua.execute": Execute
 );
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct CreateBody {
+pub struct Create {
     pub registry_id: AccountId,
     pub account_name: String,
     pub version_key: String,
@@ -58,5 +58,5 @@ pub struct CreateBody {
 
 write_method_spec!(
     /// Create a universal account from the registry.
-    "ua.create": Create(CreateBody)
+    "ua.create": Create
 );

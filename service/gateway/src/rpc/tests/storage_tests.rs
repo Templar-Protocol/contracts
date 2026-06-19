@@ -9,7 +9,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let balance_before = stack
         .controller
         .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOfParams {
+            params: storage::GetBalanceOf {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
@@ -23,7 +23,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<storage::Deposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::DepositBody {
+            body: storage::Deposit {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 beneficiary_id: Some(stack.harness.beneficiary_account_id.clone()),
                 registration_only: true,
@@ -35,7 +35,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let beneficiary_balance = stack
         .controller
         .request::<storage::GetBalanceOf>(&ReadRequest {
-            params: storage::GetBalanceOfParams {
+            params: storage::GetBalanceOf {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
             },
@@ -47,7 +47,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let deposit_transaction = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: tx_hash(&beneficiary_deposit),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 wait_until: None,
@@ -67,7 +67,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({ "amount": "1" })),
@@ -80,7 +80,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let mint_status = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: tx_hash(&mint_transaction),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 wait_until: None,
@@ -96,7 +96,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("ft_transfer".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -112,7 +112,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let transfer_result = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: tx_hash(&transfer_transaction),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 wait_until: None,
@@ -129,7 +129,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("patch_storage_unregister".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({ "force": false })),
@@ -142,7 +142,7 @@ async fn storage_and_get_transaction_endpoints_work_against_sandbox() -> Result<
     let unregister_result = stack
         .controller
         .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
+            params: tx::Get {
                 tx_hash: tx_hash(&unregister_transaction),
                 sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
                 wait_until: None,
@@ -170,7 +170,7 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         .request::<storage::EnsureDeposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::EnsureDepositBody {
+            body: storage::EnsureDeposit {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
                 mode: storage::EnsureDepositMode::Registered,
@@ -185,7 +185,7 @@ async fn storage_ensure_deposit_endpoint_supports_noop_and_operation() -> Result
         .request::<storage::EnsureDeposit>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: storage::EnsureDepositBody {
+            body: storage::EnsureDeposit {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
                 mode: storage::EnsureDepositMode::Registered,

@@ -7,7 +7,7 @@ async fn account_get_endpoint_works_against_sandbox() -> Result<()> {
     let result = stack
         .controller
         .request::<account::Get>(&ReadRequest {
-            params: account::GetParams {
+            params: account::Get {
                 account_id: stack.harness.gateway_signer_account_id.0.clone(),
             },
         })
