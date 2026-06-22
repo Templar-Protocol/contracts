@@ -38,9 +38,10 @@ Permissionless write (`#[payable]`):
 - `update_price_feeds(payload: Base64VecU8)` — verify and store; emits `UpdatePrices`. Bundles
   carrying more than `config.max_feeds_per_update` feeds are rejected up front (keeps the emitted
   event/log bounded). A feed is stored only with both a price and an exponent, only if its effective
-  per-feed publish timestamp strictly advances (anti-replay) and is not too far in the future, and
-  EMA is stored only when the payload actually carried it (never derived from spot). The caller must
-  attach a deposit covering
+  per-feed publish timestamp strictly advances (anti-replay) and is not too far in the future. EMA
+  (price + non-negative confidence) is **required**: a spot-only payload is rejected wholesale, so it
+  can never overwrite a stored feed and drop its EMA. EMA is never derived from spot. (The stateless
+  `verify_update` view does not require EMA — see below.) The caller must attach a deposit covering
   the newly consumed storage plus `config.update_fee`; the excess is refunded. Updates that only
   overwrite known feeds consume no new storage, so with a zero fee they are effectively free.
 
