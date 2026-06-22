@@ -17,6 +17,8 @@ members = [
     "contract/proxy-oracle/soroban/common",
     "contract/proxy-oracle/soroban/integration-tests",
     "contract/proxy-oracle/soroban/sep40-adapter-contract",
+    "contract/pyth-pro/verifier",
+    "contract/pyth-pro/contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -101,6 +103,7 @@ near-token = "0.3.3"
 near-workspaces = "0.22.1"
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
+pyth-lazer-protocol = { git = "https://github.com/Templar-Protocol/pyth-lazer-public", rev = "10aebfd0075887e9784f9fb65ef28ddbadb57139", default-features = false }
 redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "3.1.0-pre1", default-features = false }
 reqwest = "0.12.28"
 rstest = { version = "0.24" }
@@ -141,6 +144,7 @@ templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common
 templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
 templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common" }
 templar-proxy-oracle-near-governance-contract = { path = "./contract/proxy-oracle/near/governance-contract" }
+templar-pyth-pro-verifier = { path = "./contract/pyth-pro/verifier" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }

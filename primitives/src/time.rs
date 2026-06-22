@@ -39,6 +39,11 @@ impl Nanoseconds {
         Self(SU64::new(value))
     }
 
+    /// Creates a `Nanoseconds` value from microseconds.
+    pub const fn from_micros(value: u64) -> Self {
+        Self(SU64::new(value.saturating_mul(1_000)))
+    }
+
     /// Creates a `Nanoseconds` value from milliseconds.
     pub const fn from_ms(value: u64) -> Self {
         Self(SU64::new(value.saturating_mul(1_000_000)))
@@ -57,6 +62,11 @@ impl Nanoseconds {
     /// Returns the value as milliseconds, truncated.
     pub const fn as_ms(&self) -> u64 {
         self.0 .0 / 1_000_000
+    }
+
+    /// Returns the value as microseconds, truncated.
+    pub const fn as_micros(&self) -> u64 {
+        self.0 .0 / 1_000
     }
 
     /// Returns the value as nanoseconds.
