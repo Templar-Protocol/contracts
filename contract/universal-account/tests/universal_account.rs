@@ -570,10 +570,10 @@ async fn key_indexes_are_unique_across_remove_and_readd() {
     );
     assert_eq!(readded_entry.nonce.0, 0);
 
-    let keys = uac.list_keys(None, None).await;
-    assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&key1));
-    assert!(keys.contains(&key2));
+    let listed_keys = uac.list_keys(None, None).await;
+    assert_eq!(listed_keys.len(), 2);
+    assert!(listed_keys.contains(&key1));
+    assert!(listed_keys.contains(&key2));
 }
 
 #[tokio::test]
