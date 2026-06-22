@@ -43,7 +43,7 @@ mod serde_impl {
         {
             struct NumberVisitor;
 
-            impl<'de> de::Visitor<'de> for NumberVisitor {
+            impl de::Visitor<'_> for NumberVisitor {
                 type Value = Number;
 
                 fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
