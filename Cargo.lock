@@ -13173,6 +13173,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-gateway-catalog"
+version = "0.1.0"
+dependencies = [
+ "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-spec",
+ "templar-gateway-types",
+]
+
+[[package]]
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
