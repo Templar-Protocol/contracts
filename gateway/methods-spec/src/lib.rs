@@ -21,11 +21,13 @@ pub mod universal_account;
 /// Invoke `$callback!($spec)` once for every **read** method served by
 /// [`templar_gateway_methods_dispatch::Dispatch`].
 ///
-/// Together with [`for_each_write_method`] this is the single canonical list of
-/// these methods: the RPC service expands it to register handlers and the
-/// catalog crate expands it to build the method reference, so registration and
-/// documentation cannot drift apart. Adding a line here is the only step needed
-/// to expose **and** document a method.
+/// **Whenever you add or remove a gateway read method, add or remove its line
+/// here.** Together with [`for_each_write_method`] this is the single canonical
+/// list of these methods: the RPC service expands it to register handlers and
+/// the catalog crate expands it to build `gateway/METHODS.md`, so registration
+/// and documentation cannot drift apart. Removing a method's spec without
+/// removing its line here is a compile error; adding a spec without adding a line
+/// here leaves it unregistered and undocumented.
 ///
 /// Excludes [`op::Get`], which reads the operation store rather than the chain
 /// and so is registered specially (see `register_operation_get` in the service);
@@ -95,7 +97,8 @@ macro_rules! for_each_read_method {
 }
 
 /// Invoke `$callback!($spec)` once for every **write** method served by
-/// [`templar_gateway_methods_dispatch::Dispatch`]. See [`for_each_read_method`].
+/// [`templar_gateway_methods_dispatch::Dispatch`]. Add or remove a line here
+/// whenever you add or remove a write method — see [`for_each_read_method`].
 #[macro_export]
 macro_rules! for_each_write_method {
     ($callback:ident) => {
