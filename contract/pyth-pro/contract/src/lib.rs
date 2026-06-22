@@ -645,8 +645,8 @@ impl Contract {
     }
 }
 
-/// A confidence is usable only when explicitly present and non-negative; absent or negative ⇒
-/// `None`, and the caller skips the feed. On the Lazer wire a `0` confidence is indistinguishable
+/// A confidence is usable only when explicitly present and strictly positive; absent, zero, or
+/// negative ⇒ `None`, and the caller skips the feed. On the Lazer wire a `0` confidence is indistinguishable
 /// from "absent" (both deserialize to `None` upstream), so a stored feed always carries a genuine
 /// positive confidence — we reject the ambiguous/invalid case rather than mold it into a
 /// precise-looking zero.

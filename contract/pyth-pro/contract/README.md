@@ -39,7 +39,7 @@ Permissionless write (`#[payable]`):
   carrying more than `config.max_feeds_per_update` feeds are rejected up front (keeps the emitted
   event/log bounded). A feed is stored only with both a price and an exponent, only if its effective
   per-feed publish timestamp strictly advances (anti-replay) and is not too far in the future. EMA
-  (price + non-negative confidence) is **required**: a spot-only payload is rejected wholesale, so it
+  (price + strictly-positive confidence) is **required**: a spot-only payload is rejected wholesale, so it
   can never overwrite a stored feed and drop its EMA. EMA is never derived from spot. (The stateless
   `verify_update` view does not require EMA — see below.) The caller must attach a deposit covering
   the newly consumed storage plus `config.update_fee`; the excess is refunded. Updates that only
