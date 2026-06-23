@@ -1,3 +1,7 @@
+# Opt into setup scripts (used by the `sandbox` profile to start one shared
+# out-of-band neard before node-backed tests).
+experimental = ["setup-scripts"]
+
 [profile.default]
 # Limit test threads to reduce memory/disk usage
 test-threads = 4
@@ -22,6 +26,25 @@ status-level = "fail"
 
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }
+
+# Node-backed tests: share one out-of-band `neard` instead of booting one per
+# test. The setup script starts the node and exports NEAR_SANDBOX_RPC_URL +
+# TEST_CONTRACTS_PREBUILT into the test environment. Run via
+# `script/test-sandbox.sh` (which guarantees teardown), or
+# `cargo nextest run --profile sandbox --run-ignored all`.
+[scripts.setup.sandbox]
+command = "script/sandbox-up.sh"
+
+[profile.sandbox]
+# Serial for now: every test creates accounts signed by the genesis root key,
+# so parallel processes would contend on its nonce (per-slot tenancy is the
+# follow-up that unlocks parallelism).
+test-threads = 1
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[[profile.sandbox.scripts]]
+filter = "all()"
+setup = "sandbox"
 
 [store]
 # Reduce disk usage by not storing test output
