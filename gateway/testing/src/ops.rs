@@ -318,6 +318,47 @@ impl SandboxHarness {
         .await
     }
 
+    /// Apply accrued interest to a borrow position.
+    pub async fn apply_interest(
+        &self,
+        caller: &ManagedAccountId,
+        market: &DeployedMarket,
+        account_id: Option<AccountId>,
+        snapshot_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            market::ApplyInterest {
+                market_id: market.market_id.clone(),
+                account_id,
+                snapshot_limit,
+            },
+        )
+        .await
+    }
+
+    /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
+    /// asset is supplied by `liquidator`).
+    pub async fn liquidate(
+        &self,
+        liquidator: &ManagedAccountId,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+        liquidation_amount: u128,
+        collateral_amount: Option<u128>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            liquidator,
+            market::Liquidate {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+                liquidation_amount: BorrowAssetAmount::new(liquidation_amount),
+                collateral_amount: collateral_amount.map(CollateralAssetAmount::new),
+            },
+        )
+        .await
+    }
+
     /// Transfer fungible tokens (plain NEP-141 `ft_transfer`, no receiver call).
     pub async fn ft_transfer(
         &self,
