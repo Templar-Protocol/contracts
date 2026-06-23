@@ -347,7 +347,7 @@ mod tests {
     use rstest::rstest;
     use templar_primitives::dec;
 
-    use crate::oracle::pyth::PriceIdentifier;
+    use crate::{fee::TimeBasedFeeFunction, oracle::pyth::PriceIdentifier};
 
     use super::*;
 
@@ -403,9 +403,10 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn single_snapshot_maximum_interest() {
-        let c = MarketConfiguration {
+    /// A baseline configuration that passes [`MarketConfiguration::validate`].
+    /// Validation tests mutate a single field to drive it out of bounds.
+    fn valid_configuration() -> MarketConfiguration {
+        MarketConfiguration {
             time_chunk_configuration: TimeChunkConfiguration::new(600_000),
             borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
             collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
@@ -432,7 +433,204 @@ mod tests {
                 .with_static("revenue.tmplr.near".parse().unwrap(), 1),
             protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
             liquidation_maximum_spread: dec!("0.05"),
+        }
+    }
+
+    #[test]
+    fn valid_configuration_passes_validation() {
+        valid_configuration().validate().unwrap();
+    }
+
+    #[test]
+    fn borrow_asset_is_collateral_asset() {
+        let mut c = valid_configuration();
+        c.borrow_asset = c.collateral_asset.clone().coerce();
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_asset`: must not equal `collateral_asset`",
+        );
+    }
+
+    #[test]
+    fn borrow_interest_rate_strategy_exceed_apy_limit() {
+        let mut c = valid_configuration();
+        c.borrow_interest_rate_strategy =
+            InterestRateStrategy::linear(dec!("0"), dec!("100001")).unwrap();
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_interest_rate_strategy`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn borrow_mcr_maintenance_less_than_1() {
+        let mut c = valid_configuration();
+        c.borrow_mcr_maintenance = dec!(".99");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_mcr_maintenance`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn borrow_mcr_maintenance_less_than_borrow_mcr_liquidation() {
+        let mut c = valid_configuration();
+        c.borrow_mcr_maintenance = dec!("1.2");
+        c.borrow_mcr_liquidation = dec!("1.200000001");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_mcr_maintenance`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn borrow_mcr_liquidation_less_than_1() {
+        let mut c = valid_configuration();
+        c.borrow_mcr_liquidation = dec!(".99");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_mcr_liquidation`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn borrow_asset_maximum_usage_ratio_is_zero() {
+        let mut c = valid_configuration();
+        c.borrow_asset_maximum_usage_ratio = dec!("0");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_asset_maximum_usage_ratio`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn borrow_asset_maximum_usage_ratio_greater_than_1() {
+        let mut c = valid_configuration();
+        c.borrow_asset_maximum_usage_ratio = dec!("1.0001");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `borrow_asset_maximum_usage_ratio`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn withdrawal_minimum_greater_than_supply_minimum() {
+        let mut c = valid_configuration();
+        c.supply_range = (1, None).try_into().unwrap();
+        c.supply_withdrawal_range = (2, None).try_into().unwrap();
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `supply_withdrawal_range.minimum`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn withdrawal_fee_greater_than_withdrawal_minimum() {
+        let mut c = valid_configuration();
+        c.supply_range = (2, None).try_into().unwrap();
+        c.supply_withdrawal_range = (2, None).try_into().unwrap();
+        c.supply_withdrawal_fee = TimeBasedFee {
+            fee: Fee::Flat(100.into()),
+            duration: 100.into(),
+            behavior: TimeBasedFeeFunction::Linear,
         };
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `supply_withdrawal_fee.fee`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn liquidation_maximum_spread_greater_than_1() {
+        let mut c = valid_configuration();
+        c.liquidation_maximum_spread = dec!("2");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `liquidation_maximum_spread`: out of bounds",
+        );
+    }
+
+    #[test]
+    fn liquidation_maximum_spread_mcr_underflow() {
+        let mut c = valid_configuration();
+        c.borrow_mcr_maintenance = dec!("1.5");
+        c.borrow_mcr_liquidation = dec!("1.1");
+        c.liquidation_maximum_spread = dec!("0.1");
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "Invalid configuration field `liquidation_maximum_spread`: out of bounds",
+        );
+    }
+
+    // `valid_configuration` has maintenance MCR 1.25, liquidation MCR 1.2, and
+    // no maximum borrow duration.
+
+    #[test]
+    fn borrow_status_healthy_at_or_above_maintenance() {
+        let c = valid_configuration();
+        assert_eq!(
+            c.borrow_status(Some(dec!("1.5")), None::<u64>, 0),
+            BorrowStatus::Healthy,
+        );
+        // The maintenance threshold itself is healthy (comparison is strict).
+        assert_eq!(
+            c.borrow_status(Some(dec!("1.25")), None::<u64>, 0),
+            BorrowStatus::Healthy,
+        );
+    }
+
+    #[test]
+    fn borrow_status_maintenance_required_between_thresholds() {
+        let c = valid_configuration();
+        assert_eq!(
+            c.borrow_status(Some(dec!("1.24")), None::<u64>, 0),
+            BorrowStatus::MaintenanceRequired,
+        );
+        // The liquidation threshold itself is not yet liquidatable.
+        assert_eq!(
+            c.borrow_status(Some(dec!("1.2")), None::<u64>, 0),
+            BorrowStatus::MaintenanceRequired,
+        );
+    }
+
+    #[test]
+    fn borrow_status_liquidation_when_undercollateralized() {
+        let c = valid_configuration();
+        assert_eq!(
+            c.borrow_status(Some(dec!("1.19")), None::<u64>, 0),
+            BorrowStatus::Liquidation(LiquidationReason::Undercollateralization),
+        );
+    }
+
+    #[test]
+    fn borrow_status_healthy_without_ratio_or_duration_limit() {
+        let c = valid_configuration();
+        assert_eq!(
+            c.borrow_status(None, None::<u64>, 1_000),
+            BorrowStatus::Healthy,
+        );
+    }
+
+    #[test]
+    fn borrow_status_liquidation_on_expiration_overrides_ratio() {
+        let mut c = valid_configuration();
+        c.borrow_maximum_duration_ms = Some(1_000.into());
+        // Past the maximum duration: expiration liquidation regardless of a
+        // healthy collateralization ratio.
+        assert_eq!(
+            c.borrow_status(Some(dec!("5")), Some(0u64), 2_000),
+            BorrowStatus::Liquidation(LiquidationReason::Expiration),
+        );
+        // Within the maximum duration: the healthy ratio stands.
+        assert_eq!(
+            c.borrow_status(Some(dec!("5")), Some(0u64), 500),
+            BorrowStatus::Healthy,
+        );
+    }
+
+    #[test]
+    fn single_snapshot_maximum_interest() {
+        let c = valid_configuration();
 
         let actual = c.single_snapshot_maximum_interest();
 
