@@ -791,9 +791,13 @@ impl SandboxHarness {
         let result = self.try_execute(signer, op).await?;
         anyhow::ensure!(
             result.operation.status == OperationStatus::Succeeded,
-            "operation {} did not succeed (status: {:?})",
+            "operation {} did not succeed (status: {:?}): {}",
             result.operation.id.0,
             result.operation.status,
+            result
+                .operation
+                .failure_message()
+                .unwrap_or("<no failure message>"),
         );
         Ok(result)
     }
