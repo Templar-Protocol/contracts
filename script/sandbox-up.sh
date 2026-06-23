@@ -31,6 +31,9 @@ for _ in $(seq 1 180); do
 done
 if [ ! -s "$ADDR_FILE" ]; then
   echo "sandbox host did not report an RPC url; see $LOG_FILE" >&2
+  # Don't leak the half-started host or leave stale metadata behind.
+  kill "$(cat "$PID_FILE")" 2>/dev/null || true
+  rm -f "$PID_FILE" "$ADDR_FILE"
   exit 1
 fi
 URL="$(cat "$ADDR_FILE")"
