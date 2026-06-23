@@ -11,6 +11,7 @@ use anyhow::Result;
 use rstest::rstest;
 use templar_common::market::DepositMsg;
 use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_types::OperationStatus;
 
 #[rstest]
 #[tokio::test]
@@ -26,7 +27,7 @@ async fn supply_requires_market_registration(#[future(awt)] harness: SandboxHarn
     harness.fund_user(&user, &market).await?;
 
     let balance_before = harness.ft_balance_of(&market.borrow_ft_id, &user.0).await?;
-    harness
+    let result = harness
         .ft_transfer_call(
             &user,
             &market.borrow_ft_id,
@@ -36,6 +37,18 @@ async fn supply_requires_market_registration(#[future(awt)] harness: SandboxHarn
         )
         .await?;
 
+    // The market rejects the deposit specifically because the account is not
+    // registered; the FT then refunds (so the operation reports Failed).
+    assert_eq!(result.operation.status, OperationStatus::Failed);
+    assert!(
+        result
+            .operation
+            .failure_message()
+            .unwrap_or_default()
+            .contains("is not registered"),
+        "unexpected failure reason: {:?}",
+        result.operation.failure_message(),
+    );
     assert!(
         harness
             .get_supply_position(&market, &user.0)

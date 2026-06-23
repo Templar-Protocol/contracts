@@ -236,18 +236,23 @@ impl SandboxHarness {
         amount: u128,
     ) -> Result<()> {
         self.supply(user, market, amount).await?;
-        while !self
-            .get_supply_position(market, &user.0)
-            .await?
-            .context("supply position missing after supply")?
-            .get_deposit()
-            .incoming
-            .is_empty()
-        {
+        // Guard against an unexpectedly never-activating deposit (bounded well
+        // above any realistic snapshot count for a test).
+        for _ in 0..1000 {
+            if self
+                .get_supply_position(market, &user.0)
+                .await?
+                .context("supply position missing after supply")?
+                .get_deposit()
+                .incoming
+                .is_empty()
+            {
+                return Ok(());
+            }
             self.harvest_yield(user, market, Some(user.0.clone()))
                 .await?;
         }
-        Ok(())
+        anyhow::bail!("supply deposit did not activate after 1000 harvests")
     }
 
     /// Deposit collateral into the market.
@@ -642,7 +647,9 @@ impl SandboxHarness {
     /// snapshot/time control instead of wall-clock waits.
     pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
         let url = self.network.rpc_endpoints[0].url.clone();
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()?;
         let target = rpc_block_height(&client, &url).await? + blocks;
         client
             .post(url.clone())
@@ -836,6 +843,9 @@ async fn rpc_block_height(client: &reqwest::Client, url: &reqwest::Url) -> Resul
         .await?
         .json()
         .await?;
+    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+        anyhow::bail!("RPC error fetching block height: {error}");
+    }
     response["result"]["header"]["height"]
         .as_u64()
         .context("missing block height in RPC response")
