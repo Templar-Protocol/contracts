@@ -55,6 +55,11 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Why it matters: a drop-in `pyth-oracle.near` price oracle — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
   Watch for: signer/trust/expiry + ed25519 checks, canonical-encoding (`NonCanonical`) rejection, the freshness window and per-feed monotonic anti-replay, confidence/EMA discipline, `SignerSet` invariants, and storage-fee/refund.
   Minimum verification: `cargo test -p templar-pyth-pro-verifier -p templar-pyth-pro-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-pro-adapter-contract`.
+- `gateway/*` (the Templar gateway: `templar-gateway-*`)
+  Read first: `gateway/README.md` (RPC naming) and `gateway/METHODS.md` (the generated catalog of every method: kind, input → output, summary).
+  Why it matters: the gateway is the single standardized implementation of NEAR reads and writes (planning, signing, multi-step finalization, idempotency/replay). Rust consumers integrate it in-process via `templar-gateway-client`; the JSON-RPC service is for non-Rust clients.
+  Watch for: when migrating a consumer onto the gateway, diff it against the original operation-by-operation and map each call by **semantics, not name**. Prefer domain/standard-agnostic methods over low-level ones (e.g. `token.transfer`, which dispatches NEP-141 vs NEP-245, over `ft.transfer` — an asset may be a multi-token). If the gateway lacks a method a consumer needs, add it to the gateway rather than hand-rolling a NEAR call in the consumer. The method lists are canonical in the spec crates' `for_each_*_method!` macros (the RPC service registration and `METHODS.md` both expand them); add or remove a method's line there whenever you add or remove a method — it is the only step, and a removed spec left in the list is a compile error.
+  Minimum verification: `cargo check --workspace`; `cargo test -p templar-gateway-catalog` (keeps `METHODS.md` in sync — regenerate with `cargo test -p templar-gateway-catalog regenerate_methods_md -- --ignored`); plus the narrowest relevant `cargo test -p templar-gateway-<crate> -- --nocapture`.
 
 ## Working Norms
 

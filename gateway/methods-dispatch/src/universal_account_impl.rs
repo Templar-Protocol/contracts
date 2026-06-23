@@ -6,8 +6,7 @@ use templar_gateway_core::{
     },
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
-use templar_gateway_methods_spec::{registry::DeployBody, universal_account};
-use templar_gateway_types::MethodSpec;
+use templar_gateway_methods_spec::{registry::Deploy, universal_account};
 use templar_universal_account::InitArgs;
 
 use crate::registry_impl::plan_deploy_from_registry;
@@ -34,14 +33,12 @@ fn into_parameters_view(
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<universal_account::GetKey, C> for Dispatch {
     async fn dispatch(
-        params: <universal_account::GetKey as MethodSpec>::Input,
+        params: universal_account::GetKey,
         ctx: C,
     ) -> GatewayResult<universal_account::GetKeyResult> {
         ctx.near_client()
-            .universal_account(params.params.account_id.clone())
-            .get_key(UaGetKeyArgs {
-                key: params.params.key,
-            })
+            .universal_account(params.account_id.clone())
+            .get_key(UaGetKeyArgs { key: params.key })
             .await
             .map(|parameters| universal_account::GetKeyResult {
                 parameters: parameters.map(into_parameters_view),
@@ -52,7 +49,7 @@ impl<C: HasNearClient> DispatchRead<universal_account::GetKey, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<universal_account::Execute, C> for Dispatch {
     async fn plan(
-        request: <universal_account::Execute as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<universal_account::Execute>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -70,14 +67,14 @@ impl<C: HasNearClient> PlanWrite<universal_account::Execute, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<universal_account::Create, C> for Dispatch {
     async fn plan(
-        request: <universal_account::Create as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<universal_account::Create>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
         plan_deploy_from_registry(
             &ctx,
             request.signer_account_id,
-            DeployBody {
+            Deploy {
                 registry_id: body.registry_id,
                 name: body.account_name,
                 version_key: body.version_key,

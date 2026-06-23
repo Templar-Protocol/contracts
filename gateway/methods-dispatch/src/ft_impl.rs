@@ -4,7 +4,6 @@ use templar_gateway_core::{
     ContractWriteOptions, DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::ft;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
@@ -13,15 +12,12 @@ impl<C> DispatchRead<ft::GetBalanceOf, C> for Dispatch
 where
     C: HasNearClient,
 {
-    async fn dispatch(
-        request: <ft::GetBalanceOf as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<ft::GetBalanceOfResult> {
+    async fn dispatch(request: ft::GetBalanceOf, ctx: C) -> GatewayResult<ft::GetBalanceOfResult> {
         let balance = ctx
             .near_client()
-            .ft(request.params.contract_id)
+            .ft(request.contract_id)
             .ft_balance_of(GetBalanceOfArgs {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await?;
 
@@ -35,7 +31,7 @@ where
     C: HasNearClient,
 {
     async fn plan(
-        request: <ft::Transfer as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<ft::Transfer>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -57,7 +53,7 @@ where
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<ft::TransferCall, C> for Dispatch {
     async fn plan(
-        request: <ft::TransferCall as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<ft::TransferCall>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()

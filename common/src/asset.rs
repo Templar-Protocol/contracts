@@ -284,6 +284,16 @@ impl<T: AssetClass> FungibleAsset<T> {
         }
     }
 
+    /// The NEP-245 token id, or `None` for an NEP-141 fungible token. Combined
+    /// with [`Self::contract_id`], this identifies the token without consuming
+    /// the asset or exposing its representation.
+    pub fn nep245_token_id(&self) -> Option<&str> {
+        match self.kind {
+            FungibleAssetKind::Nep245 { ref token_id, .. } => Some(token_id),
+            FungibleAssetKind::Nep141(_) => None,
+        }
+    }
+
     #[allow(clippy::missing_panics_doc, clippy::unwrap_used)]
     pub fn current_account_balance(&self) -> Promise {
         let current_account_id = env::current_account_id();

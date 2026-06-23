@@ -18,7 +18,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({ "amount": "5" })),
@@ -33,7 +33,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: mt_contract_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -48,27 +48,23 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
 
     let ft_balance = stack
         .controller
-        .request::<token::GetBalanceOf>(&ReadRequest {
-            params: token::GetBalanceOfParams {
-                token: token::TokenReference::Ft {
-                    contract_id: stack.harness.ft_contract_id.clone(),
-                },
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
+        .request::<token::GetBalanceOf>(&token::GetBalanceOf {
+            token: token::TokenReference::Ft {
+                contract_id: stack.harness.ft_contract_id.clone(),
             },
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
     assert_eq!(ft_balance.balance, templar_gateway_types::U128(5));
 
     let mt_balance = stack
         .controller
-        .request::<token::GetBalanceOf>(&ReadRequest {
-            params: token::GetBalanceOfParams {
-                token: token::TokenReference::Mt {
-                    contract_id: mt_contract_id.clone(),
-                    token_id: "mt_borrow".to_owned(),
-                },
-                account_id: stack.harness.gateway_signer_account_id.0.clone(),
+        .request::<token::GetBalanceOf>(&token::GetBalanceOf {
+            token: token::TokenReference::Mt {
+                contract_id: mt_contract_id.clone(),
+                token_id: "mt_borrow".to_owned(),
             },
+            account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
     assert_eq!(mt_balance.balance, templar_gateway_types::U128(6));
@@ -78,7 +74,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
         .request::<token::Transfer>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: token::TransferBody {
+            body: token::Transfer {
                 token: token::TokenReference::Ft {
                     contract_id: stack.harness.ft_contract_id.clone(),
                 },
@@ -98,7 +94,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
         .request::<token::TransferCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: token::TransferCallBody {
+            body: token::TransferCall {
                 token: token::TokenReference::Mt {
                     contract_id: mt_contract_id.clone(),
                     token_id: "mt_borrow".to_owned(),
@@ -117,13 +113,11 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
 
     let _ = stack
         .controller
-        .request::<tx::Get>(&ReadRequest {
-            params: tx::GetParams {
-                tx_hash: tx_hash(&transfer_call),
-                sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
-                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
-                encoding: tx::ValueEncoding::Json,
-            },
+        .request::<tx::Get>(&tx::Get {
+            tx_hash: tx_hash(&transfer_call),
+            sender_account_id: stack.harness.gateway_signer_account_id.0.clone(),
+            wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
         })
         .await?;
 

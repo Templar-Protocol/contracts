@@ -1,11 +1,13 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::common::{StorageBalance, StorageBalanceBounds};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceBoundsParams {
+/// Get storage balance bounds for a contract.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "storage.getBalanceBounds", output = GetBalanceBoundsResult)]
+pub struct GetBalanceBounds {
     pub contract_id: AccountId,
 }
 
@@ -14,13 +16,10 @@ pub struct GetBalanceBoundsResult {
     pub bounds: StorageBalanceBounds,
 }
 
-read_method_spec!(
-    /// Get storage balance bounds for a contract.
-    "storage.getBalanceBounds": GetBalanceBounds(GetBalanceBoundsParams) -> GetBalanceBoundsResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+/// Get storage balance for an account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "storage.getBalanceOf", output = GetBalanceOfResult)]
+pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
 }
@@ -30,13 +29,10 @@ pub struct GetBalanceOfResult {
     pub balance: Option<StorageBalance>,
 }
 
-read_method_spec!(
-    /// Get storage balance for an account.
-    "storage.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct DepositBody {
+/// Deposit storage for an account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "storage.deposit")]
+pub struct Deposit {
     pub contract_id: AccountId,
     pub beneficiary_id: Option<AccountId>,
     #[serde(default)]
@@ -44,25 +40,19 @@ pub struct DepositBody {
     pub deposit: templar_gateway_types::NearToken,
 }
 
-write_method_spec!(
-    /// Deposit storage for an account.
-    "storage.deposit": Deposit(DepositBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct UnregisterBody {
+/// Unregister storage for an account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "storage.unregister")]
+pub struct Unregister {
     pub contract_id: AccountId,
     #[serde(default)]
     pub force: bool,
 }
 
-write_method_spec!(
-    /// Unregister storage for an account.
-    "storage.unregister": Unregister(UnregisterBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct EnsureDepositBody {
+/// Ensure an account has enough storage deposit.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "storage.ensureDeposit")]
+pub struct EnsureDeposit {
     pub contract_id: AccountId,
     pub account_id: AccountId,
     pub mode: EnsureDepositMode,
@@ -75,8 +65,3 @@ pub enum EnsureDepositMode {
     MinimumTotal(templar_gateway_types::NearToken),
     MinimumAvailable(templar_gateway_types::NearToken),
 }
-
-write_method_spec!(
-    /// Ensure an account has enough storage deposit.
-    "storage.ensureDeposit": EnsureDeposit(EnsureDepositBody)
-);

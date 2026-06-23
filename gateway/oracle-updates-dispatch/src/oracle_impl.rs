@@ -10,7 +10,7 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_spec::oracle::OracleContractKind;
 use templar_gateway_oracle_updates_spec::oracle::{UpdatePrices, UpdatePyth, UpdateRedStone};
-use templar_gateway_types::{ContractKind, MethodSpec};
+use templar_gateway_types::ContractKind;
 use templar_proxy_oracle_kernel::proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::request::OracleRequest;
@@ -23,7 +23,7 @@ where
     C: HasNearClient + ProvidesPythSource,
 {
     async fn plan(
-        request: <UpdatePyth as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<UpdatePyth>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -43,7 +43,7 @@ where
     C: HasNearClient + ProvidesRedStoneSource,
 {
     async fn plan(
-        request: <UpdateRedStone as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<UpdateRedStone>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -73,7 +73,7 @@ where
     C: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource,
 {
     async fn plan(
-        request: <UpdatePrices as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<UpdatePrices>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let requests =

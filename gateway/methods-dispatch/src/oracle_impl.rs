@@ -20,7 +20,7 @@ use templar_gateway_methods_spec::oracle::{
     GetPrices, OracleContractKind, PythOraclePrices, RedStoneOraclePrices, ResolvePrice,
     ResolvePriceResult, ResolvePrices, ResolvePricesResult, ResolvedPrice,
 };
-use templar_gateway_types::{contract::ContractKind, MethodSpec};
+use templar_gateway_types::contract::ContractKind;
 use templar_proxy_oracle_kernel::proxy;
 use templar_proxy_oracle_kernel::proxy::aggregator::method::Aggregate;
 use templar_proxy_oracle_near_common::convert;
@@ -33,10 +33,10 @@ use crate::Dispatch;
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<GetPriceResolutionDependencies, C> for Dispatch {
     async fn dispatch(
-        request: <GetPriceResolutionDependencies as MethodSpec>::Input,
+        request: GetPriceResolutionDependencies,
         ctx: C,
     ) -> GatewayResult<GetPriceResolutionDependenciesResult> {
-        let params = request.params;
+        let params = request;
         let kind = query_oracle_kind(&ctx, params.oracle_id.clone()).await?;
         let requests = resolve_dependencies(&ctx, params.oracle_id, params.price_id, &kind).await?;
         Ok(GetPriceResolutionDependenciesResult { kind, requests })
@@ -45,11 +45,8 @@ impl<C: HasNearClient> DispatchRead<GetPriceResolutionDependencies, C> for Dispa
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<ResolvePrice, C> for Dispatch {
-    async fn dispatch(
-        request: <ResolvePrice as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<ResolvePriceResult> {
-        let params = request.params;
+    async fn dispatch(request: ResolvePrice, ctx: C) -> GatewayResult<ResolvePriceResult> {
+        let params = request;
         let inputs = ResolutionInputs::new(params.pyth, params.redstone);
         let price = resolve_price(
             &ctx,
@@ -65,11 +62,8 @@ impl<C: HasNearClient> DispatchRead<ResolvePrice, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<ResolvePrices, C> for Dispatch {
-    async fn dispatch(
-        request: <ResolvePrices as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<ResolvePricesResult> {
-        let params = request.params;
+    async fn dispatch(request: ResolvePrices, ctx: C) -> GatewayResult<ResolvePricesResult> {
+        let params = request;
         let inputs = ResolutionInputs::new(params.pyth, params.redstone);
         let max_age = Nanoseconds::from_secs(params.age);
         let mut prices = Vec::with_capacity(params.price_ids.len());
@@ -84,11 +78,8 @@ impl<C: HasNearClient> DispatchRead<ResolvePrices, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<GetPrice, C> for Dispatch {
-    async fn dispatch(
-        request: <GetPrice as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<GetPriceResult> {
-        let params = request.params;
+    async fn dispatch(request: GetPrice, ctx: C) -> GatewayResult<GetPriceResult> {
+        let params = request;
         let price = get_price_onchain(
             &ctx,
             params.oracle_id,
@@ -102,11 +93,8 @@ impl<C: HasNearClient> DispatchRead<GetPrice, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<GetPrices, C> for Dispatch {
-    async fn dispatch(
-        request: <GetPrices as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<ResolvePricesResult> {
-        let params = request.params;
+    async fn dispatch(request: GetPrices, ctx: C) -> GatewayResult<ResolvePricesResult> {
+        let params = request;
         let max_age = Nanoseconds::from_secs(params.age);
         let mut prices = Vec::with_capacity(params.price_ids.len());
         for price_id in params.price_ids {

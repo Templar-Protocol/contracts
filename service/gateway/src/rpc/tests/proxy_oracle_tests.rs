@@ -18,32 +18,32 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
     // with no active proposals.
     let next_id = stack
         .controller
-        .request::<proxy_oracle_governance::NextProposalId>(&ReadRequest {
-            params: proxy_oracle_governance::NextProposalIdParams {
+        .request::<proxy_oracle_governance::NextProposalId>(
+            &proxy_oracle_governance::NextProposalId {
                 governance_id: governance_id.clone(),
             },
-        })
+        )
         .await?;
     assert_eq!(next_id, 1);
 
     let count = stack
         .controller
-        .request::<proxy_oracle_governance::ProposalCount>(&ReadRequest {
-            params: proxy_oracle_governance::ProposalCountParams {
+        .request::<proxy_oracle_governance::ProposalCount>(
+            &proxy_oracle_governance::ProposalCount {
                 governance_id: governance_id.clone(),
             },
-        })
+        )
         .await?;
     assert_eq!(count, 0);
 
     let ttl = stack
         .controller
-        .request::<proxy_oracle_governance::GetOperationTtl>(&ReadRequest {
-            params: proxy_oracle_governance::GetOperationTtlParams {
+        .request::<proxy_oracle_governance::GetOperationTtl>(
+            &proxy_oracle_governance::GetOperationTtl {
                 governance_id: governance_id.clone(),
                 kind: OperationKind::SetProxy,
             },
-        })
+        )
         .await?;
     assert_eq!(ttl.ttl_ns, Nanoseconds::zero());
 
@@ -62,7 +62,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .request::<proxy_oracle_governance::CreateProposal>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_governance::CreateProposalBody {
+            body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
                 operation: Operation::SetProxy {
@@ -76,23 +76,21 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
 
     let proposal = stack
         .controller
-        .request::<proxy_oracle_governance::GetProposal>(&ReadRequest {
-            params: proxy_oracle_governance::GetProposalParams {
-                governance_id: governance_id.clone(),
-                id: 1,
-            },
+        .request::<proxy_oracle_governance::GetProposal>(&proxy_oracle_governance::GetProposal {
+            governance_id: governance_id.clone(),
+            id: 1,
         })
         .await?;
     assert!(proposal.proposal.is_some());
     let ids = stack
         .controller
-        .request::<proxy_oracle_governance::ListProposals>(&ReadRequest {
-            params: proxy_oracle_governance::ListProposalsParams {
+        .request::<proxy_oracle_governance::ListProposals>(
+            &proxy_oracle_governance::ListProposals {
                 governance_id: governance_id.clone(),
                 offset: None,
                 count: None,
             },
-        })
+        )
         .await?;
     assert_eq!(ids.ids, vec![1]);
 
@@ -102,7 +100,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .request::<proxy_oracle_governance::ExecuteProposal>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_governance::ExecuteProposalBody {
+            body: proxy_oracle_governance::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
             },
@@ -111,22 +109,18 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
 
     let got_proxy = stack
         .controller
-        .request::<proxy_oracle::GetProxy>(&ReadRequest {
-            params: proxy_oracle::GetProxyParams {
-                oracle_id: oracle_id.clone(),
-                id: price_id,
-            },
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id: oracle_id.clone(),
+            id: price_id,
         })
         .await?;
     assert_eq!(got_proxy.proxy, Some(proxy));
 
     let exists = stack
         .controller
-        .request::<proxy_oracle::PriceFeedExists>(&ReadRequest {
-            params: proxy_oracle::PriceFeedExistsParams {
-                oracle_id: oracle_id.clone(),
-                price_identifier: price_id,
-            },
+        .request::<proxy_oracle::PriceFeedExists>(&proxy_oracle::PriceFeedExists {
+            oracle_id: oracle_id.clone(),
+            price_identifier: price_id,
         })
         .await?;
     assert!(exists.exists);
@@ -137,7 +131,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .request::<proxy_oracle_governance::CreateProposal>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_governance::CreateProposalBody {
+            body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 2,
                 operation: Operation::SetActionTtl {
@@ -153,7 +147,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .request::<proxy_oracle_governance::CancelProposal>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_governance::CancelProposalBody {
+            body: proxy_oracle_governance::CancelProposal {
                 governance_id: governance_id.clone(),
                 id: 2,
             },
@@ -161,11 +155,9 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .await?;
     let cancelled = stack
         .controller
-        .request::<proxy_oracle_governance::GetProposal>(&ReadRequest {
-            params: proxy_oracle_governance::GetProposalParams {
-                governance_id,
-                id: 2,
-            },
+        .request::<proxy_oracle_governance::GetProposal>(&proxy_oracle_governance::GetProposal {
+            governance_id,
+            id: 2,
         })
         .await?;
     assert!(cancelled.proposal.is_none());
@@ -181,10 +173,8 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
 
     let owner = stack
         .controller
-        .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
-            params: proxy_oracle_owner::GetOwnerParams {
-                oracle_id: oracle_id.clone(),
-            },
+        .request::<proxy_oracle_owner::GetOwner>(&proxy_oracle_owner::GetOwner {
+            oracle_id: oracle_id.clone(),
         })
         .await?;
     assert_eq!(
@@ -197,7 +187,7 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::ProposeOwner>(&WriteRequest {
             signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_owner::ProposeOwnerBody {
+            body: proxy_oracle_owner::ProposeOwner {
                 oracle_id: oracle_id.clone(),
                 account_id: Some(stack.harness.cleanup_signer_account_id.0.clone()),
             },
@@ -206,10 +196,8 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
 
     let proposed = stack
         .controller
-        .request::<proxy_oracle_owner::GetProposedOwner>(&ReadRequest {
-            params: proxy_oracle_owner::GetProposedOwnerParams {
-                oracle_id: oracle_id.clone(),
-            },
+        .request::<proxy_oracle_owner::GetProposedOwner>(&proxy_oracle_owner::GetProposedOwner {
+            oracle_id: oracle_id.clone(),
         })
         .await?;
     assert_eq!(
@@ -222,7 +210,7 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::AcceptOwner>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_owner::AcceptOwnerBody {
+            body: proxy_oracle_owner::AcceptOwner {
                 oracle_id: oracle_id.clone(),
             },
         })
@@ -230,10 +218,8 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
 
     let owner = stack
         .controller
-        .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
-            params: proxy_oracle_owner::GetOwnerParams {
-                oracle_id: oracle_id.clone(),
-            },
+        .request::<proxy_oracle_owner::GetOwner>(&proxy_oracle_owner::GetOwner {
+            oracle_id: oracle_id.clone(),
         })
         .await?;
     assert_eq!(
@@ -246,16 +232,14 @@ async fn proxy_oracle_owner_endpoints_work_against_sandbox() -> Result<()> {
         .request::<proxy_oracle_owner::RenounceOwner>(&WriteRequest {
             signer_account_id: stack.harness.cleanup_signer_account_id.clone(),
             idempotency_key: None,
-            body: proxy_oracle_owner::RenounceOwnerBody {
+            body: proxy_oracle_owner::RenounceOwner {
                 oracle_id: oracle_id.clone(),
             },
         })
         .await?;
     let owner = stack
         .controller
-        .request::<proxy_oracle_owner::GetOwner>(&ReadRequest {
-            params: proxy_oracle_owner::GetOwnerParams { oracle_id },
-        })
+        .request::<proxy_oracle_owner::GetOwner>(&proxy_oracle_owner::GetOwner { oracle_id })
         .await?;
     assert_eq!(owner.owner, None);
 
@@ -290,34 +274,28 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
 
     let got = stack
         .controller
-        .request::<proxy_oracle::GetProxy>(&ReadRequest {
-            params: proxy_oracle::GetProxyParams {
-                oracle_id: oracle_id.clone(),
-                id: price_id,
-            },
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id: oracle_id.clone(),
+            id: price_id,
         })
         .await?;
     assert_eq!(got.proxy, Some(expected));
 
     let exists = stack
         .controller
-        .request::<proxy_oracle::PriceFeedExists>(&ReadRequest {
-            params: proxy_oracle::PriceFeedExistsParams {
-                oracle_id: oracle_id.clone(),
-                price_identifier: price_id,
-            },
+        .request::<proxy_oracle::PriceFeedExists>(&proxy_oracle::PriceFeedExists {
+            oracle_id: oracle_id.clone(),
+            price_identifier: price_id,
         })
         .await?;
     assert!(exists.exists);
 
     let list = stack
         .controller
-        .request::<proxy_oracle::ListProxies>(&ReadRequest {
-            params: proxy_oracle::ListProxiesParams {
-                oracle_id,
-                offset: None,
-                count: None,
-            },
+        .request::<proxy_oracle::ListProxies>(&proxy_oracle::ListProxies {
+            oracle_id,
+            offset: None,
+            count: None,
         })
         .await?;
     assert_eq!(list.proxies, vec![price_id]);

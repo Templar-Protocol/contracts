@@ -1,14 +1,16 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::{ContractArgs, TxExecutionStatus},
     Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetParams {
+/// Fetch transaction execution status and result details.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "tx.get", output = GetResult)]
+pub struct Get {
     pub tx_hash: CryptoHash,
     pub sender_account_id: AccountId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,13 +50,10 @@ pub struct GetResult {
     pub return_value: Option<ReturnValue>,
 }
 
-read_method_spec!(
-    /// Fetch transaction execution status and result details.
-    "tx.get": Get(GetParams) -> GetResult
-);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct FunctionCallBody {
+/// Submit a single function-call transaction.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.functionCall")]
+pub struct FunctionCall {
     pub receiver_id: AccountId,
     pub method_name: ContractMethodName,
     pub args: ContractArgs,
@@ -62,35 +61,26 @@ pub struct FunctionCallBody {
     pub deposit: NearToken,
 }
 
-write_method_spec!(
-    /// Submit a single function-call transaction.
-    "tx.functionCall": FunctionCall(FunctionCallBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferBody {
+/// Transfer native NEAR to another account.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.transfer")]
+pub struct Transfer {
     pub receiver_id: AccountId,
     pub amount: NearToken,
 }
 
-write_method_spec!(
-    /// Transfer native NEAR to another account.
-    "tx.transfer": Transfer(TransferBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct DeployContractBody {
+/// Deploy contract code to an existing account in a single transaction.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.deployContract")]
+pub struct DeployContract {
     pub account_id: AccountId,
     pub code: Base64Bytes,
 }
 
-write_method_spec!(
-    /// Deploy contract code to an existing account in a single transaction.
-    "tx.deployContract": DeployContract(DeployContractBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct DeployAndInitBody {
+/// Deploy contract code and call its init method in one transaction.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.deployAndInit")]
+pub struct DeployAndInit {
     pub account_id: AccountId,
     pub code: Base64Bytes,
     pub method_name: ContractMethodName,
@@ -98,8 +88,3 @@ pub struct DeployAndInitBody {
     pub gas: NearGas,
     pub deposit: NearToken,
 }
-
-write_method_spec!(
-    /// Deploy contract code and call its init method in one transaction.
-    "tx.deployAndInit": DeployAndInit(DeployAndInitBody)
-);

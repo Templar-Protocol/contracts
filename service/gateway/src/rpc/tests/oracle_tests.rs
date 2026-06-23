@@ -19,7 +19,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .request::<oracle_updates::UpdatePyth>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle_updates::UpdatePythBody {
+            body: oracle_updates::UpdatePyth {
                 oracle_id: pyth_oracle_id.clone(),
                 vaa: Base64Bytes(vec![0xde, 0xad, 0xbe, 0xef]),
             },
@@ -48,7 +48,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
         .request::<oracle_updates::UpdateRedStone>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle_updates::UpdateRedStoneBody {
+            body: oracle_updates::UpdateRedStone {
                 oracle_id: redstone_oracle_id.clone(),
                 feed_id: "BTC".into(),
             },
@@ -126,7 +126,7 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         .request::<oracle_updates::UpdatePrices>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: oracle_updates::UpdatePricesBody {
+            body: oracle_updates::UpdatePrices {
                 oracle_id: proxy_oracle_id,
                 price_ids: vec![proxy_direct_id, proxy_redstone_id],
             },
@@ -238,12 +238,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let direct = stack
         .controller
-        .request::<oracle::GetPriceResolutionDependencies>(&ReadRequest {
-            params: oracle::GetPriceResolutionDependenciesParams {
+        .request::<oracle::GetPriceResolutionDependencies>(
+            &oracle::GetPriceResolutionDependencies {
                 oracle_id: direct_oracle_id.clone(),
                 price_id: direct_price_id,
             },
-        })
+        )
         .await?;
     assert_eq!(direct.kind, oracle::OracleContractKind::Direct);
     assert_eq!(
@@ -256,12 +256,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let lst = stack
         .controller
-        .request::<oracle::GetPriceResolutionDependencies>(&ReadRequest {
-            params: oracle::GetPriceResolutionDependenciesParams {
+        .request::<oracle::GetPriceResolutionDependencies>(
+            &oracle::GetPriceResolutionDependencies {
                 oracle_id: lst_oracle_id.clone(),
                 price_id: transformed_price_id,
             },
-        })
+        )
         .await?;
     assert_eq!(
         lst.kind,
@@ -279,12 +279,12 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let proxy = stack
         .controller
-        .request::<oracle::GetPriceResolutionDependencies>(&ReadRequest {
-            params: oracle::GetPriceResolutionDependenciesParams {
+        .request::<oracle::GetPriceResolutionDependencies>(
+            &oracle::GetPriceResolutionDependencies {
                 oracle_id: proxy_oracle_id.clone(),
                 price_id: proxy_direct_id,
             },
-        })
+        )
         .await?;
     assert_eq!(proxy.kind, oracle::OracleContractKind::Proxy);
     assert_eq!(
@@ -300,7 +300,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         .request::<tx::FunctionCall>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: stack.harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -314,25 +314,23 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let prices = stack
         .controller
-        .request::<oracle::ResolvePrices>(&ReadRequest {
-            params: oracle::ResolvePricesParams {
-                oracle_id: proxy_oracle_id,
-                price_ids: vec![proxy_direct_id, proxy_redstone_id],
-                age: 60,
-                pyth: vec![oracle::PythOraclePrices {
-                    oracle_id: direct_oracle_id.clone(),
-                    response: [(direct_price_id, Some(pyth_price(100.0)))]
-                        .into_iter()
-                        .collect(),
+        .request::<oracle::ResolvePrices>(&oracle::ResolvePrices {
+            oracle_id: proxy_oracle_id,
+            price_ids: vec![proxy_direct_id, proxy_redstone_id],
+            age: 60,
+            pyth: vec![oracle::PythOraclePrices {
+                oracle_id: direct_oracle_id.clone(),
+                response: [(direct_price_id, Some(pyth_price(100.0)))]
+                    .into_iter()
+                    .collect(),
+            }],
+            redstone: vec![oracle::RedStoneOraclePrices {
+                oracle_id: direct_oracle_id.clone(),
+                response: vec![oracle::RedStonePriceEntry {
+                    feed_id: "BTC".into(),
+                    data: redstone_price(42.0),
                 }],
-                redstone: vec![oracle::RedStoneOraclePrices {
-                    oracle_id: direct_oracle_id.clone(),
-                    response: vec![oracle::RedStonePriceEntry {
-                        feed_id: "BTC".into(),
-                        data: redstone_price(42.0),
-                    }],
-                }],
-            },
+            }],
         })
         .await?;
 
@@ -349,19 +347,17 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let one_price = stack
         .controller
-        .request::<oracle::ResolvePrice>(&ReadRequest {
-            params: oracle::ResolvePriceParams {
-                oracle_id: lst_oracle_id.clone(),
-                price_id: transformed_price_id,
-                age: 60,
-                pyth: vec![oracle::PythOraclePrices {
-                    oracle_id: direct_oracle_id.clone(),
-                    response: [(direct_price_id, Some(pyth_price(100.0)))]
-                        .into_iter()
-                        .collect(),
-                }],
-                redstone: vec![],
-            },
+        .request::<oracle::ResolvePrice>(&oracle::ResolvePrice {
+            oracle_id: lst_oracle_id.clone(),
+            price_id: transformed_price_id,
+            age: 60,
+            pyth: vec![oracle::PythOraclePrices {
+                oracle_id: direct_oracle_id.clone(),
+                response: [(direct_price_id, Some(pyth_price(100.0)))]
+                    .into_iter()
+                    .collect(),
+            }],
+            redstone: vec![],
         })
         .await?;
     assert!(one_price.price.is_some());
@@ -385,12 +381,10 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let on_chain = stack
         .controller
-        .request::<oracle::GetPrices>(&ReadRequest {
-            params: oracle::GetPricesParams {
-                oracle_id: lst_oracle_id,
-                price_ids: vec![direct_price_id, transformed_price_id],
-                age: 60,
-            },
+        .request::<oracle::GetPrices>(&oracle::GetPrices {
+            oracle_id: lst_oracle_id,
+            price_ids: vec![direct_price_id, transformed_price_id],
+            age: 60,
         })
         .await?;
 
@@ -408,12 +402,10 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 
     let one_on_chain = stack
         .controller
-        .request::<oracle::GetPrice>(&ReadRequest {
-            params: oracle::GetPriceParams {
-                oracle_id: direct_oracle_id,
-                price_id: direct_price_id,
-                age: 60,
-            },
+        .request::<oracle::GetPrice>(&oracle::GetPrice {
+            oracle_id: direct_oracle_id,
+            price_id: direct_price_id,
+            age: 60,
         })
         .await?;
     assert!(one_on_chain.price.is_some());

@@ -2,15 +2,15 @@ use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 use actix::Addr;
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayResult, HasIdempotencyKey, HasNearClient,
-    HasSignerAccountId, NearOperationExecutor, NearTransactionSigner, OperationDriver, PlanWrite,
-    SharedOperationStore,
+    DispatchRead, GatewayContext, GatewayResult, HasNearClient, NearOperationExecutor,
+    NearTransactionSigner, OperationDriver, PlanWrite, SharedOperationStore,
 };
 use templar_gateway_runtime::{
     map_mailbox_error, spawn_runtime, GatewayRuntime, ManagedSigner, ReadActor, RpcMessage,
 };
 use templar_gateway_types::{
-    common::WriteOperationResult, ManagedAccountId, MethodSpec, OperationId, OperationRecord,
+    common::{WriteOperationResult, WriteRequest},
+    ManagedAccountId, MethodSpec, OperationId, OperationRecord,
 };
 use tokio::sync::Mutex;
 
@@ -81,7 +81,7 @@ where
 
     pub async fn request_read<Request, Impl>(
         &self,
-        params: Request::Input,
+        params: Request,
     ) -> GatewayResult<Request::Output>
     where
         Request: MethodSpec + 'static,
@@ -105,28 +105,15 @@ where
 
     pub async fn request_write<Request, Impl>(
         &self,
-        params: Request::Input,
+        params: WriteRequest<Request>,
     ) -> GatewayResult<Request::Output>
     where
         Request: MethodSpec<Output = WriteOperationResult> + 'static,
-        Request::Input: HasIdempotencyKey + HasSignerAccountId,
         Impl: PlanWrite<Request, ContextType>,
     {
-        tracing::debug!(
-            rpc_method = Request::RPC_METHOD,
-            signer_account_id = %params.signer_account_id().0,
-            has_idempotency_key = params.idempotency_key().is_some(),
-            "planning gateway write request"
-        );
-        let plan = Impl::plan(params.clone(), self.inner.context.clone()).await?;
-        tracing::debug!(
-            rpc_method = Request::RPC_METHOD,
-            step_count = plan.steps.len(),
-            "planned gateway write request"
-        );
         self.inner
             .driver
-            .complete_write(Request::RPC_METHOD, params, plan)
+            .plan_and_complete::<Request, Impl, ContextType>(self.inner.context.clone(), params)
             .await
     }
 }
@@ -219,7 +206,7 @@ mod tests {
             .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
-                body: tx::FunctionCallBody {
+                body: tx::FunctionCall {
                     receiver_id: harness.ft_contract_id.clone(),
                     method_name: ContractMethodName("set_redemption_rate".to_owned()),
                     args: ContractArgs::Json(serde_json::json!({
@@ -235,7 +222,7 @@ mod tests {
             .request_write::<tx::FunctionCall, Dispatch>(WriteRequest {
                 signer_account_id: harness.gateway_signer_account_id.clone(),
                 idempotency_key: Some(IdempotencyKey("same-key".to_owned())),
-                body: tx::FunctionCallBody {
+                body: tx::FunctionCall {
                     receiver_id: harness.ft_contract_id.clone(),
                     method_name: ContractMethodName("set_redemption_rate".to_owned()),
                     args: ContractArgs::Json(serde_json::json!({
@@ -259,7 +246,7 @@ mod tests {
         let request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("recovery-key".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -313,7 +300,7 @@ mod tests {
         let first_request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("multi-step-sequence".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({
@@ -326,7 +313,7 @@ mod tests {
         let second_request = WriteRequest {
             signer_account_id: harness.gateway_signer_account_id.clone(),
             idempotency_key: Some(IdempotencyKey("multi-step-sequence".to_owned())),
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: harness.ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({

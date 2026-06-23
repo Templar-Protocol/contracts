@@ -1,10 +1,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::read_method_spec;
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{OperationId, OperationRecord};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetParams {
+/// Look up a previously submitted operation by ID.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "op.get", output = GetResult)]
+pub struct Get {
     pub operation_id: OperationId,
 }
 
@@ -12,8 +14,3 @@ pub struct GetParams {
 pub struct GetResult {
     pub operation: Option<OperationRecord>,
 }
-
-read_method_spec!(
-    /// Look up a previously submitted operation by ID.
-    "op.get": Get(GetParams) -> GetResult
-);

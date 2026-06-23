@@ -1,13 +1,15 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
-    common::WriteOperationResult, operation::OperationRecord, operation::OperationStatus,
-    IdempotencyKey, OperationId,
+    common::{WriteOperationResult, WriteRequest},
+    operation::OperationRecord,
+    operation::OperationStatus,
+    IdempotencyKey, MethodSpec, OperationId,
 };
 
 use crate::{
     CreateOperationResult, CurrentStep, CurrentStepRef, GatewayResult, HasIdempotencyKey,
-    HasSignerAccountId, OperationPlan, SharedExecuteOperation, SharedOperationStore,
+    HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation, SharedOperationStore,
     SharedSignTransaction, StoredOperation, SucceededStep,
 };
 
@@ -92,6 +94,24 @@ impl OperationDriver {
 
         let operation = self.execute_remaining_steps(operation).await?;
         Ok(operation.record().into())
+    }
+
+    /// Plan a write operation via `Impl` and execute it through this driver
+    /// (idempotency, multi-step finalization, replay).
+    ///
+    /// This is the shared write path behind both the direct client and the RPC
+    /// service, so neither re-implements signing/submission.
+    pub async fn plan_and_complete<Spec, Impl, Ctx>(
+        &self,
+        context: Ctx,
+        request: WriteRequest<Spec>,
+    ) -> GatewayResult<WriteOperationResult>
+    where
+        Spec: MethodSpec<Output = WriteOperationResult>,
+        Impl: PlanWrite<Spec, Ctx>,
+    {
+        let plan = <Impl as PlanWrite<Spec, Ctx>>::plan(request.clone(), context).await?;
+        self.complete_write(Spec::RPC_METHOD, request, plan).await
     }
 
     pub async fn create_planned_operation<Input>(

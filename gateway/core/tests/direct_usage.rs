@@ -10,7 +10,7 @@ use templar_gateway_core::{
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{account, tx};
 use templar_gateway_types::{
-    common::{ContractArgs, ReadRequest, WriteRequest},
+    common::{ContractArgs, WriteRequest},
     ContractMethodName, ManagedAccountId, NearGas,
 };
 use test_utils::FtController;
@@ -43,10 +43,8 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     let context = GatewayContext::new(network.clone())?;
 
     let account = <Dispatch as DispatchRead<account::Get, GatewayContext>>::dispatch(
-        ReadRequest {
-            params: account::GetParams {
-                account_id: signer_account_id.0.clone(),
-            },
+        account::Get {
+            account_id: signer_account_id.0.clone(),
         },
         context.clone(),
     )
@@ -62,7 +60,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
         WriteRequest {
             signer_account_id: signer_account_id.clone(),
             idempotency_key: None,
-            body: tx::FunctionCallBody {
+            body: tx::FunctionCall {
                 receiver_id: ft_contract_id.clone(),
                 method_name: ContractMethodName("set_redemption_rate".to_owned()),
                 args: ContractArgs::Json(serde_json::json!({

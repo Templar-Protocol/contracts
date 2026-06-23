@@ -4,21 +4,13 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
 };
 use templar_gateway_methods_spec::account;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
-    async fn dispatch(
-        request: <account::Get as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<account::GetResult> {
-        let account = ctx
-            .near_client()
-            .account()
-            .get(request.params.account_id)
-            .await?;
+    async fn dispatch(request: account::Get, ctx: C) -> GatewayResult<account::GetResult> {
+        let account = ctx.near_client().account().get(request.account_id).await?;
 
         let (code_hash, global_contract_hash, global_contract_account_id) =
             match account.contract_state {
@@ -56,7 +48,7 @@ impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
 #[async_trait]
 impl<C: Send + 'static> PlanWrite<account::Delete, C> for Dispatch {
     async fn plan(
-        request: <account::Delete as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<account::Delete>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         Ok(OperationPlan::single(PlannedTransaction {

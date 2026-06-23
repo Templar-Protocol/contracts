@@ -89,6 +89,26 @@ pub struct AccumulateStaticYieldArgs {
     pub snapshot_limit: Option<u32>,
 }
 
+/// A market's static yield record, decoded across market versions.
+///
+/// Markets >= 1.1.0 expose an [`Accumulator`]; earlier markets report a split
+/// of collateral and borrow yield. Variants are ordered split-first so that the
+/// untagged deserializer matches the legacy shape (which carries both keys)
+/// before falling back to the accumulator.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum StaticYieldRecord {
+    Split {
+        #[allow(
+            dead_code,
+            reason = "needed to disambiguate the untagged legacy shape; not read"
+        )]
+        collateral_asset: CollateralAssetAmount,
+        borrow_asset: BorrowAssetAmount,
+    },
+    Accumulator(Accumulator<BorrowAsset>),
+}
+
 #[derive(Clone)]
 pub struct MarketClient<'a> {
     pub(crate) inner: &'a NearClient,
@@ -135,7 +155,7 @@ impl MarketClient<'_> {
         pub fn get_supply_withdrawal_request_status(AccountIdArg) -> Option<WithdrawalRequestStatus>;
         pub fn get_supply_withdrawal_queue_status(()) -> WithdrawalQueueStatus;
         pub fn get_last_yield_rate(()) -> Decimal;
-        pub fn get_static_yield(AccountIdArg) -> Option<Accumulator<BorrowAsset>>;
+        pub fn get_static_yield(AccountIdArg) -> Option<StaticYieldRecord>;
     }
 
     contract_writes! {

@@ -4,18 +4,17 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_owner;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_owner::GetOwner, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_owner::GetOwner as MethodSpec>::Input,
+        request: proxy_oracle_owner::GetOwner,
         ctx: C,
     ) -> GatewayResult<proxy_oracle_owner::GetOwnerResult> {
         ctx.near_client()
-            .proxy_oracle(request.params.oracle_id)
+            .proxy_oracle(request.oracle_id)
             .own_get_owner(())
             .await
             .map(|owner| proxy_oracle_owner::GetOwnerResult { owner })
@@ -25,11 +24,11 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_owner::GetOwner, C> for Dispatc
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle_owner::GetProposedOwner, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle_owner::GetProposedOwner as MethodSpec>::Input,
+        request: proxy_oracle_owner::GetProposedOwner,
         ctx: C,
     ) -> GatewayResult<proxy_oracle_owner::GetProposedOwnerResult> {
         ctx.near_client()
-            .proxy_oracle(request.params.oracle_id)
+            .proxy_oracle(request.oracle_id)
             .own_get_proposed_owner(())
             .await
             .map(|proposed_owner| proxy_oracle_owner::GetProposedOwnerResult { proposed_owner })
@@ -39,7 +38,7 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_owner::GetProposedOwner, C> for
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_owner::ProposeOwner, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_owner::ProposeOwner as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle_owner::ProposeOwner>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -60,7 +59,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_owner::ProposeOwner, C> for Dispat
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_owner::AcceptOwner, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_owner::AcceptOwner as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle_owner::AcceptOwner>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -78,7 +77,7 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_owner::AcceptOwner, C> for Dispatc
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<proxy_oracle_owner::RenounceOwner, C> for Dispatch {
     async fn plan(
-        request: <proxy_oracle_owner::RenounceOwner as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle_owner::RenounceOwner>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()

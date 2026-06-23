@@ -10,21 +10,18 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::storage;
-use templar_gateway_types::{
-    common::{StorageBalance, StorageBalanceBounds},
-    MethodSpec,
-};
+use templar_gateway_types::common::{StorageBalance, StorageBalanceBounds};
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<storage::GetBalanceBounds, C> for Dispatch {
     async fn dispatch(
-        request: <storage::GetBalanceBounds as MethodSpec>::Input,
+        request: storage::GetBalanceBounds,
         ctx: C,
     ) -> GatewayResult<storage::GetBalanceBoundsResult> {
         ctx.near_client()
-            .storage(request.params.contract_id)
+            .storage(request.contract_id)
             .cached_storage_balance_bounds()
             .await
             .map(|bounds| storage::GetBalanceBoundsResult {
@@ -39,13 +36,13 @@ impl<C: HasNearClient> DispatchRead<storage::GetBalanceBounds, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<storage::GetBalanceOf, C> for Dispatch {
     async fn dispatch(
-        request: <storage::GetBalanceOf as MethodSpec>::Input,
+        request: storage::GetBalanceOf,
         ctx: C,
     ) -> GatewayResult<storage::GetBalanceOfResult> {
         ctx.near_client()
-            .storage(request.params.contract_id)
+            .storage(request.contract_id)
             .storage_balance_of(StorageBalanceOfArgs {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|balance| storage::GetBalanceOfResult {
@@ -60,7 +57,7 @@ impl<C: HasNearClient> DispatchRead<storage::GetBalanceOf, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<storage::Deposit, C> for Dispatch {
     async fn plan(
-        request: <storage::Deposit as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<storage::Deposit>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -81,7 +78,7 @@ impl<C: HasNearClient> PlanWrite<storage::Deposit, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<storage::Unregister, C> for Dispatch {
     async fn plan(
-        request: <storage::Unregister as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<storage::Unregister>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         ctx.near_client()
@@ -101,7 +98,7 @@ impl<C: HasNearClient> PlanWrite<storage::Unregister, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<storage::EnsureDeposit, C> for Dispatch {
     async fn plan(
-        request: <storage::EnsureDeposit as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<storage::EnsureDeposit>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
