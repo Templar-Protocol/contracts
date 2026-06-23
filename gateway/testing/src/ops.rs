@@ -12,8 +12,9 @@ use near_api::types::AccountId;
 use near_token::NearToken;
 use templar_common::{
     asset::{BorrowAssetAmount, CollateralAssetAmount},
-    borrow::BorrowPosition,
+    borrow::{BorrowPosition, BorrowStatus},
     market::{HarvestYieldMode, MarketConfiguration},
+    oracle::pyth::OracleResponse,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
@@ -486,6 +487,116 @@ impl SandboxHarness {
             .0)
     }
 
+    /// Transfer fungible tokens and call the receiver (raw NEP-141
+    /// `ft_transfer_call`). Unlike [`supply`](Self::supply)/etc. this does NOT
+    /// pre-register the receiver, and does NOT assert success — use it to
+    /// exercise the contract's own registration/validation on the deposit path
+    /// (where a rejecting receiver makes `ft_on_transfer` fail and the FT refund,
+    /// so the operation reports `Failed` despite the refund).
+    pub async fn ft_transfer_call(
+        &self,
+        user: &ManagedAccountId,
+        token_id: &AccountId,
+        receiver_id: &AccountId,
+        amount: u128,
+        msg: String,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            ft::TransferCall {
+                contract_id: token_id.clone(),
+                receiver_id: receiver_id.clone(),
+                amount: U128(amount),
+                msg,
+                memo: None,
+            },
+        )
+        .await
+    }
+
+    /// Unregister `user` from storage on `contract_id`.
+    pub async fn storage_unregister(
+        &self,
+        user: &ManagedAccountId,
+        contract_id: &AccountId,
+        force: bool,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            storage::Unregister {
+                contract_id: contract_id.clone(),
+                force,
+            },
+        )
+        .await
+    }
+
+    /// Advance the sandbox by `blocks` blocks via `sandbox_fast_forward` (over
+    /// RPC, so it works in both owned and attach modes), for deterministic
+    /// snapshot/time control instead of wall-clock waits.
+    pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
+        let url = self.network.rpc_endpoints[0].url.clone();
+        let client = reqwest::Client::new();
+        let target = rpc_block_height(&client, &url).await? + blocks;
+        client
+            .post(url.clone())
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "fast_forward",
+                "method": "sandbox_fast_forward",
+                "params": { "delta_height": blocks },
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+
+        let start = std::time::Instant::now();
+        loop {
+            if rpc_block_height(&client, &url).await? >= target {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "fast_forward timed out waiting for block {target}",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Fetch the market's current oracle prices (the `OracleResponse` shape the
+    /// market expects), by reading the mock oracle directly.
+    pub async fn get_oracle_prices(&self, market: &DeployedMarket) -> Result<OracleResponse> {
+        let oracle = &market.configuration.price_oracle_configuration;
+        let args = serde_json::to_vec(&serde_json::json!({
+            "price_ids": [oracle.borrow_asset_price_id, oracle.collateral_asset_price_id],
+            "age": oracle.price_maximum_age_s,
+        }))?;
+        self.gateway_client()
+            .contract(oracle.account_id.clone())
+            .view_function::<OracleResponse>("list_ema_prices_no_older_than", args)
+            .await
+            .map_err(|error| anyhow::anyhow!("get_oracle_prices failed: {error}"))
+    }
+
+    /// Read an account's borrow status given an oracle response.
+    pub async fn get_borrow_status(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+        oracle_response: OracleResponse,
+    ) -> Result<Option<BorrowStatus>> {
+        Ok(self
+            .client()?
+            .read(market::GetBorrowStatus {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+                oracle_response,
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_borrow_status failed: {error}"))?
+            .status)
+    }
+
     /// Read a borrow position.
     pub async fn get_borrow_position(
         &self,
@@ -599,4 +710,23 @@ impl SandboxHarness {
             .await
             .map_err(|error| anyhow::anyhow!("operation submission failed: {error}"))
     }
+}
+
+/// Query the current final block height via JSON-RPC.
+async fn rpc_block_height(client: &reqwest::Client, url: &reqwest::Url) -> Result<u64> {
+    let response: serde_json::Value = client
+        .post(url.clone())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "block",
+            "method": "block",
+            "params": { "finality": "final" },
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    response["result"]["header"]["height"]
+        .as_u64()
+        .context("missing block height in RPC response")
 }
