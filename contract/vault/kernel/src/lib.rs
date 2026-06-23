@@ -435,6 +435,75 @@ mod kani_proofs {
         assert_asset_sum(&requested.state);
     }
 
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn post_deposit_request_withdraw_preserves_accounting_and_escrows_previewed_shares() {
+        let deposited_assets = nonzero_bounded_amount();
+        let minted_shares = deposited_assets;
+        let config = zero_fee_config();
+        let post_deposit = VaultState::with_initial(
+            deposited_assets,
+            minted_shares,
+            deposited_assets,
+            0,
+            TimestampNs::from_nanos(1),
+        );
+        let post_deposit_idle_assets = post_deposit.idle_assets;
+        let post_deposit_external_assets = post_deposit.external_assets;
+        let post_deposit_total_assets = post_deposit.total_assets;
+        let post_deposit_total_shares = post_deposit.total_shares;
+        let post_deposit_next_op_id = post_deposit.next_op_id;
+        let expected_assets = deposited_assets;
+        let request_plan = WithdrawalRequestPlan {
+            owner: RECEIVER,
+            receiver: OWNER,
+            shares: minted_shares,
+            expected_assets,
+        };
+
+        let requested = apply_withdrawal_request_plan(
+            post_deposit,
+            &config,
+            &SELF,
+            request_plan,
+            TimestampNs::from_nanos(2),
+        )
+        .unwrap();
+
+        assert!(requested.state.op_state.is_idle());
+        assert_eq!(requested.state.idle_assets, post_deposit_idle_assets);
+        assert_eq!(
+            requested.state.external_assets,
+            post_deposit_external_assets
+        );
+        assert_eq!(requested.state.total_assets, post_deposit_total_assets);
+        assert_eq!(requested.state.total_shares, post_deposit_total_shares);
+        assert_eq!(requested.state.next_op_id, post_deposit_next_op_id);
+        assert_eq!(requested.state.withdraw_queue.status().length, 1);
+        assert_eq!(
+            requested.state.withdraw_queue.status().total_escrow_shares,
+            minted_shares
+        );
+        assert_eq!(
+            requested
+                .state
+                .withdraw_queue
+                .status()
+                .total_expected_assets,
+            expected_assets
+        );
+        let (request_id, head) = requested.state.withdraw_queue.head().unwrap();
+        assert_eq!(request_id, 0);
+        assert_address_eq(head.owner, RECEIVER);
+        assert_address_eq(head.receiver, OWNER);
+        assert_eq!(head.escrow_shares, minted_shares);
+        assert_eq!(head.expected_assets, expected_assets);
+        assert_eq!(requested.effects.len(), 2);
+        assert_transfer_shares_effect(&requested.effects[0], RECEIVER, SELF, minted_shares);
+        assert_emit_event_effect(&requested.effects[1]);
+        assert_asset_sum(&requested.state);
+    }
+
     #[cfg(feature = "action-sync-external")]
     #[kani::proof]
     fn rebalance_withdraw_conserves_total_assets_and_moves_external_to_idle() {
@@ -1594,9 +1663,9 @@ mod kani_proofs {
     #[kani::proof]
     #[kani::unwind(8)]
     fn refresh_fees_active_rates_only_mint_fee_shares_and_update_anchor() {
-        let idle = 0u128;
+        let idle = 100u128;
         let external = 0u128;
-        let shares = 0u128;
+        let shares = 100u128;
         let anchor_assets = 0u128;
         let now = TimestampNs::from_nanos(1);
 
@@ -1626,6 +1695,7 @@ mod kani_proofs {
             minted += mint_shares_or_event_amount(&result.effects[2]);
         }
 
+        assert!(minted > 0);
         assert_eq!(result.state.idle_assets, before.idle_assets);
         assert_eq!(result.state.external_assets, before.external_assets);
         assert_eq!(result.state.total_assets, before.total_assets);
