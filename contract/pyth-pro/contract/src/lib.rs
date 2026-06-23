@@ -279,8 +279,8 @@ impl TryFrom<ConfigArgs> for Config {
 }
 
 /// EMA price/confidence for a feed, following the same fixed-point `expo` as the spot price.
-/// Present only when the signed payload actually carried an EMA price — never synthesized from
-/// spot data.
+/// Required by the stateful storage path (a payload without a valid EMA is rejected); never
+/// synthesized from spot data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
 pub struct EmaData {
@@ -295,8 +295,9 @@ pub struct EmaData {
 pub struct FeedData {
     pub price: I64,
     pub conf: U64,
-    /// EMA data, present only when the payload carried it (no fallback to spot).
-    pub ema: Option<EmaData>,
+    /// EMA data. The stateful storage path requires it (see [`FeedData::from_parsed`]), so a stored
+    /// feed always carries EMA; it is never synthesized from spot.
+    pub ema: EmaData,
     pub expo: i32,
     /// Per-feed publish time (Lazer `FeedUpdateTimestamp`, else the payload timestamp), in
     /// nanoseconds. Drives both the served freshness and the monotonic anti-replay gate. The `_ns`
@@ -316,10 +317,10 @@ impl FeedData {
         })
     }
 
-    /// EMA [`Price`] view (`list_ema_prices_*` / `get_ema_price_*`); `None` if no EMA was carried.
+    /// EMA [`Price`] view (`list_ema_prices_*` / `get_ema_price_*`). A stored feed always carries
+    /// EMA, so this is `None` only when the publish time can't be represented (see [`Self::to_price`]).
     fn to_ema_price(&self) -> Option<Price> {
-        let ema = self.ema.as_ref()?;
-        self.to_price(ema.price, ema.conf)
+        self.to_price(self.ema.price, self.ema.conf)
     }
 
     /// Spot [`Price`] view (`list_prices_*` / `get_price_*`).
@@ -329,9 +330,15 @@ impl FeedData {
 
     /// Fallibly build a storable feed from a parsed (wire) feed, owning every intrinsic validity
     /// rule. Returns `None` when the feed must be skipped: missing price or exponent, missing or
-    /// invalid spot confidence, an `EmaPrice` without a valid `EmaConfidence`, or an effective
-    /// publish timestamp more than `max_ahead_s` seconds beyond `now`. (Anti-replay is relational
-    /// and handled by the caller.)
+    /// invalid spot confidence, a missing or invalid EMA price/confidence, or an effective publish
+    /// timestamp more than `max_ahead_s` seconds beyond `now`. (Anti-replay is relational and
+    /// handled by the caller.)
+    ///
+    /// EMA is **required** here: a spot-only signed payload is rejected (the whole feed is skipped)
+    /// so it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since the
+    /// market reads EMA via `list_ema_prices_no_older_than`. This applies only to the stateful
+    /// storage path; the stateless [`Contract::verify_update`] view does not call this and stays at
+    /// parity with the official Pyth Pro contracts (spot-only payloads allowed).
     fn from_parsed(
         parsed: &verifier::ParsedFeed,
         package: Nanoseconds,
@@ -350,14 +357,12 @@ impl FeedData {
             return None;
         }
 
-        // EMA is stored only when the payload carried an EMA price *and* a valid EMA confidence;
-        // never fall back to spot. A half-specified EMA makes the whole feed malformed.
-        let ema = match parsed.ema_price {
-            Some(ema_price) => Some(EmaData {
-                price: I64(ema_price),
-                conf: U64(require_confidence(parsed.ema_confidence)?),
-            }),
-            None => None,
+        // EMA is mandatory on the stateful path: require both an EMA price and a valid EMA
+        // confidence, never falling back to spot. A missing or half-specified EMA skips the whole
+        // feed, so a spot-only update can't overwrite a stored feed and wipe its EMA.
+        let ema = EmaData {
+            price: I64(parsed.ema_price?),
+            conf: U64(require_confidence(parsed.ema_confidence)?),
         };
 
         Some(Self {
@@ -640,8 +645,8 @@ impl Contract {
     }
 }
 
-/// A confidence is usable only when explicitly present and non-negative; absent or negative ⇒
-/// `None`, and the caller skips the feed. On the Lazer wire a `0` confidence is indistinguishable
+/// A confidence is usable only when explicitly present and strictly positive; absent, zero, or
+/// negative ⇒ `None`, and the caller skips the feed. On the Lazer wire a `0` confidence is indistinguishable
 /// from "absent" (both deserialize to `None` upstream), so a stored feed always carries a genuine
 /// positive confidence — we reject the ambiguous/invalid case rather than mold it into a
 /// precise-looking zero.

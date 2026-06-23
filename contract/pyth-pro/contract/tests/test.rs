@@ -3,7 +3,7 @@
 use byteorder::LE;
 use ed25519_dalek::{Signer, SigningKey};
 use near_sdk::{
-    json_types::Base64VecU8,
+    json_types::{Base64VecU8, I64},
     mock::MockAction,
     test_utils::{get_created_receipts, VMContextBuilder},
     testing_env, AccountId, NearToken,
@@ -505,6 +505,8 @@ fn duplicate_feed_id_in_payload_is_first_wins() {
             PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
             PayloadPropertyValue::Confidence(Some(Price::from_mantissa(1).unwrap())),
             PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(price).unwrap())),
+            PayloadPropertyValue::EmaConfidence(Some(Price::from_mantissa(1).unwrap())),
             PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
                 NOW_S * 1_000_000,
             ))),
@@ -586,37 +588,91 @@ fn negative_confidence_skips_feed() {
     assert!(!contract.price_feed_exists(price_id()));
 }
 
+fn spot_only_props(price: i64, conf: i64, timestamp_us: u64) -> Vec<PayloadPropertyValue> {
+    vec![
+        PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+        PayloadPropertyValue::Confidence(Some(Price::from_mantissa(conf).unwrap())),
+        PayloadPropertyValue::Exponent(EXPO),
+        PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(timestamp_us))),
+    ]
+}
+
 #[test]
-fn payload_without_ema_serves_spot_only() {
+fn payload_without_ema_is_skipped() {
     let mut contract = deploy_and_map();
 
     relayer_context(ample_deposit());
-    // No EmaPrice property: spot is stored, but EMA must not be synthesized from spot.
+    // The stateful path requires EMA: a spot-only payload stores nothing at all (no spot-only
+    // feeds), so it can never overwrite/wipe a stored feed's EMA.
     contract.update_price_feeds(Base64VecU8(build_payload(
         NOW_S * 1_000_000,
         ChannelId::REAL_TIME.0,
-        vec![
-            PayloadPropertyValue::Price(Some(Price::from_mantissa(123_456).unwrap())),
-            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(50).unwrap())),
-            PayloadPropertyValue::Exponent(EXPO),
-            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
-                NOW_S * 1_000_000,
-            ))),
-        ],
+        spot_only_props(123_456, 50, NOW_S * 1_000_000),
     )));
 
-    // Spot works...
+    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_price_unsafe(price_id()).is_none());
+    assert!(contract.get_ema_price_unsafe(price_id()).is_none());
+}
+
+#[test]
+fn spot_only_update_cannot_wipe_stored_ema() {
+    // Regression for the market-DoS vector (ENG-385): a relayer submits a valid signed spot-only
+    // update with a strictly-newer timestamp for an already-mapped feed. It must NOT overwrite the
+    // stored full feed and drop its EMA.
+    let mut contract = deploy_and_map();
+
+    relayer_context(ample_deposit());
+    // Honest full update at NOW: spot + EMA both stored.
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+    assert_eq!(
+        contract.get_ema_price_unsafe(price_id()).unwrap().price.0,
+        123_000
+    );
+
+    // Attacker's spot-only update at NOW+5s (strictly newer): rejected wholesale, so nothing
+    // changes — the EMA survives, and even the (authentic) newer spot is not applied.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        (NOW_S + 5) * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        spot_only_props(999_999, 50, (NOW_S + 5) * 1_000_000),
+    )));
+
+    assert_eq!(
+        contract.get_ema_price_unsafe(price_id()).unwrap().price.0,
+        123_000,
+        "spot-only update must not wipe the stored EMA"
+    );
     assert_eq!(
         contract.get_price_unsafe(price_id()).unwrap().price.0,
-        123_456
+        123_456,
+        "the rejected spot-only update must not advance spot either"
     );
-    // ...but the EMA surface returns nothing (no spot fallback).
-    assert!(contract.get_ema_price_unsafe(price_id()).is_none());
-    assert!(contract
-        .list_ema_prices_unsafe(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_none());
+}
+
+#[test]
+fn verify_update_stays_at_parity_for_spot_only_payloads() {
+    // The stateless verify-and-return surface must match the official Pyth Pro contracts: it does
+    // NOT require EMA. A spot-only payload still verifies and returns its parsed properties.
+    let contract = deploy_and_map();
+
+    let view = contract.verify_update(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        spot_only_props(123_456, 50, NOW_S * 1_000_000),
+    )));
+
+    let feed = &view.feeds[0];
+    assert_eq!(feed.price, Some(I64(123_456)));
+    assert!(
+        feed.ema_price.is_none(),
+        "spot-only payload carries no EMA, but verify_update still returns the feed"
+    );
 }
 
 #[test]

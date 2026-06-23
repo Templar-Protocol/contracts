@@ -39,8 +39,12 @@ An accepted update must satisfy:
 - the ed25519 signature verifies over the payload under that public key;
 - channel is allowed;
 - package timestamp is within configured past/future bounds;
-- each stored feed has price, exponent, and explicit non-negative confidence;
-- EMA is stored only when EMA price and explicit non-negative EMA confidence are both present;
+- each stored feed has price, exponent, and explicit strictly-positive confidence (a wire `0` is
+  indistinguishable from absent and is rejected);
+- EMA price and explicit strictly-positive EMA confidence are **required** for storage: a spot-only
+  payload is rejected wholesale (the feed is skipped), so it cannot overwrite a stored feed and drop
+  its EMA. This applies only to the stateful storage path; the stateless `verify_update` view stays
+  at parity with the official Pyth Pro contracts and does not require EMA;
 - effective per-feed publish time strictly advances stored data;
 - age-gated reads reject stale and future-dated prices.
 
