@@ -416,6 +416,75 @@ impl SandboxHarness {
         ))
     }
 
+    /// The static-yield record total for `account_id`, or `None` if the account
+    /// has no record (distinguishing "no record" from "a record of zero").
+    pub async fn static_yield_record(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<Option<u128>> {
+        Ok(self
+            .client()?
+            .read(market::GetStaticYield {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("static_yield failed: {error}"))?
+            .record
+            .map(|record| u128::from(record.borrow_asset_total())))
+    }
+
+    /// Attempt to withdraw static yield, returning the (possibly failed)
+    /// operation result for tests where the transfer is expected to be rejected.
+    pub async fn try_withdraw_static_yield(
+        &self,
+        recipient: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: Option<u128>,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            recipient,
+            market::WithdrawStaticYield {
+                market_id: market.market_id.clone(),
+                amount: amount.map(BorrowAssetAmount::new),
+            },
+        )
+        .await
+    }
+
+    /// List all supply positions, keyed by account.
+    pub async fn list_supply_positions(
+        &self,
+        market: &DeployedMarket,
+    ) -> Result<std::collections::HashMap<AccountId, SupplyPosition>> {
+        Ok(self
+            .client()?
+            .read(market::ListSupplyPositions {
+                market_id: market.market_id.clone(),
+                args: Pagination::default(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("list_supply_positions failed: {error}"))?
+            .positions)
+    }
+
+    /// List all borrow positions, keyed by account.
+    pub async fn list_borrow_positions(
+        &self,
+        market: &DeployedMarket,
+    ) -> Result<std::collections::HashMap<AccountId, BorrowPosition>> {
+        Ok(self
+            .client()?
+            .read(market::ListBorrowPositions {
+                market_id: market.market_id.clone(),
+                args: Pagination::default(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("list_borrow_positions failed: {error}"))?
+            .positions)
+    }
+
     /// List the finalized snapshots.
     pub async fn list_finalized_snapshots(&self, market: &DeployedMarket) -> Result<Vec<Snapshot>> {
         Ok(self
@@ -510,19 +579,31 @@ impl SandboxHarness {
         .await
     }
 
-    /// Harvest supply yield for `account_id`.
+    /// Harvest supply yield for `account_id` (default mode).
     pub async fn harvest_yield(
         &self,
         user: &ManagedAccountId,
         market: &DeployedMarket,
         account_id: Option<AccountId>,
     ) -> Result<WriteOperationResult> {
+        self.harvest_yield_with_mode(user, market, account_id, Some(HarvestYieldMode::Default))
+            .await
+    }
+
+    /// Harvest supply yield for `account_id` with an explicit harvest mode.
+    pub async fn harvest_yield_with_mode(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        account_id: Option<AccountId>,
+        mode: Option<HarvestYieldMode>,
+    ) -> Result<WriteOperationResult> {
         self.execute(
             user,
             market::HarvestYield {
                 market_id: market.market_id.clone(),
                 account_id,
-                mode: Some(HarvestYieldMode::Default),
+                mode,
             },
         )
         .await
@@ -554,6 +635,24 @@ impl SandboxHarness {
         amount: u128,
     ) -> Result<WriteOperationResult> {
         self.execute(
+            user,
+            market::CreateSupplyWithdrawalRequest {
+                market_id: market.market_id.clone(),
+                amount: BorrowAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
+    /// Attempt to enqueue a supply withdrawal, returning the (possibly failed)
+    /// operation result for tests where the contract is expected to reject it.
+    pub async fn try_create_supply_withdrawal_request(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
             user,
             market::CreateSupplyWithdrawalRequest {
                 market_id: market.market_id.clone(),
@@ -647,8 +746,10 @@ impl SandboxHarness {
     /// snapshot/time control instead of wall-clock waits.
     pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
         let url = self.network.rpc_endpoints[0].url.clone();
+        // Generous: this only bounds an otherwise-infinite hang, not a fail-fast
+        // budget — a loaded shared node can legitimately take a while to advance.
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
+            .timeout(std::time::Duration::from_secs(120))
             .build()?;
         let target = rpc_block_height(&client, &url).await? + blocks;
         client

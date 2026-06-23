@@ -9,11 +9,12 @@
 
 use anyhow::{Context, Result};
 use near_sandbox::Sandbox;
+use templar_gateway_testing::sandbox::sandbox_config;
 use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let sandbox = Sandbox::start_sandbox()
+    let sandbox = Sandbox::start_sandbox_with_config(sandbox_config())
         .await
         .context("failed to start out-of-band sandbox")?;
     let url = sandbox.rpc_addr.clone();

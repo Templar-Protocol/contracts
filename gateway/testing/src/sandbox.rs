@@ -4,13 +4,17 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
 use near_api::{types::AccountId, Account, Contract, NetworkConfig, SecretKey, Signer};
 use near_sandbox::{
-    config::{DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY},
-    Sandbox,
+    config::{
+        DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
+        DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
+    },
+    GenesisAccount, Sandbox, SandboxConfig,
 };
 use near_token::NearToken;
 use templar_common::{
@@ -44,9 +48,14 @@ pub struct SandboxHarness {
     #[allow(dead_code, reason = "RAII handle keeping owned neard alive")]
     sandbox: Option<Sandbox>,
     pub network: NetworkConfig,
-    /// Signer for the genesis `sandbox` root account, used to create every
-    /// (sub-)account the harness needs.
-    root_signer: Arc<Signer>,
+    /// Per-process intermediate root account, created once from the genesis key.
+    /// Every working (sub-)account is funded and signed by this account instead
+    /// of the genesis root, so the heavily-shared genesis key's nonce is touched
+    /// only once per test process. This account's own key nonce is touched only
+    /// by this process, removing the cross-process nonce contention that signing
+    /// every account with the single genesis key would create on a shared node.
+    tenant_root_id: AccountId,
+    tenant_root_signer: Arc<Signer>,
     pub gateway_signer_account_id: ManagedAccountId,
     pub cleanup_signer_account_id: ManagedAccountId,
     pub registry_signer_account_id: ManagedAccountId,
@@ -75,13 +84,16 @@ impl SandboxHarness {
         let (sandbox, network) = connect().await?;
         let root_signer = Signer::from_secret_key(genesis_secret_key()?)
             .context("failed to initialize genesis root signer")?;
+        let (tenant_root_id, tenant_root_signer) =
+            create_tenant_root(&network, &root_signer).await?;
         let signers = Mutex::new(HashMap::new());
         let account_seq = AtomicU64::new(0);
 
         let harness = Self {
             sandbox,
             network,
-            root_signer,
+            tenant_root_id,
+            tenant_root_signer,
             // Operator id fields are filled in after the partial harness exists
             // so account creation can go through `Self::create_account`.
             gateway_signer_account_id: ManagedAccountId(DEFAULT_GENESIS_ACCOUNT.to_owned()),
@@ -147,9 +159,11 @@ impl SandboxHarness {
     ) -> Result<(AccountId, Arc<Signer>)> {
         let account_id = self.unique_account_id(label)?;
         let secret_key = test_secret_key()?;
+        // Fund and sign with the per-process tenant root, not the genesis key.
         create_funded_account(
             &self.network,
-            &self.root_signer,
+            &self.tenant_root_id,
+            &self.tenant_root_signer,
             &account_id,
             &secret_key,
             balance,
@@ -175,12 +189,13 @@ impl SandboxHarness {
         Ok(ManagedAccountId(account_id))
     }
 
-    /// A unique `{label}-{seq}-{pid}.sandbox` id. The per-harness `seq` keeps
-    /// accounts distinct within one process; `pid` keeps them distinct across
-    /// the parallel test processes that share an attached node.
+    /// A unique `{label}-{seq}.{tenant_root}` id. The per-harness `seq` keeps
+    /// accounts distinct within one process; nesting under the per-process tenant
+    /// root keeps them distinct across the parallel test processes that share an
+    /// attached node.
     fn unique_account_id(&self, label: &str) -> Result<AccountId> {
         let seq = self.account_seq.fetch_add(1, Ordering::Relaxed);
-        format!("{label}-{seq}-{}.sandbox", std::process::id())
+        format!("{label}-{seq}.{}", self.tenant_root_id)
             .parse()
             .with_context(|| format!("invalid account id for label `{label}`"))
     }
@@ -746,29 +761,129 @@ async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
         );
         Ok((None, network))
     } else {
-        let sandbox = Sandbox::start_sandbox().await?;
+        let sandbox = Sandbox::start_sandbox_with_config(sandbox_config()).await?;
         let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
         Ok((Some(sandbox), network))
     }
 }
 
-/// Create `account_id` as a sub-account of the genesis root, funded with
-/// `balance` and a full-access key derived from `secret_key`.
+/// The high-balance genesis account every harness funds its accounts from.
+///
+/// The default genesis `sandbox` account holds only 10_000 NEAR — a long run
+/// against one shared node exhausts it, because each test locks funds in
+/// accounts that outlive it. This account is seeded with a very large balance so
+/// the shared node never runs dry. It reuses the default genesis keypair, so the
+/// existing genesis signer can sign for it.
+pub(crate) const FUNDER_ACCOUNT_ID: &str = "funder";
+
+/// Sandbox launch config shared by owned mode ([`connect`]) and the out-of-band
+/// host (`bin/sandbox-host.rs`), so both nodes seed the [`FUNDER_ACCOUNT_ID`]
+/// account identically.
+#[must_use]
+pub fn sandbox_config() -> SandboxConfig {
+    SandboxConfig {
+        additional_accounts: vec![GenesisAccount {
+            account_id: FUNDER_ACCOUNT_ID
+                .parse()
+                .expect("funder account id is valid"),
+            public_key: DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
+            private_key: DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
+            balance: NearToken::from_near(100_000_000),
+        }],
+        ..SandboxConfig::default()
+    }
+}
+
+/// Create `account_id` as a sub-account of `funder_id`, funded with `balance`
+/// and a full-access key derived from `secret_key`, signed by `funder_signer`.
+///
+/// Working accounts are funded by the per-process tenant root, whose key nonce
+/// is touched only by this process — so there is no cross-process contention
+/// here and no retry is needed (cf. [`create_tenant_root`], the single
+/// genesis-signed creation per process).
 async fn create_funded_account(
     network: &NetworkConfig,
-    root_signer: &Arc<Signer>,
+    funder_id: &AccountId,
+    funder_signer: &Arc<Signer>,
     account_id: &AccountId,
     secret_key: &SecretKey,
     balance: NearToken,
 ) -> Result<()> {
     Account::create_account(account_id.clone())
-        .fund_myself(DEFAULT_GENESIS_ACCOUNT.to_owned(), balance)
+        .fund_myself(funder_id.clone(), balance)
         .with_public_key(secret_key.public_key())
-        .with_signer(root_signer.clone())
+        .with_signer(funder_signer.clone())
         .send_to(network)
-        .await?
+        .await
+        .with_context(|| format!("failed to create account {account_id}"))?
         .assert_success();
     Ok(())
+}
+
+/// Create this process's intermediate root account from the genesis key, and
+/// return it with a signer over its own key.
+///
+/// This is the *only* genesis-signed transaction per test process, and thus the
+/// only point of cross-process nonce contention on the shared genesis key: many
+/// processes touch that one key, and a process can read a nonce that does not
+/// yet reflect another process's just-submitted creation, surfacing as
+/// `InvalidNonce`/`InvalidTransaction`. Such a transaction is rejected at
+/// submission (it never enters the mempool, so it cannot pile up as a pending
+/// tx); we simply re-issue it a few times, rebuilding the genesis signer so its
+/// nonce cache re-queries the chain. Every *other* account this process creates
+/// is funded by the returned tenant root and needs no retry.
+async fn create_tenant_root(
+    network: &NetworkConfig,
+    genesis_signer: &Arc<Signer>,
+) -> Result<(AccountId, Arc<Signer>)> {
+    static TENANT_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = TENANT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let account_id: AccountId = format!("t{}-{seq}.{FUNDER_ACCOUNT_ID}", std::process::id())
+        .parse()
+        .context("invalid tenant root id")?;
+    let funder_id: AccountId = FUNDER_ACCOUNT_ID.parse().context("invalid funder id")?;
+    let secret_key = test_secret_key()?;
+    let public_key = secret_key.public_key();
+
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 1..=MAX_ATTEMPTS {
+        // First attempt reuses the passed signer; retries rebuild it so its
+        // nonce cache re-queries the chain after the contending tx finalized.
+        let signer = if attempt == 1 {
+            genesis_signer.clone()
+        } else {
+            Signer::from_secret_key(genesis_secret_key()?)
+                .context("failed to rebuild genesis signer")?
+        };
+        let result = Account::create_account(account_id.clone())
+            .fund_myself(funder_id.clone(), NearToken::from_near(5_000))
+            .with_public_key(public_key.clone())
+            .with_signer(signer)
+            .send_to(network)
+            .await;
+
+        match result {
+            Ok(outcome) => {
+                outcome.assert_success();
+                let tenant_signer = Signer::from_secret_key(secret_key)
+                    .context("failed to initialize tenant root signer")?;
+                return Ok((account_id, tenant_signer));
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let retriable = message.contains("InvalidNonce")
+                    || message.contains("InvalidTransaction")
+                    || message.contains("nonce")
+                    || message.contains("Expired");
+                if attempt == MAX_ATTEMPTS || !retriable {
+                    return Err(anyhow::Error::new(error)
+                        .context(format!("failed to create tenant root {account_id}")));
+                }
+                tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+            }
+        }
+    }
+    unreachable!("create_tenant_root loop always returns")
 }
 
 /// The genesis root account's secret key (deterministic across sandbox runs).
