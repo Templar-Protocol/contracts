@@ -10,7 +10,6 @@ use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
 use templar_gateway_testing::{harness, SandboxHarness};
-use test_utils::to_price;
 
 #[rstest]
 #[tokio::test]
@@ -27,21 +26,7 @@ async fn fast_borrow_is_not_free(#[future(awt)] harness: SandboxHarness) -> Resu
         .await?;
 
     // Both assets priced at 1.0 so collateral covers the borrow.
-    let oracle = market.configuration.price_oracle_configuration.clone();
-    harness
-        .set_mock_oracle_pyth_price(
-            oracle.account_id.clone(),
-            oracle.borrow_asset_price_id,
-            Some(to_price(1.0)),
-        )
-        .await?;
-    harness
-        .set_mock_oracle_pyth_price(
-            oracle.account_id.clone(),
-            oracle.collateral_asset_price_id,
-            Some(to_price(1.0)),
-        )
-        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
 
     let supply_user = harness.create_user("supply").await?;
     let borrow_user = harness.create_user("borrow").await?;

@@ -17,11 +17,13 @@ use templar_common::{
     supply::SupplyPosition,
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{market, storage, tx};
+use templar_gateway_methods_spec::{ft, market, storage, tx};
 use templar_gateway_types::{
     common::{ContractArgs, WriteOperationResult},
     ContractMethodName, ManagedAccountId, NearGas, U128,
 };
+
+use test_utils::to_price;
 
 use crate::sandbox::SandboxHarness;
 
@@ -86,6 +88,49 @@ impl SandboxHarness {
             collateral_ft_id,
             configuration,
         })
+    }
+
+    /// Set the market's mock oracle prices for both assets (in whole units).
+    pub async fn set_asset_prices(
+        &self,
+        market: &DeployedMarket,
+        borrow_price: f64,
+        collateral_price: f64,
+    ) -> Result<()> {
+        let oracle = &market.configuration.price_oracle_configuration;
+        self.set_mock_oracle_pyth_price(
+            oracle.account_id.clone(),
+            oracle.borrow_asset_price_id,
+            Some(to_price(borrow_price)),
+        )
+        .await?;
+        self.set_mock_oracle_pyth_price(
+            oracle.account_id.clone(),
+            oracle.collateral_asset_price_id,
+            Some(to_price(collateral_price)),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Top up `user`'s storage deposit on `contract_id` by its minimum bound —
+    /// the amount the market charges per new supply/borrow position. Unlike
+    /// registration this is additive, so it covers a position re-created after a
+    /// prior one (and its snapshot storage) was charged.
+    pub async fn storage_deposit_min(
+        &self,
+        user: &ManagedAccountId,
+        contract_id: &AccountId,
+    ) -> Result<WriteOperationResult> {
+        let bounds = self
+            .client()?
+            .read(storage::GetBalanceBounds {
+                contract_id: contract_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("storage_balance_bounds failed: {error}"))?
+            .bounds;
+        self.storage_deposit(user, contract_id, bounds.min).await
     }
 
     /// Register `user` for storage on `contract_id`, paying `deposit`.
@@ -253,6 +298,76 @@ impl SandboxHarness {
             },
         )
         .await
+    }
+
+    /// Withdraw collateral from a borrow position.
+    pub async fn withdraw_collateral(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            market::WithdrawCollateral {
+                market_id: market.market_id.clone(),
+                amount: CollateralAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
+    /// Request a supply withdrawal (queued; executed by
+    /// [`execute_next_supply_withdrawal_request`](Self::execute_next_supply_withdrawal_request)).
+    pub async fn create_supply_withdrawal_request(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            market::CreateSupplyWithdrawalRequest {
+                market_id: market.market_id.clone(),
+                amount: BorrowAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
+    /// Execute the next queued supply withdrawal request.
+    pub async fn execute_next_supply_withdrawal_request(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        batch_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            market::ExecuteNextSupplyWithdrawalRequest {
+                market_id: market.market_id.clone(),
+                batch_limit,
+            },
+        )
+        .await
+    }
+
+    /// Read a fungible token balance.
+    pub async fn ft_balance_of(
+        &self,
+        token_id: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<u128> {
+        Ok(self
+            .client()?
+            .read(ft::GetBalanceOf {
+                contract_id: token_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("ft_balance_of failed: {error}"))?
+            .balance
+            .0)
     }
 
     /// Read a borrow position.
