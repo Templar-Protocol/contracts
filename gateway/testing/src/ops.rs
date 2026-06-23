@@ -15,13 +15,14 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{HarvestYieldMode, MarketConfiguration},
     oracle::pyth::OracleResponse,
+    snapshot::Snapshot,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, market, storage, tx};
 use templar_gateway_types::{
-    common::{ContractArgs, WriteOperationResult},
+    common::{ContractArgs, Pagination, WriteOperationResult},
     ContractMethodName, ManagedAccountId, NearGas, OperationStatus, U128,
 };
 
@@ -354,6 +355,73 @@ impl SandboxHarness {
             },
         )
         .await
+    }
+
+    /// Accumulate the statically-allocated yield for `account_id` (permissionless).
+    pub async fn accumulate_static_yield(
+        &self,
+        caller: &ManagedAccountId,
+        market: &DeployedMarket,
+        account_id: Option<AccountId>,
+        snapshot_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            market::AccumulateStaticYield {
+                market_id: market.market_id.clone(),
+                account_id,
+                snapshot_limit,
+            },
+        )
+        .await
+    }
+
+    /// Withdraw the caller's accumulated static yield (`None` = all).
+    pub async fn withdraw_static_yield(
+        &self,
+        recipient: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: Option<u128>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            recipient,
+            market::WithdrawStaticYield {
+                market_id: market.market_id.clone(),
+                amount: amount.map(BorrowAssetAmount::new),
+            },
+        )
+        .await
+    }
+
+    /// Total accumulated static yield for `account_id` (borrow-denominated).
+    pub async fn static_yield_total(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<u128> {
+        Ok(u128::from(
+            self.client()?
+                .read(market::GetStaticYield {
+                    market_id: market.market_id.clone(),
+                    account_id: account_id.clone(),
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("static_yield failed: {error}"))?
+                .borrow_asset_total(),
+        ))
+    }
+
+    /// List the finalized snapshots.
+    pub async fn list_finalized_snapshots(&self, market: &DeployedMarket) -> Result<Vec<Snapshot>> {
+        Ok(self
+            .client()?
+            .read(market::ListFinalizedSnapshots {
+                market_id: market.market_id.clone(),
+                args: Pagination::default(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("list_finalized_snapshots failed: {error}"))?
+            .snapshots)
     }
 
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
