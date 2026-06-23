@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
+use indexmap::IndexSet;
 use templar_gateway_core::{
     CreateOperationResult, GatewayError, GatewayResult, OperationPlan, OperationStore,
     StoredOperation,
@@ -36,10 +37,10 @@ struct MemoryStoreState {
     idempotency: HashMap<IdempotencyKey, OperationId>,
     /// Reverse index so an evicted operation can drop its idempotency mapping.
     idempotency_by_id: HashMap<OperationId, IdempotencyKey>,
-    /// Terminal operations in completion order (oldest at the front).
-    completed_order: VecDeque<OperationId>,
-    /// Membership set for `completed_order`, to dedupe repeated terminal saves.
-    completed_set: HashSet<OperationId>,
+    /// Terminal operations in completion order (oldest first). An ordered set
+    /// gives FIFO eviction *and* O(1) dedupe of repeated terminal saves in a
+    /// single field, so the order/membership invariant can't drift.
+    completed: IndexSet<OperationId>,
 }
 
 impl MemoryStore {
@@ -77,15 +78,13 @@ impl MemoryStoreState {
     /// Record a terminal operation and evict the oldest completed operations
     /// beyond the retention cap, dropping their entries from every index.
     fn record_completion_and_evict(&mut self, operation_id: OperationId, max_completed: usize) {
-        if self.completed_set.insert(operation_id.clone()) {
-            self.completed_order.push_back(operation_id);
-        }
+        // `insert` keeps insertion order and dedupes a repeated terminal save.
+        self.completed.insert(operation_id);
 
-        while self.completed_order.len() > max_completed {
-            let Some(evicted) = self.completed_order.pop_front() else {
+        while self.completed.len() > max_completed {
+            let Some(evicted) = self.completed.shift_remove_index(0) else {
                 break;
             };
-            self.completed_set.remove(&evicted);
             self.operations.remove(&evicted);
             if let Some(key) = self.idempotency_by_id.remove(&evicted) {
                 self.idempotency.remove(&key);
@@ -284,8 +283,7 @@ mod tests {
 
         let state = store.state.lock().await;
         assert_eq!(state.operations.len(), 3);
-        assert_eq!(state.completed_order.len(), 3);
-        assert_eq!(state.completed_set.len(), 3);
+        assert_eq!(state.completed.len(), 3);
     }
 
     #[tokio::test]
@@ -302,7 +300,7 @@ mod tests {
         }
 
         let state = store.state.lock().await;
-        assert_eq!(state.completed_order.len(), 1);
+        assert_eq!(state.completed.len(), 1);
         assert_eq!(state.operations.len(), 1);
     }
 
@@ -321,7 +319,7 @@ mod tests {
 
         let state = store.state.lock().await;
         assert_eq!(state.operations.len(), 10);
-        assert!(state.completed_order.is_empty());
+        assert!(state.completed.is_empty());
     }
 
     #[tokio::test]
