@@ -30,7 +30,7 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 # Node-backed tests: share one out-of-band `neard` instead of booting one per
 # test. The setup script starts the node and exports NEAR_SANDBOX_RPC_URL +
 # TEST_CONTRACTS_PREBUILT into the test environment. Run via
-# `script/test-sandbox.sh` (which guarantees teardown), or
+# `just test-sandbox` (which guarantees teardown), or
 # `cargo nextest run --profile sandbox --run-ignored all`.
 [scripts.setup.sandbox]
 command = "script/sandbox-up.sh"
