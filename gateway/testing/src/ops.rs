@@ -207,6 +207,24 @@ impl SandboxHarness {
         .await
     }
 
+    /// Attempt to supply, returning the (possibly failed) operation result for
+    /// tests that expect the contract to reject it.
+    pub async fn try_supply(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            market::Supply {
+                market_id: market.market_id.clone(),
+                amount: BorrowAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
     /// Supply, then harvest until the deposit is fully activated (no longer in
     /// the `incoming` bucket) — mirrors the old controller helper.
     pub async fn supply_and_harvest_until_activation(
