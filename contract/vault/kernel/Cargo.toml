@@ -45,6 +45,9 @@ all-actions = [
     "action-allocation-lifecycle",
     "action-refresh-lifecycle",
 ]
+# Opt-in Kani harnesses that currently require queue/effect stubbing before
+# they are suitable for regular CI.
+kani-expensive-vault-proofs = []
 
 [dependencies]
 derive_more.workspace = true

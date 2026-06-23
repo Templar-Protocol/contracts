@@ -75,9 +75,74 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Vault Kernel sync/rebalance Kani proofs
+      - name: Run Vault Kernel external sync immutability Kani proof
         uses: model-checking/kani-github-action@v1
         with:
           kani-version: ${{ env.KANI_VERSION }}
           command: cargo-kani
-          args: -p templar-vault-kernel --features action-sync-external
+          args: >-
+            -p templar-vault-kernel
+            --features action-sync-external
+            --harness sync_external_assets_only_mutates_external_and_total_assets_for_allowed_ops
+
+  vault-kernel-allocation-lifecycle:
+    name: Vault Kernel / Allocation Lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Vault Kernel allocation lifecycle Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-vault-kernel
+            --features action-allocation-lifecycle,action-sync-external,action-recovery
+            --harness allocation_partial_sync_then_abort_restores_unallocated_assets
+            --harness allocation_full_sync_then_finish_conserves_assets
+            --harness allocation_wrong_op_id_is_rejected_without_progress
+
+  vault-kernel-refresh-lifecycle:
+    name: Vault Kernel / Refresh Lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Vault Kernel refresh lifecycle Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-vault-kernel
+            --features action-refresh-lifecycle,action-sync-external
+            --harness refresh_lifecycle_mutates_only_external_assets_and_returns_idle
+
+  vault-kernel-refresh-fees:
+    name: Vault Kernel / Refresh Fees
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Run Vault Kernel refresh fee Kani proofs
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: ${{ env.KANI_VERSION }}
+          command: cargo-kani
+          args: >-
+            -p templar-vault-kernel
+            --features action-refresh-fees
+            --harness refresh_fees_zero_fee_rates_only_update_anchor
