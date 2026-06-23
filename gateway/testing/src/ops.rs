@@ -117,6 +117,38 @@ impl SandboxHarness {
         Ok(())
     }
 
+    /// Set the market's mock oracle borrow-asset price to an exact pyth `Price`
+    /// (explicit exponent), for tests exercising extreme/edge price values.
+    pub async fn set_borrow_asset_price_exact(
+        &self,
+        market: &DeployedMarket,
+        price: Option<templar_common::oracle::pyth::Price>,
+    ) -> Result<()> {
+        let oracle = &market.configuration.price_oracle_configuration;
+        self.set_mock_oracle_pyth_price(
+            oracle.account_id.clone(),
+            oracle.borrow_asset_price_id,
+            price,
+        )
+        .await
+    }
+
+    /// Set the market's mock oracle collateral-asset price to an exact pyth
+    /// `Price` (explicit exponent).
+    pub async fn set_collateral_asset_price_exact(
+        &self,
+        market: &DeployedMarket,
+        price: Option<templar_common::oracle::pyth::Price>,
+    ) -> Result<()> {
+        let oracle = &market.configuration.price_oracle_configuration;
+        self.set_mock_oracle_pyth_price(
+            oracle.account_id.clone(),
+            oracle.collateral_asset_price_id,
+            price,
+        )
+        .await
+    }
+
     /// Top up `user`'s storage deposit on `contract_id` by its minimum bound —
     /// the amount the market charges per new supply/borrow position. Unlike
     /// registration this is additive, so it covers a position re-created after a
