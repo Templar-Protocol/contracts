@@ -1,8 +1,17 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
 
 use anyhow::{Context, Result};
-use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
-use near_sandbox::Sandbox;
+use near_api::{types::AccountId, Account, Contract, NetworkConfig, SecretKey, Signer};
+use near_sandbox::{
+    config::{DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY},
+    Sandbox,
+};
 use near_token::NearToken;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
@@ -28,60 +37,80 @@ use test_utils::{
 };
 
 pub struct SandboxHarness {
-    pub sandbox: Sandbox,
+    /// The owned `neard` process in owned mode; `None` in attach mode, where
+    /// `neard` runs out-of-band and we only hold an RPC connection. Held purely
+    /// to keep the process alive for the harness lifetime (dropping a `Sandbox`
+    /// kills its process), hence never read directly.
+    #[allow(dead_code, reason = "RAII handle keeping owned neard alive")]
+    sandbox: Option<Sandbox>,
     pub network: NetworkConfig,
+    /// Signer for the genesis `sandbox` root account, used to create every
+    /// (sub-)account the harness needs.
+    root_signer: Arc<Signer>,
     pub gateway_signer_account_id: ManagedAccountId,
     pub cleanup_signer_account_id: ManagedAccountId,
     pub registry_signer_account_id: ManagedAccountId,
     pub universal_account_signer_account_id: ManagedAccountId,
     pub proxy_oracle_signer_account_id: ManagedAccountId,
-    registry_signer: Arc<Signer>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
-    /// Every account the harness can sign as: the fixed gateway operator
-    /// accounts seeded at [`start`](Self::start), plus accounts created on
-    /// demand during a test (users, extra contracts). Used both to seed the
-    /// gateway service under test (see [`Self::gateway_signers`]) and to drive
-    /// the direct [`Client`](templar_gateway_client::Client).
-    signers: std::sync::Mutex<HashMap<ManagedAccountId, ManagedSigner>>,
-    /// Monotonic counter for minting unique on-demand account ids.
-    account_seq: std::sync::atomic::AtomicU64,
+    /// Every account the harness can sign as: the gateway operator accounts
+    /// seeded at [`start`](Self::start), plus accounts created on demand during
+    /// a test (users, contracts). Used both to seed the gateway service under
+    /// test (see [`Self::gateway_signers`]) and to drive the direct
+    /// [`Client`](templar_gateway_client::Client).
+    signers: Mutex<HashMap<ManagedAccountId, ManagedSigner>>,
+    /// Monotonic counter for minting unique account ids within this harness.
+    account_seq: AtomicU64,
 }
 
 impl SandboxHarness {
+    /// Start a harness. In **attach** mode (`NEAR_SANDBOX_RPC_URL` set) it
+    /// connects to an out-of-band `neard` over RPC and creates only its own
+    /// uniquely-named sub-accounts, so many harnesses can share one node. In
+    /// **owned** mode (default) it launches a dedicated `neard`. Either way,
+    /// accounts are `*.sandbox` sub-accounts created via near-api against the
+    /// genesis root.
     pub async fn start() -> Result<Self> {
-        let sandbox = Sandbox::start_sandbox().await?;
-        let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
+        let (sandbox, network) = connect().await?;
+        let root_signer = Signer::from_secret_key(genesis_secret_key()?)
+            .context("failed to initialize genesis root signer")?;
+        let signers = Mutex::new(HashMap::new());
+        let account_seq = AtomicU64::new(0);
 
-        let (gateway_signer_account_id, gateway_signer) =
-            create_managed_signer_account(&sandbox, "gateway.near", "gateway").await?;
-        let (cleanup_signer_account_id, cleanup_signer) =
-            create_managed_signer_account(&sandbox, "cleanup.near", "cleanup").await?;
-        let (registry_signer_account_id, registry_signer) =
-            create_managed_signer_account(&sandbox, "registry.near", "registry").await?;
-        let registry_deploy_signer = registry_signer.signer.clone();
-
-        let (universal_account_signer_account_id, universal_account_signer) =
-            create_managed_signer_account(&sandbox, "ua.near", "universal account").await?;
-        let (proxy_oracle_signer_account_id, proxy_oracle_signer) =
-            create_managed_signer_account(&sandbox, "proxy-oracle.near", "proxy oracle").await?;
-
-        let gateway_signers = HashMap::from([
-            (gateway_signer_account_id.clone(), gateway_signer),
-            (cleanup_signer_account_id.clone(), cleanup_signer),
-            (registry_signer_account_id.clone(), registry_signer),
-            (
-                universal_account_signer_account_id.clone(),
-                universal_account_signer,
+        let harness = Self {
+            sandbox,
+            network,
+            root_signer,
+            // Operator id fields are filled in after the partial harness exists
+            // so account creation can go through `Self::create_account`.
+            gateway_signer_account_id: ManagedAccountId(DEFAULT_GENESIS_ACCOUNT.to_owned()),
+            cleanup_signer_account_id: ManagedAccountId(DEFAULT_GENESIS_ACCOUNT.to_owned()),
+            registry_signer_account_id: ManagedAccountId(DEFAULT_GENESIS_ACCOUNT.to_owned()),
+            universal_account_signer_account_id: ManagedAccountId(
+                DEFAULT_GENESIS_ACCOUNT.to_owned(),
             ),
-            (proxy_oracle_signer_account_id.clone(), proxy_oracle_signer),
-        ]);
+            proxy_oracle_signer_account_id: ManagedAccountId(DEFAULT_GENESIS_ACCOUNT.to_owned()),
+            ft_contract_id: DEFAULT_GENESIS_ACCOUNT.to_owned(),
+            beneficiary_account_id: DEFAULT_GENESIS_ACCOUNT.to_owned(),
+            signers,
+            account_seq,
+        };
 
-        let ft_contract_id: AccountId = "mock-ft.near".parse()?;
-        let ft_signer =
-            create_account_signer(&sandbox, &ft_contract_id, NearToken::from_near(100)).await?;
+        let operator = NearToken::from_near(100);
+        let gateway_signer_account_id = harness.create_managed_account("gateway", operator).await?;
+        let cleanup_signer_account_id = harness.create_managed_account("cleanup", operator).await?;
+        let registry_signer_account_id =
+            harness.create_managed_account("registry", operator).await?;
+        let universal_account_signer_account_id =
+            harness.create_managed_account("ua", operator).await?;
+        let proxy_oracle_signer_account_id = harness
+            .create_managed_account("proxy-oracle", operator)
+            .await?;
+
+        let (ft_contract_id, ft_signer) = harness.create_account("mock-ft", operator).await?;
         deploy_contract(
-            &network,
+            &harness.network,
             ft_contract_id.clone(),
             ft_signer,
             FtController::wasm().await.to_vec(),
@@ -93,27 +122,67 @@ impl SandboxHarness {
         )
         .await?;
 
-        let beneficiary_account_id: AccountId = "beneficiary.near".parse()?;
-        sandbox
-            .create_account(beneficiary_account_id.clone())
-            .initial_balance(NearToken::from_near(25))
-            .send()
+        let (beneficiary_account_id, _) = harness
+            .create_account("beneficiary", NearToken::from_near(25))
             .await?;
 
         Ok(Self {
-            sandbox,
-            network,
             gateway_signer_account_id,
             cleanup_signer_account_id,
             registry_signer_account_id,
             universal_account_signer_account_id,
             proxy_oracle_signer_account_id,
-            registry_signer: registry_deploy_signer,
             ft_contract_id,
             beneficiary_account_id,
-            signers: std::sync::Mutex::new(gateway_signers),
-            account_seq: std::sync::atomic::AtomicU64::new(0),
+            ..harness
         })
+    }
+
+    /// Create a uniquely-named funded `*.sandbox` sub-account, register its
+    /// signer, and return its id plus a signer for it.
+    pub(crate) async fn create_account(
+        &self,
+        label: &str,
+        balance: NearToken,
+    ) -> Result<(AccountId, Arc<Signer>)> {
+        let account_id = self.unique_account_id(label)?;
+        let secret_key = test_secret_key()?;
+        create_funded_account(
+            &self.network,
+            &self.root_signer,
+            &account_id,
+            &secret_key,
+            balance,
+        )
+        .await?;
+
+        let managed = ManagedSigner::new([secret_key])
+            .await
+            .with_context(|| format!("failed to initialize {label} signer"))?;
+        let signer = managed.signer.clone();
+        self.register_signer(ManagedAccountId(account_id.clone()), managed);
+        Ok((account_id, signer))
+    }
+
+    /// Like [`create_account`](Self::create_account) but returns the
+    /// [`ManagedAccountId`] for operator accounts stored on the harness.
+    async fn create_managed_account(
+        &self,
+        label: &str,
+        balance: NearToken,
+    ) -> Result<ManagedAccountId> {
+        let (account_id, _) = self.create_account(label, balance).await?;
+        Ok(ManagedAccountId(account_id))
+    }
+
+    /// A unique `{label}-{seq}-{pid}.sandbox` id. The per-harness `seq` keeps
+    /// accounts distinct within one process; `pid` keeps them distinct across
+    /// the parallel test processes that share an attached node.
+    fn unique_account_id(&self, label: &str) -> Result<AccountId> {
+        let seq = self.account_seq.fetch_add(1, Ordering::Relaxed);
+        format!("{label}-{seq}-{}.sandbox", std::process::id())
+            .parse()
+            .with_context(|| format!("invalid account id for label `{label}`"))
     }
 
     pub fn gateway_client(&self) -> NearClient {
@@ -142,22 +211,17 @@ impl SandboxHarness {
             .insert(account_id, signer);
     }
 
-    /// Next value of the unique-account-id counter.
-    pub(crate) fn next_account_seq(&self) -> u64 {
-        self.account_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-
     pub async fn ft_wasm(&self) -> Vec<u8> {
         FtController::wasm().await.to_vec()
     }
 
     pub async fn deploy_mt(&self, account_id: AccountId) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
-            account_id.clone(),
+            id.clone(),
             signer,
             test_utils::controller::mt::MtController::wasm()
                 .await
@@ -166,22 +230,23 @@ impl SandboxHarness {
             serde_json::json!({}),
         )
         .await?;
-        Ok(account_id)
+        Ok(id)
     }
 
     pub async fn deploy_receiver(&self, account_id: AccountId) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
-            account_id.clone(),
+            id.clone(),
             signer,
             ReceiverController::wasm().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
         .await?;
-        Ok(account_id)
+        Ok(id)
     }
 
     pub async fn deploy_ref_finance(
@@ -189,26 +254,27 @@ impl SandboxHarness {
         account_id: AccountId,
         pools: Vec<PoolInfo>,
     ) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
-            account_id.clone(),
+            id.clone(),
             signer,
             RefFinanceController::wasm().await.to_vec(),
             "new",
             serde_json::json!({ "pools": pools }),
         )
         .await?;
-        Ok(account_id)
+        Ok(id)
     }
 
     pub async fn deploy_registry(&self) -> Result<AccountId> {
-        let account_id: AccountId = "registry.near".parse()?;
+        let account_id = self.registry_signer_account_id.0.clone();
         deploy_contract(
             &self.network,
             account_id.clone(),
-            self.registry_signer.clone(),
+            account_signer()?,
             RegistryController::wasm().await.to_vec(),
             "new",
             serde_json::json!({}),
@@ -227,14 +293,8 @@ impl SandboxHarness {
         &self,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
-        let borrow_asset_id: AccountId = "borrow-ft.near".parse()?;
-        let collateral_asset_id: AccountId = "collateral-ft.near".parse()?;
-        let oracle_id: AccountId = "oracle.near".parse()?;
-        let market_id: AccountId = "market.near".parse()?;
-
-        let borrow_signer =
-            create_account_signer(&self.sandbox, &borrow_asset_id, NearToken::from_near(100))
-                .await?;
+        let balance = NearToken::from_near(100);
+        let (borrow_asset_id, borrow_signer) = self.create_account("borrow-ft", balance).await?;
         deploy_contract(
             &self.network,
             borrow_asset_id.clone(),
@@ -245,12 +305,8 @@ impl SandboxHarness {
         )
         .await?;
 
-        let collateral_signer = create_account_signer(
-            &self.sandbox,
-            &collateral_asset_id,
-            NearToken::from_near(100),
-        )
-        .await?;
+        let (collateral_asset_id, collateral_signer) =
+            self.create_account("collateral-ft", balance).await?;
         deploy_contract(
             &self.network,
             collateral_asset_id.clone(),
@@ -261,8 +317,7 @@ impl SandboxHarness {
         )
         .await?;
 
-        let oracle_signer =
-            create_account_signer(&self.sandbox, &oracle_id, NearToken::from_near(100)).await?;
+        let (oracle_id, oracle_signer) = self.create_account("oracle", balance).await?;
         deploy_contract(
             &self.network,
             oracle_id.clone(),
@@ -282,8 +337,7 @@ impl SandboxHarness {
         );
         customize(&mut configuration);
 
-        let market_signer =
-            create_account_signer(&self.sandbox, &market_id, NearToken::from_near(100)).await?;
+        let (market_id, market_signer) = self.create_account("market", balance).await?;
         deploy_contract(
             &self.network,
             market_id.clone(),
@@ -363,23 +417,25 @@ impl SandboxHarness {
     }
 
     pub async fn deploy_mock_oracle(&self, account_id: AccountId) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
-            account_id.clone(),
+            id.clone(),
             signer,
             MockOracleController::wasm().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
         .await?;
-        Ok(account_id)
+        Ok(id)
     }
 
     pub async fn deploy_redstone_adapter(&self, account_id: AccountId) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (account_id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         let mut config = redstone_config::prod();
         config.max_timestamp_delay_ms = u64::MAX;
         config.max_timestamp_ahead_ms = u64::MAX;
@@ -453,18 +509,19 @@ impl SandboxHarness {
         account_id: AccountId,
         oracle_id: AccountId,
     ) -> Result<AccountId> {
-        let signer =
-            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let (id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
-            account_id.clone(),
+            id.clone(),
             signer,
             LstOracleController::wasm().await.to_vec(),
             "new",
             serde_json::json!({ "oracle_id": oracle_id }),
         )
         .await?;
-        Ok(account_id)
+        Ok(id)
     }
 
     pub async fn create_lst_transformer(
@@ -528,9 +585,9 @@ impl SandboxHarness {
         oracle_id: AccountId,
         admin_id: AccountId,
     ) -> Result<AccountId> {
-        let governance_id: AccountId = "governance.near".parse()?;
-        let deploy_signer =
-            create_account_signer(&self.sandbox, &governance_id, NearToken::from_near(100)).await?;
+        let (governance_id, deploy_signer) = self
+            .create_account("governance", NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
             governance_id.clone(),
@@ -677,39 +734,60 @@ fn zero_ttl_config() -> TtlConfig {
     }
 }
 
-async fn create_account_signer(
-    sandbox: &Sandbox,
-    account_id: &AccountId,
-    initial_balance: NearToken,
-) -> Result<Arc<Signer>> {
-    let secret_key = test_secret_key()?;
-    sandbox
-        .create_account(account_id.clone())
-        .initial_balance(initial_balance)
-        .public_key(secret_key.public_key().to_string())
-        .send()
-        .await?;
-
-    Signer::from_secret_key(secret_key).context("failed to initialize account signer")
+/// Choose the harness mode from the environment. `NEAR_SANDBOX_RPC_URL` set →
+/// attach to an out-of-band node (no owned `Sandbox`); otherwise launch one.
+async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
+    if let Ok(rpc_url) = std::env::var("NEAR_SANDBOX_RPC_URL") {
+        let network = NetworkConfig::from_rpc_url(
+            "sandbox",
+            rpc_url
+                .parse()
+                .with_context(|| format!("invalid NEAR_SANDBOX_RPC_URL: {rpc_url}"))?,
+        );
+        Ok((None, network))
+    } else {
+        let sandbox = Sandbox::start_sandbox().await?;
+        let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
+        Ok((Some(sandbox), network))
+    }
 }
 
-async fn create_managed_signer_account(
-    sandbox: &Sandbox,
-    account_id: &str,
-    label: &str,
-) -> Result<(ManagedAccountId, ManagedSigner)> {
-    let account_id = ManagedAccountId(account_id.parse()?);
-    let secret_key = test_secret_key()?;
-    sandbox
-        .create_account(account_id.0.clone())
-        .initial_balance(NearToken::from_near(100))
-        .public_key(secret_key.public_key().to_string())
-        .send()
-        .await?;
-    let signer = ManagedSigner::new([secret_key])
-        .await
-        .with_context(|| format!("failed to initialize {label} signer"))?;
-    Ok((account_id, signer))
+/// Create `account_id` as a sub-account of the genesis root, funded with
+/// `balance` and a full-access key derived from `secret_key`.
+async fn create_funded_account(
+    network: &NetworkConfig,
+    root_signer: &Arc<Signer>,
+    account_id: &AccountId,
+    secret_key: &SecretKey,
+    balance: NearToken,
+) -> Result<()> {
+    Account::create_account(account_id.clone())
+        .fund_myself(DEFAULT_GENESIS_ACCOUNT.to_owned(), balance)
+        .with_public_key(secret_key.public_key())
+        .with_signer(root_signer.clone())
+        .send_to(network)
+        .await?
+        .assert_success();
+    Ok(())
+}
+
+/// The genesis root account's secret key (deterministic across sandbox runs).
+fn genesis_secret_key() -> Result<SecretKey> {
+    DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
+        .parse()
+        .context("failed to parse genesis private key")
+}
+
+/// A signer over the deterministic test key, valid for any harness-created
+/// account (they all share that key).
+fn account_signer() -> Result<Arc<Signer>> {
+    Signer::from_secret_key(test_secret_key()?).context("failed to initialize account signer")
+}
+
+/// The label segment of a requested id (e.g. `kind-pyth.near` → `kind-pyth`),
+/// used to namespace caller-supplied contract ids into the harness instance.
+fn label_of(account_id: &AccountId) -> &str {
+    account_id.as_str().split('.').next().unwrap_or("account")
 }
 
 async fn deploy_contract(

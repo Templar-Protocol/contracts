@@ -18,13 +18,12 @@ use templar_common::{
 };
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{market, storage, tx};
-use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::{
     common::{ContractArgs, WriteOperationResult},
     ContractMethodName, ManagedAccountId, NearGas, U128,
 };
 
-use crate::sandbox::{test_secret_key, SandboxHarness};
+use crate::sandbox::SandboxHarness;
 
 /// A market deployed by [`SandboxHarness::deploy_full_market`], with the asset
 /// and oracle accounts resolved from its configuration for convenient access.
@@ -50,24 +49,12 @@ impl SandboxHarness {
     }
 
     /// Create a funded sub-account with a unique id and register its signer so
-    /// the harness can drive operations as it. Owned-mode (top-level `*.near`).
+    /// the harness can drive operations as it.
     pub async fn create_user(&self, prefix: &str) -> Result<ManagedAccountId> {
-        let seq = self.next_account_seq();
-        let account_id: AccountId = format!("{prefix}-{seq}.near").parse()?;
-        let secret_key = test_secret_key()?;
-        self.sandbox
-            .create_account(account_id.clone())
-            .initial_balance(NearToken::from_near(100))
-            .public_key(secret_key.public_key().to_string())
-            .send()
+        let (account_id, _) = self
+            .create_account(prefix, NearToken::from_near(100))
             .await?;
-
-        let managed = ManagedSigner::new([secret_key])
-            .await
-            .context("failed to initialize user signer")?;
-        let managed_account_id = ManagedAccountId(account_id);
-        self.register_signer(managed_account_id.clone(), managed);
-        Ok(managed_account_id)
+        Ok(ManagedAccountId(account_id))
     }
 
     /// Deploy a market (plus its FT pair and mock oracle) and resolve the asset

@@ -5,17 +5,17 @@
 //! `cargo nextest run -p templar-gateway-testing --run-ignored all`.
 
 use anyhow::{Context, Result};
+use rstest::rstest;
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_testing::{harness, SandboxHarness};
 use test_utils::to_price;
 
+#[rstest]
 #[tokio::test]
 #[ignore = "requires NEAR sandbox"]
-async fn fast_borrow_is_not_free() -> Result<()> {
-    let harness = SandboxHarness::start().await?;
-
+async fn fast_borrow_is_not_free(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy =
