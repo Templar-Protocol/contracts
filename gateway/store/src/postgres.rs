@@ -430,6 +430,10 @@ async fn insert_operation_steps(
             templar_gateway_core::CurrentStep::Failed {
                 transaction,
                 tx_hash,
+                // The failure reason is surfaced in-process (in the returned
+                // operation record); it is not persisted, so a step resumed from
+                // the store reports `failure: None`.
+                failure: _,
             } => {
                 insert_step_row(
                     tx,
@@ -656,6 +660,7 @@ fn apply_step_row(
             *current_step = Some(templar_gateway_core::CurrentStep::Failed {
                 transaction,
                 tx_hash,
+                failure: None,
             });
         }
         OperationStepStateRow::NotStarted => remaining_steps.push_back(transaction),
@@ -761,6 +766,7 @@ mod tests {
                 current_step: Some(CurrentStep::Failed {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
+                    failure: None,
                 }),
                 remaining_steps: VecDeque::new(),
             },
@@ -788,6 +794,7 @@ mod tests {
                 current_step: Some(CurrentStep::Failed {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
+                    failure: None,
                 }),
                 remaining_steps: VecDeque::new(),
             },

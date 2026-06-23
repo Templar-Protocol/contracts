@@ -108,6 +108,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::market::Create);
         $callback!($crate::market::Borrow);
         $callback!($crate::market::Supply);
+        $callback!($crate::market::Collateralize);
         $callback!($crate::market::WithdrawCollateral);
         $callback!($crate::market::ApplyInterest);
         $callback!($crate::market::Repay);

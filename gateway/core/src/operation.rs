@@ -102,6 +102,7 @@ pub enum CurrentStep {
     Failed {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
+        failure: Option<String>,
     },
 }
 
@@ -254,7 +255,12 @@ impl StoredOperation {
                 CurrentStep::Submitted { tx_hash, .. } => {
                     StepStatus::Submitted { tx_hash: *tx_hash }
                 }
-                CurrentStep::Failed { tx_hash, .. } => StepStatus::Failed { tx_hash: *tx_hash },
+                CurrentStep::Failed {
+                    tx_hash, failure, ..
+                } => StepStatus::Failed {
+                    tx_hash: *tx_hash,
+                    failure: failure.clone(),
+                },
             };
             steps.push(templar_gateway_types::TransactionStepRecord {
                 index: next_index,
@@ -328,10 +334,11 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub async fn fail(self, tx_hash: CryptoHash) -> GatewayResult<()> {
+    pub async fn fail(self, tx_hash: CryptoHash, failure: Option<String>) -> GatewayResult<()> {
         self.operation.current_step = Some(CurrentStep::Failed {
             transaction: self.transaction,
             tx_hash,
+            failure,
         });
         self.store.save_operation(self.operation.clone()).await
     }
