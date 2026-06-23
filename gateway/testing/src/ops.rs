@@ -266,6 +266,24 @@ impl SandboxHarness {
         .await
     }
 
+    /// Attempt to deposit collateral, returning the (possibly refunded/failed)
+    /// operation result for tests where the contract rejects it.
+    pub async fn try_collateralize(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            market::Collateralize {
+                market_id: market.market_id.clone(),
+                amount: CollateralAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
     /// Borrow against deposited collateral.
     pub async fn borrow(
         &self,
@@ -389,6 +407,26 @@ impl SandboxHarness {
         account_id: Option<AccountId>,
     ) -> Result<WriteOperationResult> {
         self.execute(
+            user,
+            market::Repay {
+                market_id: market.market_id.clone(),
+                amount: BorrowAssetAmount::new(amount),
+                account_id,
+            },
+        )
+        .await
+    }
+
+    /// Attempt to repay, returning the (possibly refunded/failed) operation
+    /// result for tests where the contract rejects it (e.g. while liquidatable).
+    pub async fn try_repay(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+        account_id: Option<AccountId>,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
             user,
             market::Repay {
                 market_id: market.market_id.clone(),
