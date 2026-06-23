@@ -89,13 +89,13 @@ enum WithdrawalQueueOutcome {
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct PendingWithdrawalHead {
-    id: u64,
-    owner: Address,
-    receiver: Address,
-    escrow_shares: u128,
-    expected_assets: u128,
-    requested_at_ns: TimestampNs,
+pub(crate) struct PendingWithdrawalHead {
+    pub(crate) id: u64,
+    pub(crate) owner: Address,
+    pub(crate) receiver: Address,
+    pub(crate) escrow_shares: u128,
+    pub(crate) expected_assets: u128,
+    pub(crate) requested_at_ns: TimestampNs,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -109,20 +109,31 @@ enum WithdrawalHeadOutcome {
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct PayoutSettlement {
-    burn_shares: u128,
-    refund_shares: u128,
-    completed_amount: u128,
-    success: bool,
+pub(crate) struct PayoutSettlement {
+    pub(crate) burn_shares: u128,
+    pub(crate) refund_shares: u128,
+    pub(crate) completed_amount: u128,
+    pub(crate) success: bool,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
+#[derive(Clone, PartialEq, Eq)]
+#[cfg(any(feature = "action-recovery", test))]
+pub(crate) struct EmergencyResetOutcome {
+    pub(crate) state: VaultState,
+    pub(crate) op_id: u64,
+    pub(crate) from_code: u32,
+    pub(crate) refund_owner: Option<Address>,
+    pub(crate) refund_shares: u128,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct WithdrawalRequestPlan {
-    owner: Address,
-    receiver: Address,
-    shares: u128,
-    expected_assets: u128,
+pub(crate) struct WithdrawalRequestPlan {
+    pub(crate) owner: Address,
+    pub(crate) receiver: Address,
+    pub(crate) shares: u128,
+    pub(crate) expected_assets: u128,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
@@ -614,7 +625,7 @@ fn check_op_id(expected: u64, actual: u64) -> Result<(), KernelError> {
 ///
 /// Used by both `AbortWithdrawing` and `SettlePayout` to ensure consistency
 /// between the op-state and the queue.
-fn validate_queue_head(
+pub(crate) fn validate_queue_head(
     queue: &WithdrawQueue,
     request_id: u64,
     owner: &Address,
@@ -914,7 +925,7 @@ fn dequeue_skipped_withdrawal(
 }
 
 #[inline]
-fn pending_withdrawal_head(state: &VaultState) -> Option<PendingWithdrawalHead> {
+pub(crate) fn pending_withdrawal_head(state: &VaultState) -> Option<PendingWithdrawalHead> {
     state
         .withdraw_queue
         .head()
@@ -962,7 +973,7 @@ fn has_actionable_withdrawal_liquidity(expected_assets: u128, available_assets: 
 }
 
 #[inline]
-fn withdrawal_request_from_head(
+pub(crate) fn withdrawal_request_from_head(
     state: &mut VaultState,
     head: PendingWithdrawalHead,
 ) -> WithdrawalRequest {
@@ -1011,6 +1022,46 @@ fn plan_withdrawal_request(
         shares,
         expected_assets,
     })
+}
+
+#[inline]
+pub(crate) fn apply_withdrawal_request_plan(
+    mut state: VaultState,
+    config: &VaultConfig,
+    self_id: &Address,
+    request_plan: WithdrawalRequestPlan,
+    now_ns: TimestampNs,
+) -> Result<KernelResult, KernelError> {
+    let id = state
+        .withdraw_queue
+        .enqueue(
+            request_plan.owner,
+            request_plan.receiver,
+            request_plan.shares,
+            request_plan.expected_assets,
+            now_ns,
+            config.max_pending_withdrawals,
+        )
+        .map_err(map_queue_error)?;
+
+    let effects = vec![
+        KernelEffect::TransferShares {
+            from: request_plan.owner,
+            to: *self_id,
+            shares: request_plan.shares,
+        },
+        KernelEffect::EmitEvent {
+            event: crate::effects::KernelEvent::WithdrawalRequested {
+                id,
+                owner: request_plan.owner,
+                receiver: request_plan.receiver,
+                shares: request_plan.shares,
+                expected_assets: request_plan.expected_assets,
+            },
+        },
+    ];
+
+    Ok(KernelResult::new(state, effects))
 }
 
 #[inline]
@@ -1221,7 +1272,7 @@ fn handle_atomic_redeem(
 /// Enqueue a withdrawal request: validate, compute expected assets, escrow shares.
 #[allow(clippy::too_many_arguments)]
 fn handle_request_withdraw(
-    mut state: VaultState,
+    state: VaultState,
     config: &VaultConfig,
     restrictions: Option<&Restrictions>,
     self_id: &Address,
@@ -1247,36 +1298,7 @@ fn handle_request_withdraw(
     let request_plan =
         plan_withdrawal_request(&state, config, owner, receiver, shares, min_assets_out)?;
 
-    let id = state
-        .withdraw_queue
-        .enqueue(
-            request_plan.owner,
-            request_plan.receiver,
-            request_plan.shares,
-            request_plan.expected_assets,
-            now_ns,
-            config.max_pending_withdrawals,
-        )
-        .map_err(map_queue_error)?;
-
-    let effects = vec![
-        KernelEffect::TransferShares {
-            from: request_plan.owner,
-            to: *self_id,
-            shares: request_plan.shares,
-        },
-        KernelEffect::EmitEvent {
-            event: crate::effects::KernelEvent::WithdrawalRequested {
-                id,
-                owner: request_plan.owner,
-                receiver: request_plan.receiver,
-                shares: request_plan.shares,
-                expected_assets: request_plan.expected_assets,
-            },
-        },
-    ];
-
-    Ok(KernelResult::new(state, effects))
+    apply_withdrawal_request_plan(state, config, self_id, request_plan, now_ns)
 }
 
 /// Execute the next queued withdrawal after cooldown.
@@ -1547,7 +1569,7 @@ fn handle_abort_withdrawing(
 }
 
 #[inline]
-fn plan_payout_settlement(
+pub(crate) fn plan_payout_settlement(
     payout: &PayoutState,
     outcome: PayoutOutcome,
 ) -> Result<PayoutSettlement, KernelError> {
@@ -1576,7 +1598,7 @@ fn plan_payout_settlement(
     }
 }
 
-fn apply_payout_settlement(
+pub(crate) fn apply_payout_settlement(
     state: &mut VaultState,
     payout: &PayoutState,
     settlement: PayoutSettlement,
@@ -1756,10 +1778,9 @@ fn handle_refresh_fees(
 }
 
 #[cfg(any(feature = "action-recovery", test))]
-fn handle_emergency_reset(
+pub(crate) fn plan_emergency_reset(
     mut state: VaultState,
-    self_id: &Address,
-) -> Result<KernelResult, KernelError> {
+) -> Result<EmergencyResetOutcome, KernelError> {
     let prev_state = mem::take(&mut state.op_state);
     let from_code = prev_state.kind_code();
     let op_id = match prev_state.op_id() {
@@ -1771,8 +1792,8 @@ fn handle_emergency_reset(
         }
     };
 
-    let mut effects = Vec::new();
-    let escrow_address = *self_id;
+    let mut refund_owner = None;
+    let mut refund_shares = 0;
 
     match prev_state {
         OpState::Idle => {
@@ -1788,13 +1809,15 @@ fn handle_emergency_reset(
             state.restore_to_idle(alloc.remaining);
         }
         OpState::Withdrawing(w) => {
-            push_refund_shares(&mut effects, escrow_address, w.owner, w.escrow_shares);
+            refund_owner = Some(w.owner);
+            refund_shares = w.escrow_shares;
             // Restore any collected assets back to idle.
             state.restore_to_idle(w.collected);
             state.withdraw_queue.dequeue();
         }
         OpState::Payout(p) => {
-            push_refund_shares(&mut effects, escrow_address, p.owner, p.escrow_shares);
+            refund_owner = Some(p.owner);
+            refund_shares = p.escrow_shares;
             // Restore payout amount back to idle.
             state.restore_to_idle(p.amount);
             state.withdraw_queue.dequeue();
@@ -1803,14 +1826,34 @@ fn handle_emergency_reset(
 
     state.op_state = OpState::Idle;
     state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, state.fee_anchor.timestamp_ns);
+
+    Ok(EmergencyResetOutcome {
+        state,
+        op_id,
+        from_code,
+        refund_owner,
+        refund_shares,
+    })
+}
+
+#[cfg(any(feature = "action-recovery", test))]
+pub(crate) fn handle_emergency_reset(
+    state: VaultState,
+    self_id: &Address,
+) -> Result<KernelResult, KernelError> {
+    let outcome = plan_emergency_reset(state)?;
+    let mut effects = Vec::new();
+    if let Some(owner) = outcome.refund_owner {
+        push_refund_shares(&mut effects, *self_id, owner, outcome.refund_shares);
+    }
     effects.push(KernelEffect::EmitEvent {
         event: KernelEvent::EmergencyResetCompleted {
-            op_id,
-            from_state: from_code,
+            op_id: outcome.op_id,
+            from_state: outcome.from_code,
         },
     });
 
-    Ok(KernelResult::new(state, effects))
+    Ok(KernelResult::new(outcome.state, effects))
 }
 
 /// Apply a kernel action to state, returning updated state and effects.
