@@ -265,6 +265,7 @@ fn needs_caller(raw_args: &[String]) -> bool {
         "extend-ttl",
         "allocate-supply",
         "allocate-withdraw",
+        "abort-withdrawing",
         "refresh-markets",
     ]
     .into_iter()

@@ -146,6 +146,109 @@ Common role terms:
   allow adapters and place them into the typed supply queue before allocations can route through
   them.
 
+### Allocation Through Adapters
+
+Allocation is a two-step mental model:
+
+1. Governance configures which adapter contract serves each market id.
+2. Allocators later move assets by market id and amount; they do not choose an adapter at execution
+   time.
+
+Adapters can exist in the deployment manifest before they are usable by the vault. A Blend or
+custodial adapter becomes an active supply route only after governance adds it to the allowed
+adapter set and binds it into the supply queue:
+
+```sh
+tmplr-soroban-vault governance submit-set-allowed-adapters \
+  --admin GCURATOR_OR_MULTISIG... \
+  --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+
+tmplr-soroban-vault governance submit-set-supply-queue \
+  --admin GCURATOR_OR_MULTISIG... \
+  --entry 0:CBLENDADAPTER... \
+  --entry 1:CCUSTODIALADAPTER...
+```
+
+Each `--entry` is `market_id:adapter_address`. The `market_id` is the same value passed later to
+`curator allocate-supply --market` and `curator allocate-withdraw --market`.
+
+Once setup is accepted, the allocation command is deliberately small:
+
+```sh
+tmplr-soroban-vault curator allocate-supply \
+  --caller GALLOCATOR... \
+  --market 0 \
+  --amount 100 \
+  --asset-decimals 7
+```
+
+The CLI sends a compact vault command containing the caller, market id, amount, and direction. The
+vault resolves the adapter from its stored market binding. For supply, the bound adapter must still
+be in the allowed adapter set. For withdrawal, the vault uses the stored market binding so assets can
+be recovered from an existing route even if governance has removed that adapter from new supply.
+
+The supply queue is typed by market id, not by list position. Reordering the queue does not change
+which adapter a market id uses, and an existing market id cannot be rebound to a different adapter by
+submitting a new queue entry. UIs should present adapter selection as a governance/setup workflow and
+present routine allocation as `direction + market id + amount + caller`.
+
+For cross-chain Templar market routes, keep the accounting boundary at the adapter. The vault does
+not track each off-chain hop after assets leave Stellar, and it does not map individual vault shares
+to a NEAR account, universal account, or market position. User shares are derived from vault NAV:
+`total_assets / total_shares`. The adapter reports the aggregate route NAV back to the vault through
+its `total_assets(asset)` surface, and the vault incorporates that value when allocators supply,
+withdraw, or run `curator refresh-markets`.
+
+Operationally, a Templar route may move assets through custody, bridge or intents infrastructure,
+and a NEAR-side supply position. From the Stellar vault's perspective, that path is one
+adapter-bound market route. Yield is reflected when the route NAV reported by the adapter increases;
+the vault share rate changes from aggregate NAV, not from per-user off-chain positions.
+
+Withdrawals use two different CLI surfaces:
+
+- `curator allocate-withdraw` is an allocator operation. It pulls liquidity back from the adapter
+  bound to a market id by calling the adapter's `progress_withdrawal(vault, asset, amount)`. The
+  `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
+  returned by the adapter.
+- `user request-withdraw` and `user execute-withdraw` are user exit operations. `request-withdraw`
+  queues shares for withdrawal after the configured cooldown. `execute-withdraw` attempts to pay the
+  next ready request from idle vault assets. If idle assets are not sufficient, an allocator first
+  uses `curator allocate-withdraw` to bring liquidity back from one or more market adapters, then
+  `user execute-withdraw` can settle the queued request.
+- `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
+  Use it only when the vault is stuck in `Withdrawing` and operators have identified the operation id
+  to abort.
+
+```sh
+tmplr-soroban-vault curator allocate-withdraw \
+  --caller GALLOCATOR... \
+  --market 0 \
+  --amount 25 \
+  --asset-decimals 7
+
+tmplr-soroban-vault user request-withdraw \
+  --owner GUSER... \
+  --shares 10 \
+  --share-decimals manifest \
+  --min-assets-out 9.9 \
+  --asset-decimals 7
+
+tmplr-soroban-vault user execute-withdraw --operator GUSER...
+
+tmplr-soroban-vault curator abort-withdrawing \
+  --caller GALLOCATOR_OR_SENTINEL... \
+  --op-id 42
+```
+
+Curator commands fall into three groups:
+
+- Allocation: `curator allocate-supply`, `curator allocate-withdraw`, and
+  `curator abort-withdrawing`.
+- Maintenance: `curator refresh-markets`, `curator refresh-fees`, and `curator resync-idle`.
+- Governance conveniences for zero-timelock/local workflows: `curator set-allowed-adapters` and
+  `curator set-supply-queue`. Production or timelocked deployments normally use the matching
+  `governance submit-*` and `governance accept-ready` commands.
+
 For timelocked deployments, submit commands create proposals and `accept-ready` accepts them only
 after the relevant timelock has elapsed. Use `governance queue` and `governance explain` to inspect
 pending proposal ids and readiness.
@@ -466,6 +569,14 @@ tmplr-soroban-vault curator allocate-supply \
   --market 0 \
   --amount 1.25 \
   --asset-decimals 7
+
+# Allocator recovery from an in-flight withdrawing state.
+tmplr-soroban-vault curator abort-withdrawing --caller G... --op-id 42
+
+# Curator maintenance operations.
+tmplr-soroban-vault curator refresh-markets --caller G... --markets 0,1
+tmplr-soroban-vault curator refresh-fees
+tmplr-soroban-vault curator resync-idle
 
 # Submit and optionally accept governance-backed supply queue changes.
 tmplr-soroban-vault curator set-supply-queue \
