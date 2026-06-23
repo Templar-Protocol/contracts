@@ -4,21 +4,20 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient,
 };
 use templar_gateway_methods_spec::proxy_oracle;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle::ListProxies, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle::ListProxies as MethodSpec>::Input,
+        request: proxy_oracle::ListProxies,
         ctx: C,
     ) -> GatewayResult<proxy_oracle::ListProxiesResult> {
         ctx.near_client()
-            .proxy_oracle(request.params.oracle_id)
+            .proxy_oracle(request.oracle_id)
             .list_proxies(ListProxiesArgs {
-                offset: request.params.offset,
-                count: request.params.count,
+                offset: request.offset,
+                count: request.count,
             })
             .await
             .map(|proxies| proxy_oracle::ListProxiesResult { proxies })
@@ -28,10 +27,10 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::ListProxies, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle::GetProxy as MethodSpec>::Input,
+        request: proxy_oracle::GetProxy,
         ctx: C,
     ) -> GatewayResult<proxy_oracle::GetProxyResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .proxy_oracle(params.oracle_id)
             .cached_get_proxy(GetProxyArgs { id: params.id })
@@ -43,10 +42,10 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle::PriceFeedExists, C> for Dispatch {
     async fn dispatch(
-        request: <proxy_oracle::PriceFeedExists as MethodSpec>::Input,
+        request: proxy_oracle::PriceFeedExists,
         ctx: C,
     ) -> GatewayResult<proxy_oracle::PriceFeedExistsResult> {
-        let params = request.params;
+        let params = request;
         ctx.near_client()
             .proxy_oracle(params.oracle_id)
             .price_feed_exists(PriceFeedExistsArgs {

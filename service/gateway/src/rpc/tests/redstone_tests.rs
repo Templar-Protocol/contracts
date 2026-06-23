@@ -15,21 +15,17 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let config = stack
         .controller
-        .request::<redstone::GetConfig>(&ReadRequest {
-            params: redstone::GetConfigParams {
-                oracle_id: oracle_id.clone(),
-            },
+        .request::<redstone::GetConfig>(&redstone::GetConfig {
+            oracle_id: oracle_id.clone(),
         })
         .await?;
     assert!(config.config.signer_count_threshold > 0);
 
     let prices = stack
         .controller
-        .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceDataParams {
-                oracle_id: oracle_id.clone(),
-                feed_ids: vec!["BTC".into()],
-            },
+        .request::<redstone::ReadPriceData>(&redstone::ReadPriceData {
+            oracle_id: oracle_id.clone(),
+            feed_ids: vec!["BTC".into()],
         })
         .await?;
     assert_eq!(prices.entries.len(), 1);
@@ -39,7 +35,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .request::<redstone::SetRole>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: redstone::SetRoleBody {
+            body: redstone::SetRole {
                 oracle_id: oracle_id.clone(),
                 account_id: stack.harness.beneficiary_account_id.clone(),
                 role: redstone::RoleValue::TrustedUpdater,
@@ -54,11 +50,9 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let roles = stack
         .controller
-        .request::<redstone::ListRole>(&ReadRequest {
-            params: redstone::ListRoleParams {
-                oracle_id: oracle_id.clone(),
-                role: redstone::RoleValue::TrustedUpdater,
-            },
+        .request::<redstone::ListRole>(&redstone::ListRole {
+            oracle_id: oracle_id.clone(),
+            role: redstone::RoleValue::TrustedUpdater,
         })
         .await?;
     assert_eq!(
@@ -71,7 +65,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
         .request::<redstone::WritePrices>(&WriteRequest {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
-            body: redstone::WritePricesBody {
+            body: redstone::WritePrices {
                 oracle_id: oracle_id.clone(),
                 feed_ids: vec!["ETH".into()],
                 payload: Base64Bytes(vec![1, 2, 3]),
@@ -85,11 +79,9 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
 
     let written = stack
         .controller
-        .request::<redstone::ReadPriceData>(&ReadRequest {
-            params: redstone::ReadPriceDataParams {
-                oracle_id,
-                feed_ids: vec!["ETH".into()],
-            },
+        .request::<redstone::ReadPriceData>(&redstone::ReadPriceData {
+            oracle_id,
+            feed_ids: vec!["ETH".into()],
         })
         .await?;
     assert_eq!(written.entries.len(), 1);

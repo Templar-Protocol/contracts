@@ -34,32 +34,26 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
 
     let get_oracle_id = stack
         .controller
-        .request::<lst_oracle::GetOracleId>(&ReadRequest {
-            params: lst_oracle::GetOracleIdParams {
-                oracle_id: lst_oracle_id.clone(),
-            },
+        .request::<lst_oracle::GetOracleId>(&lst_oracle::GetOracleId {
+            oracle_id: lst_oracle_id.clone(),
         })
         .await?;
     assert_eq!(get_oracle_id.pyth_oracle_id, pyth_oracle_id);
 
     let list = stack
         .controller
-        .request::<lst_oracle::ListTransformers>(&ReadRequest {
-            params: lst_oracle::ListTransformersParams {
-                oracle_id: lst_oracle_id.clone(),
-                pagination: templar_gateway_types::common::Pagination::default(),
-            },
+        .request::<lst_oracle::ListTransformers>(&lst_oracle::ListTransformers {
+            oracle_id: lst_oracle_id.clone(),
+            pagination: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
     assert_eq!(list.price_ids, vec![transformed_price_id]);
 
     let get = stack
         .controller
-        .request::<lst_oracle::GetTransformer>(&ReadRequest {
-            params: lst_oracle::GetTransformerParams {
-                oracle_id: lst_oracle_id,
-                price_identifier: transformed_price_id,
-            },
+        .request::<lst_oracle::GetTransformer>(&lst_oracle::GetTransformer {
+            oracle_id: lst_oracle_id,
+            price_identifier: transformed_price_id,
         })
         .await?;
     assert_eq!(get.transformer, Some(transformer));

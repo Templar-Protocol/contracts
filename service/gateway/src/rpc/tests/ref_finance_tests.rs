@@ -19,12 +19,10 @@ async fn ref_finance_get_pools_endpoint_works_against_sandbox() -> Result<()> {
 
     let pools = stack
         .controller
-        .request::<ref_finance::GetPools>(&ReadRequest {
-            params: ref_finance::GetPoolsParams {
-                exchange_id,
-                from_index: Some(0),
-                limit: Some(10),
-            },
+        .request::<ref_finance::GetPools>(&ref_finance::GetPools {
+            exchange_id,
+            from_index: Some(0),
+            limit: Some(10),
         })
         .await?;
 

@@ -1,17 +1,16 @@
 use async_trait::async_trait;
 use templar_gateway_core::{DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite};
 use templar_gateway_methods_spec::token;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<token::GetBalanceOf, C> for Dispatch {
     async fn dispatch(
-        request: <token::GetBalanceOf as MethodSpec>::Input,
+        request: token::GetBalanceOf,
         ctx: C,
     ) -> GatewayResult<token::GetBalanceOfResult> {
-        let params = request.params;
+        let params = request;
         let balance = match params.token {
             token::TokenReference::Ft { contract_id } => {
                 ctx.near_client()
@@ -41,10 +40,10 @@ impl<C: HasNearClient> DispatchRead<token::GetBalanceOf, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<token::Transfer, C> for Dispatch {
     async fn plan(
-        request: <token::Transfer as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<token::Transfer>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let token::TransferBody {
+        let token::Transfer {
             token,
             receiver_id,
             amount,
@@ -88,10 +87,10 @@ impl<C: HasNearClient> PlanWrite<token::Transfer, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<token::TransferCall, C> for Dispatch {
     async fn plan(
-        request: <token::TransferCall as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<token::TransferCall>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let token::TransferCallBody {
+        let token::TransferCall {
             token,
             receiver_id,
             amount,

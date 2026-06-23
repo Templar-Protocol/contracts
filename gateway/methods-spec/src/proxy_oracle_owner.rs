@@ -1,9 +1,11 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetOwnerParams {
+/// Get the current proxy oracle owner.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleOwner.getOwner", output = GetOwnerResult)]
+pub struct GetOwner {
     pub oracle_id: near_account_id::AccountId,
 }
 
@@ -12,13 +14,10 @@ pub struct GetOwnerResult {
     pub owner: Option<near_account_id::AccountId>,
 }
 
-read_method_spec!(
-    /// Get the current proxy oracle owner.
-    "proxyOracleOwner.getOwner": GetOwner(GetOwnerParams) -> GetOwnerResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetProposedOwnerParams {
+/// Get the proposed proxy oracle owner.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleOwner.getProposedOwner", output = GetProposedOwnerResult)]
+pub struct GetProposedOwner {
     pub oracle_id: near_account_id::AccountId,
 }
 
@@ -27,35 +26,24 @@ pub struct GetProposedOwnerResult {
     pub proposed_owner: Option<near_account_id::AccountId>,
 }
 
-read_method_spec!(
-    /// Get the proposed proxy oracle owner.
-    "proxyOracleOwner.getProposedOwner": GetProposedOwner(GetProposedOwnerParams) -> GetProposedOwnerResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ProposeOwnerBody {
+/// Propose a new proxy oracle owner.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracleOwner.proposeOwner")]
+pub struct ProposeOwner {
     pub oracle_id: near_account_id::AccountId,
     pub account_id: Option<near_account_id::AccountId>,
 }
-write_method_spec!(
-    /// Propose a new proxy oracle owner.
-    "proxyOracleOwner.proposeOwner": ProposeOwner(ProposeOwnerBody)
-);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AcceptOwnerBody {
+/// Accept proxy oracle ownership.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracleOwner.acceptOwner")]
+pub struct AcceptOwner {
     pub oracle_id: near_account_id::AccountId,
 }
-write_method_spec!(
-    /// Accept proxy oracle ownership.
-    "proxyOracleOwner.acceptOwner": AcceptOwner(AcceptOwnerBody)
-);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RenounceOwnerBody {
+/// Renounce proxy oracle ownership.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracleOwner.renounceOwner")]
+pub struct RenounceOwner {
     pub oracle_id: near_account_id::AccountId,
 }
-write_method_spec!(
-    /// Renounce proxy oracle ownership.
-    "proxyOracleOwner.renounceOwner": RenounceOwner(RenounceOwnerBody)
-);

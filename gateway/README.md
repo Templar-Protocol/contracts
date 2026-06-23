@@ -40,13 +40,16 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 - `account.*`: account state and account lifecycle
 - `contract.*`: generic contract introspection and generic contract view calls
 - `tx.*`: low-level transaction submission and transaction inspection
-- `ft.*`: NEP-141 standard operations
+- `ft.*`: NEP-141 (fungible token) standard operations
+- `mt.*`: NEP-245 (multi-token) standard operations
+- `token.*`: standard-agnostic token operations that dispatch NEP-141 vs NEP-245 internally
 - `storage.*`: NEP-145 standard operations
 - `registry.*`, `market.*`, `ua.*`: protocol/domain-specific operations
 
 ## Guidance
 
 - Prefer a domain namespace over a low-level namespace when the method represents a standard or protocol concept.
+- For token transfers and balances where the token standard is not fixed at the call site (e.g. an asset that may be NEP-141 or NEP-245), prefer the standard-agnostic `token.*` methods over `ft.*`/`mt.*`. They dispatch on the standard internally, so a caller cannot pick the wrong one.
 - Prefer first-class typed methods when permissioning or validation matters.
 - Use `contract.viewFunction` only for generic contract views that do not deserve a more specific typed RPC.
 

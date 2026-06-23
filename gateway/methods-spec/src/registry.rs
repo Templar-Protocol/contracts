@@ -1,13 +1,15 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::Pagination, contract::ContractKind, primitive::PublicKey, Base64Bytes, NearToken,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListDeploymentsParams {
+/// List deployments in a registry.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.listDeployments", output = ListDeploymentsResult)]
+pub struct ListDeployments {
     pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
@@ -18,26 +20,20 @@ pub struct ListDeploymentsResult {
     pub account_ids: Vec<AccountId>,
 }
 
-read_method_spec!(
-    /// List deployments in a registry.
-    "registry.listDeployments": ListDeployments(ListDeploymentsParams) -> ListDeploymentsResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListDeploymentsByKindParams {
+/// List deployments in a registry filtered by contract kind.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.listDeploymentsByKind", output = ListDeploymentsResult)]
+pub struct ListDeploymentsByKind {
     pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
     pub kind: ContractKind,
 }
 
-read_method_spec!(
-    /// List deployments in a registry filtered by contract kind.
-    "registry.listDeploymentsByKind": ListDeploymentsByKind(ListDeploymentsByKindParams) -> ListDeploymentsResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ListVersionsParams {
+/// List versions in a registry.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.listVersions", output = ListVersionsResult)]
+pub struct ListVersions {
     pub registry_id: AccountId,
     #[serde(flatten)]
     pub args: Pagination,
@@ -48,13 +44,10 @@ pub struct ListVersionsResult {
     pub values: Vec<String>,
 }
 
-read_method_spec!(
-    /// List versions in a registry.
-    "registry.listVersions": ListVersions(ListVersionsParams) -> ListVersionsResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetDeploymentParams {
+/// Get a deployment record from a registry.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "registry.getDeployment", output = GetDeploymentResult)]
+pub struct GetDeployment {
     pub registry_id: AccountId,
     pub account_id: AccountId,
 }
@@ -64,13 +57,10 @@ pub struct GetDeploymentResult {
     pub deployment: Option<templar_common::registry::Deployment>,
 }
 
-read_method_spec!(
-    /// Get a deployment record from a registry.
-    "registry.getDeployment": GetDeployment(GetDeploymentParams) -> GetDeploymentResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct AddVersionBody {
+/// Add a deployable version to a registry.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "registry.addVersion")]
+pub struct AddVersion {
     pub registry_id: AccountId,
     pub version_key: String,
     pub deploy_mode: templar_common::registry::DeployMode,
@@ -78,13 +68,10 @@ pub struct AddVersionBody {
     pub deposit: NearToken,
 }
 
-write_method_spec!(
-    /// Add a deployable version to a registry.
-    "registry.addVersion": AddVersion(AddVersionBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct DeployBody {
+/// Deploy a contract from a registry version.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "registry.deploy")]
+pub struct Deploy {
     pub registry_id: AccountId,
     pub name: String,
     pub version_key: String,
@@ -94,18 +81,10 @@ pub struct DeployBody {
     pub deposit: NearToken,
 }
 
-write_method_spec!(
-    /// Deploy a contract from a registry version.
-    "registry.deploy": Deploy(DeployBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RemoveVersionBody {
+/// Remove a version from a registry.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "registry.removeVersion")]
+pub struct RemoveVersion {
     pub registry_id: AccountId,
     pub version_key: String,
 }
-
-write_method_spec!(
-    /// Remove a version from a registry.
-    "registry.removeVersion": RemoveVersion(RemoveVersionBody)
-);

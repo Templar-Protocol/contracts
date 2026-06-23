@@ -1,11 +1,13 @@
 use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use templar_gateway_macros::{read_method_spec, write_method_spec};
+use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::U128;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GetBalanceOfParams {
+/// Get a fungible token balance.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "ft.getBalanceOf", output = GetBalanceOfResult)]
+pub struct GetBalanceOf {
     pub contract_id: AccountId,
     pub account_id: AccountId,
 }
@@ -15,13 +17,10 @@ pub struct GetBalanceOfResult {
     pub balance: U128,
 }
 
-read_method_spec!(
-    /// Get a fungible token balance.
-    "ft.getBalanceOf": GetBalanceOf(GetBalanceOfParams) -> GetBalanceOfResult
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferBody {
+/// Transfer fungible tokens.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "ft.transfer")]
+pub struct Transfer {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -29,13 +28,10 @@ pub struct TransferBody {
     pub memo: Option<String>,
 }
 
-write_method_spec!(
-    /// Transfer fungible tokens.
-    "ft.transfer": Transfer(TransferBody)
-);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TransferCallBody {
+/// Transfer fungible tokens and call the receiver.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "ft.transferCall")]
+pub struct TransferCall {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub amount: U128,
@@ -43,8 +39,3 @@ pub struct TransferCallBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,
 }
-
-write_method_spec!(
-    /// Transfer fungible tokens and call the receiver.
-    "ft.transferCall": TransferCall(TransferCallBody)
-);

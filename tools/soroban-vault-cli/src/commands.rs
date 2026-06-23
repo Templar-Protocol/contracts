@@ -2299,6 +2299,14 @@ fn run_curator<E: CommandExecutor>(
                 &AllocationDelta::Withdraw(*market, amount),
             )
         }
+        CuratorCommand::AbortWithdrawing { caller, op_id } => execute_vault(
+            stellar,
+            manifest,
+            WireVaultCommand::AbortWithdrawing {
+                caller: caller.to_string(),
+                op_id: *op_id,
+            },
+        ),
         CuratorCommand::RefreshMarkets { caller, markets } => execute_vault(
             stellar,
             manifest,
@@ -4401,8 +4409,9 @@ mod tests {
     use crate::{
         artifacts::ArtifactSpec,
         cli::{
-            ArtifactName, Cli, Commands, DeployArgs, DeployCommand, DeployStackArgs, ExtendTtlArgs,
-            GovernanceArgs, ShareTokenArgs, UserArgs, DEFAULT_CONTRACT_SOURCE_REPO,
+            ArtifactName, Cli, Commands, CuratorArgs, CuratorCommand, DeployArgs, DeployCommand,
+            DeployStackArgs, ExtendTtlArgs, GovernanceArgs, ShareTokenArgs, UserArgs,
+            DEFAULT_CONTRACT_SOURCE_REPO,
         },
         stellar::{CommandExecutor, CommandOutput},
     };
@@ -4586,6 +4595,41 @@ mod tests {
             parse_proposal_id("proposal 1\ntx hash: abcdef9876543210").expect("proposal id");
 
         assert_eq!(proposal_id, 1);
+    }
+
+    #[test]
+    fn curator_abort_withdrawing_encodes_vault_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let cli = base_cli(
+            state,
+            Commands::Curator(CuratorArgs {
+                command: CuratorCommand::AbortWithdrawing {
+                    caller: ACCOUNT.parse().expect("caller"),
+                    op_id: 42,
+                },
+            }),
+        );
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("abort withdrawing");
+
+        let calls = submitted_calls(&executor.calls());
+        let payload = calls
+            .iter()
+            .flat_map(|(_, args)| args.windows(2))
+            .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
+            .expect("payload argument");
+        let bytes = hex::decode(payload).expect("decode payload hex");
+        let command = WireVaultCommand::decode(&bytes).expect("decode vault command");
+        assert_eq!(
+            command,
+            WireVaultCommand::AbortWithdrawing {
+                caller: ACCOUNT.to_string(),
+                op_id: 42,
+            }
+        );
     }
 
     #[test]

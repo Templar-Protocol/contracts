@@ -5,7 +5,6 @@ use templar_gateway_core::{
     OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::registry;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
@@ -15,12 +14,12 @@ where
     C: HasNearClient,
 {
     async fn dispatch(
-        request: <registry::ListDeployments as MethodSpec>::Input,
+        request: registry::ListDeployments,
         ctx: C,
     ) -> GatewayResult<registry::ListDeploymentsResult> {
         ctx.near_client()
-            .registry(request.params.registry_id)
-            .list_deployments(request.params.args)
+            .registry(request.registry_id)
+            .list_deployments(request.args)
             .await
             .map(|account_ids| registry::ListDeploymentsResult { account_ids })
     }
@@ -29,13 +28,13 @@ where
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
     async fn dispatch(
-        request: <registry::GetDeployment as MethodSpec>::Input,
+        request: registry::GetDeployment,
         ctx: C,
     ) -> GatewayResult<registry::GetDeploymentResult> {
         ctx.near_client()
-            .registry(request.params.registry_id)
+            .registry(request.registry_id)
             .get_deployment(GetDeploymentArgs {
-                account_id: request.params.account_id,
+                account_id: request.account_id,
             })
             .await
             .map(|deployment| registry::GetDeploymentResult { deployment })
@@ -45,12 +44,12 @@ impl<C: HasNearClient> DispatchRead<registry::GetDeployment, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<registry::ListVersions, C> for Dispatch {
     async fn dispatch(
-        request: <registry::ListVersions as MethodSpec>::Input,
+        request: registry::ListVersions,
         ctx: C,
     ) -> GatewayResult<registry::ListVersionsResult> {
         ctx.near_client()
-            .registry(request.params.registry_id)
-            .list_versions(request.params.args)
+            .registry(request.registry_id)
+            .list_versions(request.args)
             .await
             .map(|values| registry::ListVersionsResult { values })
     }
@@ -62,10 +61,10 @@ where
     C: HasNearClient,
 {
     async fn dispatch(
-        request: <registry::ListDeploymentsByKind as MethodSpec>::Input,
+        request: registry::ListDeploymentsByKind,
         ctx: C,
     ) -> GatewayResult<registry::ListDeploymentsResult> {
-        let params = request.params;
+        let params = request;
         let account_ids = ctx
             .near_client()
             .registry(params.registry_id)
@@ -94,7 +93,7 @@ where
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<registry::AddVersion, C> for Dispatch {
     async fn plan(
-        request: <registry::AddVersion as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<registry::AddVersion>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -126,7 +125,7 @@ where
     C: HasNearClient,
 {
     async fn plan(
-        request: <registry::Deploy as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<registry::Deploy>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         plan_deploy_from_registry(&ctx, request.signer_account_id, request.body).await
@@ -136,7 +135,7 @@ where
 pub async fn plan_deploy_from_registry<C: HasNearClient>(
     ctx: &C,
     signer_account_id: templar_gateway_types::ManagedAccountId,
-    body: registry::DeployBody,
+    body: registry::Deploy,
 ) -> GatewayResult<OperationPlan> {
     let deposit = body.deposit;
     let registry_version = ctx
@@ -165,7 +164,7 @@ pub async fn plan_deploy_from_registry<C: HasNearClient>(
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<registry::RemoveVersion, C> for Dispatch {
     async fn plan(
-        request: <registry::RemoveVersion as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<registry::RemoveVersion>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;

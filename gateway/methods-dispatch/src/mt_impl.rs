@@ -10,7 +10,6 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::mt;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
@@ -23,11 +22,8 @@ fn approval(approval: Option<mt::MtApproval>) -> Option<Approval> {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetBalanceOf, C> for Dispatch {
-    async fn dispatch(
-        request: <mt::GetBalanceOf as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<mt::GetBalanceOfResult> {
-        let params = request.params;
+    async fn dispatch(request: mt::GetBalanceOf, ctx: C) -> GatewayResult<mt::GetBalanceOfResult> {
+        let params = request;
         let balance = ctx
             .near_client()
             .mt(params.contract_id)
@@ -43,10 +39,10 @@ impl<C: HasNearClient> DispatchRead<mt::GetBalanceOf, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetBatchBalanceOf, C> for Dispatch {
     async fn dispatch(
-        request: <mt::GetBatchBalanceOf as MethodSpec>::Input,
+        request: mt::GetBatchBalanceOf,
         ctx: C,
     ) -> GatewayResult<mt::GetBatchBalanceOfResult> {
-        let params = request.params;
+        let params = request;
         let token_ids = params.token_ids;
         let values = ctx
             .near_client()
@@ -68,11 +64,8 @@ impl<C: HasNearClient> DispatchRead<mt::GetBatchBalanceOf, C> for Dispatch {
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetSupply, C> for Dispatch {
-    async fn dispatch(
-        request: <mt::GetSupply as MethodSpec>::Input,
-        ctx: C,
-    ) -> GatewayResult<mt::GetSupplyResult> {
-        let params = request.params;
+    async fn dispatch(request: mt::GetSupply, ctx: C) -> GatewayResult<mt::GetSupplyResult> {
+        let params = request;
         let supply = ctx
             .near_client()
             .mt(params.contract_id)
@@ -87,10 +80,10 @@ impl<C: HasNearClient> DispatchRead<mt::GetSupply, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<mt::GetBatchSupply, C> for Dispatch {
     async fn dispatch(
-        request: <mt::GetBatchSupply as MethodSpec>::Input,
+        request: mt::GetBatchSupply,
         ctx: C,
     ) -> GatewayResult<mt::GetBatchSupplyResult> {
-        let params = request.params;
+        let params = request;
         let token_ids = params.token_ids;
         let values = ctx
             .near_client()
@@ -112,7 +105,7 @@ impl<C: HasNearClient> DispatchRead<mt::GetBatchSupply, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<mt::Transfer, C> for Dispatch {
     async fn plan(
-        request: <mt::Transfer as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<mt::Transfer>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
@@ -137,7 +130,7 @@ impl<C: HasNearClient> PlanWrite<mt::Transfer, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<mt::TransferCall, C> for Dispatch {
     async fn plan(
-        request: <mt::TransferCall as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<mt::TransferCall>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;

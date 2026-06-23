@@ -31,14 +31,13 @@ pub trait DispatchRead<Spec, Context>: Send + 'static
 where
     Spec: MethodSpec,
 {
-    async fn dispatch(request: Spec::Input, context: Context) -> GatewayResult<Spec::Output>;
+    async fn dispatch(request: Spec, context: Context) -> GatewayResult<Spec::Output>;
 }
 
 #[async_trait]
 pub trait PlanWrite<Spec, Context>: Send + 'static
 where
     Spec: MethodSpec<Output = WriteOperationResult>,
-    Spec::Input: HasIdempotencyKey + HasSignerAccountId,
 {
-    async fn plan(request: Spec::Input, context: Context) -> GatewayResult<OperationPlan>;
+    async fn plan(request: WriteRequest<Spec>, context: Context) -> GatewayResult<OperationPlan>;
 }

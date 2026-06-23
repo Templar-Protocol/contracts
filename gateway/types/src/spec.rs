@@ -7,8 +7,11 @@ pub enum MethodKind {
     Write,
 }
 
-pub trait MethodSpec {
-    type Input: Serialize + DeserializeOwned + JsonSchema + Clone + Send + 'static;
+/// A gateway method. The implementing type *is* the method input — reads
+/// dispatch on it directly, writes wrap it in a [`WriteRequest`].
+///
+/// [`WriteRequest`]: crate::common::WriteRequest
+pub trait MethodSpec: Serialize + DeserializeOwned + JsonSchema + Clone + Send + 'static {
     type Output: Serialize + JsonSchema + Clone + Send + 'static;
 
     const RPC_METHOD: &'static str;

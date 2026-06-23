@@ -4548,14 +4548,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "near-contract-standards",
- "near-crypto",
- "near-primitives",
- "near-sdk",
+ "near-account-id",
+ "near-api",
  "templar-common",
+ "templar-gateway-client",
+ "templar-gateway-methods-spec",
  "templar-gateway-types",
- "templar-tools-common",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -13215,6 +13213,26 @@ dependencies = [
  "templar-soroban-custodial-adapter",
  "templar-soroban-runtime",
  "templar-vault-kernel",
+]
+
+[[package]]
+name = "templar-gateway-catalog"
+version = "0.1.0"
+dependencies = [
+ "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-spec",
+ "templar-gateway-types",
+]
+
+[[package]]
+name = "templar-gateway-client"
+version = "0.1.0"
+dependencies = [
+ "near-api",
+ "templar-gateway-core",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-store",
+ "templar-gateway-types",
 ]
 
 [[package]]

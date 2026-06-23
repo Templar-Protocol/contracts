@@ -20,10 +20,9 @@ impl TestController {
         &self.rpc_url
     }
 
-    pub async fn request<Spec>(&self, params: &Spec::Input) -> Result<Spec::Output>
+    pub async fn request<Spec>(&self, params: &impl serde::Serialize) -> Result<Spec::Output>
     where
         Spec: MethodSpec,
-        Spec::Input: serde::Serialize,
         Spec::Output: DeserializeOwned,
     {
         let response = self

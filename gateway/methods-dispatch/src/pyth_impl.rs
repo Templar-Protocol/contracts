@@ -6,7 +6,6 @@ use templar_gateway_core::{
     plan_pyth_update, DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::pyth;
-use templar_gateway_types::MethodSpec;
 
 use crate::Dispatch;
 
@@ -29,10 +28,10 @@ fn prices_in_request_order(
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesNoOlderThan, C> for Dispatch {
     async fn dispatch(
-        request: <pyth::ListEmaPricesNoOlderThan as MethodSpec>::Input,
+        request: pyth::ListEmaPricesNoOlderThan,
         ctx: C,
     ) -> GatewayResult<pyth::ListEmaPricesNoOlderThanResult> {
-        let params = request.params;
+        let params = request;
         let price_ids = params.price_ids;
         let response = ctx
             .near_client()
@@ -51,10 +50,10 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesNoOlderThan, C> for Dispa
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesUnsafe, C> for Dispatch {
     async fn dispatch(
-        request: <pyth::ListEmaPricesUnsafe as MethodSpec>::Input,
+        request: pyth::ListEmaPricesUnsafe,
         ctx: C,
     ) -> GatewayResult<pyth::ListEmaPricesUnsafeResult> {
-        let params = request.params;
+        let params = request;
         let price_ids = params.price_ids;
         let response = ctx
             .near_client()
@@ -72,7 +71,7 @@ impl<C: HasNearClient> DispatchRead<pyth::ListEmaPricesUnsafe, C> for Dispatch {
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<pyth::UpdatePriceFeeds, C> for Dispatch {
     async fn plan(
-        request: <pyth::UpdatePriceFeeds as MethodSpec>::Input,
+        request: templar_gateway_types::common::WriteRequest<pyth::UpdatePriceFeeds>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
