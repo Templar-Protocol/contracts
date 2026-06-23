@@ -13,20 +13,18 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
-near-crypto = { workspace = true }
-near-jsonrpc-client = { workspace = true }
-near-jsonrpc-primitives = { workspace = true }
-near-primitives = { workspace = true }
-near-sdk = { workspace = true, features = ["non-contract-usage"] }
-templar-common = { workspace = true }
-thiserror = { workspace = true }
+near-account-id = { workspace = true }
+near-api = { workspace = true }
+templar-common = { workspace = true, features = ["rpc"] }
+templar-gateway-client = { workspace = true }
+templar-gateway-methods-spec = { workspace = true }
+templar-gateway-types = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-base64 = { workspace = true }
-wiremock = { workspace = true }
+near-crypto = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
