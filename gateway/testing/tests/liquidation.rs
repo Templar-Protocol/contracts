@@ -1,11 +1,11 @@
-//! Ported from `contract/market/tests/liquidation.rs` (core liquidation flows).
+//! Ported from `contract/market/tests/liquidation.rs`.
 //!
 //! Rejected liquidations pay via `ft_transfer_call`, so the contract's rejection
 //! is refunded and asserted here as "no effect" (balances + position unchanged).
 //! `liquidatable_collateral_fmv`/`_with_spread` are harness helpers mirroring the
 //! retired controller. The interest-only case advances time with `fast_forward`
-//! instead of sleeping. The yield-distribution (`good_debt_under_mcr`), partial,
-//! and extreme-price cases are ported separately.
+//! instead of sleeping; the extreme-price cases set raw pyth prices with explicit
+//! exponents.
 
 use anyhow::{Context, Result};
 use near_token::NearToken;
