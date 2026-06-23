@@ -395,6 +395,57 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
 }
 
 #[async_trait]
+impl<C: HasNearClient> PlanWrite<market::Collateralize, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<market::Collateralize>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let configuration = ctx
+            .near_client()
+            .market(body.market_id.clone())
+            .cached_get_configuration()
+            .await?;
+        let mut steps = Vec::new();
+
+        if let Some(asset_id) = configuration.collateral_asset.clone().into_nep141() {
+            if let Some(tx_result) = ensure_storage_registration(
+                &ctx,
+                request.signer_account_id.clone(),
+                asset_id,
+                body.market_id.clone(),
+            )
+            .await?
+            {
+                steps.push(tx_result);
+            }
+        }
+
+        if let Some(tx_result) = ensure_storage_registration(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.market_id.clone(),
+            request.signer_account_id.0.clone(),
+        )
+        .await?
+        {
+            steps.push(tx_result);
+        }
+
+        steps.push(transfer_call_asset(
+            &ctx,
+            request.signer_account_id,
+            configuration.collateral_asset,
+            body.market_id,
+            body.amount,
+            &DepositMsg::Collateralize,
+        )?);
+
+        Ok(OperationPlan { steps })
+    }
+}
+
+#[async_trait]
 impl<C: HasNearClient> PlanWrite<market::WithdrawCollateral, C> for Dispatch {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<market::WithdrawCollateral>,

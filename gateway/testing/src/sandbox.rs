@@ -35,10 +35,17 @@ pub struct SandboxHarness {
     pub registry_signer_account_id: ManagedAccountId,
     pub universal_account_signer_account_id: ManagedAccountId,
     pub proxy_oracle_signer_account_id: ManagedAccountId,
-    pub gateway_signers: HashMap<ManagedAccountId, ManagedSigner>,
     registry_signer: Arc<Signer>,
     pub ft_contract_id: AccountId,
     pub beneficiary_account_id: AccountId,
+    /// Every account the harness can sign as: the fixed gateway operator
+    /// accounts seeded at [`start`](Self::start), plus accounts created on
+    /// demand during a test (users, extra contracts). Used both to seed the
+    /// gateway service under test (see [`Self::gateway_signers`]) and to drive
+    /// the direct [`Client`](templar_gateway_client::Client).
+    signers: std::sync::Mutex<HashMap<ManagedAccountId, ManagedSigner>>,
+    /// Monotonic counter for minting unique on-demand account ids.
+    account_seq: std::sync::atomic::AtomicU64,
 }
 
 impl SandboxHarness {
@@ -101,15 +108,44 @@ impl SandboxHarness {
             registry_signer_account_id,
             universal_account_signer_account_id,
             proxy_oracle_signer_account_id,
-            gateway_signers,
             registry_signer: registry_deploy_signer,
             ft_contract_id,
             beneficiary_account_id,
+            signers: std::sync::Mutex::new(gateway_signers),
+            account_seq: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     pub fn gateway_client(&self) -> NearClient {
         NearClient::new(self.network.clone())
+    }
+
+    /// Snapshot of the gateway operator signers (and any on-demand accounts) as
+    /// the [`ManagedSigner`] map the runtime [`GatewayService`] expects.
+    ///
+    /// [`GatewayService`]: templar_gateway_runtime
+    #[must_use]
+    pub fn gateway_signers(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+        self.signers.lock().expect("signers mutex poisoned").clone()
+    }
+
+    /// Snapshot of every (account, signer) the harness can sign as.
+    pub(crate) fn signers_snapshot(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+        self.signers.lock().expect("signers mutex poisoned").clone()
+    }
+
+    /// Register a signer for an on-demand account.
+    pub(crate) fn register_signer(&self, account_id: ManagedAccountId, signer: ManagedSigner) {
+        self.signers
+            .lock()
+            .expect("signers mutex poisoned")
+            .insert(account_id, signer);
+    }
+
+    /// Next value of the unique-account-id counter.
+    pub(crate) fn next_account_seq(&self) -> u64 {
+        self.account_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn ft_wasm(&self) -> Vec<u8> {
@@ -182,6 +218,15 @@ impl SandboxHarness {
     }
 
     pub async fn deploy_market(&self) -> Result<(AccountId, MarketConfiguration)> {
+        self.deploy_market_with(|_| {}).await
+    }
+
+    /// Deploy a market (plus its FT pair and mock oracle), applying `customize`
+    /// to the [`MarketConfiguration`] before deployment.
+    pub async fn deploy_market_with(
+        &self,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<(AccountId, MarketConfiguration)> {
         let borrow_asset_id: AccountId = "borrow-ft.near".parse()?;
         let collateral_asset_id: AccountId = "collateral-ft.near".parse()?;
         let oracle_id: AccountId = "oracle.near".parse()?;
@@ -228,13 +273,14 @@ impl SandboxHarness {
         )
         .await?;
 
-        let configuration = market_configuration(
+        let mut configuration = market_configuration(
             oracle_id,
             borrow_asset_id,
             collateral_asset_id,
             self.gateway_signer_account_id.0.clone(),
             YieldWeights::new_with_supply_weight(1),
         );
+        customize(&mut configuration);
 
         let market_signer =
             create_account_signer(&self.sandbox, &market_id, NearToken::from_near(100)).await?;
@@ -685,7 +731,7 @@ async fn deploy_contract(
     Ok(())
 }
 
-fn test_secret_key() -> Result<SecretKey> {
+pub(crate) fn test_secret_key() -> Result<SecretKey> {
     Ok("ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
         .parse()?)
 }

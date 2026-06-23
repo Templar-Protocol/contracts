@@ -89,7 +89,7 @@ impl TestStack {
             .build();
         let gateway = GatewayService::spawn(
             context,
-            harness.gateway_signers.clone(),
+            harness.gateway_signers(),
             Arc::new(MemoryStore::new()),
         )?;
 

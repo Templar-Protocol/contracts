@@ -270,6 +270,14 @@ pub struct Supply {
     pub amount: BorrowAssetAmount,
 }
 
+/// Deposit collateral into a market.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "market.collateralize")]
+pub struct Collateralize {
+    pub market_id: AccountId,
+    pub amount: CollateralAssetAmount,
+}
+
 /// Withdraw collateral from a market.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "market.withdrawCollateral")]
