@@ -308,6 +308,7 @@ pub async fn list_all_deployments(
     registries: Vec<AccountId>,
     concurrency: usize,
 ) -> anyhow::Result<Vec<AccountId>> {
+    let registry_count = registries.len();
     let per_registry = futures::stream::iter(registries)
         .map(|registry| {
             let client = client.clone();
@@ -318,11 +319,21 @@ pub async fn list_all_deployments(
         .await;
 
     let mut all_markets = Vec::new();
+    let mut failures = 0_usize;
     for result in per_registry {
         match result {
             Ok(markets) => all_markets.extend(markets),
-            Err(err) => error!("Failed to list deployments: {err}"),
+            Err(err) => {
+                failures += 1;
+                error!("Failed to list deployments: {err}");
+            }
         }
+    }
+
+    // Distinguish "every registry failed" (transient outage — surface it so the
+    // caller can keep its known-good state) from "registries returned nothing".
+    if registry_count > 0 && failures == registry_count {
+        anyhow::bail!("failed to list deployments from all {registry_count} configured registries");
     }
 
     let existing = futures::stream::iter(all_markets)

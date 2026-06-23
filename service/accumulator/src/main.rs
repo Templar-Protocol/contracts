@@ -25,6 +25,16 @@ async fn run_service_with_client(
     client: SigningClient,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    // Zero would panic `tokio::time::interval` / break `buffer_unordered`; fail
+    // fast rather than crash mid-run on a bad env/CLI override.
+    anyhow::ensure!(
+        args.interval > 0
+            && args.static_interval > 0
+            && args.registry_refresh_interval > 0
+            && args.concurrency > 0,
+        "interval, static_interval, registry_refresh_interval, and concurrency must all be > 0"
+    );
+
     let registries = args.registries.clone();
     let concurrency = args.concurrency;
 
