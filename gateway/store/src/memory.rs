@@ -65,6 +65,14 @@ impl Default for MemoryStore {
     }
 }
 
+/// Whether an operation has reached a terminal (`Succeeded`/`Failed`) status.
+fn is_terminal(operation: &StoredOperation) -> bool {
+    matches!(
+        operation.status(),
+        OperationStatus::Succeeded | OperationStatus::Failed
+    )
+}
+
 impl MemoryStoreState {
     /// Record a terminal operation and evict the oldest completed operations
     /// beyond the retention cap, dropping their entries from every index.
@@ -161,18 +169,27 @@ impl OperationStore for MemoryStore {
         state
             .operations
             .insert(operation.operation_id().clone(), operation.clone());
+
+        // A zero-step plan (e.g. a no-op `storage.ensureDeposit`) is already
+        // terminal at creation and never passes through `save_operation`, so
+        // enroll it for eviction here — otherwise repeated no-op writes would
+        // accumulate in `operations` without bound.
+        if is_terminal(&operation) {
+            state.record_completion_and_evict(
+                operation.operation_id().clone(),
+                self.max_completed_operations,
+            );
+        }
+
         Ok(CreateOperationResult::Created(operation))
     }
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
         let mut state = self.state.lock().await;
         let operation_id = operation.operation_id().clone();
-        let is_terminal = matches!(
-            operation.status(),
-            OperationStatus::Succeeded | OperationStatus::Failed
-        );
+        let terminal = is_terminal(&operation);
         state.operations.insert(operation_id.clone(), operation);
-        if is_terminal {
+        if terminal {
             state.record_completion_and_evict(operation_id, self.max_completed_operations);
         }
         Ok(())
@@ -364,5 +381,50 @@ mod tests {
         let state = store.state.lock().await;
         assert_eq!(state.idempotency.len(), 1);
         assert_eq!(state.idempotency_by_id.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn keyed_op_evicted_by_unkeyed_completions_cleans_idempotency() {
+        let store = MemoryStore::with_capacity(2);
+        let key = IdempotencyKey("keep-me".to_owned());
+
+        // A single keyed terminal operation.
+        let CreateOperationResult::Created(keyed) = store
+            .create_or_get_operation(
+                "market.applyInterest",
+                signer(),
+                Some(key.clone()),
+                [0_u8; 32],
+                Vec::new(),
+                OperationPlan { steps: Vec::new() },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created operation");
+        };
+        store.save_operation(keyed.clone()).await.unwrap();
+
+        // Flood the window with un-keyed terminal completions, pushing the keyed
+        // op out of the retention window.
+        for i in 0..5 {
+            store
+                .save_operation(terminal_operation(&format!("unkeyed-{i}")))
+                .await
+                .unwrap();
+        }
+
+        // The keyed op is gone from every index — including both idempotency maps.
+        assert!(store
+            .get_by_id(keyed.operation_id())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
+
+        let state = store.state.lock().await;
+        assert_eq!(state.operations.len(), 2);
+        assert!(state.idempotency.is_empty());
+        assert!(state.idempotency_by_id.is_empty());
     }
 }
