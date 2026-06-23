@@ -15,12 +15,13 @@ use templar_common::{
     borrow::BorrowPosition,
     market::{HarvestYieldMode, MarketConfiguration},
     supply::SupplyPosition,
+    withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, market, storage, tx};
 use templar_gateway_types::{
     common::{ContractArgs, WriteOperationResult},
-    ContractMethodName, ManagedAccountId, NearGas, U128,
+    ContractMethodName, ManagedAccountId, NearGas, OperationStatus, U128,
 };
 
 use test_utils::to_price;
@@ -263,6 +264,62 @@ impl SandboxHarness {
         .await
     }
 
+    /// Attempt to borrow, returning the (possibly failed) operation result for
+    /// tests that expect the contract to reject it.
+    pub async fn try_borrow(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            market::Borrow {
+                market_id: market.market_id.clone(),
+                amount: BorrowAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
+    /// Attempt to withdraw collateral, returning the (possibly failed) operation
+    /// result for tests that expect the contract to reject it.
+    pub async fn try_withdraw_collateral(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            market::WithdrawCollateral {
+                market_id: market.market_id.clone(),
+                amount: CollateralAssetAmount::new(amount),
+            },
+        )
+        .await
+    }
+
+    /// Transfer fungible tokens (plain NEP-141 `ft_transfer`, no receiver call).
+    pub async fn ft_transfer(
+        &self,
+        user: &ManagedAccountId,
+        token_id: &AccountId,
+        receiver_id: &AccountId,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            ft::Transfer {
+                contract_id: token_id.clone(),
+                receiver_id: receiver_id.clone(),
+                amount: U128(amount),
+                memo: None,
+            },
+        )
+        .await
+    }
+
     /// Repay a borrow position (the signer's own, when `account_id` is `None`).
     pub async fn repay(
         &self,
@@ -404,6 +461,36 @@ impl SandboxHarness {
             .position)
     }
 
+    /// Read the supply withdrawal queue status.
+    pub async fn supply_withdrawal_queue_status(
+        &self,
+        market: &DeployedMarket,
+    ) -> Result<WithdrawalQueueStatus> {
+        self.client()?
+            .read(market::GetSupplyWithdrawalQueueStatus {
+                market_id: market.market_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("supply_withdrawal_queue_status failed: {error}"))
+    }
+
+    /// Read an account's supply withdrawal request status.
+    pub async fn supply_withdrawal_request_status(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<Option<WithdrawalRequestStatus>> {
+        Ok(self
+            .client()?
+            .read(market::GetSupplyWithdrawalRequestStatus {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("supply_withdrawal_request_status failed: {error}"))?
+            .status)
+    }
+
     /// Count finalized snapshots.
     pub async fn get_finalized_snapshots_len(&self, market: &DeployedMarket) -> Result<u32> {
         self.client()?
@@ -414,18 +501,43 @@ impl SandboxHarness {
             .map_err(|error| anyhow::anyhow!("get_finalized_snapshots_len failed: {error}"))
     }
 
-    /// Plan, sign, and submit a write operation as `signer`, asserting success.
+    /// Plan, sign, and submit a write operation as `signer`, asserting it
+    /// succeeds. A contract panic does not surface as an `Err` from the gateway
+    /// (the driver records the operation as `Failed` and returns `Ok`), so the
+    /// status check here is what turns an unexpected on-chain failure into a
+    /// test failure.
     async fn execute<Op>(&self, signer: &ManagedAccountId, op: Op) -> Result<WriteOperationResult>
     where
         Op: templar_gateway_types::MethodSpec<Output = WriteOperationResult>,
         templar_gateway_methods_dispatch::Dispatch:
             templar_gateway_core::PlanWrite<Op, templar_gateway_core::GatewayContext>,
     {
-        let result = self
-            .client()?
+        let result = self.try_execute(signer, op).await?;
+        anyhow::ensure!(
+            result.operation.status == OperationStatus::Succeeded,
+            "operation {} did not succeed (status: {:?})",
+            result.operation.id.0,
+            result.operation.status,
+        );
+        Ok(result)
+    }
+
+    /// Like [`execute`](Self::execute) but returns the operation result without
+    /// asserting success — for tests that expect a contract rejection. Only
+    /// errors on a planning/submission failure, not an on-chain one.
+    async fn try_execute<Op>(
+        &self,
+        signer: &ManagedAccountId,
+        op: Op,
+    ) -> Result<WriteOperationResult>
+    where
+        Op: templar_gateway_types::MethodSpec<Output = WriteOperationResult>,
+        templar_gateway_methods_dispatch::Dispatch:
+            templar_gateway_core::PlanWrite<Op, templar_gateway_core::GatewayContext>,
+    {
+        self.client()?
             .execute_as(signer.clone(), op)
             .await
-            .map_err(|error| anyhow::anyhow!("operation failed: {error}"))?;
-        Ok(result)
+            .map_err(|error| anyhow::anyhow!("operation submission failed: {error}"))
     }
 }
