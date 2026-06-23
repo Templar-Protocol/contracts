@@ -15,9 +15,12 @@ use templar_gateway_testing::{harness, SandboxHarness};
 #[tokio::test]
 #[ignore = "requires NEAR sandbox"]
 async fn liquidatable_after_expiration(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    // Comfortably longer than the few seconds of reads before the
+    // expiration-check, so the "healthy" assertion can't flake and `fast_forward`
+    // (not wall-clock) is what drives the expiration.
     let market = harness
         .deploy_full_market_with(|c| {
-            c.borrow_maximum_duration_ms = Some(U64(1000));
+            c.borrow_maximum_duration_ms = Some(U64(10_000));
         })
         .await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -43,8 +46,8 @@ async fn liquidatable_after_expiration(#[future(awt)] harness: SandboxHarness) -
         "should be healthy before expiration: {status:?}"
     );
 
-    // Advance past the maximum borrow duration.
-    harness.fast_forward(200).await?;
+    // Advance well past the maximum borrow duration.
+    harness.fast_forward(1000).await?;
 
     let prices = harness.get_oracle_prices(&market).await?;
     let status = harness
