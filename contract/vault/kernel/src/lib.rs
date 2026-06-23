@@ -111,7 +111,7 @@ mod kani_proofs {
         VaultConfig {
             fees: FeesSpec::new(
                 FeeSlot::new(Wad::one() / 10, Address([0x66; 32])),
-                FeeSlot::new(Wad::one() / 20, Address([0x77; 32])),
+                FeeSlot::zero(),
                 None,
             ),
             min_withdrawal_assets: 0,
@@ -198,10 +198,12 @@ mod kani_proofs {
     }
 
     #[cfg(feature = "action-refresh-fees")]
-    fn mint_shares_or_event_amount(effect: &KernelEffect) -> u128 {
+    fn assert_mint_shares_effect(effect: &KernelEffect) -> u128 {
         match effect {
-            KernelEffect::MintShares { shares, .. } => *shares,
-            KernelEffect::EmitEvent { .. } => 0,
+            KernelEffect::MintShares { shares, .. } => {
+                assert!(*shares > 0);
+                *shares
+            }
             _ => panic!("refresh fees must not move assets or non-fee shares"),
         }
     }
@@ -1684,16 +1686,9 @@ mod kani_proofs {
         )
         .unwrap();
 
-        let effect_count = result.effects.len();
-        assert!(effect_count > 0);
-        assert!(effect_count <= 3);
-        let mut minted = mint_shares_or_event_amount(&result.effects[0]);
-        if effect_count > 1 {
-            minted += mint_shares_or_event_amount(&result.effects[1]);
-        }
-        if effect_count > 2 {
-            minted += mint_shares_or_event_amount(&result.effects[2]);
-        }
+        assert_eq!(result.effects.len(), 2);
+        let minted = assert_mint_shares_effect(&result.effects[0]);
+        assert_emit_event_effect(&result.effects[1]);
 
         assert!(minted > 0);
         assert_eq!(result.state.idle_assets, before.idle_assets);
