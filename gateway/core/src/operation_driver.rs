@@ -256,30 +256,34 @@ impl OperationDriver {
                                 );
                                 submitted_step.succeed(final_hash).await?;
                             } else {
+                                let failure =
+                                    full.into_result().err().map(|error| error.to_string());
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
+                                    failure = failure.as_deref().unwrap_or_default(),
                                     "gateway operation step failed"
                                 );
-                                submitted_step.fail(final_hash).await?;
+                                submitted_step.fail(final_hash, failure).await?;
                             }
                         }
                     }
                     Err(error) => {
+                        let failure = Some(error.to_string());
                         tracing::debug!(
                             operation_id = %operation_id.0,
                             %tx_hash,
                             %error,
                             "gateway operation step submission failed"
                         );
-                        submitted_step.fail(tx_hash).await?;
+                        submitted_step.fail(tx_hash, failure).await?;
                         return Err(error);
                     }
                 }
             }
             Some(CurrentStepRef::Submitted(submitted_step)) => {
                 let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(tx_hash).await?;
+                submitted_step.fail(tx_hash, None).await?;
             }
             Some(CurrentStepRef::Failed) | None => {}
         }
@@ -316,6 +320,7 @@ impl OperationDriver {
                         operation.current_step = Some(CurrentStep::Failed {
                             transaction,
                             tx_hash,
+                            failure: Some(error.to_string()),
                         });
                     }
                 },
@@ -329,6 +334,7 @@ impl OperationDriver {
                     operation.current_step = Some(CurrentStep::Failed {
                         transaction,
                         tx_hash,
+                        failure: Some(error.to_string()),
                     });
                 }
             }

@@ -155,7 +155,7 @@ fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> Cryp
         templar_gateway_types::StepStatus::Prepared { tx_hash }
         | templar_gateway_types::StepStatus::Submitted { tx_hash }
         | templar_gateway_types::StepStatus::Succeeded { tx_hash }
-        | templar_gateway_types::StepStatus::Failed { tx_hash } => *tx_hash,
+        | templar_gateway_types::StepStatus::Failed { tx_hash, .. } => *tx_hash,
         templar_gateway_types::StepStatus::NotStarted => {
             panic!("transaction hash should be present for final execution")
         }
