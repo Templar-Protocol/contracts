@@ -15,6 +15,7 @@ use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::{HarvestYieldMode, MarketConfiguration},
     oracle::pyth::OracleResponse,
+    price::Convert,
     snapshot::Snapshot,
     supply::SupplyPosition,
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
@@ -518,6 +519,98 @@ impl SandboxHarness {
             },
         )
         .await
+    }
+
+    /// Attempt a liquidation, returning the (possibly refunded/failed) operation
+    /// result for tests where the contract rejects it (liquidation pays via
+    /// `ft_transfer_call`, so a rejected attempt is refunded).
+    pub async fn try_liquidate(
+        &self,
+        liquidator: &ManagedAccountId,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+        liquidation_amount: u128,
+        collateral_amount: Option<u128>,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            liquidator,
+            market::Liquidate {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+                liquidation_amount: BorrowAssetAmount::new(liquidation_amount),
+                collateral_amount: collateral_amount.map(CollateralAssetAmount::new),
+            },
+        )
+        .await
+    }
+
+    /// The liquidatable collateral for `account_id` and the borrow-asset amount a
+    /// liquidator must pay for it at fair market value (mirrors the retired
+    /// controller's `liquidatable_collateral_fmv`).
+    pub async fn liquidatable_collateral_fmv(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<(CollateralAssetAmount, BorrowAssetAmount)> {
+        let collateral = self.liquidatable_collateral(market, account_id).await?;
+        let prices = self.get_oracle_prices(market).await?;
+        let price_pair = market
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&prices)
+            .context("failed to create price pair")?;
+        let pay = price_pair
+            .convert(collateral)
+            .to_u128_ceil()
+            .context("price conversion overflow")?
+            .max(1)
+            .into();
+        Ok((collateral, pay))
+    }
+
+    /// Like [`liquidatable_collateral_fmv`](Self::liquidatable_collateral_fmv) but
+    /// discounting the pay amount by the configured maximum liquidator spread.
+    pub async fn liquidatable_collateral_with_spread(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<(CollateralAssetAmount, BorrowAssetAmount)> {
+        let collateral = self.liquidatable_collateral(market, account_id).await?;
+        let prices = self.get_oracle_prices(market).await?;
+        let price_pair = market
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&prices)
+            .context("failed to create price pair")?;
+        let pay = (price_pair.convert(collateral)
+            * (templar_common::Decimal::ONE - market.configuration.liquidation_maximum_spread))
+            .to_u128_ceil()
+            .context("price conversion overflow")?
+            .max(1)
+            .into();
+        Ok((collateral, pay))
+    }
+
+    async fn liquidatable_collateral(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<CollateralAssetAmount> {
+        let prices = self.get_oracle_prices(market).await?;
+        let price_pair = market
+            .configuration
+            .price_oracle_configuration
+            .create_price_pair(&prices)
+            .context("failed to create price pair")?;
+        let position = self
+            .get_borrow_position(market, account_id)
+            .await?
+            .context("borrow position missing")?;
+        Ok(position.liquidatable_collateral(
+            &price_pair,
+            market.configuration.borrow_mcr_maintenance,
+            market.configuration.liquidation_maximum_spread,
+        ))
     }
 
     /// Transfer fungible tokens (plain NEP-141 `ft_transfer`, no receiver call).
