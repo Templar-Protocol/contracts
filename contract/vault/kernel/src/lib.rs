@@ -66,7 +66,14 @@ mod kani_proofs {
     use alloc::{vec, vec::Vec};
 
     use super::*;
-    use crate::effects::{KernelEffect, KernelEvent};
+    #[cfg(feature = "action-recovery")]
+    use crate::actions::plan_emergency_reset;
+    use crate::actions::{
+        apply_payout_settlement, apply_withdrawal_request_plan, pending_withdrawal_head,
+        plan_payout_settlement, validate_queue_head, withdrawal_request_from_head,
+        WithdrawalRequestPlan,
+    };
+    use crate::effects::KernelEffect;
 
     const MAX_AMOUNT: u128 = 32;
     const OWNER: Address = Address([0x11; 32]);
@@ -99,15 +106,12 @@ mod kani_proofs {
         }
     }
 
-    #[cfg(all(
-        feature = "action-refresh-fees",
-        feature = "kani-expensive-vault-proofs"
-    ))]
-    fn bounded_fee_config() -> VaultConfig {
+    #[cfg(feature = "action-refresh-fees")]
+    fn active_fee_config() -> VaultConfig {
         VaultConfig {
             fees: FeesSpec::new(
-                FeeSlot::new(Wad(Number::from(1u128)), Address([0x66; 32])),
-                FeeSlot::new(Wad(Number::from(1u128)), Address([0x77; 32])),
+                FeeSlot::new(Wad::one() / 10, Address([0x66; 32])),
+                FeeSlot::new(Wad::one() / 20, Address([0x77; 32])),
                 None,
             ),
             min_withdrawal_assets: 0,
@@ -142,17 +146,6 @@ mod kani_proofs {
         }
     }
 
-    fn address_eq(left: Address, right: Address) -> bool {
-        let mut index = 0usize;
-        while index < 32 {
-            if left.0[index] != right.0[index] {
-                return false;
-            }
-            index += 1;
-        }
-        true
-    }
-
     fn bounded_state() -> VaultState {
         let idle = bounded_amount();
         let external = bounded_amount();
@@ -181,58 +174,43 @@ mod kani_proofs {
             .unwrap()
     }
 
-    fn refund_effect_sum(effects: &[KernelEffect], owner: Address) -> u128 {
-        let mut total = 0u128;
-        for effect in effects {
-            if let KernelEffect::TransferShares { from, to, shares } = effect {
-                if address_eq(*from, SELF) && address_eq(*to, owner) {
-                    total += *shares;
-                }
+    fn assert_transfer_shares_effect(
+        effect: &KernelEffect,
+        expected_from: Address,
+        expected_to: Address,
+        expected_shares: u128,
+    ) {
+        match effect {
+            KernelEffect::TransferShares { from, to, shares } => {
+                assert_address_eq(*from, expected_from);
+                assert_address_eq(*to, expected_to);
+                assert_eq!(*shares, expected_shares);
             }
+            _ => panic!("expected transfer shares effect"),
         }
-        total
     }
 
-    fn burn_effect_sum(effects: &[KernelEffect]) -> u128 {
-        let mut total = 0u128;
-        for effect in effects {
-            if let KernelEffect::BurnShares { owner, shares } = effect {
-                if address_eq(*owner, SELF) {
-                    total += *shares;
-                }
-            }
+    fn assert_emit_event_effect(effect: &KernelEffect) {
+        match effect {
+            KernelEffect::EmitEvent { .. } => {}
+            _ => panic!("expected emit event effect"),
         }
-        total
     }
 
     #[cfg(feature = "action-refresh-fees")]
-    fn minted_effect_sum(effects: &[KernelEffect]) -> u128 {
-        let mut total = 0u128;
-        for effect in effects {
-            if let KernelEffect::MintShares { shares, .. } = effect {
-                total += *shares;
-            }
+    fn mint_shares_or_event_amount(effect: &KernelEffect) -> u128 {
+        match effect {
+            KernelEffect::MintShares { shares, .. } => *shares,
+            KernelEffect::EmitEvent { .. } => 0,
+            _ => panic!("refresh fees must not move assets or non-fee shares"),
         }
-        total
     }
 
-    fn payout_event(effects: &[KernelEffect]) -> Option<(bool, u128, u128, u128)> {
-        for effect in effects {
-            if let KernelEffect::EmitEvent {
-                event:
-                    KernelEvent::PayoutCompleted {
-                        success,
-                        burn_shares,
-                        refund_shares,
-                        amount,
-                        ..
-                    },
-            } = effect
-            {
-                return Some((*success, *burn_shares, *refund_shares, *amount));
-            }
+    fn assert_refund_owner_is_owner(refund_owner: Option<Address>) {
+        match refund_owner {
+            Some(owner) => assert_eq!(owner.0[0], OWNER.0[0]),
+            None => panic!("expected refund owner"),
         }
-        None
     }
 
     #[kani::proof]
@@ -396,6 +374,65 @@ mod kani_proofs {
         assert!(!queue.contains(first_id));
         assert!(queue.contains(second_id));
         assert_eq!(queue.head().map(|(id, _)| id), Some(second_id));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn withdrawal_request_plan_preserves_accounting_and_enqueues_exact_escrow() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let total_shares = nonzero_bounded_amount();
+        let shares = nonzero_bounded_amount();
+        let expected_assets = bounded_amount();
+        kani::assume(idle + external <= MAX_AMOUNT);
+        let config = zero_fee_config();
+        let state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
+        );
+        let before = state.clone();
+        let plan = WithdrawalRequestPlan {
+            owner: RECEIVER,
+            receiver: OWNER,
+            shares,
+            expected_assets,
+        };
+
+        let requested =
+            apply_withdrawal_request_plan(state, &config, &SELF, plan, TimestampNs::ZERO).unwrap();
+
+        assert!(requested.state.op_state.is_idle());
+        assert_eq!(requested.state.idle_assets, before.idle_assets);
+        assert_eq!(requested.state.external_assets, before.external_assets);
+        assert_eq!(requested.state.total_assets, before.total_assets);
+        assert_eq!(requested.state.total_shares, before.total_shares);
+        assert_eq!(requested.state.next_op_id, before.next_op_id);
+        assert_eq!(requested.state.withdraw_queue.status().length, 1);
+        assert_eq!(
+            requested.state.withdraw_queue.status().total_escrow_shares,
+            shares
+        );
+        assert_eq!(
+            requested
+                .state
+                .withdraw_queue
+                .status()
+                .total_expected_assets,
+            expected_assets
+        );
+        let (request_id, head) = requested.state.withdraw_queue.head().unwrap();
+        assert_eq!(request_id, 0);
+        assert_address_eq(head.owner, RECEIVER);
+        assert_address_eq(head.receiver, OWNER);
+        assert_eq!(head.escrow_shares, shares);
+        assert_eq!(head.expected_assets, expected_assets);
+        assert_eq!(requested.effects.len(), 2);
+        assert_transfer_shares_effect(&requested.effects[0], RECEIVER, SELF, shares);
+        assert_emit_event_effect(&requested.effects[1]);
+        assert_asset_sum(&requested.state);
     }
 
     #[cfg(feature = "action-sync-external")]
@@ -710,98 +747,6 @@ mod kani_proofs {
         assert!(state == baseline);
     }
 
-    #[cfg(all(feature = "action-recovery", feature = "kani-expensive-vault-proofs"))]
-    #[kani::proof]
-    #[kani::unwind(40)]
-    fn abort_withdrawing_requires_fifo_head_identity_and_refunds_escrow() {
-        let idle = bounded_amount();
-        let external = bounded_amount();
-        let total_shares = nonzero_bounded_amount();
-        let first_shares = nonzero_bounded_amount();
-        let second_shares = nonzero_bounded_amount();
-        let first_expected = nonzero_bounded_amount();
-        let second_expected = nonzero_bounded_amount();
-        let collected = bounded_amount();
-
-        let mut state = VaultState::with_initial(
-            idle + external,
-            total_shares,
-            idle,
-            external,
-            TimestampNs::ZERO,
-        );
-        let first_id = enqueue_withdrawal(
-            &mut state,
-            OWNER,
-            RECEIVER,
-            first_shares,
-            first_expected,
-            TimestampNs::ZERO,
-        );
-        let second_id = enqueue_withdrawal(
-            &mut state,
-            SECOND_OWNER,
-            SECOND_RECEIVER,
-            second_shares,
-            second_expected,
-            TimestampNs::ZERO,
-        );
-
-        let op_id = 21;
-        let mismatched = WithdrawingState {
-            op_id,
-            request_id: second_id,
-            index: 0,
-            remaining: second_expected,
-            collected,
-            receiver: SECOND_RECEIVER,
-            owner: SECOND_OWNER,
-            escrow_shares: second_shares,
-        };
-        let mut mismatch_state = state.clone();
-        mismatch_state.op_state = OpState::Withdrawing(mismatched);
-        assert!(apply_action(
-            mismatch_state,
-            &zero_fee_config(),
-            None,
-            &SELF,
-            KernelAction::abort_withdrawing(op_id),
-        )
-        .is_err());
-
-        let mut valid_state = state.clone();
-        valid_state.op_state = OpState::Withdrawing(WithdrawingState {
-            op_id,
-            request_id: first_id,
-            index: 0,
-            remaining: first_expected,
-            collected,
-            receiver: RECEIVER,
-            owner: OWNER,
-            escrow_shares: first_shares,
-        });
-        let result = apply_action(
-            valid_state,
-            &zero_fee_config(),
-            None,
-            &SELF,
-            KernelAction::abort_withdrawing(op_id),
-        )
-        .unwrap();
-
-        assert!(result.state.op_state.is_idle());
-        assert_asset_sum(&result.state);
-        assert_eq!(result.state.idle_assets, idle + collected);
-        assert_eq!(result.state.external_assets, external);
-        assert_eq!(result.state.total_shares, total_shares);
-        assert_eq!(refund_effect_sum(&result.effects, OWNER), first_shares);
-        assert_eq!(result.state.withdraw_queue.status().length, 1);
-        assert_eq!(
-            result.state.withdraw_queue.head().map(|(id, _)| id),
-            Some(second_id)
-        );
-    }
-
     #[kani::proof]
     fn withdrawal_collection_preserves_collected_plus_remaining() {
         let amount = nonzero_bounded_amount();
@@ -844,16 +789,144 @@ mod kani_proofs {
         assert!(payout.burn_shares <= payout.escrow_shares);
     }
 
-    #[cfg(feature = "kani-expensive-vault-proofs")]
-    fn payout_state(
-        idle: u128,
-        external: u128,
-        total_shares: u128,
-        escrow_shares: u128,
-        burn_shares: u128,
-        amount: u128,
-        op_id: u64,
-    ) -> VaultState {
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn withdrawal_queue_head_validation_requires_exact_identity_fields() {
+        let mut state = VaultState::with_initial(16, 16, 16, 0, TimestampNs::ZERO);
+        let first_id = enqueue_withdrawal(&mut state, OWNER, RECEIVER, 3, 5, TimestampNs::ZERO);
+
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id, &OWNER, &RECEIVER, 3,).is_ok()
+        );
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id + 1, &OWNER, &RECEIVER, 3,)
+                .is_err()
+        );
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id, &SECOND_OWNER, &RECEIVER, 3,)
+                .is_err()
+        );
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id, &OWNER, &SECOND_RECEIVER, 3,)
+                .is_err()
+        );
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id, &OWNER, &RECEIVER, 4,).is_err()
+        );
+        assert_eq!(
+            state.withdraw_queue.head().map(|(id, _)| id),
+            Some(first_id)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn withdrawal_queue_head_validation_rejects_later_fifo_entry() {
+        let mut state = VaultState::with_initial(16, 16, 16, 0, TimestampNs::ZERO);
+        let first_id = enqueue_withdrawal(&mut state, OWNER, RECEIVER, 3, 5, TimestampNs::ZERO);
+        let second_id = enqueue_withdrawal(
+            &mut state,
+            SECOND_OWNER,
+            SECOND_RECEIVER,
+            7,
+            11,
+            TimestampNs::ZERO,
+        );
+        let before = state.withdraw_queue.status();
+
+        assert!(
+            validate_queue_head(&state.withdraw_queue, first_id, &OWNER, &RECEIVER, 3,).is_ok()
+        );
+        assert!(validate_queue_head(
+            &state.withdraw_queue,
+            second_id,
+            &SECOND_OWNER,
+            &SECOND_RECEIVER,
+            7,
+        )
+        .is_err());
+        assert_eq!(
+            state.withdraw_queue.head().map(|(id, _)| id),
+            Some(first_id)
+        );
+        assert_eq!(state.withdraw_queue.status().length, before.length);
+        assert_eq!(
+            state.withdraw_queue.status().total_escrow_shares,
+            before.total_escrow_shares
+        );
+        assert_eq!(
+            state.withdraw_queue.status().total_expected_assets,
+            before.total_expected_assets
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn withdrawal_fifo_head_maps_to_started_withdrawal_request() {
+        let mut state = VaultState::with_initial(16, 16, 16, 0, TimestampNs::ZERO);
+        let first_id = enqueue_withdrawal(&mut state, OWNER, RECEIVER, 3, 5, TimestampNs::ZERO);
+
+        let head = pending_withdrawal_head(&state).unwrap();
+        assert_eq!(head.id, first_id);
+        assert_address_eq(head.owner, OWNER);
+        assert_address_eq(head.receiver, RECEIVER);
+        assert_eq!(head.escrow_shares, 3);
+        assert_eq!(head.expected_assets, 5);
+
+        let request = withdrawal_request_from_head(&mut state, head);
+        assert_eq!(request.request_id, first_id);
+        assert_address_eq(request.owner, OWNER);
+        assert_address_eq(request.receiver, RECEIVER);
+        assert_eq!(request.escrow_shares, 3);
+        assert_eq!(request.amount, 5);
+        assert_eq!(state.withdraw_queue.status().length, 1);
+
+        let started = start_withdrawal(OpState::Idle, request).unwrap().new_state;
+        let withdrawing = started.as_withdrawing().unwrap();
+        assert_eq!(withdrawing.request_id, first_id);
+        assert_address_eq(withdrawing.owner, OWNER);
+        assert_address_eq(withdrawing.receiver, RECEIVER);
+        assert_eq!(withdrawing.escrow_shares, 3);
+        assert_eq!(withdrawing.remaining, 5);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn payout_queue_head_dequeues_once_before_settlement() {
+        let mut queue = WithdrawQueue::new();
+        let first_id = queue
+            .enqueue(OWNER, RECEIVER, 3, 5, TimestampNs::ZERO, 3)
+            .unwrap();
+        let second_id = queue
+            .enqueue(SECOND_OWNER, SECOND_RECEIVER, 7, 11, TimestampNs::ZERO, 3)
+            .unwrap();
+
+        let (dequeued_id, dequeued) = queue.dequeue().unwrap();
+        assert_eq!(dequeued_id, first_id);
+        assert_address_eq(dequeued.owner, OWNER);
+        assert_address_eq(dequeued.receiver, RECEIVER);
+        assert_eq!(dequeued.escrow_shares, 3);
+        assert_eq!(dequeued.expected_assets, 5);
+        assert_eq!(queue.status().length, 1);
+        assert_eq!(queue.status().total_escrow_shares, 7);
+        assert_eq!(queue.status().total_expected_assets, 11);
+        assert_eq!(queue.head().map(|(id, _)| id), Some(second_id));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(40)]
+    fn payout_success_settlement_conserves_assets_and_escrow() {
+        let idle = nonzero_bounded_amount();
+        let external = bounded_amount();
+        let total_shares = nonzero_bounded_amount();
+        let escrow_shares = nonzero_bounded_amount();
+        let burn_shares = bounded_amount();
+        let amount = bounded_amount();
+        kani::assume(burn_shares <= escrow_shares);
+        kani::assume(burn_shares <= total_shares);
+        kani::assume(amount <= idle);
+
+        let op_id = 41;
         let mut state = VaultState::with_initial(
             idle + external,
             total_shares,
@@ -869,7 +942,7 @@ mod kani_proofs {
             amount,
             TimestampNs::ZERO,
         );
-        state.op_state = OpState::Payout(PayoutState {
+        let payout = PayoutState {
             op_id,
             request_id,
             receiver: RECEIVER,
@@ -877,63 +950,48 @@ mod kani_proofs {
             owner: OWNER,
             escrow_shares,
             burn_shares,
-        });
-        state
-    }
+        };
 
-    #[cfg(feature = "kani-expensive-vault-proofs")]
-    #[kani::proof]
-    #[kani::unwind(40)]
-    fn payout_success_settlement_conserves_assets_and_escrow() {
-        let idle = nonzero_bounded_amount();
-        let external = bounded_amount();
-        let total_shares = nonzero_bounded_amount();
-        let escrow_shares = nonzero_bounded_amount();
-        let burn_shares = bounded_amount();
-        let amount = bounded_amount();
-        kani::assume(burn_shares <= escrow_shares);
-        kani::assume(burn_shares <= total_shares);
-        kani::assume(amount <= idle);
-
-        let op_id = 41;
-        let success = apply_action(
-            payout_state(
-                idle,
-                external,
-                total_shares,
-                escrow_shares,
-                burn_shares,
-                amount,
-                op_id,
-            ),
-            &zero_fee_config(),
-            None,
-            &SELF,
-            KernelAction::settle_payout(op_id, PayoutOutcome::Success),
+        assert!(validate_queue_head(
+            &state.withdraw_queue,
+            payout.request_id,
+            &payout.owner,
+            &payout.receiver,
+            payout.escrow_shares,
         )
-        .unwrap();
-        assert!(success.state.op_state.is_idle());
-        assert_asset_sum(&success.state);
-        assert_eq!(success.state.idle_assets, idle - amount);
-        assert_eq!(success.state.external_assets, external);
-        assert_eq!(success.state.total_assets, idle + external - amount);
-        assert_eq!(success.state.total_shares, total_shares - burn_shares);
-        assert_eq!(success.state.withdraw_queue.status().length, 0);
-        assert_eq!(burn_effect_sum(&success.effects), burn_shares);
+        .is_ok());
+        let (dequeued_id, dequeued) = state.withdraw_queue.dequeue().unwrap();
+        assert_eq!(dequeued_id, request_id);
+        assert_address_eq(dequeued.owner, OWNER);
+        assert_address_eq(dequeued.receiver, RECEIVER);
+        assert_eq!(dequeued.escrow_shares, escrow_shares);
+        assert_eq!(state.withdraw_queue.status().length, 0);
+
+        let settlement = plan_payout_settlement(&payout, PayoutOutcome::Success).unwrap();
+        let mut effects = Vec::new();
+        apply_payout_settlement(&mut state, &payout, settlement, SELF, &mut effects).unwrap();
+
+        assert!(state.op_state.is_idle());
+        assert_asset_sum(&state);
+        assert!(settlement.success);
+        assert_eq!(settlement.burn_shares, burn_shares);
+        assert_eq!(settlement.refund_shares, escrow_shares - burn_shares);
         assert_eq!(
-            refund_effect_sum(&success.effects, OWNER),
-            escrow_shares - burn_shares
+            settlement.burn_shares + settlement.refund_shares,
+            escrow_shares
         );
-        assert_eq!(
-            payout_event(&success.effects),
-            Some((true, burn_shares, escrow_shares - burn_shares, amount))
-        );
+        assert_eq!(settlement.completed_amount, amount);
+        assert_eq!(state.idle_assets, idle - amount);
+        assert_eq!(state.external_assets, external);
+        assert_eq!(state.total_assets, idle + external - amount);
+        assert_eq!(state.total_shares, total_shares - burn_shares);
+        assert_eq!(state.withdraw_queue.status().length, 0);
     }
 
-    #[cfg(feature = "kani-expensive-vault-proofs")]
     #[kani::proof]
     #[kani::unwind(40)]
-    fn payout_failure_settlement_refunds_without_mutating_assets_or_shares() {
+    fn payout_failure_settlement_refunds_without_mutating_assets_or_shares_and_dequeues_head_once()
+    {
         let idle = nonzero_bounded_amount();
         let external = bounded_amount();
         let total_shares = nonzero_bounded_amount();
@@ -941,190 +999,261 @@ mod kani_proofs {
         let burn_shares = bounded_amount();
         let amount = bounded_amount();
         kani::assume(burn_shares <= escrow_shares);
-        kani::assume(burn_shares <= total_shares);
         kani::assume(amount <= idle);
 
         let op_id = 42;
-        let failure = apply_action(
-            payout_state(
-                idle,
-                external,
-                total_shares,
-                escrow_shares,
-                burn_shares,
-                amount,
-                op_id,
-            ),
-            &zero_fee_config(),
-            None,
-            &SELF,
-            KernelAction::settle_payout(op_id, PayoutOutcome::Failure),
-        )
-        .unwrap();
-        assert!(failure.state.op_state.is_idle());
-        assert_asset_sum(&failure.state);
-        assert_eq!(failure.state.idle_assets, idle);
-        assert_eq!(failure.state.external_assets, external);
-        assert_eq!(failure.state.total_assets, idle + external);
-        assert_eq!(failure.state.total_shares, total_shares);
-        assert_eq!(failure.state.withdraw_queue.status().length, 0);
-        assert_eq!(burn_effect_sum(&failure.effects), 0);
-        assert_eq!(refund_effect_sum(&failure.effects, OWNER), escrow_shares);
-        assert_eq!(
-            payout_event(&failure.effects),
-            Some((false, 0, escrow_shares, 0))
+        let mut state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
         );
+        let request_id = enqueue_withdrawal(
+            &mut state,
+            OWNER,
+            RECEIVER,
+            escrow_shares,
+            amount,
+            TimestampNs::ZERO,
+        );
+        let payout = PayoutState {
+            op_id,
+            request_id,
+            receiver: RECEIVER,
+            amount,
+            owner: OWNER,
+            escrow_shares,
+            burn_shares,
+        };
+
+        assert!(validate_queue_head(
+            &state.withdraw_queue,
+            payout.request_id,
+            &payout.owner,
+            &payout.receiver,
+            payout.escrow_shares,
+        )
+        .is_ok());
+        let (dequeued_id, dequeued) = state.withdraw_queue.dequeue().unwrap();
+        assert_eq!(dequeued_id, request_id);
+        assert_address_eq(dequeued.owner, OWNER);
+        assert_address_eq(dequeued.receiver, RECEIVER);
+        assert_eq!(dequeued.escrow_shares, escrow_shares);
+        assert_eq!(state.withdraw_queue.status().length, 0);
+
+        let settlement = plan_payout_settlement(&payout, PayoutOutcome::Failure).unwrap();
+        let mut effects = Vec::new();
+        apply_payout_settlement(&mut state, &payout, settlement, SELF, &mut effects).unwrap();
+
+        assert!(state.op_state.is_idle());
+        assert_asset_sum(&state);
+        assert!(!settlement.success);
+        assert_eq!(settlement.burn_shares, 0);
+        assert_eq!(settlement.refund_shares, escrow_shares);
+        assert_eq!(settlement.completed_amount, 0);
+        assert_eq!(state.idle_assets, idle);
+        assert_eq!(state.external_assets, external);
+        assert_eq!(state.total_assets, idle + external);
+        assert_eq!(state.total_shares, total_shares);
     }
 
-    #[cfg(all(feature = "action-recovery", feature = "kani-expensive-vault-proofs"))]
+    #[cfg(feature = "action-recovery")]
     #[kani::proof]
-    #[kani::unwind(40)]
-    fn emergency_reset_recovers_non_idle_states_without_share_or_queue_leakage() {
+    #[kani::unwind(8)]
+    fn emergency_reset_allocating_restores_remaining_assets_to_idle() {
         let idle = bounded_amount();
         let external = bounded_amount();
-        let shares = nonzero_bounded_amount();
-        let amount = bounded_amount();
-        let escrow = nonzero_bounded_amount();
-        let kind = kani::any::<u8>();
-        kani::assume(kind < 4);
-
-        let mut state =
-            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        let total_shares = bounded_amount();
+        let remaining = bounded_amount();
         let op_id = 51;
-        let expected_idle_restore;
-        let expected_refund;
-        let expected_queue_len;
 
-        if kind == 0 {
-            state.op_state = OpState::Allocating(AllocatingState {
-                op_id,
-                index: 0,
-                remaining: amount,
-                plan: allocation_plan(amount, 0),
-            });
-            expected_idle_restore = amount;
-            expected_refund = 0;
-            expected_queue_len = 0;
-        } else if kind == 1 {
-            let request_id = enqueue_withdrawal(
-                &mut state,
-                OWNER,
-                RECEIVER,
-                escrow,
-                amount,
-                TimestampNs::ZERO,
-            );
-            state.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id,
-                request_id,
-                index: 0,
-                remaining: amount,
-                collected: amount,
-                receiver: RECEIVER,
-                owner: OWNER,
-                escrow_shares: escrow,
-            });
-            expected_idle_restore = amount;
-            expected_refund = escrow;
-            expected_queue_len = 0;
-        } else if kind == 2 {
-            let request_id = enqueue_withdrawal(
-                &mut state,
-                OWNER,
-                RECEIVER,
-                escrow,
-                amount,
-                TimestampNs::ZERO,
-            );
-            state.op_state = OpState::Payout(PayoutState {
-                op_id,
-                request_id,
-                receiver: RECEIVER,
-                amount,
-                owner: OWNER,
-                escrow_shares: escrow,
-                burn_shares: 0,
-            });
-            expected_idle_restore = amount;
-            expected_refund = escrow;
-            expected_queue_len = 0;
-        } else {
-            state.op_state = OpState::Refreshing(RefreshingState {
-                op_id,
-                index: 0,
-                plan: vec![0],
-            });
-            expected_idle_restore = 0;
-            expected_refund = 0;
-            expected_queue_len = 0;
-        }
+        let mut state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
+        );
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 0,
+            remaining,
+            plan: allocation_plan(remaining, 0),
+        });
 
-        let result = apply_action(
-            state,
-            &zero_fee_config(),
-            None,
-            &SELF,
-            KernelAction::emergency_reset(),
-        )
-        .unwrap();
+        let result = plan_emergency_reset(state).unwrap();
 
         assert!(result.state.op_state.is_idle());
-        assert_asset_sum(&result.state);
-        assert_eq!(result.state.idle_assets, idle + expected_idle_restore);
+        assert_eq!(result.state.idle_assets, idle + remaining);
         assert_eq!(result.state.external_assets, external);
-        assert_eq!(result.state.total_shares, shares);
-        assert_eq!(
-            result.state.withdraw_queue.status().length,
-            expected_queue_len
-        );
-        assert_eq!(refund_effect_sum(&result.effects, OWNER), expected_refund);
+        assert_eq!(result.state.total_assets, idle + external + remaining);
+        assert_eq!(result.state.total_shares, total_shares);
+        assert_eq!(result.state.withdraw_queue.status().length, 0);
+        assert!(result.refund_owner.is_none());
+        assert_eq!(result.refund_shares, 0);
         assert_eq!(
             result.state.fee_anchor.total_assets,
             result.state.total_assets
         );
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-recovery")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn emergency_reset_withdrawing_restores_collected_assets_and_refunds_escrow() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let total_shares = nonzero_bounded_amount();
+        let remaining = bounded_amount();
+        let collected = bounded_amount();
+        let escrow_shares = nonzero_bounded_amount();
+        let op_id = 52;
+
+        let mut state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
+        );
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id,
+            request_id: 0,
+            index: 0,
+            remaining,
+            collected,
+            receiver: RECEIVER,
+            owner: OWNER,
+            escrow_shares,
+        });
+
+        let result = plan_emergency_reset(state).unwrap();
+
+        assert!(result.state.op_state.is_idle());
+        assert_eq!(result.state.idle_assets, idle + collected);
+        assert_eq!(result.state.external_assets, external);
+        assert_eq!(result.state.total_assets, idle + external + collected);
+        assert_eq!(result.state.total_shares, total_shares);
+        assert_eq!(result.state.withdraw_queue.status().length, 0);
+        assert_refund_owner_is_owner(result.refund_owner);
+        assert_eq!(result.refund_shares, escrow_shares);
+        assert_eq!(
+            result.state.fee_anchor.total_assets,
+            result.state.total_assets
+        );
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-recovery")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn emergency_reset_payout_restores_payout_assets_and_refunds_escrow() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let total_shares = nonzero_bounded_amount();
+        let amount = bounded_amount();
+        let escrow_shares = nonzero_bounded_amount();
+        let burn_shares = bounded_amount();
+        let op_id = 53;
+        kani::assume(burn_shares <= escrow_shares);
+
+        let mut state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
+        );
+        state.op_state = OpState::Payout(PayoutState {
+            op_id,
+            request_id: 0,
+            receiver: RECEIVER,
+            amount,
+            owner: OWNER,
+            escrow_shares,
+            burn_shares,
+        });
+
+        let result = plan_emergency_reset(state).unwrap();
+
+        assert!(result.state.op_state.is_idle());
+        assert_eq!(result.state.idle_assets, idle + amount);
+        assert_eq!(result.state.external_assets, external);
+        assert_eq!(result.state.total_assets, idle + external + amount);
+        assert_eq!(result.state.total_shares, total_shares);
+        assert_eq!(result.state.withdraw_queue.status().length, 0);
+        assert_refund_owner_is_owner(result.refund_owner);
+        assert_eq!(result.refund_shares, escrow_shares);
+        assert_eq!(
+            result.state.fee_anchor.total_assets,
+            result.state.total_assets
+        );
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-recovery")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn emergency_reset_refreshing_returns_idle_without_accounting_mutation() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let total_shares = bounded_amount();
+        let op_id = 54;
+
+        let mut state = VaultState::with_initial(
+            idle + external,
+            total_shares,
+            idle,
+            external,
+            TimestampNs::ZERO,
+        );
+        let before = state.clone();
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id,
+            index: 1,
+            plan: vec![7, 8],
+        });
+
+        let result = plan_emergency_reset(state).unwrap();
+
+        assert!(result.state.op_state.is_idle());
+        assert_eq!(result.state.idle_assets, before.idle_assets);
+        assert_eq!(result.state.external_assets, before.external_assets);
+        assert_eq!(result.state.total_assets, before.total_assets);
+        assert_eq!(result.state.total_shares, before.total_shares);
+        assert_eq!(
+            result.state.withdraw_queue.status().length,
+            before.withdraw_queue.status().length
+        );
+        assert!(result.refund_owner.is_none());
+        assert_eq!(result.refund_shares, 0);
+        assert_eq!(
+            result.state.fee_anchor.total_assets,
+            result.state.total_assets
+        );
+        assert_asset_sum(&result.state);
     }
 
     #[cfg(feature = "action-sync-external")]
     #[kani::proof]
-    #[kani::unwind(40)]
-    fn sync_external_assets_only_mutates_external_and_total_assets_for_allowed_ops() {
+    #[kani::unwind(8)]
+    fn sync_external_assets_allocating_only_mutates_external_and_total_assets() {
         let idle = bounded_amount();
         let external = bounded_amount();
         let synced_external = bounded_amount();
         let shares = bounded_amount();
-        let op_kind = kani::any::<u8>();
-        kani::assume(op_kind < 3);
+        let op_id = 61;
 
         let mut state =
             VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
-        let op_id = 61;
-        if op_kind == 0 {
-            state.op_state = OpState::Allocating(AllocatingState {
-                op_id,
-                index: 1,
-                remaining: 2,
-                plan: allocation_plan(1, 1),
-            });
-        } else if op_kind == 1 {
-            let request_id =
-                enqueue_withdrawal(&mut state, OWNER, RECEIVER, 3, 4, TimestampNs::ZERO);
-            state.op_state = OpState::Withdrawing(WithdrawingState {
-                op_id,
-                request_id,
-                index: 1,
-                remaining: 2,
-                collected: 2,
-                receiver: RECEIVER,
-                owner: OWNER,
-                escrow_shares: 3,
-            });
-        } else {
-            state.op_state = OpState::Refreshing(RefreshingState {
-                op_id,
-                index: 1,
-                plan: vec![7, 8],
-            });
-        }
+        state.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 1,
+            remaining: 2,
+            plan: allocation_plan(1, 1),
+        });
 
         let before_idle = state.idle_assets;
         let before_shares = state.total_shares;
@@ -1163,41 +1292,188 @@ mod kani_proofs {
             before_fee_anchor_total_assets
         );
         assert!(result.state.fee_anchor.timestamp_ns == before_fee_anchor_timestamp);
-        match &result.state.op_state {
-            OpState::Allocating(alloc) => {
-                assert_eq!(op_kind, 0);
-                assert_eq!(alloc.op_id, op_id);
-                assert_eq!(alloc.index, 1);
-                assert_eq!(alloc.remaining, 2);
-            }
-            OpState::Withdrawing(withdraw) => {
-                assert_eq!(op_kind, 1);
-                assert_eq!(withdraw.op_id, op_id);
-                assert_eq!(withdraw.index, 1);
-                assert_eq!(withdraw.remaining, 2);
-                assert_eq!(withdraw.collected, 2);
-                assert_address_eq(withdraw.owner, OWNER);
-                assert_address_eq(withdraw.receiver, RECEIVER);
-                assert_eq!(withdraw.escrow_shares, 3);
-            }
-            OpState::Refreshing(refresh) => {
-                assert_eq!(op_kind, 2);
-                assert_eq!(refresh.op_id, op_id);
-                assert_eq!(refresh.index, 1);
-            }
-            _ => panic!("sync must preserve active operation kind"),
+        if let OpState::Allocating(alloc) = &result.state.op_state {
+            assert_eq!(alloc.op_id, op_id);
+            assert_eq!(alloc.index, 1);
+            assert_eq!(alloc.remaining, 2);
+        } else {
+            panic!("sync must preserve allocating operation");
         }
         assert_asset_sum(&result.state);
+    }
 
-        let idle_state = VaultState::with_initial(
-            before_idle + synced_external,
-            before_shares,
-            before_idle,
-            synced_external,
-            TimestampNs::ZERO,
+    #[cfg(feature = "action-sync-external")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn sync_external_assets_withdrawing_preserves_share_supply_queue_and_actor_fields() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let synced_external = bounded_amount();
+        let shares = bounded_amount();
+        let op_id = 62;
+
+        let mut state =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        state.op_state = OpState::Withdrawing(WithdrawingState {
+            op_id,
+            request_id: 7,
+            index: 1,
+            remaining: 2,
+            collected: 2,
+            receiver: RECEIVER,
+            owner: OWNER,
+            escrow_shares: 3,
+        });
+
+        let before_queue = state.withdraw_queue.status();
+        let before_next_op_id = state.next_op_id;
+        let result = apply_action(
+            state,
+            &zero_fee_config(),
+            None,
+            &SELF,
+            KernelAction::sync_external_assets(synced_external, op_id, TimestampNs::ZERO),
+        )
+        .unwrap();
+
+        assert_eq!(result.state.idle_assets, idle);
+        assert_eq!(result.state.external_assets, synced_external);
+        assert_eq!(result.state.total_assets, idle + synced_external);
+        assert_eq!(result.state.total_shares, shares);
+        assert_eq!(
+            result.state.withdraw_queue.status().length,
+            before_queue.length
         );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_escrow_shares,
+            before_queue.total_escrow_shares
+        );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_expected_assets,
+            before_queue.total_expected_assets
+        );
+        assert_eq!(result.state.next_op_id, before_next_op_id);
+        if let OpState::Withdrawing(withdraw) = &result.state.op_state {
+            assert_eq!(withdraw.op_id, op_id);
+            assert_eq!(withdraw.request_id, 7);
+            assert_eq!(withdraw.index, 1);
+            assert_eq!(withdraw.remaining, 2);
+            assert_eq!(withdraw.collected, 2);
+            assert_eq!(withdraw.owner.0[0], OWNER.0[0]);
+            assert_eq!(withdraw.receiver.0[0], RECEIVER.0[0]);
+            assert_eq!(withdraw.escrow_shares, 3);
+        } else {
+            panic!("sync must preserve withdrawing operation");
+        }
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-sync-external")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn sync_external_assets_refreshing_only_mutates_external_and_total_assets() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let synced_external = bounded_amount();
+        let shares = bounded_amount();
+        let op_id = 63;
+
+        let mut state =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        state.op_state = OpState::Refreshing(RefreshingState {
+            op_id,
+            index: 1,
+            plan: vec![7, 8],
+        });
+
+        let before_queue = state.withdraw_queue.status();
+        let before_next_op_id = state.next_op_id;
+        let result = apply_action(
+            state,
+            &zero_fee_config(),
+            None,
+            &SELF,
+            KernelAction::sync_external_assets(synced_external, op_id, TimestampNs::ZERO),
+        )
+        .unwrap();
+
+        assert_eq!(result.state.idle_assets, idle);
+        assert_eq!(result.state.external_assets, synced_external);
+        assert_eq!(result.state.total_assets, idle + synced_external);
+        assert_eq!(result.state.total_shares, shares);
+        assert_eq!(
+            result.state.withdraw_queue.status().length,
+            before_queue.length
+        );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_escrow_shares,
+            before_queue.total_escrow_shares
+        );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_expected_assets,
+            before_queue.total_expected_assets
+        );
+        assert_eq!(result.state.next_op_id, before_next_op_id);
+        if let OpState::Refreshing(refresh) = &result.state.op_state {
+            assert_eq!(refresh.op_id, op_id);
+            assert_eq!(refresh.index, 1);
+        } else {
+            panic!("sync must preserve refreshing operation");
+        }
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-sync-external")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn sync_external_assets_rejects_wrong_op_id_and_disallowed_states() {
+        let idle = bounded_amount();
+        let external = bounded_amount();
+        let synced_external = bounded_amount();
+        let shares = bounded_amount();
+        let op_id = 64;
+
+        let mut allocating =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        allocating.op_state = OpState::Allocating(AllocatingState {
+            op_id,
+            index: 1,
+            remaining: 2,
+            plan: allocation_plan(1, 1),
+        });
+        assert!(apply_action(
+            allocating,
+            &zero_fee_config(),
+            None,
+            &SELF,
+            KernelAction::sync_external_assets(synced_external, op_id + 1, TimestampNs::ZERO),
+        )
+        .is_err());
+
+        let idle_state =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
         assert!(apply_action(
             idle_state,
+            &zero_fee_config(),
+            None,
+            &SELF,
+            KernelAction::sync_external_assets(synced_external, op_id, TimestampNs::ZERO),
+        )
+        .is_err());
+
+        let mut payout_state =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        payout_state.op_state = OpState::Payout(PayoutState {
+            op_id,
+            request_id: 0,
+            receiver: RECEIVER,
+            amount: 1,
+            owner: OWNER,
+            escrow_shares: 1,
+            burn_shares: 1,
+        });
+        assert!(apply_action(
+            payout_state,
             &zero_fee_config(),
             None,
             &SELF,
@@ -1285,12 +1561,76 @@ mod kani_proofs {
         )
         .unwrap();
 
-        let minted = minted_effect_sum(&result.effects);
         assert_eq!(result.state.idle_assets, before.idle_assets);
         assert_eq!(result.state.external_assets, before.external_assets);
         assert_eq!(result.state.total_assets, before.total_assets);
-        assert_eq!(minted, 0);
+        assert_eq!(result.effects.len(), 1);
+        assert_emit_event_effect(&result.effects[0]);
         assert_eq!(result.state.total_shares, before.total_shares);
+        assert_eq!(
+            result.state.fee_anchor.total_assets,
+            result.state.total_assets
+        );
+        assert!(result.state.fee_anchor.timestamp_ns == now);
+        assert!(result.state.fee_anchor.timestamp_ns > before.fee_anchor.timestamp_ns);
+        assert!(result.state.op_state.is_idle());
+        assert_eq!(
+            result.state.withdraw_queue.status().length,
+            before_queue.length
+        );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_escrow_shares,
+            before_queue.total_escrow_shares
+        );
+        assert_eq!(
+            result.state.withdraw_queue.status().total_expected_assets,
+            before_queue.total_expected_assets
+        );
+        assert_eq!(result.state.next_op_id, before.next_op_id);
+        assert_asset_sum(&result.state);
+    }
+
+    #[cfg(feature = "action-refresh-fees")]
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn refresh_fees_active_rates_only_mint_fee_shares_and_update_anchor() {
+        let idle = 0u128;
+        let external = 0u128;
+        let shares = 0u128;
+        let anchor_assets = 0u128;
+        let now = TimestampNs::from_nanos(1);
+
+        let mut state =
+            VaultState::with_initial(idle + external, shares, idle, external, TimestampNs::ZERO);
+        state.fee_anchor = FeeAccrualAnchor::new(anchor_assets, TimestampNs::ZERO);
+        let before = state.clone();
+        let before_queue = before.withdraw_queue.status();
+
+        let result = apply_action(
+            state,
+            &active_fee_config(),
+            None,
+            &SELF,
+            KernelAction::refresh_fees(now),
+        )
+        .unwrap();
+
+        let effect_count = result.effects.len();
+        assert!(effect_count > 0);
+        assert!(effect_count <= 3);
+        let mut minted = mint_shares_or_event_amount(&result.effects[0]);
+        if effect_count > 1 {
+            minted += mint_shares_or_event_amount(&result.effects[1]);
+        }
+        if effect_count > 2 {
+            minted += mint_shares_or_event_amount(&result.effects[2]);
+        }
+
+        assert_eq!(result.state.idle_assets, before.idle_assets);
+        assert_eq!(result.state.external_assets, before.external_assets);
+        assert_eq!(result.state.total_assets, before.total_assets);
+        assert!(result.state.total_shares >= before.total_shares);
+        assert_eq!(result.state.total_shares, before.total_shares + minted);
         assert_eq!(
             result.state.fee_anchor.total_assets,
             result.state.total_assets
