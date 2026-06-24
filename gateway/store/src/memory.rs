@@ -168,18 +168,6 @@ impl OperationStore for MemoryStore {
         state
             .operations
             .insert(operation.operation_id().clone(), operation.clone());
-
-        // A zero-step plan (e.g. a no-op `storage.ensureDeposit`) is already
-        // terminal at creation and never passes through `save_operation`, so
-        // enroll it for eviction here — otherwise repeated no-op writes would
-        // accumulate in `operations` without bound.
-        if is_terminal(&operation) {
-            state.record_completion_and_evict(
-                operation.operation_id().clone(),
-                self.max_completed_operations,
-            );
-        }
-
         Ok(CreateOperationResult::Created(operation))
     }
 

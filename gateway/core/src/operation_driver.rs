@@ -93,6 +93,13 @@ impl OperationDriver {
         };
 
         let operation = self.execute_remaining_steps(operation).await?;
+        // Persist the final (terminal) state through the normal store path. For
+        // multi-step operations the last step already saved this, making it a
+        // harmless re-save; for a zero-step plan (already terminal at creation,
+        // e.g. a no-op `storage.ensureDeposit`) this is the only save, and it is
+        // what lets the store account for the completed operation (e.g. bounded
+        // retention/eviction in `MemoryStore`).
+        self.store.save_operation(operation.clone()).await?;
         Ok(operation.record().into())
     }
 
