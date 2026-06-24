@@ -174,9 +174,15 @@ tmplr-soroban-vault governance submit-set-cap \
   --admin GCURATOR_OR_MULTISIG... \
   --market-id 1 \
   --cap 1000000000
-tmplr-soroban-vault governance accept-ready \
+# After the cap proposals are ready, verify and accept the specific SetCap proposal ids.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_1_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
   --admin GCURATOR_OR_MULTISIG... \
-  --kind cap
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR_OR_MULTISIG... \
+  --proposal-id CAP_MARKET_1_PROPOSAL_ID
 
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR_OR_MULTISIG... \
@@ -270,7 +276,9 @@ Curator commands fall into three groups:
 
 For timelocked deployments, submit commands create proposals and `accept-ready` accepts them only
 after the relevant timelock has elapsed. Use `governance queue` and `governance explain` to inspect
-pending proposal ids and readiness.
+pending proposal ids and readiness. For market caps, prefer accepting the specific SetCap proposal id
+after `explain` confirms the market id; avoid filtering ready proposals by cap kind because that
+text match can also include cap-group proposals.
 
 ### Single Curator
 
@@ -292,7 +300,11 @@ tmplr-soroban-vault governance submit-set-cap \
   --admin GCURATOR... \
   --market-id 0 \
   --cap 1000000000
-tmplr-soroban-vault governance accept-ready --admin GCURATOR... --kind cap
+# After the cap proposal is ready, verify and accept the specific SetCap proposal id.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
 
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR... \
@@ -318,7 +330,11 @@ tmplr-soroban-vault governance submit-set-cap \
   --admin GCURATOR... \
   --market-id 0 \
   --cap 1000000000
-tmplr-soroban-vault governance accept-ready --admin GCURATOR... --kind cap
+# After the cap proposal is ready, verify and accept the specific SetCap proposal id.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
 tmplr-soroban-vault curator set-supply-queue \
   --admin GCURATOR... \
   --entry 0:CBLENDADAPTER... \
