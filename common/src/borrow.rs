@@ -761,10 +761,155 @@ mod tests {
         interest_rate_strategy::InterestRateStrategy,
         market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
         oracle::pyth::{self, PriceIdentifier},
-        time_chunk::TimeChunkConfiguration,
+        snapshot::Snapshot,
+        time_chunk::{TimeChunk, TimeChunkConfiguration},
     };
 
     use super::*;
+
+    /// Build a minimal valid market configuration. The interest-rate strategy
+    /// is irrelevant to [`calculate_interest`] because the test overwrites the
+    /// `interest_rate` of each finalized snapshot directly.
+    fn interest_test_configuration() -> MarketConfiguration {
+        use templar_primitives::dec;
+
+        MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(600_000),
+            borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "pyth-oracle.near".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([0xcc; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([0xbb; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: dec!("1.25"),
+            borrow_mcr_liquidation: dec!("1.2"),
+            borrow_asset_maximum_usage_ratio: dec!("0.99"),
+            borrow_origination_fee: Fee::zero(),
+            borrow_interest_rate_strategy: InterestRateStrategy::zero(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(9)
+                .with_static("revenue.tmplr.near".parse().unwrap(), 1),
+            protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
+            liquidation_maximum_spread: dec!("0.05"),
+        }
+    }
+
+    /// Push a finalized snapshot with an explicitly chosen end timestamp and
+    /// interest rate. Only `end_timestamp_ms`, `interest_rate`, and
+    /// `time_chunk` (for panic messages) feed into [`calculate_interest`]; the
+    /// remaining balance fields are irrelevant and left at zero.
+    fn push_finalized_snapshot(market: &mut Market, end_timestamp_ms: u64, interest_rate: Decimal) {
+        market.finalized_snapshots.push(Snapshot {
+            time_chunk: TimeChunk(end_timestamp_ms.into()),
+            end_timestamp_ms: end_timestamp_ms.into(),
+            borrow_asset_deposited_active: 0.into(),
+            borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited: 0.into(),
+            yield_distribution: BorrowAssetAmount::zero(),
+            interest_rate,
+        });
+    }
+
+    /// Deterministic, node-free unit test of the interest-accrual math in
+    /// [`BorrowPositionRef::calculate_interest`].
+    ///
+    /// The market is constructed in the in-process near-sdk test VM (no neard
+    /// sandbox). `Market::new` pushes finalized snapshot #0, whose
+    /// `end_timestamp_ms` is the construction block timestamp (`T0`). We then
+    /// push two more finalized snapshots at chosen timestamps with chosen
+    /// interest rates, and build a borrow position whose interest accumulator
+    /// begins at snapshot index 1 (so accrual spans snapshots #1 and #2).
+    ///
+    /// For each finalized snapshot the function accrues:
+    ///     principal * interest_rate * duration_ms * YEAR_PER_MS
+    /// where `duration_ms` is the gap to the previous snapshot's end timestamp,
+    /// then returns `floor(sum)`.
+    ///
+    /// Chosen inputs:
+    ///   principal P  = 1_000_000_000_000          (1e12)
+    ///   T0 (snap #0) = 1_000_000 ms
+    ///   snap #1: end = T0 + 2_592_000_000 ms (30 days), rate = 0.10
+    ///   snap #2: end = +  5_184_000_000 ms (60 days), rate = 0.20
+    ///
+    /// Approx accrual (using YEAR_PER_MS ~= 3.168873850681e-11):
+    ///   snap #1: 1e12 * 0.10 * 2.592e9 * 3.168873e-11 ~= 8.21372e9
+    ///   snap #2: 1e12 * 0.20 * 5.184e9 * 3.168873e-11 ~= 3.28549e10
+    ///   total  ~= 4.10686e10
+    /// The exact floored integer is pinned to `EXPECTED` below.
+    #[test]
+    fn calculate_interest_two_snapshots_exact() {
+        const T0_MS: u64 = 1_000_000;
+        const DURATION_1_MS: u64 = 2_592_000_000; // 30 days
+        const DURATION_2_MS: u64 = 5_184_000_000; // 60 days
+        const T1_MS: u64 = T0_MS + DURATION_1_MS;
+        const T2_MS: u64 = T1_MS + DURATION_2_MS;
+        const PRINCIPAL: u128 = 1_000_000_000_000;
+
+        let rate_1 = templar_primitives::dec!("0.10");
+        let rate_2 = templar_primitives::dec!("0.20");
+
+        // In-process near-sdk VM: set the construction-time block timestamp so
+        // that finalized snapshot #0 lands at T0_MS (block timestamp is in ns).
+        let context = VMContextBuilder::new()
+            .block_timestamp(T0_MS * 1_000_000)
+            .build();
+        testing_env!(context);
+
+        let mut market = Market::new(b"m", interest_test_configuration());
+        // Sanity: Market::new pushed exactly one snapshot (#0) at T0_MS.
+        assert_eq!(market.finalized_snapshots.len(), 1);
+        assert_eq!(
+            market.get_last_finalized_snapshot().end_timestamp_ms.0,
+            T0_MS
+        );
+
+        push_finalized_snapshot(&mut market, T1_MS, rate_1); // index 1
+        push_finalized_snapshot(&mut market, T2_MS, rate_2); // index 2
+        assert_eq!(market.finalized_snapshots.len(), 3);
+
+        // Borrow position with the chosen principal; its interest accumulator
+        // starts at snapshot index 1, so accrual covers snapshots #1 and #2.
+        let mut position = BorrowPosition::new(1);
+        position.borrow_asset_principal = BorrowAssetAmount::new(PRINCIPAL);
+        assert_eq!(position.interest.get_next_snapshot_index(), 1);
+
+        let position_ref =
+            BorrowPositionRef::new(&market, "borrower.near".parse().unwrap(), position);
+
+        let record = position_ref.calculate_interest(u32::MAX);
+
+        // Independently recompute the expected value with the exact same
+        // fixed-point operations and accumulation order as the function under
+        // test, so fixed-point rounding matches bit-for-bit.
+        let principal = Decimal::from(PRINCIPAL);
+        let mut expected_acc = Decimal::ZERO;
+        expected_acc += principal * rate_1 * Decimal::from(DURATION_1_MS) * YEAR_PER_MS;
+        expected_acc += principal * rate_2 * Decimal::from(DURATION_2_MS) * YEAR_PER_MS;
+        let expected = expected_acc.to_u128_floor().unwrap();
+
+        // Pin the exact integer so this is not merely a re-run of the impl.
+        const EXPECTED: u128 = 41_068_605_104;
+        assert_eq!(
+            expected, EXPECTED,
+            "hand-derived Decimal computation drifted from the pinned literal",
+        );
+
+        assert_eq!(
+            u128::from(record.amount),
+            EXPECTED,
+            "calculate_interest accrued the wrong amount",
+        );
+        // The accumulator advances to one-past the last consumed snapshot.
+        assert_eq!(record.next_snapshot_index, 3);
+    }
 
     #[rstest]
     #[test]
