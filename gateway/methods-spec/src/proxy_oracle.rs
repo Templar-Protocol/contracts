@@ -44,3 +44,11 @@ pub struct PriceFeedExists {
 pub struct PriceFeedExistsResult {
     pub exists: bool,
 }
+
+/// Refresh the proxy oracle's cached prices for the given feeds.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracle.updatePrices")]
+pub struct UpdatePrices {
+    pub oracle_id: near_account_id::AccountId,
+    pub price_ids: Vec<PriceIdentifier>,
+}
