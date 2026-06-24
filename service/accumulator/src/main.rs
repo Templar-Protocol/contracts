@@ -25,6 +25,13 @@ async fn run_service_with_client(
     client: SigningClient,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    // The accumulator only discovers markets via registries, so an empty set
+    // means the daemon would run forever doing nothing. Fail fast.
+    anyhow::ensure!(
+        !args.registries.is_empty(),
+        "at least one registry must be configured (REGISTRIES_ACCOUNT_IDS / --registries)"
+    );
+
     // Zero would panic `tokio::time::interval` / break `buffer_unordered`; fail
     // fast rather than crash mid-run on a bad env/CLI override.
     anyhow::ensure!(
