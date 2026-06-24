@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use near_sdk::AccountId;
-use templar_common::utils::Network;
+use templar_gateway_client::Network;
 
 use crate::{
     notifier::{Notifier, TelegramConfig},
@@ -423,7 +423,7 @@ impl Args {
 
 #[cfg(test)]
 mod tests {
-    use templar_common::utils::Network;
+    use templar_gateway_client::Network;
 
     use super::*;
 

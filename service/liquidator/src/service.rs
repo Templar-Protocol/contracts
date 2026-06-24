@@ -10,7 +10,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use near_crypto::{InMemorySigner, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
-use templar_common::utils::Network;
+use templar_gateway_client::Network;
 use tokio::{
     select,
     sync::RwLock,
