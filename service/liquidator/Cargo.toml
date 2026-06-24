@@ -19,18 +19,17 @@ clap = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 near-account-id = { workspace = true }
+near-api = { workspace = true }
 near-crypto = { workspace = true }
 near-jsonrpc-client = { workspace = true }
-near-jsonrpc-primitives = { workspace = true }
-near-primitives = { workspace = true }
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
 reqwest = { version = "0.11", features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 templar-common = { workspace = true, features = ["rpc"] }
 templar-gateway-client = { workspace = true, features = ["clap"] }
+templar-gateway-core = { workspace = true }
 templar-gateway-methods-spec = { workspace = true }
 templar-gateway-types = { workspace = true }
-templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

@@ -18,14 +18,13 @@
 
 use std::sync::Arc;
 
-use near_crypto::Signer;
-use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::{json_types::U128, AccountId};
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     market::MarketConfiguration,
     oracle::pyth::OracleResponse,
 };
+use templar_gateway_client::SigningClient;
 
 use crate::liquidation_strategy::{LiquidationStrategy, SAFETY_BUFFER_BPS};
 
@@ -356,14 +355,12 @@ impl Liquidator {
     /// * `max_loop_iterations` - Maximum iterations for loop liquidation (safety limit)
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: &JsonRpcClient,
-        signer: Arc<Signer>,
+        client: &SigningClient,
         inventory: &inventory::SharedInventory,
         market: AccountId,
         market_config: MarketConfiguration,
         strategy: Arc<dyn LiquidationStrategy>,
         collateral_strategy: CollateralStrategy,
-        timeout: u64,
         dry_run: bool,
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         loop_liquidation: bool,
@@ -373,9 +370,7 @@ impl Liquidator {
         swap_retry_config: crate::swap::SwapRetryConfig,
         min_swap_value_usd: f64,
         proxy_oracle_cache: Option<oracle::ProxyOracleCache>,
-        signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
         notifier: crate::notifier::SharedNotifier,
-        nonce_tracker: crate::rpc::NonceTracker,
     ) -> Self {
         let scanner = scanner::MarketScanner::new(client.clone(), market.clone());
         let oracle_fetcher = oracle::OracleFetcher::new(
@@ -383,15 +378,11 @@ impl Liquidator {
             hermes_url,
             redstone_gateway_url,
             proxy_oracle_cache,
-            signer_for_oracle,
-            nonce_tracker.clone(),
         );
         let executor = executor::LiquidationExecutor::new(
             client.clone(),
-            signer,
             inventory.clone(),
             market.clone(),
-            timeout,
             dry_run,
             collateral_strategy,
             swap_provider,
@@ -400,7 +391,6 @@ impl Liquidator {
             market_config
                 .price_oracle_configuration
                 .collateral_asset_decimals,
-            nonce_tracker,
         );
 
         Self {

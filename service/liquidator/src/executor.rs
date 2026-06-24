@@ -3,27 +3,18 @@
 //! Handles the creation and submission of liquidation transactions,
 //! including inventory management and immediate collateral swapping.
 
-use near_crypto::Signer;
-use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::{
-    hash::CryptoHash,
-    transaction::{Transaction, TransactionV0},
-};
 use near_sdk::{json_types::U128, AccountId};
-use std::sync::Arc;
-use templar_common::{
-    asset::{
-        BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
-        FungibleAssetAmount,
-    },
-    market::{DepositMsg, LiquidateMsg},
+use templar_common::asset::{
+    BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
+    FungibleAssetAmount,
 };
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::market;
+use templar_gateway_types::OperationStatus;
 
 use crate::{
-    inventory,
-    rpc::{check_transaction_success, get_access_key_data, send_tx, NonceTracker},
-    swap::SwapProvider,
-    CollateralStrategy, LiquidationOutcome, LiquidatorError, LiquidatorResult,
+    inventory, swap::SwapProvider, CollateralStrategy, LiquidationOutcome, LiquidatorError,
+    LiquidatorResult,
 };
 
 /// Swap issue that occurred after a successful liquidation.
@@ -54,50 +45,41 @@ pub enum SwapIssue {
 /// - Executing transactions
 /// - Immediately swapping collateral based on strategy
 pub struct LiquidationExecutor {
-    client: JsonRpcClient,
-    signer: Arc<Signer>,
+    client: SigningClient,
     inventory: inventory::SharedInventory,
     market: AccountId,
-    timeout: u64,
     dry_run: bool,
     collateral_strategy: CollateralStrategy,
     swap_provider: Option<crate::swap::SwapProviderImpl>,
     swap_retry_config: crate::swap::SwapRetryConfig,
     min_swap_value_usd: f64,
     collateral_decimals: i32,
-    nonce_tracker: NonceTracker,
 }
 
 impl LiquidationExecutor {
     /// Creates a new liquidation executor.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        client: JsonRpcClient,
-        signer: Arc<Signer>,
+        client: SigningClient,
         inventory: inventory::SharedInventory,
         market: AccountId,
-        timeout: u64,
         dry_run: bool,
         collateral_strategy: CollateralStrategy,
         swap_provider: Option<crate::swap::SwapProviderImpl>,
         swap_retry_config: crate::swap::SwapRetryConfig,
         min_swap_value_usd: f64,
         collateral_decimals: i32,
-        nonce_tracker: NonceTracker,
     ) -> Self {
         Self {
             client,
-            signer,
             inventory,
             market,
-            timeout,
             dry_run,
             collateral_strategy,
             swap_provider,
             swap_retry_config,
             min_swap_value_usd,
             collateral_decimals,
-            nonce_tracker,
         }
     }
 
@@ -109,34 +91,6 @@ impl LiquidationExecutor {
     /// Check if executor is in dry run mode
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
-    }
-
-    /// Creates a transfer transaction for liquidation.
-    fn create_transfer_tx(
-        &self,
-        borrow_asset: &FungibleAsset<BorrowAsset>,
-        borrow_account: &AccountId,
-        liquidation_amount: U128,
-        collateral_amount: Option<U128>,
-        nonce: u64,
-        block_hash: CryptoHash,
-    ) -> LiquidatorResult<Transaction> {
-        let msg = near_sdk::serde_json::to_string(&DepositMsg::Liquidate(LiquidateMsg {
-            account_id: borrow_account.clone(),
-            amount: collateral_amount.map(Into::into),
-        }))?;
-
-        let function_call =
-            borrow_asset.transfer_call_action(&self.market, liquidation_amount.into(), &msg);
-
-        Ok(Transaction::V0(TransactionV0 {
-            nonce,
-            receiver_id: borrow_asset.contract_id().into(),
-            block_hash,
-            signer_id: self.signer.get_account_id(),
-            public_key: self.signer.public_key().clone(),
-            actions: vec![function_call.into()],
-        }))
     }
 
     /// Executes a liquidation transaction.
@@ -203,21 +157,10 @@ impl LiquidationExecutor {
             "Reserved inventory for liquidation"
         );
 
-        // Execute liquidation transaction
-        let (nonce, block_hash) =
-            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker))
-                .await
-                .map_err(LiquidatorError::AccessKeyDataError)?;
-
-        let tx = self.create_transfer_tx(
-            borrow_asset,
-            borrow_account,
-            U128::from(liquidation_amount),
-            Some(U128::from(collateral_amount)), // Request specific collateral amount calculated by strategy
-            nonce,
-            block_hash,
-        )?;
-
+        // Execute liquidation transaction through the gateway. The driver signs,
+        // submits, and polls to finality; a reverted on-chain transaction comes
+        // back as `Ok` with a `Failed` operation status (not an `Err`), so the
+        // status is checked explicitly below.
         tracing::info!(
             borrower = %borrow_account,
             liquidation_amount = %u128::from(liquidation_amount),
@@ -227,15 +170,23 @@ impl LiquidationExecutor {
         );
 
         let tx_start = std::time::Instant::now();
-        let tx_result = send_tx(&self.client, &self.signer, self.timeout, tx).await;
+        let tx_result = self
+            .client
+            .execute(market::Liquidate {
+                market_id: self.market.clone(),
+                account_id: borrow_account.clone(),
+                liquidation_amount,
+                collateral_amount: Some(collateral_amount), // Request specific collateral amount calculated by strategy
+            })
+            .await;
 
         match tx_result {
-            Ok(outcome) => {
+            Ok(operation_result) => {
                 let tx_duration = tx_start.elapsed();
 
-                // Check if transaction AND all receipts succeeded
-                match check_transaction_success(&outcome) {
-                    Ok(()) => {
+                // Check if the operation (and thus all receipts) succeeded.
+                match operation_result.operation.status {
+                    OperationStatus::Succeeded => {
                         tracing::info!(
                             borrower = %borrow_account,
                             liquidation_amount = %u128::from(liquidation_amount),
@@ -293,26 +244,32 @@ impl LiquidationExecutor {
 
                         Ok((LiquidationOutcome::Liquidated, swap_issue))
                     }
-                    Err(error_msg) => {
-                        // Receipt failed - release reserved inventory
+                    failed_status => {
+                        // Operation did not succeed (reverted receipt, or did not
+                        // reach finality) - release reserved inventory.
                         self.inventory
                             .write()
                             .await
                             .release(borrow_asset, liquidation_amount);
 
+                        let operation_id = operation_result.operation.id.0.clone();
+                        let error_msg = format!(
+                            "Liquidation operation {operation_id} ended with status {failed_status:?}"
+                        );
+
                         tracing::error!(
                             borrower = %borrow_account,
                             liquidation_amount = %u128::from(liquidation_amount),
-                            error = %error_msg,
-                            tx_hash = %outcome.transaction_outcome.id,
-                            "Liquidation transaction had failed receipt, inventory released"
+                            operation_id = %operation_id,
+                            status = ?failed_status,
+                            "Liquidation transaction did not succeed, inventory released"
                         );
                         Err(LiquidatorError::TransactionFailed(error_msg))
                     }
                 }
             }
             Err(e) => {
-                // Release reserved inventory on RPC failure
+                // Release reserved inventory on submission failure
                 self.inventory
                     .write()
                     .await
@@ -321,10 +278,10 @@ impl LiquidationExecutor {
                 tracing::error!(
                     borrower = %borrow_account,
                     liquidation_amount = %u128::from(liquidation_amount),
-                    error = ?e,
-                    "Liquidation RPC call failed, inventory released"
+                    error = %e,
+                    "Liquidation gateway call failed, inventory released"
                 );
-                Err(LiquidatorError::LiquidationTransactionError(e))
+                Err(LiquidatorError::LiquidationTransactionError(e.into()))
             }
         }
     }
@@ -414,7 +371,6 @@ impl LiquidationExecutor {
                     provider
                         .swap(&coll, &borrow, swap_amount)
                         .await
-                        .map(|_| ())
                         .map_err(|e| {
                             let msg = e.to_string();
                             let kind = if msg.contains("Amount is too low") {
