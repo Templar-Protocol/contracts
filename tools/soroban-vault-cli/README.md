@@ -162,6 +162,9 @@ adapter set, sets a nonzero market cap, and binds it into the supply queue:
 tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR_OR_MULTISIG... \
   --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind allowed-adapters
 
 tmplr-soroban-vault governance submit-set-cap \
   --admin GCURATOR_OR_MULTISIG... \
@@ -171,11 +174,17 @@ tmplr-soroban-vault governance submit-set-cap \
   --admin GCURATOR_OR_MULTISIG... \
   --market-id 1 \
   --cap 1000000000
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind cap
 
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR_OR_MULTISIG... \
   --entry 0:CBLENDADAPTER... \
   --entry 1:CCUSTODIALADAPTER...
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind supply-queue
 ```
 
 Each `--entry` is `market_id:adapter_address`. The `market_id` is the same value passed later to

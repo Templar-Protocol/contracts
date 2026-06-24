@@ -1678,6 +1678,11 @@ proptest! {
             },
         );
 
+        if previewed_assets > old_state.idle_assets {
+            prop_assert!(result.is_err(), "atomic redeem over idle cap succeeded");
+            return Ok(());
+        }
+
         if let Ok(result) = result {
             let burned_shares = result
                 .effects

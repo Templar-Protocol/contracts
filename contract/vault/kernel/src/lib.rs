@@ -139,11 +139,38 @@ mod kani_proofs {
     }
 
     fn assert_address_eq(left: Address, right: Address) {
-        let mut index = 0usize;
-        while index < 32 {
-            assert_eq!(left.0[index], right.0[index]);
-            index += 1;
-        }
+        assert_eq!(left.0[0], right.0[0]);
+        assert_eq!(left.0[1], right.0[1]);
+        assert_eq!(left.0[2], right.0[2]);
+        assert_eq!(left.0[3], right.0[3]);
+        assert_eq!(left.0[4], right.0[4]);
+        assert_eq!(left.0[5], right.0[5]);
+        assert_eq!(left.0[6], right.0[6]);
+        assert_eq!(left.0[7], right.0[7]);
+        assert_eq!(left.0[8], right.0[8]);
+        assert_eq!(left.0[9], right.0[9]);
+        assert_eq!(left.0[10], right.0[10]);
+        assert_eq!(left.0[11], right.0[11]);
+        assert_eq!(left.0[12], right.0[12]);
+        assert_eq!(left.0[13], right.0[13]);
+        assert_eq!(left.0[14], right.0[14]);
+        assert_eq!(left.0[15], right.0[15]);
+        assert_eq!(left.0[16], right.0[16]);
+        assert_eq!(left.0[17], right.0[17]);
+        assert_eq!(left.0[18], right.0[18]);
+        assert_eq!(left.0[19], right.0[19]);
+        assert_eq!(left.0[20], right.0[20]);
+        assert_eq!(left.0[21], right.0[21]);
+        assert_eq!(left.0[22], right.0[22]);
+        assert_eq!(left.0[23], right.0[23]);
+        assert_eq!(left.0[24], right.0[24]);
+        assert_eq!(left.0[25], right.0[25]);
+        assert_eq!(left.0[26], right.0[26]);
+        assert_eq!(left.0[27], right.0[27]);
+        assert_eq!(left.0[28], right.0[28]);
+        assert_eq!(left.0[29], right.0[29]);
+        assert_eq!(left.0[30], right.0[30]);
+        assert_eq!(left.0[31], right.0[31]);
     }
 
     fn bounded_state() -> VaultState {
@@ -210,7 +237,7 @@ mod kani_proofs {
 
     fn assert_refund_owner_is_owner(refund_owner: Option<Address>) {
         match refund_owner {
-            Some(owner) => assert_eq!(owner.0[0], OWNER.0[0]),
+            Some(owner) => assert_address_eq(owner, OWNER),
             None => panic!("expected refund owner"),
         }
     }
@@ -1430,8 +1457,8 @@ mod kani_proofs {
             assert_eq!(withdraw.index, 1);
             assert_eq!(withdraw.remaining, 2);
             assert_eq!(withdraw.collected, 2);
-            assert_eq!(withdraw.owner.0[0], OWNER.0[0]);
-            assert_eq!(withdraw.receiver.0[0], RECEIVER.0[0]);
+            assert_address_eq(withdraw.owner, OWNER);
+            assert_address_eq(withdraw.receiver, RECEIVER);
             assert_eq!(withdraw.escrow_shares, 3);
         } else {
             panic!("sync must preserve withdrawing operation");
