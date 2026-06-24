@@ -124,24 +124,24 @@ mod tests {
 
         let passkey = p256::SecretKey::from_bytes(&[0x88_u8; 32].into()).unwrap();
 
-        old.keys.insert(
-            KeyId::Passkey(passkey::VerifyKey(passkey.public_key().into())),
-            KeyParameters {
-                block_height: 1111.into(),
-                index: 2222.into(),
-                nonce: 3333.into(),
-            },
-        );
-        old.keys.insert(
-            KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into())),
-            KeyParameters {
-                block_height: 4444.into(),
-                index: 5555.into(),
-                nonce: 6666.into(),
-            },
-        );
+        let passkey_key = KeyId::Passkey(passkey::VerifyKey(passkey.public_key().into()));
+        let passkey_parameters = KeyParameters {
+            block_height: 1111.into(),
+            index: 2222.into(),
+            nonce: 3333.into(),
+        };
+        let raw_key = KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into()));
+        let raw_parameters = KeyParameters {
+            block_height: 4444.into(),
+            index: 5555.into(),
+            nonce: 6666.into(),
+        };
+
+        old.keys.insert(passkey_key.clone(), passkey_parameters);
+        old.keys.insert(raw_key.clone(), raw_parameters);
 
         env::state_write(&old);
+        drop(old);
 
         let migration = V0 {
             chain_id: 1234.into(),
@@ -153,12 +153,16 @@ mod tests {
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 2);
+        assert_eq!(new.keys.get(&passkey_key), Some(&passkey_parameters));
+        assert_eq!(new.keys.get(&raw_key), Some(&raw_parameters));
 
-        env::state_write(&state::V1 {
+        let v1_state = state::V1 {
             next_key_index: new.next_key_index,
             keys: new.keys,
             chain_id: new.chain_id,
-        });
+        };
+        env::state_write(&v1_state);
+        drop(v1_state);
 
         let new = V1.run().unwrap();
 
@@ -166,6 +170,8 @@ mod tests {
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 2);
+        assert_eq!(new.keys.get(&passkey_key), Some(&passkey_parameters));
+        assert_eq!(new.keys.get(&raw_key), Some(&raw_parameters));
     }
 
     #[test]
@@ -178,16 +184,17 @@ mod tests {
             chain_id: 1234,
         };
 
-        old.keys.insert(
-            KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into())),
-            KeyParameters {
-                block_height: 4444.into(),
-                index: 5555.into(),
-                nonce: 6666.into(),
-            },
-        );
+        let raw_key = KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into()));
+        let raw_parameters = KeyParameters {
+            block_height: 4444.into(),
+            index: 5555.into(),
+            nonce: 6666.into(),
+        };
+
+        old.keys.insert(raw_key.clone(), raw_parameters);
 
         env::state_write(&old);
+        drop(old);
         write_state_version(0);
 
         let new = UnbrickV1.run().unwrap();
@@ -196,6 +203,7 @@ mod tests {
         assert_eq!(new.chain_id, 1234);
         assert_eq!(new.next_key_index, 42);
         assert_eq!(new.keys.len(), 1);
+        assert_eq!(new.keys.get(&raw_key), Some(&raw_parameters));
     }
 }
 

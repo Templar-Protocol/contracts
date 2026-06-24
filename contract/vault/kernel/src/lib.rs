@@ -1216,9 +1216,17 @@ mod kani_proofs {
             external,
             TimestampNs::ZERO,
         );
+        let request_id = enqueue_withdrawal(
+            &mut state,
+            OWNER,
+            RECEIVER,
+            escrow_shares,
+            collected + remaining,
+            TimestampNs::ZERO,
+        );
         state.op_state = OpState::Withdrawing(WithdrawingState {
             op_id,
-            request_id: 0,
+            request_id,
             index: 0,
             remaining,
             collected,
@@ -1264,9 +1272,17 @@ mod kani_proofs {
             external,
             TimestampNs::ZERO,
         );
+        let request_id = enqueue_withdrawal(
+            &mut state,
+            OWNER,
+            RECEIVER,
+            escrow_shares,
+            amount,
+            TimestampNs::ZERO,
+        );
         state.op_state = OpState::Payout(PayoutState {
             op_id,
-            request_id: 0,
+            request_id,
             receiver: RECEIVER,
             amount,
             owner: OWNER,

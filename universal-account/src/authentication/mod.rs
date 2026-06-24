@@ -207,10 +207,7 @@ pub trait HashForSigning {
 mod kani_proofs {
     use near_sdk::{json_types::U64, AccountId};
 
-    use crate::{
-        authentication::{ed25519::raw, with_raw_string::WithRawString},
-        encoding, PayloadExecutionParameters,
-    };
+    use crate::{authentication::ed25519::raw, encoding, PayloadExecutionParameters};
 
     use super::*;
 
@@ -230,10 +227,7 @@ mod kani_proofs {
     }
 
     fn valid_raw_message(payload: u8) -> MessageWithValidSignature<raw::Message<u8>> {
-        let message = raw::Message::new(WithRawString {
-            raw: String::new(),
-            parsed: Payload::new(execution_parameters(), payload),
-        });
+        let message = raw::Message::from_parsed(Payload::new(execution_parameters(), payload));
 
         MessageWithValidSignature(MessageWithSignature {
             message,
