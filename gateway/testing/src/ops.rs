@@ -24,7 +24,7 @@ use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, market, storage, tx};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
-    ContractMethodName, ManagedAccountId, NearGas, OperationStatus, U128,
+    ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus, U128,
 };
 
 use test_utils::to_price;
@@ -900,6 +900,53 @@ impl SandboxHarness {
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+    }
+
+    /// Total gas burnt across every transaction an operation produced (the
+    /// transaction plus its receipts), summed over the operation's steps. Used by
+    /// the gas-regression tests; queried via the JSON-RPC `tx` status method
+    /// since the gateway result carries only step transaction hashes.
+    pub async fn operation_gas_burnt(&self, result: &WriteOperationResult) -> Result<u64> {
+        let url = self.network.rpc_endpoints[0].url.clone();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
+        let sender = result.operation.signer_account_id.0.to_string();
+
+        let mut total = 0u64;
+        for step in &result.operation.steps {
+            let tx_hash = match &step.status {
+                StepStatus::Succeeded { tx_hash } | StepStatus::Failed { tx_hash, .. } => {
+                    tx_hash.to_string()
+                }
+                _ => continue,
+            };
+            let response: serde_json::Value = client
+                .post(url.clone())
+                .json(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": "tx",
+                    "method": "tx",
+                    "params": [tx_hash, sender],
+                }))
+                .send()
+                .await?
+                .json()
+                .await?;
+            if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+                anyhow::bail!("tx status error: {error}");
+            }
+            let outcome = &response["result"];
+            total += outcome["transaction_outcome"]["outcome"]["gas_burnt"]
+                .as_u64()
+                .context("missing transaction gas_burnt in tx status")?;
+            if let Some(receipts) = outcome["receipts_outcome"].as_array() {
+                for receipt in receipts {
+                    total += receipt["outcome"]["gas_burnt"].as_u64().unwrap_or(0);
+                }
+            }
+        }
+        Ok(total)
     }
 
     /// Fetch the market's current oracle prices (the `OracleResponse` shape the

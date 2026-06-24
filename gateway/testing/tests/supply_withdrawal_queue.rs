@@ -3,9 +3,10 @@
 //! The original also asserts on the `WithdrawalQueueStatus` *returned* by
 //! `execute_next_supply_withdrawal_request`; the gateway write op surfaces only
 //! the transaction result, so here we assert the same outcomes via the queue
-//! status *read* plus balances/positions. `measure_gas` is omitted (it inspects
-//! per-call gas, which the harness does not expose). The mock
-//! `patch_storage_unregister` is replaced with the gateway `storage::unregister`.
+//! status *read* plus balances/positions. `measure_gas` reads gas via the
+//! harness `operation_gas_burnt` helper (the gateway result carries only tx
+//! hashes). The mock `patch_storage_unregister` is replaced with the gateway
+//! `storage::unregister`.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -470,6 +471,68 @@ async fn batch_fulfillment_partial(#[future(awt)] harness: SandboxHarness) -> Re
             .ft_balance_of(&market.borrow_ft_id, &supply_3.0)
             .await?,
         b3 + 5_000,
+    );
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn measure_gas(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    const TGAS: u64 = 1_000_000_000_000;
+
+    let market = harness.deploy_full_market().await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let users = [
+        harness.create_user("supply1").await?,
+        harness.create_user("supply2").await?,
+        harness.create_user("supply3").await?,
+        harness.create_user("supply4").await?,
+    ];
+    for user in &users {
+        harness.fund_user(user, &market).await?;
+    }
+    for user in &users {
+        harness
+            .supply_and_harvest_until_activation(user, &market, 20_000)
+            .await?;
+    }
+
+    // Gas for fulfilling a single request.
+    harness
+        .create_supply_withdrawal_request(&users[0], &market, 1_000)
+        .await?;
+    let one = harness
+        .operation_gas_burnt(
+            &harness
+                .execute_next_supply_withdrawal_request(&users[0], &market, None)
+                .await?,
+        )
+        .await?;
+
+    // Gas for fulfilling four requests in one batch.
+    for user in &users {
+        harness
+            .create_supply_withdrawal_request(user, &market, 1_000)
+            .await?;
+    }
+    let four = harness
+        .operation_gas_burnt(
+            &harness
+                .execute_next_supply_withdrawal_request(&users[0], &market, Some(100))
+                .await?,
+        )
+        .await?;
+
+    // one = base + 1*per_request, four = base + 4*per_request.
+    let base = (4 * one).saturating_sub(four) / 3;
+    let per_request = four.saturating_sub(one) / 3;
+
+    assert!(base < 7 * TGAS, "base gas too high: {base}");
+    assert!(
+        per_request < 5 * TGAS,
+        "per-request gas too high: {per_request}",
     );
 
     Ok(())
