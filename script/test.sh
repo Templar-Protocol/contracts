@@ -13,14 +13,10 @@ docker compose \
 # Run tests with nextest profile (defaults to 'ci' in CI via NEXTEST_PROFILE env var)
 cargo nextest run "$@"
 
-# Clean up build artifacts to save disk space in CI
-if [ -n "$CI" ]; then
-    echo "Cleaning up build artifacts to save disk space..."
-    # Remove only the largest intermediate artifacts
-    find target -type f -name "*.rmeta" -delete 2>/dev/null || true
-    # Clean up incremental compilation artifacts
-    rm -rf target/debug/incremental 2>/dev/null || true
-    rm -rf target/release 2>/dev/null || true
-    # Show remaining disk space
-    df -h
-fi
+# Build-artifact cleanup is intentionally NOT done here. Disk is managed by
+# reducing debug info (CARGO_PROFILE_*_DEBUG=line-tables-only in CI) and by
+# Swatinem/rust-cache's own cache-aware pruning. The previous
+# `find … -name '*.rmeta' -delete` ran *after* the tests (too late to relieve
+# in-run disk pressure) and stripped dependency metadata from the saved cache,
+# forcing those deps to recompile next run — spending time to save disk that did
+# not actually materialize.

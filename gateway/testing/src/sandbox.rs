@@ -793,12 +793,12 @@ fn zero_ttl_config() -> TtlConfig {
 /// Choose the harness mode from the environment. `NEAR_SANDBOX_RPC_URL` set →
 /// attach to an out-of-band node (no owned `Sandbox`); otherwise launch one.
 async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
-    if let Ok(rpc_url) = std::env::var("NEAR_SANDBOX_RPC_URL") {
+    if let Some(rpc_url) = attach_rpc_url()? {
         let network = NetworkConfig::from_rpc_url(
             "sandbox",
             rpc_url
                 .parse()
-                .with_context(|| format!("invalid NEAR_SANDBOX_RPC_URL: {rpc_url}"))?,
+                .with_context(|| format!("invalid sandbox RPC url: {rpc_url}"))?,
         );
         Ok((None, network))
     } else {
@@ -806,6 +806,33 @@ async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
         let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
         Ok((Some(sandbox), network))
     }
+}
+
+/// The RPC url to attach to in attach mode, or `None` for owned mode.
+///
+/// Under the nextest `sandbox` profile the setup script starts a pool of nodes
+/// and exports `NEAR_SANDBOX_RPC_URL_<i>` per node. A test reads its
+/// `NEXTEST_TEST_GLOBAL_SLOT` and attaches to that slot's node, giving it
+/// exclusive use of it — so `fast_forward` and chain state stay isolated from
+/// other concurrently-running tests, which one shared node could not guarantee.
+/// Falls back to the single `NEAR_SANDBOX_RPC_URL` for manual/non-nextest runs.
+fn attach_rpc_url() -> Result<Option<String>> {
+    if let Ok(slot) = std::env::var("NEXTEST_TEST_GLOBAL_SLOT") {
+        let var = format!("NEAR_SANDBOX_RPC_URL_{slot}");
+        if let Ok(url) = std::env::var(&var) {
+            return Ok(Some(url));
+        }
+        // In a pooled run every slot must map to a node; a missing one means the
+        // pool is smaller than the profile's test-threads — fail loudly rather
+        // than silently sharing a node (which would break time isolation).
+        if std::env::var("NEAR_SANDBOX_RPC_URL_0").is_ok() {
+            anyhow::bail!(
+                "no pooled sandbox node for slot {slot} ({var} unset): \
+                 SANDBOX_NODE_COUNT must be >= the sandbox profile's test-threads"
+            );
+        }
+    }
+    Ok(std::env::var("NEAR_SANDBOX_RPC_URL").ok())
 }
 
 /// The high-balance genesis account every harness funds its accounts from.

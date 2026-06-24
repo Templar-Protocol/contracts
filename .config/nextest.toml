@@ -36,10 +36,13 @@ slow-timeout = { period = "120s", terminate-after = 3 }
 command = "script/sandbox-up.sh"
 
 [profile.sandbox]
-# Serial for now: every test creates accounts signed by the genesis root key,
-# so parallel processes would contend on its nonce (per-slot tenancy is the
-# follow-up that unlocks parallelism).
-test-threads = 1
+# Parallel across a pool of neard nodes: the setup script (script/sandbox-up.sh)
+# starts one node per slot and each test attaches to the node for its
+# NEXTEST_TEST_GLOBAL_SLOT. Exclusive use per slot keeps fast_forward and chain
+# state isolated between concurrent tests, while reusing a node across the tests
+# that pass through its slot avoids per-test boot. test-threads MUST be <=
+# SANDBOX_NODE_COUNT (default 4; keep them in sync, lower both on tight runners).
+test-threads = 4
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 [[profile.sandbox.scripts]]
