@@ -308,6 +308,31 @@ impl SandboxHarness {
         &self,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
+        let (oracle_id, oracle_signer) = self
+            .create_account("oracle", NearToken::from_near(100))
+            .await?;
+        deploy_contract(
+            &self.network,
+            oracle_id.clone(),
+            oracle_signer,
+            MockOracleController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({}),
+        )
+        .await?;
+
+        self.deploy_market_with_oracle(oracle_id, customize).await
+    }
+
+    /// Deploy a market (plus its FT pair) pointing at an existing `oracle_id`
+    /// instead of a freshly-deployed mock oracle — e.g. a proxy oracle that
+    /// aggregates other oracles. Applies `customize` to the
+    /// [`MarketConfiguration`] before deployment.
+    pub async fn deploy_market_with_oracle(
+        &self,
+        oracle_id: AccountId,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<(AccountId, MarketConfiguration)> {
         let balance = NearToken::from_near(100);
         let (borrow_asset_id, borrow_signer) = self.create_account("borrow-ft", balance).await?;
         deploy_contract(
@@ -329,17 +354,6 @@ impl SandboxHarness {
             FtController::wasm().await.to_vec(),
             "new",
             serde_json::json!({ "name": "Collateral FT", "symbol": "CFT" }),
-        )
-        .await?;
-
-        let (oracle_id, oracle_signer) = self.create_account("oracle", balance).await?;
-        deploy_contract(
-            &self.network,
-            oracle_id.clone(),
-            oracle_signer,
-            MockOracleController::wasm().await.to_vec(),
-            "new",
-            serde_json::json!({}),
         )
         .await?;
 
@@ -583,6 +597,33 @@ impl SandboxHarness {
             )
             .transaction()
             .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
+    }
+
+    /// Refresh the proxy oracle's cached prices for `price_ids` by invoking
+    /// `update_prices`, which fans out to each proxy's underlying sources and
+    /// caches the aggregated result so a subsequent
+    /// `list_ema_prices_no_older_than` read sees it. Signed as the oracle
+    /// account (permissionless, but the call still needs a signer). Generously
+    /// gassed since it triggers a cross-contract fan-out per proxy.
+    pub async fn update_proxy_prices(
+        &self,
+        oracle_id: AccountId,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize update_prices signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "update_prices",
+                serde_json::json!({ "price_ids": price_ids }),
+            )
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(300))
             .with_signer(oracle_id, signer)
             .send_to(&self.network)
             .await?

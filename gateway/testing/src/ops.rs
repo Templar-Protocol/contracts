@@ -76,6 +76,28 @@ impl SandboxHarness {
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<DeployedMarket> {
         let (market_id, configuration) = self.deploy_market_with(customize).await?;
+        Self::resolve_deployed_market(market_id, configuration)
+    }
+
+    /// [`deploy_full_market`](Self::deploy_full_market) but pointing the market at
+    /// an existing `oracle_id` (e.g. a proxy oracle) instead of a fresh mock
+    /// oracle, with a hook to customize the [`MarketConfiguration`].
+    pub async fn deploy_full_market_with_oracle(
+        &self,
+        oracle_id: AccountId,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<DeployedMarket> {
+        let (market_id, configuration) =
+            self.deploy_market_with_oracle(oracle_id, customize).await?;
+        Self::resolve_deployed_market(market_id, configuration)
+    }
+
+    /// Resolve the NEP-141 asset account ids from a deployed market's
+    /// configuration into a [`DeployedMarket`].
+    fn resolve_deployed_market(
+        market_id: AccountId,
+        configuration: MarketConfiguration,
+    ) -> Result<DeployedMarket> {
         let borrow_ft_id = configuration
             .borrow_asset
             .clone()
