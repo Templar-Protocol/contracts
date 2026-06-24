@@ -21,10 +21,11 @@ use templar_common::{
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{ft, market, storage, tx};
+use templar_gateway_methods_spec::{ft, market, registry, storage, tx};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
-    ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus, U128,
+    primitive::PublicKey,
+    Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus, U128,
 };
 
 use test_utils::to_price;
@@ -551,6 +552,105 @@ impl SandboxHarness {
             .await
             .map_err(|error| anyhow::anyhow!("list_finalized_snapshots failed: {error}"))?
             .snapshots)
+    }
+
+    /// Add a contract version (wasm) to a registry.
+    pub async fn registry_add_version(
+        &self,
+        caller: &ManagedAccountId,
+        registry_id: &AccountId,
+        version_key: &str,
+        deploy_mode: templar_common::registry::DeployMode,
+        code: Vec<u8>,
+        deposit: NearToken,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            registry::AddVersion {
+                registry_id: registry_id.clone(),
+                version_key: version_key.to_owned(),
+                deploy_mode,
+                code: Base64Bytes(code),
+                deposit,
+            },
+        )
+        .await
+    }
+
+    /// Deploy a contract from a registry version. The deployed contract lives at
+    /// the sub-account `{name}.{registry_id}`.
+    pub async fn registry_deploy(
+        &self,
+        caller: &ManagedAccountId,
+        registry_id: &AccountId,
+        name: &str,
+        version_key: &str,
+        init_args: Vec<u8>,
+        full_access_keys: Option<Vec<PublicKey>>,
+        deposit: NearToken,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            registry::Deploy {
+                registry_id: registry_id.clone(),
+                name: name.to_owned(),
+                version_key: version_key.to_owned(),
+                init_args: Base64Bytes(init_args),
+                full_access_keys,
+                deposit,
+            },
+        )
+        .await
+    }
+
+    /// Read a market's configuration by account id (for markets not deployed via
+    /// the harness, e.g. deployed through a registry).
+    pub async fn get_configuration(&self, market_id: &AccountId) -> Result<MarketConfiguration> {
+        self.client()?
+            .read(market::GetConfiguration {
+                market_id: market_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_configuration failed: {error}"))
+    }
+
+    /// List `account_id`'s access keys as `(public_key, is_full_access)` via the
+    /// JSON-RPC `view_access_key_list` query.
+    pub async fn view_access_keys(&self, account_id: &AccountId) -> Result<Vec<(String, bool)>> {
+        let url = self.network.rpc_endpoints[0].url.clone();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
+        let response: serde_json::Value = client
+            .post(url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "keys",
+                "method": "query",
+                "params": {
+                    "request_type": "view_access_key_list",
+                    "finality": "final",
+                    "account_id": account_id.to_string(),
+                },
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+            anyhow::bail!("view_access_key_list error: {error}");
+        }
+        let keys = response["result"]["keys"]
+            .as_array()
+            .context("missing keys in access key list")?;
+        Ok(keys
+            .iter()
+            .map(|key| {
+                let public_key = key["public_key"].as_str().unwrap_or_default().to_owned();
+                let full_access = key["access_key"]["permission"].as_str() == Some("FullAccess");
+                (public_key, full_access)
+            })
+            .collect())
     }
 
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow

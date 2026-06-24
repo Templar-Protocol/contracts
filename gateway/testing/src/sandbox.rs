@@ -461,6 +461,23 @@ impl SandboxHarness {
         Ok(id)
     }
 
+    /// Deploy a standalone mock fungible token (NEP-141) and return its id.
+    pub async fn deploy_ft(&self, label: &str, name: &str, symbol: &str) -> Result<AccountId> {
+        let (id, signer) = self
+            .create_account(label, NearToken::from_near(100))
+            .await?;
+        deploy_contract(
+            &self.network,
+            id.clone(),
+            signer,
+            FtController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "name": name, "symbol": symbol }),
+        )
+        .await?;
+        Ok(id)
+    }
+
     pub async fn deploy_redstone_adapter(&self, account_id: AccountId) -> Result<AccountId> {
         let (account_id, signer) = self
             .create_account(label_of(&account_id), NearToken::from_near(100))

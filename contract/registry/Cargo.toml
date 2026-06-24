@@ -34,11 +34,16 @@ near-sdk-contract-tools.workspace = true
 templar-common.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
+near-token.workspace = true
 rstest.workspace = true
+serde_json.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
+templar-gateway-testing.workspace = true
+templar-gateway-types.workspace = true
 
 [lints]
 workspace = true
