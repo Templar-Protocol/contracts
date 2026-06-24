@@ -438,7 +438,7 @@ jobs:
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --profile sandbox --run-ignored all -p templar-gateway-testing --test-threads 2
+        run: cargo nextest run --profile sandbox --run-ignored all -p templar-market-contract --test-threads 2
 
       - name: Cleanup Docker resources
         if: always()
