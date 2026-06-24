@@ -6,11 +6,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+clap = { workspace = true, optional = true }
 near-api.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
+
+[features]
+# Derive `clap::ValueEnum` on `Network` so CLI consumers can use it directly.
+clap = ["dep:clap"]
 
 [lints]
 workspace = true

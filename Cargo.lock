@@ -13226,6 +13226,7 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "near-api",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",

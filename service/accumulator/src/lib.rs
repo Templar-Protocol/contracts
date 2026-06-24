@@ -10,15 +10,14 @@
 
 use std::{collections::HashMap, future::Future};
 
-use anyhow::Context;
 use clap::Parser;
 use futures::StreamExt;
 use near_account_id::AccountId;
 use near_api::SecretKey;
 use templar_common::{borrow::BorrowPosition, market::MarketConfiguration};
-use templar_gateway_client::SigningClient;
+use templar_gateway_client::{Network, SigningClient};
 use templar_gateway_methods_spec::{account, contract, market, registry};
-use templar_gateway_types::{common::Pagination, Market, MarketVersion};
+use templar_gateway_types::{common::Pagination, Market};
 use tracing::{debug, error, info, instrument};
 
 /// Borrow positions keyed by account.
@@ -28,37 +27,6 @@ pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 const BORROW_POSITIONS_PAGE_SIZE: u32 = 100;
 /// Page size for listing deployments on a registry.
 const DEPLOYMENTS_PAGE_SIZE: u32 = 500;
-
-/// Network configuration for NEAR.
-#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
-pub enum Network {
-    /// NEAR mainnet.
-    Mainnet,
-    /// NEAR testnet (default).
-    #[default]
-    Testnet,
-}
-
-impl Network {
-    /// Default RPC URL for this network.
-    #[must_use]
-    pub fn rpc_url(self) -> &'static str {
-        match self {
-            Network::Mainnet => "https://rpc.mainnet.fastnear.com",
-            Network::Testnet => "https://rpc.testnet.fastnear.com",
-        }
-    }
-}
-
-impl std::fmt::Display for Network {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Network::Mainnet => "mainnet",
-            Network::Testnet => "testnet",
-        }
-        .fmt(f)
-    }
-}
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -195,35 +163,29 @@ impl Accumulator {
     }
 
     /// Whether this market's deployed version performs static yield
-    /// accumulation. Returns `false` (and skips) when the version can't be
-    /// determined, mirroring the conservative legacy behaviour.
+    /// accumulation (>= 1.1.0). An undeterminable or unparseable version is
+    /// treated as "no" (skip), mirroring the conservative legacy behaviour and
+    /// `harvest-static-yield`.
     #[instrument(skip(self), level = "debug")]
-    pub async fn supports_static_yield(&self) -> bool {
-        match self.market_version().await {
-            Ok(version) => version.requires_static_yield_accumulation(),
-            Err(err) => {
-                debug!("Could not determine version for {}: {err}", self.market);
-                false
-            }
-        }
-    }
-
-    async fn market_version(&self) -> anyhow::Result<MarketVersion> {
-        let version = self
+    async fn supports_static_yield(&self) -> bool {
+        let version = match self
             .client
             .read(contract::GetVersion {
                 contract_id: self.market.clone(),
             })
-            .await?;
+            .await
+        {
+            Ok(version) => version,
+            Err(err) => {
+                debug!("Could not determine version for {}: {err}", self.market);
+                return false;
+            }
+        };
+
         version
             .parsed
             .map(|version| version.cast::<Market>())
-            .with_context(|| {
-                format!(
-                    "market {} reported an unparseable version \"{}\"",
-                    self.market, version.version_string
-                )
-            })
+            .is_some_and(|version| version.requires_static_yield_accumulation())
     }
 
     #[instrument(skip(self), level = "debug")]
