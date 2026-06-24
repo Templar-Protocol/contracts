@@ -70,6 +70,7 @@ impl YieldWeights {
 
 /// Parsed from the string parameter `msg` passed by `*_transfer_call` to
 /// `*_on_transfer` calls.
+#[derive(Debug)]
 #[near(serializers = [json])]
 pub enum DepositMsg {
     /// Add the attached tokens to the sender's supply position's deposit.
@@ -98,12 +99,14 @@ impl DepositMsg {
 }
 
 /// Indicate an account to repay.
+#[derive(Debug)]
 #[near(serializers = [json])]
 pub struct RepayAccountMsg {
     pub account_id: AccountId,
 }
 
 /// Indicate an account to liquidate.
+#[derive(Debug)]
 #[near(serializers = [json])]
 pub struct LiquidateMsg {
     pub account_id: AccountId,
@@ -118,4 +121,81 @@ pub struct Withdrawal {
     pub account_id: AccountId,
     pub amount_to_account: BorrowAssetAmount,
     pub amount_to_fees: BorrowAssetAmount,
+}
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::{
+        json_types::U128,
+        serde_json::{self, json, Value},
+    };
+
+    use super::*;
+
+    /// Parse the wire `msg` shape, assert re-serializing reproduces it exactly,
+    /// and return the parsed message. This is the regression guard for the
+    /// `msg` strings passed to `ft_transfer_call`/`mt_transfer_call`: the
+    /// contract deserializes `msg` into [`DepositMsg`] through this same path.
+    fn roundtrip(wire: &Value) -> DepositMsg {
+        let parsed: DepositMsg = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(&serde_json::to_value(&parsed).unwrap(), wire);
+        parsed
+    }
+
+    #[test]
+    fn deposit_msg_supply() {
+        let msg = roundtrip(&json!("Supply"));
+        assert!(matches!(msg, DepositMsg::Supply));
+        assert!(msg.expects_borrow_asset());
+    }
+
+    #[test]
+    fn deposit_msg_collateralize() {
+        let msg = roundtrip(&json!("Collateralize"));
+        assert!(matches!(msg, DepositMsg::Collateralize));
+        assert!(!msg.expects_borrow_asset());
+    }
+
+    #[test]
+    fn deposit_msg_repay() {
+        let msg = roundtrip(&json!("Repay"));
+        assert!(matches!(msg, DepositMsg::Repay));
+        assert!(msg.expects_borrow_asset());
+    }
+
+    #[test]
+    fn deposit_msg_repay_account() {
+        let msg = roundtrip(&json!({ "RepayAccount": { "account_id": "borrow_user.near" } }));
+        let DepositMsg::RepayAccount(RepayAccountMsg { account_id }) = &msg else {
+            panic!("expected RepayAccount, got {msg:?}");
+        };
+        assert_eq!(account_id.as_str(), "borrow_user.near");
+        assert!(msg.expects_borrow_asset());
+    }
+
+    #[test]
+    fn deposit_msg_liquidate() {
+        let msg = roundtrip(&json!({
+            "Liquidate": { "account_id": "borrow_user.near", "amount": U128(1_000_000) },
+        }));
+        let DepositMsg::Liquidate(LiquidateMsg { account_id, amount }) = &msg else {
+            panic!("expected Liquidate, got {msg:?}");
+        };
+        assert_eq!(account_id.as_str(), "borrow_user.near");
+        assert_eq!(*amount, Some(CollateralAssetAmount::new(1_000_000)));
+        assert!(msg.expects_borrow_asset());
+    }
+
+    #[test]
+    fn deposit_msg_liquidate_whole_position() {
+        // Omitting `amount` liquidates the whole position. (A `None` amount
+        // re-serializes as `"amount": null`, so this case is parse-only.)
+        let msg: DepositMsg =
+            serde_json::from_value(json!({ "Liquidate": { "account_id": "borrow_user.near" } }))
+                .unwrap();
+        let DepositMsg::Liquidate(LiquidateMsg { amount, .. }) = &msg else {
+            panic!("expected Liquidate, got {msg:?}");
+        };
+        assert_eq!(*amount, None);
+    }
 }
