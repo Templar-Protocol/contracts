@@ -93,6 +93,23 @@ impl OperationDriver {
         };
 
         let operation = self.execute_remaining_steps(operation).await?;
+        // Persist the final (terminal) state through the normal store path. For
+        // multi-step operations the last step already saved this, making it a
+        // harmless re-save; for a zero-step plan (already terminal at creation,
+        // e.g. a no-op `storage.ensureDeposit`) this is the only save, and it is
+        // what lets the store account for the completed operation (e.g. bounded
+        // retention/eviction in `MemoryStore`).
+        //
+        // This is best-effort book-keeping: the operation has already reached
+        // its terminal outcome, so a transient store failure here must not turn
+        // a completed operation into an error for the caller.
+        if let Err(error) = self.store.save_operation(operation.clone()).await {
+            tracing::warn!(
+                operation_id = %operation.operation_id().0,
+                %error,
+                "failed to persist terminal operation state for store book-keeping"
+            );
+        }
         Ok(operation.record().into())
     }
 
