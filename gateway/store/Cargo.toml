@@ -9,6 +9,7 @@ repository.workspace = true
 async-trait.workspace = true
 borsh.workspace = true
 chrono.workspace = true
+indexmap.workspace = true
 near-account-id.workspace = true
 near-api.workspace = true
 serde_json.workspace = true
