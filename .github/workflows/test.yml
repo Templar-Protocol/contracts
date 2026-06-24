@@ -373,6 +373,8 @@ jobs:
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: cargo nextest run --workspace --lib
 
   near-integration-tests:
@@ -416,6 +418,11 @@ jobs:
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
+          # Shrink target/ + the cached artifacts (debug symbols are the bulk of
+          # both) while keeping panic backtraces (file:line). Disk relief without
+          # forcing recompilation, unlike deleting build artifacts after the fact.
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: ./script/test.sh --workspace
 
       - name: Cleanup Docker resources
