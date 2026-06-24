@@ -99,7 +99,17 @@ impl OperationDriver {
         // e.g. a no-op `storage.ensureDeposit`) this is the only save, and it is
         // what lets the store account for the completed operation (e.g. bounded
         // retention/eviction in `MemoryStore`).
-        self.store.save_operation(operation.clone()).await?;
+        //
+        // This is best-effort book-keeping: the operation has already reached
+        // its terminal outcome, so a transient store failure here must not turn
+        // a completed operation into an error for the caller.
+        if let Err(error) = self.store.save_operation(operation.clone()).await {
+            tracing::warn!(
+                operation_id = %operation.operation_id().0,
+                %error,
+                "failed to persist terminal operation state for store book-keeping"
+            );
+        }
         Ok(operation.record().into())
     }
 
