@@ -1,26 +1,32 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashMap;
+mod common;
 
+use std::{collections::HashMap, sync::Arc};
+
+use anyhow::Result;
+use common::{
+    call, create_account, deploy_code, deploy_with_init, execute_as, get_counter, get_key, harness,
+    increment_action, list_keys, migrate, needs_migration, patch_state_version, patch_storage,
+    stored_state_version, target_state_version, test_signer, to_sdk, ua_id, view_succeeds,
+    CallOutcome,
+};
+use near_api::{AccountId, Signer};
 use near_sdk::{
     borsh,
     json_types::{U128, U64},
-    serde_json::json,
-    NearToken,
+    Gas,
 };
-use near_workspaces::{network::Sandbox, Account, Worker};
+use near_token::NearToken;
+use rstest::rstest;
+use templar_gateway_testing::SandboxHarness;
 use templar_universal_account::{
     authentication::{with_raw_string::WithRawString, Payload},
     state,
-    transaction::{FunctionCallAction, Transaction},
-    NEAR_TESTNET_CHAIN_ID,
+    transaction::Transaction,
+    InitArgs, KeyId, NEAR_TESTNET_CHAIN_ID,
 };
-use test_utils::{
-    assert_all_outcomes_success, controller::migration::MigrationController,
-    test_signer::TestSigner, worker, ContractController, FtController, UniversalAccountController,
-};
-
-type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
+use test_utils::{test_signer::TestSigner, UniversalAccountController};
 
 static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_patch.borsh");
 static WASM_0_4_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_4_0_state_patch.borsh");
@@ -46,121 +52,6 @@ enum MigrationStep {
     UnbrickV1,
 }
 
-async fn deploy_patched(
-    worker: &Worker<Sandbox>,
-    wasm: &'static [u8],
-    patch: &[u8],
-) -> UniversalAccountController {
-    deploy_patched_with_version(worker, wasm, patch, None).await
-}
-
-async fn deploy_patched_with_version(
-    worker: &Worker<Sandbox>,
-    wasm: &'static [u8],
-    patch: &[u8],
-    version: Option<u32>,
-) -> UniversalAccountController {
-    let ua = worker.dev_deploy(wasm).await.unwrap();
-    let state_patch: StatePatch = borsh::from_slice(patch).unwrap();
-
-    for (key, value) in state_patch {
-        worker.patch_state(ua.id(), &key, &value).await.unwrap();
-    }
-
-    if let Some(version) = version {
-        worker
-            .patch_state(ua.id(), b"__v", &version.to_le_bytes())
-            .await
-            .unwrap();
-    }
-
-    let contract = ua
-        .as_account()
-        .deploy(UniversalAccountController::wasm().await)
-        .await
-        .unwrap()
-        .unwrap();
-
-    UniversalAccountController { contract }
-}
-
-async fn deploy_current(worker: &Worker<Sandbox>) -> UniversalAccountController {
-    let passkey = TestSigner::fixed_passkey([0x44_u8; 32]).id();
-
-    UniversalAccountController::deploy(
-        worker.dev_create_account().await.unwrap(),
-        passkey,
-        NEAR_TESTNET_CHAIN_ID,
-        None,
-    )
-    .await
-}
-
-async fn deploy_for_sequence(
-    worker: &Worker<Sandbox>,
-    start: MigrationSequenceStart,
-) -> UniversalAccountController {
-    match start {
-        MigrationSequenceStart::Current => deploy_current(worker).await,
-        MigrationSequenceStart::From0_2_0 => {
-            deploy_patched(
-                worker,
-                UniversalAccountController::wasm_0_2_0(),
-                WASM_0_2_0_STATE_PATCH,
-            )
-            .await
-        }
-        MigrationSequenceStart::From0_4_0 => {
-            deploy_patched(
-                worker,
-                UniversalAccountController::wasm_0_4_0(),
-                WASM_0_4_0_STATE_PATCH,
-            )
-            .await
-        }
-    }
-}
-
-async fn run_migration_step(
-    ua: &UniversalAccountController,
-    step: MigrationStep,
-) -> Result<(), String> {
-    let args = match step {
-        MigrationStep::V0 => state::Migration::from(state::migration::V0 {
-            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        }),
-        MigrationStep::V1 => state::Migration::from(state::migration::V1),
-        MigrationStep::UnbrickV1 => state::Migration::from(state::migration::UnbrickV1),
-    };
-
-    let result = ua
-        .contract()
-        .as_account()
-        .call(ua.contract().id(), "migrate")
-        .args_json(args)
-        .max_gas()
-        .transact()
-        .await
-        .unwrap();
-
-    let errs = format!("{:#?}", result.failures());
-
-    if result.failures().is_empty() {
-        Ok(())
-    } else {
-        Err(errs)
-    }
-}
-
-fn increment() -> FunctionCallAction {
-    FunctionCallAction {
-        function_name: "increment".to_string(),
-        arguments: json!({}).to_string().into_bytes().into(),
-        amount: NearToken::from_near(0),
-        gas: near_sdk::Gas::from_tgas(30),
-    }
-}
-
 fn patch_secret_key() -> [u8; 32] {
     [0x55_u8; 32]
 }
@@ -174,236 +65,343 @@ fn patch_keys() -> PatchKeys {
     }
 }
 
+/// Deploy a legacy wasm, patch in its borsh state snapshot, then redeploy the
+/// current wasm on top — the same staging the `near-workspaces` tests used.
+async fn deploy_patched(
+    harness: &SandboxHarness,
+    wasm: &'static [u8],
+    patch: &[u8],
+) -> Result<AccountId> {
+    deploy_patched_with_version(harness, wasm, patch, None).await
+}
+
+async fn deploy_patched_with_version(
+    harness: &SandboxHarness,
+    wasm: &'static [u8],
+    patch: &[u8],
+    version: Option<u32>,
+) -> Result<AccountId> {
+    let ua = ua_id(harness);
+    let network = &harness.network;
+
+    deploy_code(network, &ua, test_signer(), wasm.to_vec()).await?;
+
+    let state_patch: HashMap<Vec<u8>, Vec<u8>> = borsh::from_slice(patch)?;
+    patch_storage(harness, &ua, state_patch).await?;
+
+    if let Some(version) = version {
+        patch_state_version(harness, &ua, &version.to_le_bytes()).await?;
+    }
+
+    deploy_code(
+        network,
+        &ua,
+        test_signer(),
+        UniversalAccountController::wasm().await.to_vec(),
+    )
+    .await?;
+
+    Ok(ua)
+}
+
+async fn deploy_current(harness: &SandboxHarness, key: KeyId) -> Result<AccountId> {
+    let ua = ua_id(harness);
+    deploy_with_init(
+        &harness.network,
+        &ua,
+        test_signer(),
+        UniversalAccountController::wasm().await.to_vec(),
+        "new",
+        InitArgs {
+            key,
+            chain_id: NEAR_TESTNET_CHAIN_ID.into(),
+            execute: None,
+        },
+    )
+    .await?;
+    Ok(ua)
+}
+
+async fn deploy_for_sequence(
+    harness: &SandboxHarness,
+    start: MigrationSequenceStart,
+) -> Result<AccountId> {
+    match start {
+        MigrationSequenceStart::Current => {
+            deploy_current(harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await
+        }
+        MigrationSequenceStart::From0_2_0 => {
+            deploy_patched(
+                harness,
+                UniversalAccountController::wasm_0_2_0(),
+                WASM_0_2_0_STATE_PATCH,
+            )
+            .await
+        }
+        MigrationSequenceStart::From0_4_0 => {
+            deploy_patched(
+                harness,
+                UniversalAccountController::wasm_0_4_0(),
+                WASM_0_4_0_STATE_PATCH,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_migration_step(
+    harness: &SandboxHarness,
+    ua: &AccountId,
+    step: MigrationStep,
+) -> Result<CallOutcome> {
+    let args = match step {
+        MigrationStep::V0 => state::Migration::from(state::migration::V0 {
+            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+        }),
+        MigrationStep::V1 => state::Migration::from(state::migration::V1),
+        MigrationStep::UnbrickV1 => state::Migration::from(state::migration::UnbrickV1),
+    };
+    migrate(&harness.network, ua, args).await
+}
+
 async fn assert_key_can_increment_counter(
-    ua: &UniversalAccountController,
-    ft: &FtController,
-    third_party: &Account,
+    harness: &SandboxHarness,
+    ua: &AccountId,
+    ft: &AccountId,
+    relayer: &AccountId,
+    relayer_signer: Arc<Signer>,
     signer: &TestSigner,
-) {
-    let key = signer.id();
-    let key_entry = ua.get_key(key).await.unwrap();
+) -> Result<()> {
+    let network = &harness.network;
+    let key_entry = get_key(network, ua, &signer.id()).await?.unwrap();
     let payload = WithRawString::from_parsed(Payload::new(
         key_entry.next_nonce(),
         vec![Transaction {
-            receiver_id: ft.contract().id().clone(),
-            actions: vec![increment().into()].into(),
+            receiver_id: to_sdk(ft),
+            actions: vec![increment_action().into()].into(),
         }]
         .into(),
     ));
 
-    let result = ua.execute(third_party, signer.execute_args(payload)).await;
-
-    assert_all_outcomes_success(&result);
-}
-
-#[rstest::rstest]
-#[tokio::test]
-pub async fn new_account_writes_current_state_version_on_init(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    let passkey = TestSigner::fixed_passkey([0x11_u8; 32]).id();
-
-    let ua = UniversalAccountController::deploy(
-        worker.dev_create_account().await.unwrap(),
-        passkey,
-        NEAR_TESTNET_CHAIN_ID,
-        None,
+    execute_as(
+        network,
+        ua,
+        relayer,
+        relayer_signer,
+        signer.execute_args(payload),
     )
-    .await;
-
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    .await?
+    .assert_success();
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn migration_views_are_exposed(#[future(awt)] worker: Worker<Sandbox>) {
-    let ua = deploy_current(&worker).await;
+#[ignore = "requires NEAR sandbox"]
+async fn new_account_writes_current_state_version_on_init(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x11_u8; 32]).id()).await?;
+    let network = &harness.network;
 
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
+    assert!(!needs_migration(network, &ua).await?);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn migration_views_are_exposed(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await?;
+    let network = &harness.network;
+
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(!needs_migration(network, &ua).await?);
+    Ok(())
+}
+
+#[rstest]
 #[case::current(MigrationSequenceStart::Current)]
 #[case::from_0_2_0(MigrationSequenceStart::From0_2_0)]
 #[case::from_0_4_0(MigrationSequenceStart::From0_4_0)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: migrate function is private"]
-pub async fn migrate_can_only_be_called_reflexively(
-    #[future(awt)] worker: Worker<Sandbox>,
+#[ignore = "requires NEAR sandbox"]
+async fn migrate_can_only_be_called_reflexively(
+    #[future(awt)] harness: SandboxHarness,
     #[case] start: MigrationSequenceStart,
-) {
-    let ua = deploy_for_sequence(&worker, start).await;
-    let caller = worker.dev_create_account().await.unwrap();
+) -> Result<()> {
+    let ua = deploy_for_sequence(&harness, start).await?;
 
-    caller
-        .call(ua.contract().id(), "migrate")
-        .args_json(state::migration::V0 {
+    let caller: AccountId = "caller.near".parse()?;
+    let caller_signer = create_account(&harness, &caller, NearToken::from_near(10)).await?;
+
+    call(
+        &harness.network,
+        &ua,
+        "migrate",
+        state::migration::V0 {
             chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        })
-        .max_gas()
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
+        },
+        NearToken::from_near(0),
+        Gas::from_tgas(300),
+        &caller,
+        caller_signer,
+    )
+    .await?
+    .assert_failure_contains("Smart contract panicked: migrate function is private");
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn migrate_accepts_legacy_direct_payload(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn migrate_accepts_legacy_direct_payload(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_2_0(),
         WASM_0_2_0_STATE_PATCH,
     )
-    .await;
+    .await?;
+    let network = &harness.network;
 
-    let result = ua
-        .contract()
-        .as_account()
-        .call(ua.contract().id(), "migrate")
-        .args_json(json!({
+    migrate(
+        network,
+        &ua,
+        serde_json::json!({
             "from_version": "v0",
             "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
-        }))
-        .max_gas()
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
+        }),
+    )
+    .await?
+    .assert_success();
 
-    assert_all_outcomes_success(&result);
-    assert_eq!(ua.get_stored_state_version().await, 1);
+    assert_eq!(stored_state_version(network, &ua).await?, 1);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn from_0_2_0(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let passkey = patch_keys().passkey;
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_2_0(),
         WASM_0_2_0_STATE_PATCH,
     )
-    .await;
+    .await?;
+    let network = &harness.network;
 
-    assert_eq!(ua.get_stored_state_version().await, 0);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
+    assert_eq!(stored_state_version(network, &ua).await?, 0);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(needs_migration(network, &ua).await?);
 
-    let r = ua
-        .migrate(
-            ua.contract().as_account(),
-            state::migration::V0 {
-                chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-            },
-        )
-        .await;
+    migrate(
+        network,
+        &ua,
+        state::Migration::from(state::migration::V0 {
+            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+        }),
+    )
+    .await?
+    .assert_success();
 
-    assert_all_outcomes_success(&r);
+    assert_eq!(stored_state_version(network, &ua).await?, 1);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(needs_migration(network, &ua).await?);
 
-    assert_eq!(ua.get_stored_state_version().await, 1);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
-
-    let get_key = ua.get_key(passkey.id()).await.unwrap();
-
-    eprintln!("{get_key:?}");
+    let get_key = get_key(network, &ua, &passkey.id()).await?.unwrap();
 
     assert_eq!(get_key.chain_id, Some(U128(NEAR_TESTNET_CHAIN_ID)));
     assert_eq!(get_key.index, U64(0));
     assert_eq!(get_key.name, Some("Templar Universal Account".to_string()));
     assert_eq!(get_key.nonce, U64(0));
-    assert_eq!(&get_key.verifying_contract, ua.contract().as_account().id());
+    assert_eq!(get_key.verifying_contract, to_sdk(&ua));
 
-    let r = ua
-        .migrate(ua.contract().as_account(), state::migration::V1)
-        .await;
+    migrate(network, &ua, state::Migration::from(state::migration::V1))
+        .await?
+        .assert_success();
 
-    assert_all_outcomes_success(&r);
-
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(!needs_migration(network, &ua).await?);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Failed to migrate V0: Stored state version 1 != args `from_version` 0"]
-pub async fn from_0_2_0_fail_migrate_twice(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_2_0_fail_migrate_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_2_0(),
         WASM_0_2_0_STATE_PATCH,
     )
-    .await;
+    .await?;
 
-    ua.migrate(
-        ua.contract().as_account(),
-        state::migration::V0 {
-            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        },
-    )
-    .await;
-    ua.migrate(
-        ua.contract().as_account(),
-        state::migration::V0 {
-            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        },
-    )
-    .await;
+    run_migration_step(&harness, &ua, MigrationStep::V0)
+        .await?
+        .assert_success();
+    run_migration_step(&harness, &ua, MigrationStep::V0)
+        .await?
+        .assert_failure_contains(
+            "Smart contract panicked: Failed to migrate V0: Stored state version 1 != args `from_version` 0",
+        );
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Failed to migrate V1: Stored state version 2 != args `from_version` 1"]
-pub async fn current_state_fail_reinitialize_version(#[future(awt)] worker: Worker<Sandbox>) {
-    let passkey = TestSigner::fixed_passkey([0x22_u8; 32]).id();
+#[ignore = "requires NEAR sandbox"]
+async fn current_state_fail_reinitialize_version(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x22_u8; 32]).id()).await?;
 
-    let ua = UniversalAccountController::deploy(
-        worker.dev_create_account().await.unwrap(),
-        passkey,
-        NEAR_TESTNET_CHAIN_ID,
-        None,
-    )
-    .await;
-
-    ua.migrate(ua.contract().as_account(), state::migration::V1)
-        .await;
+    run_migration_step(&harness, &ua, MigrationStep::V1)
+        .await?
+        .assert_failure_contains(
+            "Smart contract panicked: Failed to migrate V1: Stored state version 2 != args `from_version` 1",
+        );
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let expected_keys = patch_keys();
-    test_utils::accounts!(worker, ft_account, third_party);
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_4_0(),
         WASM_0_4_0_STATE_PATCH,
     )
-    .await;
+    .await?;
+    let network = &harness.network;
+    let ft = common::ft_id(&harness);
 
-    assert_eq!(ua.get_stored_state_version().await, 0);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
+    let relayer: AccountId = "relayer.near".parse()?;
+    let relayer_signer = create_account(&harness, &relayer, NearToken::from_near(50)).await?;
 
-    let result = ua
-        .migrate(ua.contract().as_account(), state::migration::UnbrickV1)
-        .await;
+    assert_eq!(stored_state_version(network, &ua).await?, 0);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(needs_migration(network, &ua).await?);
 
-    assert_all_outcomes_success(&result);
+    run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
+        .await?
+        .assert_success();
 
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(!needs_migration(network, &ua).await?);
 
-    let keys = ua.list_keys(None, None).await;
+    let keys = list_keys(network, &ua).await?;
     assert_eq!(keys.len(), 4);
-
     assert!(keys.contains(&expected_keys.passkey.id()));
     assert!(keys.contains(&expected_keys.ed25519_raw.id()));
     assert!(keys.contains(&expected_keys.eip191.id()));
@@ -415,130 +413,137 @@ pub async fn from_0_4_0_unbrick_v1(#[future(awt)] worker: Worker<Sandbox>) {
         &expected_keys.eip191,
         &expected_keys.sep53,
     ] {
-        let entry = ua.get_key(key.id()).await.unwrap();
+        let entry = get_key(network, &ua, &key.id()).await?.unwrap();
         assert_eq!(entry.chain_id, Some(U128(NEAR_TESTNET_CHAIN_ID)));
         assert_eq!(entry.name, Some("Templar Universal Account".to_string()));
-        assert_eq!(&entry.verifying_contract, ua.contract().as_account().id());
+        assert_eq!(entry.verifying_contract, to_sdk(&ua));
     }
 
-    let ft = FtController::deploy(ft_account, "Fungible Token", "FT").await;
     for signer in [
         &expected_keys.passkey,
         &expected_keys.ed25519_raw,
         &expected_keys.eip191,
         &expected_keys.sep53,
     ] {
-        assert_key_can_increment_counter(&ua, &ft, &third_party, signer).await;
+        assert_key_can_increment_counter(
+            &harness,
+            &ua,
+            &ft,
+            &relayer,
+            relayer_signer.clone(),
+            signer,
+        )
+        .await?;
     }
 
-    assert_eq!(ft.get_counter(ua.contract().id()).await, 4);
+    assert_eq!(get_counter(network, &ft, &ua).await?, 4);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn from_0_4_0_with_stored_v1_migrates_via_v1(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_4_0_with_stored_v1_migrates_via_v1(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
     let ua = deploy_patched_with_version(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_4_0(),
         WASM_0_4_0_STATE_PATCH,
         Some(1),
     )
-    .await;
+    .await?;
+    let network = &harness.network;
 
-    assert_eq!(ua.get_stored_state_version().await, 1);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(ua.needs_migration().await);
+    assert_eq!(stored_state_version(network, &ua).await?, 1);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(needs_migration(network, &ua).await?);
 
-    let result = ua
-        .migrate(ua.contract().as_account(), state::migration::V1)
-        .await;
+    run_migration_step(&harness, &ua, MigrationStep::V1)
+        .await?
+        .assert_success();
 
-    assert_all_outcomes_success(&result);
-
-    assert_eq!(ua.get_stored_state_version().await, 2);
-    assert_eq!(ua.get_target_state_version().await, 2);
-    assert!(!ua.needs_migration().await);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
+    assert_eq!(target_state_version(network, &ua).await?, 2);
+    assert!(!needs_migration(network, &ua).await?);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0"]
-pub async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_4_0(),
         WASM_0_4_0_STATE_PATCH,
     )
-    .await;
+    .await?;
 
-    ua.migrate(ua.contract().as_account(), state::migration::UnbrickV1)
-        .await;
-    ua.migrate(ua.contract().as_account(), state::migration::UnbrickV1)
-        .await;
+    run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
+        .await?
+        .assert_success();
+    run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
+        .await?
+        .assert_failure_contains(
+            "Smart contract panicked: Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0",
+        );
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: Failed to migrate V1: Stored state version 0 != args `from_version` 1"]
-pub async fn from_0_4_0_fail_v1_migration_without_unbrick(#[future(awt)] worker: Worker<Sandbox>) {
+#[ignore = "requires NEAR sandbox"]
+async fn from_0_4_0_fail_v1_migration_without_unbrick(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
     let ua = deploy_patched(
-        &worker,
+        &harness,
         UniversalAccountController::wasm_0_4_0(),
         WASM_0_4_0_STATE_PATCH,
     )
-    .await;
+    .await?;
 
-    ua.migrate(ua.contract().as_account(), state::migration::V1)
-        .await;
+    run_migration_step(&harness, &ua, MigrationStep::V1)
+        .await?
+        .assert_failure_contains(
+            "Smart contract panicked: Failed to migrate V1: Stored state version 0 != args `from_version` 1",
+        );
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn malformed_stored_version_breaks_public_migration_views(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    let ua = deploy_current(&worker).await;
+#[ignore = "requires NEAR sandbox"]
+async fn malformed_stored_version_breaks_public_migration_views(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await?;
+    let network = &harness.network;
 
-    worker
-        .patch_state(ua.contract().id(), b"__v", &[1, 2, 3])
-        .await
-        .unwrap();
+    patch_state_version(&harness, &ua, &[1, 2, 3]).await?;
 
-    assert!(ua
-        .contract()
-        .view("get_stored_state_version")
-        .args_json(json!({}))
-        .await
-        .is_err());
-    assert!(ua
-        .contract()
-        .view("needs_migration")
-        .args_json(json!({}))
-        .await
-        .is_err());
+    assert!(!view_succeeds(network, &ua, "get_stored_state_version").await);
+    assert!(!view_succeeds(network, &ua, "needs_migration").await);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[tokio::test]
-pub async fn future_stored_version_breaks_public_migration_views(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    let ua = deploy_current(&worker).await;
+#[ignore = "requires NEAR sandbox"]
+async fn future_stored_version_breaks_public_migration_views(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await?;
+    let network = &harness.network;
 
-    worker
-        .patch_state(ua.contract().id(), b"__v", &9_u32.to_le_bytes())
-        .await
-        .unwrap();
+    patch_state_version(&harness, &ua, &9_u32.to_le_bytes()).await?;
 
-    assert!(ua
-        .contract()
-        .view("needs_migration")
-        .args_json(json!({}))
-        .await
-        .is_err());
+    assert!(!view_succeeds(network, &ua, "needs_migration").await);
+    Ok(())
 }
 
-#[rstest::rstest]
+#[rstest]
 #[case::current_then_v0(
     MigrationSequenceStart::Current,
     &[MigrationStep::V0],
@@ -585,24 +590,25 @@ pub async fn future_stored_version_breaks_public_migration_views(
     "Cannot deserialize the contract state.", // Bugged version doesn't have stored state properly set, but still fails correctly.
 )]
 #[tokio::test]
-pub async fn invalid_migration_sequences_fail(
-    #[future(awt)] worker: Worker<Sandbox>,
+#[ignore = "requires NEAR sandbox"]
+async fn invalid_migration_sequences_fail(
+    #[future(awt)] harness: SandboxHarness,
     #[case] start: MigrationSequenceStart,
     #[case] steps: &'static [MigrationStep],
     #[case] expected_error: &str,
-) {
-    let ua = deploy_for_sequence(&worker, start).await;
+) -> Result<()> {
+    let ua = deploy_for_sequence(&harness, start).await?;
 
-    let mut results = Vec::new();
+    let mut first_failure = None;
     for &step in steps {
-        results.push(run_migration_step(&ua, step).await);
+        let outcome = run_migration_step(&harness, &ua, step).await?;
+        if !outcome.success {
+            first_failure = Some(outcome.failures);
+            break;
+        }
     }
 
-    let failing = results
-        .into_iter()
-        .find_map(|r| r.err())
-        .expect("expected at least one migration failure");
-
-    let error = failing;
+    let error = first_failure.expect("expected at least one migration failure");
     assert!(error.contains(expected_error), "unexpected error: {error}");
+    Ok(())
 }
