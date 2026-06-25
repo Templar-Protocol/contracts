@@ -13563,14 +13563,19 @@ dependencies = [
 name = "templar-market-contract"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
  "itertools 0.14.0",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
+ "near-token",
  "near-workspaces",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
@@ -13834,12 +13839,17 @@ dependencies = [
 name = "templar-registry-contract"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "test-utils",
  "tokio",
 ]
