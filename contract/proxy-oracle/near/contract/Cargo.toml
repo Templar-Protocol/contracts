@@ -36,10 +36,16 @@ templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars
 templar-proxy-oracle-near-common.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+base64.workspace = true
 hex-literal.workspace = true
+near-api.workspace = true
+near-sandbox.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
+near-token.workspace = true
 rstest.workspace = true
+serde_json.workspace = true
+templar-gateway-testing.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
 

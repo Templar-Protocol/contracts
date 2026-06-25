@@ -13511,13 +13511,16 @@ dependencies = [
 name = "templar-lst-oracle-contract"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
  "hex-literal",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
  "templar-common",
+ "templar-gateway-testing",
  "templar-proxy-oracle-near-common",
  "test-utils",
  "tokio",
@@ -13669,13 +13672,19 @@ dependencies = [
 name = "templar-proxy-oracle-near-contract"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "getrandom 0.2.17",
  "hex-literal",
+ "near-api",
+ "near-sandbox",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "test-utils",

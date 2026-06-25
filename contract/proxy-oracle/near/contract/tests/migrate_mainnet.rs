@@ -1,21 +1,23 @@
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use near_workspaces::{network::Sandbox, AccountId, Worker};
+use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use near_api::{types::AccountId, Contract, NetworkConfig};
+use serde_json::json;
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
-use test_utils::{
-    assert_all_outcomes_success, controller::migration::MigrationController,
-    pyth_price_id::stable::CRYPTO_USDC_USD, worker, ContractController, ProxyOracleController,
-};
+use test_utils::pyth_price_id::stable::CRYPTO_USDC_USD;
 
-type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
+use common::StatePatch;
 
 const USTRY_PRICE_ID: PriceIdentifier =
     PriceIdentifier(*b"USTRY\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
@@ -34,30 +36,8 @@ fn patch() -> StatePatch {
     .unwrap()
 }
 
-async fn deploy_from_patch(
-    worker: &Worker<Sandbox>,
-    state_patch: StatePatch,
-) -> ProxyOracleController {
-    let contract = worker
-        .dev_deploy(ProxyOracleController::wasm_v0())
-        .await
-        .unwrap();
-
-    for (key, value) in state_patch {
-        worker
-            .patch_state(contract.id(), &key, &value)
-            .await
-            .unwrap();
-    }
-
-    let contract = contract
-        .as_account()
-        .deploy(ProxyOracleController::wasm().await)
-        .await
-        .unwrap()
-        .unwrap();
-
-    ProxyOracleController { contract }
+fn migration() -> state::migration::Migration {
+    state::migration::Migration::from(state::migration::V0ToV1)
 }
 
 fn expected_ustry_proxy() -> Proxy<Source> {
@@ -89,47 +69,75 @@ fn expected_usdc_proxy() -> Proxy<Source> {
 
 #[tokio::test]
 #[ignore = "fixture generator"]
-async fn generate_mainnet_state_patch() {
-    let worker = near_workspaces::mainnet().await.unwrap();
-    let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near"
-        .parse()
-        .unwrap();
-    let state_patch = worker
-        .view_state(&account_id)
-        .await
-        .unwrap()
+async fn generate_mainnet_state_patch() -> Result<()> {
+    let network = NetworkConfig::mainnet();
+    let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near".parse()?;
+    let storage = Contract(account_id)
+        .view_storage()
+        .fetch_from(&network)
+        .await?
+        .data;
+    let state_patch: StatePatch = storage
+        .values
         .into_iter()
-        .collect::<StatePatch>();
-
+        .map(|entry| {
+            (
+                STANDARD.decode(entry.key.0).unwrap(),
+                STANDARD.decode(entry.value.0).unwrap(),
+            )
+        })
+        .collect();
     fs::write(patch_path(), near_sdk::borsh::to_vec(&state_patch).unwrap()).unwrap();
+    Ok(())
 }
 
-#[rstest::rstest]
 #[tokio::test]
-async fn migrate_mainnet_patch_exactly(#[future(awt)] worker: Worker<Sandbox>) {
-    let proxy = deploy_from_patch(&worker, patch()).await;
+#[ignore = "requires NEAR sandbox"]
+async fn migrate_mainnet_patch_exactly() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let proxy = common::deploy_from_patch(&harness, patch()).await?;
+    let network = &harness.network;
 
-    let result = proxy
-        .migrate(
-            proxy.contract().as_account(),
-            state::migration::Migration::from(state::migration::V0ToV1),
-        )
-        .await;
+    common::call(network, &proxy, &proxy, "migrate", migration(), 300, 0).await?;
 
-    assert_all_outcomes_success(&result);
-    assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert!(!proxy.needs_migration().await);
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
+        1
+    );
+    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
 
-    let mut proxies = proxy.list_proxies(None, None).await;
+    let mut proxies: Vec<PriceIdentifier> = common::view(
+        network,
+        &proxy,
+        "list_proxies",
+        json!({ "offset": null, "count": null }),
+    )
+    .await?;
     proxies.sort();
     assert_eq!(proxies, vec![USDC_PRICE_ID, USTRY_PRICE_ID]);
 
     assert_eq!(
-        proxy.get_proxy(USTRY_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": USTRY_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_ustry_proxy()
     );
     assert_eq!(
-        proxy.get_proxy(USDC_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": USDC_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_usdc_proxy()
     );
+
+    Ok(())
 }

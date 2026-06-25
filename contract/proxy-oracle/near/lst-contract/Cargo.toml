@@ -35,10 +35,13 @@ templar-common.workspace = true
 templar-proxy-oracle-near-common.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 hex-literal.workspace = true
+near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
+near-token.workspace = true
 rstest.workspace = true
+templar-gateway-testing.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
 

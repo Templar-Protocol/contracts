@@ -1,19 +1,24 @@
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
+use anyhow::Result;
+use near_api::types::AccountId;
 use near_sdk::{
     borsh, json_types::Base64VecU8, mock::with_mocked_blockchain, test_utils::VMContextBuilder,
     testing_env,
 };
-use near_workspaces::{network::Sandbox, Worker};
+use near_token::NearToken;
+use serde_json::json;
 use templar_common::{
     oracle::pyth::PriceIdentifier, versioned_state::write_state_version, Nanoseconds,
 };
+use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::proxy::{
     aggregator::method::median::MedianLow, Aggregator, FreshnessFilter, Proxy, WeightedSource,
 };
@@ -24,12 +29,8 @@ use templar_proxy_oracle_near_common::{
     state,
     state::legacy::v0,
 };
-use test_utils::{
-    assert_all_outcomes_success, controller::migration::MigrationController, worker,
-    ContractController, ProxyOracleController,
-};
 
-type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
+use common::StatePatch;
 
 const BTC_PRICE_ID: PriceIdentifier = PriceIdentifier([0x41; 32]);
 const ETH_PRICE_ID: PriceIdentifier = PriceIdentifier([0x42; 32]);
@@ -268,30 +269,8 @@ fn build_patch() -> StatePatch {
     with_mocked_blockchain(|b| b.take_storage())
 }
 
-async fn deploy_from_patch(
-    worker: &Worker<Sandbox>,
-    state_patch: StatePatch,
-) -> ProxyOracleController {
-    let contract = worker
-        .dev_deploy(ProxyOracleController::wasm_v0())
-        .await
-        .unwrap();
-
-    for (key, value) in state_patch {
-        worker
-            .patch_state(contract.id(), &key, &value)
-            .await
-            .unwrap();
-    }
-
-    let contract = contract
-        .as_account()
-        .deploy(ProxyOracleController::wasm().await)
-        .await
-        .unwrap()
-        .unwrap();
-
-    ProxyOracleController { contract }
+fn migration() -> state::migration::Migration {
+    state::migration::Migration::from(state::migration::V0ToV1)
 }
 
 #[test]
@@ -301,74 +280,122 @@ fn generate_v0_state_patch() {
     fs::write(patch_path(), borsh::to_vec(&state_patch).unwrap()).unwrap();
 }
 
-/// These near-workspaces sandbox tests require local port binding and may fail
-/// in restricted environments.
-#[rstest::rstest]
 #[tokio::test]
-async fn init_writes_current_state_version(#[future(awt)] worker: Worker<Sandbox>) {
-    let proxy = ProxyOracleController::deploy(worker.dev_create_account().await.unwrap()).await;
+#[ignore = "requires NEAR sandbox"]
+async fn init_writes_current_state_version() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let proxy = harness.deploy_proxy_oracle().await?;
+    let network = &harness.network;
 
-    assert_eq!(proxy.get_target_state_version().await, 1);
-    assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert!(!proxy.needs_migration().await);
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
+        1
+    );
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
+        1
+    );
+    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+
+    Ok(())
 }
 
-/// These near-workspaces sandbox tests require local port binding and may fail
-/// in restricted environments.
-#[rstest::rstest]
 #[tokio::test]
-async fn migrate_v0_fixture_exactly(#[future(awt)] worker: Worker<Sandbox>) {
-    let proxy = deploy_from_patch(&worker, patch()).await;
+#[ignore = "requires NEAR sandbox"]
+async fn migrate_v0_fixture_exactly() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let proxy = common::deploy_from_patch(&harness, patch()).await?;
+    let network = &harness.network;
 
-    assert_eq!(proxy.get_stored_state_version().await, 0);
-    assert_eq!(proxy.get_target_state_version().await, 1);
-    assert!(proxy.needs_migration().await);
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
+        0
+    );
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
+        1
+    );
+    assert!(common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
 
-    let result = proxy
-        .migrate(
-            proxy.contract().as_account(),
-            state::migration::Migration::from(state::migration::V0ToV1),
-        )
-        .await;
+    common::call(network, &proxy, &proxy, "migrate", migration(), 300, 0).await?;
 
-    assert_all_outcomes_success(&result);
-    assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert_eq!(proxy.get_target_state_version().await, 1);
-    assert!(!proxy.needs_migration().await);
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
+        1
+    );
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
+        1
+    );
+    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
 
-    let mut proxies = proxy.list_proxies(None, None).await;
+    let mut proxies: Vec<PriceIdentifier> = common::view(
+        network,
+        &proxy,
+        "list_proxies",
+        json!({ "offset": null, "count": null }),
+    )
+    .await?;
     proxies.sort();
     assert_eq!(proxies, vec![BTC_PRICE_ID, ETH_PRICE_ID, STNEAR_PRICE_ID]);
 
     assert_eq!(
-        proxy.get_proxy(BTC_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": BTC_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_btc_proxy()
     );
     assert_eq!(
-        proxy.get_proxy(ETH_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": ETH_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_eth_proxy()
     );
     assert_eq!(
-        proxy.get_proxy(STNEAR_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": STNEAR_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_stnear_proxy()
     );
+
+    Ok(())
 }
 
-/// These near-workspaces sandbox tests require local port binding and may fail
-/// in restricted environments.
-#[rstest::rstest]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: migrate function is private"]
-async fn migrate_is_private(#[future(awt)] worker: Worker<Sandbox>) {
-    let proxy = deploy_from_patch(&worker, patch()).await;
-    let caller = worker.dev_create_account().await.unwrap();
+#[ignore = "requires NEAR sandbox"]
+async fn migrate_is_private() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let proxy = common::deploy_from_patch(&harness, patch()).await?;
 
-    caller
-        .call(proxy.contract().id(), "migrate")
-        .args_json(state::migration::Migration::from(state::migration::V0ToV1))
-        .max_gas()
-        .transact()
-        .await
-        .unwrap()
-        .unwrap();
+    let caller: AccountId = "caller.near".parse()?;
+    common::create_account(&harness.sandbox, &caller, NearToken::from_near(10)).await?;
+
+    let result = common::try_call(
+        &harness.network,
+        &proxy,
+        &caller,
+        "migrate",
+        migration(),
+        300,
+        0,
+    )
+    .await?;
+    common::assert_failure_contains(result, "migrate function is private");
+
+    Ok(())
 }

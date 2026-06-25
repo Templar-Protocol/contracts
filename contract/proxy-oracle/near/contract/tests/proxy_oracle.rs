@@ -4,24 +4,25 @@
     clippy::unwrap_used
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use anyhow::Result;
+use near_api::{types::AccountId, NetworkConfig};
 use near_sdk::{
-    json_types::{Base64VecU8, I64, U64},
+    json_types::Base64VecU8,
     mock::MockAction,
     test_utils::{get_created_receipts, VMContextBuilder},
     testing_env, NearToken,
 };
-use near_workspaces::{network::Sandbox, Account, Worker};
-
+use serde_json::json;
 use templar_common::{
-    oracle::{
-        pyth::{self, PriceIdentifier, PythTimestamp},
-        redstone::FeedData,
-    },
-    primitive_types, Decimal, Nanoseconds,
+    oracle::pyth::{self, OracleResponse, PriceIdentifier},
+    Decimal, Nanoseconds,
 };
+use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::{
     proxy::{
         aggregator::{method::median::MedianLow, Aggregator},
@@ -34,15 +35,15 @@ use templar_proxy_oracle_kernel::{
     Price,
 };
 use templar_proxy_oracle_near_common::{
-    cache::CachedProxyPriceStatus, governance::ProxyOracleAdminInterface, request::OracleRequest,
+    cache::CachedProxyPriceStatus, governance::ProxyOracleAdminInterface, input::Source,
+    request::OracleRequest,
 };
 use templar_proxy_oracle_near_contract::Contract;
-use test_utils::{
-    accounts,
-    controller::proxy_oracle::ProxyOracleController,
-    pyth_price_id::{self, stable::CRYPTO_BTC_USD},
-    worker, ContractController, MockOracleController,
-};
+use test_utils::pyth_price_id::stable::CRYPTO_BTC_USD;
+
+// ---------------------------------------------------------------------------
+// Pure-unit tests (near-sdk `testing_env!`, no sandbox).
+// ---------------------------------------------------------------------------
 
 fn norm_price(price: &pyth::Price) -> u64 {
     let p = u64::try_from(price.price.0).unwrap();
@@ -54,18 +55,6 @@ fn norm_price(price: &pyth::Price) -> u64 {
     }
 }
 
-async fn update_and_list(
-    proxy_oracle: &ProxyOracleController,
-    actor: &Account,
-    price_ids: Vec<PriceIdentifier>,
-    age: u32,
-) -> pyth::OracleResponse {
-    proxy_oracle.update_prices(actor, price_ids.clone()).await;
-    proxy_oracle
-        .list_ema_prices_no_older_than(actor, price_ids, age)
-        .await
-}
-
 fn proxy_price(value: i64) -> Price {
     Price {
         price: value,
@@ -75,7 +64,7 @@ fn proxy_price(value: i64) -> Price {
     }
 }
 
-fn test_proxy(oracle_id: &str) -> Proxy<templar_proxy_oracle_near_common::input::Source> {
+fn test_proxy(oracle_id: &str) -> Proxy<Source> {
     Proxy::median_low(
         [OracleRequest::pyth(oracle_id.parse().unwrap(), CRYPTO_BTC_USD).into()],
         FreshnessFilter::empty(),
@@ -109,7 +98,6 @@ fn stepwise_breaker() -> CircuitBreaker {
     })
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     testing_env!(VMContextBuilder::new()
@@ -160,7 +148,6 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     }
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 #[should_panic(expected = "Owner only")]
 pub fn admin_upgrade_requires_owner() {
@@ -178,7 +165,6 @@ pub fn admin_upgrade_requires_owner() {
     let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn manual_trip_invalidates_cached_price() {
     testing_env!(VMContextBuilder::new()
@@ -203,7 +189,6 @@ pub fn manual_trip_invalidates_cached_price() {
     );
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn admin_configure_circuit_breakers_invalidates_cached_price() {
     testing_env!(VMContextBuilder::new()
@@ -227,7 +212,6 @@ pub fn admin_configure_circuit_breakers_invalidates_cached_price() {
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn breaker_mutations_invalidate_cached_price() {
     testing_env!(VMContextBuilder::new()
@@ -267,7 +251,6 @@ pub fn breaker_mutations_invalidate_cached_price() {
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
     testing_env!(VMContextBuilder::new().build());
@@ -294,7 +277,6 @@ pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
     assert_eq!(c.get_proxy_circuit_breaker_set(proxy_id), Some(breaker_set));
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
     testing_env!(VMContextBuilder::new().build());
@@ -310,7 +292,6 @@ pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
     assert!(c.cache_epoch(proxy_id) > initial_epoch);
 }
 
-#[allow(clippy::unwrap_used)]
 #[test]
 pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
     testing_env!(VMContextBuilder::new().build());
@@ -336,7 +317,6 @@ pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
     assert!(c.get_cached_proxy_price(proxy_id).is_none());
 }
 
-#[allow(clippy::unwrap_used)]
 #[rstest::rstest]
 #[case::blocked(CachedProxyPriceStatus::Blocked {
     reason: PriceBlockedReason::ManuallyTripped,
@@ -361,83 +341,71 @@ pub fn cached_non_accepted_status_reads_as_none(#[case] status: CachedProxyPrice
     );
 }
 
+// ---------------------------------------------------------------------------
+// Sandbox tests (gateway `SandboxHarness`).
+// ---------------------------------------------------------------------------
+
 #[derive(Clone, Copy)]
 enum TestMethod {
     MedianLow,
     Priority,
 }
 
+/// Push fresh prices into the proxy oracle's cache, then read them back.
+async fn update_and_list(
+    network: &NetworkConfig,
+    proxy_id: &AccountId,
+    price_ids: Vec<PriceIdentifier>,
+    age: u64,
+) -> Result<OracleResponse> {
+    common::call(
+        network,
+        proxy_id,
+        proxy_id,
+        "update_prices",
+        json!({ "price_ids": price_ids }),
+        300,
+        0,
+    )
+    .await?;
+    common::view(
+        network,
+        proxy_id,
+        "list_ema_prices_no_older_than",
+        json!({ "price_ids": price_ids, "age": age }),
+    )
+    .await
+}
+
 #[rstest::rstest]
 #[case::median_low(TestMethod::MedianLow)]
 #[case::priority(TestMethod::Priority)]
 #[tokio::test]
-pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method: TestMethod) {
-    accounts!(
-        worker,
-        actor,
-        redstone_adapter,
-        proxy_oracle,
-        pyth_oracle,
-        pyth_oracle2
-    );
-    let pyth_oracle = MockOracleController::deploy(pyth_oracle);
-    let pyth_oracle2 = MockOracleController::deploy(pyth_oracle2);
-    let redstone_adapter = MockOracleController::deploy(redstone_adapter);
-    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
-    let (pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle) =
-        tokio::join!(pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle);
+#[ignore = "requires NEAR sandbox"]
+#[allow(clippy::too_many_lines)]
+async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let network = harness.network.clone();
 
-    let list_proxies = proxy_oracle.list_proxies(None, None).await;
+    let pyth_oracle = harness
+        .deploy_mock_oracle("pyth-oracle.near".parse()?)
+        .await?;
+    let pyth_oracle2 = harness
+        .deploy_mock_oracle("pyth-oracle2.near".parse()?)
+        .await?;
+    let redstone_adapter = harness
+        .deploy_mock_oracle("redstone-adapter.near".parse()?)
+        .await?;
+    let proxy_oracle = harness.deploy_proxy_oracle().await?;
+
+    let list_proxies: Vec<PriceIdentifier> = common::view(
+        &network,
+        &proxy_oracle,
+        "list_proxies",
+        json!({ "offset": null, "count": null }),
+    )
+    .await?;
     assert_eq!(list_proxies, vec![]);
-
-    macro_rules! set {
-        (pyth . $id: ident = $val: literal) => {
-            set!(
-                pyth.$id = Some(pyth::Price {
-                    price: I64($val),
-                    conf: U64(0),
-                    expo: 0,
-                    publish_time: PythTimestamp::from_secs(
-                        std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
-                    ),
-                })
-            )
-        };
-        (pyth . $id: ident = $val: expr) => {
-            pyth_oracle.set_pyth_price(&actor, pyth_price_id::stable::$id, $val)
-        };
-        (pyth2 . $id: ident = $val: literal) => {
-            set!(
-                pyth2.$id = Some(pyth::Price {
-                    price: I64($val),
-                    conf: U64(0),
-                    expo: 0,
-                    publish_time: PythTimestamp::from_secs(
-                        std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64
-                    ),
-                })
-            )
-        };
-        (pyth2 . $id: ident = $val: expr) => {
-            pyth_oracle2.set_pyth_price(&actor, pyth_price_id::stable::$id, $val)
-        };
-        (redstone . $id: ident = $val: literal) => {
-            set!(
-                redstone.$id = Some(FeedData {
-                    price: primitive_types::U256::from($val * 100_000_000_u128).into(),
-                    package_timestamp: templar_common::Nanoseconds::from_ms(
-                        std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
-                    ),
-                    write_timestamp: templar_common::Nanoseconds::from_ms(
-                        std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64
-                    ),
-                })
-            )
-        };
-        (redstone . $id: ident = $val: expr) => {
-            redstone_adapter.set_redstone_price(&actor, stringify!($id), $val)
-        };
-    }
 
     let default_filter = FreshnessFilter::new(
         Some(Nanoseconds::from_ms(60 * 1000)),
@@ -447,26 +415,17 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     let btc_proxy_def = match method {
         TestMethod::MedianLow => Proxy::new(
             Aggregator::MedianLow(MedianLow::new([
-                WeightedSource::new(
-                    OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
-                    1,
-                ),
-                WeightedSource::new(
-                    OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
-                    1,
-                ),
-                WeightedSource::new(
-                    OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
-                    1,
-                ),
+                WeightedSource::new(OracleRequest::pyth(pyth_oracle.clone(), CRYPTO_BTC_USD), 1),
+                WeightedSource::new(OracleRequest::redstone(redstone_adapter.clone(), "BTC"), 1),
+                WeightedSource::new(OracleRequest::pyth(pyth_oracle2.clone(), CRYPTO_BTC_USD), 1),
             ])),
             default_filter.clone(),
         ),
         TestMethod::Priority => Proxy::priority(
             [
-                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
-                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
-                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::pyth(pyth_oracle2.clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::redstone(redstone_adapter.clone(), "BTC").into(),
+                OracleRequest::pyth(pyth_oracle.clone(), CRYPTO_BTC_USD).into(),
             ],
             default_filter.clone(),
         ),
@@ -475,61 +434,82 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
 
     // Single-source proxies: method doesn't affect the result.
     let just_pyth_btc = Proxy::median_low(
-        [OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into()],
+        [OracleRequest::pyth(pyth_oracle.clone(), CRYPTO_BTC_USD).into()],
         default_filter.clone(),
     );
     let just_pyth_btc_id = PriceIdentifier([0x02_u8; 32]);
     let just_redstone_eth = Proxy::median_low(
-        [OracleRequest::redstone(redstone_adapter.id().clone(), "ETH").into()],
+        [OracleRequest::redstone(redstone_adapter.clone(), "ETH").into()],
         default_filter.clone(),
     );
     let just_redstone_eth_id = PriceIdentifier([0x03_u8; 32]);
 
-    proxy_oracle
+    harness
         .admin_set_proxy(
-            proxy_oracle.account(),
+            proxy_oracle.clone(),
             btc_proxy_id,
             Some(btc_proxy_def.clone()),
         )
-        .await;
-    proxy_oracle
+        .await?;
+    harness
         .admin_set_proxy(
-            proxy_oracle.account(),
+            proxy_oracle.clone(),
             just_pyth_btc_id,
             Some(just_pyth_btc.clone()),
         )
-        .await;
-    proxy_oracle
+        .await?;
+    harness
         .admin_set_proxy(
-            proxy_oracle.account(),
+            proxy_oracle.clone(),
             just_redstone_eth_id,
             Some(just_redstone_eth.clone()),
         )
-        .await;
+        .await?;
 
+    let list_proxies: Vec<PriceIdentifier> = common::view(
+        &network,
+        &proxy_oracle,
+        "list_proxies",
+        json!({ "offset": null, "count": null }),
+    )
+    .await?;
     assert_eq!(
-        proxy_oracle.list_proxies(None, None).await,
+        list_proxies,
         vec![btc_proxy_id, just_pyth_btc_id, just_redstone_eth_id],
     );
-    assert_eq!(
-        proxy_oracle.get_proxy(btc_proxy_id).await.unwrap(),
-        btc_proxy_def,
-    );
+    let stored_btc: Option<Proxy<Source>> = common::view(
+        &network,
+        &proxy_oracle,
+        "get_proxy",
+        json!({ "id": btc_proxy_id }),
+    )
+    .await?;
+    assert_eq!(stored_btc.unwrap(), btc_proxy_def);
 
-    let result = proxy_oracle
-        .list_ema_prices_no_older_than(&actor, vec![btc_proxy_id, CRYPTO_BTC_USD], 60_u32)
-        .await;
+    let result: OracleResponse = common::view(
+        &network,
+        &proxy_oracle,
+        "list_ema_prices_no_older_than",
+        json!({ "price_ids": [btc_proxy_id, CRYPTO_BTC_USD], "age": 60 }),
+    )
+    .await?;
     assert_eq!(result, HashMap::from_iter([(btc_proxy_id, None)]));
 
-    // Step 1: Only redstone has a price. Single source → same for both methods.
-    set!(redstone.BTC = 100_000).await;
+    // Step 1: Only redstone has a price. Single source -> same for both methods.
+    harness
+        .set_mock_oracle_redstone_price(
+            redstone_adapter.clone(),
+            "BTC".into(),
+            Some(common::redstone_price_now(100_000)),
+        )
+        .await?;
     let result = update_and_list(
+        &network,
         &proxy_oracle,
-        &actor,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
-        60_u32,
+        60,
     )
-    .await;
+    .await?;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
@@ -537,13 +517,25 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     );
 
     // Step 2: redstone=100k, pyth1=90k.
-    //   MedianLow: median of [90k, 100k] → 90k
-    //   Priority: redstone (weight 5) > pyth1 (weight 1) → 100k
-    set!(pyth.CRYPTO_BTC_USD = 90_000).await;
-    set!(redstone.ETH = 1_800).await;
+    //   MedianLow: median of [90k, 100k] -> 90k
+    //   Priority: redstone > pyth1 -> 100k
+    harness
+        .set_mock_oracle_pyth_price(
+            pyth_oracle.clone(),
+            CRYPTO_BTC_USD,
+            Some(common::pyth_price_now(90_000)),
+        )
+        .await?;
+    harness
+        .set_mock_oracle_redstone_price(
+            redstone_adapter.clone(),
+            "ETH".into(),
+            Some(common::redstone_price_now(1_800)),
+        )
+        .await?;
     let result = update_and_list(
+        &network,
         &proxy_oracle,
-        &actor,
         vec![
             btc_proxy_id,
             CRYPTO_BTC_USD,
@@ -553,9 +545,9 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
             just_pyth_btc_id,
             just_redstone_eth_id,
         ],
-        60_u32,
+        60,
     )
-    .await;
+    .await?;
     assert_eq!(result.len(), 3);
     let expected_btc_2source = match method {
         TestMethod::MedianLow => 90_000,
@@ -583,16 +575,22 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     );
 
     // Step 3: All three sources: pyth1=90k, redstone=100k, pyth2=80k.
-    //   MedianLow: median of [80k, 90k, 100k] → 90k
-    //   Priority: pyth2 (weight 10) wins → 80k
-    set!(pyth2.CRYPTO_BTC_USD = 80_000).await;
+    //   MedianLow: median of [80k, 90k, 100k] -> 90k
+    //   Priority: pyth2 wins -> 80k
+    harness
+        .set_mock_oracle_pyth_price(
+            pyth_oracle2.clone(),
+            CRYPTO_BTC_USD,
+            Some(common::pyth_price_now(80_000)),
+        )
+        .await?;
     let result = update_and_list(
+        &network,
         &proxy_oracle,
-        &actor,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
-        60_u32,
+        60,
     )
-    .await;
+    .await?;
     assert_eq!(result.len(), 1);
     let expected_btc_3source = match method {
         TestMethod::MedianLow => 90_000,
@@ -603,46 +601,51 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
         Some(expected_btc_3source),
     );
 
-    // Step 4: Clear pyth1 and redstone, only pyth2=80k remains. Single source → same for both.
-    set!(pyth.CRYPTO_BTC_USD = None).await;
-    set!(redstone.BTC = None).await;
+    // Step 4: Clear pyth1 and redstone, only pyth2=80k remains.
+    harness
+        .set_mock_oracle_pyth_price(pyth_oracle.clone(), CRYPTO_BTC_USD, None)
+        .await?;
+    harness
+        .set_mock_oracle_redstone_price(redstone_adapter.clone(), "BTC".into(), None)
+        .await?;
     let result = update_and_list(
+        &network,
         &proxy_oracle,
-        &actor,
         vec![btc_proxy_id, CRYPTO_BTC_USD],
-        60_u32,
+        60,
     )
-    .await;
+    .await?;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
     );
+
+    Ok(())
 }
 
 #[rstest::rstest]
 #[case::median_low(TestMethod::MedianLow, 100_000)]
 #[case::priority(TestMethod::Priority, 100_000)]
 #[tokio::test]
+#[ignore = "requires NEAR sandbox"]
 async fn proxy_oracle_enforces_freshness_filter(
-    #[future(awt)] worker: Worker<Sandbox>,
     #[case] method: TestMethod,
     #[case] expected_price: u64,
-) {
-    accounts!(
-        worker,
-        actor,
-        redstone_adapter,
-        proxy_oracle,
-        pyth_oracle,
-        pyth_oracle2
-    );
-    let pyth_oracle = MockOracleController::deploy(pyth_oracle);
-    let pyth_oracle2 = MockOracleController::deploy(pyth_oracle2);
-    let redstone_adapter = MockOracleController::deploy(redstone_adapter);
-    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
-    let (pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle) =
-        tokio::join!(pyth_oracle, pyth_oracle2, redstone_adapter, proxy_oracle);
+) -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let network = harness.network.clone();
+
+    let pyth_oracle = harness
+        .deploy_mock_oracle("pyth-oracle.near".parse()?)
+        .await?;
+    let pyth_oracle2 = harness
+        .deploy_mock_oracle("pyth-oracle2.near".parse()?)
+        .await?;
+    let redstone_adapter = harness
+        .deploy_mock_oracle("redstone-adapter.near".parse()?)
+        .await?;
+    let proxy_oracle = harness.deploy_proxy_oracle().await?;
 
     let default_filter = FreshnessFilter::new(
         Some(Nanoseconds::from_secs(10)),
@@ -652,83 +655,58 @@ async fn proxy_oracle_enforces_freshness_filter(
     let btc_proxy_def = match method {
         TestMethod::MedianLow => Proxy::new(
             Aggregator::MedianLow(MedianLow::new([
-                WeightedSource::new(
-                    OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD),
-                    1,
-                ),
-                WeightedSource::new(
-                    OracleRequest::redstone(redstone_adapter.id().clone(), "BTC"),
-                    1,
-                ),
-                WeightedSource::new(
-                    OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD),
-                    1,
-                ),
+                WeightedSource::new(OracleRequest::pyth(pyth_oracle.clone(), CRYPTO_BTC_USD), 1),
+                WeightedSource::new(OracleRequest::redstone(redstone_adapter.clone(), "BTC"), 1),
+                WeightedSource::new(OracleRequest::pyth(pyth_oracle2.clone(), CRYPTO_BTC_USD), 1),
             ])),
             default_filter,
         ),
         TestMethod::Priority => Proxy::priority(
             [
-                OracleRequest::pyth(pyth_oracle2.id().clone(), CRYPTO_BTC_USD).into(),
-                OracleRequest::redstone(redstone_adapter.id().clone(), "BTC").into(),
-                OracleRequest::pyth(pyth_oracle.id().clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::pyth(pyth_oracle2.clone(), CRYPTO_BTC_USD).into(),
+                OracleRequest::redstone(redstone_adapter.clone(), "BTC").into(),
+                OracleRequest::pyth(pyth_oracle.clone(), CRYPTO_BTC_USD).into(),
             ],
             default_filter,
         ),
     };
     let btc_proxy_id = PriceIdentifier([0x09_u8; 32]);
-    proxy_oracle
-        .admin_set_proxy(
-            proxy_oracle.account(),
-            btc_proxy_id,
-            Some(btc_proxy_def.clone()),
-        )
-        .await;
+    harness
+        .admin_set_proxy(proxy_oracle.clone(), btc_proxy_id, Some(btc_proxy_def))
+        .await?;
 
-    let now = Nanoseconds::from_ms(std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64);
+    let now = common::now_ns();
     let stale_time = now.saturating_sub(Nanoseconds::from_secs(30));
     let future_time = now.saturating_add(Nanoseconds::from_secs(20));
 
-    pyth_oracle
-        .set_pyth_price(
-            &actor,
+    harness
+        .set_mock_oracle_pyth_price(
+            pyth_oracle.clone(),
             CRYPTO_BTC_USD,
-            Some(pyth::Price {
-                price: I64(expected_price as i64),
-                conf: U64(0),
-                expo: 0,
-                publish_time: PythTimestamp::try_from_time(now).unwrap(),
-            }),
+            Some(common::pyth_price_at(expected_price as i64, now)),
         )
-        .await;
-    pyth_oracle2
-        .set_pyth_price(
-            &actor,
+        .await?;
+    harness
+        .set_mock_oracle_pyth_price(
+            pyth_oracle2.clone(),
             CRYPTO_BTC_USD,
-            Some(pyth::Price {
-                price: I64(80_000),
-                conf: U64(0),
-                expo: 0,
-                publish_time: PythTimestamp::try_from_time(future_time).unwrap(),
-            }),
+            Some(common::pyth_price_at(80_000, future_time)),
         )
-        .await;
-    redstone_adapter
-        .set_redstone_price(
-            &actor,
-            "BTC",
-            Some(FeedData {
-                price: primitive_types::U256::from(90_000_u128 * 100_000_000_u128).into(),
-                package_timestamp: stale_time,
-                write_timestamp: stale_time,
-            }),
+        .await?;
+    harness
+        .set_mock_oracle_redstone_price(
+            redstone_adapter.clone(),
+            "BTC".into(),
+            Some(common::redstone_price_at(90_000, stale_time)),
         )
-        .await;
+        .await?;
 
-    let result = update_and_list(&proxy_oracle, &actor, vec![btc_proxy_id], 60_u32).await;
+    let result = update_and_list(&network, &proxy_oracle, vec![btc_proxy_id], 60).await?;
     assert_eq!(result.len(), 1);
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(expected_price)
     );
+
+    Ok(())
 }
