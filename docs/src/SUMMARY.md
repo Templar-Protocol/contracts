@@ -11,6 +11,7 @@
 - [Smart Contract Deployments](./deployments.md)
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)
+- [Soroban Vault Curator Guide](./curator-guide.md)
 - [Monitoring and Risk Management](./monitoring.md)
 - [Frontend Security](./frontend-security.md)
 - [Testing](./testing.md)
