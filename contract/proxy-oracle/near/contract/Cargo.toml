@@ -40,7 +40,6 @@ anyhow.workspace = true
 base64.workspace = true
 hex-literal.workspace = true
 near-api.workspace = true
-near-sandbox.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-token.workspace = true
 rstest.workspace = true

@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
-use near_sandbox::Sandbox;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::{
     json_types::{I64, U64},
@@ -46,17 +45,12 @@ pub fn signer() -> Result<Arc<Signer>> {
 
 /// Create a fresh, signable sandbox account under the shared test key.
 pub async fn create_account(
-    sandbox: &Sandbox,
-    account_id: &near_api::types::AccountId,
-    balance: NearToken,
-) -> Result<()> {
-    sandbox
-        .create_account(account_id.clone())
-        .initial_balance(balance)
-        .public_key(secret_key()?.public_key().to_string())
-        .send()
-        .await?;
-    Ok(())
+    harness: &templar_gateway_testing::SandboxHarness,
+    label: &str,
+) -> Result<near_api::types::AccountId> {
+    // Harness accounts are all created with the shared test key, so the global
+    // `signer()` signs for the returned account. The exact id is generated.
+    Ok(harness.create_user(label).await?.0)
 }
 
 /// Dispatch a contract view call and deserialize the result.
@@ -223,8 +217,6 @@ pub async fn deploy_from_patch(
     harness: &templar_gateway_testing::SandboxHarness,
     patch: StatePatch,
 ) -> Result<near_api::types::AccountId> {
-    use base64::{engine::general_purpose::STANDARD, Engine};
-
     let account_id = harness.proxy_oracle_signer_account_id.0.clone();
 
     deploy_code(
@@ -234,16 +226,7 @@ pub async fn deploy_from_patch(
     )
     .await?;
 
-    harness
-        .sandbox
-        .patch_state(account_id.clone())
-        .storage_entries(
-            patch
-                .into_iter()
-                .map(|(key, value)| (STANDARD.encode(key), STANDARD.encode(value))),
-        )
-        .send()
-        .await?;
+    harness.patch_state(&account_id, patch).await?;
 
     deploy_code(
         &harness.network,

@@ -8,12 +8,10 @@ use std::{
 };
 
 use anyhow::Result;
-use near_api::types::AccountId;
 use near_sdk::{
     borsh, json_types::Base64VecU8, mock::with_mocked_blockchain, test_utils::VMContextBuilder,
     testing_env,
 };
-use near_token::NearToken;
 use serde_json::json;
 use templar_common::{
     oracle::pyth::PriceIdentifier, versioned_state::write_state_version, Nanoseconds,
@@ -382,8 +380,7 @@ async fn migrate_is_private() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;
 
-    let caller: AccountId = "caller.near".parse()?;
-    common::create_account(&harness.sandbox, &caller, NearToken::from_near(10)).await?;
+    let caller = common::create_account(&harness, "caller").await?;
 
     let result = common::try_call(
         &harness.network,
