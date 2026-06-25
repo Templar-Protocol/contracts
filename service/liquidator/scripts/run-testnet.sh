@@ -146,9 +146,19 @@ done
 
 [ "$DRY_RUN" = "true" ] && CMD_ARGS+=("--dry-run")
 
-# Add NEAR_RPC_URL if set
-[ -n "$NEAR_RPC_URL" ] && CMD_ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
-[ -n "$NEAR_API_KEY" ] && CMD_ARGS+=("--near-api-key" "$NEAR_API_KEY")
+# Add NEAR_RPC_URL if set. The bot no longer sends an X-API-Key header, so fold
+# any NEAR_API_KEY into the URL (FastNear/QuickNode accept `?apiKey=<key>`).
+if [ -n "$NEAR_RPC_URL" ]; then
+    if [ -n "$NEAR_API_KEY" ]; then
+        case "$NEAR_RPC_URL" in
+            *\?*) NEAR_RPC_URL="${NEAR_RPC_URL}&apiKey=${NEAR_API_KEY}" ;;
+            *)    NEAR_RPC_URL="${NEAR_RPC_URL}?apiKey=${NEAR_API_KEY}" ;;
+        esac
+    fi
+    CMD_ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
+elif [ -n "$NEAR_API_KEY" ]; then
+    echo "WARNING: NEAR_API_KEY is set but NEAR_RPC_URL is not; the key is ignored. Set NEAR_RPC_URL to an authenticated endpoint." >&2
+fi
 
 # Add liquidation strategy arguments (mutually exclusive)
 [ -n "$PARTIAL_LIQUIDATION_PERCENTAGE" ] && CMD_ARGS+=("--partial-percentage" "$PARTIAL_LIQUIDATION_PERCENTAGE")

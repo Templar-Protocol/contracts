@@ -29,9 +29,7 @@ use near_sdk::{
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 use templar_gateway_client::SigningClient;
 use templar_gateway_methods_spec::{storage, token, tx};
-use templar_gateway_types::{
-    CryptoHash, NearToken, OperationRecord, OperationStatus, StepStatus, U128 as GatewayU128,
-};
+use templar_gateway_types::{CryptoHash, NearToken, OperationStatus, U128 as GatewayU128};
 
 use crate::rpc::{AppError, AppResult};
 use crate::swap::SwapProvider;
@@ -329,22 +327,6 @@ impl OneClickSwap {
     /// The bot's account ID (the bound signer on the gateway client).
     fn our_account(&self) -> AccountId {
         self.client.account_id().0.clone()
-    }
-
-    /// Extracts the most-recent transaction hash from a completed operation
-    /// record, if any step reached the chain.
-    fn operation_tx_hash(operation: &OperationRecord) -> Option<CryptoHash> {
-        operation
-            .steps
-            .iter()
-            .rev()
-            .find_map(|step| match step.status {
-                StepStatus::Prepared { tx_hash }
-                | StepStatus::Submitted { tx_hash }
-                | StepStatus::Succeeded { tx_hash }
-                | StepStatus::Failed { tx_hash } => Some(tx_hash),
-                StepStatus::NotStarted => None,
-            })
     }
 
     /// Fetches the list of supported tokens from the 1-Click API `/v0/tokens`
@@ -742,7 +724,7 @@ impl OneClickSwap {
             .map_err(|e| AppError::Rpc(e.into()))?;
 
         let operation = &operation_result.operation;
-        let tx_hash = Self::operation_tx_hash(operation);
+        let tx_hash = operation.latest_tx_hash();
         let tx_hash_str = tx_hash.map_or_else(|| operation.id.0.clone(), |hash| hash.to_string());
 
         match operation.status {

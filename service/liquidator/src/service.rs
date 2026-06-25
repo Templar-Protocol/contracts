@@ -56,10 +56,8 @@ pub struct ServiceConfig {
     pub signer_account: AccountId,
     /// Network to operate on
     pub network: Network,
-    /// RPC URL
+    /// RPC URL (embed any provider key in the URL, e.g. `…/?apiKey=<key>`)
     pub near_rpc_url: Option<String>,
-    /// API key sent via X-API-Key header for RPC authentication
-    pub near_api_key: Option<String>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
     /// Interval between liquidation scans in seconds
@@ -137,15 +135,6 @@ impl LiquidatorService {
             .unwrap_or_else(|| config.network.rpc_url().to_string());
 
         tracing::info!(near_rpc_url = %near_rpc_url, "Connecting to RPC");
-
-        if config.near_api_key.is_some() {
-            // The gateway client manages its own RPC connection; the legacy
-            // X-API-Key header is no longer plumbed through. Point NEAR_RPC_URL
-            // at an authenticated endpoint instead.
-            tracing::warn!(
-                "NEAR_API_KEY is set but is no longer applied; use an authenticated NEAR_RPC_URL"
-            );
-        }
 
         let network = near_api::NetworkConfig::from_rpc_url(
             &config.network.to_string(),

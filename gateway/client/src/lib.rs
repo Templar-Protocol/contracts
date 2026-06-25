@@ -113,6 +113,14 @@ pub struct Client {
     signer_account_ids: HashSet<ManagedAccountId>,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("signer_account_ids", &self.signer_account_ids)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Client {
     /// Start building a client for `network`.
     #[must_use]
@@ -212,6 +220,14 @@ impl Client {
 pub struct SigningClient {
     client: Client,
     signer_account_id: ManagedAccountId,
+}
+
+impl std::fmt::Debug for SigningClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigningClient")
+            .field("signer_account_id", &self.signer_account_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SigningClient {
