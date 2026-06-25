@@ -653,6 +653,50 @@ impl SandboxHarness {
             .collect())
     }
 
+    /// Patch raw contract storage entries (key/value byte pairs) on `account_id`
+    /// via the `sandbox_patch_state` RPC. Works in both attach and owned mode
+    /// (it only needs the node's RPC url, not an owned `Sandbox`).
+    pub async fn patch_state(
+        &self,
+        account_id: &AccountId,
+        entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
+    ) -> Result<()> {
+        use base64::Engine as _;
+        let base64 = base64::engine::general_purpose::STANDARD;
+        let records: Vec<serde_json::Value> = entries
+            .into_iter()
+            .map(|(key, value)| {
+                serde_json::json!({
+                    "Data": {
+                        "account_id": account_id.to_string(),
+                        "data_key": base64.encode(key),
+                        "value": base64.encode(value),
+                    }
+                })
+            })
+            .collect();
+        let url = self.network.rpc_endpoints[0].url.clone();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
+        let response: serde_json::Value = client
+            .post(url)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": "patch_state",
+                "method": "sandbox_patch_state",
+                "params": { "records": records },
+            }))
+            .send()
+            .await?
+            .json()
+            .await?;
+        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+            anyhow::bail!("sandbox_patch_state error: {error}");
+        }
+        Ok(())
+    }
+
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
     /// asset is supplied by `liquidator`).
     pub async fn liquidate(

@@ -235,8 +235,7 @@ async fn migrate_can_only_be_called_reflexively(
 ) -> Result<()> {
     let ua = deploy_for_sequence(&harness, start).await?;
 
-    let caller: AccountId = "caller.near".parse()?;
-    let caller_signer = create_account(&harness, &caller, NearToken::from_near(10)).await?;
+    let (caller, caller_signer) = create_account(&harness, "caller").await?;
 
     call(
         &harness.network,
@@ -385,8 +384,7 @@ async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result
     let network = &harness.network;
     let ft = common::ft_id(&harness);
 
-    let relayer: AccountId = "relayer.near".parse()?;
-    let relayer_signer = create_account(&harness, &relayer, NearToken::from_near(50)).await?;
+    let (relayer, relayer_signer) = create_account(&harness, "relayer").await?;
 
     assert_eq!(stored_state_version(network, &ua).await?, 0);
     assert_eq!(target_state_version(network, &ua).await?, 2);

@@ -13,7 +13,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use near_api::{AccountId, Contract, NetworkConfig, SecretKey, Signer};
 use near_sdk::{json_types::U128, Gas};
 use near_token::NearToken;
@@ -61,21 +60,15 @@ pub fn to_sdk(id: &AccountId) -> near_sdk::AccountId {
     id.to_string().parse().expect("valid account id")
 }
 
-/// Create a fresh top-level account funded with `balance`, signed by the shared
-/// test key, and return its signer.
+/// Create a fresh harness account (a `*.<tenant-root>` sub-account, created with
+/// the shared test key) and return its id and signer. Works in both attach and
+/// owned mode. The `label` only seeds a unique id — the exact id is generated.
 pub async fn create_account(
     harness: &SandboxHarness,
-    account_id: &AccountId,
-    balance: NearToken,
-) -> Result<Arc<Signer>> {
-    harness
-        .sandbox
-        .create_account(account_id.clone())
-        .initial_balance(balance)
-        .public_key(test_secret_key().public_key().to_string())
-        .send()
-        .await?;
-    Ok(test_signer())
+    label: &str,
+) -> Result<(AccountId, Arc<Signer>)> {
+    let account_id = harness.create_user(label).await?.0;
+    Ok((account_id, test_signer()))
 }
 
 /// Deploy `code` to `account_id` without an init call (used both for legacy
@@ -333,12 +326,7 @@ pub async fn patch_storage(
     account_id: &AccountId,
     entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
 ) -> Result<()> {
-    let mut patch = harness.sandbox.patch_state(account_id.clone());
-    for (key, value) in entries {
-        patch = patch.storage(BASE64.encode(key), BASE64.encode(value));
-    }
-    patch.send().await?;
-    Ok(())
+    harness.patch_state(account_id, entries).await
 }
 
 /// Patch the stored state-version key (`__v`) with raw bytes.

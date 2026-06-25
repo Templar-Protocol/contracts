@@ -50,8 +50,7 @@ async fn setup(
     let ua = ua_id(harness);
     let ft = ft_id(harness);
 
-    let relayer: AccountId = "relayer.near".parse()?;
-    let relayer_signer = create_account(harness, &relayer, NearToken::from_near(50)).await?;
+    let (relayer, relayer_signer) = create_account(harness, "relayer").await?;
 
     if migrated {
         deploy_with_init(
