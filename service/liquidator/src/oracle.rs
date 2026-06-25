@@ -774,14 +774,12 @@ impl OracleFetcher {
 
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
     async fn fetch_transformer_input(&self, call: &Call) -> Result<Decimal, RpcError> {
-        let contract_id = call.account_id.as_str().parse().map_err(|err| {
-            RpcError::WrongResponseKind(format!("Invalid account ID in transformer call: {err}"))
-        })?;
-
         let result = self
             .client
             .read(contract::ViewFunction {
-                contract_id,
+                // `near_sdk::AccountId` is a re-export of `near_account_id::AccountId`
+                // (the type the spec uses), so no conversion is needed.
+                contract_id: call.account_id.clone(),
                 method_name: ContractMethodName(call.method_name.clone()),
                 args: ContractArgs::Raw(Base64Bytes(call.args.0.clone())),
             })
