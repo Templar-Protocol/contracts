@@ -271,6 +271,33 @@ struct TokenInfo {
     asset_id: String,
 }
 
+/// A NEP-297 event envelope (`EVENT_JSON:{…}`) as emitted in transaction logs,
+/// typed just enough to read NEP-141 `ft_transfer` events.
+#[derive(Debug, Deserialize)]
+struct Nep297Event {
+    standard: String,
+    event: String,
+    #[serde(default)]
+    data: Vec<FtTransferEvent>,
+}
+
+/// One entry in a NEP-141 `ft_transfer` event's `data` array.
+#[derive(Debug, Deserialize)]
+struct FtTransferEvent {
+    old_owner_id: Option<AccountId>,
+    new_owner_id: Option<AccountId>,
+    amount: U128,
+}
+
+/// Parse a single transaction log line into a typed NEP-297 event, if it is one.
+///
+/// Logs are formatted `EVENT_JSON:{…json…}` (NEP-297); anything that isn't a
+/// well-formed event envelope yields `None`.
+fn parse_nep297_event(log: &str) -> Option<Nep297Event> {
+    let json = &log[log.find("EVENT_JSON:")? + "EVENT_JSON:".len()..];
+    near_sdk::serde_json::from_str(json).ok()
+}
+
 /// 1-Click API swap provider
 #[derive(Clone)]
 pub struct OneClickSwap {
@@ -822,22 +849,22 @@ impl OneClickSwap {
         let mut refund_amount: Option<U128> = None;
 
         for log in &tx_result.logs {
-            // Check for NEP-141 transfer events
-            if log.contains("EVENT_JSON") && log.contains("ft_transfer") {
-                // Parse the event to check direction and extract amount
-                if log.contains(&format!("\"new_owner_id\":\"{deposit_account}\"")) {
+            let Some(event) = parse_nep297_event(log) else {
+                continue;
+            };
+            if event.standard != "nep141" || event.event != "ft_transfer" {
+                continue;
+            }
+            for transfer in &event.data {
+                // Tokens leaving our account toward the deposit address.
+                if transfer.new_owner_id.as_ref() == Some(deposit_account) {
                     tokens_sent = true;
                 }
-                if log.contains(&format!("\"old_owner_id\":\"{deposit_account}\""))
-                    && log.contains(&format!("\"new_owner_id\":\"{our_account}\""))
+                // A refund: deposit address → us.
+                if transfer.old_owner_id.as_ref() == Some(deposit_account)
+                    && transfer.new_owner_id.as_ref() == Some(&our_account)
                 {
-                    // Extract amount from the event JSON
-                    // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"..."}]}
-                    if let Some(amount_str) = Self::extract_transfer_amount(log) {
-                        if let Ok(amount_value) = amount_str.parse::<u128>() {
-                            refund_amount = Some(U128(amount_value));
-                        }
-                    }
+                    refund_amount = Some(transfer.amount);
                 }
             }
         }
@@ -848,19 +875,6 @@ impl OneClickSwap {
         } else {
             Ok(None)
         }
-    }
-
-    /// Extracts the transfer amount from a NEP-141 `EVENT_JSON` log entry.
-    fn extract_transfer_amount(log: &str) -> Option<String> {
-        // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"12345",...}]}
-        // Find the "amount" field value
-        if let Some(amount_start) = log.find(r#""amount":""#) {
-            let amount_start = amount_start + r#""amount":""#.len();
-            if let Some(amount_end) = log[amount_start..].find('"') {
-                return Some(log[amount_start..amount_start + amount_end].to_string());
-            }
-        }
-        None
     }
 
     /// Notifies 1-Click API of the deposit.

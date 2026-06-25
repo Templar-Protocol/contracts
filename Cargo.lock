@@ -13232,6 +13232,7 @@ dependencies = [
  "templar-gateway-methods-dispatch",
  "templar-gateway-store",
  "templar-gateway-types",
+ "tokio",
 ]
 
 [[package]]

@@ -17,5 +17,8 @@ templar-gateway-types.workspace = true
 # Derive `clap::ValueEnum` on `Network` so CLI consumers can use it directly.
 clap = ["dep:clap"]
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints]
 workspace = true

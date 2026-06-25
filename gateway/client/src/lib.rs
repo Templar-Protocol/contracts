@@ -29,6 +29,9 @@
 mod network;
 pub use network::Network;
 
+mod pagination;
+pub use pagination::collect_paginated;
+
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,

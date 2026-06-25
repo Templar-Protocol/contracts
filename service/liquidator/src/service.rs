@@ -5,10 +5,10 @@
 //! - Inventory refresh (updating asset balances)
 //! - Liquidation rounds (scanning and executing liquidations)
 
-use std::{collections::HashMap, future::Future, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use near_sdk::AccountId;
-use templar_gateway_client::{Network, SigningClient};
+use templar_gateway_client::{collect_paginated, Network, SigningClient};
 use templar_gateway_methods_spec::{contract, market, registry};
 use templar_gateway_types::common::Pagination;
 use tokio::{
@@ -1036,34 +1036,6 @@ async fn list_deployments(
         }
     })
     .await
-}
-
-/// Collect every page produced by `fetch_page(offset, page_size)`, stopping once
-/// a page is shorter than `page_size`. The offset advances by the number of
-/// items actually returned.
-async fn collect_paginated<T, F, Fut>(
-    page_size: u32,
-    mut fetch_page: F,
-) -> templar_gateway_core::GatewayResult<Vec<T>>
-where
-    F: FnMut(u32, u32) -> Fut,
-    Fut: Future<Output = templar_gateway_core::GatewayResult<Vec<T>>>,
-{
-    let mut all = Vec::new();
-    let mut offset = 0u32;
-
-    loop {
-        let page = fetch_page(offset, page_size).await?;
-        let fetched = u32::try_from(page.len()).unwrap_or(u32::MAX);
-        all.extend(page);
-
-        if fetched < page_size {
-            break;
-        }
-        offset += fetched;
-    }
-
-    Ok(all)
 }
 
 /// Check if an asset is a USDC variant (preferred swap target for rebalancing).
