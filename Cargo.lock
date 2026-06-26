@@ -13481,6 +13481,7 @@ dependencies = [
 name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
@@ -13497,8 +13498,10 @@ dependencies = [
  "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
+ "templar-gateway-testing",
  "templar-gateway-types",
  "templar-proxy-oracle-near-common",
+ "test-utils",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
