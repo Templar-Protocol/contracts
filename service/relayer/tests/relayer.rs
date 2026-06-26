@@ -813,24 +813,6 @@ pub async fn requires_network_update_prices_updates_redstone_market(
     };
     assert_eq!(response.market_ids, vec![market.id().clone()]);
 
-    let accounts = app.accounts.read().await;
-    let market_data = accounts.market_data.get(market.id()).unwrap();
-    assert!(market_data
-        .borrow
-        .update_oracle
-        .contains(&OracleRequest::redstone(
-            redstone_adapter.id().clone(),
-            usdc.clone(),
-        )));
-    assert!(market_data
-        .collateral
-        .update_oracle
-        .contains(&OracleRequest::redstone(
-            redstone_adapter.id().clone(),
-            btc.clone(),
-        )));
-    drop(accounts);
-
     let SimpleResponse::Success(prices) =
         templar_relayer::route::get_market_prices::get_market_prices(
             State(app),

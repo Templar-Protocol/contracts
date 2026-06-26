@@ -177,24 +177,27 @@ pub async fn relay(
                 };
             }
         };
-        let additional_interactions =
-            match app.actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter()) {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::info!("Rejecting payload for reason: {e:?}");
-                    let mut s = e[0].to_string();
-                    for err in &e[1..] {
-                        let _ = write!(&mut s, "\n{err}");
-                    }
-                    return SimpleResponse::Rejected { reason: s };
+        let additional_interactions = match app
+            .actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter())
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::info!("Rejecting payload for reason: {e:?}");
+                let mut s = e[0].to_string();
+                for err in &e[1..] {
+                    let _ = write!(&mut s, "\n{err}");
                 }
-            };
+                return SimpleResponse::Rejected { reason: s };
+            }
+        };
         interacted_contract_ids.insert(receiver_id.to_owned());
         interacted_contract_ids.extend(additional_interactions.into_iter());
         gas += calls.iter().map(|f| f.gas.as_gas()).sum::<u64>();
     }
 
-    App::expand_market_related_contracts(&accounts, &mut interacted_contract_ids);
+    app.expand_market_related_contracts(&accounts.market_ids, &mut interacted_contract_ids)
+        .await;
     let market_ids = App::resolve_market_ids(&accounts, &interacted_contract_ids);
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);

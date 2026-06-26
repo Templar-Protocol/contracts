@@ -9,12 +9,10 @@ use near_sdk::{
 };
 
 use templar_common::{
-    asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
-    market::PriceOracleConfiguration,
-    oracle::pyth::{Price, PriceIdentifier},
+    asset::{AssetClass, FungibleAsset},
+    oracle::pyth::Price,
 };
 use templar_gateway_types::common::StorageBalanceBounds;
-use templar_proxy_oracle_near_common::request::OracleRequest;
 
 pub mod app;
 pub mod broom;
@@ -45,7 +43,10 @@ pub fn router(app: app::App) -> Router {
 
 #[derive(Debug, Clone, Default)]
 pub struct AccountData {
-    pub market_data: HashMap<AccountId, MarketData>,
+    /// The set of discovered market contracts. Market configuration (assets,
+    /// oracle, price feeds) is resolved on demand through the gateway rather
+    /// than cached here, so it cannot go stale between restarts.
+    pub market_ids: HashSet<AccountId>,
     pub allowed_contract_data: HashMap<AccountId, ContractData>,
 }
 
@@ -53,36 +54,6 @@ pub struct AccountData {
 pub struct ContractData {
     pub storage_balance_bounds: Option<StorageBalanceBounds>,
     pub allowed_methods: HashSet<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct MarketData {
-    pub account_id: AccountId,
-    pub oracle_id: AccountId,
-    pub oracle_kind: MarketOracleKind,
-    pub price_oracle_configuration: PriceOracleConfiguration,
-    pub collateral: AssetResolution<CollateralAsset>,
-    pub borrow: AssetResolution<BorrowAsset>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MarketOracleKind {
-    PythDirect,
-    PythLst,
-    Proxy,
-}
-
-impl MarketOracleKind {
-    pub const fn requires_proxy_update(self) -> bool {
-        matches!(self, Self::Proxy)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AssetResolution<A: AssetClass> {
-    pub asset: FungibleAsset<A>,
-    pub price_id: PriceIdentifier,
-    pub update_oracle: HashSet<OracleRequest>,
 }
 
 pub struct AssetTransfer {
