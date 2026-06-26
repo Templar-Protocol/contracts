@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use axum::extract::{Query, State};
 use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId,
 };
+use templar_gateway_methods_spec::oracle;
 
 use crate::{app::App, route::SimpleResponse, ViewMarketPrices};
 
@@ -31,8 +34,19 @@ pub async fn get_market_prices(
         };
     };
 
-    let market_prices = match app.relay_near.load_market_prices(&market).await {
-        Ok(p) => p,
+    // Resolve current on-chain prices through the gateway, which classifies the
+    // oracle (direct / LST / proxy) and applies transformers internally.
+    let cfg = &market.price_oracle_configuration;
+    let result = match app
+        .gateway
+        .read(oracle::GetPrices {
+            oracle_id: cfg.account_id.clone(),
+            price_ids: vec![cfg.borrow_asset_price_id, cfg.collateral_asset_price_id],
+            age: u64::from(cfg.price_maximum_age_s),
+        })
+        .await
+    {
+        Ok(result) => result,
         Err(error) => {
             tracing::error!(%error, "Failed to load market prices");
             return SimpleResponse::Failure {
@@ -41,5 +55,14 @@ pub async fn get_market_prices(
         }
     };
 
-    SimpleResponse::success(market_prices)
+    let mut prices: HashMap<_, _> = result
+        .prices
+        .into_iter()
+        .map(|entry| (entry.price_id, entry.price))
+        .collect();
+
+    SimpleResponse::success(ViewMarketPrices {
+        borrow: prices.remove(&cfg.borrow_asset_price_id).flatten(),
+        collateral: prices.remove(&cfg.collateral_asset_price_id).flatten(),
+    })
 }

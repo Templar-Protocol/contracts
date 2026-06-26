@@ -20,6 +20,10 @@ use templar_common::{
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
+use templar_gateway_client::{collect_paginated, Client as GatewayClient};
+use templar_gateway_core::GatewayResult;
+use templar_gateway_methods_spec::{market, oracle as oracle_spec, registry};
+use templar_gateway_types::common::Pagination;
 use templar_proxy_oracle_near_common::cache::CachedProxyPriceStatus;
 use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
@@ -39,7 +43,7 @@ use crate::{
         oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
-    AccountData, AssetTransfer, ContractData,
+    AccountData, AssetResolution, AssetTransfer, ContractData, MarketData, MarketOracleKind,
 };
 
 pub mod args;
@@ -52,6 +56,10 @@ type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
 pub struct App {
     pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
+    /// In-process gateway client — the standard chain interface. Reads
+    /// (market/oracle/storage) go through its typed specs; the bespoke `Near`
+    /// client is being retired onto it.
+    pub gateway: GatewayClient,
     pub relay_near: Near,
     pub ua_near: Near,
     pub pyth: oracle::Handle<oracle::PythSpec>,
@@ -61,10 +69,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(
-        args: args::Configuration,
-        kill: watch::Sender<()>,
-    ) -> Result<Self, templar_redstone_bridge::BridgeError> {
+    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
+        let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
+        let gateway = GatewayClient::read_only(network)?;
+
         let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
             args.relay.account_id.clone(),
@@ -115,6 +123,7 @@ impl App {
         Ok(Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
+            gateway,
             relay_near,
             ua_near,
             pyth,
@@ -148,10 +157,10 @@ impl App {
         for registry_id in &self.args.monitor.registry {
             tracing::debug!(%registry_id, "Loading from registry");
             set.spawn({
-                let near = self.relay_near.clone();
+                let gateway = self.gateway.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    near.load_deployments_from_registry(registry_id.clone())
+                    load_registry_deployments(&gateway, registry_id.clone())
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!(
@@ -169,9 +178,9 @@ impl App {
         for market in markets {
             tracing::debug!(%market, "Loading market");
             set.spawn({
-                let near = self.relay_near.clone();
+                let gateway = self.gateway.clone();
                 async move {
-                    match near.load_market_accounts(market.clone()).await {
+                    match load_market_data(&gateway, market.clone()).await {
                         Ok(market_accounts) => Some(market_accounts),
                         Err(e) => {
                             tracing::warn!("Failed to load accounts for market {market}: {e}");
@@ -1244,4 +1253,84 @@ mod tests {
                 )
         ));
     }
+}
+
+/// Page size for draining a registry's deployment list through the gateway.
+const REGISTRY_PAGE_SIZE: u32 = 100;
+
+fn map_oracle_kind(kind: &oracle_spec::OracleContractKind) -> MarketOracleKind {
+    match kind {
+        oracle_spec::OracleContractKind::Direct => MarketOracleKind::PythDirect,
+        oracle_spec::OracleContractKind::Lst { .. } => MarketOracleKind::PythLst,
+        oracle_spec::OracleContractKind::Proxy => MarketOracleKind::Proxy,
+    }
+}
+
+/// Drain every deployment account from a registry via the gateway.
+async fn load_registry_deployments(
+    gateway: &GatewayClient,
+    registry_id: AccountId,
+) -> GatewayResult<Vec<AccountId>> {
+    collect_paginated(REGISTRY_PAGE_SIZE, move |offset, count| {
+        let gateway = gateway.clone();
+        let registry_id = registry_id.clone();
+        async move {
+            let result = gateway
+                .read(registry::ListDeployments {
+                    registry_id,
+                    args: Pagination {
+                        offset: Some(offset),
+                        limit: Some(count),
+                    },
+                })
+                .await?;
+            Ok(result.account_ids)
+        }
+    })
+    .await
+}
+
+/// Load a market's configuration and resolve its oracle classification +
+/// per-asset price-update dependencies through the gateway (cached server-side).
+async fn load_market_data(
+    gateway: &GatewayClient,
+    market_id: AccountId,
+) -> GatewayResult<MarketData> {
+    let config = gateway
+        .read(market::GetConfiguration {
+            market_id: market_id.clone(),
+        })
+        .await?;
+    let oracle_cfg = config.price_oracle_configuration.clone();
+    let oracle_id = oracle_cfg.account_id.clone();
+
+    let borrow = gateway
+        .read(oracle_spec::GetPriceResolutionDependencies {
+            oracle_id: oracle_id.clone(),
+            price_id: oracle_cfg.borrow_asset_price_id,
+        })
+        .await?;
+    let collateral = gateway
+        .read(oracle_spec::GetPriceResolutionDependencies {
+            oracle_id: oracle_id.clone(),
+            price_id: oracle_cfg.collateral_asset_price_id,
+        })
+        .await?;
+
+    Ok(MarketData {
+        account_id: market_id,
+        oracle_id,
+        oracle_kind: map_oracle_kind(&borrow.kind),
+        collateral: AssetResolution {
+            asset: config.collateral_asset.clone(),
+            price_id: oracle_cfg.collateral_asset_price_id,
+            update_oracle: collateral.requests.into_iter().collect(),
+        },
+        borrow: AssetResolution {
+            asset: config.borrow_asset.clone(),
+            price_id: oracle_cfg.borrow_asset_price_id,
+            update_oracle: borrow.requests.into_iter().collect(),
+        },
+        price_oracle_configuration: oracle_cfg,
+    })
 }
