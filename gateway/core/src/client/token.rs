@@ -1,6 +1,6 @@
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 use crate::{operation::PlannedTransaction, GatewayResult, NearClient};
 
@@ -40,7 +40,7 @@ impl<'a> TokenClient<'a> {
         amount: impl Into<u128>,
         msg: String,
     ) -> GatewayResult<PlannedTransaction> {
-        let amount = U128(amount.into());
+        let amount = SU128::from(amount.into());
 
         match self {
             Self::Ft(client) => client.ft_transfer_call(

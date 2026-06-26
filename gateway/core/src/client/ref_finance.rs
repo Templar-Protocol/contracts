@@ -1,5 +1,5 @@
 use near_account_id::AccountId;
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 use crate::client::{macros::contract_views, NearClient};
 
@@ -24,7 +24,7 @@ impl BoundContractClient for RefFinanceClient<'_> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PoolInfo {
     pub token_account_ids: Vec<AccountId>,
-    pub shares_total_supply: U128,
+    pub shares_total_supply: SU128,
 }
 
 #[derive(serde::Serialize)]

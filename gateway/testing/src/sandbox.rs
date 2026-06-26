@@ -7,6 +7,7 @@ use near_token::NearToken;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     oracle::{pyth::PriceIdentifier, redstone::config as redstone_config},
+    vault::VaultConfiguration,
     Nanoseconds,
 };
 use templar_gateway_core::NearClient;
@@ -22,9 +23,9 @@ use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
     market_configuration,
     test_signer::TestSigner,
-    FtController, GovernanceContractController, MarketController, MockOracleController,
-    ProxyOracleController, ReceiverController, RedStoneAdapterController, RefFinanceController,
-    RegistryController, UniversalAccountController,
+    vault_configuration, FtController, GovernanceContractController, MarketController,
+    MockOracleController, ProxyOracleController, ReceiverController, RedStoneAdapterController,
+    RefFinanceController, RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -251,6 +252,35 @@ impl SandboxHarness {
         .await?;
 
         Ok((market_id, configuration))
+    }
+
+    pub async fn deploy_vault(&self) -> Result<(AccountId, VaultConfiguration)> {
+        let vault_id: AccountId = "vault.near".parse()?;
+        let signer =
+            create_account_signer(&self.sandbox, &vault_id, NearToken::from_near(100)).await?;
+        let configuration = vault_configuration(
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.ft_contract_id.clone(),
+            self.beneficiary_account_id.clone(),
+            self.beneficiary_account_id.clone(),
+        );
+
+        deploy_contract(
+            &self.network,
+            vault_id.clone(),
+            signer,
+            test_utils::controller::vault::load_wasm().await.to_vec(),
+            "new",
+            serde_json::json!({
+                "configuration": configuration.clone(),
+            }),
+        )
+        .await?;
+
+        Ok((vault_id, configuration))
     }
 
     pub async fn deploy_universal_account(&self) -> Result<(AccountId, TestSigner)> {

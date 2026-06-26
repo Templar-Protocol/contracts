@@ -35,7 +35,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_id: "mt_borrow".to_owned(),
         })
         .await?;
-    assert_eq!(balance.balance, templar_gateway_types::U128(11));
+    assert_eq!(balance.balance, templar_common::SU128::from(11));
 
     let balances = stack
         .controller
@@ -47,9 +47,9 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         balances.balances[0].balance,
-        templar_gateway_types::U128(11)
+        templar_common::SU128::from(11)
     );
-    assert_eq!(balances.balances[1].balance, templar_gateway_types::U128(0));
+    assert_eq!(balances.balances[1].balance, templar_common::SU128::from(0));
 
     let supply = stack
         .controller
@@ -58,7 +58,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
             token_id: "mt_borrow".to_owned(),
         })
         .await?;
-    assert_eq!(supply.supply, Some(templar_gateway_types::U128(11)));
+    assert_eq!(supply.supply, Some(templar_common::SU128::from(11)));
 
     let supplies = stack
         .controller
@@ -69,7 +69,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
         .await?;
     assert_eq!(
         supplies.supplies[0].supply,
-        Some(templar_gateway_types::U128(11))
+        Some(templar_common::SU128::from(11))
     );
     assert_eq!(supplies.supplies[1].supply, None);
 
@@ -82,7 +82,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
                 contract_id: mt_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
                 token_id: "mt_borrow".to_owned(),
-                amount: templar_gateway_types::U128(4),
+                amount: templar_common::SU128::from(4),
                 approval: None,
                 memo: Some("transfer".to_owned()),
             },
@@ -102,7 +102,7 @@ async fn mt_endpoints_work_against_sandbox() -> Result<()> {
                 contract_id: mt_contract_id.clone(),
                 receiver_id: receiver_id.clone(),
                 token_id: "mt_borrow".to_owned(),
-                amount: templar_gateway_types::U128(7),
+                amount: templar_common::SU128::from(7),
                 approval: None,
                 memo: Some("call".to_owned()),
                 msg: "ok".to_owned(),
