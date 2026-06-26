@@ -333,13 +333,6 @@ pub struct Skim {
     pub token: AccountId,
 }
 
-/// Accrue vault fees.
-#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "vault.accrueFee")]
-pub struct AccrueFee {
-    pub vault_id: AccountId,
-}
-
 /// Set the supply queue.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "vault.setSupplyQueue")]

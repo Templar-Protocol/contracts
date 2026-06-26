@@ -33,7 +33,7 @@ where
 }
 
 #[tokio::test]
-async fn vault_deposit_donate_and_resync_against_sandbox() -> Result<()> {
+async fn vault_deposit_donate_resync_and_withdraw_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let (market_account, _) = stack.harness.deploy_market().await?;
     let (vault_id, _) = stack.harness.deploy_vault().await?;
@@ -134,6 +134,46 @@ async fn vault_deposit_donate_and_resync_against_sandbox() -> Result<()> {
     )
     .await?;
     assert_vault_assets_eventually(&stack, &vault_id, 125).await?;
+
+    // A withdrawal pays out via the underlying token's `ft_transfer`, which fails
+    // unless the receiver is registered there. The `vault.withdraw` plan must
+    // pre-register the receiver, so a withdrawal to a fresh account succeeds and
+    // leaves that account registered on the underlying token.
+    let receiver = stack.harness.beneficiary_account_id.clone();
+    let receiver_balance_before = stack
+        .controller
+        .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: receiver.clone(),
+        })
+        .await?;
+    anyhow::ensure!(
+        receiver_balance_before.balance.is_none(),
+        "withdrawal receiver should start unregistered on the underlying token"
+    );
+
+    exec(
+        &stack,
+        &signer,
+        vault::Withdraw {
+            vault_id: vault_id.clone(),
+            amount: SU128::from(10_u128),
+            receiver: receiver.clone(),
+        },
+    )
+    .await?;
+
+    let receiver_balance_after = stack
+        .controller
+        .request::<storage::GetBalanceOf>(&storage::GetBalanceOf {
+            contract_id: stack.harness.ft_contract_id.clone(),
+            account_id: receiver.clone(),
+        })
+        .await?;
+    anyhow::ensure!(
+        receiver_balance_after.balance.is_some(),
+        "withdrawal plan should have registered the receiver on the underlying token"
+    );
 
     stack.shutdown().await;
     Ok(())

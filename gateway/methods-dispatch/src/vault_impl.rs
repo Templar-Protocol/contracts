@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use near_account_id::AccountId;
 use templar_common::{
     vault::{self as common_vault, DepositMsg, VaultConfiguration},
     SU64,
@@ -14,9 +15,10 @@ use templar_gateway_core::{
         },
         ContractWriteOptions,
     },
-    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
 };
 use templar_gateway_methods_spec::vault;
+use templar_gateway_types::ManagedAccountId;
 use templar_primitives::SU128;
 
 use crate::token_ops::{ensure_storage_registration, transfer_call_asset};
@@ -56,7 +58,6 @@ passthrough_read!(
     get_max_single_market_deposit,
     SU128
 );
-passthrough_read!(vault::GetFeeAnchorTimestamp, get_fee_anchor_timestamp, SU64);
 passthrough_read!(vault::GetFees, get_fees, common_vault::Fees<SU128>);
 passthrough_read!(
     vault::HasPendingMarketWithdrawal,
@@ -68,6 +69,20 @@ passthrough_read!(
     build_real_assets_report,
     common_vault::RealAssetsReport
 );
+
+// The contract does not export a bare `get_fee_anchor_timestamp`; read the full
+// `get_fee_anchor` view (an exported method) and project out the timestamp.
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetFeeAnchorTimestamp, C> for Dispatch {
+    async fn dispatch(request: vault::GetFeeAnchorTimestamp, ctx: C) -> GatewayResult<SU64> {
+        let anchor = ctx
+            .near_client()
+            .vault(request.vault_id)
+            .get_fee_anchor(())
+            .await?;
+        Ok(SU64::from(anchor.timestamp_ns))
+    }
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<vault::ConvertToShares, C> for Dispatch {
@@ -352,26 +367,109 @@ direct_write!(
     |body: vault::Allocate| DeltaArg { delta: body.delta },
     300
 );
-direct_write!(
-    vault::Withdraw,
-    withdraw,
-    |body: vault::Withdraw| WithdrawArgs {
-        amount: body.amount,
-        receiver: body.receiver
-    },
-    30,
-    vault::WITHDRAW_REQUEST_DEPOSIT
-);
-direct_write!(
-    vault::Redeem,
-    redeem,
-    |body: vault::Redeem| RedeemArgs {
-        shares: body.shares,
-        receiver: body.receiver
-    },
-    300,
-    vault::WITHDRAW_REQUEST_DEPOSIT
-);
+// Creating a withdraw/redeem request touches two NEP-141 ledgers that each reject
+// unregistered accounts, so the plan pre-registers both parties (mirroring
+// `vault::Deposit` and the `market::Liquidate` collateral pre-registration):
+//
+//   1. The vault escrows the redeemed shares to *itself* while the request is
+//      pending, so it must be registered on its own share token (the vault
+//      contract). The contract test harness does the same via
+//      `storage_deposits(vault_account)` before withdrawing.
+//   2. The eventual payout sends the underlying via `ft_transfer`, which fails
+//      unless the receiver is registered on the underlying token (the contract
+//      then refunds the escrowed shares and the assets are never delivered).
+async fn withdraw_registration_steps<C: HasNearClient>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    vault_id: AccountId,
+    receiver: AccountId,
+) -> GatewayResult<Vec<PlannedTransaction>> {
+    let configuration = ctx
+        .near_client()
+        .vault(vault_id.clone())
+        .cached_get_configuration()
+        .await?;
+    let mut steps = Vec::new();
+
+    // (1) Register the vault on its own share token so it can hold escrowed shares.
+    if let Some(step) =
+        ensure_storage_registration(ctx, signer_account_id.clone(), vault_id.clone(), vault_id)
+            .await?
+    {
+        steps.push(step);
+    }
+
+    // (2) Register the payout receiver on the underlying token. `ft_transfer`
+    // payout only applies to NEP-141 underlyings; NEP-245/MT have no per-receiver
+    // storage registration, so there is nothing to pre-register.
+    if let Some(asset_id) = configuration.underlying_token.into_nep141() {
+        if let Some(step) =
+            ensure_storage_registration(ctx, signer_account_id, asset_id, receiver).await?
+        {
+            steps.push(step);
+        }
+    }
+
+    Ok(steps)
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::Withdraw, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::Withdraw>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let mut steps = withdraw_registration_steps(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.vault_id.clone(),
+            body.receiver.clone(),
+        )
+        .await?;
+        steps.push(
+            ctx.near_client().vault(body.vault_id).withdraw(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(30)
+                    .deposit(vault::WITHDRAW_REQUEST_DEPOSIT),
+                WithdrawArgs {
+                    amount: body.amount,
+                    receiver: body.receiver,
+                },
+            )?,
+        );
+        Ok(OperationPlan { steps })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::Redeem, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::Redeem>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let mut steps = withdraw_registration_steps(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.vault_id.clone(),
+            body.receiver.clone(),
+        )
+        .await?;
+        steps.push(
+            ctx.near_client().vault(body.vault_id).redeem(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(300)
+                    .deposit(vault::WITHDRAW_REQUEST_DEPOSIT),
+                RedeemArgs {
+                    shares: body.shares,
+                    receiver: body.receiver,
+                },
+            )?,
+        );
+        Ok(OperationPlan { steps })
+    }
+}
 direct_write!(
     vault::ExecuteWithdrawal,
     execute_withdrawal,
@@ -417,12 +515,6 @@ direct_write!(
     skim,
     |body: vault::Skim| TokenArg { token: body.token },
     50
-);
-direct_write!(
-    vault::AccrueFee,
-    internal_accrue_fee,
-    |_body: vault::AccrueFee| (),
-    20
 );
 #[async_trait]
 impl<C: HasNearClient> PlanWrite<vault::SetSupplyQueue, C> for Dispatch {

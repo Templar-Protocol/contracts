@@ -157,7 +157,6 @@ macro_rules! for_each_write_method {
         $callback!($crate::vault::RefreshMarkets);
         $callback!($crate::vault::Unbrick);
         $callback!($crate::vault::Skim);
-        $callback!($crate::vault::AccrueFee);
         $callback!($crate::vault::SetSupplyQueue);
         $callback!($crate::vault::SubmitCap);
         $callback!($crate::vault::AcceptCap);

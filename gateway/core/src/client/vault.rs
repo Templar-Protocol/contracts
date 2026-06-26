@@ -1,8 +1,9 @@
 use moka::sync::Cache;
 use near_account_id::AccountId;
 use templar_common::vault::{
-    AllocationDelta, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey, Fees, MarketId,
-    RealAssetsReport, Restrictions, TimelockKind, VaultConfiguration,
+    AllocationDelta, CapGroupId, CapGroupRecord, CapGroupUpdate, CapGroupUpdateKey,
+    FeeAccrualAnchor, Fees, MarketId, RealAssetsReport, Restrictions, TimelockKind,
+    VaultConfiguration,
 };
 use templar_common::SU64;
 use templar_primitives::SU128;
@@ -188,7 +189,7 @@ impl VaultClient<'_> {
         pub fn preview_withdraw(U128AssetsArg) -> SU128;
         pub fn preview_redeem(U128SharesArg) -> SU128;
         pub fn get_cap_groups(()) -> Vec<(CapGroupId, CapGroupRecord)>;
-        pub fn get_fee_anchor_timestamp(()) -> SU64;
+        pub fn get_fee_anchor(()) -> FeeAccrualAnchor;
         pub fn get_fees(()) -> Fees<SU128>;
         pub fn get_restrictions(()) -> Option<Restrictions>;
         pub fn get_withdrawing_op_id(()) -> Option<SU64>;
@@ -213,7 +214,6 @@ impl VaultClient<'_> {
         pub fn refresh_markets(MarketsArg);
         pub fn unbrick(());
         pub fn skim(TokenArg);
-        pub fn internal_accrue_fee(());
         pub fn set_supply_queue(MarketsArg);
         pub fn submit_cap(CapArgs);
         pub fn accept_cap(CapMarketArg);
