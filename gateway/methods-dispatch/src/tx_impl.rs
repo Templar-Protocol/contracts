@@ -3,7 +3,8 @@ use near_api::types::transaction::actions::{
     Action, DeployContractAction, FunctionCallAction, TransferAction,
 };
 use templar_gateway_core::{
-    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
+    DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    PlannedTransaction,
 };
 use templar_gateway_methods_spec::tx;
 
@@ -76,6 +77,33 @@ impl<C: Send + 'static> PlanWrite<tx::Transfer, C> for Dispatch {
             actions: vec![Action::Transfer(TransferAction {
                 deposit: request.body.amount,
             })],
+        }))
+    }
+}
+
+#[async_trait]
+impl<C: Send + 'static> PlanWrite<tx::RelayDelegateAction, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<tx::RelayDelegateAction>,
+        _context: C,
+    ) -> GatewayResult<OperationPlan> {
+        use borsh::BorshDeserialize;
+
+        // NEP-366: the relayer wraps the user's signed delegate action in a
+        // transaction it signs and pays for, sent to the delegate's sender.
+        let signed_delegate_action =
+            near_api::types::transaction::delegate_action::SignedDelegateAction::try_from_slice(
+                &request.body.signed_delegate_action.0,
+            )
+            .map_err(|error| {
+                GatewayError::NearTransaction(format!("invalid signed delegate action: {error}"))
+            })?;
+
+        Ok(OperationPlan::single(PlannedTransaction {
+            signer_account_id: request.signer_account_id,
+            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
+            receiver_id: signed_delegate_action.delegate_action.sender_id.clone(),
+            actions: vec![Action::Delegate(Box::new(signed_delegate_action))],
         }))
     }
 }
