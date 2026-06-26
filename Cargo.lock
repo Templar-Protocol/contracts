@@ -13248,6 +13248,7 @@ dependencies = [
  "near-account-id",
  "near-api",
  "near-contract-standards",
+ "near-jsonrpc-client",
  "near-openapi-client",
  "near-sandbox",
  "near-sdk",

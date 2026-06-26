@@ -1,4 +1,5 @@
 pub mod account;
+pub mod chain;
 pub mod contract;
 pub mod ft;
 pub mod lst_oracle;
@@ -36,6 +37,7 @@ pub mod universal_account;
 macro_rules! for_each_read_method {
     ($callback:ident) => {
         $callback!($crate::account::Get);
+        $callback!($crate::chain::GetGasPrice);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);

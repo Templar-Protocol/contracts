@@ -1,6 +1,8 @@
 use near_api::types::transaction::result::ExecutionFinalResult;
+use near_jsonrpc_client::{methods, JsonRpcClient};
+use templar_gateway_types::NearToken;
 
-use crate::{client::NearClient, GatewayResult, ReadNear};
+use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
@@ -8,6 +10,31 @@ pub struct ChainClient<'a> {
 }
 
 impl ChainClient<'_> {
+    /// Connect a JSON-RPC client to the network's primary endpoint.
+    ///
+    /// `near_api` exposes no builder for chain-level reads like gas price, so
+    /// these go through `near-jsonrpc-client` directly against the configured
+    /// endpoint (whose URL already carries any auth, e.g. an `?apiKey=` param).
+    fn json_rpc(self) -> GatewayResult<JsonRpcClient> {
+        let endpoint = self
+            .inner
+            .network()
+            .rpc_endpoints
+            .first()
+            .ok_or_else(|| GatewayError::NearQuery("no RPC endpoint configured".to_owned()))?;
+        Ok(JsonRpcClient::connect(endpoint.url.as_str()))
+    }
+
+    /// The current gas price (yoctoNEAR per unit of gas) at the latest block.
+    pub async fn gas_price(&self) -> GatewayResult<NearToken> {
+        let response = self
+            .json_rpc()?
+            .call(methods::gas_price::RpcGasPriceRequest { block_id: None })
+            .await
+            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+        Ok(NearToken::from_yoctonear(response.gas_price.as_yoctonear()))
+    }
+
     pub async fn get_transaction(
         &self,
         tx_hash: near_api::CryptoHash,

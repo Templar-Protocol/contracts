@@ -1,4 +1,5 @@
 mod account_impl;
+mod chain_impl;
 mod contract_impl;
 mod ft_impl;
 mod lst_oracle_impl;
