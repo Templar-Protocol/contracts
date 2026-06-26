@@ -17,3 +17,17 @@ impl<C: HasNearClient> DispatchRead<chain::GetGasPrice, C> for Dispatch {
             .map(|gas_price| chain::GetGasPriceResult { gas_price })
     }
 }
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<chain::GetBlock, C> for Dispatch {
+    async fn dispatch(request: chain::GetBlock, ctx: C) -> GatewayResult<chain::GetBlockResult> {
+        ctx.near_client()
+            .chain()
+            .block(request.block_hash)
+            .await
+            .map(|(height, timestamp_ns)| chain::GetBlockResult {
+                height,
+                timestamp_ns,
+            })
+    }
+}

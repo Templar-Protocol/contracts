@@ -1,6 +1,6 @@
 use near_api::types::transaction::result::ExecutionFinalResult;
 use near_jsonrpc_client::{methods, JsonRpcClient};
-use templar_gateway_types::NearToken;
+use templar_gateway_types::{CryptoHash, NearToken};
 
 use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
 
@@ -33,6 +33,31 @@ impl ChainClient<'_> {
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
         Ok(NearToken::from_yoctonear(response.gas_price.as_yoctonear()))
+    }
+
+    /// Header height and timestamp (nanoseconds) for a block; `block_hash`
+    /// selects a specific block, otherwise the latest final block is used.
+    pub async fn block(&self, block_hash: Option<CryptoHash>) -> GatewayResult<(u64, u64)> {
+        use near_primitives::types::{BlockId, BlockReference, Finality};
+
+        let block_reference = match block_hash {
+            Some(hash) => {
+                let hash = hash
+                    .to_string()
+                    .parse::<near_primitives::hash::CryptoHash>()
+                    .map_err(|error| {
+                        GatewayError::NearQuery(format!("invalid block hash: {error}"))
+                    })?;
+                BlockReference::BlockId(BlockId::Hash(hash))
+            }
+            None => BlockReference::Finality(Finality::Final),
+        };
+        let response = self
+            .json_rpc()?
+            .call(methods::block::RpcBlockRequest { block_reference })
+            .await
+            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+        Ok((response.header.height, response.header.timestamp_nanosec))
     }
 
     pub async fn get_transaction(

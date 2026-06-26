@@ -13250,6 +13250,7 @@ dependencies = [
  "near-contract-standards",
  "near-jsonrpc-client",
  "near-openapi-client",
+ "near-primitives",
  "near-sandbox",
  "near-sdk",
  "near-token",
@@ -13876,6 +13877,7 @@ dependencies = [
  "templar-common",
  "templar-gateway-client",
  "templar-gateway-core",
+ "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
  "templar-gateway-store",
  "templar-gateway-types",
@@ -13890,6 +13892,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.23.0",
 ]
 
 [[package]]
