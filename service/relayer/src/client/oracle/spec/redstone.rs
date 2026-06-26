@@ -1,18 +1,16 @@
 use std::{sync::Arc, time::Duration};
 
-use near_primitives::action::{Action, FunctionCallAction};
-use near_sdk::{
-    json_types::Base64VecU8,
-    serde_json::{self, json},
-};
+use near_sdk::AccountId;
 use templar_common::oracle::redstone::FeedId;
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::redstone as redstone_spec;
+use templar_gateway_types::{Base64Bytes, CryptoHash};
 use templar_redstone_bridge::{Bridge, BridgeError};
 use tokio::sync::watch;
 
 use crate::{
     app::args,
-    cache::Cache,
-    client::{near::Near, oracle::Handle},
+    client::oracle::{succeeded_tx_hash, Handle, UpdateError},
 };
 
 use super::Spec;
@@ -34,14 +32,12 @@ impl RedStoneSpec {
 
     pub fn handle(
         config: args::RedStoneConfig,
-        near: Near,
-        cache: Cache,
+        gateway: SigningClient,
         kill: watch::Sender<()>,
     ) -> Result<Handle<Self>, BridgeError> {
         Ok(Handle::new(
             Arc::new(Self::new(config, kill.clone())?),
-            near,
-            cache,
+            gateway,
             kill,
         ))
     }
@@ -49,7 +45,6 @@ impl RedStoneSpec {
 
 impl Spec for RedStoneSpec {
     type FeedId = FeedId;
-    type Error = BridgeError;
 
     fn name() -> &'static str {
         "RedStone"
@@ -59,25 +54,31 @@ impl Spec for RedStoneSpec {
         self.config.refresh
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+    #[tracing::instrument(skip(self, gateway))]
+    async fn execute_update(
+        &self,
+        gateway: &SigningClient,
+        oracle_id: AccountId,
+        feed_ids: &[Self::FeedId],
+    ) -> Result<Option<CryptoHash>, UpdateError> {
         if feed_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(None);
         }
 
-        let payload_vec = self.bridge.fetch(feed_ids.to_vec()).await?;
+        let payload = self
+            .bridge
+            .fetch(feed_ids.to_vec())
+            .await
+            .map_err(|e| UpdateError::Fetch(Box::new(e)))?;
 
-        Ok(vec![FunctionCallAction {
-            method_name: "write_prices".to_string(),
-            #[allow(clippy::unwrap_used, reason = "This serialization is infallible")]
-            args: serde_json::to_vec(&json!({
-                "feed_ids": feed_ids,
-                "payload": Base64VecU8(payload_vec),
-            }))
-            .unwrap(),
-            gas: near_primitives::gas::Gas::from_gas(self.config.update_gas.as_gas()),
-            deposit: self.config.update_deposit,
-        }
-        .into()])
+        let result = gateway
+            .execute(redstone_spec::WritePrices {
+                oracle_id,
+                feed_ids: feed_ids.to_vec(),
+                payload: Base64Bytes(payload),
+            })
+            .await?;
+
+        succeeded_tx_hash(result)
     }
 }

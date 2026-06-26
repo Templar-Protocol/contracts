@@ -10,9 +10,8 @@ use near_crypto::InMemorySigner;
 use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
 use near_primitives::{
     action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
-    hash::CryptoHash,
     transaction::SignedTransaction,
-    views::{FinalExecutionOutcomeView, FinalExecutionStatus, TxExecutionStatus},
+    views::{FinalExecutionOutcomeView, TxExecutionStatus},
 };
 use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
 use templar_common::{
@@ -22,9 +21,8 @@ use templar_common::{
 };
 use templar_gateway_client::{collect_paginated, Client as GatewayClient};
 use templar_gateway_core::GatewayResult;
-use templar_gateway_methods_spec::{market, oracle as oracle_spec, registry};
-use templar_gateway_types::common::Pagination;
-use templar_proxy_oracle_near_common::cache::CachedProxyPriceStatus;
+use templar_gateway_methods_spec::{market, oracle as oracle_spec, proxy_oracle, registry};
+use templar_gateway_types::{common::Pagination, CryptoHash};
 use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
     sync::{watch, RwLock},
@@ -69,9 +67,33 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
+    pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
         let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
-        let gateway = GatewayClient::read_only(network)?;
+
+        // The relay account signs with a rotating multi-key pool; the UA account
+        // is registered for the universal-account relay path (Phase 3).
+        let to_api_keys = |keys: &[near_crypto::SecretKey]| {
+            keys.iter()
+                .map(|k| k.to_string().parse())
+                .collect::<Result<Vec<near_api::SecretKey>, _>>()
+        };
+        let mut builder = GatewayClient::builder(network);
+        let relay_keys = to_api_keys(&args.relay.secret_key)?;
+        if !relay_keys.is_empty() {
+            builder = builder
+                .secret_keys(args.relay.account_id.clone(), relay_keys)
+                .await?;
+        }
+        let ua_keys = to_api_keys(&args.ua.secret_key)?;
+        if !ua_keys.is_empty() {
+            builder = builder
+                .secret_keys(args.ua.account_id.clone(), ua_keys)
+                .await?;
+        }
+        let gateway = builder.build()?;
+        let relay_gateway = gateway
+            .clone()
+            .into_signing(args.relay.account_id.clone())?;
 
         let relay_near = Near::new(
             near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
@@ -98,17 +120,11 @@ impl App {
 
         let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
 
-        let pyth = oracle::PythSpec::handle(
-            args.pyth.clone(),
-            relay_near.clone(),
-            cache.clone(),
-            kill.clone(),
-        );
+        let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
 
         let redstone = oracle::RedStoneSpec::handle(
             args.redstone.clone(),
-            relay_near.clone(),
-            cache.clone(),
+            relay_gateway.clone(),
             kill.clone(),
         )?;
 
@@ -452,63 +468,23 @@ impl App {
             return Ok(None);
         }
 
-        let action = FunctionCallAction {
-            method_name: "update_prices".to_string(),
-            args: serde_json::to_vec(&serde_json::json!({ "price_ids": &price_ids }))
-                .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
-                .map_err(Arc::new)?,
-            gas: near_primitives::gas::Gas::from_teragas(100),
-            deposit: NearToken::ZERO,
-        };
+        // The gateway write returns only the operation status, not the per-price
+        // `Accepted`/`Rejected` cache map the bespoke path inspected; a reverted
+        // breaker surfaces as a non-`Succeeded` operation.
+        let result = self
+            .gateway
+            .execute_as(
+                self.args.relay.account_id.clone(),
+                proxy_oracle::UpdatePrices {
+                    oracle_id,
+                    price_ids: price_ids.into_vec(),
+                },
+            )
+            .await
+            .map_err(oracle::UpdateError::from)
+            .map_err(Arc::new)?;
 
-        let signed_transaction = self
-            .relay_near
-            .sign_transaction(&self.cache, oracle_id.clone(), vec![action.into()])
-            .await;
-        let transaction_hash = signed_transaction.get_hash();
-        let transaction_result = tokio::time::timeout(
-            self.args.rpc_timeout,
-            self.relay_near
-                .send_transaction(signed_transaction, TxExecutionStatus::Final),
-        )
-        .await
-        .map_err(|_| oracle::UpdateError::RpcTimeout(self.args.rpc_timeout))
-        .map_err(Arc::new)?
-        .map_err(oracle::UpdateError::JsonRpc)
-        .map_err(Arc::new)?;
-
-        let Some(outcome) = transaction_result.final_execution_outcome else {
-            return Err(Arc::new(oracle::UpdateError::UnknownRpcError));
-        };
-
-        match outcome.into_outcome().status {
-            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                Err(Arc::new(oracle::UpdateError::UnknownRpcError))
-            }
-            FinalExecutionStatus::Failure(error) => Err(Arc::new(error.into())),
-            FinalExecutionStatus::SuccessValue(value) => {
-                let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
-                    serde_json::from_slice(&value)
-                        .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
-                        .map_err(Arc::new)?;
-
-                for price_id in price_ids.iter().copied() {
-                    let Some(status) = statuses.get(&price_id) else {
-                        return Err(Arc::new(
-                            oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id },
-                        ));
-                    };
-                    if !matches!(status, CachedProxyPriceStatus::Accepted { .. }) {
-                        return Err(Arc::new(oracle::UpdateError::ProxyOracleUpdateFailed {
-                            oracle_id,
-                            message: format!("price {price_id} returned {status:?}"),
-                        }));
-                    }
-                }
-
-                Ok(Some(transaction_hash))
-            }
-        }
+        oracle::succeeded_tx_hash(result).map_err(Arc::new)
     }
 
     pub async fn update_market_prices(
@@ -1233,12 +1209,11 @@ mod tests {
             )]),
             |_, _| async { Ok(None) },
             |_, _| async { Ok(None) },
-            move |_, _| async move {
-                Err(Arc::new(
-                    oracle::UpdateError::ProxyOracleUpdateMissingStatus {
-                        price_id: failed_price_id,
-                    },
-                ))
+            |_, _| async {
+                Err(Arc::new(oracle::UpdateError::NotSucceeded {
+                    operation_id: "op-1".to_owned(),
+                    status: templar_gateway_types::OperationStatus::Failed,
+                }))
             },
         )
         .await;
@@ -1246,11 +1221,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(PriceUpdateError::Oracle(error))
-                if matches!(
-                    &*error,
-                    oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id }
-                        if *price_id == failed_price_id
-                )
+                if matches!(&*error, oracle::UpdateError::NotSucceeded { .. })
         ));
     }
 }

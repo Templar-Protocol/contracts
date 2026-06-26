@@ -4,23 +4,15 @@ use std::{
     time::Duration,
 };
 
-use near_jsonrpc_client::errors::JsonRpcError;
-use near_primitives::{
-    errors::TxExecutionError,
-    hash::CryptoHash,
-    views::{FinalExecutionStatus, TxExecutionStatus},
-};
 use near_sdk::AccountId;
-use templar_common::oracle::pyth::PriceIdentifier;
+use templar_gateway_client::SigningClient;
+use templar_gateway_core::GatewayError;
+use templar_gateway_types::{common::WriteOperationResult, CryptoHash, OperationStatus};
 use tokio::{
     select,
     sync::{mpsc, oneshot, watch, Mutex},
     time::Instant,
 };
-
-use crate::cache::Cache;
-
-use super::near::Near;
 
 mod spec;
 pub use spec::*;
@@ -36,15 +28,44 @@ pub enum Request<S: Spec> {
     },
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum UpdateError {
+    #[error("failed to fetch oracle update payload: {0}")]
+    Fetch(Box<dyn std::error::Error + Send + Sync>),
+    #[error("gateway execution failed: {0}")]
+    Gateway(#[from] GatewayError),
+    #[error("oracle update operation {operation_id} ended with status {status:?}")]
+    NotSucceeded {
+        operation_id: String,
+        status: OperationStatus,
+    },
+}
+
+/// Interpret a completed gateway write: the latest tx hash on success, an error
+/// otherwise. The gateway driver already signed, submitted, and waited for
+/// finality, so a reverted operation comes back as `Ok` with a non-`Succeeded`
+/// status rather than a transport error.
+pub(crate) fn succeeded_tx_hash(
+    result: WriteOperationResult,
+) -> Result<Option<CryptoHash>, UpdateError> {
+    if result.operation.status == OperationStatus::Succeeded {
+        Ok(result.operation.latest_tx_hash())
+    } else {
+        Err(UpdateError::NotSucceeded {
+            operation_id: result.operation.id.0,
+            status: result.operation.status,
+        })
+    }
+}
+
 #[tracing::instrument(skip_all, name = "oracle_service", fields(oracle_name = S::name()))]
 async fn start<S: Spec>(
     mut recv: mpsc::Receiver<Request<S>>,
     spec: Arc<S>,
-    near: Near,
-    cache: Cache,
+    gateway: SigningClient,
     kill: watch::Sender<()>,
 ) {
-    let mut client = Client::new(spec, near, cache);
+    let mut client = Client::new(spec, gateway);
     let mut on_kill = kill.subscribe();
 
     let mut batch_timer = tokio::time::interval(Duration::from_millis(100));
@@ -89,56 +110,29 @@ async fn start<S: Spec>(
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum UpdateError {
-    #[error("Failed to construct update transaction: {0}")]
-    UpdateActions(Box<dyn std::error::Error + Send + Sync>),
-    #[error(transparent)]
-    JsonRpc(#[from] JsonRpcError<near_jsonrpc_client::methods::tx::RpcTransactionError>),
-    #[error("RPC transaction timed out after {0:?}")]
-    RpcTimeout(Duration),
-    #[error("Unknown RPC error")]
-    UnknownRpcError,
-    #[error("Transaction execution error: {0}")]
-    TransactionExecution(#[from] TxExecutionError),
-    #[error("Proxy oracle update failed for {oracle_id}: {message}")]
-    ProxyOracleUpdateFailed {
-        oracle_id: AccountId,
-        message: String,
-    },
-    #[error("Failed to decode proxy oracle update result: {0}")]
-    ProxyOracleUpdateResult(#[from] near_sdk::serde_json::Error),
-    #[error("Proxy oracle update returned no status for {price_id}")]
-    ProxyOracleUpdateMissingStatus { price_id: PriceIdentifier },
-}
-
 #[derive(Debug)]
 struct PendingBatch<S: Spec> {
     feed_ids: HashSet<S::FeedId>,
     responders: Vec<Responder>,
 }
 
-#[derive(Debug)]
 struct Client<S: Spec> {
     last_updated: HashMap<AccountId, HashMap<S::FeedId, Instant>>,
     pending_batches: Mutex<HashMap<AccountId, PendingBatch<S>>>,
     spec: Arc<S>,
-    near: Near,
-    cache: Cache,
+    gateway: SigningClient,
 }
 
 impl<S: Spec> Client<S> {
-    fn new(spec: Arc<S>, near: Near, cache: Cache) -> Self {
+    fn new(spec: Arc<S>, gateway: SigningClient) -> Self {
         Self {
             last_updated: HashMap::new(),
             pending_batches: Mutex::new(HashMap::new()),
             spec,
-            near,
-            cache,
+            gateway,
         }
     }
 
-    #[tracing::instrument(skip(self))]
     async fn add_to_batch(
         &self,
         oracle_id: AccountId,
@@ -162,75 +156,38 @@ impl<S: Spec> Client<S> {
         oracle_id: AccountId,
         price_ids: &[S::FeedId],
     ) -> Result<Option<CryptoHash>, UpdateError> {
-        let send_updates_for = IntoIterator::into_iter(price_ids)
+        let send_updates_for = price_ids
+            .iter()
             .filter(|id| {
                 self.last_updated
                     .get(&oracle_id)
                     .and_then(|h| h.get(*id))
                     .is_none_or(|i| i.elapsed() > self.spec.refresh())
             })
-            .collect::<HashSet<_>>();
+            .cloned()
+            .collect::<Vec<_>>();
 
         if send_updates_for.is_empty() {
             return Ok(None);
         }
 
-        let send_updates_for: Vec<_> = send_updates_for.into_iter().cloned().collect();
-
         tracing::info!(price_ids = ?send_updates_for, "Sending update for prices");
 
-        // Start timing from when we request the prices
+        // Start timing from when we request the prices.
         let now = Instant::now();
-        let actions = self
+        let hash = self
             .spec
-            .update_actions(&send_updates_for)
-            .await
-            .map_err(|e| UpdateError::UpdateActions(Box::new(e)))?;
-        if actions.is_empty() {
-            tracing::debug!("No actions to send for this update");
-            return Ok(None);
-        }
-        tracing::debug!(?actions, "Update actions");
-        let signed_transaction = self
-            .near
-            .sign_transaction(&self.cache, oracle_id.clone(), actions)
-            .await;
-        tracing::debug!(?signed_transaction, "Signed oracle update transaction");
-
-        let transaction_hash = signed_transaction.get_hash();
-
-        let transaction_result = self
-            .near
-            .send_transaction(signed_transaction, TxExecutionStatus::Final)
+            .execute_update(&self.gateway, oracle_id.clone(), &send_updates_for)
             .await?;
-        tracing::debug!(?transaction_result, "Oracle update transaction sent");
 
-        if let Some(o) = transaction_result.final_execution_outcome {
-            match o.into_outcome().status {
-                FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                    // Should never happen because we waited until TxExecutionStatus::Final
-                    tracing::warn!("Unexpected transaction execution status retrieved from RPC");
-                    Err(UpdateError::UnknownRpcError)
-                }
-                FinalExecutionStatus::Failure(error) => {
-                    tracing::error!(?error, "Oracle update transaction failed");
-                    Err(error.into())
-                }
-                FinalExecutionStatus::SuccessValue(..) => {
-                    tracing::debug!("Oracle update succeeded");
-
-                    self.last_updated
-                        .entry(oracle_id)
-                        .or_default()
-                        .extend(send_updates_for.into_iter().map(|id| (id, now)));
-
-                    Ok(Some(transaction_hash))
-                }
-            }
-        } else {
-            tracing::warn!("Unable to retrieve final execution outcome from RPC");
-            Err(UpdateError::UnknownRpcError)
+        if hash.is_some() {
+            self.last_updated
+                .entry(oracle_id)
+                .or_default()
+                .extend(send_updates_for.into_iter().map(|id| (id, now)));
         }
+
+        Ok(hash)
     }
 }
 
@@ -240,19 +197,17 @@ pub struct Handle<S: Spec> {
 }
 
 impl<S: Spec> Handle<S> {
-    pub fn new(spec: Arc<S>, near: Near, cache: Cache, kill: watch::Sender<()>) -> Self {
+    pub fn new(spec: Arc<S>, gateway: SigningClient, kill: watch::Sender<()>) -> Self {
         let (send, recv) = mpsc::channel(16);
-        tokio::spawn(start(recv, spec, near, cache, kill));
+        tokio::spawn(start(recv, spec, gateway, kill));
 
         Self { send }
     }
 
     /// # Errors
     ///
-    /// - Network error [`reqwest::Error`]
-    /// - JSON RPC error
-    /// - Unexpected/inconsistent RPC behavior
-    /// - Transaction failure
+    /// - Off-chain payload fetch failure
+    /// - Gateway execution failure / non-success operation status
     #[allow(clippy::unwrap_used)]
     #[tracing::instrument(skip(self))]
     pub async fn update(

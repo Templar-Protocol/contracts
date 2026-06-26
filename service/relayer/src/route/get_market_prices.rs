@@ -5,7 +5,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId,
 };
-use templar_gateway_methods_spec::oracle;
+use templar_gateway_methods_spec::{market, oracle};
 
 use crate::{app::App, route::SimpleResponse, ViewMarketPrices};
 
@@ -20,23 +20,27 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Query(GetMarketPricesRequest { market_id }): Query<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
-    let Some(market) = app
-        .accounts
-        .read()
+    // Fetch the market's oracle config on demand — the gateway caches the read,
+    // so there's no relayer-side market state to go stale.
+    let config = match app
+        .gateway
+        .read(market::GetConfiguration {
+            market_id: market_id.clone(),
+        })
         .await
-        .market_data
-        .get(&market_id)
-        .cloned()
-    else {
-        tracing::debug!(%market_id, "Unknown market");
-        return SimpleResponse::Rejected {
-            reason: format!("Unknown market: {market_id}"),
-        };
+    {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::debug!(%market_id, %error, "Unknown or unreadable market");
+            return SimpleResponse::Rejected {
+                reason: format!("Unknown market: {market_id}"),
+            };
+        }
     };
 
     // Resolve current on-chain prices through the gateway, which classifies the
     // oracle (direct / LST / proxy) and applies transformers internally.
-    let cfg = &market.price_oracle_configuration;
+    let cfg = &config.price_oracle_configuration;
     let result = match app
         .gateway
         .read(oracle::GetPrices {

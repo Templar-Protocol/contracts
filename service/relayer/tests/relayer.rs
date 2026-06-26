@@ -6,7 +6,7 @@ use std::{collections::HashSet, str::FromStr, time::Duration};
 use axum::extract::Query;
 use axum::{extract::State, Json};
 use clap::Parser;
-use near_jsonrpc_client::{methods::tx::TransactionInfo, JsonRpcClient};
+use near_jsonrpc_client::methods::tx::TransactionInfo;
 use near_primitives::{
     action::{
         delegate::{DelegateAction, SignedDelegateAction},
@@ -35,6 +35,7 @@ use templar_common::{
     },
     registry::DeployMode,
 };
+use templar_gateway_client::SigningClient;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{
     input::{ProxyPriceTransformer, Source},
@@ -43,8 +44,7 @@ use templar_proxy_oracle_near_common::{
 };
 use templar_relayer::{
     app::{args, App, Configuration},
-    cache::Cache,
-    client::{near::Near, oracle},
+    client::oracle,
     route::{
         get_market_prices::GetMarketPricesRequest,
         relay::RelayRequest as SdaRelayRequest,
@@ -341,6 +341,7 @@ async fn init_relayer_app(
         ]),
         watch::Sender::default(),
     )
+    .await
     .unwrap();
     app.database.migrate().await.unwrap();
     app
@@ -1171,25 +1172,20 @@ pub async fn pyth_updates() {
         timeout: Duration::from_secs(10),
     };
 
-    let near = Near::new(
-        JsonRpcClient::connect("https://test.rpc.fastnear.com"),
-        account_id.clone(),
-        vec![near_crypto::InMemorySigner::from_secret_key(
-            account_id, secret_key,
-        )],
+    let network = near_api::NetworkConfig::from_rpc_url(
+        "test",
+        "https://test.rpc.fastnear.com".parse().unwrap(),
     );
-
-    let cache_args = args::Cache {
-        gas_price_refresh: Duration::from_secs(600),
-        nonce_refresh: Duration::from_secs(60),
-    };
+    let gateway = SigningClient::connect(
+        network,
+        account_id.clone(),
+        secret_key.to_string().parse().unwrap(),
+    )
+    .unwrap();
 
     let kill = watch::Sender::default();
 
-    let cache = Cache::new(near.clone(), cache_args, kill.clone());
-
-    let pyth =
-        oracle::PythSpec::handle(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
+    let pyth = oracle::PythSpec::handle(pyth_args.clone(), gateway, kill.clone());
 
     let price_id = PriceIdentifier(
         hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
