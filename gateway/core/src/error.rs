@@ -12,6 +12,8 @@ pub enum GatewayError {
     NearQuery(String),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
+    #[error("invalid signer key: {0}")]
+    InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]
     NearTransaction(String),
     #[error("external service failed: {0}")]

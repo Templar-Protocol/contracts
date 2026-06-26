@@ -73,9 +73,35 @@ impl ClientBuilder {
         account_id: impl Into<ManagedAccountId>,
         secret_key: SecretKey,
     ) -> GatewayResult<Self> {
-        let signer = Signer::from_secret_key(secret_key).map_err(|error| {
-            GatewayError::NearTransaction(format!("invalid signer secret key: {error}"))
+        let signer = Signer::from_secret_key(secret_key)
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        Ok(self.signer(account_id, signer))
+    }
+
+    /// Register a multi-key rotating signer for an account from several secret
+    /// keys.
+    ///
+    /// The keys form a single `near_api` signing pool, so writes for this
+    /// account rotate across the keys (each with its own nonce sequence),
+    /// giving nonce-parallel throughput from one account — the model the
+    /// relayer relies on for its relay signer. Errors if no keys are provided.
+    pub async fn secret_keys(
+        self,
+        account_id: impl Into<ManagedAccountId>,
+        secret_keys: impl IntoIterator<Item = SecretKey>,
+    ) -> GatewayResult<Self> {
+        let mut keys = secret_keys.into_iter();
+        let first = keys.next().ok_or_else(|| {
+            GatewayError::InvalidSignerKey("at least one secret key is required".to_owned())
         })?;
+        let signer = Signer::from_secret_key(first)
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        for key in keys {
+            signer
+                .add_secret_key_to_pool(key)
+                .await
+                .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        }
         Ok(self.signer(account_id, signer))
     }
 

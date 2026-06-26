@@ -10,6 +10,7 @@ clap.workspace = true
 dotenvy = "0.15.7"
 futures.workspace = true
 hex.workspace = true
+near-api.workspace = true
 near-contract-standards.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
@@ -32,6 +33,10 @@ sqlx = { version = "0.8", features = [
     "uuid",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
+templar-gateway-client.workspace = true
+templar-gateway-core.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }
 templar-redstone-bridge.workspace = true
