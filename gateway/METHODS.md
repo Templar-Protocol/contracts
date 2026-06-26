@@ -246,7 +246,7 @@
 | `vault.previewMint` | read | `PreviewMint` → `StrNum<u128>` | Preview mint assets. |
 | `vault.previewRedeem` | read | `PreviewRedeem` → `StrNum<u128>` | Preview redeem assets. |
 | `vault.previewWithdraw` | read | `PreviewWithdraw` → `StrNum<u128>` | Preview withdraw shares. |
-| `vault.queueTail` | read | `QueueTail` → `u64` | Get withdrawal queue tail id. |
+| `vault.queueTail` | read | `QueueTail` → `StrNum<u64>` | Get withdrawal queue tail id. |
 | `vault.redeem` | write | `Redeem` → `WriteOperationResult` | Redeem shares for underlying. |
 | `vault.refreshMarkets` | write | `RefreshMarkets` → `WriteOperationResult` | Refresh market principal records. |
 | `vault.resyncIdleBalance` | write | `ResyncIdleBalance` → `WriteOperationResult` | Resync the vault's idle balance from underlying token balance. |

@@ -63,7 +63,6 @@ passthrough_read!(
     has_pending_market_withdrawal,
     bool
 );
-passthrough_read!(vault::QueueTail, queue_tail, u64);
 passthrough_read!(
     vault::BuildRealAssetsReport,
     build_real_assets_report,
@@ -208,7 +207,20 @@ impl<C: HasNearClient> DispatchRead<vault::PeekNextPendingWithdrawalId, C> for D
             .vault(request.vault_id)
             .peek_next_pending_withdrawal_id(())
             .await
-            .map(|request_id| vault::PeekNextPendingWithdrawalIdResult { request_id })
+            .map(|request_id| vault::PeekNextPendingWithdrawalIdResult {
+                request_id: request_id.map(SU64::from),
+            })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::QueueTail, C> for Dispatch {
+    async fn dispatch(request: vault::QueueTail, ctx: C) -> GatewayResult<SU64> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .queue_tail(())
+            .await
+            .map(SU64::from)
     }
 }
 
@@ -271,6 +283,22 @@ impl<C: HasNearClient> PlanWrite<vault::Deposit, C> for Dispatch {
             .cached_get_configuration()
             .await?;
         let mut steps = Vec::new();
+
+        // The vault must be registered on the underlying token to receive the
+        // transfer, and the depositor must be registered on the vault share
+        // token to receive minted shares (mirrors `market::Supply`).
+        if let Some(asset_id) = configuration.underlying_token.clone().into_nep141() {
+            if let Some(tx_result) = ensure_storage_registration(
+                &ctx,
+                request.signer_account_id.clone(),
+                asset_id,
+                body.vault_id.clone(),
+            )
+            .await?
+            {
+                steps.push(tx_result);
+            }
+        }
 
         if let Some(tx_result) = ensure_storage_registration(
             &ctx,
@@ -396,15 +424,35 @@ direct_write!(
     |_body: vault::AccrueFee| (),
     20
 );
-direct_write!(
-    vault::SetSupplyQueue,
-    set_supply_queue,
-    |body: vault::SetSupplyQueue| MarketsArg {
-        markets: body.markets
-    },
-    50,
-    vault::SET_SUPPLY_QUEUE_DEPOSIT
-);
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::SetSupplyQueue, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::SetSupplyQueue>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let vault_id = body.vault_id.clone();
+        // The contract only charges storage for markets newly added to the queue.
+        // Attaching one entry's worth per requested market is a safe upper bound:
+        // it never under-pays, and any excess accrues to the vault's own balance.
+        let deposit = templar_gateway_types::NearToken::from_yoctonear(
+            vault::SET_SUPPLY_QUEUE_DEPOSIT
+                .as_yoctonear()
+                .saturating_mul(body.markets.len() as u128),
+        );
+        ctx.near_client()
+            .vault(vault_id)
+            .set_supply_queue(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(50)
+                    .deposit(deposit),
+                MarketsArg {
+                    markets: body.markets,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
 direct_write!(
     vault::SubmitCap,
     submit_cap,

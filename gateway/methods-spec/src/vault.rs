@@ -179,7 +179,7 @@ pub struct HasPendingMarketWithdrawal {
 
 /// Get withdrawal queue tail id.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "vault.queueTail", output = u64)]
+#[method(read = "vault.queueTail", output = SU64)]
 pub struct QueueTail {
     pub vault_id: AccountId,
 }
@@ -193,7 +193,7 @@ pub struct PeekNextPendingWithdrawalId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PeekNextPendingWithdrawalIdResult {
-    pub request_id: Option<u64>,
+    pub request_id: Option<SU64>,
 }
 
 /// Build a real-assets report from stored state.

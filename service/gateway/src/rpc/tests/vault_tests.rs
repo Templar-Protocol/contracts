@@ -39,11 +39,10 @@ async fn vault_deposit_donate_and_resync_against_sandbox() -> Result<()> {
     let (vault_id, _) = stack.harness.deploy_vault().await?;
     let signer = stack.harness.gateway_signer_account_id.clone();
 
-    // The depositor needs an underlying balance; the vault needs storage on the
-    // underlying token to receive the transfer. (The depositor's registration on
-    // the vault's share token is handled inside the `vault.deposit` plan.)
+    // The depositor needs an underlying balance. Storage registration of both
+    // the vault (on the underlying token) and the depositor (on the share token)
+    // is handled inside the `vault.deposit` plan, so we don't pre-register here.
     let _ = register_gateway_signer_for_ft(&stack).await?;
-    let _ = register_ft_account(&stack, vault_id.clone()).await?;
 
     let _ = stack
         .controller
