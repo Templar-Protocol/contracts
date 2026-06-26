@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH inserted AS (\n    INSERT INTO\n        \"transaction\" (\n            operation_key,\n            account_id,\n            \"status\",\n            allowance_spent_gas,\n            allowance_spent_inner\n        )\n    VALUES\n        ($1, $2, 'pending'::transaction_status, $3, $4)\n    RETURNING\n        operation_key\n)\nUPDATE\n    account\nSET\n    pending_operation_key = (\n        SELECT\n            operation_key\n        FROM\n            inserted\n    )\nWHERE\n    account_id = $2\n    AND pending_operation_key IS NULL\nRETURNING\n    pending_operation_key\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pending_operation_key",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Numeric",
+        "Numeric"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f982dbea9d6a6fade6d9fda5e12efe74f6c28d4f37a14fd6958372ff086dd0ae"
+}

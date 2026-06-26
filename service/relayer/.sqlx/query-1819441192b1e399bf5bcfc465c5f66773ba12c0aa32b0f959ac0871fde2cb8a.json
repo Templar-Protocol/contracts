@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nUPDATE\n    account\nSET\n    pending_operation_key = NULL,\n    allowance = allowance + $1\nWHERE\n    account_id = $2\n    AND pending_operation_key = $3\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1819441192b1e399bf5bcfc465c5f66773ba12c0aa32b0f959ac0871fde2cb8a"
+}

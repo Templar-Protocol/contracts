@@ -76,6 +76,47 @@ use test_utils::*;
 
 const POW_DIFFICULTY: usize = 6;
 
+struct AccessKeyInfo {
+    nonce: u64,
+    block_height: u64,
+    block_hash: near_primitives::hash::CryptoHash,
+}
+
+/// Fetch an account's access-key nonce and the current block reference directly
+/// from the sandbox RPC (the relayer no longer exposes a bespoke NEAR client).
+async fn view_access_key(
+    worker: &Worker<Sandbox>,
+    account_id: &near_workspaces::AccountId,
+    public_key: near_crypto::PublicKey,
+) -> AccessKeyInfo {
+    use near_jsonrpc_client::{methods, JsonRpcClient};
+    use near_jsonrpc_primitives::types::query::QueryResponseKind;
+    use near_primitives::{
+        types::{BlockReference, Finality},
+        views::QueryRequest,
+    };
+
+    let client = JsonRpcClient::connect(worker.rpc_addr());
+    let response = client
+        .call(methods::query::RpcQueryRequest {
+            block_reference: BlockReference::Finality(Finality::Final),
+            request: QueryRequest::ViewAccessKey {
+                account_id: account_id.clone(),
+                public_key,
+            },
+        })
+        .await
+        .unwrap();
+    let QueryResponseKind::AccessKey(access_key) = response.kind else {
+        panic!("unexpected query response kind");
+    };
+    AccessKeyInfo {
+        nonce: access_key.nonce,
+        block_height: response.block_height,
+        block_hash: response.block_hash,
+    }
+}
+
 struct InitTest {
     worker: Worker<Sandbox>,
     app: App,
@@ -458,14 +499,12 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &worker,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     let delegate_action = DelegateAction {
         sender_id: borrow_user.id().clone(),
@@ -498,7 +537,6 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
             signed_delegate_action,
             storage_deposit: false,
             update_prices: false,
-            wait_until: TxExecutionStatus::Final,
         }),
     )
     .await;
@@ -841,12 +879,14 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
         .unwrap()
         .unwrap();
 
-    let parameters = app
-        .ua_near
-        .load_ua_key(ua.id().clone(), KeyId::Passkey(passkey.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let parameters = templar_relayer::route::universal_account::relay::load_ua_key(
+        &app,
+        ua.id().clone(),
+        KeyId::Passkey(passkey.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     app.database
         .create_account(ua.id(), NearToken::from_near(1).saturating_div(4))
@@ -963,14 +1003,12 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &worker,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     // Deploy a universal account.
 
@@ -1036,8 +1074,7 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
     // Send an action to the universal account contract
 
     let load_parameters = async |account_id: AccountId, key: KeyId| {
-        app.ua_near
-            .load_ua_key(account_id, key)
+        templar_relayer::route::universal_account::relay::load_ua_key(&app, account_id, key)
             .await
             .unwrap()
             .unwrap()
@@ -1217,14 +1254,12 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &worker,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     // Deploy a universal account.
 
@@ -1290,8 +1325,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
     // Send an action to the universal account contract
 
     let load_parameters = async |account_id: AccountId, key: KeyId| {
-        app.ua_near
-            .load_ua_key(account_id, key)
+        templar_relayer::route::universal_account::relay::load_ua_key(&app, account_id, key)
             .await
             .unwrap()
             .unwrap()

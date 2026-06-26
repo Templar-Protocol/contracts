@@ -8,17 +8,16 @@ use near_sdk::{
     serde_json, AccountIdRef,
 };
 
-use near_sdk_contract_tools::standard::nep145::StorageBalanceBounds;
 use templar_common::{
     asset::{AssetClass, BorrowAsset, CollateralAsset, FungibleAsset},
     market::PriceOracleConfiguration,
     oracle::pyth::{Price, PriceIdentifier},
 };
+use templar_gateway_types::common::StorageBalanceBounds;
 use templar_proxy_oracle_near_common::request::OracleRequest;
 
 pub mod app;
 pub mod broom;
-pub mod cache;
 pub mod client;
 pub mod error;
 pub mod route;

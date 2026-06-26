@@ -1,14 +1,17 @@
 use std::{collections::HashSet, fmt::Write};
 
 use axum::{extract::State, Json};
-use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
+use near_primitives::hash::CryptoHash;
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    serde_json, AccountId, NearToken,
+    serde_json, AccountId, Gas, NearToken,
 };
+use templar_gateway_core::GatewayError;
+use templar_gateway_methods_spec::{contract, universal_account as ua};
+use templar_gateway_types::common::ContractArgs;
 use templar_universal_account::{
     transaction::{Action, Transaction},
-    ExecuteArgs,
+    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
 };
 
 use crate::{app::App, route::SimpleResponse};
@@ -75,11 +78,7 @@ pub async fn relay(
         }
     };
 
-    let parameters = match app
-        .ua_near
-        .load_ua_key(account_id.clone(), args.key_id())
-        .await
-    {
+    let parameters = match load_ua_key(&app, account_id.clone(), args.key_id()).await {
         Ok(parameters) => parameters,
         Err(e) => {
             // Account might not exist, but we also might have connection issues.
@@ -136,15 +135,20 @@ pub async fn relay(
                 }
             }
 
-            let protocol_config = app.cache.protocol_configuration().await;
-
+            // Sum gas from any function-call actions for the allowance-lock
+            // estimate. The gateway attaches the maximum gas to `ua.execute`
+            // and we reconcile against the actual `tokens_burnt`, so this need
+            // not account for the (refunded) cost of non-call actions.
             gas += transaction
                 .actions
                 .iter()
-                .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
-                .reduce(|a, b| a.saturating_add(b))
-                .unwrap_or(near_primitives::gas::Gas::ZERO)
-                .as_gas();
+                .filter_map(|a| match a {
+                    Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
+                        Some(call.gas.as_gas())
+                    }
+                    _ => None,
+                })
+                .sum::<u64>();
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
             continue;
         }
@@ -212,20 +216,6 @@ pub async fn relay(
         }
     }
 
-    // Send any requested price updates
-    let mut interacted_prices = HashSet::with_capacity(2);
-    for contract_id in &interacted_contract_ids {
-        if let Some(market_data) = accounts.market_data.get(contract_id) {
-            let c = &market_data.collateral;
-            for source in &c.update_oracle {
-                interacted_prices.insert((c.price_id, source.clone()));
-            }
-            let b = &market_data.borrow;
-            for source in &b.update_oracle {
-                interacted_prices.insert((b.price_id, source.clone()));
-            }
-        }
-    }
     drop(accounts);
 
     if update_prices {
@@ -236,50 +226,71 @@ pub async fn relay(
         }
     }
 
-    // Send the user's transaction
-    let signed_transaction = app
-        .relay_near
-        .construct_ua_execute_transaction(
-            &app.cache,
-            account_id.clone(),
-            &args_raw,
-            near_primitives::gas::Gas::from_gas(gas),
-        )
-        .await;
-    let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
+    let Some(cost_of_gas) = app.estimate_cost_of_gas(Gas::from_gas(gas)).await else {
         tracing::error!("Failed to estimate cost of gas");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),
         };
     };
 
-    let transaction_hash = signed_transaction.get_hash();
-
-    let resolve_transaction = match app
-        .send_and_resolve_transaction(
-            account_id,
+    // The relay account signs and pays; the UA account is charged. The gateway
+    // attaches the maximum gas to `ua.execute` and surfaces the real cost.
+    let transaction_hash = match app
+        .execute_and_account(
+            account_id.clone(),
+            app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            signed_transaction,
-            TxExecutionStatus::Final,
+            ua::Execute { account_id, args },
         )
         .await
     {
-        Ok(future) => future,
+        Ok(transaction_hash) => transaction_hash,
         Err(e) => {
-            tracing::error!("Send transaction failure: {e}");
+            tracing::error!("Universal account relay failure: {e}");
             return SimpleResponse::Failure {
-                error: format!("Send transaction failure: {e}"),
+                error: format!("Universal account relay failure: {e}"),
             };
         }
     };
 
-    // Resolve asynchronously.
-    tokio::spawn(async move {
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
-        }
-    });
-
     RelayResponse { transaction_hash }.into()
+}
+
+/// Load a key's execution parameters from a universal account through the
+/// gateway's generic contract view, preserving the relayer's typed handling of
+/// the versioned `get_key` response.
+pub async fn load_ua_key(
+    app: &App,
+    ua_account_id: AccountId,
+    key: KeyId,
+) -> Result<Option<PayloadExecutionParameters>, GatewayError> {
+    let result = app
+        .gateway
+        .read(contract::ViewFunction {
+            contract_id: ua_account_id.clone(),
+            method_name: "get_key".to_string().into(),
+            args: ContractArgs::Json(serde_json::json!({ "key": key })),
+        })
+        .await?;
+
+    let view: Option<VersionedKeyParameters> = serde_json::from_value(result.value)
+        .map_err(|error| GatewayError::NearQuery(format!("invalid get_key response: {error}")))?;
+
+    Ok(view.map(|v| match v {
+        VersionedKeyParameters::V1(p) => p,
+        VersionedKeyParameters::V0(p) => PayloadExecutionParameters::builder_empty()
+            .with_key_parameters(p)
+            .verifying_contract(ua_account_id)
+            .build(),
+    }))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+enum VersionedKeyParameters {
+    #[serde(untagged)]
+    V1(PayloadExecutionParameters),
+    #[serde(untagged)]
+    V0(KeyParameters),
 }

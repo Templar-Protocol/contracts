@@ -1,12 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    transaction_hash,\n    allowance_spent_gas,\n    allowance_spent_inner\nFROM\n    transaction\nWHERE\n    account_id = $1\n    AND \"status\" = 'pending'::transaction_status\n",
+  "query": "\nSELECT\n    operation_key,\n    allowance_spent_gas,\n    allowance_spent_inner\nFROM\n    \"transaction\"\nWHERE\n    account_id = $1\n    AND \"status\" = 'pending'::transaction_status\n",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "transaction_hash",
-        "type_info": "Varchar"
+        "name": "operation_key",
+        "type_info": "Uuid"
       },
       {
         "ordinal": 1,
@@ -30,5 +30,5 @@
       false
     ]
   },
-  "hash": "47341504602cea758e974858e73244c16dae561dbce6adebc94e93ee6af28239"
+  "hash": "9b2cfe4a5f6b20c7dbe56e36a0b65b464869aeea40bfd5fa5be5e7246e72f3ef"
 }

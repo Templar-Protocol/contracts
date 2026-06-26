@@ -4,15 +4,13 @@ use std::{
 };
 
 use axum::{extract::State, Json};
-use near_jsonrpc_client::{
-    errors::{JsonRpcError, JsonRpcServerError},
-    methods::query::RpcQueryError,
-};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{
     serde::{Deserialize, Serialize},
-    AccountId, NearToken,
+    serde_json, AccountId, NearToken,
 };
+use templar_gateway_methods_spec::{account, chain, registry};
+use templar_gateway_types::Base64Bytes;
 
 use templar_universal_account::{
     authentication::{
@@ -24,12 +22,11 @@ use templar_universal_account::{
         with_raw_string::WithRawString,
         MessageWithSignature,
     },
-    ExecuteArgs, ExecuteArgsMessage, KeyId, PayloadExecutionParameters,
+    ExecuteArgs, ExecuteArgsMessage, InitArgs, KeyId, PayloadExecutionParameters,
 };
 
 use crate::{
-    app::App,
-    client::near::DeployArgs,
+    app::{to_gateway_hash, App},
     route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
 };
 
@@ -228,11 +225,23 @@ pub async fn create(
     // Check block timestamp (make sure signature is not too old)
 
     let block_hash = create.block_hash;
-    let Ok(block_timestamp_ms) = app.ua_near.fetch_block_timestamp_ms(block_hash).await else {
+    let Some(block_hash_gw) = to_gateway_hash(&block_hash) else {
+        return SimpleResponse::Failure {
+            error: "Invalid block hash".to_string(),
+        };
+    };
+    let Ok(block) = app
+        .gateway
+        .read(chain::GetBlock {
+            block_hash: Some(block_hash_gw),
+        })
+        .await
+    else {
         return SimpleResponse::Failure {
             error: "Failed to fetch block timestamp".to_string(),
         };
     };
+    let block_timestamp_ms = block.timestamp_ns / 1_000_000;
 
     let Some(block_timestamp) =
         SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(block_timestamp_ms))
@@ -268,56 +277,40 @@ pub async fn create(
         }
     };
 
-    // Check that account does not exist by fetching the balance and looking
-    // for "unknown account" error.
-    match app.ua_near.fetch_near_balance(account_id.clone()).await {
-        Err(JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
-            RpcQueryError::UnknownAccount { .. },
-        ))) => { /* Account does not exist already: continue. */ }
-        Ok(_) => {
-            return SimpleResponse::Rejected {
-                reason: "Account already exists".to_string(),
-            };
-        }
-        Err(e) => {
-            tracing::error!("Error detecting account existence: {e}");
-            return SimpleResponse::Failure {
-                error: "Failed to detect whether account exists".to_string(),
-            };
-        }
+    // A successful account read means the account already exists. A read error
+    // is treated as "does not exist"; if it was instead transient, the deploy
+    // below fails cleanly (the account already exists on chain).
+    if app
+        .gateway
+        .read(account::Get {
+            account_id: account_id.clone(),
+        })
+        .await
+        .is_ok()
+    {
+        return SimpleResponse::Rejected {
+            reason: "Account already exists".to_string(),
+        };
     }
 
-    // Create transaction.
-    let signed_transaction = app
-        .ua_near
-        .construct_deploy_from_registry_transaction(
-            &app.cache,
-            app.args.ua.registry_id.clone(),
-            &DeployArgs::new(
-                account_slug,
-                app.args.ua.version_key.clone(),
-                &templar_universal_account::InitArgs {
-                    key: create.key,
-                    chain_id: app.args.ua.chain_id.into(),
-                    execute: None,
-                },
-                None,
-            ),
-        )
-        .await;
+    let init_args = match serde_json::to_vec(&InitArgs {
+        key: create.key,
+        chain_id: app.args.ua.chain_id.into(),
+        execute: None,
+    }) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!("Failed to encode init args: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to encode init args".to_string(),
+            };
+        }
+    };
 
-    // NOTE: This only counts gas from function calls, but this is OK, because
-    // the deploy-from-registry transaction is a function call.
-    let gas_estimate = near_sdk::Gas::from_gas(
-        signed_transaction
-            .transaction
-            .actions()
-            .iter()
-            .map(|a| a.get_prepaid_gas().as_gas())
-            .sum(),
-    );
-
-    let Some(gas_cost_estimate) = app.estimate_cost_of_gas(gas_estimate).await else {
+    // The deploy-from-registry call is a single function call; lock the cost of
+    // its gas budget (reconciled against actual spend afterwards).
+    let Some(gas_cost_estimate) = app.estimate_cost_of_gas(near_sdk::Gas::from_tgas(50)).await
+    else {
         return SimpleResponse::Failure {
             error: "Gas cost estimation failure".to_string(),
         };
@@ -334,33 +327,32 @@ pub async fn create(
         };
     }
 
-    let transaction_hash = signed_transaction.get_hash();
-
-    let resolve = match app
-        .send_and_resolve_transaction(
+    // The UA relayer account signs and pays; the new account is charged.
+    let transaction_hash = match app
+        .execute_and_account(
             account_id.clone(),
+            app.args.ua.account_id.clone(),
             gas_cost_estimate,
             NearToken::from_near(0),
-            signed_transaction,
-            near_primitives::views::TxExecutionStatus::Included,
+            registry::Deploy {
+                registry_id: app.args.ua.registry_id.clone(),
+                name: account_slug,
+                version_key: app.args.ua.version_key.clone(),
+                init_args: Base64Bytes(init_args),
+                full_access_keys: None,
+                deposit: NearToken::from_yoctonear(0),
+            },
         )
         .await
     {
-        Ok(r) => r,
+        Ok(transaction_hash) => transaction_hash,
         Err(e) => {
-            tracing::error!("Failed to send account contract deployment transaction: {e}");
+            tracing::error!("Failed to deploy universal account: {e}");
             return SimpleResponse::Failure {
-                error: "Failed to send account contract deployment transaction".to_string(),
+                error: "Failed to deploy universal account".to_string(),
             };
         }
     };
-
-    // Resolve the transaction in our DB asynchronously.
-    tokio::spawn(async move {
-        if let Err(e) = resolve.await {
-            tracing::error!("Failed to resolve transaction: {e}");
-        }
-    });
 
     SimpleResponse::success(CreateResponse {
         account_id,

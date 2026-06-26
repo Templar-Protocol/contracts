@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nUPDATE\n    \"transaction\"\nSET\n    \"status\" = $1,\n    allowance_spent_gas = $2,\n    allowance_spent_inner = $3\nWHERE\n    transaction_hash = $4\n",
+  "query": "\nUPDATE\n    \"transaction\"\nSET\n    \"status\" = $1,\n    allowance_spent_gas = $2,\n    allowance_spent_inner = $3\nWHERE\n    operation_key = $4\n",
   "describe": {
     "columns": [],
     "parameters": {
@@ -19,10 +19,10 @@
         },
         "Numeric",
         "Numeric",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": []
   },
-  "hash": "689277bcd0b6efc87bd12443c342f4e9c0a844ffe4dd31d48fdaee7dd2772ee4"
+  "hash": "a51b08013d25adba65ac6e924790ac281c4272149f92163708effc600a199465"
 }

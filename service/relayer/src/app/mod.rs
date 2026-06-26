@@ -6,38 +6,37 @@ use std::{
     time::Duration,
 };
 
-use near_crypto::InMemorySigner;
-use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
-use near_primitives::{
-    action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
-    transaction::SignedTransaction,
-    views::{FinalExecutionOutcomeView, TxExecutionStatus},
-};
-use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
+use near_primitives::action::{delegate::SignedDelegateAction, Action, FunctionCallAction};
+use near_sdk::{serde_json, AccountId, AccountIdRef, Gas, NearToken};
 use templar_common::{
     asset::{BorrowAsset, CollateralAsset},
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
 use templar_gateway_client::{collect_paginated, Client as GatewayClient};
-use templar_gateway_core::GatewayResult;
-use templar_gateway_methods_spec::{market, oracle as oracle_spec, proxy_oracle, registry};
-use templar_gateway_types::{common::Pagination, CryptoHash};
+use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
+use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_methods_spec::{
+    chain, market, oracle as oracle_spec, proxy_oracle, registry, storage, tx,
+};
+use templar_gateway_types::{
+    common::{Pagination, TxExecutionStatus, WriteOperationResult, WriteRequest},
+    CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
+};
 use templar_proxy_oracle_near_common::request::OracleRequest;
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
 };
+use uuid::Uuid;
 
 use crate::{
     broom,
-    cache::Cache,
     client::{
         database::{
             error::{RecordTransactionError, SetPendingTransactionError},
             Database,
         },
-        near::{Near, ViewError, STORAGE_DEPOSIT_GAS},
         oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
@@ -50,19 +49,20 @@ pub use args::Configuration;
 type PythUpdatesByOracle = HashMap<AccountId, HashSet<pyth::PriceIdentifier>>;
 type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
 
+/// Gas attached to a `storage_deposit` call (matches the gateway's
+/// `storage.deposit` plan); used to size the allowance lock estimate.
+const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(100);
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
-    /// In-process gateway client — the standard chain interface. Reads
-    /// (market/oracle/storage) go through its typed specs; the bespoke `Near`
-    /// client is being retired onto it.
+    /// In-process gateway client — the relayer's sole chain interface. Reads
+    /// (market/oracle/storage/chain) and writes (meta-tx relay, UA execute/
+    /// create, storage deposit) all go through its typed specs.
     pub gateway: GatewayClient,
-    pub relay_near: Near,
-    pub ua_near: Near,
     pub pyth: oracle::Handle<oracle::PythSpec>,
     pub redstone: oracle::Handle<oracle::RedStoneSpec>,
-    pub cache: Arc<Cache>,
     pub database: Database,
 }
 
@@ -70,30 +70,23 @@ impl App {
     pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
         let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
 
-        // The relay account signs with a rotating multi-key pool; the UA account
-        // is registered for the universal-account relay path (Phase 3).
-        let to_api_keys = |keys: &[near_crypto::SecretKey]| {
-            keys.iter()
-                .map(|k| k.to_string().parse())
-                .collect::<Result<Vec<near_api::SecretKey>, _>>()
-        };
         // Persist gateway operations in the relayer's Postgres so idempotency
         // and replay survive restarts — a relay retried after a crash won't
         // re-submit and double-pay gas.
         let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
         gateway_store.migrate().await?;
 
-        let mut builder = GatewayClient::builder(network).store(std::sync::Arc::new(gateway_store));
-        let relay_keys = to_api_keys(&args.relay.secret_key)?;
-        if !relay_keys.is_empty() {
+        // The relay account signs with a rotating multi-key pool; the UA account
+        // is registered for the universal-account creation path.
+        let mut builder = GatewayClient::builder(network).store(Arc::new(gateway_store));
+        if !args.relay.secret_key.is_empty() {
             builder = builder
-                .secret_keys(args.relay.account_id.clone(), relay_keys)
+                .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())
                 .await?;
         }
-        let ua_keys = to_api_keys(&args.ua.secret_key)?;
-        if !ua_keys.is_empty() {
+        if !args.ua.secret_key.is_empty() {
             builder = builder
-                .secret_keys(args.ua.account_id.clone(), ua_keys)
+                .secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())
                 .await?;
         }
         let gateway = builder.build()?;
@@ -101,42 +94,18 @@ impl App {
             .clone()
             .into_signing(args.relay.account_id.clone())?;
 
-        let relay_near = Near::new(
-            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.relay.account_id.clone(),
-            args.relay
-                .secret_key
-                .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.relay.account_id.clone(), s.clone()))
-                .collect(),
-        );
-
-        let ua_near = Near::new(
-            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.ua.account_id.clone(),
-            args.ua
-                .secret_key
-                .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.ua.account_id.clone(), s.clone()))
-                .collect(),
-        );
-
         #[allow(clippy::unwrap_used)]
         let database = Database::new(&args.database_url, kill.clone()).unwrap();
 
-        let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
-
         let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
 
-        let redstone = oracle::RedStoneSpec::handle(
-            args.redstone.clone(),
-            relay_gateway.clone(),
-            kill.clone(),
-        )?;
+        let redstone =
+            oracle::RedStoneSpec::handle(args.redstone.clone(), relay_gateway, kill.clone())?;
 
         tokio::spawn(broom::start(
             database.clone(),
-            relay_near.clone(),
+            gateway.clone(),
+            vec![args.relay.account_id.clone(), args.ua.account_id.clone()],
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
             kill,
@@ -146,23 +115,29 @@ impl App {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             gateway,
-            relay_near,
-            ua_near,
             pyth,
             redstone,
-            cache: Arc::new(cache),
             database,
         })
     }
 
+    /// Estimate the NEAR cost of `gas` at the current gas price.
+    ///
+    /// This sizes the allowance lock before submitting; the lock is reconciled
+    /// against the actual `tokens_burnt` afterwards, so a coarse estimate only
+    /// affects the pre-flight affordability gate, never the amount charged.
     #[tracing::instrument(skip(self), fields(gas = %gas))]
-    pub async fn estimate_cost_of_gas(&self, gas: near_sdk::Gas) -> Option<NearToken> {
-        const TERA: u128 = near_sdk::Gas::from_tgas(1).as_gas() as u128;
+    pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
+        let gas_price = match self.gateway.read(chain::GetGasPrice {}).await {
+            Ok(result) => result.gas_price,
+            Err(error) => {
+                tracing::error!(%error, "Failed to fetch gas price");
+                return None;
+            }
+        };
 
-        let price_per_tgas = self.cache.gas_price().await;
-        let result = price_per_tgas
-            .checked_mul(u128::from(gas.as_gas()))
-            .and_then(|x| x.checked_div(TERA));
+        // `gas_price` is yoctoNEAR per unit of gas.
+        let result = gas_price.checked_mul(u128::from(gas.as_gas()));
 
         tracing::debug!(cost = ?result, "Estimated gas cost");
         result
@@ -269,11 +244,17 @@ impl App {
             ] {
                 match allowed_contracts.entry(contract_id.to_owned()) {
                     Entry::Vacant(e) => {
+                        // `None` for contracts that don't implement storage
+                        // management (or are momentarily unreachable); those are
+                        // simply never storage-deposited.
                         let storage_balance_bounds = self
-                            .relay_near
-                            .load_storage_balance_bounds(contract_id.to_owned())
+                            .gateway
+                            .read(storage::GetBalanceBounds {
+                                contract_id: contract_id.to_owned(),
+                            })
                             .await
-                            .ok();
+                            .ok()
+                            .map(|result| result.bounds);
 
                         tracing::info!(
                             "Loaded storage balance bounds for contract {}: {}",
@@ -669,85 +650,131 @@ impl App {
         })
     }
 
+    /// Submit a write through the gateway and reconcile the charged account's
+    /// allowance against the operation's actual cost.
+    ///
+    /// The allowance is locked up front under a freshly generated gateway
+    /// idempotency key — the on-chain hash isn't known until the gateway
+    /// submits, so the key is the record's identity. The gateway drives the
+    /// operation to completion; the on-chain hash is recorded as soon as it is
+    /// known (so the broom can reconcile even if this is interrupted), the true
+    /// `tokens_burnt` is read back, and the lock is settled. On a submission
+    /// error the lock is released.
+    ///
+    /// `account_id` is the account charged for the operation; `signer_account_id`
+    /// is the relayer-controlled account that signs and pays (relay or UA).
+    ///
     /// # Errors
     ///
-    /// - When sending the transaction
-    /// - When resolving the transaction in the database
-    #[tracing::instrument(skip(self, signed_transaction), fields(
+    /// - Locking or finalizing the allowance in the database
+    /// - Gateway execution
+    /// - The operation completing without producing a transaction
+    #[tracing::instrument(skip(self, body), fields(
         account_id = %account_id,
+        signer_account_id = %signer_account_id,
         gas_cost_estimate = %gas_cost_estimate,
         spend_within_transaction = %spend_within_transaction,
-        transaction_hash = tracing::field::Empty
+        transaction_hash = tracing::field::Empty,
     ))]
-    pub async fn send_and_resolve_transaction(
+    pub async fn execute_and_account<S>(
         &self,
         account_id: AccountId,
+        signer_account_id: AccountId,
         gas_cost_estimate: NearToken,
         spend_within_transaction: NearToken,
-        signed_transaction: SignedTransaction,
-        wait_until: TxExecutionStatus,
-    ) -> Result<
-        impl Future<Output = Result<FinalExecutionOutcomeView, ResolveTransactionError>>,
-        SendTransactionError,
-    > {
-        let transaction_hash = signed_transaction.get_hash();
-        tracing::Span::current().record(
-            "transaction_hash",
-            tracing::field::display(&transaction_hash),
-        );
-        tracing::info!("Sending and resolving transaction");
+        body: S,
+    ) -> Result<near_primitives::hash::CryptoHash, SubmitError>
+    where
+        S: MethodSpec<Output = WriteOperationResult> + Send,
+        Dispatch: PlanWrite<S, GatewayContext>,
+    {
+        tracing::info!("Submitting and accounting for transaction");
+        let operation_key = Uuid::new_v4();
 
         self.database
             .set_pending_transaction(
                 &account_id,
                 gas_cost_estimate,
                 spend_within_transaction,
-                transaction_hash,
+                operation_key,
             )
             .await?;
 
-        let result = self
-            .relay_near
-            .send_transaction(signed_transaction, wait_until)
-            .await;
-
-        let result = match result {
+        let result = match self
+            .gateway
+            .execute_request(WriteRequest {
+                signer_account_id: signer_account_id.clone().into(),
+                idempotency_key: Some(IdempotencyKey(operation_key.to_string())),
+                body,
+            })
+            .await
+        {
             Ok(result) => result,
-            Err(e) => {
-                // Some sort of RPC error: remove the pending transaction record.
+            Err(error) => {
+                // The submission never landed; release the allowance lock.
                 self.database
                     .remove_pending_transaction(&account_id)
                     .await?;
-                return Err(e.into());
+                return Err(SubmitError::Gateway(error));
             }
         };
 
-        let near = self.relay_near.clone();
-        let database = self.database.clone();
+        let succeeded = result.operation.status == OperationStatus::Succeeded;
 
-        Ok(async move {
-            let status = if let Some(outcome) = result.final_execution_outcome {
-                outcome.into_outcome()
-            } else {
-                near.fetch_transaction_status(account_id.clone(), transaction_hash)
-                    .await?
-            };
+        let Some(tx_hash) = result.operation.latest_tx_hash() else {
+            self.database
+                .remove_pending_transaction(&account_id)
+                .await?;
+            return Err(SubmitError::NoTransaction {
+                operation_id: result.operation.id.0,
+            });
+        };
 
-            database.record_transaction(&account_id, &status).await?;
+        let native_tx_hash = tx_hash
+            .to_string()
+            .parse::<near_primitives::hash::CryptoHash>()
+            .map_err(|error| SubmitError::InvalidTxHash(error.to_string()))?;
+        tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-            Ok(status)
-        })
+        // Record the hash before the (possibly slow) finality wait, so the broom
+        // can reconcile this row even if finalization below is interrupted.
+        self.database
+            .attach_transaction_hash(operation_key, native_tx_hash)
+            .await?;
+
+        // Charge the true cost. The gateway drives the operation only to
+        // `ExecutedOptimistic`, so wait for `Executed` here to capture
+        // tokens_burnt across every receipt the signer paid for.
+        let tokens_burnt = self
+            .gateway
+            .read(tx::Get {
+                tx_hash,
+                sender_account_id: signer_account_id,
+                wait_until: Some(TxExecutionStatus::Executed),
+                encoding: tx::ValueEncoding::Json,
+            })
+            .await
+            .map_err(SubmitError::Gateway)?
+            .tokens_burnt;
+
+        self.database
+            .finalize_pending_transaction(&account_id, operation_key, tokens_burnt, succeeded)
+            .await?;
+
+        Ok(native_tx_hash)
     }
 
-    /// Perform a storage deposit top-up, charging the associated account
-    /// accordingly with the amount of storage balance consumed.
+    /// Ensure `account_id` holds the relayer's guaranteed-minimum storage
+    /// balance on `contract_id`, charging the account for any deposit made.
+    ///
+    /// Contracts without storage management (`storage_balance_bounds` absent or
+    /// zero) are skipped.
     ///
     /// # Errors
     ///
-    /// - If loading storage balance bounds from the contract fails.
-    /// - If gas calculation fails.
-    /// - If sending the transaction fails.
-    /// - If resolving the final transaction status with the database fails.
+    /// - Reading the account's storage balance through the gateway
+    /// - Estimating gas
+    /// - Submitting or accounting for the deposit
     pub async fn storage_deposit_top_up(
         &self,
         contract_data: &ContractData,
@@ -763,9 +790,13 @@ impl App {
         };
 
         let storage_balance = self
-            .relay_near
-            .load_storage_balance_of(contract_id.clone(), &account_id)
-            .await?;
+            .gateway
+            .read(storage::GetBalanceOf {
+                contract_id: contract_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await?
+            .balance;
 
         let available = storage_balance.map_or(NearToken::from_near(0), |s| s.available);
 
@@ -782,36 +813,23 @@ impl App {
             return Ok(());
         }
 
-        let Some(cost_of_gas) = self
-            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
-            .await
-            .map(|amount| amount.saturating_add(storage_deposit_amount))
-        else {
+        let Some(cost_of_gas) = self.estimate_cost_of_gas(STORAGE_DEPOSIT_GAS).await else {
             return Err(StorageDepositError::GasEstimationFailure);
         };
 
-        let signed_transaction = self
-            .relay_near
-            .construct_storage_deposit_transaction(
-                &self.cache,
-                account_id.clone(),
-                contract_id.clone(),
-                storage_deposit_amount,
-            )
-            .await;
-
-        let resolve_transaction = self
-            .send_and_resolve_transaction(
-                account_id,
-                cost_of_gas,
-                storage_deposit_amount,
-                signed_transaction,
-                TxExecutionStatus::Final,
-            )
-            .await?;
-
-        // Resolve synchronously.
-        resolve_transaction.await?;
+        self.execute_and_account(
+            account_id.clone(),
+            self.args.relay.account_id.clone(),
+            cost_of_gas,
+            storage_deposit_amount,
+            storage::Deposit {
+                contract_id,
+                beneficiary_id: Some(account_id),
+                registration_only: false,
+                deposit: storage_deposit_amount,
+            },
+        )
+        .await?;
 
         Ok(())
     }
@@ -827,32 +845,29 @@ pub struct SdaCheckResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageDepositError {
-    #[error("RPC view error: {0}")]
-    View(#[from] ViewError),
+    #[error("Gateway read error: {0}")]
+    Gateway(#[from] GatewayError),
     #[error("Failed to estimate gas")]
     GasEstimationFailure,
-    #[error("Error sending storage deposit: {0}")]
-    Send(#[from] SendTransactionError),
-    #[error("Error resolving storage deposit: {0}")]
-    Resolve(#[from] ResolveTransactionError),
+    #[error("Error submitting storage deposit: {0}")]
+    Submit(#[from] SubmitError),
 }
 
+/// Failure submitting a gateway write and reconciling its allowance.
 #[derive(Debug, thiserror::Error)]
-pub enum SendTransactionError {
-    #[error("RPC error: {0}")]
-    Rpc(#[from] JsonRpcError<RpcTransactionError>),
+pub enum SubmitError {
     #[error("Set pending transaction error: {0}")]
-    SetPendingTransaction(#[from] SetPendingTransactionError),
-    #[error("Remove pending transaction error: {0}")]
-    RemovePendingTransaction(#[from] sqlx::Error),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ResolveTransactionError {
-    #[error("RPC error: {0}")]
-    Rpc(#[from] JsonRpcError<RpcTransactionError>),
-    #[error("Record transaction error: {0}")]
-    RecordTransaction(#[from] RecordTransactionError),
+    SetPending(#[from] SetPendingTransactionError),
+    #[error("Gateway execution error: {0}")]
+    Gateway(GatewayError),
+    #[error("Operation {operation_id} completed without a transaction")]
+    NoTransaction { operation_id: String },
+    #[error("Invalid transaction hash from gateway: {0}")]
+    InvalidTxHash(String),
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("Finalize transaction error: {0}")]
+    Finalize(#[from] RecordTransactionError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1230,6 +1245,13 @@ mod tests {
                 if matches!(&*error, oracle::UpdateError::NotSucceeded { .. })
         ));
     }
+}
+
+/// Convert a native transaction/block hash into the gateway's hash type via
+/// their shared base58 string form.
+#[must_use]
+pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> Option<CryptoHash> {
+    serde_json::from_value(serde_json::Value::String(hash.to_string())).ok()
 }
 
 /// Page size for draining a registry's deployment list through the gateway.

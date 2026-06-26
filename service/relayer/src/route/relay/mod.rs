@@ -1,5 +1,7 @@
 use axum::{extract::State, Json};
-use near_sdk::NearToken;
+use near_sdk::{borsh, NearToken};
+use templar_gateway_methods_spec::tx;
+use templar_gateway_types::Base64Bytes;
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -22,7 +24,6 @@ pub async fn relay(
         signed_delegate_action,
         storage_deposit,
         update_prices,
-        wait_until,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing relay request");
@@ -99,38 +100,39 @@ pub async fn relay(
         };
     }
 
-    let signed_transaction = app
-        .relay_near
-        .construct_delegate_transaction(&app.cache, signed_delegate_action)
-        .await;
+    // NEP-366: the gateway wraps the user's signed delegate action in a
+    // transaction the relay account signs and pays for. The gateway decodes the
+    // borsh-encoded delegate action (the NEP-366 layout is signer-agnostic).
+    let signed_delegate_action = match borsh::to_vec(&signed_delegate_action) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!("Failed to encode signed delegate action: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to encode signed delegate action".to_string(),
+            };
+        }
+    };
 
-    let transaction_hash = signed_transaction.get_hash();
-
-    let resolve_transaction = match app
-        .send_and_resolve_transaction(
+    let transaction_hash = match app
+        .execute_and_account(
             account_id,
+            app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            signed_transaction,
-            wait_until,
+            tx::RelayDelegateAction {
+                signed_delegate_action: Base64Bytes(signed_delegate_action),
+            },
         )
         .await
     {
-        Ok(future) => future,
+        Ok(transaction_hash) => transaction_hash,
         Err(e) => {
-            tracing::error!("Send transaction failure: {e}");
+            tracing::error!("Relay submission failure: {e}");
             return SimpleResponse::Failure {
                 error: e.to_string(),
             };
         }
     };
-
-    // Resolve asynchronously.
-    tokio::spawn(async move {
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
-        }
-    });
 
     RelayResponse { transaction_hash }.into()
 }

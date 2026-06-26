@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nDELETE FROM\n    \"transaction\"\nWHERE\n    operation_key = $1\n    AND account_id = $2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6d607481f4abfcbc5d97f688629f2b3a56b72f56f9925e450a6805b0a4af59cd"
+}

@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser};
-use near_crypto::SecretKey;
+use near_api::SecretKey;
 use near_sdk::{AccountId, NearToken};
 
 use templar_universal_account::NEAR_TESTNET_CHAIN_ID;
@@ -36,8 +36,6 @@ pub struct Configuration {
     pub redstone: RedStoneConfig,
     #[clap(flatten)]
     pub pyth: PythConfig,
-    #[clap(flatten)]
-    pub cache: Cache,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
     pub broom_batch_size: u32,
@@ -132,28 +130,6 @@ pub struct PythConfig {
         default_value = "0.01 NEAR"
     )]
     pub update_deposit: NearToken,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct Cache {
-    /// Refresh the cached gas price after X seconds.
-    #[arg(
-        id = "cache-gase-price-secs",
-        long = "cache-gase-price-secs",
-        env = "CACHE_GAS_PRICE_SECS",
-        value_parser = duration_from_secs,
-        default_value = "600"
-    )]
-    pub gas_price_refresh: Duration,
-    /// Refresh a cached nonce after X seconds.
-    #[arg(
-        id = "cache-nonce-secs",
-        long = "cache-nonce-secs",
-        env = "CACHE_NONCE_SECS",
-        value_parser = duration_from_secs,
-        default_value = "60"
-    )]
-    pub nonce_refresh: Duration,
 }
 
 #[derive(Args, Debug, Clone)]
