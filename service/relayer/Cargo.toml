@@ -37,6 +37,7 @@ templar-common = { workspace = true, features = ["rpc"] }
 templar-gateway-client.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
+templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }

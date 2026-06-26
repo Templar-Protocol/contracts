@@ -13876,6 +13876,7 @@ dependencies = [
  "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
+ "templar-gateway-store",
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",

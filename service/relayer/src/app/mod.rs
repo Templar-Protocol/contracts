@@ -77,7 +77,13 @@ impl App {
                 .map(|k| k.to_string().parse())
                 .collect::<Result<Vec<near_api::SecretKey>, _>>()
         };
-        let mut builder = GatewayClient::builder(network);
+        // Persist gateway operations in the relayer's Postgres so idempotency
+        // and replay survive restarts — a relay retried after a crash won't
+        // re-submit and double-pay gas.
+        let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
+        gateway_store.migrate().await?;
+
+        let mut builder = GatewayClient::builder(network).store(std::sync::Arc::new(gateway_store));
         let relay_keys = to_api_keys(&args.relay.secret_key)?;
         if !relay_keys.is_empty() {
             builder = builder
