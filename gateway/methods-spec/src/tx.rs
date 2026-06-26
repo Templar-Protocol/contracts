@@ -46,6 +46,9 @@ pub enum Status {
 pub struct GetResult {
     pub status: Status,
     pub total_gas_burnt: NearGas,
+    /// Total NEAR burnt across the transaction and all its receipts — the
+    /// actual cost the signer paid (not always `gas × gas_price`).
+    pub tokens_burnt: NearToken,
     pub logs: Vec<String>,
     pub return_value: Option<ReturnValue>,
 }

@@ -23,6 +23,16 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             )
             .await?;
 
+        // Sum tokens burnt across the transaction and all receipts (the signer's
+        // true cost) before consuming `result` for the return value below.
+        let tokens_burnt = result
+            .outcomes()
+            .iter()
+            .map(|outcome| outcome.tokens_burnt)
+            .fold(near_api::NearToken::from_yoctonear(0), |acc, item| {
+                acc.saturating_add(item)
+            });
+
         Ok(tx::GetResult {
             status: if result.is_success() {
                 tx::Status::Succeeded
@@ -32,6 +42,7 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
                 tx::Status::Failed
             },
             total_gas_burnt: result.total_gas_burnt,
+            tokens_burnt,
             logs: result.logs().into_iter().map(ToString::to_string).collect(),
             return_value: match request.encoding {
                 tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
