@@ -1,24 +1,28 @@
 use std::time::Duration;
 
-use near_sdk::AccountId;
 use templar_gateway_client::Client as GatewayClient;
+use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::common::TxExecutionStatus;
+use templar_gateway_types::{common::TxExecutionStatus, IdempotencyKey};
 use tokio::{select, sync::watch};
 
 use crate::{
-    app::to_gateway_hash,
-    client::database::{Database, PendingTransaction},
+    app::from_gateway_hash,
+    client::database::{error::RecordTransactionError, Database, PendingTransaction},
 };
 
-/// Periodically settle any pending transactions whose on-chain outcome the
-/// relayer never recorded (e.g. a relay interrupted between submission and
+/// A pending row is left alone until it is at least this old, so the broom never
+/// acts on one still mid-submission (whose gateway operation may not be
+/// persisted yet) and mistakes it for abandoned.
+const MIN_PENDING_AGE: Duration = Duration::from_secs(60);
+
+/// Periodically settle pending transactions whose on-chain outcome the relayer
+/// never recorded (e.g. a relay interrupted between submission and
 /// finalization), reconciling each account's allowance against the real cost.
 #[tracing::instrument(skip_all, fields(batch_size = %batch_size, delay = ?delay))]
 pub async fn start(
     database: Database,
     gateway: GatewayClient,
-    signer_account_ids: Vec<AccountId>,
     batch_size: u32,
     delay: Duration,
     kill: watch::Sender<()>,
@@ -36,7 +40,9 @@ pub async fn start(
                 break;
             }
             _ = interval.tick() => {
-                let Ok(pending_transactions) = database.get_pending_transactions(batch_size).await else {
+                let Ok(pending_transactions) =
+                    database.get_pending_transactions(batch_size, MIN_PENDING_AGE).await
+                else {
                     tracing::warn!("Failed to fetch pending transactions.");
                     continue;
                 };
@@ -47,10 +53,10 @@ pub async fn start(
                 );
 
                 for pending in pending_transactions {
-                    if let Err(e) = reconcile(&database, &gateway, &signer_account_ids, &pending).await {
+                    if let Err(e) = reconcile(&database, &gateway, &pending).await {
                         tracing::warn!(
                             account_id = %pending.account_id,
-                            transaction_hash = %pending.transaction_hash,
+                            operation_key = %pending.operation_key,
                             "Broom failed to reconcile pending transaction: {e}",
                         );
                     }
@@ -60,65 +66,96 @@ pub async fn start(
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-enum ReconcileError {
-    #[error("transaction hash is not valid base58")]
-    InvalidHash,
-    #[error("could not fetch transaction status from any candidate signer")]
-    StatusUnavailable,
-    #[error("finalize error: {0}")]
-    Finalize(#[from] crate::client::database::error::RecordTransactionError),
+/// How a pending row should be settled, once resolved against the gateway.
+enum Resolution {
+    /// The operation reached a final on-chain outcome; charge the actual cost.
+    Settle {
+        transaction_hash: near_primitives::hash::CryptoHash,
+        tokens_burnt: near_sdk::NearToken,
+        succeeded: bool,
+    },
+    /// The operation never reached the gateway; release the pending slot.
+    Release,
+    /// Still in flight; leave it for a later sweep.
+    InFlight,
 }
 
-/// Look up a pending transaction's outcome through the gateway and settle the
-/// account's allowance against the true gas cost.
+#[derive(Debug, thiserror::Error)]
+enum ReconcileError {
+    #[error("gateway error: {0}")]
+    Gateway(#[from] GatewayError),
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("finalize error: {0}")]
+    Finalize(#[from] RecordTransactionError),
+}
+
 async fn reconcile(
     database: &Database,
     gateway: &GatewayClient,
-    signer_account_ids: &[AccountId],
     pending: &PendingTransaction,
 ) -> Result<(), ReconcileError> {
-    let Some(tx_hash) = to_gateway_hash(&pending.transaction_hash) else {
-        return Err(ReconcileError::InvalidHash);
-    };
-
-    // The row doesn't record which relayer-controlled account signed, so try
-    // each candidate (relay, UA) until one resolves the transaction.
-    let mut result = None;
-    for signer_account_id in signer_account_ids {
-        if let Ok(status) = gateway
-            .read(tx::Get {
-                tx_hash,
-                sender_account_id: signer_account_id.clone(),
-                wait_until: Some(TxExecutionStatus::Executed),
-                encoding: tx::ValueEncoding::Json,
-            })
-            .await
-        {
-            result = Some(status);
-            break;
-        }
-    }
-
-    let Some(status) = result else {
-        return Err(ReconcileError::StatusUnavailable);
-    };
-
-    // A still-pending transaction hasn't reached a final outcome yet; leave it
-    // for a later sweep.
-    if status.status == tx::Status::Pending {
-        return Ok(());
-    }
-
-    let succeeded = status.status == tx::Status::Succeeded;
-    database
-        .finalize_pending_transaction(
-            &pending.account_id,
-            pending.operation_key,
-            status.tokens_burnt,
+    match resolve(gateway, pending).await? {
+        Resolution::Settle {
+            transaction_hash,
+            tokens_burnt,
             succeeded,
-        )
+        } => {
+            database
+                .finalize_pending_transaction(
+                    &pending.account_id,
+                    pending.operation_key,
+                    transaction_hash,
+                    tokens_burnt,
+                    succeeded,
+                )
+                .await?;
+        }
+        Resolution::Release => {
+            database
+                .remove_pending_transaction(&pending.account_id)
+                .await?;
+        }
+        Resolution::InFlight => {}
+    }
+    Ok(())
+}
+
+/// Resolve a pending row against the gateway operation store — the source of
+/// truth for an interrupted operation's outcome (it records the signer, the
+/// on-chain hash, and survives relayer restarts).
+async fn resolve(
+    gateway: &GatewayClient,
+    pending: &PendingTransaction,
+) -> Result<Resolution, ReconcileError> {
+    let key = IdempotencyKey(pending.operation_key.to_string());
+
+    let Some(operation) = gateway.operation_by_idempotency_key(&key).await? else {
+        // The operation never reached the gateway; the lock can be released.
+        return Ok(Resolution::Release);
+    };
+
+    let Some(tx_hash) = operation.latest_tx_hash() else {
+        // Submitted but no on-chain hash yet; reconcile on a later sweep.
+        return Ok(Resolution::InFlight);
+    };
+
+    let status = gateway
+        .read(tx::Get {
+            tx_hash,
+            sender_account_id: operation.signer_account_id.0,
+            wait_until: Some(TxExecutionStatus::Executed),
+            encoding: tx::ValueEncoding::Json,
+        })
         .await?;
 
-    Ok(())
+    if status.status == tx::Status::Pending {
+        return Ok(Resolution::InFlight);
+    }
+
+    Ok(Resolution::Settle {
+        transaction_hash: from_gateway_hash(&tx_hash),
+        tokens_burnt: status.tokens_burnt,
+        succeeded: status.status == tx::Status::Succeeded,
+    })
 }

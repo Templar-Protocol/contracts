@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
@@ -33,7 +31,6 @@ pub enum TransactionStatus {
 pub struct PendingTransaction {
     pub account_id: AccountId,
     pub operation_key: Uuid,
-    pub transaction_hash: CryptoHash,
 }
 
 pub mod error {
@@ -126,38 +123,40 @@ impl Database {
         sqlx::migrate!("./migrations").run(&self.connection).await
     }
 
-    /// Pending transactions that already carry an on-chain hash, oldest first.
+    /// Pending transactions older than `min_age`, oldest first.
     ///
-    /// Rows without a hash (a relay that crashed between submission and
-    /// recording the hash) are excluded — the broom has nothing to reconcile
-    /// against until a hash exists.
+    /// The broom reconciles each against the gateway operation store (keyed by
+    /// `operation_key`). The `min_age` floor skips rows young enough to still be
+    /// mid-submission, so a row whose gateway operation isn't persisted yet is
+    /// never mistaken for an abandoned one.
     ///
     /// # Errors
     ///
     /// - Query errors
-    #[tracing::instrument(skip(self), fields(limit = %limit))]
+    #[tracing::instrument(skip(self), fields(limit = %limit, min_age = ?min_age))]
     pub async fn get_pending_transactions(
         &self,
         limit: i64,
+        min_age: std::time::Duration,
     ) -> Result<Vec<PendingTransaction>, sqlx::Error> {
         tracing::debug!("Fetching pending transactions");
         let results = sqlx::query!(
             r#"
 SELECT
     account_id,
-    operation_key,
-    transaction_hash
+    operation_key
 FROM
     "transaction"
 WHERE
     "status" = 'pending'::transaction_status
-    AND transaction_hash IS NOT NULL
+    AND created_at < NOW() - make_interval(secs => $2)
 ORDER BY
     created_at ASC
 LIMIT
     $1
 "#,
             limit,
+            min_age.as_secs_f64(),
         )
         .fetch_all(&self.connection)
         .await?;
@@ -165,17 +164,11 @@ LIMIT
         Ok(results
             .into_iter()
             .filter_map(|r| {
-                // A malformed record is skipped rather than aborting the batch.
-                // The count of skipped records could in theory exceed `limit`,
-                // leaving an empty result, but such records should never exist.
-                let account_id: AccountId = r.account_id.parse().ok()?;
-                let transaction_hash = r
-                    .transaction_hash
-                    .and_then(|hash| CryptoHash::from_str(&hash).ok())?;
+                // A malformed account id skips the row rather than aborting the
+                // batch; such records should never exist.
                 Some(PendingTransaction {
-                    account_id,
+                    account_id: r.account_id.parse().ok()?,
                     operation_key: r.operation_key,
-                    transaction_hash,
                 })
             })
             .collect())
@@ -316,37 +309,6 @@ RETURNING
         Ok(tx.commit().await?)
     }
 
-    /// Record the on-chain hash of a pending transaction once the gateway has
-    /// submitted it, so the broom can reconcile it even if finalization is
-    /// interrupted.
-    ///
-    /// # Errors
-    ///
-    /// - Query errors
-    pub async fn attach_transaction_hash(
-        &self,
-        operation_key: Uuid,
-        transaction_hash: CryptoHash,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query!(
-            r#"
-UPDATE
-    "transaction"
-SET
-    transaction_hash = $1
-WHERE
-    operation_key = $2
-    AND "status" = 'pending'::transaction_status
-"#,
-            transaction_hash.to_string(),
-            operation_key,
-        )
-        .execute(&self.connection)
-        .await?;
-
-        Ok(())
-    }
-
     /// # Errors
     ///
     /// - Query errors
@@ -436,6 +398,7 @@ WHERE
     #[tracing::instrument(skip(self), fields(
         account_id = %account_id,
         operation_key = %operation_key,
+        transaction_hash = %transaction_hash,
         tokens_burnt = %tokens_burnt,
         succeeded = succeeded,
     ))]
@@ -443,6 +406,7 @@ WHERE
         &self,
         account_id: &AccountIdRef,
         operation_key: Uuid,
+        transaction_hash: CryptoHash,
         tokens_burnt: NearToken,
         succeeded: bool,
     ) -> Result<(), error::RecordTransactionError> {
@@ -545,7 +509,8 @@ UPDATE
 SET
     "status" = $1,
     allowance_spent_gas = $2,
-    allowance_spent_inner = $3
+    allowance_spent_inner = $3,
+    transaction_hash = $5
 WHERE
     operation_key = $4
 "#,
@@ -553,6 +518,7 @@ WHERE
             Decimal::from(allowance_spent_gas.as_yoctonear()),
             Decimal::from(allowance_spent_inner.as_yoctonear()),
             operation_key,
+            transaction_hash.to_string(),
         )
         .execute(&mut *tx)
         .await?;

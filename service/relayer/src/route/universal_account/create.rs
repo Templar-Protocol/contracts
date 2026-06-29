@@ -224,16 +224,10 @@ pub async fn create(
 
     // Check block timestamp (make sure signature is not too old)
 
-    let block_hash = create.block_hash;
-    let Some(block_hash_gw) = to_gateway_hash(&block_hash) else {
-        return SimpleResponse::Failure {
-            error: "Invalid block hash".to_string(),
-        };
-    };
     let Ok(block) = app
         .gateway
         .read(chain::GetBlock {
-            block_hash: Some(block_hash_gw),
+            block_hash: Some(to_gateway_hash(&create.block_hash)),
         })
         .await
     else {

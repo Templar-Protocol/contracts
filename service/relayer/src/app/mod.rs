@@ -106,7 +106,6 @@ impl App {
         tokio::spawn(broom::start(
             database.clone(),
             gateway.clone(),
-            vec![args.relay.account_id.clone(), args.ua.account_id.clone()],
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
             kill,
@@ -783,15 +782,11 @@ impl App {
             .map_err(|error| SubmitError::InvalidTxHash(error.to_string()))?;
         tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-        // Record the hash before the (possibly slow) finality wait, so the broom
-        // can reconcile this row even if finalization below is interrupted.
-        self.database
-            .attach_transaction_hash(operation_key, native_tx_hash)
-            .await?;
-
         // Charge the true cost. The gateway drives the operation only to
         // `ExecutedOptimistic`, so wait for `Executed` here to capture
-        // tokens_burnt across every receipt the signer paid for.
+        // tokens_burnt across every receipt the signer paid for. If this is
+        // interrupted, the broom reconciles the pending row from the gateway
+        // operation store.
         let tokens_burnt = self
             .gateway
             .read(tx::Get {
@@ -805,7 +800,13 @@ impl App {
             .tokens_burnt;
 
         self.database
-            .finalize_pending_transaction(&account_id, operation_key, tokens_burnt, succeeded)
+            .finalize_pending_transaction(
+                &account_id,
+                operation_key,
+                native_tx_hash,
+                tokens_burnt,
+                succeeded,
+            )
             .await?;
 
         Ok(native_tx_hash)
@@ -1120,11 +1121,18 @@ mod tests {
     }
 }
 
-/// Convert a native transaction/block hash into the gateway's hash type via
-/// their shared base58 string form.
+/// Convert a native transaction/block hash into the gateway's hash type. Both
+/// are 32-byte hashes, so this is a total byte-for-byte move.
 #[must_use]
-pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> Option<CryptoHash> {
-    serde_json::from_value(serde_json::Value::String(hash.to_string())).ok()
+pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> CryptoHash {
+    CryptoHash::from(near_api::CryptoHash(hash.0))
+}
+
+/// Convert a gateway hash into the native transaction-hash type. Both are
+/// 32-byte hashes, so this is a total byte-for-byte move.
+#[must_use]
+pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash {
+    near_primitives::hash::CryptoHash(hash.0 .0)
 }
 
 /// Page size for draining a registry's deployment list through the gateway.

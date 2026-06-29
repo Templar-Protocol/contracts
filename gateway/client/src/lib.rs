@@ -47,7 +47,7 @@ use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    ManagedAccountId, MethodSpec,
+    IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
 };
 
 /// Builder for [`Client`]. Takes the network once, accumulates signers, and
@@ -226,6 +226,22 @@ impl Client {
         self.driver
             .plan_and_complete::<S, Dispatch, GatewayContext>(self.context.clone(), request)
             .await
+    }
+
+    /// Look up a previously-submitted operation by its idempotency key.
+    ///
+    /// Lets a caller recover the outcome of work whose result it never recorded
+    /// — e.g. a crash between submitting an operation and persisting its hash —
+    /// by re-reading the durable operation store under the same key.
+    pub async fn operation_by_idempotency_key(
+        &self,
+        idempotency_key: &IdempotencyKey,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        Ok(self
+            .driver
+            .get_by_idempotency_key(idempotency_key)
+            .await?
+            .map(|operation| operation.record()))
     }
 
     /// Plan a write request into the transactions required to fulfil it, without

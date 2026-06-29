@@ -41,14 +41,9 @@ impl ChainClient<'_> {
         use near_primitives::types::{BlockId, BlockReference, Finality};
 
         let block_reference = match block_hash {
+            // Both are 32-byte hashes; convert byte-for-byte.
             Some(hash) => {
-                let hash = hash
-                    .to_string()
-                    .parse::<near_primitives::hash::CryptoHash>()
-                    .map_err(|error| {
-                        GatewayError::NearQuery(format!("invalid block hash: {error}"))
-                    })?;
-                BlockReference::BlockId(BlockId::Hash(hash))
+                BlockReference::BlockId(BlockId::Hash(near_primitives::hash::CryptoHash(hash.0 .0)))
             }
             None => BlockReference::Finality(Finality::Final),
         };
