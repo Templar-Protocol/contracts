@@ -26,6 +26,9 @@
 //!
 //! [`OperationStore`]: templar_gateway_core::OperationStore
 
+mod network;
+pub use network::Network;
+
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
