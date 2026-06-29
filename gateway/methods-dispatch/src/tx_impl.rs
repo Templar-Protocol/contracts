@@ -101,9 +101,9 @@ impl<C: Send + 'static> PlanWrite<tx::Transfer, C> for Dispatch {
 }
 
 #[async_trait]
-impl<C: Send + 'static> PlanWrite<tx::RelayDelegateAction, C> for Dispatch {
+impl<C: Send + 'static> PlanWrite<tx::RelaySignedDelegateAction, C> for Dispatch {
     async fn plan(
-        request: templar_gateway_types::common::WriteRequest<tx::RelayDelegateAction>,
+        request: templar_gateway_types::common::WriteRequest<tx::RelaySignedDelegateAction>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
         use borsh::BorshDeserialize;

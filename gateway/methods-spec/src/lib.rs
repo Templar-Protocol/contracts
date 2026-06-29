@@ -140,7 +140,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::token::TransferCall);
         $callback!($crate::tx::FunctionCall);
         $callback!($crate::tx::Transfer);
-        $callback!($crate::tx::RelayDelegateAction);
+        $callback!($crate::tx::RelaySignedDelegateAction);
         $callback!($crate::tx::DeployContract);
         $callback!($crate::tx::DeployAndInit);
         $callback!($crate::universal_account::Execute);

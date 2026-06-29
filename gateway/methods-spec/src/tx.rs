@@ -82,8 +82,8 @@ pub struct Transfer {
 /// account submits a transaction carrying the delegate action and pays its gas.
 /// `signed_delegate_action` is the borsh-encoded `SignedDelegateAction`.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "tx.relayDelegateAction")]
-pub struct RelayDelegateAction {
+#[method(write = "tx.relaySignedDelegateAction")]
+pub struct RelaySignedDelegateAction {
     pub signed_delegate_action: Base64Bytes,
 }
 

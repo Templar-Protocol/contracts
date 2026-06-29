@@ -119,7 +119,7 @@ pub async fn relay(
             app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            tx::RelayDelegateAction {
+            tx::RelaySignedDelegateAction {
                 signed_delegate_action: Base64Bytes(signed_delegate_action),
             },
         )
