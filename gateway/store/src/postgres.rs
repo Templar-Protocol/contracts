@@ -26,6 +26,29 @@ use templar_gateway_types::{
 /// component without their migration tables colliding.
 pub const DEFAULT_SCHEMA: &str = "gateway";
 
+/// Reject anything that isn't a plain, unquoted Postgres identifier, since the
+/// schema name is interpolated into DDL that can't be parameterized. Allows
+/// `[A-Za-z_][A-Za-z0-9_]*` up to Postgres's 63-byte identifier limit (so e.g.
+/// `"public"` and `"gateway"` pass; empty, `"a-b"`, or a quote-bearing value
+/// fail).
+fn validate_schema_identifier(schema: &str) -> Result<(), sqlx::Error> {
+    let valid = (1..=63).contains(&schema.len())
+        && schema.chars().enumerate().all(|(index, character)| {
+            if index == 0 {
+                character.is_ascii_alphabetic() || character == '_'
+            } else {
+                character.is_ascii_alphanumeric() || character == '_'
+            }
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(sqlx::Error::Configuration(
+            format!("invalid Postgres schema identifier: {schema:?}").into(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PostgresStore {
     pool: PgPool,
@@ -122,7 +145,14 @@ impl PostgresStore {
     /// The connection's `search_path` puts `schema` first, so the store's
     /// unqualified DDL and queries resolve there. Pass `"public"` to use the
     /// database's default schema (only safe when the store owns the database).
+    ///
+    /// `schema` is interpolated into DDL (`search_path` / `CREATE SCHEMA`), which
+    /// can't be parameterized, so it must be a valid unquoted Postgres
+    /// identifier — this is validated up front and an invalid value (empty,
+    /// containing punctuation/quotes, too long) is rejected here rather than
+    /// risking malformed or injectable DDL later.
     pub fn with_schema(database_url: &str, schema: &str) -> Result<Self, sqlx::Error> {
+        validate_schema_identifier(schema)?;
         let options = PgConnectOptions::from_str(database_url)?
             .options([("search_path", format!("{schema},public"))]);
         let pool = PgPoolOptions::new()
@@ -136,8 +166,9 @@ impl PostgresStore {
 
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
         // Create the schema before sqlx creates `_sqlx_migrations` (and the
-        // store's tables) in it via the connection search_path. `self.schema` is
-        // a trusted, caller-supplied identifier.
+        // store's tables) in it via the connection search_path. `self.schema` was
+        // validated as a plain identifier in `with_schema`, so this interpolation
+        // is safe.
         sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", self.schema))
             .execute(&self.pool)
             .await?;
@@ -1040,6 +1071,29 @@ mod tests {
                 }),
                 remaining_steps: VecDeque::new(),
             },
+        }
+    }
+
+    #[test]
+    fn schema_identifier_validation() {
+        for ok in ["gateway", "public", "_private", "s9_x"] {
+            assert!(
+                validate_schema_identifier(ok).is_ok(),
+                "{ok} should be valid"
+            );
+        }
+        for bad in [
+            "",
+            "has space",
+            "a-b",
+            "1abc",
+            "\"; DROP SCHEMA x --",
+            "a;b",
+        ] {
+            assert!(
+                validate_schema_identifier(bad).is_err(),
+                "{bad:?} should be rejected"
+            );
         }
     }
 
