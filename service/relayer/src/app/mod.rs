@@ -512,8 +512,7 @@ impl App {
         // a user action that would price against stale/unavailable data.
         if let Some(return_value) = result
             .operation
-            .outcome
-            .as_ref()
+            .final_outcome()
             .and_then(|outcome| outcome.return_value.as_ref())
         {
             let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
@@ -808,15 +807,11 @@ impl App {
         let native_tx_hash = from_gateway_hash(&tx_hash);
         tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-        // The gateway captured the execution outcome at submission, so the true
-        // cost is already in the result — no follow-up `tx.get`. Gas burnt is
-        // charged even on failure; the in-transaction spend only on success
-        // (handled by `finalize_pending_transaction`).
-        let tokens_burnt = result
-            .operation
-            .outcome
-            .as_ref()
-            .map_or_else(|| NearToken::from_near(0), |outcome| outcome.tokens_burnt);
+        // The gateway captured each step's execution outcome at submission, so
+        // the true cost is already in the result — no follow-up `tx.get`. Gas
+        // burnt is charged even on failure; the in-transaction spend only on
+        // success (handled by `finalize_pending_transaction`).
+        let tokens_burnt = result.operation.tokens_burnt();
 
         self.database
             .finalize_pending_transaction(
