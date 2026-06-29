@@ -15,7 +15,8 @@ use templar_gateway_core::{
     PlannedTransaction, StoredOperation, SucceededStep,
 };
 use templar_gateway_types::{
-    operation::OperationId, CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
+    operation::{ExecutionOutcome, OperationId},
+    CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
 };
 
 /// The Postgres schema the operation store confines itself to unless overridden.
@@ -93,6 +94,7 @@ struct OperationStepRow {
     state: OperationStepStateRow,
     tx_hash: Option<String>,
     signed_transaction: Option<Vec<u8>>,
+    outcome: Option<Value>,
     #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     created_at: DateTime<Utc>,
     #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
@@ -430,60 +432,72 @@ async fn insert_operation_steps(
             OperationStepStateRow::Succeeded,
             Some(step.tx_hash),
             None,
+            Some(&step.outcome),
         )
         .await?;
     }
 
     let mut current_index = step_index(operation.succeeded_steps.len())?;
     if let Some(current_step) = &operation.current_step {
-        match current_step {
-            templar_gateway_core::CurrentStep::Prepared {
+        use templar_gateway_core::CurrentStep;
+        // Reverted and Rejected share the `failed` row state; the presence of an
+        // outcome distinguishes them on load (reverted executed and carries one;
+        // rejected never executed).
+        let (transaction, state, tx_hash, signed, outcome) = match current_step {
+            CurrentStep::Prepared {
                 transaction,
                 signed_transaction,
                 tx_hash,
-            } => {
-                insert_step_row(
-                    tx,
-                    operation_uuid,
-                    current_index,
-                    transaction,
-                    OperationStepStateRow::Prepared,
-                    Some(*tx_hash),
-                    Some(signed_transaction),
-                )
-                .await?;
-            }
-            templar_gateway_core::CurrentStep::Submitted {
+            } => (
+                transaction,
+                OperationStepStateRow::Prepared,
+                *tx_hash,
+                Some(signed_transaction.as_ref()),
+                None,
+            ),
+            CurrentStep::Submitted {
                 transaction,
                 tx_hash,
-            } => {
-                insert_step_row(
-                    tx,
-                    operation_uuid,
-                    current_index,
-                    transaction,
-                    OperationStepStateRow::Submitted,
-                    Some(*tx_hash),
-                    None,
-                )
-                .await?;
-            }
-            templar_gateway_core::CurrentStep::Failed {
+            } => (
+                transaction,
+                OperationStepStateRow::Submitted,
+                *tx_hash,
+                None,
+                None,
+            ),
+            CurrentStep::Reverted {
                 transaction,
                 tx_hash,
-            } => {
-                insert_step_row(
-                    tx,
-                    operation_uuid,
-                    current_index,
-                    transaction,
-                    OperationStepStateRow::Failed,
-                    Some(*tx_hash),
-                    None,
-                )
-                .await?;
-            }
-        }
+                outcome,
+            } => (
+                transaction,
+                OperationStepStateRow::Failed,
+                *tx_hash,
+                None,
+                Some(outcome),
+            ),
+            CurrentStep::Rejected {
+                transaction,
+                tx_hash,
+            } => (
+                transaction,
+                OperationStepStateRow::Failed,
+                *tx_hash,
+                None,
+                None,
+            ),
+        };
+        insert_step_row(
+            tx,
+            operation_uuid,
+            current_index,
+            transaction,
+            state,
+            Some(tx_hash),
+            signed,
+            outcome,
+        )
+        .await?;
         current_index += 1;
     }
 
@@ -494,6 +508,7 @@ async fn insert_operation_steps(
             current_index + step_index(offset)?,
             step,
             OperationStepStateRow::NotStarted,
+            None,
             None,
             None,
         )
@@ -509,6 +524,10 @@ fn step_index(index: usize) -> GatewayResult<i32> {
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a step row is a flat record; grouping its columns would obscure the 1:1 INSERT"
+)]
 async fn insert_step_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     operation_id: uuid::Uuid,
@@ -517,12 +536,17 @@ async fn insert_step_row(
     state: OperationStepStateRow,
     tx_hash: Option<CryptoHash>,
     signed_transaction: Option<&SignedTransaction>,
+    outcome: Option<&ExecutionOutcome>,
 ) -> GatewayResult<()> {
     let actions = serde_json::to_value(&transaction.actions)?;
     let signed_transaction = signed_transaction
         .map(to_vec)
         .transpose()
         .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    let outcome = outcome
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(GatewayError::JsonSerialization)?;
 
     sqlx::query!(
         r#"
@@ -536,10 +560,11 @@ INSERT INTO
         actions,
         state,
         tx_hash,
-        signed_transaction
+        signed_transaction,
+        outcome
     )
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 "#,
         operation_id,
         step_index,
@@ -550,6 +575,7 @@ VALUES
         state as OperationStepStateRow,
         tx_hash.map(|hash| hash.0.to_string()),
         signed_transaction,
+        outcome,
     )
     .execute(&mut **tx)
     .await?;
@@ -573,6 +599,7 @@ SELECT
     state AS "state: OperationStepStateRow",
     tx_hash,
     signed_transaction,
+    outcome,
     created_at,
     updated_at
 FROM
@@ -599,6 +626,7 @@ ORDER BY
             state: row.state,
             tx_hash: row.tx_hash,
             signed_transaction: row.signed_transaction,
+            outcome: row.outcome,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
@@ -671,9 +699,11 @@ fn apply_step_row(
     match row.state {
         OperationStepStateRow::Succeeded => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "succeeded")?;
+            let outcome = parse_required_outcome(row.outcome, "succeeded")?;
             succeeded_steps.push(SucceededStep {
                 transaction,
                 tx_hash,
+                outcome,
             });
         }
         OperationStepStateRow::Prepared => {
@@ -692,16 +722,40 @@ fn apply_step_row(
                 tx_hash,
             });
         }
+        // A `failed` row is `Reverted` if it executed (carries an outcome) and
+        // `Rejected` otherwise.
         OperationStepStateRow::Failed => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "failed")?;
-            *current_step = Some(templar_gateway_core::CurrentStep::Failed {
-                transaction,
-                tx_hash,
+            *current_step = Some(match parse_optional_outcome(row.outcome)? {
+                Some(outcome) => templar_gateway_core::CurrentStep::Reverted {
+                    transaction,
+                    tx_hash,
+                    outcome,
+                },
+                None => templar_gateway_core::CurrentStep::Rejected {
+                    transaction,
+                    tx_hash,
+                },
             });
         }
         OperationStepStateRow::NotStarted => remaining_steps.push_back(transaction),
     }
     Ok(())
+}
+
+fn parse_optional_outcome(value: Option<Value>) -> GatewayResult<Option<ExecutionOutcome>> {
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(GatewayError::JsonSerialization)
+}
+
+fn parse_required_outcome(value: Option<Value>, state: &str) -> GatewayResult<ExecutionOutcome> {
+    parse_optional_outcome(value)?.ok_or_else(|| {
+        GatewayError::InvalidStoredOperation(format!(
+            "{state} step is missing its execution outcome"
+        ))
+    })
 }
 
 fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransaction> {
@@ -764,7 +818,7 @@ mod tests {
     use near_api::types::transaction::actions::{Action, TransferAction};
     use near_api::types::CryptoHash as NearCryptoHash;
     use templar_gateway_core::CurrentStep;
-    use templar_gateway_types::{common::TxExecutionStatus, NearToken};
+    use templar_gateway_types::{common::TxExecutionStatus, NearGas, NearToken};
 
     use super::*;
 
@@ -777,6 +831,15 @@ mod tests {
                 deposit: NearToken::from_yoctonear(7),
             }),
         )
+    }
+
+    fn sample_outcome() -> ExecutionOutcome {
+        ExecutionOutcome {
+            tokens_burnt: NearToken::from_yoctonear(42),
+            total_gas_burnt: NearGas::from_gas(1_000),
+            receipts: vec![],
+            return_value: None,
+        }
     }
 
     fn sample_operation(status: OperationStatus) -> StoredOperation {
@@ -799,7 +862,7 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 succeeded_steps: vec![],
-                current_step: Some(CurrentStep::Failed {
+                current_step: Some(CurrentStep::Submitted {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
                 }),
@@ -814,6 +877,7 @@ mod tests {
                 succeeded_steps: vec![SucceededStep {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
+                    outcome: sample_outcome(),
                 }],
                 current_step: None,
                 remaining_steps: VecDeque::new(),
@@ -826,9 +890,10 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 succeeded_steps: vec![],
-                current_step: Some(CurrentStep::Failed {
+                current_step: Some(CurrentStep::Reverted {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
+                    outcome: sample_outcome(),
                 }),
                 remaining_steps: VecDeque::new(),
             },
@@ -909,6 +974,9 @@ mod tests {
                     .to_string(),
             ),
             signed_transaction: None,
+            outcome: Some(
+                serde_json::to_value(&operation.succeeded_steps.first().unwrap().outcome).unwrap(),
+            ),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }];
@@ -916,5 +984,9 @@ mod tests {
         let restored = rows_to_stored_operation(operation_row, step_rows).unwrap();
         assert_eq!(restored.status(), OperationStatus::Succeeded);
         assert_eq!(restored.succeeded_steps.len(), 1);
+        assert_eq!(
+            restored.succeeded_steps.first().unwrap().outcome,
+            sample_outcome()
+        );
     }
 }

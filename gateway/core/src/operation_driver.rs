@@ -1,10 +1,10 @@
+use near_api::types::transaction::result::ExecutionFinalResult;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    operation::OperationRecord,
-    operation::OperationStatus,
-    IdempotencyKey, MethodSpec, OperationId,
+    operation::{ExecutionOutcome, OperationRecord, OperationStatus, ReceiptOutcome},
+    Base64Bytes, IdempotencyKey, MethodSpec, NearToken, OperationId,
 };
 
 use crate::{
@@ -265,20 +265,25 @@ impl OperationDriver {
                     Ok(tx_result) => {
                         if let Some(full) = tx_result.into_full() {
                             let final_hash = full.outcome().transaction_hash.into();
-                            if full.is_success() {
+                            let is_success = full.is_success();
+                            // The submission result already carries the full
+                            // execution outcome — capture it so callers needn't
+                            // re-fetch it with a separate `tx.get`.
+                            let outcome = execution_outcome(full);
+                            if is_success {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step succeeded"
                                 );
-                                submitted_step.succeed(final_hash).await?;
+                                submitted_step.succeed(final_hash, outcome).await?;
                             } else {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step failed"
                                 );
-                                submitted_step.fail(final_hash).await?;
+                                submitted_step.fail(final_hash, Some(outcome)).await?;
                             }
                         }
                     }
@@ -289,14 +294,14 @@ impl OperationDriver {
                             %error,
                             "gateway operation step submission failed"
                         );
-                        submitted_step.fail(tx_hash).await?;
+                        submitted_step.fail(tx_hash, None).await?;
                         return Err(error);
                     }
                 }
             }
             Some(CurrentStepRef::Submitted(submitted_step)) => {
                 let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(tx_hash).await?;
+                submitted_step.fail(tx_hash, None).await?;
             }
             Some(CurrentStepRef::Failed) | None => {}
         }
@@ -315,27 +320,29 @@ impl OperationDriver {
                 .query_transaction(&transaction.signer_account_id, tx_hash)
                 .await
             {
-                Ok(execution) => match execution.into_result() {
-                    Ok(_) => {
+                Ok(execution) => {
+                    let is_success = execution.is_success();
+                    let outcome = execution_outcome(execution);
+                    if is_success {
                         operation.succeeded_steps.push(SucceededStep {
                             transaction,
                             tx_hash,
+                            outcome,
                         });
                         operation.current_step = None;
-                    }
-                    Err(error) => {
+                    } else {
                         tracing::warn!(
                             operation_id = %operation.id.0,
                             %tx_hash,
-                            %error,
-                            "current step transaction failed"
+                            "current step transaction reverted"
                         );
-                        operation.current_step = Some(CurrentStep::Failed {
+                        operation.current_step = Some(CurrentStep::Reverted {
                             transaction,
                             tx_hash,
+                            outcome,
                         });
                     }
-                },
+                }
                 Err(error) => {
                     tracing::warn!(
                         operation_id = %operation.id.0,
@@ -343,13 +350,43 @@ impl OperationDriver {
                         %error,
                         "failed to reconcile submitted gateway transaction"
                     );
-                    operation.current_step = Some(CurrentStep::Failed {
+                    operation.current_step = Some(CurrentStep::Rejected {
                         transaction,
                         tx_hash,
                     });
                 }
             }
         }
+    }
+}
+
+/// Build an [`ExecutionOutcome`] from a transaction's final result — the data
+/// the RPC already returned on submission, so it needn't be re-fetched.
+fn execution_outcome(result: ExecutionFinalResult) -> ExecutionOutcome {
+    let tokens_burnt = result
+        .outcomes()
+        .iter()
+        .map(|outcome| outcome.tokens_burnt)
+        .fold(NearToken::from_yoctonear(0), NearToken::saturating_add);
+    let total_gas_burnt = result.total_gas_burnt;
+    // Group logs per receipt with the executing contract, preserving receipt
+    // boundaries so consumers can attribute log content safely. Excludes the
+    // transaction outcome (not a receipt; it emits no logs).
+    let receipts = result
+        .receipt_outcomes()
+        .iter()
+        .map(|outcome| ReceiptOutcome {
+            contract_id: outcome.executor_id.clone(),
+            logs: outcome.logs.clone(),
+        })
+        .collect();
+    // Consume `result` last: `raw_bytes` takes it by value.
+    let return_value = result.raw_bytes().ok().map(Base64Bytes::from);
+    ExecutionOutcome {
+        tokens_burnt,
+        total_gas_burnt,
+        receipts,
+        return_value,
     }
 }
 

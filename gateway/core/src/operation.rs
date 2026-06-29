@@ -6,8 +6,9 @@ use near_api::types::{
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
-    common::TxExecutionStatus, operation::OperationRecord, CryptoHash, ManagedAccountId,
-    OperationId, OperationStatus, StepStatus,
+    common::TxExecutionStatus,
+    operation::{ExecutionOutcome, OperationRecord},
+    CryptoHash, ManagedAccountId, OperationId, OperationStatus, StepStatus,
 };
 
 use crate::{GatewayResult, OperationStore};
@@ -86,6 +87,7 @@ impl From<PlannedTransaction> for OperationPlan {
 pub struct SucceededStep {
     pub transaction: PlannedTransaction,
     pub tx_hash: CryptoHash,
+    pub outcome: ExecutionOutcome,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +101,15 @@ pub enum CurrentStep {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
     },
-    Failed {
+    /// The transaction executed on chain but its final outcome was a failure.
+    Reverted {
+        transaction: PlannedTransaction,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    },
+    /// The step failed before a recorded on-chain execution (e.g. a submission
+    /// error).
+    Rejected {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
     },
@@ -165,7 +175,9 @@ impl StoredOperation {
 
     pub fn status(&self) -> OperationStatus {
         match &self.current_step {
-            Some(CurrentStep::Failed { .. }) => OperationStatus::Failed,
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. }) => {
+                OperationStatus::Failed
+            }
             Some(CurrentStep::Prepared { .. } | CurrentStep::Submitted { .. }) => {
                 OperationStatus::InProgress
             }
@@ -176,7 +188,10 @@ impl StoredOperation {
     }
 
     pub fn current_step_is_failed(&self) -> bool {
-        matches!(self.current_step, Some(CurrentStep::Failed { .. }))
+        matches!(
+            self.current_step,
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. })
+        )
     }
 
     #[must_use]
@@ -225,7 +240,9 @@ impl StoredOperation {
                 transaction,
                 tx_hash,
             }))),
-            Some(CurrentStep::Failed { .. }) => Some(CurrentStepRef::Failed),
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. }) => {
+                Some(CurrentStepRef::Failed)
+            }
             None => None,
         }
     }
@@ -243,6 +260,7 @@ impl StoredOperation {
                 index: next_index,
                 status: StepStatus::Succeeded {
                     tx_hash: step.tx_hash,
+                    outcome: step.outcome.clone(),
                 },
             });
             next_index = next_index.saturating_add(1);
@@ -254,7 +272,13 @@ impl StoredOperation {
                 CurrentStep::Submitted { tx_hash, .. } => {
                     StepStatus::Submitted { tx_hash: *tx_hash }
                 }
-                CurrentStep::Failed { tx_hash, .. } => StepStatus::Failed { tx_hash: *tx_hash },
+                CurrentStep::Reverted {
+                    tx_hash, outcome, ..
+                } => StepStatus::Reverted {
+                    tx_hash: *tx_hash,
+                    outcome: outcome.clone(),
+                },
+                CurrentStep::Rejected { tx_hash, .. } => StepStatus::Rejected { tx_hash: *tx_hash },
             };
             steps.push(templar_gateway_types::TransactionStepRecord {
                 index: next_index,
@@ -319,19 +343,39 @@ impl SubmittedCurrentStep<'_> {
         &self.transaction
     }
 
-    pub async fn succeed(self, tx_hash: CryptoHash) -> GatewayResult<()> {
+    pub async fn succeed(
+        self,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    ) -> GatewayResult<()> {
         self.operation.succeeded_steps.push(SucceededStep {
             transaction: self.transaction,
             tx_hash,
+            outcome,
         });
         self.operation.current_step = None;
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub async fn fail(self, tx_hash: CryptoHash) -> GatewayResult<()> {
-        self.operation.current_step = Some(CurrentStep::Failed {
-            transaction: self.transaction,
-            tx_hash,
+    /// Record the step as failed. `outcome` carries the execution result when
+    /// the transaction ran and reverted, and is `None` when it failed before a
+    /// recorded execution — mapping to a `Reverted` or `Rejected` step
+    /// respectively.
+    pub async fn fail(
+        self,
+        tx_hash: CryptoHash,
+        outcome: Option<ExecutionOutcome>,
+    ) -> GatewayResult<()> {
+        self.operation.current_step = Some(match outcome {
+            Some(outcome) => CurrentStep::Reverted {
+                transaction: self.transaction,
+                tx_hash,
+                outcome,
+            },
+            None => CurrentStep::Rejected {
+                transaction: self.transaction,
+                tx_hash,
+            },
         });
         self.store.save_operation(self.operation.clone()).await
     }

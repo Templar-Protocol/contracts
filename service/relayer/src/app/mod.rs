@@ -17,13 +17,13 @@ use templar_gateway_client::{collect_paginated, Client as GatewayClient};
 use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{
-    chain, market, oracle as oracle_spec, proxy_oracle, registry, storage, tx,
+    chain, market, oracle as oracle_spec, proxy_oracle, registry, storage,
 };
 use templar_gateway_types::{
-    common::{Pagination, TxExecutionStatus, WriteOperationResult, WriteRequest},
+    common::{Pagination, WriteOperationResult, WriteRequest},
     CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
 };
-use templar_proxy_oracle_near_common::request::OracleRequest;
+use templar_proxy_oracle_near_common::{cache::CachedProxyPriceStatus, request::OracleRequest};
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
@@ -486,9 +486,6 @@ impl App {
             return Ok(None);
         }
 
-        // The gateway write returns only the operation status, not the per-price
-        // `Accepted`/`Rejected` cache map the bespoke path inspected; a reverted
-        // breaker surfaces as a non-`Succeeded` operation.
         let result = self
             .gateway
             .execute_as(
@@ -502,7 +499,39 @@ impl App {
             .map_err(oracle::UpdateError::from)
             .map_err(Arc::new)?;
 
-        oracle::succeeded_tx_hash(result).map_err(Arc::new)
+        if result.operation.status != OperationStatus::Succeeded {
+            return Err(Arc::new(oracle::UpdateError::NotSucceeded {
+                operation_id: result.operation.id.0,
+                status: result.operation.status,
+            }));
+        }
+
+        // The proxy's `update_prices` returns a per-price status map and the
+        // transaction succeeds even when a price is circuit-breaker-blocked, so
+        // inspect the captured return value and reject before the caller relays
+        // a user action that would price against stale/unavailable data.
+        if let Some(return_value) = result
+            .operation
+            .outcome
+            .as_ref()
+            .and_then(|outcome| outcome.return_value.as_ref())
+        {
+            let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
+                serde_json::from_slice(return_value)
+                    .map_err(|error| Arc::new(oracle::UpdateError::ProxyResultDecode(error)))?;
+            let blocked: Vec<pyth::PriceIdentifier> = statuses
+                .into_iter()
+                .filter(|(_, status)| !matches!(status, CachedProxyPriceStatus::Accepted { .. }))
+                .map(|(price_id, _)| price_id)
+                .collect();
+            if !blocked.is_empty() {
+                return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
+                    price_ids: blocked,
+                }));
+            }
+        }
+
+        Ok(result.operation.latest_tx_hash())
     }
 
     pub async fn update_market_prices(
@@ -776,28 +805,18 @@ impl App {
             });
         };
 
-        let native_tx_hash = tx_hash
-            .to_string()
-            .parse::<near_primitives::hash::CryptoHash>()
-            .map_err(|error| SubmitError::InvalidTxHash(error.to_string()))?;
+        let native_tx_hash = from_gateway_hash(&tx_hash);
         tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-        // Charge the true cost. The gateway drives the operation only to
-        // `ExecutedOptimistic`, so wait for `Executed` here to capture
-        // tokens_burnt across every receipt the signer paid for. If this is
-        // interrupted, the broom reconciles the pending row from the gateway
-        // operation store.
-        let tokens_burnt = self
-            .gateway
-            .read(tx::Get {
-                tx_hash,
-                sender_account_id: signer_account_id,
-                wait_until: Some(TxExecutionStatus::Executed),
-                encoding: tx::ValueEncoding::Json,
-            })
-            .await
-            .map_err(SubmitError::Gateway)?
-            .tokens_burnt;
+        // The gateway captured the execution outcome at submission, so the true
+        // cost is already in the result — no follow-up `tx.get`. Gas burnt is
+        // charged even on failure; the in-transaction spend only on success
+        // (handled by `finalize_pending_transaction`).
+        let tokens_burnt = result
+            .operation
+            .outcome
+            .as_ref()
+            .map_or_else(|| NearToken::from_near(0), |outcome| outcome.tokens_burnt);
 
         self.database
             .finalize_pending_transaction(
@@ -910,8 +929,6 @@ pub enum SubmitError {
     Gateway(GatewayError),
     #[error("Operation {operation_id} completed without a transaction")]
     NoTransaction { operation_id: String },
-    #[error("Invalid transaction hash from gateway: {0}")]
-    InvalidTxHash(String),
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Finalize transaction error: {0}")]

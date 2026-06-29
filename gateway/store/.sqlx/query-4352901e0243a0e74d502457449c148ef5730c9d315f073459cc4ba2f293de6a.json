@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    operation_id,\n    step_index,\n    signer_account_id,\n    receiver_id,\n    wait_until,\n    actions,\n    state AS \"state: OperationStepStateRow\",\n    tx_hash,\n    signed_transaction,\n    created_at,\n    updated_at\nFROM\n    gateway_operation_steps\nWHERE\n    operation_id = $1\nORDER BY\n    step_index ASC\n",
+  "query": "\nSELECT\n    operation_id,\n    step_index,\n    signer_account_id,\n    receiver_id,\n    wait_until,\n    actions,\n    state AS \"state: OperationStepStateRow\",\n    tx_hash,\n    signed_transaction,\n    outcome,\n    created_at,\n    updated_at\nFROM\n    gateway_operation_steps\nWHERE\n    operation_id = $1\nORDER BY\n    step_index ASC\n",
   "describe": {
     "columns": [
       {
@@ -63,11 +63,16 @@
       },
       {
         "ordinal": 9,
+        "name": "outcome",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
@@ -87,9 +92,10 @@
       false,
       true,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "ca9aee80cd52e0f70934a4f7f61eda680c10b489bb98f84c9e046dbae546518c"
+  "hash": "4352901e0243a0e74d502457449c148ef5730c9d315f073459cc4ba2f293de6a"
 }

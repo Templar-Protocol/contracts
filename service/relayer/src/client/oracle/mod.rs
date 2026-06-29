@@ -39,6 +39,12 @@ pub enum UpdateError {
         operation_id: String,
         status: OperationStatus,
     },
+    #[error("failed to decode proxy update result: {0}")]
+    ProxyResultDecode(near_sdk::serde_json::Error),
+    #[error("proxy prices unavailable after update: {price_ids:?}")]
+    ProxyPricesUnavailable {
+        price_ids: Vec<templar_common::oracle::pyth::PriceIdentifier>,
+    },
 }
 
 /// Interpret a completed gateway write: the latest tx hash on success, an error
