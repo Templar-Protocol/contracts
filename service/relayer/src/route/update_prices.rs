@@ -36,11 +36,16 @@ pub async fn update_prices(
         };
     }
 
-    let accounts = app.accounts.read().await.clone();
-    if let Some(market_id) = market_ids
-        .iter()
-        .find(|market_id| !accounts.market_ids.contains(*market_id))
-    {
+    // Scope the read guard so it isn't held across the later await (and don't
+    // clone the whole `AccountData` just to check membership).
+    let unknown_market = {
+        let accounts = app.accounts.read().await;
+        market_ids
+            .iter()
+            .find(|market_id| !accounts.market_ids.contains(*market_id))
+            .cloned()
+    };
+    if let Some(market_id) = unknown_market {
         tracing::info!(%market_id, "Rejecting unknown market in price update request");
         return SimpleResponse::Rejected {
             reason: format!("Unknown market: {market_id}"),

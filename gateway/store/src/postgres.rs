@@ -11,7 +11,7 @@ use sqlx::{
     PgPool,
 };
 use templar_gateway_core::{
-    CreateOperationResult, GatewayError, GatewayResult, OperationPlan, OperationStore,
+    CreateOperationResult, CurrentStep, GatewayError, GatewayResult, OperationPlan, OperationStore,
     PlannedTransaction, StoredOperation, SucceededStep,
 };
 use templar_gateway_types::{
@@ -476,7 +476,6 @@ async fn insert_operation_steps(
 
     let mut current_index = step_index(operation.succeeded_steps.len())?;
     if let Some(current_step) = &operation.current_step {
-        use templar_gateway_core::CurrentStep;
         // Reverted and Rejected share the `failed` row state; the presence of an
         // outcome distinguishes them on load (reverted executed and carries one;
         // rejected never executed).
@@ -859,7 +858,7 @@ fn apply_step_row(
         OperationStepStateRow::Prepared => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "prepared")?;
             let signed_transaction = parse_signed_transaction(row.signed_transaction)?;
-            *current_step = Some(templar_gateway_core::CurrentStep::Prepared {
+            *current_step = Some(CurrentStep::Prepared {
                 transaction,
                 signed_transaction: Box::new(signed_transaction),
                 tx_hash,
@@ -867,7 +866,7 @@ fn apply_step_row(
         }
         OperationStepStateRow::Submitted => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "submitted")?;
-            *current_step = Some(templar_gateway_core::CurrentStep::Submitted {
+            *current_step = Some(CurrentStep::Submitted {
                 transaction,
                 tx_hash,
             });
@@ -877,12 +876,12 @@ fn apply_step_row(
         OperationStepStateRow::Failed => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "failed")?;
             *current_step = Some(match outcome {
-                Some(outcome) => templar_gateway_core::CurrentStep::Reverted {
+                Some(outcome) => CurrentStep::Reverted {
                     transaction,
                     tx_hash,
                     outcome,
                 },
-                None => templar_gateway_core::CurrentStep::Rejected {
+                None => CurrentStep::Rejected {
                     transaction,
                     tx_hash,
                 },
@@ -980,7 +979,6 @@ fn operation_status_row(status: OperationStatus) -> OperationStatusRow {
 mod tests {
     use near_api::types::transaction::actions::{Action, TransferAction};
     use near_api::types::CryptoHash as NearCryptoHash;
-    use templar_gateway_core::CurrentStep;
     use templar_gateway_types::{common::TxExecutionStatus, NearGas, NearToken};
 
     use super::*;

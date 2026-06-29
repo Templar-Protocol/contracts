@@ -72,6 +72,24 @@ impl OperationPlan {
         Self { steps: vec![step] }
     }
 
+    /// A single-step plan that waits for `ExecutedOptimistic` — the default for
+    /// gateway writes. Collapses the common
+    /// `OperationPlan::single(PlannedTransaction { …, wait_until: ExecutedOptimistic, … })`
+    /// boilerplate in `PlanWrite` impls.
+    #[must_use]
+    pub fn execute(
+        signer_account_id: ManagedAccountId,
+        receiver_id: AccountId,
+        actions: Vec<Action>,
+    ) -> Self {
+        Self::single(PlannedTransaction {
+            signer_account_id,
+            wait_until: TxExecutionStatus::ExecutedOptimistic,
+            receiver_id,
+            actions,
+        })
+    }
+
     pub fn push(&mut self, step: PlannedTransaction) {
         self.steps.push(step);
     }
@@ -357,25 +375,27 @@ impl SubmittedCurrentStep<'_> {
         self.store.save_operation(self.operation.clone()).await
     }
 
-    /// Record the step as failed. `outcome` carries the execution result when
-    /// the transaction ran and reverted, and is `None` when it failed before a
-    /// recorded execution — mapping to a `Reverted` or `Rejected` step
-    /// respectively.
-    pub async fn fail(
+    /// Record the step as having executed on chain but reverted (final outcome
+    /// was a failure).
+    pub async fn reverted(
         self,
         tx_hash: CryptoHash,
-        outcome: Option<ExecutionOutcome>,
+        outcome: ExecutionOutcome,
     ) -> GatewayResult<()> {
-        self.operation.current_step = Some(match outcome {
-            Some(outcome) => CurrentStep::Reverted {
-                transaction: self.transaction,
-                tx_hash,
-                outcome,
-            },
-            None => CurrentStep::Rejected {
-                transaction: self.transaction,
-                tx_hash,
-            },
+        self.operation.current_step = Some(CurrentStep::Reverted {
+            transaction: self.transaction,
+            tx_hash,
+            outcome,
+        });
+        self.store.save_operation(self.operation.clone()).await
+    }
+
+    /// Record the step as having failed before a recorded on-chain execution
+    /// (e.g. a submission error).
+    pub async fn rejected(self, tx_hash: CryptoHash) -> GatewayResult<()> {
+        self.operation.current_step = Some(CurrentStep::Rejected {
+            transaction: self.transaction,
+            tx_hash,
         });
         self.store.save_operation(self.operation.clone()).await
     }

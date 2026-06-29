@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use near_api::types::transaction::actions::{Action, DeleteAccountAction};
-use templar_gateway_core::{
-    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
-};
+use templar_gateway_core::{DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite};
 use templar_gateway_methods_spec::account;
 
 use crate::Dispatch;
@@ -51,13 +49,12 @@ impl<C: Send + 'static> PlanWrite<account::Delete, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<account::Delete>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id.clone(),
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: request.signer_account_id.0,
-            actions: vec![Action::DeleteAccount(DeleteAccountAction {
+        Ok(OperationPlan::execute(
+            request.signer_account_id.clone(),
+            request.signer_account_id.0,
+            vec![Action::DeleteAccount(DeleteAccountAction {
                 beneficiary_id: request.body.beneficiary_id,
             })],
-        }))
+        ))
     }
 }

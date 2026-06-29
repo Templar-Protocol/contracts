@@ -178,7 +178,12 @@ pub async fn relay(
             }
         };
         let additional_interactions = match app
-            .actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter())
+            .actions_are_allowed(
+                &accounts.market_ids,
+                receiver_id,
+                contract_data,
+                calls.iter(),
+            )
             .await
         {
             Ok(a) => a,
@@ -198,7 +203,7 @@ pub async fn relay(
 
     app.expand_market_related_contracts(&accounts.market_ids, &mut interacted_contract_ids)
         .await;
-    let market_ids = App::resolve_market_ids(&accounts, &interacted_contract_ids);
+    let market_ids = App::resolve_market_ids(&accounts.market_ids, &interacted_contract_ids);
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 

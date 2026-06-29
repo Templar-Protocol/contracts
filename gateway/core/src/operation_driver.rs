@@ -285,7 +285,7 @@ impl OperationDriver {
                                     tx_hash = %final_hash,
                                     "gateway operation step failed"
                                 );
-                                submitted_step.fail(final_hash, Some(outcome)).await?;
+                                submitted_step.reverted(final_hash, outcome).await?;
                             }
                         }
                     }
@@ -296,14 +296,14 @@ impl OperationDriver {
                             %error,
                             "gateway operation step submission failed"
                         );
-                        submitted_step.fail(tx_hash, None).await?;
+                        submitted_step.rejected(tx_hash).await?;
                         return Err(error);
                     }
                 }
             }
             Some(CurrentStepRef::Submitted(submitted_step)) => {
                 let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(tx_hash, None).await?;
+                submitted_step.rejected(tx_hash).await?;
             }
             Some(CurrentStepRef::Failed) | None => {}
         }

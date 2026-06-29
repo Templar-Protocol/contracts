@@ -4,7 +4,6 @@ use near_api::types::transaction::actions::{
 };
 use templar_gateway_core::{
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
-    PlannedTransaction,
 };
 use templar_gateway_methods_spec::tx;
 
@@ -72,17 +71,16 @@ impl<C: Send + 'static> PlanWrite<tx::FunctionCall, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<tx::FunctionCall>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: request.body.receiver_id,
-            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+        Ok(OperationPlan::execute(
+            request.signer_account_id,
+            request.body.receiver_id,
+            vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: request.body.method_name.0,
                 args: request.body.args.try_into_bytes()?,
                 gas: request.body.gas,
                 deposit: request.body.deposit,
             }))],
-        }))
+        ))
     }
 }
 
@@ -92,14 +90,13 @@ impl<C: Send + 'static> PlanWrite<tx::Transfer, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<tx::Transfer>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: request.body.receiver_id,
-            actions: vec![Action::Transfer(TransferAction {
+        Ok(OperationPlan::execute(
+            request.signer_account_id,
+            request.body.receiver_id,
+            vec![Action::Transfer(TransferAction {
                 deposit: request.body.amount,
             })],
-        }))
+        ))
     }
 }
 
@@ -121,12 +118,11 @@ impl<C: Send + 'static> PlanWrite<tx::RelayDelegateAction, C> for Dispatch {
                 GatewayError::NearTransaction(format!("invalid signed delegate action: {error}"))
             })?;
 
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: signed_delegate_action.delegate_action.sender_id.clone(),
-            actions: vec![Action::Delegate(Box::new(signed_delegate_action))],
-        }))
+        Ok(OperationPlan::execute(
+            request.signer_account_id,
+            signed_delegate_action.delegate_action.sender_id.clone(),
+            vec![Action::Delegate(Box::new(signed_delegate_action))],
+        ))
     }
 }
 
@@ -136,14 +132,13 @@ impl<C: Send + 'static> PlanWrite<tx::DeployContract, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<tx::DeployContract>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: request.body.account_id,
-            actions: vec![Action::DeployContract(DeployContractAction {
+        Ok(OperationPlan::execute(
+            request.signer_account_id,
+            request.body.account_id,
+            vec![Action::DeployContract(DeployContractAction {
                 code: request.body.code.0,
             })],
-        }))
+        ))
     }
 }
 
@@ -153,11 +148,10 @@ impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<tx::DeployAndInit>,
         _context: C,
     ) -> GatewayResult<OperationPlan> {
-        Ok(OperationPlan::single(PlannedTransaction {
-            signer_account_id: request.signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
-            receiver_id: request.body.account_id,
-            actions: vec![
+        Ok(OperationPlan::execute(
+            request.signer_account_id,
+            request.body.account_id,
+            vec![
                 Action::DeployContract(DeployContractAction {
                     code: request.body.code.0,
                 }),
@@ -168,6 +162,6 @@ impl<C: Send + 'static> PlanWrite<tx::DeployAndInit, C> for Dispatch {
                     deposit: request.body.deposit,
                 })),
             ],
-        }))
+        ))
     }
 }

@@ -49,6 +49,15 @@ pub use args::Configuration;
 type PythUpdatesByOracle = HashMap<AccountId, HashSet<pyth::PriceIdentifier>>;
 type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
 
+/// The per-oracle price updates a set of markets needs, grouped by oracle kind.
+/// A named struct rather than a 3-tuple, since `pyth` and `proxy` share a type
+/// but mean different things.
+struct GroupedPriceUpdates {
+    pyth: PythUpdatesByOracle,
+    redstone: RedstoneUpdatesByOracle,
+    proxy: PythUpdatesByOracle,
+}
+
 /// Gas attached to a `storage_deposit` call (matches the gateway's
 /// `storage.deposit` plan); used to size the allowance lock estimate.
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(100);
@@ -331,25 +340,25 @@ impl App {
     }
 
     pub fn resolve_market_ids(
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         interacted_contract_ids: &HashSet<AccountId>,
     ) -> HashSet<AccountId> {
         interacted_contract_ids
             .iter()
-            .filter(|contract_id| accounts.market_ids.contains(*contract_id))
+            .filter(|contract_id| known_market_ids.contains(*contract_id))
             .cloned()
             .collect()
     }
 
     fn derive_sda_interactions(
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         receiver_id: &AccountId,
         additional_interactions: Vec<AccountId>,
     ) -> (HashSet<AccountId>, HashSet<AccountId>) {
         let interacted_contract_ids: HashSet<_> = std::iter::once(receiver_id.clone())
             .chain(additional_interactions)
             .collect();
-        let market_ids = Self::resolve_market_ids(accounts, &interacted_contract_ids);
+        let market_ids = Self::resolve_market_ids(known_market_ids, &interacted_contract_ids);
         (interacted_contract_ids, market_ids)
     }
 
@@ -364,11 +373,7 @@ impl App {
     async fn group_price_updates(
         &self,
         market_ids: &HashSet<AccountId>,
-    ) -> GatewayResult<(
-        PythUpdatesByOracle,
-        RedstoneUpdatesByOracle,
-        PythUpdatesByOracle,
-    )> {
+    ) -> GatewayResult<GroupedPriceUpdates> {
         let mut pyth = PythUpdatesByOracle::new();
         let mut redstone = RedstoneUpdatesByOracle::new();
         let mut proxy = PythUpdatesByOracle::new();
@@ -408,7 +413,11 @@ impl App {
             }
         }
 
-        Ok((pyth, redstone, proxy))
+        Ok(GroupedPriceUpdates {
+            pyth,
+            redstone,
+            proxy,
+        })
     }
 
     async fn dispatch_grouped_price_updates<
@@ -543,7 +552,11 @@ impl App {
         &self,
         market_ids: &HashSet<AccountId>,
     ) -> Result<(), PriceUpdateError> {
-        let (pyth_updates, redstone_updates, proxy_updates) = self
+        let GroupedPriceUpdates {
+            pyth: pyth_updates,
+            redstone: redstone_updates,
+            proxy: proxy_updates,
+        } = self
             .group_price_updates(market_ids)
             .await
             .map_err(PriceUpdateError::Resolve)?;
@@ -576,10 +589,10 @@ impl App {
     ///
     /// - If the receiver is not known.
     /// - If any of the function call actions are not allowed.
-    #[tracing::instrument(skip(self, accounts, contract_data, calls))]
+    #[tracing::instrument(skip(self, known_market_ids, contract_data, calls))]
     pub async fn actions_are_allowed<'a>(
         &self,
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         receiver_id: &AccountIdRef,
         contract_data: &ContractData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
@@ -599,7 +612,7 @@ impl App {
                 let market_id = transfer.token_receiver_id();
                 other_interactions.push(market_id.to_owned());
 
-                if !accounts.market_ids.contains(market_id) {
+                if !known_market_ids.contains(market_id) {
                     errors.push(FunctionCallRejectionReason::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,
@@ -709,7 +722,7 @@ impl App {
 
         let additional_interactions = self
             .actions_are_allowed(
-                &accounts,
+                &accounts.market_ids,
                 receiver_id,
                 &contract_data,
                 calls.iter().map(Borrow::borrow),
@@ -717,8 +730,11 @@ impl App {
             .await
             .map_err(PayloadRejectionReason::FunctionCallRejection)?;
 
-        let (interacted_contract_ids, market_ids) =
-            Self::derive_sda_interactions(&accounts, receiver_id, additional_interactions);
+        let (interacted_contract_ids, market_ids) = Self::derive_sda_interactions(
+            &accounts.market_ids,
+            receiver_id,
+            additional_interactions,
+        );
 
         let gas_total = calls.iter().map(|call| call.gas.as_gas()).sum();
 
@@ -977,7 +993,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            App::resolve_market_ids(&accounts, &interacted_contract_ids),
+            App::resolve_market_ids(&accounts.market_ids, &interacted_contract_ids),
             HashSet::from([market_id])
         );
     }
@@ -991,7 +1007,7 @@ mod tests {
         };
 
         let (interacted_contract_ids, market_ids) =
-            App::derive_sda_interactions(&accounts, &market_id, vec![]);
+            App::derive_sda_interactions(&accounts.market_ids, &market_id, vec![]);
 
         assert_eq!(interacted_contract_ids, HashSet::from([market_id.clone()]));
         assert_eq!(market_ids, HashSet::from([market_id]));

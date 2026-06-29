@@ -62,7 +62,11 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     /// Register a pre-built signer for an account.
     #[must_use]
-    pub fn signer(mut self, account_id: impl Into<ManagedAccountId>, signer: Arc<Signer>) -> Self {
+    pub fn with_signer(
+        mut self,
+        account_id: impl Into<ManagedAccountId>,
+        signer: Arc<Signer>,
+    ) -> Self {
         self.signers.insert(account_id.into(), signer);
         self
     }
@@ -75,7 +79,7 @@ impl ClientBuilder {
     ) -> GatewayResult<Self> {
         let signer = Signer::from_secret_key(secret_key)
             .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
-        Ok(self.signer(account_id, signer))
+        Ok(self.with_signer(account_id, signer))
     }
 
     /// Register a multi-key rotating signer for an account from several secret
@@ -102,7 +106,7 @@ impl ClientBuilder {
                 .await
                 .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
         }
-        Ok(self.signer(account_id, signer))
+        Ok(self.with_signer(account_id, signer))
     }
 
     /// Use a specific operation store (e.g. a durable `PostgresStore`) for

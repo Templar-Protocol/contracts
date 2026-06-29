@@ -53,7 +53,7 @@ pub async fn start(
                 );
 
                 for pending in pending_transactions {
-                    if let Err(e) = reconcile(&database, &gateway, &pending).await {
+                    if let Err(e) = reconcile_pending(&database, &gateway, &pending).await {
                         tracing::warn!(
                             account_id = %pending.account_id,
                             operation_key = %pending.operation_key,
@@ -76,8 +76,8 @@ enum Resolution {
     },
     /// The operation never reached the gateway; release the pending slot.
     Release,
-    /// Still in flight; leave it for a later sweep.
-    InFlight,
+    /// Not yet resolvable (still in flight); defer it to a later sweep.
+    Defer,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,12 +90,12 @@ enum ReconcileError {
     Finalize(#[from] RecordTransactionError),
 }
 
-async fn reconcile(
+async fn reconcile_pending(
     database: &Database,
     gateway: &GatewayClient,
     pending: &PendingTransaction,
 ) -> Result<(), ReconcileError> {
-    match resolve(gateway, pending).await? {
+    match classify(gateway, pending).await? {
         Resolution::Settle {
             transaction_hash,
             tokens_burnt,
@@ -116,15 +116,15 @@ async fn reconcile(
                 .remove_pending_transaction(&pending.account_id)
                 .await?;
         }
-        Resolution::InFlight => {}
+        Resolution::Defer => {}
     }
     Ok(())
 }
 
-/// Resolve a pending row against the gateway operation store — the source of
+/// Classify a pending row against the gateway operation store — the source of
 /// truth for an interrupted operation's outcome (it records the signer, the
-/// on-chain hash, and survives relayer restarts).
-async fn resolve(
+/// on-chain hash, and survives relayer restarts) — into how it should be settled.
+async fn classify(
     gateway: &GatewayClient,
     pending: &PendingTransaction,
 ) -> Result<Resolution, ReconcileError> {
@@ -137,7 +137,7 @@ async fn resolve(
 
     let Some(tx_hash) = operation.latest_tx_hash() else {
         // Submitted but no on-chain hash yet; reconcile on a later sweep.
-        return Ok(Resolution::InFlight);
+        return Ok(Resolution::Defer);
     };
 
     let status = gateway
@@ -150,7 +150,7 @@ async fn resolve(
         .await?;
 
     if status.status == tx::Status::Pending {
-        return Ok(Resolution::InFlight);
+        return Ok(Resolution::Defer);
     }
 
     Ok(Resolution::Settle {
