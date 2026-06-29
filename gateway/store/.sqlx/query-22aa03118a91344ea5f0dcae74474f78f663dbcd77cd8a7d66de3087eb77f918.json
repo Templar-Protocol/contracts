@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT\n    step_index,\n    contract_id,\n    status,\n    logs\nFROM\n    gateway_operation_step_receipts\nWHERE\n    operation_id = $1\nORDER BY\n    step_index ASC,\n    receipt_index ASC\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "step_index",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "contract_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "logs",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "22aa03118a91344ea5f0dcae74474f78f663dbcd77cd8a7d66de3087eb77f918"
+}

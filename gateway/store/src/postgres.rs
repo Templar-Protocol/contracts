@@ -15,8 +15,8 @@ use templar_gateway_core::{
     PlannedTransaction, StoredOperation, SucceededStep,
 };
 use templar_gateway_types::{
-    operation::{ExecutionOutcome, OperationId},
-    CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
+    operation::{ExecutionOutcome, OperationId, ReceiptOutcome, ReceiptStatus},
+    CryptoHash, IdempotencyKey, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
 
 /// The Postgres schema the operation store confines itself to unless overridden.
@@ -85,7 +85,6 @@ struct OperationStepRow {
         reason = "loaded from the audit table for row-shape completeness"
     )]
     operation_id: uuid::Uuid,
-    #[allow(dead_code, reason = "step ordering metadata retained in the row DTO")]
     step_index: i32,
     signer_account_id: String,
     receiver_id: String,
@@ -94,7 +93,11 @@ struct OperationStepRow {
     state: OperationStepStateRow,
     tx_hash: Option<String>,
     signed_transaction: Option<Vec<u8>>,
-    outcome: Option<Value>,
+    // Execution-outcome scalars (present iff the step executed); the per-receipt
+    // detail lives in `gateway_operation_step_receipts`.
+    outcome_tokens_burnt: Option<String>,
+    outcome_total_gas_burnt: Option<String>,
+    outcome_return_value: Option<Vec<u8>>,
     #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     created_at: DateTime<Utc>,
     #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
@@ -192,7 +195,8 @@ WHERE
         };
 
         let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
-        rows_to_stored_operation(operation_row, step_rows).map(Some)
+        let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
+        rows_to_stored_operation(operation_row, step_rows, receipts).map(Some)
     }
 
     async fn get_by_idempotency_key(
@@ -237,7 +241,8 @@ WHERE
         };
 
         let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
-        rows_to_stored_operation(operation_row, step_rows).map(Some)
+        let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
+        rows_to_stored_operation(operation_row, step_rows, receipts).map(Some)
     }
 
     async fn create_or_get_operation(
@@ -327,7 +332,8 @@ ORDER BY
                 updated_at: row.updated_at,
             };
             let steps = load_step_rows(&self.pool, operation_row.id).await?;
-            operations.push(rows_to_stored_operation(operation_row, steps)?);
+            let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
+            operations.push(rows_to_stored_operation(operation_row, steps, receipts)?);
         }
         Ok(operations)
     }
@@ -543,10 +549,10 @@ async fn insert_step_row(
         .map(to_vec)
         .transpose()
         .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-    let outcome = outcome
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(GatewayError::JsonSerialization)?;
+    // u128/u64 amounts as lossless decimal text; return value as raw bytes.
+    let tokens_burnt = outcome.map(|o| o.tokens_burnt.as_yoctonear().to_string());
+    let total_gas_burnt = outcome.map(|o| o.total_gas_burnt.as_gas().to_string());
+    let return_value = outcome.and_then(|o| o.return_value.as_ref().map(|b| b.0.clone()));
 
     sqlx::query!(
         r#"
@@ -561,10 +567,12 @@ INSERT INTO
         state,
         tx_hash,
         signed_transaction,
-        outcome
+        outcome_tokens_burnt,
+        outcome_total_gas_burnt,
+        outcome_return_value
     )
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 "#,
         operation_id,
         step_index,
@@ -575,12 +583,65 @@ VALUES
         state as OperationStepStateRow,
         tx_hash.map(|hash| hash.0.to_string()),
         signed_transaction,
-        outcome,
+        tokens_burnt,
+        total_gas_burnt,
+        return_value,
     )
     .execute(&mut **tx)
     .await?;
 
+    // One row per receipt (the outcome's per-receipt detail).
+    if let Some(outcome) = outcome {
+        for (receipt_index, receipt) in outcome.receipts.iter().enumerate() {
+            sqlx::query!(
+                r#"
+INSERT INTO
+    gateway_operation_step_receipts (
+        operation_id,
+        step_index,
+        receipt_index,
+        contract_id,
+        status,
+        logs
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6)
+"#,
+                operation_id,
+                step_index,
+                i32::try_from(receipt_index).map_err(|_| {
+                    GatewayError::InvalidStoredOperation(
+                        "receipt index exceeds i32 range".to_owned(),
+                    )
+                })?,
+                receipt.contract_id.to_string(),
+                receipt_status_str(receipt.status),
+                &receipt.logs,
+            )
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+
     Ok(())
+}
+
+/// The `status` text stored for a receipt (DB CHECK enforces this set).
+fn receipt_status_str(status: ReceiptStatus) -> &'static str {
+    match status {
+        ReceiptStatus::Succeeded => "succeeded",
+        ReceiptStatus::Failed => "failed",
+    }
+}
+
+fn parse_receipt_status(value: &str) -> GatewayResult<ReceiptStatus> {
+    match value {
+        "succeeded" => Ok(ReceiptStatus::Succeeded),
+        "failed" => Ok(ReceiptStatus::Failed),
+        other => Err(GatewayError::InvalidStoredOperation(format!(
+            "invalid receipt status {other:?}"
+        ))),
+    }
 }
 
 async fn load_step_rows(
@@ -599,7 +660,9 @@ SELECT
     state AS "state: OperationStepStateRow",
     tx_hash,
     signed_transaction,
-    outcome,
+    outcome_tokens_burnt,
+    outcome_total_gas_burnt,
+    outcome_return_value,
     created_at,
     updated_at
 FROM
@@ -626,24 +689,74 @@ ORDER BY
             state: row.state,
             tx_hash: row.tx_hash,
             signed_transaction: row.signed_transaction,
-            outcome: row.outcome,
+            outcome_tokens_burnt: row.outcome_tokens_burnt,
+            outcome_total_gas_burnt: row.outcome_total_gas_burnt,
+            outcome_return_value: row.outcome_return_value,
             created_at: row.created_at,
             updated_at: row.updated_at,
         })
         .collect())
 }
 
+/// Load every step's receipts for an operation, grouped by `step_index` and
+/// ordered by `receipt_index`.
+async fn load_step_receipts(
+    pool: &PgPool,
+    operation_id: uuid::Uuid,
+) -> GatewayResult<std::collections::HashMap<i32, Vec<ReceiptOutcome>>> {
+    let rows = sqlx::query!(
+        r#"
+SELECT
+    step_index,
+    contract_id,
+    status,
+    logs
+FROM
+    gateway_operation_step_receipts
+WHERE
+    operation_id = $1
+ORDER BY
+    step_index ASC,
+    receipt_index ASC
+"#,
+        operation_id,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut by_step: std::collections::HashMap<i32, Vec<ReceiptOutcome>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let contract_id = row
+            .contract_id
+            .parse::<near_account_id::AccountId>()
+            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+        by_step
+            .entry(row.step_index)
+            .or_default()
+            .push(ReceiptOutcome {
+                contract_id,
+                status: parse_receipt_status(&row.status)?,
+                logs: row.logs,
+            });
+    }
+    Ok(by_step)
+}
+
 fn rows_to_stored_operation(
     operation_row: OperationRow,
     step_rows: Vec<OperationStepRow>,
+    mut receipts_by_step: std::collections::HashMap<i32, Vec<ReceiptOutcome>>,
 ) -> GatewayResult<StoredOperation> {
     let mut succeeded_steps = Vec::new();
     let mut current_step = None;
     let mut remaining_steps = VecDeque::new();
 
     for row in step_rows {
+        let receipts = receipts_by_step.remove(&row.step_index).unwrap_or_default();
         apply_step_row(
             row,
+            receipts,
             &mut succeeded_steps,
             &mut current_step,
             &mut remaining_steps,
@@ -691,15 +804,21 @@ fn rows_to_stored_operation(
 
 fn apply_step_row(
     row: OperationStepRow,
+    receipts: Vec<ReceiptOutcome>,
     succeeded_steps: &mut Vec<SucceededStep>,
     current_step: &mut Option<templar_gateway_core::CurrentStep>,
     remaining_steps: &mut VecDeque<PlannedTransaction>,
 ) -> GatewayResult<()> {
     let transaction = step_row_transaction(&row)?;
+    let outcome = build_outcome(&row, receipts)?;
     match row.state {
         OperationStepStateRow::Succeeded => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "succeeded")?;
-            let outcome = parse_required_outcome(row.outcome, "succeeded")?;
+            let outcome = outcome.ok_or_else(|| {
+                GatewayError::InvalidStoredOperation(
+                    "succeeded step is missing its execution outcome".to_owned(),
+                )
+            })?;
             succeeded_steps.push(SucceededStep {
                 transaction,
                 tx_hash,
@@ -726,7 +845,7 @@ fn apply_step_row(
         // `Rejected` otherwise.
         OperationStepStateRow::Failed => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "failed")?;
-            *current_step = Some(match parse_optional_outcome(row.outcome)? {
+            *current_step = Some(match outcome {
                 Some(outcome) => templar_gateway_core::CurrentStep::Reverted {
                     transaction,
                     tx_hash,
@@ -743,19 +862,32 @@ fn apply_step_row(
     Ok(())
 }
 
-fn parse_optional_outcome(value: Option<Value>) -> GatewayResult<Option<ExecutionOutcome>> {
-    value
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(GatewayError::JsonSerialization)
-}
-
-fn parse_required_outcome(value: Option<Value>, state: &str) -> GatewayResult<ExecutionOutcome> {
-    parse_optional_outcome(value)?.ok_or_else(|| {
-        GatewayError::InvalidStoredOperation(format!(
-            "{state} step is missing its execution outcome"
-        ))
-    })
+/// Reconstruct a step's [`ExecutionOutcome`] from its scalar columns and loaded
+/// receipts. Returns `None` when the step never executed (no scalars stored).
+fn build_outcome(
+    row: &OperationStepRow,
+    receipts: Vec<ReceiptOutcome>,
+) -> GatewayResult<Option<ExecutionOutcome>> {
+    // The two scalars are written together (DB CHECK), so either both are
+    // present (the step executed) or neither is.
+    let (Some(tokens), Some(gas)) = (
+        row.outcome_tokens_burnt.as_deref(),
+        row.outcome_total_gas_burnt.as_deref(),
+    ) else {
+        return Ok(None);
+    };
+    let tokens_burnt = NearToken::from_yoctonear(tokens.parse().map_err(|_| {
+        GatewayError::InvalidStoredOperation(format!("invalid tokens_burnt {tokens:?}"))
+    })?);
+    let total_gas_burnt = NearGas::from_gas(gas.parse().map_err(|_| {
+        GatewayError::InvalidStoredOperation(format!("invalid total_gas_burnt {gas:?}"))
+    })?);
+    Ok(Some(ExecutionOutcome {
+        tokens_burnt,
+        total_gas_burnt,
+        receipts,
+        return_value: row.outcome_return_value.clone().map(Into::into),
+    }))
 }
 
 fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransaction> {
@@ -837,7 +969,18 @@ mod tests {
         ExecutionOutcome {
             tokens_burnt: NearToken::from_yoctonear(42),
             total_gas_burnt: NearGas::from_gas(1_000),
-            receipts: vec![],
+            receipts: vec![
+                ReceiptOutcome {
+                    contract_id: "receiver.near".parse().unwrap(),
+                    status: ReceiptStatus::Succeeded,
+                    logs: vec!["hello".to_owned()],
+                },
+                ReceiptOutcome {
+                    contract_id: "callback.near".parse().unwrap(),
+                    status: ReceiptStatus::Failed,
+                    logs: vec![],
+                },
+            ],
             return_value: None,
         }
     }
@@ -974,14 +1117,16 @@ mod tests {
                     .to_string(),
             ),
             signed_transaction: None,
-            outcome: Some(
-                serde_json::to_value(&operation.succeeded_steps.first().unwrap().outcome).unwrap(),
-            ),
+            outcome_tokens_burnt: Some(sample_outcome().tokens_burnt.as_yoctonear().to_string()),
+            outcome_total_gas_burnt: Some(sample_outcome().total_gas_burnt.as_gas().to_string()),
+            outcome_return_value: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }];
+        let receipts =
+            std::collections::HashMap::from([(0_i32, sample_outcome().receipts.clone())]);
 
-        let restored = rows_to_stored_operation(operation_row, step_rows).unwrap();
+        let restored = rows_to_stored_operation(operation_row, step_rows, receipts).unwrap();
         assert_eq!(restored.status(), OperationStatus::Succeeded);
         assert_eq!(restored.succeeded_steps.len(), 1);
         assert_eq!(

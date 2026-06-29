@@ -3,7 +3,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    operation::{ExecutionOutcome, OperationRecord, OperationStatus, ReceiptOutcome},
+    operation::{
+        ExecutionOutcome, OperationRecord, OperationStatus, ReceiptOutcome, ReceiptStatus,
+    },
     Base64Bytes, IdempotencyKey, MethodSpec, NearToken, OperationId,
 };
 
@@ -369,6 +371,14 @@ fn execution_outcome(result: ExecutionFinalResult) -> ExecutionOutcome {
         .map(|outcome| outcome.tokens_burnt)
         .fold(NearToken::from_yoctonear(0), NearToken::saturating_add);
     let total_gas_burnt = result.total_gas_burnt;
+    // A receipt is failed iff `receipt_failures()` (which reads near_api's
+    // private per-receipt status) returns a reference to it; compare by identity
+    // since those references point into the `receipt_outcomes()` slice.
+    let failed: Vec<*const _> = result
+        .receipt_failures()
+        .iter()
+        .map(|outcome| std::ptr::from_ref(*outcome))
+        .collect();
     // Group logs per receipt with the executing contract, preserving receipt
     // boundaries so consumers can attribute log content safely. Excludes the
     // transaction outcome (not a receipt; it emits no logs).
@@ -377,6 +387,11 @@ fn execution_outcome(result: ExecutionFinalResult) -> ExecutionOutcome {
         .iter()
         .map(|outcome| ReceiptOutcome {
             contract_id: outcome.executor_id.clone(),
+            status: if failed.contains(&std::ptr::from_ref(outcome)) {
+                ReceiptStatus::Failed
+            } else {
+                ReceiptStatus::Succeeded
+            },
             logs: outcome.logs.clone(),
         })
         .collect();

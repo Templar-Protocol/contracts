@@ -3,8 +3,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Base64Bytes, CryptoHash, ManagedAccountId, NearGas, NearToken};
 
-/// The outcome of a single receipt: the contract that executed it and the logs
-/// it emitted.
+/// Whether a single receipt executed successfully or failed.
+///
+/// A transaction can be a top-level success while an inner receipt fails (e.g. a
+/// rejected `ft_transfer_call` whose callback panics and is refunded), so a
+/// consumer that requires *every* receipt to have succeeded must check this.
+/// (The failure *message* is not captured — near_api keeps per-receipt status
+/// private; see ENG-407.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum ReceiptStatus {
+    Succeeded,
+    Failed,
+}
+
+/// The outcome of a single receipt: the contract that executed it, whether it
+/// succeeded, and the logs it emitted.
 ///
 /// Logs are grouped per receipt rather than flattened so that (a) consumers
 /// interpreting log *content* (e.g. detecting a token transfer) can attribute it
@@ -14,6 +27,7 @@ use crate::{Base64Bytes, CryptoHash, ManagedAccountId, NearGas, NearToken};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReceiptOutcome {
     pub contract_id: near_account_id::AccountId,
+    pub status: ReceiptStatus,
     pub logs: Vec<String>,
 }
 
