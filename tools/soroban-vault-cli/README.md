@@ -143,8 +143,8 @@ Common role terms:
   run market allocation and refresh operations. The vault curator is always authorized as an
   allocator too.
 - `adapter`: a market route such as a Blend adapter or custodial adapter. The governance admin must
-  allow adapters and place them into the typed supply queue before allocations can route through
-  them.
+  allow adapters, set a nonzero market cap, and place them into the typed supply queue before
+  allocations can route through them.
 
 ### Allocation Through Adapters
 
@@ -156,17 +156,41 @@ Allocation is a two-step mental model:
 
 Adapters can exist in the deployment manifest before they are usable by the vault. A Blend or
 custodial adapter becomes an active supply route only after governance adds it to the allowed
-adapter set and binds it into the supply queue:
+adapter set, sets a nonzero market cap, and binds it into the supply queue:
 
 ```sh
 tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR_OR_MULTISIG... \
   --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind allowed-adapters
+
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 0 \
+  --cap 1000000000
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 1 \
+  --cap 1000000000
+# After the cap proposals are ready, verify and accept the specific SetCap proposal ids.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_1_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR_OR_MULTISIG... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR_OR_MULTISIG... \
+  --proposal-id CAP_MARKET_1_PROPOSAL_ID
 
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR_OR_MULTISIG... \
   --entry 0:CBLENDADAPTER... \
   --entry 1:CCUSTODIALADAPTER...
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind supply-queue
 ```
 
 Each `--entry` is `market_id:adapter_address`. The `market_id` is the same value passed later to
@@ -196,8 +220,9 @@ For cross-chain Templar market routes, keep the accounting boundary at the adapt
 not track each off-chain hop after assets leave Stellar, and it does not map individual vault shares
 to a NEAR account, universal account, or market position. User shares are derived from vault NAV:
 `total_assets / total_shares`. The adapter reports the aggregate route NAV back to the vault through
-its `total_assets(asset)` surface, and the vault incorporates that value when allocators supply,
-withdraw, or run `curator refresh-markets`.
+its `total_assets(asset)` surface, and the vault incorporates that value when allocators supply or
+run `curator refresh-markets`. `curator allocate-withdraw` does not refresh route NAV; it verifies
+the realized token balance delta and subtracts that amount from stored principal.
 
 Operationally, a Templar route may move assets through custody, bridge or intents infrastructure,
 and a NEAR-side supply position. From the Stellar vault's perspective, that path is one
@@ -209,7 +234,7 @@ Withdrawals use two different CLI surfaces:
 - `curator allocate-withdraw` is an allocator operation. It pulls liquidity back from the adapter
   bound to a market id by calling the adapter's `progress_withdrawal(vault, asset, amount)`. The
   `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
-  returned by the adapter.
+  returned by the adapter without calling adapter `total_assets`.
 - `user request-withdraw` and `user execute-withdraw` are user exit operations. `request-withdraw`
   queues shares for withdrawal after the configured cooldown. `execute-withdraw` attempts to pay the
   next ready request from idle vault assets. If idle assets are not sufficient, an allocator first
@@ -251,7 +276,9 @@ Curator commands fall into three groups:
 
 For timelocked deployments, submit commands create proposals and `accept-ready` accepts them only
 after the relevant timelock has elapsed. Use `governance queue` and `governance explain` to inspect
-pending proposal ids and readiness.
+pending proposal ids and readiness. For market caps, prefer accepting the specific SetCap proposal id
+after `explain` confirms the market id; avoid filtering ready proposals by cap kind because that
+text match can also include cap-group proposals.
 
 ### Single Curator
 
@@ -268,6 +295,16 @@ tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR... \
   --adapters CBLENDADAPTER...
 tmplr-soroban-vault governance accept-ready --admin GCURATOR... --kind allowed-adapters
+
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR... \
+  --market-id 0 \
+  --cap 1000000000
+# After the cap proposal is ready, verify and accept the specific SetCap proposal id.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
 
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR... \
@@ -289,6 +326,15 @@ tmplr-soroban-vault curator set-allowed-adapters \
   --admin GCURATOR... \
   --adapters CBLENDADAPTER... \
   --auto-accept
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR... \
+  --market-id 0 \
+  --cap 1000000000
+# After the cap proposal is ready, verify and accept the specific SetCap proposal id.
+tmplr-soroban-vault governance explain --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
 tmplr-soroban-vault curator set-supply-queue \
   --admin GCURATOR... \
   --entry 0:CBLENDADAPTER... \
@@ -311,6 +357,9 @@ tmplr-soroban-vault governance plan-submit-set-supply-queue \
   --admin CMULTISIG... \
   --entry 0:CBLENDADAPTER...
 ```
+
+Fresh markets need an accepted `submit-set-cap --market-id ... --cap ...` proposal before governance
+accepts a supply queue containing that market. `--cap` is expressed in raw asset base units.
 
 When the multisig can authorize the child invocation directly, submit and accept through the CLI:
 
@@ -430,6 +479,14 @@ tmplr-soroban-vault governance submit-set-allocators \
 tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR_OR_MULTISIG... \
   --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 0 \
+  --cap 1000000000
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 1 \
+  --cap 1000000000
 tmplr-soroban-vault governance submit-set-supply-queue \
   --admin GCURATOR_OR_MULTISIG... \
   --entry 0:CBLENDADAPTER... \
@@ -456,12 +513,18 @@ stellar contract invoke \
   --paused true
 ```
 
+Run `curator refresh-markets` after adapter NAV changes and before relying on share-rate or
+accounting views. `curator allocate-supply` observes adapter `total_assets` after supplying, but
+`curator allocate-withdraw` verifies the realized token balance delta and subtracts that amount from
+stored principal; it does not refresh route NAV.
+
 For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
-then allow the deployed adapter and add it to the supply queue before allocating to it. Each
-custodial adapter is bound to the manifest asset token at deployment and rejects calls for any
-other asset. The custodian, adapter admin, or vault can explicitly report route NAV on the adapter.
-Reports include the current stored NAV and a monotonically increasing nonce so stale heartbeats
-cannot re-add assets that have already been released back to the vault:
+then allow the deployed adapter, set a nonzero market cap, refresh reported NAV, and add it to the
+supply queue before allocating to it. Each custodial adapter is bound to the manifest asset token at
+deployment and rejects calls for any other asset. The custodian, adapter admin, or vault can
+explicitly report route NAV on the adapter. Reports include the current stored NAV and a
+monotonically increasing nonce so stale heartbeats cannot re-add assets that have already been
+released back to the vault:
 
 ```sh
 stellar contract invoke \
@@ -573,7 +636,7 @@ tmplr-soroban-vault curator allocate-supply \
 # Allocator recovery from an in-flight withdrawing state.
 tmplr-soroban-vault curator abort-withdrawing --caller G... --op-id 42
 
-# Curator maintenance operations.
+# Curator maintenance operations. Refresh adapter NAV before relying on share-rate or accounting views.
 tmplr-soroban-vault curator refresh-markets --caller G... --markets 0,1
 tmplr-soroban-vault curator refresh-fees
 tmplr-soroban-vault curator resync-idle
@@ -582,6 +645,12 @@ tmplr-soroban-vault curator resync-idle
 tmplr-soroban-vault curator set-supply-queue \
   --admin G... \
   --entry 0:C...
+
+# Fresh markets need a nonzero raw asset-unit cap before governance accepts them in the supply queue.
+tmplr-soroban-vault governance submit-set-cap \
+  --admin G... \
+  --market-id 0 \
+  --cap 1000000000
 
 # Submit the same typed supply queue directly to governance.
 tmplr-soroban-vault governance submit-set-supply-queue \

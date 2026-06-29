@@ -9,8 +9,8 @@ use templar_common::asset::{
     FungibleAssetAmount,
 };
 use templar_gateway_client::SigningClient;
-use templar_gateway_methods_spec::market;
-use templar_gateway_types::OperationStatus;
+use templar_gateway_methods_spec::{market, tx};
+use templar_gateway_types::{common::TxExecutionStatus, OperationStatus};
 
 use crate::{
     inventory, swap::SwapProvider, CollateralStrategy, LiquidationOutcome, LiquidatorError,
@@ -184,9 +184,50 @@ impl LiquidationExecutor {
             Ok(operation_result) => {
                 let tx_duration = tx_start.elapsed();
 
-                // Check if the operation (and thus all receipts) succeeded.
                 match operation_result.operation.status {
                     OperationStatus::Succeeded => {
+                        // The operation status reflects only the transaction's
+                        // final receipt. `market::Liquidate` is an
+                        // `ft_transfer_call`, so a liquidation the market rejects
+                        // makes the receiver callback panic while
+                        // `ft_resolve_transfer` refunds and the top-level
+                        // transaction still succeeds. Treat any failed receipt as
+                        // a failed liquidation.
+                        let failed_receipt =
+                            match self.first_failed_receipt(&operation_result).await {
+                                Ok(failed_receipt) => failed_receipt,
+                                Err(error) => {
+                                    // Inventory was reserved above; release it before
+                                    // surfacing the inspection error, like the other
+                                    // failure paths.
+                                    self.inventory
+                                        .write()
+                                        .await
+                                        .release(borrow_asset, liquidation_amount);
+                                    return Err(error);
+                                }
+                            };
+
+                        if let Some(failed_on) = failed_receipt {
+                            self.inventory
+                                .write()
+                                .await
+                                .release(borrow_asset, liquidation_amount);
+
+                            let operation_id = operation_result.operation.id.0.clone();
+                            let error_msg = format!(
+                                "Liquidation operation {operation_id} succeeded at top level but a receipt on {failed_on} failed (likely rejected and refunded)"
+                            );
+                            tracing::error!(
+                                borrower = %borrow_account,
+                                liquidation_amount = %u128::from(liquidation_amount),
+                                operation_id = %operation_id,
+                                failed_receipt_account = %failed_on,
+                                "Liquidation reverted in a receipt despite top-level success, inventory released"
+                            );
+                            return Err(LiquidatorError::TransactionFailed(error_msg));
+                        }
+
                         tracing::info!(
                             borrower = %borrow_account,
                             liquidation_amount = %u128::from(liquidation_amount),
@@ -284,6 +325,33 @@ impl LiquidationExecutor {
                 Err(LiquidatorError::LiquidationTransactionError(e.into()))
             }
         }
+    }
+
+    /// Return the first contract whose receipt failed for a completed operation,
+    /// if any.
+    ///
+    /// The gateway's operation status only reflects the transaction's final
+    /// receipt, so a rejected `ft_transfer_call` — whose receiver callback
+    /// panicked and was refunded by `ft_resolve_transfer` — reports success.
+    /// This fetches the receipt outcomes so the caller can detect that.
+    async fn first_failed_receipt(
+        &self,
+        result: &templar_gateway_types::common::WriteOperationResult,
+    ) -> LiquidatorResult<Option<String>> {
+        let Some(tx_hash) = result.operation.latest_tx_hash() else {
+            return Ok(None);
+        };
+        let detail = self
+            .client
+            .read(tx::Get {
+                tx_hash,
+                sender_account_id: result.operation.signer_account_id.0.clone(),
+                wait_until: Some(TxExecutionStatus::Executed),
+                encoding: tx::ValueEncoding::Json,
+            })
+            .await
+            .map_err(|error| LiquidatorError::LiquidationTransactionError(error.into()))?;
+        Ok(detail.failed_receipts.first().map(ToString::to_string))
     }
 
     /// Swap collateral immediately after liquidation.

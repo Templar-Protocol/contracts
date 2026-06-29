@@ -148,6 +148,8 @@ done
 
 # Add NEAR_RPC_URL if set. The bot no longer sends an X-API-Key header, so fold
 # any NEAR_API_KEY into the URL (FastNear/QuickNode accept `?apiKey=<key>`).
+# Pass it via the environment (clap reads `NEAR_RPC_URL`) rather than argv, so
+# the secret-bearing URL isn't exposed in the process list.
 if [ -n "$NEAR_RPC_URL" ]; then
     if [ -n "$NEAR_API_KEY" ]; then
         case "$NEAR_RPC_URL" in
@@ -155,7 +157,7 @@ if [ -n "$NEAR_RPC_URL" ]; then
             *)    NEAR_RPC_URL="${NEAR_RPC_URL}?apiKey=${NEAR_API_KEY}" ;;
         esac
     fi
-    CMD_ARGS+=("--near-rpc-url" "$NEAR_RPC_URL")
+    export NEAR_RPC_URL
 elif [ -n "$NEAR_API_KEY" ]; then
     echo "WARNING: NEAR_API_KEY is set but NEAR_RPC_URL is not; the key is ignored. Set NEAR_RPC_URL to an authenticated endpoint." >&2
 fi

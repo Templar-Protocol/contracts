@@ -10,8 +10,10 @@ use near_sdk::{
 };
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 use templar_gateway_client::SigningClient;
-use templar_gateway_methods_spec::{ft, ref_finance, storage};
-use templar_gateway_types::{NearToken, OperationStatus, U128 as GatewayU128};
+use templar_gateway_methods_spec::{ft, ref_finance, storage, tx};
+use templar_gateway_types::{
+    common::TxExecutionStatus, NearToken, OperationStatus, U128 as GatewayU128,
+};
 
 use crate::rpc::{AppError, AppResult};
 
@@ -421,6 +423,29 @@ impl SwapProvider for RefSwap {
             )));
         }
 
+        // A Ref swap is an `ft_transfer_call`, so the receiver callback can fail
+        // and be refunded while the top-level transaction still reports success.
+        // Verify no receipt failed (same NEP-141 pattern handled in the
+        // liquidation executor).
+        if let Some(tx_hash) = result.operation.latest_tx_hash() {
+            let detail = self
+                .client
+                .read(tx::Get {
+                    tx_hash,
+                    sender_account_id: result.operation.signer_account_id.0.clone(),
+                    wait_until: Some(TxExecutionStatus::Executed),
+                    encoding: tx::ValueEncoding::Json,
+                })
+                .await
+                .map_err(|e| AppError::Rpc(e.into()))?;
+            if let Some(failed_on) = detail.failed_receipts.first() {
+                return Err(AppError::ValidationError(format!(
+                    "Ref Finance swap operation {} succeeded at top level but a receipt on {failed_on} failed (likely refunded)",
+                    result.operation.id.0
+                )));
+            }
+        }
+
         tracing::info!("Ref Finance swap executed successfully");
         Ok(())
     }
@@ -493,15 +518,17 @@ impl SwapProvider for RefSwap {
                 );
                 Ok(())
             }
-            Ok(_) => {
-                // A non-success status here is most commonly an already-registered
-                // account; treat it as non-fatal so the swap can proceed.
-                tracing::debug!(
-                    account = %account_id,
-                    token = %token_contract.contract_id(),
-                    "Storage registration did not succeed (likely already registered)"
-                );
-                Ok(())
+            Ok(result) => {
+                // A non-success status is a genuine registration failure, not a
+                // proxy for "already registered" (an already-registered
+                // `storage_deposit` succeeds and refunds). Proceeding would swap
+                // against an unregistered account, so surface it.
+                Err(AppError::ValidationError(format!(
+                    "Storage registration for {} on {} ended with status {:?}",
+                    account_id,
+                    token_contract.contract_id(),
+                    result.operation.status
+                )))
             }
             Err(e) => {
                 // If already registered, that's fine

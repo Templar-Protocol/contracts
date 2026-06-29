@@ -272,21 +272,35 @@ struct TokenInfo {
 }
 
 /// A NEP-297 event envelope (`EVENT_JSON:{…}`) as emitted in transaction logs,
-/// typed just enough to read NEP-141 `ft_transfer` events.
+/// typed just enough to read NEP-141 `ft_transfer` and NEP-245 `mt_transfer`
+/// events.
 #[derive(Debug, Deserialize)]
 struct Nep297Event {
     standard: String,
     event: String,
     #[serde(default)]
-    data: Vec<FtTransferEvent>,
+    data: Vec<TransferEvent>,
 }
 
-/// One entry in a NEP-141 `ft_transfer` event's `data` array.
+/// One entry in an `ft_transfer` (NEP-141) or `mt_transfer` (NEP-245) event's
+/// `data` array. NEP-141 carries a single `amount`; NEP-245 carries parallel
+/// `amounts` (one per token id).
 #[derive(Debug, Deserialize)]
-struct FtTransferEvent {
+struct TransferEvent {
     old_owner_id: Option<AccountId>,
     new_owner_id: Option<AccountId>,
-    amount: U128,
+    #[serde(default)]
+    amount: Option<U128>,
+    #[serde(default)]
+    amounts: Vec<U128>,
+}
+
+impl TransferEvent {
+    /// Total transferred in this entry, across NEP-141's single `amount` and
+    /// NEP-245's `amounts`.
+    fn total_amount(&self) -> u128 {
+        self.amount.map_or(0, |a| a.0) + self.amounts.iter().map(|a| a.0).sum::<u128>()
+    }
 }
 
 /// Parse a single transaction log line into a typed NEP-297 event, if it is one.
@@ -637,11 +651,22 @@ impl OneClickSwap {
             })
             .await
         {
-            Ok(result) => {
+            Ok(result) if result.operation.status == OperationStatus::Succeeded => {
                 tracing::debug!(
                     account = %account_id,
-                    status = ?result.operation.status,
                     "Storage deposit completed"
+                );
+                Ok(())
+            }
+            Ok(result) => {
+                // NEP-245 tokens are excluded upstream and an already-registered
+                // `storage_deposit` succeeds, so a non-success status is a genuine
+                // registration failure. The deposit may then be refunded (refund
+                // detection backstops it); surface it loudly rather than ignoring.
+                tracing::warn!(
+                    account = %account_id,
+                    status = ?result.operation.status,
+                    "Storage deposit did not succeed; deposit may be refunded (refund detection backstops)"
                 );
                 Ok(())
             }
@@ -703,8 +728,20 @@ impl OneClickSwap {
                     })
                     .await
                 {
-                    Ok(_) => {
-                        tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
+                    Ok(result) => {
+                        // A non-success status (the account already exists is a
+                        // success) means creation failed; the later token deposit
+                        // would then be refunded, which refund detection catches,
+                        // but surface it loudly rather than logging "created".
+                        if result.operation.status == OperationStatus::Succeeded {
+                            tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
+                        } else {
+                            tracing::warn!(
+                                deposit_account = %deposit_account,
+                                status = ?result.operation.status,
+                                "Implicit account creation did not succeed; proceeding (refund detection backstops)"
+                            );
+                        }
 
                         // Wait for account creation to propagate (1-2 blocks)
                         // This prevents race conditions with storage registration
@@ -751,29 +788,12 @@ impl OneClickSwap {
             .map_err(|e| AppError::Rpc(e.into()))?;
 
         let operation = &operation_result.operation;
-        let tx_hash = operation.latest_tx_hash();
-        let tx_hash_str = tx_hash.map_or_else(|| operation.id.0.clone(), |hash| hash.to_string());
 
         match operation.status {
-            OperationStatus::Succeeded => {
-                let account_type_str = match deposit_account.get_account_type() {
-                    AccountType::NamedAccount => "named",
-                    AccountType::NearImplicitAccount => "implicit",
-                    AccountType::EthImplicitAccount => "eth-implicit",
-                    AccountType::NearDeterministicAccount => "deterministic",
-                };
-                tracing::info!(
-                    tx_hash = %tx_hash_str,
-                    asset = %asset_str,
-                    amount_raw = %amount.0,
-                    deposit_address = %deposit_address,
-                    account_type = %account_type_str,
-                    "Deposit transaction succeeded"
-                );
-            }
+            OperationStatus::Succeeded => {}
             failed_status => {
                 tracing::error!(
-                    tx_hash = %tx_hash_str,
+                    operation_id = %operation.id.0,
                     status = ?failed_status,
                     "Deposit transaction failed"
                 );
@@ -784,14 +804,36 @@ impl OneClickSwap {
             }
         }
 
-        // Check if the deposit was refunded by fetching the transaction logs.
-        let refunded = match tx_hash {
-            Some(hash) => {
-                self.check_deposit_refunded(hash, &deposit_account, amount)
-                    .await
-            }
-            None => Ok(None),
+        // A succeeded deposit must carry a transaction hash; never fall back to
+        // the operation id, which is not a valid tx hash for the 1-Click API.
+        let tx_hash = operation.latest_tx_hash().ok_or_else(|| {
+            AppError::ValidationError(format!(
+                "Deposit operation {} succeeded without a transaction hash",
+                operation.id.0
+            ))
+        })?;
+        let tx_hash_str = tx_hash.to_string();
+
+        let account_type_str = match deposit_account.get_account_type() {
+            AccountType::NamedAccount => "named",
+            AccountType::NearImplicitAccount => "implicit",
+            AccountType::EthImplicitAccount => "eth-implicit",
+            AccountType::NearDeterministicAccount => "deterministic",
         };
+        tracing::info!(
+            tx_hash = %tx_hash_str,
+            asset = %asset_str,
+            amount_raw = %amount.0,
+            deposit_address = %deposit_address,
+            account_type = %account_type_str,
+            "Deposit transaction succeeded"
+        );
+
+        // Always run refund detection now that the hash is known (no silent
+        // "assume accepted" path when the hash is absent).
+        let refunded = self
+            .check_deposit_refunded(tx_hash, &deposit_account, amount)
+            .await;
 
         match refunded {
             Ok(Some(refund_amount)) => {
@@ -852,7 +894,12 @@ impl OneClickSwap {
             let Some(event) = parse_nep297_event(log) else {
                 continue;
             };
-            if event.standard != "nep141" || event.event != "ft_transfer" {
+            // This provider deposits NEP-141 (`ft_transfer`) and NEP-245
+            // (`mt_transfer`, via `token::Transfer`) assets, so a refund can be
+            // emitted under either standard.
+            let is_transfer = (event.standard == "nep141" && event.event == "ft_transfer")
+                || (event.standard == "nep245" && event.event == "mt_transfer");
+            if !is_transfer {
                 continue;
             }
             for transfer in &event.data {
@@ -864,7 +911,7 @@ impl OneClickSwap {
                 if transfer.old_owner_id.as_ref() == Some(deposit_account)
                     && transfer.new_owner_id.as_ref() == Some(&our_account)
                 {
-                    refund_amount = Some(transfer.amount);
+                    refund_amount = Some(U128(transfer.total_amount()));
                 }
             }
         }

@@ -9,6 +9,7 @@
 //! operation driver (nonce sequencing, idempotency, and replay come for free).
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 use clap::Parser;
 use futures::StreamExt;
@@ -24,9 +25,17 @@ use tracing::{debug, error, info, instrument};
 pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
 /// Page size for listing borrow positions on a market.
-const BORROW_POSITIONS_PAGE_SIZE: u32 = 100;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const BORROW_POSITIONS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(100).unwrap();
 /// Page size for listing deployments on a registry.
-const DEPLOYMENTS_PAGE_SIZE: u32 = 500;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const DEPLOYMENTS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(500).unwrap();
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {

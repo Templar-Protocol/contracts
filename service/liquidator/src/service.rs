@@ -5,7 +5,7 @@
 //! - Inventory refresh (updating asset balances)
 //! - Liquidation rounds (scanning and executing liquidations)
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 use near_sdk::AccountId;
 use templar_gateway_client::{collect_paginated, Network, SigningClient};
@@ -29,7 +29,11 @@ use crate::{
 };
 
 /// Page size for listing registry deployments.
-const DEPLOYMENTS_PAGE_SIZE: u32 = 500;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const DEPLOYMENTS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(500).unwrap();
 
 /// Information needed to price a collateral asset and determine its swap target.
 #[derive(Debug, Clone)]
@@ -134,7 +138,13 @@ impl LiquidatorService {
             .clone()
             .unwrap_or_else(|| config.network.rpc_url().to_string());
 
-        tracing::info!(near_rpc_url = %near_rpc_url, "Connecting to RPC");
+        // Don't log `near_rpc_url`: operators embed their provider `apiKey` in
+        // it, so the URL is secret-bearing.
+        tracing::info!(
+            network = %config.network,
+            custom_rpc = config.near_rpc_url.is_some(),
+            "Connecting to RPC"
+        );
 
         let network = near_api::NetworkConfig::from_rpc_url(
             &config.network.to_string(),

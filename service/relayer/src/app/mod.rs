@@ -1148,7 +1148,11 @@ pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash
 }
 
 /// Page size for draining a registry's deployment list through the gateway.
-const REGISTRY_PAGE_SIZE: u32 = 100;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const REGISTRY_PAGE_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(100).unwrap();
 
 /// Fold a list of resolved oracle requests into the per-oracle pyth/redstone
 /// update sets.

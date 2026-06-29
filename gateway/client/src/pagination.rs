@@ -1,21 +1,29 @@
 //! Helper for collecting every page of a paginated gateway read.
 
-use std::future::Future;
+use std::{future::Future, num::NonZeroU32};
 
 /// Repeatedly invoke `fetch_page(offset, page_size)`, collecting every returned
 /// item, until a page comes back shorter than `page_size`. The offset advances
 /// by the number of items actually returned.
+///
+/// `page_size` is [`NonZeroU32`]: a zero page would never advance `offset` (a
+/// page is never "shorter than 0"), so the loop would spin forever — the type
+/// makes that unrepresentable.
 ///
 /// This is the shared form of the "loop until a short page" pattern that
 /// off-chain consumers use to drain a paginated `list_*` read (e.g.
 /// `registry.listDeployments`, `market.listBorrowPositions`). It is generic
 /// over the fetcher's error type so both `anyhow::Result` and
 /// [`GatewayResult`](templar_gateway_core::GatewayResult) callers can use it.
-pub async fn collect_paginated<T, E, F, Fut>(page_size: u32, mut fetch_page: F) -> Result<Vec<T>, E>
+pub async fn collect_paginated<T, E, F, Fut>(
+    page_size: NonZeroU32,
+    mut fetch_page: F,
+) -> Result<Vec<T>, E>
 where
     F: FnMut(u32, u32) -> Fut,
     Fut: Future<Output = Result<Vec<T>, E>>,
 {
+    let page_size = page_size.get();
     let mut all = Vec::new();
     let mut offset = 0_u32;
 
@@ -37,8 +45,13 @@ where
 mod tests {
     use super::*;
     use std::convert::Infallible;
+    use std::num::NonZeroU32;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Mutex;
+
+    fn page(size: u32) -> NonZeroU32 {
+        NonZeroU32::new(size).expect("test page size must be non-zero")
+    }
 
     /// A fetcher over `total` synthetic items returning `page_size`-sized pages,
     /// recording the (offset, count) of every call.
@@ -57,7 +70,7 @@ mod tests {
     async fn stops_on_short_page() {
         let calls = Mutex::new(Vec::new());
         // 250 items, page size 100 -> pages of 100, 100, 50 (short -> stop).
-        let items = collect_paginated(100, paged_fetcher(250, &calls))
+        let items = collect_paginated(page(100), paged_fetcher(250, &calls))
             .await
             .unwrap();
 
@@ -71,7 +84,7 @@ mod tests {
     #[tokio::test]
     async fn stops_on_empty_first_page() {
         let calls = Mutex::new(Vec::new());
-        let items = collect_paginated(100, paged_fetcher(0, &calls))
+        let items = collect_paginated(page(100), paged_fetcher(0, &calls))
             .await
             .unwrap();
 
@@ -83,7 +96,7 @@ mod tests {
     async fn makes_extra_call_on_exact_multiple() {
         let calls = Mutex::new(Vec::new());
         // Exactly 200 items: a full second page forces a third (empty) call.
-        let items = collect_paginated(100, paged_fetcher(200, &calls))
+        let items = collect_paginated(page(100), paged_fetcher(200, &calls))
             .await
             .unwrap();
 
@@ -97,7 +110,7 @@ mod tests {
     #[tokio::test]
     async fn propagates_errors() {
         let attempts = AtomicU32::new(0);
-        let result = collect_paginated(100, |_offset, _count| {
+        let result = collect_paginated(page(100), |_offset, _count| {
             attempts.fetch_add(1, Ordering::SeqCst);
             std::future::ready(Result::<Vec<u32>, &'static str>::Err("boom"))
         })

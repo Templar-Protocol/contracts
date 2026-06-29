@@ -1505,7 +1505,7 @@ proptest! {
 // Deterministic Boundary / Edge Case Tests
 
 use templar_vault_kernel::{
-    preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig,
+    convert_to_assets, preview_deposit_shares, preview_withdraw_assets, PayoutOutcome, VaultConfig,
 };
 
 fn default_config() -> VaultConfig {
@@ -1530,6 +1530,258 @@ fn default_state() -> VaultState {
 
 fn self_addr() -> templar_vault_kernel::Address {
     templar_vault_kernel::Address([99u8; 32])
+}
+
+proptest! {
+    #[test]
+    fn prop_asset_share_mutations_do_not_overflow_or_underflow(
+        idle in any::<u128>(),
+        total_shares in any::<u128>(),
+        assets_in in any::<u128>(),
+    ) {
+        let mut state = default_state();
+        state.total_assets = idle;
+        state.idle_assets = idle;
+        state.total_shares = total_shares;
+        state.fee_anchor = FeeAccrualAnchor::new(idle, TimestampNs(0));
+        let old_state = state.clone();
+        let config = default_config();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::Deposit {
+                owner: owner_addr(1),
+                receiver: receiver_addr(1),
+                assets_in,
+                min_shares_out: 0,
+                now_ns: TimestampNs(1),
+            },
+        );
+
+        if let Ok(result) = result {
+            prop_assert_eq!(
+                result.state.total_assets.checked_sub(old_state.total_assets),
+                Some(assets_in),
+            );
+            prop_assert_eq!(
+                result.state.idle_assets.checked_sub(old_state.idle_assets),
+                Some(assets_in),
+            );
+            prop_assert!(result.state.total_shares >= old_state.total_shares);
+            prop_assert!(result.state.check_invariant());
+        }
+    }
+
+    #[test]
+    fn prop_atomic_withdraw_respects_idle_cap(
+        idle in 1u128..=1_000_000_000_000u128,
+        external in 0u128..=1_000_000_000_000u128,
+        total_shares in 1u128..=1_000_000_000_000u128,
+        assets_out in 1u128..=2_000_000_000_000u128,
+    ) {
+        let mut state = default_state();
+        state.total_assets = idle + external;
+        state.idle_assets = idle;
+        state.external_assets = external;
+        state.total_shares = total_shares;
+        state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(0));
+        let old_state = state.clone();
+        let config = default_config();
+        let owner = owner_addr(1);
+        let receiver = receiver_addr(1);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::AtomicWithdraw {
+                owner,
+                receiver,
+                operator: owner,
+                assets_out,
+                max_shares_burned: u128::MAX,
+                now_ns: TimestampNs(1),
+            },
+        );
+
+        if assets_out > old_state.idle_assets {
+            prop_assert!(result.is_err(), "atomic withdraw over idle cap succeeded");
+            return Ok(());
+        }
+
+        if let Ok(result) = result {
+            let burned_shares = result
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    KernelEffect::BurnShares { owner: effect_owner, shares }
+                        if *effect_owner == owner => Some(*shares),
+                    _ => None,
+                })
+                .expect("successful atomic withdraw must burn shares");
+            let transferred_assets = result
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    KernelEffect::TransferAssets { to, amount } if *to == receiver => Some(*amount),
+                    _ => None,
+                })
+                .expect("successful atomic withdraw must transfer assets");
+
+            prop_assert_eq!(transferred_assets, assets_out);
+            prop_assert!(burned_shares <= old_state.total_shares);
+            prop_assert_eq!(result.state.idle_assets, old_state.idle_assets - assets_out);
+            prop_assert_eq!(result.state.total_assets, old_state.total_assets - assets_out);
+            prop_assert_eq!(
+                result.state.total_shares,
+                old_state.total_shares - burned_shares,
+            );
+            prop_assert!(result.state.check_invariant());
+        }
+    }
+
+    #[test]
+    fn prop_atomic_redeem_respects_idle_cap(
+        idle in 1u128..=1_000_000_000_000u128,
+        external in 0u128..=1_000_000_000_000u128,
+        total_shares in 1u128..=1_000_000_000_000u128,
+        shares in 1u128..=2_000_000_000_000u128,
+    ) {
+        let mut state = default_state();
+        state.total_assets = idle + external;
+        state.idle_assets = idle;
+        state.external_assets = external;
+        state.total_shares = total_shares;
+        state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(0));
+        let old_state = state.clone();
+        let config = default_config();
+        let owner = owner_addr(1);
+        let receiver = receiver_addr(1);
+        let previewed_assets = preview_withdraw_assets(&old_state, &config, shares);
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::AtomicRedeem {
+                owner,
+                receiver,
+                operator: owner,
+                shares,
+                min_assets_out: 0,
+                now_ns: TimestampNs(1),
+            },
+        );
+
+        if previewed_assets > old_state.idle_assets {
+            prop_assert!(result.is_err(), "atomic redeem over idle cap succeeded");
+            return Ok(());
+        }
+
+        if let Ok(result) = result {
+            let burned_shares = result
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    KernelEffect::BurnShares { owner: effect_owner, shares }
+                        if *effect_owner == owner => Some(*shares),
+                    _ => None,
+                })
+                .expect("successful atomic redeem must burn shares");
+            let transferred_assets = result
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    KernelEffect::TransferAssets { to, amount } if *to == receiver => Some(*amount),
+                    _ => None,
+                })
+                .expect("successful atomic redeem must transfer assets");
+
+            prop_assert_eq!(burned_shares, shares);
+            prop_assert_eq!(transferred_assets, previewed_assets);
+            prop_assert!(burned_shares <= old_state.total_shares);
+            prop_assert!(transferred_assets <= old_state.idle_assets);
+            prop_assert_eq!(result.state.idle_assets, old_state.idle_assets - transferred_assets);
+            prop_assert_eq!(result.state.total_assets, old_state.total_assets - transferred_assets);
+            prop_assert_eq!(
+                result.state.total_shares,
+                old_state.total_shares - burned_shares,
+            );
+            prop_assert!(result.state.check_invariant());
+        }
+    }
+
+    #[test]
+    fn prop_request_withdraw_escrow_conservation(
+        idle in 1u128..=1_000_000_000_000u128,
+        external in 0u128..=1_000_000_000_000u128,
+        total_shares in 1u128..=1_000_000_000_000u128,
+        requested_shares in 1u128..=1_000_000_000_000u128,
+    ) {
+        let mut config = default_config();
+        config.min_withdrawal_assets = 0;
+
+        let mut state = default_state();
+        state.total_assets = idle + external;
+        state.idle_assets = idle;
+        state.external_assets = external;
+        state.total_shares = total_shares;
+        state.fee_anchor = FeeAccrualAnchor::new(state.total_assets, TimestampNs(0));
+        let shares = requested_shares.min(total_shares);
+        let expected_assets = convert_to_assets(&state, &config, shares);
+        let old_state = state.clone();
+        let owner = owner_addr(1);
+        let receiver = receiver_addr(1);
+        let vault = self_addr();
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &vault,
+            KernelAction::RequestWithdraw {
+                owner,
+                receiver,
+                shares,
+                min_assets_out: 0,
+                now_ns: TimestampNs(1),
+            },
+        )
+        .expect("valid request withdraw should enqueue");
+
+        prop_assert_eq!(result.state.total_assets, old_state.total_assets);
+        prop_assert_eq!(result.state.idle_assets, old_state.idle_assets);
+        prop_assert_eq!(result.state.external_assets, old_state.external_assets);
+        prop_assert_eq!(result.state.total_shares, old_state.total_shares);
+        prop_assert!(expected_assets <= old_state.total_assets);
+        prop_assert!(result.state.check_invariant());
+
+        let pending = result
+            .state
+            .withdraw_queue
+            .pending_withdrawals()
+            .values()
+            .next()
+            .expect("request should be queued");
+        prop_assert_eq!(pending.escrow_shares, shares);
+        prop_assert_eq!(pending.expected_assets, expected_assets);
+
+        let transfer = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::TransferShares { from, to, shares: effect_shares }
+                    if *from == owner && *to == vault => Some(*effect_shares),
+                _ => None,
+            })
+            .expect("request withdraw must escrow shares");
+        prop_assert_eq!(transfer, shares);
+    }
 }
 
 /// Boundary 1: Depositing zero assets returns ZeroAmount error.
@@ -3704,6 +3956,57 @@ proptest! {
             (Err(_), Err(_)) => {} // both fail = parity
             _ => prop_assert!(false, "one succeeded, the other failed"),
         }
+    }
+
+    /// Parity property: successful deposits mint exactly the previewed shares.
+    #[test]
+    fn prop_deposit_mints_previewed_shares(
+        assets in 1u128..=1_000_000_000u128,
+        initial_idle in 0u128..=1_000_000_000u128,
+        initial_shares in 0u128..=1_000_000_000u128,
+    ) {
+        let config = default_config();
+        let state = VaultState::with_initial(
+            initial_idle,
+            initial_shares,
+            initial_idle,
+            0,
+            TimestampNs(0),
+        );
+        let previewed_shares = preview_deposit_shares(&state, &config, assets);
+        if previewed_shares == 0 {
+            return Ok(());
+        }
+
+        let result = apply_action(
+            state,
+            &config,
+            None,
+            &self_addr(),
+            KernelAction::Deposit {
+                owner: owner_addr(1),
+                receiver: receiver_addr(1),
+                assets_in: assets,
+                min_shares_out: previewed_shares,
+                now_ns: TimestampNs(1),
+            },
+        );
+        prop_assert!(result.is_ok(), "deposit with previewed minimum should succeed");
+        let result = result.expect("result was checked as ok");
+
+        let minted_shares = result
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                KernelEffect::MintShares { owner, shares } if *owner == receiver_addr(1) => {
+                    Some(*shares)
+                }
+                _ => None,
+            })
+            .expect("successful deposit must mint shares");
+
+        prop_assert_eq!(minted_shares, previewed_shares);
+        prop_assert!(result.state.check_invariant());
     }
 
     /// Parity property: executor idle_assets decrement + kernel abort always
