@@ -1,7 +1,5 @@
 use near_account_id::AccountId;
-use templar_universal_account::{
-    transaction::Transaction, ExecuteArgs, PayloadExecutionParameters,
-};
+use templar_universal_account::PayloadExecutionParameters;
 
 use crate::client::{
     macros::{contract_views, contract_writes},
@@ -15,9 +13,10 @@ pub struct UaGetKeyArgs {
     pub key: templar_universal_account::KeyId,
 }
 
+/// The user's signed `execute` payload, forwarded to the contract verbatim.
 #[derive(serde::Serialize)]
 pub struct UaExecuteArgs {
-    pub args: ExecuteArgs<Box<[Transaction]>>,
+    pub args: serde_json::Value,
 }
 
 #[derive(Clone)]

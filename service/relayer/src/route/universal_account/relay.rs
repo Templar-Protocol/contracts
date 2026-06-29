@@ -236,15 +236,19 @@ pub async fn relay(
         };
     };
 
-    // The relay account signs and pays; the UA account is charged. The gateway
-    // attaches the maximum gas to `ua.execute` and surfaces the real cost.
+    // The relay account signs and pays; the UA account is charged. `ua.execute`
+    // forwards the user's original signed args verbatim (so legacy front-end arg
+    // formats keep working). Verification above ran on the parsed args.
     let transaction_hash = match app
         .execute_and_account(
             account_id.clone(),
             app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            ua::Execute { account_id, args },
+            ua::Execute {
+                account_id,
+                args: args_raw,
+            },
         )
         .await
     {
