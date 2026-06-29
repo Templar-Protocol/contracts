@@ -3,15 +3,15 @@ use std::{collections::HashSet, fmt::Write};
 use axum::{extract::State, Json};
 use near_primitives::hash::CryptoHash;
 use near_sdk::{
+    json_types::Base58CryptoHash,
     serde::{Deserialize, Serialize},
     serde_json, AccountId, Gas, NearToken,
 };
 use templar_gateway_core::GatewayError;
-use templar_gateway_methods_spec::{contract, universal_account as ua};
-use templar_gateway_types::common::ContractArgs;
+use templar_gateway_methods_spec::universal_account as ua;
 use templar_universal_account::{
     transaction::{Action, Transaction},
-    ExecuteArgs, KeyId, KeyParameters, PayloadExecutionParameters,
+    ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
 
 use crate::{app::App, route::SimpleResponse};
@@ -272,32 +272,39 @@ pub async fn load_ua_key(
     ua_account_id: AccountId,
     key: KeyId,
 ) -> Result<Option<PayloadExecutionParameters>, GatewayError> {
+    // The gateway `ua.getKey` op already normalizes the contract's versioned
+    // response (legacy `KeyParameters` / full `PayloadExecutionParameters`); we
+    // just rebuild the contract type from its wire view for signature checking.
     let result = app
         .gateway
-        .read(contract::ViewFunction {
-            contract_id: ua_account_id.clone(),
-            method_name: "get_key".to_string().into(),
-            args: ContractArgs::Json(serde_json::json!({ "key": key })),
+        .read(ua::GetKey {
+            account_id: ua_account_id,
+            key,
         })
         .await?;
 
-    let view: Option<VersionedKeyParameters> = serde_json::from_value(result.value)
-        .map_err(|error| GatewayError::NearQuery(format!("invalid get_key response: {error}")))?;
-
-    Ok(view.map(|v| match v {
-        VersionedKeyParameters::V1(p) => p,
-        VersionedKeyParameters::V0(p) => PayloadExecutionParameters::builder_empty()
-            .with_key_parameters(p)
-            .verifying_contract(ua_account_id)
-            .build(),
-    }))
+    result.parameters.map(parameters_from_view).transpose()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(crate = "near_sdk::serde")]
-enum VersionedKeyParameters {
-    #[serde(untagged)]
-    V1(PayloadExecutionParameters),
-    #[serde(untagged)]
-    V0(KeyParameters),
+/// Rebuild the contract's [`PayloadExecutionParameters`] from the gateway op's
+/// wire view (the view is a lossless projection apart from `salt`, which is a
+/// base58 round-trip).
+fn parameters_from_view(
+    view: ua::PayloadExecutionParametersView,
+) -> Result<PayloadExecutionParameters, GatewayError> {
+    let salt = view
+        .salt
+        .map(|salt| salt.parse::<Base58CryptoHash>())
+        .transpose()
+        .map_err(|error| GatewayError::NearQuery(format!("invalid key salt: {error}")))?;
+    Ok(PayloadExecutionParameters {
+        block_height: view.block_height.into(),
+        index: view.index.into(),
+        nonce: view.nonce.into(),
+        name: view.name,
+        version: view.version,
+        chain_id: view.chain_id.map(Into::into),
+        verifying_contract: view.verifying_contract,
+        salt,
+    })
 }
