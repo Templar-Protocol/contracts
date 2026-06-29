@@ -72,7 +72,8 @@ impl App {
 
         // Persist gateway operations in the relayer's Postgres so idempotency
         // and replay survive restarts — a relay retried after a crash won't
-        // re-submit and double-pay gas.
+        // re-submit and double-pay gas. The store confines itself to its own
+        // schema by default, so its migrations don't collide with the relayer's.
         let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
         gateway_store.migrate().await?;
 

@@ -6,7 +6,10 @@ use chrono::{DateTime, Utc};
 use near_api::types::transaction::SignedTransaction;
 use near_api::types::CryptoHash as NearCryptoHash;
 use serde_json::Value;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{
+    postgres::{PgConnectOptions, PgPoolOptions},
+    PgPool,
+};
 use templar_gateway_core::{
     CreateOperationResult, GatewayError, GatewayResult, OperationPlan, OperationStore,
     PlannedTransaction, StoredOperation, SucceededStep,
@@ -15,9 +18,19 @@ use templar_gateway_types::{
     operation::OperationId, CryptoHash, IdempotencyKey, ManagedAccountId, OperationStatus,
 };
 
+/// The Postgres schema the operation store confines itself to unless overridden.
+///
+/// Keeping the store's tables, types, and `_sqlx_migrations` bookkeeping out of
+/// `public` lets it coexist in a database alongside another sqlx-migrated
+/// component without their migration tables colliding.
+pub const DEFAULT_SCHEMA: &str = "gateway";
+
 #[derive(Debug, Clone)]
 pub struct PostgresStore {
     pool: PgPool,
+    /// The Postgres schema all of the store's objects (tables, types, and the
+    /// sqlx migration bookkeeping) are confined to.
+    schema: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
@@ -87,14 +100,42 @@ struct OperationStepRow {
 }
 
 impl PostgresStore {
+    /// Connect with the store confined to its default [`DEFAULT_SCHEMA`].
+    ///
+    /// Isolating the store in its own schema (rather than `public`) means it can
+    /// always share a database with another sqlx-migrated component without their
+    /// `_sqlx_migrations` tables colliding — so consumers get that safety by
+    /// default and never have to think about it. Use [`Self::with_schema`] only
+    /// to override the schema name.
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
+        Self::with_schema(database_url, DEFAULT_SCHEMA)
+    }
+
+    /// Connect with all of the store's objects confined to a specific Postgres
+    /// `schema`.
+    ///
+    /// The connection's `search_path` puts `schema` first, so the store's
+    /// unqualified DDL and queries resolve there. Pass `"public"` to use the
+    /// database's default schema (only safe when the store owns the database).
+    pub fn with_schema(database_url: &str, schema: &str) -> Result<Self, sqlx::Error> {
+        let options = PgConnectOptions::from_str(database_url)?
+            .options([("search_path", format!("{schema},public"))]);
         let pool = PgPoolOptions::new()
             .max_connections(4)
-            .connect_lazy(database_url)?;
-        Ok(Self { pool })
+            .connect_lazy_with(options);
+        Ok(Self {
+            pool,
+            schema: schema.to_owned(),
+        })
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
+        // Create the schema before sqlx creates `_sqlx_migrations` (and the
+        // store's tables) in it via the connection search_path. `self.schema` is
+        // a trusted, caller-supplied identifier.
+        sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", self.schema))
+            .execute(&self.pool)
+            .await?;
         sqlx::migrate!("./migrations").run(&self.pool).await
     }
 
