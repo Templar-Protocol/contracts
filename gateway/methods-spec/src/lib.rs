@@ -38,7 +38,6 @@ macro_rules! for_each_read_method {
     ($callback:ident) => {
         $callback!($crate::account::Get);
         $callback!($crate::chain::GetBlock);
-        $callback!($crate::chain::GetGasPrice);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);

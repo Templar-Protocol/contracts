@@ -1,5 +1,6 @@
 use near_api::types::transaction::result::ExecutionFinalResult;
-use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_api::types::Reference;
+use near_api::Chain;
 use templar_gateway_types::{CryptoHash, NearToken};
 
 use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
@@ -9,50 +10,47 @@ pub struct ChainClient<'a> {
     pub(crate) inner: &'a NearClient,
 }
 
+/// Header summary for a block. Carries the block's `gas_price`, so callers that
+/// only need a current gas estimate can read it from the latest block instead of
+/// a separate gas-price query.
+#[derive(Debug, Clone)]
+pub struct BlockSummary {
+    pub height: u64,
+    /// Block timestamp in nanoseconds since the Unix epoch.
+    pub timestamp_ns: u64,
+    pub gas_price: NearToken,
+    pub hash: CryptoHash,
+}
+
 impl ChainClient<'_> {
-    /// Connect a JSON-RPC client to the network's primary endpoint.
-    ///
-    /// `near_api` exposes no builder for chain-level reads like gas price, so
-    /// these go through `near-jsonrpc-client` directly against the configured
-    /// endpoint (whose URL already carries any auth, e.g. an `?apiKey=` param).
-    fn json_rpc(self) -> GatewayResult<JsonRpcClient> {
-        let endpoint = self
-            .inner
-            .network()
-            .rpc_endpoints
-            .first()
-            .ok_or_else(|| GatewayError::NearQuery("no RPC endpoint configured".to_owned()))?;
-        Ok(JsonRpcClient::connect(endpoint.url.as_str()))
-    }
-
-    /// The current gas price (yoctoNEAR per unit of gas) at the latest block.
-    pub async fn gas_price(&self) -> GatewayResult<NearToken> {
-        let response = self
-            .json_rpc()?
-            .call(methods::gas_price::RpcGasPriceRequest { block_id: None })
-            .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-        Ok(NearToken::from_yoctonear(response.gas_price.as_yoctonear()))
-    }
-
-    /// Header height and timestamp (nanoseconds) for a block; `block_hash`
-    /// selects a specific block, otherwise the latest final block is used.
-    pub async fn block(&self, block_hash: Option<CryptoHash>) -> GatewayResult<(u64, u64)> {
-        use near_primitives::types::{BlockId, BlockReference, Finality};
-
-        let block_reference = match block_hash {
-            // Both are 32-byte hashes; convert byte-for-byte.
-            Some(hash) => {
-                BlockReference::BlockId(BlockId::Hash(near_primitives::hash::CryptoHash(hash.0 .0)))
-            }
-            None => BlockReference::Finality(Finality::Final),
+    /// Header summary for a block; `block_hash` selects a specific block,
+    /// otherwise the latest final block is used.
+    pub async fn block(&self, block_hash: Option<CryptoHash>) -> GatewayResult<BlockSummary> {
+        let reference = match block_hash {
+            Some(hash) => Reference::AtBlockHash(hash.0),
+            None => Reference::Final,
         };
-        let response = self
-            .json_rpc()?
-            .call(methods::block::RpcBlockRequest { block_reference })
+
+        let response = Chain::block()
+            .at(reference)
+            .fetch_from(self.inner.network())
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
-        Ok((response.header.height, response.header.timestamp_nanosec))
+
+        let header = response.header;
+        // `timestamp_nanosec` is wire-encoded as a decimal string.
+        let timestamp_ns = header.timestamp_nanosec.parse::<u64>().map_err(|error| {
+            GatewayError::NearQuery(format!("invalid block timestamp: {error}"))
+        })?;
+
+        Ok(BlockSummary {
+            height: header.height,
+            timestamp_ns,
+            // `near_openapi_types::NearToken` is `near_token::NearToken`.
+            gas_price: header.gas_price,
+            // Both `CryptoHash`es are `[u8; 32]`; convert byte-for-byte.
+            hash: CryptoHash(near_api::CryptoHash(header.hash.0)),
+        })
     }
 
     pub async fn get_transaction(

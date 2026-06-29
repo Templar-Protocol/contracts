@@ -128,7 +128,13 @@ impl App {
     /// affects the pre-flight affordability gate, never the amount charged.
     #[tracing::instrument(skip(self), fields(gas = %gas))]
     pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
-        let gas_price = match self.gateway.read(chain::GetGasPrice {}).await {
+        // The latest block's header carries the gas price, so a dedicated
+        // gas-price read isn't needed.
+        let gas_price = match self
+            .gateway
+            .read(chain::GetBlock { block_hash: None })
+            .await
+        {
             Ok(result) => result.gas_price,
             Err(error) => {
                 tracing::error!(%error, "Failed to fetch gas price");
