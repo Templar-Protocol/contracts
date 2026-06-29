@@ -193,9 +193,22 @@ impl LiquidationExecutor {
                         // `ft_resolve_transfer` refunds and the top-level
                         // transaction still succeeds. Treat any failed receipt as
                         // a failed liquidation.
-                        if let Some(failed_on) =
-                            self.first_failed_receipt(&operation_result).await?
-                        {
+                        let failed_receipt =
+                            match self.first_failed_receipt(&operation_result).await {
+                                Ok(failed_receipt) => failed_receipt,
+                                Err(error) => {
+                                    // Inventory was reserved above; release it before
+                                    // surfacing the inspection error, like the other
+                                    // failure paths.
+                                    self.inventory
+                                        .write()
+                                        .await
+                                        .release(borrow_asset, liquidation_amount);
+                                    return Err(error);
+                                }
+                            };
+
+                        if let Some(failed_on) = failed_receipt {
                             self.inventory
                                 .write()
                                 .await

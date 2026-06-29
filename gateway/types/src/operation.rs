@@ -62,13 +62,17 @@ pub struct OperationRecord {
 }
 
 impl OperationRecord {
-    /// The transaction hash of the latest step that has one (most-recent step
-    /// first), or `None` if no step has been prepared yet.
+    /// The transaction hash of the highest-`index` step that has one, or `None`
+    /// if no step has been prepared yet.
+    ///
+    /// Keyed on `index` rather than vector position so a record whose steps
+    /// arrived out of order still identifies the most recent transaction.
     #[must_use]
     pub fn latest_tx_hash(&self) -> Option<CryptoHash> {
         self.steps
             .iter()
-            .rev()
-            .find_map(TransactionStepRecord::tx_hash)
+            .filter_map(|step| step.tx_hash().map(|tx_hash| (step.index, tx_hash)))
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, tx_hash)| tx_hash)
     }
 }

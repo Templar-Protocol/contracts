@@ -380,7 +380,9 @@ impl Args {
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
-            concurrency: self.concurrency,
+            // `0` would make `buffer_unordered` hang forever; a refresh/scan with
+            // no concurrency makes no sense, so floor it at 1.
+            concurrency: self.concurrency.max(1),
             strategy,
             collateral_strategy,
             dry_run: self.dry_run,

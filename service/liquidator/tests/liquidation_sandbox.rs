@@ -101,7 +101,7 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
     // The market itself must hold deposits on both assets to receive tokens via
     // `ft_transfer_call` (collateral in, borrow/liquidation flows out).
     for token in [&borrow_asset_id, &collateral_asset_id] {
-        client
+        let result = client
             .execute_as(
                 liquidator_id.clone(),
                 storage::EnsureDeposit {
@@ -111,6 +111,11 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
                 },
             )
             .await?;
+        assert_eq!(
+            result.operation.status,
+            OperationStatus::Succeeded,
+            "market storage registration on {token} should succeed"
+        );
     }
 
     // Mint inventory: the liquidator funds borrow liquidity + liquidation
@@ -119,7 +124,7 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
         let client = client.clone();
         let amount = amount.to_owned();
         async move {
-            client
+            let result = client
                 .execute_as(
                     account,
                     tx::FunctionCall {
@@ -130,7 +135,13 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
                         deposit: NearToken::from_yoctonear(0),
                     },
                 )
-                .await
+                .await?;
+            assert_eq!(
+                result.operation.status,
+                OperationStatus::Succeeded,
+                "mint should succeed"
+            );
+            anyhow::Ok(())
         }
     };
     mint(liquidator_id.clone(), borrow_asset_id.clone(), "1000000").await?;
@@ -146,13 +157,18 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
     assert_eq!(supply.operation.status, OperationStatus::Succeeded);
 
     for _ in 0..10 {
-        client
+        let harvest = client
             .execute(market::HarvestYield {
                 market_id: market_id.clone(),
                 account_id: None,
                 mode: None,
             })
             .await?;
+        assert_eq!(
+            harvest.operation.status,
+            OperationStatus::Succeeded,
+            "harvest should succeed"
+        );
         let position = client
             .read(market::GetSupplyPosition {
                 market_id: market_id.clone(),

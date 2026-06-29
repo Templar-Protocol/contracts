@@ -160,23 +160,30 @@ impl OracleFetcher {
             }
         }
 
-        // Try to fetch underlying oracle ID
-        let result = if let Ok(response) = self
+        // Try to fetch underlying oracle ID. Only a missing `oracle_id` method
+        // means "not an LST oracle"; any other error (transient RPC, decode) is
+        // propagated and NOT cached, so a blip can't permanently misroute an LST
+        // oracle through the direct Pyth path until restart.
+        let result = match self
             .client
             .read(lst_oracle::GetOracleId {
                 oracle_id: oracle.clone(),
             })
             .await
         {
-            tracing::debug!(
-                oracle = %oracle,
-                underlying = %response.pyth_oracle_id,
-                "Detected LST oracle"
-            );
-            Some(response.pyth_oracle_id)
-        } else {
-            tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
-            None
+            Ok(response) => {
+                tracing::debug!(
+                    oracle = %oracle,
+                    underlying = %response.pyth_oracle_id,
+                    "Detected LST oracle"
+                );
+                Some(response.pyth_oracle_id)
+            }
+            Err(error) if gateway_is_method_not_found(&error) => {
+                tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
+                None
+            }
+            Err(error) => return Err(LiquidatorError::PriceFetchError(error.into())),
         };
 
         // Cache the result
@@ -290,65 +297,62 @@ impl OracleFetcher {
         &self,
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
-    ) -> HashMap<AccountId, Vec<PriceIdentifier>> {
+    ) -> LiquidatorResult<HashMap<AccountId, Vec<PriceIdentifier>>> {
         let mut targets: HashMap<AccountId, HashSet<PriceIdentifier>> = HashMap::new();
 
-        // LST oracle: resolve underlying oracle + transform price IDs
-        if let Ok(Some(underlying_oracle)) = self.is_lst_oracle(oracle).await {
+        // LST oracle: resolve underlying oracle + transform price IDs. A read
+        // failure is propagated (not silently mapped to the original feed), so we
+        // never refresh the wrong Pyth feeds; fall back to `pid` only when the
+        // contract explicitly reports no transformer.
+        if let Some(underlying_oracle) = self.is_lst_oracle(oracle).await? {
             let mut underlying_ids = Vec::new();
             for &pid in price_ids {
-                match self
+                let result = self
                     .client
                     .read(lst_oracle::GetTransformer {
                         oracle_id: oracle.clone(),
                         price_identifier: pid,
                     })
                     .await
-                {
-                    Ok(result) => match result.transformer {
-                        Some(transformer) => underlying_ids.push(transformer.price_id),
-                        None => underlying_ids.push(pid),
-                    },
-                    Err(_) => underlying_ids.push(pid),
+                    .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
+                match result.transformer {
+                    Some(transformer) => underlying_ids.push(transformer.price_id),
+                    None => underlying_ids.push(pid),
                 }
             }
             targets
                 .entry(underlying_oracle)
                 .or_default()
                 .extend(underlying_ids);
-            return targets
+            return Ok(targets
                 .into_iter()
                 .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-                .collect();
+                .collect());
         }
 
-        // Proxy oracle: collect Pyth entries from proxy config
+        // Proxy oracle: collect Pyth entries from proxy config. A read failure is
+        // propagated rather than skipped, so we don't refresh an incomplete set
+        // of feeds.
         if self.proxy_oracle_cache.read().await.contains(oracle) {
             for &pid in price_ids {
-                match self
+                let result = self
                     .client
                     .read(proxy_oracle::GetProxy {
                         oracle_id: oracle.clone(),
                         id: pid,
                     })
                     .await
-                {
-                    Ok(result) => {
-                        if let Some(proxy) = result.proxy {
-                            for source in proxy.sources() {
-                                Self::collect_pyth_targets_from_source(source, &mut targets);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(oracle = %oracle, price_id = ?pid, error = %error, "Failed to read proxy configuration while resolving Pyth targets");
+                    .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
+                if let Some(proxy) = result.proxy {
+                    for source in proxy.sources() {
+                        Self::collect_pyth_targets_from_source(source, &mut targets);
                     }
                 }
             }
-            return targets
+            return Ok(targets
                 .into_iter()
                 .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-                .collect();
+                .collect());
         }
 
         // Direct Pyth oracle
@@ -356,10 +360,10 @@ impl OracleFetcher {
             .entry(oracle.clone())
             .or_default()
             .extend(price_ids.iter().copied());
-        targets
+        Ok(targets
             .into_iter()
             .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-            .collect()
+            .collect())
     }
 
     /// Collects Pyth oracle targets from a proxy source entry.
@@ -395,7 +399,7 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
         let is_proxy_oracle = self.is_proxy_oracle(oracle).await?;
-        let targets = self.resolve_pyth_update_targets(oracle, price_ids).await;
+        let targets = self.resolve_pyth_update_targets(oracle, price_ids).await?;
 
         if targets.is_empty() && !is_proxy_oracle {
             tracing::debug!("No Pyth targets to update on-chain");
