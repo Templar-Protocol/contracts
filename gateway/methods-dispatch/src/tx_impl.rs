@@ -32,6 +32,13 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             },
             total_gas_burnt: result.total_gas_burnt,
             logs: result.logs().into_iter().map(ToString::to_string).collect(),
+            // The contract whose receipt failed, even when the transaction's
+            // final status is success (e.g. a refunded `ft_transfer_call`).
+            failed_receipts: result
+                .receipt_failures()
+                .iter()
+                .map(|outcome| outcome.executor_id.clone())
+                .collect(),
             return_value: match request.encoding {
                 tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
                 tx::ValueEncoding::Base64 => result
