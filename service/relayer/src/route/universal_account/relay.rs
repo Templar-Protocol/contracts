@@ -135,18 +135,20 @@ pub async fn relay(
                 }
             }
 
-            // Sum gas from any function-call actions for the allowance-lock
-            // estimate. The gateway attaches the maximum gas to `ua.execute`
-            // and we reconcile against the actual `tokens_burnt`, so this need
-            // not account for the (refunded) cost of non-call actions.
+            // Sum gas for the allowance-lock estimate: each function call's own
+            // gas, plus a flat configured overhead for every other action
+            // (transfer/add_key/etc. carry no explicit gas but still burn some).
+            // Reconciled against actual `tokens_burnt`, so a safe over-estimate.
+            let action_overhead =
+                near_sdk::Gas::from_tgas(app.args.ua.reflexive_action_overhead_tgas).as_gas();
             gas += transaction
                 .actions
                 .iter()
-                .filter_map(|a| match a {
+                .map(|a| match a {
                     Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
-                        Some(call.gas.as_gas())
+                        call.gas.as_gas()
                     }
-                    _ => None,
+                    _ => action_overhead,
                 })
                 .sum::<u64>();
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");

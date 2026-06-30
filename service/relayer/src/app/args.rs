@@ -258,6 +258,18 @@ pub struct UniversalAccount {
         default_value_t = 35
     )]
     pub execute_tgas: u64,
+    /// Gas (in Tgas) to assume per non-function-call action in a reflexive UA
+    /// payload (e.g. `transfer`, `add_key`, `delete_key`) when sizing the
+    /// allowance lock. These actions carry no explicit gas but still burn gas;
+    /// the lock is reconciled against actual `tokens_burnt`, so this only needs
+    /// to be a safe over-estimate.
+    #[arg(
+        id = "ua-reflexive-action-overhead-tgas",
+        long = "ua-reflexive-action-overhead-tgas",
+        env = "UA_REFLEXIVE_ACTION_OVERHEAD_TGAS",
+        default_value_t = 1
+    )]
+    pub reflexive_action_overhead_tgas: u64,
 }
 
 impl UniversalAccount {
