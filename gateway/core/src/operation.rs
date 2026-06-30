@@ -199,7 +199,11 @@ impl StoredOperation {
             Some(CurrentStep::Prepared { .. } | CurrentStep::Submitted { .. }) => {
                 OperationStatus::InProgress
             }
-            None if self.remaining_steps.is_empty() => OperationStatus::Succeeded,
+            // No steps at all = reserved before planning (or never planned): not
+            // terminal. Succeeded requires at least one step to have succeeded.
+            None if self.remaining_steps.is_empty() && !self.succeeded_steps.is_empty() => {
+                OperationStatus::Succeeded
+            }
             None if self.succeeded_steps.is_empty() => OperationStatus::Pending,
             None => OperationStatus::InProgress,
         }

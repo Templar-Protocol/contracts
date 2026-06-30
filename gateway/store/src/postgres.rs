@@ -264,6 +264,19 @@ WHERE
         update_operation_tx(&self.pool, &operation).await
     }
 
+    async fn delete_operation(&self, operation_id: &OperationId) -> GatewayResult<()> {
+        let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
+            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+        // Steps (and their receipts) cascade via the FK ON DELETE CASCADE.
+        sqlx::query!(
+            "DELETE FROM gateway_operations WHERE id = $1",
+            operation_uuid
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
         let operation_rows = sqlx::query_as!(
             OperationRow,
@@ -1054,6 +1067,40 @@ mod tests {
             .expect("operation still resolvable by idempotency key after a save");
         assert_eq!(found.id, operation.id);
         assert_eq!(found.status(), OperationStatus::Succeeded);
+    }
+
+    /// A reservation (no steps) is non-terminal, and deleting it removes the row
+    /// and its steps and clears the idempotency mapping — the path the driver
+    /// uses for a no-op plan or an abandoned reservation.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn delete_operation_removes_reservation(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+        let key = IdempotencyKey("del-key".to_owned());
+
+        let CreateOperationResult::Created(reserved) = store
+            .create_or_get_operation(
+                "tx.transfer",
+                ManagedAccountId("signer.near".parse().unwrap()),
+                Some(key.clone()),
+                [5; 32],
+                serde_json::to_vec(&serde_json::json!({ "amount": "1" })).unwrap(),
+                OperationPlan { steps: vec![] },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created reservation");
+        };
+        assert_eq!(reserved.status(), OperationStatus::Pending);
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_some());
+
+        store.delete_operation(&reserved.id).await.unwrap();
+
+        assert!(store.get_by_id(&reserved.id).await.unwrap().is_none());
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
     }
 
     #[test]
