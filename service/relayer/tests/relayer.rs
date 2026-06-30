@@ -6,7 +6,7 @@ use std::{collections::HashSet, str::FromStr, time::Duration};
 use axum::extract::Query;
 use axum::{extract::State, Json};
 use clap::Parser;
-use near_jsonrpc_client::{methods::tx::TransactionInfo, JsonRpcClient};
+use near_jsonrpc_client::methods::tx::TransactionInfo;
 use near_primitives::{
     action::{
         delegate::{DelegateAction, SignedDelegateAction},
@@ -35,6 +35,7 @@ use templar_common::{
     },
     registry::DeployMode,
 };
+use templar_gateway_client::SigningClient;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{
     input::{ProxyPriceTransformer, Source},
@@ -43,8 +44,7 @@ use templar_proxy_oracle_near_common::{
 };
 use templar_relayer::{
     app::{args, App, Configuration},
-    cache::Cache,
-    client::{near::Near, oracle},
+    client::oracle,
     route::{
         get_market_prices::GetMarketPricesRequest,
         relay::RelayRequest as SdaRelayRequest,
@@ -75,6 +75,41 @@ use templar_universal_account::{
 use test_utils::*;
 
 const POW_DIFFICULTY: usize = 6;
+
+struct AccessKeyInfo {
+    nonce: u64,
+    block_height: u64,
+    block_hash: near_primitives::hash::CryptoHash,
+}
+
+/// Fetch an account's access-key nonce and the current block reference through
+/// the gateway's typed specs (`account.getAccessKey` + `chain.getBlock`) — the
+/// same path the relayer itself uses, rather than a bespoke RPC client.
+async fn view_access_key(
+    gateway: &templar_gateway_client::Client,
+    account_id: &near_workspaces::AccountId,
+    public_key: near_crypto::PublicKey,
+) -> AccessKeyInfo {
+    use templar_gateway_methods_spec::{account, chain};
+
+    let public_key: near_api::types::PublicKey = public_key.to_string().parse().unwrap();
+    let key = gateway
+        .read(account::GetAccessKey {
+            account_id: account_id.as_str().parse().unwrap(),
+            public_key: public_key.into(),
+        })
+        .await
+        .unwrap();
+    let block = gateway
+        .read(chain::GetBlock { block_hash: None })
+        .await
+        .unwrap();
+    AccessKeyInfo {
+        nonce: key.nonce,
+        block_height: block.height,
+        block_hash: near_primitives::hash::CryptoHash(block.hash.0 .0),
+    }
+}
 
 struct InitTest {
     worker: Worker<Sandbox>,
@@ -341,6 +376,7 @@ async fn init_relayer_app(
         ]),
         watch::Sender::default(),
     )
+    .await
     .unwrap();
     app.database.migrate().await.unwrap();
     app
@@ -457,14 +493,12 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &app.gateway,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     let delegate_action = DelegateAction {
         sender_id: borrow_user.id().clone(),
@@ -497,7 +531,6 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
             signed_delegate_action,
             storage_deposit: false,
             update_prices: false,
-            wait_until: TxExecutionStatus::Final,
         }),
     )
     .await;
@@ -774,24 +807,6 @@ pub async fn requires_network_update_prices_updates_redstone_market(
     };
     assert_eq!(response.market_ids, vec![market.id().clone()]);
 
-    let accounts = app.accounts.read().await;
-    let market_data = accounts.market_data.get(market.id()).unwrap();
-    assert!(market_data
-        .borrow
-        .update_oracle
-        .contains(&OracleRequest::redstone(
-            redstone_adapter.id().clone(),
-            usdc.clone(),
-        )));
-    assert!(market_data
-        .collateral
-        .update_oracle
-        .contains(&OracleRequest::redstone(
-            redstone_adapter.id().clone(),
-            btc.clone(),
-        )));
-    drop(accounts);
-
     let SimpleResponse::Success(prices) =
         templar_relayer::route::get_market_prices::get_market_prices(
             State(app),
@@ -840,12 +855,14 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
         .unwrap()
         .unwrap();
 
-    let parameters = app
-        .ua_near
-        .load_ua_key(ua.id().clone(), KeyId::Passkey(passkey.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let parameters = templar_relayer::route::universal_account::relay::load_ua_key(
+        &app,
+        ua.id().clone(),
+        KeyId::Passkey(passkey.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     app.database
         .create_account(ua.id(), NearToken::from_near(1).saturating_div(4))
@@ -962,14 +979,12 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &app.gateway,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     // Deploy a universal account.
 
@@ -1035,8 +1050,7 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
     // Send an action to the universal account contract
 
     let load_parameters = async |account_id: AccountId, key: KeyId| {
-        app.ua_near
-            .load_ua_key(account_id, key)
+        templar_relayer::route::universal_account::relay::load_ua_key(&app, account_id, key)
             .await
             .unwrap()
             .unwrap()
@@ -1166,30 +1180,23 @@ pub async fn pyth_updates() {
     let pyth_args = args::PythConfig {
         hermes_url: "https://hermes-beta.pyth.network".to_string(),
         refresh: Duration::from_secs(25),
-        update_gas: near_sdk::Gas::from_tgas(300),
-        update_deposit: NearToken::from_near(1).saturating_div(100),
         timeout: Duration::from_secs(10),
     };
 
-    let near = Near::new(
-        JsonRpcClient::connect("https://test.rpc.fastnear.com"),
-        account_id.clone(),
-        vec![near_crypto::InMemorySigner::from_secret_key(
-            account_id, secret_key,
-        )],
+    let network = near_api::NetworkConfig::from_rpc_url(
+        "test",
+        "https://test.rpc.fastnear.com".parse().unwrap(),
     );
-
-    let cache_args = args::Cache {
-        gas_price_refresh: Duration::from_secs(600),
-        nonce_refresh: Duration::from_secs(60),
-    };
+    let gateway = SigningClient::connect(
+        network,
+        account_id.clone(),
+        secret_key.to_string().parse().unwrap(),
+    )
+    .unwrap();
 
     let kill = watch::Sender::default();
 
-    let cache = Cache::new(near.clone(), cache_args, kill.clone());
-
-    let pyth =
-        oracle::PythSpec::handle(pyth_args.clone(), near.clone(), cache.clone(), kill.clone());
+    let pyth = oracle::PythSpec::handle(pyth_args.clone(), gateway, kill.clone());
 
     let price_id = PriceIdentifier(
         hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
@@ -1221,14 +1228,12 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
 
     // Relay a signed delegate action.
 
-    let fetch_nonce = app
-        .relay_near
-        .fetch_nonce(
-            borrow_user.id().clone(),
-            borrow_user.secret_key().public_key().into(),
-        )
-        .await
-        .unwrap();
+    let fetch_nonce = view_access_key(
+        &app.gateway,
+        borrow_user.id(),
+        borrow_user.secret_key().public_key().into(),
+    )
+    .await;
 
     // Deploy a universal account.
 
@@ -1294,8 +1299,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
     // Send an action to the universal account contract
 
     let load_parameters = async |account_id: AccountId, key: KeyId| {
-        app.ua_near
-            .load_ua_key(account_id, key)
+        templar_relayer::route::universal_account::relay::load_ua_key(&app, account_id, key)
             .await
             .unwrap()
             .unwrap()

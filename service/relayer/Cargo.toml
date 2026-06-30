@@ -5,11 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 axum = "0.8.4"
 clap.workspace = true
 dotenvy = "0.15.7"
 futures.workspace = true
 hex.workspace = true
+near-api.workspace = true
 near-contract-standards.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client.workspace = true
@@ -32,6 +34,12 @@ sqlx = { version = "0.8", features = [
     "uuid",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
+templar-gateway-client.workspace = true
+templar-gateway-core.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-store.workspace = true
+templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }
 templar-redstone-bridge.workspace = true
@@ -40,6 +48,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
+uuid.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
 reqwest = { version = "0.12.24", features = ["json"] }

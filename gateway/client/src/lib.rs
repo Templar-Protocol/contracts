@@ -1,19 +1,14 @@
-//! Direct, in-process gateway client for Rust consumers (CLIs, bots, services).
+//! Direct, in-process gateway client for Rust consumers.
 //!
-//! This is the lean sibling of [`templar_gateway_runtime`], which provides the
-//! actix actor frontend used by the long-running RPC service. Where the runtime
-//! wraps dispatch in an actor for bounded concurrency, this crate offers a plain
-//! call-it-yourself facade over the same [`templar_gateway_core`] kernel — and,
-//! crucially, **reuses** the kernel's [`OperationDriver`] for writes rather than
-//! re-implementing signing/submission, so direct-client writes get the same
-//! idempotency, multi-step finalization, and replay semantics as the RPC service.
+//! Writes use the same [`OperationDriver`] as the RPC service, so direct clients
+//! get the same idempotency, finalization, and replay behavior.
 //!
 //! [`Client`] owns the read context plus an [`OperationDriver`] (signer set,
 //! executor, and an [`OperationStore`]). Its [`Client::read`] /
 //! [`Client::execute_as`] helpers take the operation type directly (the
 //! operation *is* its input), so call sites carry no turbofish, no request
 //! wrappers, and no method-name repetition. A [`SigningClient`] binds a default
-//! signing account for the common single-signer case:
+//! signing account:
 //!
 //! ```ignore
 //! let client = SigningClient::connect(network, account_id, secret_key)?;
@@ -47,7 +42,7 @@ use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    ManagedAccountId, MethodSpec,
+    IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
 };
 
 /// Builder for [`Client`]. Takes the network once, accumulates signers, and
@@ -62,7 +57,11 @@ pub struct ClientBuilder {
 impl ClientBuilder {
     /// Register a pre-built signer for an account.
     #[must_use]
-    pub fn signer(mut self, account_id: impl Into<ManagedAccountId>, signer: Arc<Signer>) -> Self {
+    pub fn with_signer(
+        mut self,
+        account_id: impl Into<ManagedAccountId>,
+        signer: Arc<Signer>,
+    ) -> Self {
         self.signers.insert(account_id.into(), signer);
         self
     }
@@ -73,10 +72,32 @@ impl ClientBuilder {
         account_id: impl Into<ManagedAccountId>,
         secret_key: SecretKey,
     ) -> GatewayResult<Self> {
-        let signer = Signer::from_secret_key(secret_key).map_err(|error| {
-            GatewayError::NearTransaction(format!("invalid signer secret key: {error}"))
+        let signer = Signer::from_secret_key(secret_key)
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        Ok(self.with_signer(account_id, signer))
+    }
+
+    /// Register a rotating signer from one or more secret keys.
+    ///
+    /// Each key keeps its own nonce sequence. Errors if no keys are provided.
+    pub async fn secret_keys(
+        self,
+        account_id: impl Into<ManagedAccountId>,
+        secret_keys: impl IntoIterator<Item = SecretKey>,
+    ) -> GatewayResult<Self> {
+        let mut keys = secret_keys.into_iter();
+        let first = keys.next().ok_or_else(|| {
+            GatewayError::InvalidSignerKey("at least one secret key is required".to_owned())
         })?;
-        Ok(self.signer(account_id, signer))
+        let signer = Signer::from_secret_key(first)
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        for key in keys {
+            signer
+                .add_secret_key_to_pool(key)
+                .await
+                .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+        }
+        Ok(self.with_signer(account_id, signer))
     }
 
     /// Use a specific operation store (e.g. a durable `PostgresStore`) for
@@ -200,6 +221,29 @@ impl Client {
         self.driver
             .plan_and_complete::<S, Dispatch, GatewayContext>(self.context.clone(), request)
             .await
+    }
+
+    /// Look up a stored operation by idempotency key.
+    ///
+    /// Used by callers that need to recover after submitting work but before
+    /// recording the result locally.
+    pub async fn operation_by_idempotency_key(
+        &self,
+        idempotency_key: &IdempotencyKey,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        Ok(self
+            .driver
+            .get_by_idempotency_key(idempotency_key)
+            .await?
+            .map(|operation| operation.record()))
+    }
+
+    /// Drive every operation left mid-flight (e.g. by a crash) to a terminal
+    /// outcome — submitting prepared steps and reconciling submitted ones against
+    /// the chain. Lets a consumer rely on the gateway to finish its own work
+    /// before reading back terminal results (see the relayer's broom).
+    pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
+        self.driver.resume_incomplete_operations().await
     }
 
     /// Plan a write request into the transactions required to fulfil it, without

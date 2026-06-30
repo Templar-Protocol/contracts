@@ -1,3 +1,4 @@
+pub mod block;
 pub mod common;
 pub mod contract;
 mod macros;
@@ -8,6 +9,7 @@ pub mod primitive;
 pub mod spec;
 pub mod version;
 
+pub use block::BlockSummary;
 pub use contract::ContractKind;
 pub use error::{CoreError, CoreResult};
 pub use operation::{
@@ -15,7 +17,7 @@ pub use operation::{
 };
 pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, NearGas,
-    NearToken, U128,
+    NearToken, SignedDelegateActionInput, U128,
 };
 pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{

@@ -13285,6 +13285,7 @@ name = "templar-gateway-methods-dispatch"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "borsh 1.6.1",
  "near-account-id",
  "near-api",
  "near-contract-standards",
@@ -13850,11 +13851,13 @@ dependencies = [
 name = "templar-relayer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "clap",
  "dotenvy",
  "futures",
  "hex",
+ "near-api",
  "near-contract-standards",
  "near-crypto",
  "near-jsonrpc-client",
@@ -13870,6 +13873,12 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "templar-common",
+ "templar-gateway-client",
+ "templar-gateway-core",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
+ "templar-gateway-store",
+ "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-redstone-bridge",
@@ -13881,6 +13890,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.23.0",
 ]
 
 [[package]]

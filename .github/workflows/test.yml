@@ -341,6 +341,22 @@ jobs:
     name: Fast Tests
     timeout-minutes: 25
     runs-on: ubuntu-latest
+    services:
+      # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
+      # database per test, so they need a reachable postgres at runtime.
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: relayeruser
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: relayer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relayeruser -d relayer"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Free up disk space
         run: |
@@ -370,6 +386,7 @@ jobs:
       - name: Run fast lib tests
         env:
           SQLX_OFFLINE: true
+          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
@@ -433,6 +450,22 @@ jobs:
       contents: read
       id-token: write # Required for Codecov OIDC authentication
     if: ${{ needs.changes.outputs.run_coverage == 'true' }}
+    services:
+      # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
+      # database per test, so they need a reachable postgres at runtime.
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: relayeruser
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: relayer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relayeruser -d relayer"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Free up disk space
         run: |
@@ -469,6 +502,7 @@ jobs:
       - name: Run tests with coverage
         env:
           SQLX_OFFLINE: true
+          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
           CARGO_INCREMENTAL: 0
           RUSTFLAGS: "-Cinstrument-coverage"
           CARGO_BUILD_JOBS: 2

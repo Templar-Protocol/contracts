@@ -1,4 +1,5 @@
 pub mod account;
+pub mod chain;
 pub mod contract;
 pub mod ft;
 pub mod lst_oracle;
@@ -36,6 +37,8 @@ pub mod universal_account;
 macro_rules! for_each_read_method {
     ($callback:ident) => {
         $callback!($crate::account::Get);
+        $callback!($crate::account::GetAccessKey);
+        $callback!($crate::chain::GetBlock);
         $callback!($crate::contract::ViewFunction);
         $callback!($crate::contract::GetKind);
         $callback!($crate::contract::GetVersion);
@@ -138,6 +141,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::token::TransferCall);
         $callback!($crate::tx::FunctionCall);
         $callback!($crate::tx::Transfer);
+        $callback!($crate::tx::RelaySignedDelegateAction);
         $callback!($crate::tx::DeployContract);
         $callback!($crate::tx::DeployAndInit);
         $callback!($crate::universal_account::Execute);

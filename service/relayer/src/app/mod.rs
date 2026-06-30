@@ -6,36 +6,34 @@ use std::{
     time::Duration,
 };
 
-use near_crypto::InMemorySigner;
-use near_jsonrpc_client::{errors::JsonRpcError, methods::tx::RpcTransactionError};
-use near_primitives::{
-    action::{delegate::SignedDelegateAction, Action, FunctionCallAction},
-    hash::CryptoHash,
-    transaction::SignedTransaction,
-    views::{FinalExecutionOutcomeView, FinalExecutionStatus, TxExecutionStatus},
-};
-use near_sdk::{serde_json, AccountId, AccountIdRef, NearToken};
+use near_primitives::action::{delegate::SignedDelegateAction, Action, FunctionCallAction};
+use near_sdk::{serde_json, AccountId, AccountIdRef, Gas, NearToken};
 use templar_common::{
     asset::{BorrowAsset, CollateralAsset},
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
-use templar_proxy_oracle_near_common::cache::CachedProxyPriceStatus;
-use templar_proxy_oracle_near_common::request::OracleRequest;
+use templar_gateway_client::{collect_paginated, Client as GatewayClient};
+use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
+use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_methods_spec::{
+    chain, market, oracle as oracle_spec, proxy_oracle, registry, storage,
+};
+use templar_gateway_types::{
+    common::{Pagination, WriteOperationResult, WriteRequest},
+    CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
+};
+use templar_proxy_oracle_near_common::{cache::CachedProxyPriceStatus, request::OracleRequest};
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
 };
+use uuid::Uuid;
 
 use crate::{
     broom,
-    cache::Cache,
     client::{
-        database::{
-            error::{RecordTransactionError, SetPendingTransactionError},
-            Database,
-        },
-        near::{Near, ViewError, STORAGE_DEPOSIT_GAS},
+        database::{error::LockError, Database},
         oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
@@ -48,65 +46,92 @@ pub use args::Configuration;
 type PythUpdatesByOracle = HashMap<AccountId, HashSet<pyth::PriceIdentifier>>;
 type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
 
+/// The per-oracle price updates a set of markets needs, grouped by oracle kind.
+/// A named struct rather than a 3-tuple, since `pyth` and `proxy` share a type
+/// but mean different things.
+struct GroupedPriceUpdates {
+    pyth: PythUpdatesByOracle,
+    redstone: RedstoneUpdatesByOracle,
+    proxy: PythUpdatesByOracle,
+}
+
+/// Gas attached to a `storage_deposit` call (matches the gateway's
+/// `storage.deposit` plan); used to size the allowance lock estimate.
+const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(100);
+
 #[derive(Debug, Clone)]
 pub struct App {
     pub args: args::Configuration,
     pub accounts: Arc<RwLock<AccountData>>,
-    pub relay_near: Near,
-    pub ua_near: Near,
+    /// In-process gateway client — the relayer's sole chain interface. Reads
+    /// (market/oracle/storage/chain) and writes (meta-tx relay, UA execute/
+    /// create, storage deposit) all go through its typed specs.
+    pub gateway: GatewayClient,
     pub pyth: oracle::Handle<oracle::PythSpec>,
     pub redstone: oracle::Handle<oracle::RedStoneSpec>,
-    pub cache: Arc<Cache>,
     pub database: Database,
 }
 
 impl App {
-    pub fn new(
-        args: args::Configuration,
-        kill: watch::Sender<()>,
-    ) -> Result<Self, templar_redstone_bridge::BridgeError> {
-        let relay_near = Near::new(
-            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.relay.account_id.clone(),
-            args.relay
-                .secret_key
-                .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.relay.account_id.clone(), s.clone()))
-                .collect(),
-        );
+    pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
+        let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
 
-        let ua_near = Near::new(
-            near_jsonrpc_client::JsonRpcClient::connect(&args.rpc_url),
-            args.ua.account_id.clone(),
-            args.ua
-                .secret_key
-                .iter()
-                .map(|s| InMemorySigner::from_secret_key(args.ua.account_id.clone(), s.clone()))
-                .collect(),
-        );
+        // Persist gateway operations in the relayer database so idempotency and
+        // replay survive restarts.
+        let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
+        gateway_store.migrate().await?;
 
-        #[allow(clippy::unwrap_used)]
-        let database = Database::new(&args.database_url, kill.clone()).unwrap();
+        // The relay account signs with a rotating multi-key pool; the UA account
+        // is registered for the universal-account creation path.
+        let mut builder = GatewayClient::builder(network).store(Arc::new(gateway_store));
+        if !args.relay.secret_key.is_empty() {
+            builder = builder
+                .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())
+                .await?;
+        }
+        if !args.ua.secret_key.is_empty() {
+            builder = builder
+                .secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())
+                .await?;
+        }
+        let gateway = builder.build()?;
+        let relay_gateway = gateway
+            .clone()
+            .into_signing(args.relay.account_id.clone())?;
 
-        let cache = Cache::new(relay_near.clone(), args.cache.clone(), kill.clone());
+        let database = Database::new(&args.database_url, kill.clone())?;
 
-        let pyth = oracle::PythSpec::handle(
-            args.pyth.clone(),
-            relay_near.clone(),
-            cache.clone(),
-            kill.clone(),
-        );
+        // Drive any operation a previous run left mid-flight to a terminal
+        // outcome, once, before serving — so the broom (and live requests) only
+        // ever settle terminal operations. Doing this while serving would race
+        // the synchronous execute path on the same operation. Fail fast if it
+        // can't: the container restarts us (retrying recovery) rather than
+        // serving with charges that can never settle — unless the operator opted
+        // into starting anyway for a persistently wedged recovery.
+        if let Err(error) = gateway.resume_incomplete_operations().await {
+            if args.ignore_startup_recovery_failure {
+                tracing::warn!(
+                    %error,
+                    "Failed to resume incomplete gateway operations at startup; serving \
+                     anyway (IGNORE_STARTUP_RECOVERY_FAILURE set). Charges left mid-flight \
+                     will not settle until recovery next succeeds.",
+                );
+            } else {
+                return Err(anyhow::Error::from(error).context(
+                    "Failed to resume incomplete gateway operations at startup \
+                     (set IGNORE_STARTUP_RECOVERY_FAILURE to start anyway)",
+                ));
+            }
+        }
 
-        let redstone = oracle::RedStoneSpec::handle(
-            args.redstone.clone(),
-            relay_near.clone(),
-            cache.clone(),
-            kill.clone(),
-        )?;
+        let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
+
+        let redstone =
+            oracle::RedStoneSpec::handle(args.redstone.clone(), relay_gateway, kill.clone())?;
 
         tokio::spawn(broom::start(
             database.clone(),
-            relay_near.clone(),
+            gateway.clone(),
             args.broom_batch_size,
             Duration::from_secs(args.broom_interval_secs),
             kill,
@@ -115,23 +140,34 @@ impl App {
         Ok(Self {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
-            relay_near,
-            ua_near,
+            gateway,
             pyth,
             redstone,
-            cache: Arc::new(cache),
             database,
         })
     }
 
+    /// Estimate the NEAR cost of `gas` at the current gas price.
+    ///
+    /// This sizes the allowance lock before submitting; the lock is reconciled
+    /// against the actual `tokens_burnt` afterwards, so a coarse estimate only
+    /// affects the pre-flight affordability gate, never the amount charged.
     #[tracing::instrument(skip(self), fields(gas = %gas))]
-    pub async fn estimate_cost_of_gas(&self, gas: near_sdk::Gas) -> Option<NearToken> {
-        const TERA: u128 = near_sdk::Gas::from_tgas(1).as_gas() as u128;
+    pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
+        let gas_price = match self
+            .gateway
+            .read(chain::GetBlock { block_hash: None })
+            .await
+        {
+            Ok(result) => result.gas_price,
+            Err(error) => {
+                tracing::error!(%error, "Failed to fetch gas price");
+                return None;
+            }
+        };
 
-        let price_per_tgas = self.cache.gas_price().await;
-        let result = price_per_tgas
-            .checked_mul(u128::from(gas.as_gas()))
-            .and_then(|x| x.checked_div(TERA));
+        // `gas_price` is yoctoNEAR per unit of gas.
+        let result = gas_price.checked_mul(u128::from(gas.as_gas()));
 
         tracing::debug!(cost = ?result, "Estimated gas cost");
         result
@@ -148,10 +184,10 @@ impl App {
         for registry_id in &self.args.monitor.registry {
             tracing::debug!(%registry_id, "Loading from registry");
             set.spawn({
-                let near = self.relay_near.clone();
+                let gateway = self.gateway.clone();
                 let registry_id = registry_id.clone();
                 async move {
-                    near.load_deployments_from_registry(registry_id.clone())
+                    load_registry_deployments(&gateway, registry_id.clone())
                         .await
                         .unwrap_or_else(|e| {
                             tracing::warn!(
@@ -164,26 +200,34 @@ impl App {
         }
         markets.extend(set.join_all().await.into_iter().flatten());
 
-        // ...and add any individual markets.
+        // ...and load each market's configuration to build the relay allowlist.
+        // Configuration is read fresh (not cached) — it only seeds the static
+        // method/storage allowlist and the set of known market accounts; the
+        // per-request paths re-resolve assets and oracle dependencies on demand.
         let mut set = JoinSet::new();
         for market in markets {
             tracing::debug!(%market, "Loading market");
             set.spawn({
-                let near = self.relay_near.clone();
+                let gateway = self.gateway.clone();
                 async move {
-                    match near.load_market_accounts(market.clone()).await {
-                        Ok(market_accounts) => Some(market_accounts),
+                    match gateway
+                        .read(market::GetConfiguration {
+                            market_id: market.clone(),
+                        })
+                        .await
+                    {
+                        Ok(configuration) => Some((market, configuration)),
                         Err(e) => {
-                            tracing::warn!("Failed to load accounts for market {market}: {e}");
+                            tracing::warn!("Failed to load configuration for market {market}: {e}");
                             None
                         }
                     }
                 }
             });
         }
-        let market_accounts_vec = set.join_all().await;
+        let market_configurations = set.join_all().await;
 
-        let mut markets = HashMap::new();
+        let mut market_ids = HashSet::new();
         let mut allowed_contracts = HashMap::new();
         if let Some(intents_id) = self.args.relay.intents_id.clone() {
             allowed_contracts.insert(
@@ -201,52 +245,56 @@ impl App {
             );
         }
 
-        for market_accounts in market_accounts_vec.into_iter().flatten() {
+        for (market_id, configuration) in market_configurations.into_iter().flatten() {
+            let oracle_id = configuration.price_oracle_configuration.account_id.clone();
             tracing::info!(
-                market_id = %market_accounts.account_id,
-                borrow_asset = %market_accounts.borrow.asset,
-                collateral_asset = %market_accounts.collateral.asset,
-                oracle_id = %market_accounts.oracle_id,
+                %market_id,
+                borrow_asset = %configuration.borrow_asset,
+                collateral_asset = %configuration.collateral_asset,
+                %oracle_id,
                 "Loaded market",
             );
 
             for (contract_id, allowed_methods) in [
                 (
-                    market_accounts.account_id.as_ref(),
+                    market_id.clone(),
                     self.args.relay.allowed_methods.as_slice(),
                 ),
                 (
-                    market_accounts.borrow.asset.contract_id(),
-                    &[market_accounts
-                        .borrow
-                        .asset
+                    configuration.borrow_asset.contract_id().to_owned(),
+                    &[configuration
+                        .borrow_asset
                         .transfer_call_method_name()
-                        .to_string()],
+                        .to_string()][..],
                 ),
                 (
-                    market_accounts.collateral.asset.contract_id(),
-                    &[market_accounts
-                        .collateral
-                        .asset
+                    configuration.collateral_asset.contract_id().to_owned(),
+                    &[configuration
+                        .collateral_asset
                         .transfer_call_method_name()
-                        .to_string()],
+                        .to_string()][..],
                 ),
                 (
-                    &market_accounts.oracle_id,
-                    &self.args.relay.oracle_allowed_methods,
+                    oracle_id.clone(),
+                    self.args.relay.oracle_allowed_methods.as_slice(),
                 ),
             ] {
-                match allowed_contracts.entry(contract_id.to_owned()) {
+                match allowed_contracts.entry(contract_id.clone()) {
                     Entry::Vacant(e) => {
+                        // `None` for contracts that don't implement storage
+                        // management (or are momentarily unreachable); those are
+                        // simply never storage-deposited.
                         let storage_balance_bounds = self
-                            .relay_near
-                            .load_storage_balance_bounds(contract_id.to_owned())
+                            .gateway
+                            .read(storage::GetBalanceBounds {
+                                contract_id: contract_id.clone(),
+                            })
                             .await
-                            .ok();
+                            .ok()
+                            .map(|result| result.bounds);
 
                         tracing::info!(
-                            "Loaded storage balance bounds for contract {}: {}",
-                            contract_id,
+                            "Loaded storage balance bounds for contract {contract_id}: {}",
                             storage_balance_bounds
                                 .as_ref()
                                 .map_or(NearToken::from_near(0), |bounds| bounds.min),
@@ -265,101 +313,126 @@ impl App {
                 }
             }
 
-            markets.insert(market_accounts.account_id.clone(), market_accounts);
+            market_ids.insert(market_id);
         }
 
         let mut handle = self.accounts.write().await;
-        handle.market_data = markets;
+        handle.market_ids = market_ids;
         handle.allowed_contract_data = allowed_contracts;
     }
 
-    pub fn expand_market_related_contracts(
-        accounts: &AccountData,
+    /// Expand a set of interacted contracts to also include each interacted
+    /// market's oracle and asset contracts, resolved on demand. Used to widen
+    /// the set of contracts eligible for storage deposits.
+    pub async fn expand_market_related_contracts(
+        &self,
+        market_ids: &HashSet<AccountId>,
         interacted_contract_ids: &mut HashSet<AccountId>,
     ) {
-        let additional_contract_ids = interacted_contract_ids
+        let mut additional = Vec::new();
+        for market_id in interacted_contract_ids
             .iter()
-            .filter_map(|contract_id| accounts.market_data.get(contract_id))
-            .flat_map(|market_data| {
-                [
-                    market_data.oracle_id.clone(),
-                    market_data.borrow.asset.contract_id().to_owned(),
-                    market_data.collateral.asset.contract_id().to_owned(),
-                ]
-            })
-            .collect::<Vec<_>>();
-
-        interacted_contract_ids.extend(additional_contract_ids);
+            .filter(|id| market_ids.contains(*id))
+        {
+            match self
+                .gateway
+                .read(market::GetConfiguration {
+                    market_id: market_id.clone(),
+                })
+                .await
+            {
+                Ok(configuration) => {
+                    additional.push(configuration.price_oracle_configuration.account_id);
+                    additional.push(configuration.borrow_asset.contract_id().to_owned());
+                    additional.push(configuration.collateral_asset.contract_id().to_owned());
+                }
+                Err(e) => {
+                    tracing::warn!(%market_id, "Failed to expand market contracts: {e}");
+                }
+            }
+        }
+        interacted_contract_ids.extend(additional);
     }
 
     pub fn resolve_market_ids(
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         interacted_contract_ids: &HashSet<AccountId>,
     ) -> HashSet<AccountId> {
         interacted_contract_ids
             .iter()
-            .filter(|contract_id| accounts.market_data.contains_key(*contract_id))
+            .filter(|contract_id| known_market_ids.contains(*contract_id))
             .cloned()
             .collect()
     }
 
     fn derive_sda_interactions(
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         receiver_id: &AccountId,
         additional_interactions: Vec<AccountId>,
     ) -> (HashSet<AccountId>, HashSet<AccountId>) {
         let interacted_contract_ids: HashSet<_> = std::iter::once(receiver_id.clone())
             .chain(additional_interactions)
             .collect();
-        let market_ids = Self::resolve_market_ids(accounts, &interacted_contract_ids);
+        let market_ids = Self::resolve_market_ids(known_market_ids, &interacted_contract_ids);
         (interacted_contract_ids, market_ids)
     }
 
+    /// Resolve, on demand, the oracle price updates required before touching the
+    /// given markets, grouped by oracle and underlying source.
+    ///
+    /// For each market the configuration and per-feed resolution dependencies
+    /// are read fresh through the gateway (cached server-side), so this never
+    /// relies on stale local state. Proxy-backed markets additionally enqueue a
+    /// refresh of the proxy's own cached prices.
     #[allow(clippy::type_complexity)]
-    fn grouped_price_updates(
-        accounts: &AccountData,
+    async fn group_price_updates(
+        &self,
         market_ids: &HashSet<AccountId>,
-    ) -> (
-        PythUpdatesByOracle,
-        RedstoneUpdatesByOracle,
-        PythUpdatesByOracle,
-    ) {
-        market_ids
-            .iter()
-            .filter_map(|market_id| accounts.market_data.get(market_id))
-            .fold(
-                (HashMap::new(), HashMap::new(), HashMap::new()),
-                |(mut pyth, mut redstone, mut proxy), market_data| {
-                    for request in market_data
-                        .collateral
-                        .update_oracle
-                        .iter()
-                        .chain(market_data.borrow.update_oracle.iter())
-                    {
-                        match request {
-                            OracleRequest::Pyth(request) => {
-                                pyth.entry(request.oracle_id.clone())
-                                    .or_default()
-                                    .insert(request.price_id);
-                            }
-                            OracleRequest::RedStone(request) => {
-                                redstone
-                                    .entry(request.oracle_id.clone())
-                                    .or_default()
-                                    .insert(request.price_id.clone());
-                            }
-                        }
-                    }
-                    if market_data.oracle_kind.requires_proxy_update() {
-                        proxy
-                            .entry(market_data.oracle_id.clone())
-                            .or_default()
-                            .extend([market_data.collateral.price_id, market_data.borrow.price_id]);
-                    }
+    ) -> GatewayResult<GroupedPriceUpdates> {
+        let mut pyth = PythUpdatesByOracle::new();
+        let mut redstone = RedstoneUpdatesByOracle::new();
+        let mut proxy = PythUpdatesByOracle::new();
 
-                    (pyth, redstone, proxy)
-                },
-            )
+        for market_id in market_ids {
+            let configuration = self
+                .gateway
+                .read(market::GetConfiguration {
+                    market_id: market_id.clone(),
+                })
+                .await?;
+            let oracle_cfg = configuration.price_oracle_configuration;
+            let oracle_id = oracle_cfg.account_id.clone();
+
+            let mut requires_proxy_update = false;
+            for price_id in [
+                oracle_cfg.collateral_asset_price_id,
+                oracle_cfg.borrow_asset_price_id,
+            ] {
+                let dependencies = self
+                    .gateway
+                    .read(oracle_spec::GetPriceResolutionDependencies {
+                        oracle_id: oracle_id.clone(),
+                        price_id,
+                    })
+                    .await?;
+                accumulate_oracle_requests(&dependencies.requests, &mut pyth, &mut redstone);
+                requires_proxy_update |=
+                    matches!(dependencies.kind, oracle_spec::OracleContractKind::Proxy);
+            }
+
+            if requires_proxy_update {
+                proxy.entry(oracle_id).or_default().extend([
+                    oracle_cfg.collateral_asset_price_id,
+                    oracle_cfg.borrow_asset_price_id,
+                ]);
+            }
+        }
+
+        Ok(GroupedPriceUpdates {
+            pyth,
+            redstone,
+            proxy,
+        })
     }
 
     async fn dispatch_grouped_price_updates<
@@ -443,73 +516,75 @@ impl App {
             return Ok(None);
         }
 
-        let action = FunctionCallAction {
-            method_name: "update_prices".to_string(),
-            args: serde_json::to_vec(&serde_json::json!({ "price_ids": &price_ids }))
-                .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
-                .map_err(Arc::new)?,
-            gas: near_primitives::gas::Gas::from_teragas(100),
-            deposit: NearToken::ZERO,
-        };
+        let requested = price_ids.into_vec();
+        let result = self
+            .gateway
+            .execute_as(
+                self.args.relay.account_id.clone(),
+                proxy_oracle::UpdatePrices {
+                    oracle_id,
+                    price_ids: requested.clone(),
+                },
+            )
+            .await
+            .map_err(oracle::UpdateError::from)
+            .map_err(Arc::new)?;
 
-        let signed_transaction = self
-            .relay_near
-            .sign_transaction(&self.cache, oracle_id.clone(), vec![action.into()])
-            .await;
-        let transaction_hash = signed_transaction.get_hash();
-        let transaction_result = tokio::time::timeout(
-            self.args.rpc_timeout,
-            self.relay_near
-                .send_transaction(signed_transaction, TxExecutionStatus::Final),
-        )
-        .await
-        .map_err(|_| oracle::UpdateError::RpcTimeout(self.args.rpc_timeout))
-        .map_err(Arc::new)?
-        .map_err(oracle::UpdateError::JsonRpc)
-        .map_err(Arc::new)?;
-
-        let Some(outcome) = transaction_result.final_execution_outcome else {
-            return Err(Arc::new(oracle::UpdateError::UnknownRpcError));
-        };
-
-        match outcome.into_outcome().status {
-            FinalExecutionStatus::NotStarted | FinalExecutionStatus::Started => {
-                Err(Arc::new(oracle::UpdateError::UnknownRpcError))
-            }
-            FinalExecutionStatus::Failure(error) => Err(Arc::new(error.into())),
-            FinalExecutionStatus::SuccessValue(value) => {
-                let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
-                    serde_json::from_slice(&value)
-                        .map_err(oracle::UpdateError::ProxyOracleUpdateResult)
-                        .map_err(Arc::new)?;
-
-                for price_id in price_ids.iter().copied() {
-                    let Some(status) = statuses.get(&price_id) else {
-                        return Err(Arc::new(
-                            oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id },
-                        ));
-                    };
-                    if !matches!(status, CachedProxyPriceStatus::Accepted { .. }) {
-                        return Err(Arc::new(oracle::UpdateError::ProxyOracleUpdateFailed {
-                            oracle_id,
-                            message: format!("price {price_id} returned {status:?}"),
-                        }));
-                    }
-                }
-
-                Ok(Some(transaction_hash))
-            }
+        if result.operation.status != OperationStatus::Succeeded {
+            return Err(Arc::new(oracle::UpdateError::NotSucceeded {
+                operation_id: result.operation.id.0,
+                status: result.operation.status,
+            }));
         }
+
+        // The proxy's `update_prices` returns a per-price status map and the
+        // transaction succeeds even when a price is circuit-breaker-blocked, so
+        // require EVERY requested price to come back `Accepted` before the caller
+        // relays a user action that would price against stale/unavailable data. A
+        // missing return value, or a missing / non-accepted entry, is unavailable
+        // (only checking the returned entries would let an omitted price slip by).
+        let Some(return_value) = result
+            .operation
+            .final_outcome()
+            .and_then(|outcome| outcome.return_value.as_ref())
+        else {
+            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
+                price_ids: requested,
+            }));
+        };
+        let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
+            serde_json::from_slice(return_value)
+                .map_err(|error| Arc::new(oracle::UpdateError::ProxyResultDecode(error)))?;
+        let unavailable: Vec<pyth::PriceIdentifier> = requested
+            .into_iter()
+            .filter(|id| {
+                !matches!(
+                    statuses.get(id),
+                    Some(CachedProxyPriceStatus::Accepted { .. })
+                )
+            })
+            .collect();
+        if !unavailable.is_empty() {
+            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
+                price_ids: unavailable,
+            }));
+        }
+
+        Ok(result.operation.latest_tx_hash())
     }
 
     pub async fn update_market_prices(
         &self,
         market_ids: &HashSet<AccountId>,
     ) -> Result<(), PriceUpdateError> {
-        let (pyth_updates, redstone_updates, proxy_updates) = {
-            let accounts = self.accounts.read().await;
-            Self::grouped_price_updates(&accounts, market_ids)
-        };
+        let GroupedPriceUpdates {
+            pyth: pyth_updates,
+            redstone: redstone_updates,
+            proxy: proxy_updates,
+        } = self
+            .group_price_updates(market_ids)
+            .await
+            .map_err(PriceUpdateError::Resolve)?;
 
         let pyth = self.pyth.clone();
         let redstone = self.redstone.clone();
@@ -539,10 +614,10 @@ impl App {
     ///
     /// - If the receiver is not known.
     /// - If any of the function call actions are not allowed.
-    #[tracing::instrument(skip(self, accounts, contract_data, calls))]
-    pub fn actions_are_allowed<'a>(
+    #[tracing::instrument(skip(self, known_market_ids, contract_data, calls))]
+    pub async fn actions_are_allowed<'a>(
         &self,
-        accounts: &AccountData,
+        known_market_ids: &HashSet<AccountId>,
         receiver_id: &AccountIdRef,
         contract_data: &ContractData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
@@ -562,7 +637,22 @@ impl App {
                 let market_id = transfer.token_receiver_id();
                 other_interactions.push(market_id.to_owned());
 
-                let Some(market_account_ids) = accounts.market_data.get(market_id) else {
+                if !known_market_ids.contains(market_id) {
+                    errors.push(FunctionCallRejectionReason::UnknownTransferReceiverId {
+                        account_id: market_id.to_owned(),
+                        index,
+                    });
+                    continue;
+                }
+
+                // Resolve the market's assets on demand to validate the deposit.
+                let Ok(configuration) = self
+                    .gateway
+                    .read(market::GetConfiguration {
+                        market_id: market_id.to_owned(),
+                    })
+                    .await
+                else {
                     errors.push(FunctionCallRejectionReason::UnknownTransferReceiverId {
                         account_id: market_id.to_owned(),
                         index,
@@ -579,20 +669,19 @@ impl App {
                     continue;
                 };
 
-                #[allow(clippy::unwrap_used, reason = "DepositMsg serialization is infallible")]
-                if transfer.asset() == market_account_ids.borrow.asset {
+                if transfer.asset() == configuration.borrow_asset {
                     if !msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.collateral.asset.to_string(),
+                            expected: configuration.collateral_asset.to_string(),
                             received: transfer.asset::<BorrowAsset>().to_string(),
                         });
                     }
-                } else if transfer.asset() == market_account_ids.collateral.asset {
+                } else if transfer.asset() == configuration.collateral_asset {
                     if msg.expects_borrow_asset() {
                         errors.push(FunctionCallRejectionReason::InvalidAssetForMsg {
                             index,
-                            expected: market_account_ids.borrow.asset.to_string(),
+                            expected: configuration.borrow_asset.to_string(),
                             received: transfer.asset::<CollateralAsset>().to_string(),
                         });
                     }
@@ -658,15 +747,19 @@ impl App {
 
         let additional_interactions = self
             .actions_are_allowed(
-                &accounts,
+                &accounts.market_ids,
                 receiver_id,
                 &contract_data,
                 calls.iter().map(Borrow::borrow),
             )
+            .await
             .map_err(PayloadRejectionReason::FunctionCallRejection)?;
 
-        let (interacted_contract_ids, market_ids) =
-            Self::derive_sda_interactions(&accounts, receiver_id, additional_interactions);
+        let (interacted_contract_ids, market_ids) = Self::derive_sda_interactions(
+            &accounts.market_ids,
+            receiver_id,
+            additional_interactions,
+        );
 
         let gas_total = calls.iter().map(|call| call.gas.as_gas()).sum();
 
@@ -678,85 +771,116 @@ impl App {
         })
     }
 
+    /// Submit a write through the gateway and reconcile the charged account's
+    /// allowance against the operation's actual cost.
+    ///
+    /// The allowance is locked up front under a freshly generated gateway
+    /// idempotency key — the on-chain hash isn't known until the gateway submits,
+    /// so the key is the charge's identity. The gateway drives the operation to a
+    /// terminal outcome and returns its record, from which the charge is settled
+    /// directly (the recorded `tokens_burnt`, plus the locked deposit on success).
+    ///
+    /// On a gateway error the lock is left in place: the operation may have
+    /// landed on chain, so the broom reconciles it against the gateway's record
+    /// rather than this path guessing. The broom is otherwise only a backstop for
+    /// a request interrupted between submission and settlement.
+    ///
+    /// `account_id` is the account charged for the operation; `signer_account_id`
+    /// is the relayer-controlled account that signs and pays (relay or UA).
+    ///
     /// # Errors
     ///
-    /// - When sending the transaction
-    /// - When resolving the transaction in the database
-    #[tracing::instrument(skip(self, signed_transaction), fields(
+    /// - Locking or settling the allowance in the database
+    /// - Gateway execution
+    /// - The operation completing without producing a transaction
+    #[tracing::instrument(skip(self, body), fields(
         account_id = %account_id,
+        signer_account_id = %signer_account_id,
         gas_cost_estimate = %gas_cost_estimate,
         spend_within_transaction = %spend_within_transaction,
-        transaction_hash = tracing::field::Empty
+        transaction_hash = tracing::field::Empty,
     ))]
-    pub async fn send_and_resolve_transaction(
+    pub async fn execute_and_account<S>(
         &self,
         account_id: AccountId,
+        signer_account_id: AccountId,
         gas_cost_estimate: NearToken,
         spend_within_transaction: NearToken,
-        signed_transaction: SignedTransaction,
-        wait_until: TxExecutionStatus,
-    ) -> Result<
-        impl Future<Output = Result<FinalExecutionOutcomeView, ResolveTransactionError>>,
-        SendTransactionError,
-    > {
-        let transaction_hash = signed_transaction.get_hash();
-        tracing::Span::current().record(
-            "transaction_hash",
-            tracing::field::display(&transaction_hash),
-        );
-        tracing::info!("Sending and resolving transaction");
+        body: S,
+    ) -> Result<AccountedExecution, SubmitError>
+    where
+        S: MethodSpec<Output = WriteOperationResult> + Send,
+        Dispatch: PlanWrite<S, GatewayContext>,
+    {
+        tracing::info!("Submitting and accounting for transaction");
+        let operation_key = Uuid::new_v4();
 
         self.database
-            .set_pending_transaction(
+            .lock_pending(
                 &account_id,
                 gas_cost_estimate,
                 spend_within_transaction,
-                transaction_hash,
+                operation_key,
             )
             .await?;
 
+        // On any gateway error, leave the locked charge for the broom: the
+        // operation may have reached the chain, and the broom settles it against
+        // the gateway's record.
         let result = self
-            .relay_near
-            .send_transaction(signed_transaction, wait_until)
-            .await;
+            .gateway
+            .execute_request(WriteRequest {
+                signer_account_id: signer_account_id.into(),
+                idempotency_key: Some(IdempotencyKey(operation_key.to_string())),
+                body,
+            })
+            .await
+            .map_err(SubmitError::Gateway)?;
 
-        let result = match result {
-            Ok(result) => result,
-            Err(e) => {
-                // Some sort of RPC error: remove the pending transaction record.
-                self.database
-                    .remove_pending_transaction(&account_id)
-                    .await?;
-                return Err(e.into());
-            }
+        let operation = result.operation;
+        let succeeded = operation.status == OperationStatus::Succeeded;
+
+        // Resolve the on-chain hash before charging, so the no-transaction error
+        // path leaves the charge untouched for the broom to reconcile rather than
+        // charging and then returning an error (a degenerate terminal operation
+        // without a hash should never settle on the hot path).
+        let Some(tx_hash) = operation.latest_tx_hash() else {
+            return Err(SubmitError::NoTransaction {
+                operation_id: operation.id.0,
+            });
         };
+        let native_tx_hash = from_gateway_hash(&tx_hash);
+        tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-        let near = self.relay_near.clone();
-        let database = self.database.clone();
+        // `execute_request` drives the operation to a terminal outcome, so its
+        // recorded cost is final. Settle directly: gas (`tokens_burnt`) always,
+        // the locked deposit only on success.
+        self.database
+            .settle(
+                &account_id,
+                operation_key,
+                operation.tokens_burnt(),
+                succeeded,
+            )
+            .await?;
 
-        Ok(async move {
-            let status = if let Some(outcome) = result.final_execution_outcome {
-                outcome.into_outcome()
-            } else {
-                near.fetch_transaction_status(account_id.clone(), transaction_hash)
-                    .await?
-            };
-
-            database.record_transaction(&account_id, &status).await?;
-
-            Ok(status)
+        Ok(AccountedExecution {
+            transaction_hash: native_tx_hash,
+            succeeded,
         })
     }
 
-    /// Perform a storage deposit top-up, charging the associated account
-    /// accordingly with the amount of storage balance consumed.
+    /// Ensure `account_id` holds the relayer's guaranteed-minimum storage
+    /// balance on `contract_id`, charging the account for any deposit made.
+    ///
+    /// Contracts without storage management (`storage_balance_bounds` absent or
+    /// zero) are skipped.
     ///
     /// # Errors
     ///
-    /// - If loading storage balance bounds from the contract fails.
-    /// - If gas calculation fails.
-    /// - If sending the transaction fails.
-    /// - If resolving the final transaction status with the database fails.
+    /// - Reading the account's storage balance through the gateway
+    /// - Estimating gas
+    /// - Submitting or accounting for the deposit
     pub async fn storage_deposit_top_up(
         &self,
         contract_data: &ContractData,
@@ -772,9 +896,13 @@ impl App {
         };
 
         let storage_balance = self
-            .relay_near
-            .load_storage_balance_of(contract_id.clone(), &account_id)
-            .await?;
+            .gateway
+            .read(storage::GetBalanceOf {
+                contract_id: contract_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await?
+            .balance;
 
         let available = storage_balance.map_or(NearToken::from_near(0), |s| s.available);
 
@@ -791,36 +919,32 @@ impl App {
             return Ok(());
         }
 
-        let Some(cost_of_gas) = self
-            .estimate_cost_of_gas(STORAGE_DEPOSIT_GAS)
-            .await
-            .map(|amount| amount.saturating_add(storage_deposit_amount))
-        else {
+        let Some(cost_of_gas) = self.estimate_cost_of_gas(STORAGE_DEPOSIT_GAS).await else {
             return Err(StorageDepositError::GasEstimationFailure);
         };
 
-        let signed_transaction = self
-            .relay_near
-            .construct_storage_deposit_transaction(
-                &self.cache,
+        let execution = self
+            .execute_and_account(
                 account_id.clone(),
-                contract_id.clone(),
-                storage_deposit_amount,
-            )
-            .await;
-
-        let resolve_transaction = self
-            .send_and_resolve_transaction(
-                account_id,
+                self.args.relay.account_id.clone(),
                 cost_of_gas,
                 storage_deposit_amount,
-                signed_transaction,
-                TxExecutionStatus::Final,
+                storage::Deposit {
+                    contract_id,
+                    beneficiary_id: Some(account_id),
+                    registration_only: false,
+                    deposit: storage_deposit_amount,
+                },
             )
             .await?;
 
-        // Resolve synchronously.
-        resolve_transaction.await?;
+        // A reverted deposit didn't register the account; callers (e.g. relay)
+        // must not proceed as if storage is in place.
+        if !execution.succeeded {
+            return Err(StorageDepositError::Reverted {
+                transaction_hash: execution.transaction_hash,
+            });
+        }
 
         Ok(())
     }
@@ -836,38 +960,116 @@ pub struct SdaCheckResult {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageDepositError {
-    #[error("RPC view error: {0}")]
-    View(#[from] ViewError),
+    #[error("Gateway read error: {0}")]
+    Gateway(#[from] GatewayError),
     #[error("Failed to estimate gas")]
     GasEstimationFailure,
-    #[error("Error sending storage deposit: {0}")]
-    Send(#[from] SendTransactionError),
-    #[error("Error resolving storage deposit: {0}")]
-    Resolve(#[from] ResolveTransactionError),
+    #[error("Error submitting storage deposit: {0}")]
+    Submit(#[from] SubmitError),
+    #[error("Storage deposit reverted on chain (transaction {transaction_hash})")]
+    Reverted {
+        transaction_hash: near_primitives::hash::CryptoHash,
+    },
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SendTransactionError {
-    #[error("RPC error: {0}")]
-    Rpc(#[from] JsonRpcError<RpcTransactionError>),
-    #[error("Set pending transaction error: {0}")]
-    SetPendingTransaction(#[from] SetPendingTransactionError),
-    #[error("Remove pending transaction error: {0}")]
-    RemovePendingTransaction(#[from] sqlx::Error),
+/// The result of [`App::execute_and_account`]: the on-chain transaction hash
+/// and whether the operation's final status was success. The charge is always
+/// settled; `succeeded` lets callers decide whether to report success (e.g. UA
+/// create must not claim success for a reverted deploy).
+#[derive(Debug, Clone, Copy)]
+pub struct AccountedExecution {
+    pub transaction_hash: near_primitives::hash::CryptoHash,
+    pub succeeded: bool,
 }
 
+/// Failure submitting a gateway write and settling its allowance charge.
 #[derive(Debug, thiserror::Error)]
-pub enum ResolveTransactionError {
-    #[error("RPC error: {0}")]
-    Rpc(#[from] JsonRpcError<RpcTransactionError>),
-    #[error("Record transaction error: {0}")]
-    RecordTransaction(#[from] RecordTransactionError),
+pub enum SubmitError {
+    #[error("Lock allowance error: {0}")]
+    Lock(#[from] LockError),
+    #[error("Gateway execution error: {0}")]
+    Gateway(GatewayError),
+    #[error("Operation {operation_id} completed without a transaction")]
+    NoTransaction { operation_id: String },
+    #[error("Database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum PriceUpdateError {
     #[error("Oracle update failed: {0}")]
     Oracle(Arc<oracle::UpdateError>),
+    #[error("Failed to resolve price-update dependencies: {0}")]
+    Resolve(GatewayError),
+}
+
+/// Convert a native transaction/block hash into the gateway's hash type. Both
+/// are 32-byte hashes, so this is a total byte-for-byte move.
+#[must_use]
+pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> CryptoHash {
+    CryptoHash::from(near_api::CryptoHash(hash.0))
+}
+
+/// Convert a gateway hash into the native transaction-hash type. Both are
+/// 32-byte hashes, so this is a total byte-for-byte move.
+#[must_use]
+pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash {
+    near_primitives::hash::CryptoHash(hash.0 .0)
+}
+
+/// Page size for draining a registry's deployment list through the gateway.
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const REGISTRY_PAGE_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(100).unwrap();
+
+/// Fold a list of resolved oracle requests into the per-oracle pyth/redstone
+/// update sets.
+fn accumulate_oracle_requests(
+    requests: &[OracleRequest],
+    pyth: &mut PythUpdatesByOracle,
+    redstone: &mut RedstoneUpdatesByOracle,
+) {
+    for request in requests {
+        match request {
+            OracleRequest::Pyth(request) => {
+                pyth.entry(request.oracle_id.clone())
+                    .or_default()
+                    .insert(request.price_id);
+            }
+            OracleRequest::RedStone(request) => {
+                redstone
+                    .entry(request.oracle_id.clone())
+                    .or_default()
+                    .insert(request.price_id.clone());
+            }
+        }
+    }
+}
+
+/// Drain every deployment account from a registry via the gateway.
+async fn load_registry_deployments(
+    gateway: &GatewayClient,
+    registry_id: AccountId,
+) -> GatewayResult<Vec<AccountId>> {
+    collect_paginated(REGISTRY_PAGE_SIZE, move |offset, count| {
+        let gateway = gateway.clone();
+        let registry_id = registry_id.clone();
+        async move {
+            let result = gateway
+                .read(registry::ListDeployments {
+                    registry_id,
+                    args: Pagination {
+                        offset: Some(offset),
+                        limit: Some(count),
+                    },
+                })
+                .await?;
+            Ok(result.account_ids)
+        }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -875,14 +1077,10 @@ mod tests {
     use std::sync::Arc;
 
     use near_sdk::AccountId;
-    use templar_common::{
-        asset::FungibleAsset,
-        oracle::{pyth::PriceIdentifier, redstone::FeedId},
-    };
+    use templar_common::oracle::{pyth::PriceIdentifier, redstone::FeedId};
     use tokio::{sync::Notify, time::timeout};
 
     use super::*;
-    use crate::{AccountData, AssetResolution, MarketData, MarketOracleKind};
 
     fn account_id(value: &str) -> AccountId {
         value.parse().unwrap()
@@ -895,39 +1093,10 @@ mod tests {
     #[test]
     fn resolve_market_ids_filters_non_markets() {
         let market_id = account_id("market.test.near");
-        let mut accounts = AccountData::default();
-        accounts.market_data.insert(
-            market_id.clone(),
-            MarketData {
-                account_id: market_id.clone(),
-                oracle_id: account_id("oracle.test.near"),
-                oracle_kind: MarketOracleKind::PythDirect,
-                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
-                    account_id: account_id("oracle.test.near"),
-                    collateral_asset_price_id: price_id(1),
-                    collateral_asset_decimals: 24,
-                    borrow_asset_price_id: price_id(2),
-                    borrow_asset_decimals: 24,
-                    price_maximum_age_s: 60,
-                },
-                collateral: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("collateral.test.near")),
-                    price_id: price_id(1),
-                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
-                        account_id("oracle.test.near"),
-                        price_id(1),
-                    )]),
-                },
-                borrow: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("borrow.test.near")),
-                    price_id: price_id(2),
-                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
-                        account_id("oracle.test.near"),
-                        FeedId::from("BTC"),
-                    )]),
-                },
-            },
-        );
+        let accounts = AccountData {
+            market_ids: HashSet::from([market_id.clone()]),
+            ..Default::default()
+        };
 
         let interacted_contract_ids = HashSet::from([
             market_id.clone(),
@@ -936,193 +1105,50 @@ mod tests {
         ]);
 
         assert_eq!(
-            App::resolve_market_ids(&accounts, &interacted_contract_ids),
+            App::resolve_market_ids(&accounts.market_ids, &interacted_contract_ids),
             HashSet::from([market_id])
-        );
-    }
-
-    #[test]
-    fn grouped_price_updates_combines_market_requests() {
-        let market_a = account_id("market-a.test.near");
-        let market_b = account_id("market-b.test.near");
-        let pyth_oracle = account_id("pyth.test.near");
-        let redstone_oracle = account_id("redstone.test.near");
-
-        let mut accounts = AccountData::default();
-        accounts.market_data.insert(
-            market_a.clone(),
-            MarketData {
-                account_id: market_a.clone(),
-                oracle_id: pyth_oracle.clone(),
-                oracle_kind: MarketOracleKind::PythDirect,
-                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
-                    account_id: pyth_oracle.clone(),
-                    collateral_asset_price_id: price_id(1),
-                    collateral_asset_decimals: 24,
-                    borrow_asset_price_id: price_id(2),
-                    borrow_asset_decimals: 24,
-                    price_maximum_age_s: 60,
-                },
-                collateral: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("collateral-a.test.near")),
-                    price_id: price_id(1),
-                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
-                        pyth_oracle.clone(),
-                        price_id(11),
-                    )]),
-                },
-                borrow: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("borrow-a.test.near")),
-                    price_id: price_id(2),
-                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
-                        pyth_oracle.clone(),
-                        price_id(12),
-                    )]),
-                },
-            },
-        );
-        accounts.market_data.insert(
-            market_b.clone(),
-            MarketData {
-                account_id: market_b.clone(),
-                oracle_id: redstone_oracle.clone(),
-                oracle_kind: MarketOracleKind::PythDirect,
-                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
-                    account_id: redstone_oracle.clone(),
-                    collateral_asset_price_id: price_id(3),
-                    collateral_asset_decimals: 24,
-                    borrow_asset_price_id: price_id(4),
-                    borrow_asset_decimals: 24,
-                    price_maximum_age_s: 60,
-                },
-                collateral: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("collateral-b.test.near")),
-                    price_id: price_id(3),
-                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
-                        redstone_oracle.clone(),
-                        FeedId::from("ETH"),
-                    )]),
-                },
-                borrow: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("borrow-b.test.near")),
-                    price_id: price_id(4),
-                    update_oracle: HashSet::from_iter([OracleRequest::redstone(
-                        redstone_oracle.clone(),
-                        FeedId::from("BTC"),
-                    )]),
-                },
-            },
-        );
-
-        let (pyth_updates, redstone_updates, proxy_updates) =
-            App::grouped_price_updates(&accounts, &HashSet::from([market_a, market_b]));
-
-        assert_eq!(pyth_updates.len(), 1);
-        assert_eq!(
-            pyth_updates[&pyth_oracle],
-            HashSet::from([price_id(11), price_id(12)])
-        );
-        assert_eq!(redstone_updates.len(), 1);
-        assert_eq!(
-            redstone_updates[&redstone_oracle],
-            HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
-        );
-        assert!(proxy_updates.is_empty());
-    }
-
-    #[test]
-    fn grouped_price_updates_includes_proxy_cache_targets() {
-        let market_id = account_id("market.test.near");
-        let proxy_oracle = account_id("proxy.test.near");
-        let pyth_oracle = account_id("pyth.test.near");
-
-        let mut accounts = AccountData::default();
-        accounts.market_data.insert(
-            market_id.clone(),
-            MarketData {
-                account_id: market_id.clone(),
-                oracle_id: proxy_oracle.clone(),
-                oracle_kind: MarketOracleKind::Proxy,
-                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
-                    account_id: proxy_oracle.clone(),
-                    collateral_asset_price_id: price_id(1),
-                    collateral_asset_decimals: 24,
-                    borrow_asset_price_id: price_id(2),
-                    borrow_asset_decimals: 24,
-                    price_maximum_age_s: 60,
-                },
-                collateral: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("collateral.test.near")),
-                    price_id: price_id(1),
-                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
-                        pyth_oracle.clone(),
-                        price_id(11),
-                    )]),
-                },
-                borrow: AssetResolution {
-                    asset: FungibleAsset::nep141(account_id("borrow.test.near")),
-                    price_id: price_id(2),
-                    update_oracle: HashSet::from_iter([OracleRequest::pyth(
-                        pyth_oracle.clone(),
-                        price_id(12),
-                    )]),
-                },
-            },
-        );
-
-        let (pyth_updates, redstone_updates, proxy_updates) =
-            App::grouped_price_updates(&accounts, &HashSet::from([market_id]));
-
-        assert_eq!(
-            pyth_updates[&pyth_oracle],
-            HashSet::from([price_id(11), price_id(12)])
-        );
-        assert!(redstone_updates.is_empty());
-        assert_eq!(
-            proxy_updates[&proxy_oracle],
-            HashSet::from([price_id(1), price_id(2)])
         );
     }
 
     #[test]
     fn derive_sda_interactions_keeps_only_contracts_the_sda_touches() {
         let market_id = account_id("market.test.near");
-        let oracle_id = account_id("oracle.test.near");
-        let borrow_asset_id = account_id("borrow.test.near");
-        let collateral_asset_id = account_id("collateral.test.near");
-        let mut accounts = AccountData::default();
-        accounts.market_data.insert(
-            market_id.clone(),
-            MarketData {
-                account_id: market_id.clone(),
-                oracle_id: oracle_id.clone(),
-                oracle_kind: MarketOracleKind::PythDirect,
-                price_oracle_configuration: templar_common::market::PriceOracleConfiguration {
-                    account_id: oracle_id,
-                    collateral_asset_price_id: price_id(1),
-                    collateral_asset_decimals: 24,
-                    borrow_asset_price_id: price_id(2),
-                    borrow_asset_decimals: 24,
-                    price_maximum_age_s: 60,
-                },
-                collateral: AssetResolution {
-                    asset: FungibleAsset::nep141(collateral_asset_id.clone()),
-                    price_id: price_id(1),
-                    update_oracle: HashSet::new(),
-                },
-                borrow: AssetResolution {
-                    asset: FungibleAsset::nep141(borrow_asset_id),
-                    price_id: price_id(2),
-                    update_oracle: HashSet::new(),
-                },
-            },
-        );
+        let accounts = AccountData {
+            market_ids: HashSet::from([market_id.clone()]),
+            ..Default::default()
+        };
 
         let (interacted_contract_ids, market_ids) =
-            App::derive_sda_interactions(&accounts, &market_id, vec![]);
+            App::derive_sda_interactions(&accounts.market_ids, &market_id, vec![]);
 
         assert_eq!(interacted_contract_ids, HashSet::from([market_id.clone()]));
         assert_eq!(market_ids, HashSet::from([market_id]));
+    }
+
+    #[test]
+    fn accumulate_oracle_requests_groups_by_source_and_oracle() {
+        let pyth_oracle = account_id("pyth.test.near");
+        let redstone_oracle = account_id("redstone.test.near");
+
+        let requests = [
+            OracleRequest::pyth(pyth_oracle.clone(), price_id(11)),
+            OracleRequest::pyth(pyth_oracle.clone(), price_id(12)),
+            OracleRequest::redstone(redstone_oracle.clone(), FeedId::from("ETH")),
+            OracleRequest::redstone(redstone_oracle.clone(), FeedId::from("BTC")),
+        ];
+
+        let mut pyth = PythUpdatesByOracle::new();
+        let mut redstone = RedstoneUpdatesByOracle::new();
+        accumulate_oracle_requests(&requests, &mut pyth, &mut redstone);
+
+        assert_eq!(
+            pyth[&pyth_oracle],
+            HashSet::from([price_id(11), price_id(12)])
+        );
+        assert_eq!(
+            redstone[&redstone_oracle],
+            HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
+        );
     }
 
     #[tokio::test]
@@ -1224,12 +1250,11 @@ mod tests {
             )]),
             |_, _| async { Ok(None) },
             |_, _| async { Ok(None) },
-            move |_, _| async move {
-                Err(Arc::new(
-                    oracle::UpdateError::ProxyOracleUpdateMissingStatus {
-                        price_id: failed_price_id,
-                    },
-                ))
+            |_, _| async {
+                Err(Arc::new(oracle::UpdateError::NotSucceeded {
+                    operation_id: "op-1".to_owned(),
+                    status: templar_gateway_types::OperationStatus::Failed,
+                }))
             },
         )
         .await;
@@ -1237,11 +1262,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(PriceUpdateError::Oracle(error))
-                if matches!(
-                    &*error,
-                    oracle::UpdateError::ProxyOracleUpdateMissingStatus { price_id }
-                        if *price_id == failed_price_id
-                )
+                if matches!(&*error, oracle::UpdateError::NotSucceeded { .. })
         ));
     }
 }

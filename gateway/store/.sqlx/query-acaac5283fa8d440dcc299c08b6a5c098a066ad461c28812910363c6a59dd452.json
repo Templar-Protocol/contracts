@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nINSERT INTO\n    gateway_operation_step_receipts (\n        operation_id,\n        step_index,\n        receipt_index,\n        contract_id,\n        STATUS,\n        LOGS\n    )\nVALUES\n    ($1, $2, $3, $4, $5, $6)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "acaac5283fa8d440dcc299c08b6a5c098a066ad461c28812910363c6a59dd452"
+}

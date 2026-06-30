@@ -10,10 +10,16 @@ pub enum GatewayError {
     HttpRequest(String),
     #[error("near query failed: {0}")]
     NearQuery(String),
+    #[error("account not found: {0}")]
+    AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
+    #[error("invalid signer key: {0}")]
+    InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]
     NearTransaction(String),
+    #[error("transaction not found on chain")]
+    TransactionNotFound,
     #[error("external service failed: {0}")]
     ExternalService(String),
     #[error("unsupported feature: {0}")]

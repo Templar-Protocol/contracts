@@ -1,23 +1,16 @@
 use std::{path::Path, time::Duration};
 
-use near_crypto::InMemorySigner;
-use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::views::TxExecutionStatus;
-use near_sdk::NearToken;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
     pyth::PriceIdentifier,
     redstone::{self, FeedId},
 };
+use templar_gateway_client::SigningClient;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::request::OracleRequest;
 use templar_relayer::{
     app::args,
-    cache::Cache,
-    client::{
-        near::Near,
-        oracle::{RedStoneSpec, Spec},
-    },
+    client::oracle::{RedStoneSpec, Spec},
 };
 use test_utils::*;
 use tokio::sync::watch;
@@ -34,29 +27,16 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
 
     accounts!(worker, redstone_oracle, proxy_oracle);
 
-    let jsonrpc_client = JsonRpcClient::connect(worker.rpc_addr());
-
-    let oracle_signer = InMemorySigner::from_secret_key(
+    // The relayer signs oracle updates through the gateway as the oracle account.
+    let network = near_api::NetworkConfig::from_rpc_url("test", worker.rpc_addr().parse().unwrap());
+    let gateway = SigningClient::connect(
+        network,
         redstone_oracle.id().clone(),
         redstone_oracle.secret_key().to_string().parse().unwrap(),
-    );
-
-    let near = Near::new(
-        jsonrpc_client,
-        redstone_oracle.id().clone(),
-        vec![oracle_signer],
-    );
+    )
+    .unwrap();
 
     let kill = watch::Sender::default();
-
-    let cache = Cache::new(
-        near.clone(),
-        args::Cache {
-            gas_price_refresh: Duration::from_secs(10),
-            nonce_refresh: Duration::from_secs(10),
-        },
-        kill.clone(),
-    );
 
     let redstone_oracle =
         RedStoneAdapterController::deploy(redstone_oracle, redstone::config::prod()).await;
@@ -94,8 +74,6 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
 
     let redstone_args = args::RedStoneConfig {
         refresh: Duration::from_secs(25),
-        update_gas: near_sdk::Gas::from_tgas(300),
-        update_deposit: NearToken::from_near(0),
         node_path: Path::new("node").to_owned(),
     };
 
@@ -109,17 +87,13 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
     assert_eq!(price_data_before.get(&redstone_eth_id), None);
     assert_eq!(price_data_before.get(&redstone_btc_id), None);
 
-    let actions = spec
-        .update_actions(&[redstone_eth_id.clone(), redstone_btc_id.clone()])
-        .await
-        .unwrap();
-
-    let signed_transaction = near
-        .sign_transaction(&cache, redstone_oracle.id().clone(), actions)
-        .await;
-    near.send_transaction(signed_transaction, TxExecutionStatus::Final)
-        .await
-        .unwrap();
+    spec.execute_update(
+        &gateway,
+        redstone_oracle.id().clone(),
+        &[redstone_eth_id.clone(), redstone_btc_id.clone()],
+    )
+    .await
+    .unwrap();
 
     let price_data_after = redstone_oracle
         .read_price_data(vec![redstone_eth_id.clone(), redstone_btc_id.clone()])

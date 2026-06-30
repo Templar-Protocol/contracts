@@ -343,8 +343,8 @@ impl LiquidationExecutor {
         result: &templar_gateway_types::common::WriteOperationResult,
     ) -> LiquidatorResult<Option<String>> {
         let Some(tx_hash) = result.operation.latest_tx_hash() else {
-            return Err(LiquidatorError::TransactionFailed(format!(
-                "Liquidation operation {} succeeded without a transaction hash; cannot inspect receipts",
+            return Err(LiquidatorError::MissingTransactionHash(format!(
+                "liquidation operation {} reported terminal without a transaction hash; cannot inspect receipts",
                 result.operation.id.0
             )));
         };

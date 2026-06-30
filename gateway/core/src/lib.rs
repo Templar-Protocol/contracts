@@ -63,5 +63,10 @@ pub trait OperationStore: Send + Sync {
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()>;
 
+    /// Remove an operation (and its steps) entirely. Used for operations that
+    /// never executed anything: a reservation whose plan turned out to be a
+    /// no-op, or one abandoned because planning failed.
+    async fn delete_operation(&self, operation_id: &OperationId) -> GatewayResult<()>;
+
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>>;
 }

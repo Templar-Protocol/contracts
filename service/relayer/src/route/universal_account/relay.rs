@@ -1,14 +1,17 @@
-use std::{collections::HashSet, fmt::Write};
+use std::collections::HashSet;
 
 use axum::{extract::State, Json};
-use near_primitives::{hash::CryptoHash, views::TxExecutionStatus};
+use near_primitives::hash::CryptoHash;
 use near_sdk::{
+    json_types::Base58CryptoHash,
     serde::{Deserialize, Serialize},
     serde_json, AccountId, NearToken,
 };
+use templar_gateway_core::GatewayError;
+use templar_gateway_methods_spec::universal_account as ua;
 use templar_universal_account::{
     transaction::{Action, Transaction},
-    ExecuteArgs,
+    ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
 
 use crate::{app::App, route::SimpleResponse};
@@ -60,10 +63,8 @@ pub async fn relay(
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
 
-    // This is a stopgap measure to support the old args passed by the FE.
-    // Once the FE is fully-upgraded to support the new args format, this
-    // should be removed, and we should deserialize `args` to `ExecuteArgs`
-    // directly in `RelayRequest`.
+    // Temporary compatibility for legacy front-end `args` payloads. Once all
+    // clients send the current shape, deserialize `args` in `RelayRequest`.
     let args = match serde_json::to_string(&args_raw)
         .and_then(|s| serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(&s))
     {
@@ -75,11 +76,7 @@ pub async fn relay(
         }
     };
 
-    let parameters = match app
-        .ua_near
-        .load_ua_key(account_id.clone(), args.key_id())
-        .await
-    {
+    let parameters = match load_ua_key(&app, account_id.clone(), args.key_id()).await {
         Ok(parameters) => parameters,
         Err(e) => {
             // Account might not exist, but we also might have connection issues.
@@ -114,7 +111,6 @@ pub async fn relay(
 
     let accounts = app.accounts.read().await;
 
-    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
     let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
@@ -136,15 +132,6 @@ pub async fn relay(
                 }
             }
 
-            let protocol_config = app.cache.protocol_configuration().await;
-
-            gas += transaction
-                .actions
-                .iter()
-                .map(|a| a.gas_cost(receiver_id, true, &protocol_config))
-                .reduce(|a, b| a.saturating_add(b))
-                .unwrap_or(near_primitives::gas::Gas::ZERO)
-                .as_gas();
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
             continue;
         }
@@ -173,25 +160,34 @@ pub async fn relay(
                 };
             }
         };
-        let additional_interactions =
-            match app.actions_are_allowed(&accounts, receiver_id, contract_data, calls.iter()) {
-                Ok(a) => a,
-                Err(e) => {
-                    tracing::info!("Rejecting payload for reason: {e:?}");
-                    let mut s = e[0].to_string();
-                    for err in &e[1..] {
-                        let _ = write!(&mut s, "\n{err}");
-                    }
-                    return SimpleResponse::Rejected { reason: s };
-                }
-            };
+        let additional_interactions = match app
+            .actions_are_allowed(
+                &accounts.market_ids,
+                receiver_id,
+                contract_data,
+                calls.iter(),
+            )
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::info!("Rejecting payload for reason: {e:?}");
+                return SimpleResponse::Rejected {
+                    reason: e
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                };
+            }
+        };
         interacted_contract_ids.insert(receiver_id.to_owned());
         interacted_contract_ids.extend(additional_interactions.into_iter());
-        gas += calls.iter().map(|f| f.gas.as_gas()).sum::<u64>();
     }
 
-    App::expand_market_related_contracts(&accounts, &mut interacted_contract_ids);
-    let market_ids = App::resolve_market_ids(&accounts, &interacted_contract_ids);
+    app.expand_market_related_contracts(&accounts.market_ids, &mut interacted_contract_ids)
+        .await;
+    let market_ids = App::resolve_market_ids(&accounts.market_ids, &interacted_contract_ids);
 
     let storage_deposit = interacted_contract_ids.intersection(&storage_deposit);
 
@@ -212,20 +208,6 @@ pub async fn relay(
         }
     }
 
-    // Send any requested price updates
-    let mut interacted_prices = HashSet::with_capacity(2);
-    for contract_id in &interacted_contract_ids {
-        if let Some(market_data) = accounts.market_data.get(contract_id) {
-            let c = &market_data.collateral;
-            for source in &c.update_oracle {
-                interacted_prices.insert((c.price_id, source.clone()));
-            }
-            let b = &market_data.borrow;
-            for source in &b.update_oracle {
-                interacted_prices.insert((b.price_id, source.clone()));
-            }
-        }
-    }
     drop(accounts);
 
     if update_prices {
@@ -236,50 +218,92 @@ pub async fn relay(
         }
     }
 
-    // Send the user's transaction
-    let signed_transaction = app
-        .relay_near
-        .construct_ua_execute_transaction(
-            &app.cache,
-            account_id.clone(),
-            &args_raw,
-            near_primitives::gas::Gas::from_gas(gas),
-        )
-        .await;
-    let Some(cost_of_gas) = app.estimate_cost_of_gas(near_sdk::Gas::from_gas(gas)).await else {
+    let Some(cost_of_gas) = app.estimate_cost_of_gas(super::GATEWAY_UA_WRITE_GAS).await else {
         tracing::error!("Failed to estimate cost of gas");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),
         };
     };
 
-    let transaction_hash = signed_transaction.get_hash();
-
-    let resolve_transaction = match app
-        .send_and_resolve_transaction(
-            account_id,
+    // The relay account signs and pays; the UA account is charged. `ua.execute`
+    // forwards the user's original signed args verbatim (so legacy front-end arg
+    // formats keep working). Verification above ran on the parsed args.
+    let execution = match app
+        .execute_and_account(
+            account_id.clone(),
+            app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            signed_transaction,
-            TxExecutionStatus::Final,
+            ua::Execute {
+                account_id,
+                args: args_raw,
+            },
         )
         .await
     {
-        Ok(future) => future,
+        Ok(execution) => execution,
         Err(e) => {
-            tracing::error!("Send transaction failure: {e}");
+            tracing::error!("Universal account relay failure: {e}");
             return SimpleResponse::Failure {
-                error: format!("Send transaction failure: {e}"),
+                error: format!("Universal account relay failure: {e}"),
             };
         }
     };
 
-    // Resolve asynchronously.
-    tokio::spawn(async move {
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
-        }
-    });
+    // The charge is settled either way, but a transaction that reverted on chain
+    // must not be reported to the caller as a success.
+    if !execution.succeeded {
+        tracing::warn!(transaction_hash = %execution.transaction_hash, "Universal account relay reverted on chain");
+        return SimpleResponse::Failure {
+            error: "Universal account relay reverted on chain".to_string(),
+        };
+    }
 
-    RelayResponse { transaction_hash }.into()
+    RelayResponse {
+        transaction_hash: execution.transaction_hash,
+    }
+    .into()
+}
+
+/// Load a key's execution parameters from a universal account via `ua.getKey`.
+pub async fn load_ua_key(
+    app: &App,
+    ua_account_id: AccountId,
+    key: KeyId,
+) -> Result<Option<PayloadExecutionParameters>, GatewayError> {
+    // The gateway `ua.getKey` op already normalizes the contract's versioned
+    // response (legacy `KeyParameters` / full `PayloadExecutionParameters`); we
+    // just rebuild the contract type from its wire view for signature checking.
+    let result = app
+        .gateway
+        .read(ua::GetKey {
+            account_id: ua_account_id,
+            key,
+        })
+        .await?;
+
+    result.parameters.map(parameters_from_view).transpose()
+}
+
+/// Rebuild the contract's [`PayloadExecutionParameters`] from the gateway op's
+/// wire view (the view is a lossless projection apart from `salt`, which is a
+/// base58 round-trip).
+fn parameters_from_view(
+    view: ua::PayloadExecutionParametersView,
+) -> Result<PayloadExecutionParameters, GatewayError> {
+    let salt = view
+        .salt
+        .map(|salt| salt.parse::<Base58CryptoHash>())
+        .transpose()
+        .map_err(|error| GatewayError::NearQuery(format!("invalid key salt: {error}")))?;
+    Ok(PayloadExecutionParameters {
+        block_height: view.block_height.into(),
+        index: view.index.into(),
+        nonce: view.nonce.into(),
+        name: view.name,
+        version: view.version,
+        chain_id: view.chain_id.map(Into::into),
+        verifying_contract: view.verifying_contract,
+        salt,
+    })
 }

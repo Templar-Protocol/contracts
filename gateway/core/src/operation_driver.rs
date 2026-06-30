@@ -1,16 +1,17 @@
+use std::collections::VecDeque;
+
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    operation::OperationRecord,
-    operation::OperationStatus,
+    operation::{ExecutionOutcome, OperationRecord, OperationStatus},
     IdempotencyKey, MethodSpec, OperationId,
 };
 
 use crate::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, GatewayResult, HasIdempotencyKey,
-    HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation, SharedOperationStore,
-    SharedSignTransaction, StoredOperation, SucceededStep,
+    CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
+    HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
+    SharedOperationStore, SharedSignTransaction, StoredOperation, SucceededStep,
 };
 
 #[derive(Clone)]
@@ -44,77 +45,14 @@ impl OperationDriver {
             .map(|operation| operation.record()))
     }
 
-    pub async fn complete_write<Input>(
-        &self,
-        rpc_method: &'static str,
-        params: Input,
-        plan: OperationPlan,
-    ) -> GatewayResult<WriteOperationResult>
-    where
-        Input: Clone + Serialize + HasIdempotencyKey + HasSignerAccountId,
-    {
-        let step_count = plan.steps.len();
-        tracing::debug!(
-            rpc_method,
-            signer_account_id = %params.signer_account_id().0,
-            step_count,
-            "creating or reusing gateway operation"
-        );
-        let request_payload = serde_json::to_vec(&params)?;
-        let fingerprint = request_fingerprint(rpc_method, &params)?;
-        let operation = match self
-            .store
-            .create_or_get_operation(
-                rpc_method,
-                params.signer_account_id().to_owned(),
-                params.idempotency_key().cloned(),
-                fingerprint,
-                request_payload,
-                plan,
-            )
-            .await?
-        {
-            CreateOperationResult::Existing(existing) => {
-                tracing::debug!(
-                    rpc_method,
-                    operation_id = %existing.operation_id().0,
-                    "reusing existing gateway operation"
-                );
-                return Ok(existing.record().into());
-            }
-            CreateOperationResult::Created(created) => {
-                tracing::debug!(
-                    rpc_method,
-                    operation_id = %created.operation_id().0,
-                    "created gateway operation"
-                );
-                created
-            }
-        };
-
-        let operation = self.execute_remaining_steps(operation).await?;
-        // Persist the final (terminal) state through the normal store path. For
-        // multi-step operations the last step already saved this, making it a
-        // harmless re-save; for a zero-step plan (already terminal at creation,
-        // e.g. a no-op `storage.ensureDeposit`) this is the only save, and it is
-        // what lets the store account for the completed operation (e.g. bounded
-        // retention/eviction in `MemoryStore`).
-        //
-        // This is best-effort book-keeping: the operation has already reached
-        // its terminal outcome, so a transient store failure here must not turn
-        // a completed operation into an error for the caller.
-        if let Err(error) = self.store.save_operation(operation.clone()).await {
-            tracing::warn!(
-                operation_id = %operation.operation_id().0,
-                %error,
-                "failed to persist terminal operation state for store book-keeping"
-            );
-        }
-        Ok(operation.record().into())
-    }
-
     /// Plan a write operation via `Impl` and execute it through this driver
     /// (idempotency, multi-step finalization, replay).
+    ///
+    /// The operation is *reserved* in the store — recording its idempotency key
+    /// and identity — before planning runs, so a slow or crashed planning step
+    /// can't leave the durable key→operation link invisible. Recovery and
+    /// downstream accounting then see a reserved operation and defer, rather
+    /// than treating an in-flight request as one that never reached the gateway.
     ///
     /// This is the shared write path behind both the direct client and the RPC
     /// service, so neither re-implements signing/submission.
@@ -127,8 +65,113 @@ impl OperationDriver {
         Spec: MethodSpec<Output = WriteOperationResult>,
         Impl: PlanWrite<Spec, Ctx>,
     {
-        let plan = <Impl as PlanWrite<Spec, Ctx>>::plan(request.clone(), context).await?;
-        self.complete_write(Spec::RPC_METHOD, request, plan).await
+        let rpc_method = Spec::RPC_METHOD;
+        let request_payload = serde_json::to_vec(&request)?;
+        let fingerprint = request_fingerprint(rpc_method, &request)?;
+
+        // Reserve before planning: the reservation carries no steps yet.
+        let operation = match self
+            .store
+            .create_or_get_operation(
+                rpc_method,
+                request.signer_account_id().to_owned(),
+                request.idempotency_key().cloned(),
+                fingerprint,
+                request_payload,
+                OperationPlan { steps: vec![] },
+            )
+            .await?
+        {
+            CreateOperationResult::Existing(existing) => {
+                tracing::debug!(
+                    rpc_method,
+                    operation_id = %existing.operation_id().0,
+                    "reusing existing gateway operation"
+                );
+                return Ok(existing.record().into());
+            }
+            CreateOperationResult::Created(reserved) => {
+                tracing::debug!(
+                    rpc_method,
+                    operation_id = %reserved.operation_id().0,
+                    "reserved gateway operation"
+                );
+                reserved
+            }
+        };
+
+        // Plan. On failure, drop the reservation: planning is read-only, so
+        // nothing was submitted and any charge held for it is safe to release.
+        let plan = match <Impl as PlanWrite<Spec, Ctx>>::plan(request, context).await {
+            Ok(plan) => plan,
+            Err(error) => {
+                if let Err(cleanup) = self.store.delete_operation(operation.operation_id()).await {
+                    tracing::warn!(
+                        operation_id = %operation.operation_id().0,
+                        %cleanup,
+                        "failed to remove reservation after planning error"
+                    );
+                }
+                return Err(error);
+            }
+        };
+
+        self.finish_reserved(operation, plan).await
+    }
+
+    /// Attach a plan to a reserved operation and run it to a terminal outcome.
+    /// An empty plan is a no-op: nothing executes, so the reservation is removed
+    /// and no operation record is left behind (a true no-op has nothing to
+    /// record).
+    async fn finish_reserved(
+        &self,
+        operation: StoredOperation,
+        plan: OperationPlan,
+    ) -> GatewayResult<WriteOperationResult> {
+        if plan.steps.is_empty() {
+            self.store
+                .delete_operation(operation.operation_id())
+                .await?;
+            return Ok(OperationRecord {
+                id: operation.id,
+                signer_account_id: operation.signer_account_id,
+                status: OperationStatus::Succeeded,
+                steps: vec![],
+            }
+            .into());
+        }
+
+        // Attach the plan and execute. Each step persists the full remaining set
+        // before its first irreversible (on-chain) action, so recovery can
+        // resume a partially-run multi-step operation.
+        let mut operation = operation;
+        operation.remaining_steps = VecDeque::from(plan.steps);
+        let operation_id = operation.operation_id().clone();
+        let operation = match self.execute_remaining_steps(operation).await {
+            Ok(operation) => operation,
+            Err(error) => {
+                // If execution failed before persisting any step (e.g. a presign
+                // error), nothing was submitted and the store still holds only
+                // the bare reservation. Drop it so accounting can release the
+                // charge now instead of waiting for startup recovery.
+                if let Ok(Some(stored)) = self.store.get_by_id(&operation_id).await {
+                    if stored.is_reservation() {
+                        let _ = self.store.delete_operation(&operation_id).await;
+                    }
+                }
+                return Err(error);
+            }
+        };
+        // Best-effort terminal save: the operation already reached its outcome,
+        // so a transient store failure here must not error the caller.
+        if let Err(error) = self.store.save_operation(operation.clone()).await {
+            tracing::warn!(
+                operation_id = %operation.operation_id().0,
+                %error,
+                "failed to persist terminal operation state for store book-keeping"
+            );
+        }
+        Ok(operation.record().into())
     }
 
     pub async fn create_planned_operation<Input>(
@@ -169,6 +212,15 @@ impl OperationDriver {
         );
         for mut operation in operations {
             let operation_id = operation.operation_id().clone();
+
+            // A reservation with no steps means a previous run crashed during
+            // planning. Planning is read-only, so nothing was submitted: drop
+            // the reservation, which lets any charge held for it be released.
+            if operation.is_reservation() {
+                self.store.delete_operation(&operation_id).await?;
+                continue;
+            }
+
             if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
                 self.reconcile_submitted_step(&mut operation).await;
                 self.store.save_operation(operation).await?;
@@ -195,7 +247,12 @@ impl OperationDriver {
             OperationStatus::Pending | OperationStatus::InProgress
         ) {
             operation = self.execute_next_step(operation).await?;
-            if operation.status() == OperationStatus::Failed {
+            // Stop once a step is terminal-failed, or in flight (Submitted with no
+            // captured outcome) — the latter can only be resolved by reconciling
+            // against the chain, not by driving more steps.
+            if operation.status() == OperationStatus::Failed
+                || matches!(operation.current_step, Some(CurrentStep::Submitted { .. }))
+            {
                 break;
             }
         }
@@ -265,40 +322,48 @@ impl OperationDriver {
                     Ok(tx_result) => {
                         if let Some(full) = tx_result.into_full() {
                             let final_hash = full.outcome().transaction_hash.into();
-                            if full.is_success() {
+                            let is_success = full.is_success();
+                            // The submission result already carries the full
+                            // execution outcome — capture it so callers needn't
+                            // re-fetch it with a separate `tx.get`.
+                            let outcome = ExecutionOutcome::from(full);
+                            if is_success {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step succeeded"
                                 );
-                                submitted_step.succeed(final_hash).await?;
+                                submitted_step.mark_succeeded(final_hash, outcome).await?;
                             } else {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step failed"
                                 );
-                                submitted_step.fail(final_hash).await?;
+                                submitted_step.mark_reverted(final_hash, outcome).await?;
                             }
                         }
                     }
                     Err(error) => {
-                        tracing::debug!(
+                        // The transaction may have reached the chain before this
+                        // error (e.g. an RPC timeout after broadcast). Leave the
+                        // step Submitted and let reconciliation settle its fate by
+                        // querying the chain; rejecting here could release a charge
+                        // for a transaction that landed.
+                        tracing::warn!(
                             operation_id = %operation_id.0,
                             %tx_hash,
                             %error,
-                            "gateway operation step submission failed"
+                            "gateway operation step submission failed; left submitted for reconciliation"
                         );
-                        submitted_step.fail(tx_hash).await?;
                         return Err(error);
                     }
                 }
             }
-            Some(CurrentStepRef::Submitted(submitted_step)) => {
-                let tx_hash = submitted_step.tx_hash();
-                submitted_step.fail(tx_hash).await?;
-            }
-            Some(CurrentStepRef::Failed) | None => {}
+            // A step left Submitted (no full outcome at submit time) is in flight:
+            // only reconciliation, querying by hash, can resolve it. The driving
+            // loop stops on a Submitted step, so this is reached only defensively.
+            Some(CurrentStepRef::Submitted(_) | CurrentStepRef::Failed) | None => {}
         }
 
         Ok(operation)
@@ -315,35 +380,57 @@ impl OperationDriver {
                 .query_transaction(&transaction.signer_account_id, tx_hash)
                 .await
             {
-                Ok(execution) => match execution.into_result() {
-                    Ok(_) => {
+                Ok(execution) => {
+                    let is_success = execution.is_success();
+                    let outcome = ExecutionOutcome::from(execution);
+                    if is_success {
                         operation.succeeded_steps.push(SucceededStep {
                             transaction,
                             tx_hash,
+                            outcome,
                         });
                         operation.current_step = None;
-                    }
-                    Err(error) => {
+                    } else {
                         tracing::warn!(
                             operation_id = %operation.id.0,
                             %tx_hash,
-                            %error,
-                            "current step transaction failed"
+                            "current step transaction reverted"
                         );
-                        operation.current_step = Some(CurrentStep::Failed {
+                        operation.current_step = Some(CurrentStep::Reverted {
                             transaction,
                             tx_hash,
+                            outcome,
                         });
                     }
-                },
+                }
+                Err(GatewayError::TransactionNotFound) => {
+                    // The chain has no record of this transaction. By the time
+                    // reconciliation runs, a transaction that landed would
+                    // resolve; an unknown one never reached the chain (e.g. a
+                    // crash between saving Submitted and broadcasting), so it is
+                    // safe to terminate it as rejected, releasing the charge.
+                    tracing::warn!(
+                        operation_id = %operation.id.0,
+                        %tx_hash,
+                        "submitted gateway transaction is unknown to the chain; marking rejected"
+                    );
+                    operation.current_step = Some(CurrentStep::Rejected {
+                        transaction,
+                        tx_hash,
+                    });
+                }
                 Err(error) => {
+                    // Transient/transport failure: the transaction may have
+                    // executed on chain, so do NOT mark it rejected — that would
+                    // release a charge for a tx that landed. Leave it submitted to
+                    // reconcile on a later recovery.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,
                         %error,
-                        "failed to reconcile submitted gateway transaction"
+                        "failed to reconcile submitted gateway transaction; leaving it submitted to retry"
                     );
-                    operation.current_step = Some(CurrentStep::Failed {
+                    operation.current_step = Some(CurrentStep::Submitted {
                         transaction,
                         tx_hash,
                     });

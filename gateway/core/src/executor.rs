@@ -24,7 +24,10 @@ use std::collections::HashMap;
 
 use templar_gateway_types::{CryptoHash, ManagedAccountId};
 
-use crate::{GatewayError, GatewayResult, PlannedTransaction, PreparedTransactionResult};
+use crate::{
+    read::is_unknown_transaction, GatewayError, GatewayResult, PlannedTransaction,
+    PreparedTransactionResult,
+};
 
 pub type SharedExecuteOperation = Arc<dyn ExecuteOperation>;
 pub type SharedSignTransaction = Arc<dyn SignTransaction>;
@@ -184,7 +187,16 @@ impl ExecuteOperation for NearOperationExecutor {
         )
         .fetch_from(&self.network)
         .await
-        .map_err(|error| GatewayError::NearTransaction(error.to_string()))
+        // Classify "the chain has no record of this transaction" at the boundary
+        // (on the raw error) into a typed variant, so reconciliation can tell a
+        // never-landed transaction from a transient query failure.
+        .map_err(|error| {
+            if is_unknown_transaction(&error) {
+                GatewayError::TransactionNotFound
+            } else {
+                GatewayError::NearTransaction(error.to_string())
+            }
+        })
     }
 }
 

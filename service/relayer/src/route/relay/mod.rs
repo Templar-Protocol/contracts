@@ -1,5 +1,7 @@
 use axum::{extract::State, Json};
-use near_sdk::NearToken;
+use near_sdk::{borsh, NearToken};
+use templar_gateway_methods_spec::tx;
+use templar_gateway_types::SignedDelegateActionInput;
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -22,7 +24,6 @@ pub async fn relay(
         signed_delegate_action,
         storage_deposit,
         update_prices,
-        wait_until,
     }): Json<RelayRequest>,
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing relay request");
@@ -62,7 +63,7 @@ pub async fn relay(
                 error: format!("Storage deposit error: {e}"),
             };
         }
-    } // end storage deposit
+    }
 
     if update_prices {
         if let Err(error) = app.update_market_prices(&market_ids).await {
@@ -99,38 +100,56 @@ pub async fn relay(
         };
     }
 
-    let signed_transaction = app
-        .relay_near
-        .construct_delegate_transaction(&app.cache, signed_delegate_action)
-        .await;
+    // NEP-366: the gateway wraps the user's signed delegate action in a
+    // transaction the relay account signs and pays for. Re-encode to borsh and
+    // hand the gateway its validated `SignedDelegateActionInput` (the NEP-366
+    // layout is signer-agnostic, bridging near_primitives -> near_api_types).
+    let signed_delegate_action = match borsh::to_vec(&signed_delegate_action)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            SignedDelegateActionInput::from_borsh_bytes(&bytes).map_err(|error| error.to_string())
+        }) {
+        Ok(payload) => payload,
+        Err(e) => {
+            tracing::error!("Failed to encode signed delegate action: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to encode signed delegate action".to_string(),
+            };
+        }
+    };
 
-    let transaction_hash = signed_transaction.get_hash();
-
-    let resolve_transaction = match app
-        .send_and_resolve_transaction(
+    let execution = match app
+        .execute_and_account(
             account_id,
+            app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            signed_transaction,
-            wait_until,
+            tx::RelaySignedDelegateAction {
+                signed_delegate_action,
+            },
         )
         .await
     {
-        Ok(future) => future,
+        Ok(execution) => execution,
         Err(e) => {
-            tracing::error!("Send transaction failure: {e}");
+            tracing::error!("Relay submission failure: {e}");
             return SimpleResponse::Failure {
                 error: e.to_string(),
             };
         }
     };
 
-    // Resolve asynchronously.
-    tokio::spawn(async move {
-        if let Err(e) = resolve_transaction.await {
-            tracing::error!("Resolve transaction failure: {e}");
-        }
-    });
+    // The charge is settled either way, but a transaction that reverted on chain
+    // must not be reported to the caller as a success.
+    if !execution.succeeded {
+        tracing::warn!(transaction_hash = %execution.transaction_hash, "Relayed transaction reverted on chain");
+        return SimpleResponse::Failure {
+            error: "Relayed transaction reverted on chain".to_string(),
+        };
+    }
 
-    RelayResponse { transaction_hash }.into()
+    RelayResponse {
+        transaction_hash: execution.transaction_hash,
+    }
+    .into()
 }

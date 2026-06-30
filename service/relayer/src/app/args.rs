@@ -2,7 +2,7 @@ use std::time::Duration;
 use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser};
-use near_crypto::SecretKey;
+use near_api::SecretKey;
 use near_sdk::{AccountId, NearToken};
 
 use templar_universal_account::NEAR_TESTNET_CHAIN_ID;
@@ -36,14 +36,21 @@ pub struct Configuration {
     pub redstone: RedStoneConfig,
     #[clap(flatten)]
     pub pyth: PythConfig,
-    #[clap(flatten)]
-    pub cache: Cache,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
     pub broom_batch_size: u32,
     /// Broom interval in seconds.
     #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
+    /// Start serving even if recovering interrupted gateway operations fails at
+    /// startup, instead of exiting.
+    ///
+    /// Recovery is normally fatal-on-failure so the container restarts and
+    /// retries it; this is an escape hatch for the case where recovery is
+    /// persistently wedged and you need the relayer up regardless. Operations
+    /// left mid-flight won't settle until recovery next succeeds.
+    #[arg(long, env = "IGNORE_STARTUP_RECOVERY_FAILURE", default_value_t = false)]
+    pub ignore_startup_recovery_failure: bool,
 }
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -70,22 +77,6 @@ pub struct RedStoneConfig {
         default_value = "3"
     )]
     pub refresh: Duration,
-    /// How much gas (in units of Tgas) to attach to oracle price update calls.
-    #[arg(
-        id = "redstone-update-gas",
-        long = "redstone-update-gas",
-        env = "REDSTONE_UPDATE_GAS",
-        default_value = "300 Tgas"
-    )]
-    pub update_gas: near_sdk::Gas,
-    /// How much NEAR to attach as a deposit to oracle price update calls.
-    #[arg(
-        id = "redstone-update-deposit",
-        long = "redstone-update-deposit",
-        env = "REDSTONE_UPDATE_DEPOSIT",
-        default_value = "0 NEAR"
-    )]
-    pub update_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -116,44 +107,6 @@ pub struct PythConfig {
         default_value = "10"
     )]
     pub timeout: Duration,
-    /// How much gas (in units of Tgas) to attach to oracle price update calls.
-    #[arg(
-        id = "pyth-update-gas",
-        long = "pyth-update-gas",
-        env = "PYTH_UPDATE_GAS",
-        default_value = "300 Tgas"
-    )]
-    pub update_gas: near_sdk::Gas,
-    /// How much NEAR to attach as a deposit to oracle price update calls.
-    #[arg(
-        id = "pyth-update-deposit",
-        long = "pyth-update-deposit",
-        env = "PYTH_UPDATE_DEPOSIT",
-        default_value = "0.01 NEAR"
-    )]
-    pub update_deposit: NearToken,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct Cache {
-    /// Refresh the cached gas price after X seconds.
-    #[arg(
-        id = "cache-gase-price-secs",
-        long = "cache-gase-price-secs",
-        env = "CACHE_GAS_PRICE_SECS",
-        value_parser = duration_from_secs,
-        default_value = "600"
-    )]
-    pub gas_price_refresh: Duration,
-    /// Refresh a cached nonce after X seconds.
-    #[arg(
-        id = "cache-nonce-secs",
-        long = "cache-nonce-secs",
-        env = "CACHE_NONCE_SECS",
-        value_parser = duration_from_secs,
-        default_value = "60"
-    )]
-    pub nonce_refresh: Duration,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -274,14 +227,6 @@ pub struct UniversalAccount {
     /// Version key of the universal account contract to deploy from the registry.
     #[arg(id = "ua-version-key", long = "ua-version-key", env = "UA_VERSION_KEY")]
     pub version_key: String,
-    /// How much gas does it take to execute the `execute` receipt on the universal account contract?
-    #[arg(
-        id = "ua-execute-tgas",
-        long = "ua-execute-tgas",
-        env = "UA_EXECUTE_TGAS",
-        default_value_t = 35
-    )]
-    pub execute_tgas: u64,
 }
 
 impl UniversalAccount {

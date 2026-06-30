@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nDELETE FROM\n    gateway_operations\nWHERE\n    id = $1\n",
+  "query": "DELETE FROM gateway_operations WHERE id = $1",
   "describe": {
     "columns": [],
     "parameters": {
@@ -10,5 +10,5 @@
     },
     "nullable": []
   },
-  "hash": "8f18978be1c81853be5b146ff1350ca0802be5b87c9a023588f64d638c61919e"
+  "hash": "2b35add3d8b1449b84a1c37e9a1eb9a4816d421d866d82ae5497d88104ac52a8"
 }
