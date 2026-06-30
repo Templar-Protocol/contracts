@@ -6,13 +6,11 @@ use crate::Dispatch;
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<chain::GetBlock, C> for Dispatch {
-    async fn dispatch(request: chain::GetBlock, ctx: C) -> GatewayResult<chain::GetBlockResult> {
-        let block = ctx.near_client().chain().block(request.block_hash).await?;
-        Ok(chain::GetBlockResult {
-            height: block.height,
-            timestamp_ns: block.timestamp_ns,
-            gas_price: block.gas_price,
-            hash: block.hash,
-        })
+    async fn dispatch(
+        request: chain::GetBlock,
+        ctx: C,
+    ) -> GatewayResult<templar_gateway_types::BlockSummary> {
+        // The chain client returns the shared `BlockSummary` directly.
+        ctx.near_client().chain().block(request.block_hash).await
     }
 }

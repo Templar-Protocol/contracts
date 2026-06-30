@@ -1,25 +1,13 @@
 use near_api::types::transaction::result::ExecutionFinalResult;
 use near_api::types::Reference;
 use near_api::Chain;
-use templar_gateway_types::{CryptoHash, NearToken};
+use templar_gateway_types::{BlockSummary, CryptoHash};
 
 use crate::{client::NearClient, GatewayError, GatewayResult, ReadNear};
 
 #[derive(Clone, Copy)]
 pub struct ChainClient<'a> {
     pub(crate) inner: &'a NearClient,
-}
-
-/// Header summary for a block. Carries the block's `gas_price`, so callers that
-/// only need a current gas estimate can read it from the latest block instead of
-/// a separate gas-price query.
-#[derive(Debug, Clone)]
-pub struct BlockSummary {
-    pub height: u64,
-    /// Block timestamp in nanoseconds since the Unix epoch.
-    pub timestamp_ns: u64,
-    pub gas_price: NearToken,
-    pub hash: CryptoHash,
 }
 
 impl ChainClient<'_> {

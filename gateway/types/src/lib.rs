@@ -1,3 +1,4 @@
+pub mod block;
 pub mod common;
 pub mod contract;
 mod macros;
@@ -8,6 +9,7 @@ pub mod primitive;
 pub mod spec;
 pub mod version;
 
+pub use block::BlockSummary;
 pub use contract::ContractKind;
 pub use error::{CoreError, CoreResult};
 pub use operation::{

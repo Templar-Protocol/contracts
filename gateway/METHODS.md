@@ -17,7 +17,7 @@
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
-| `chain.getBlock` | read | `GetBlock` → `GetBlockResult` | Fetch summary header information for a block. |
+| `chain.getBlock` | read | `GetBlock` → `BlockSummary` | Fetch summary header information for a block. |
 
 ## `contract`
 
