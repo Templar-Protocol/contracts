@@ -45,5 +45,10 @@ ADD CONSTRAINT pk__transaction PRIMARY KEY (operation_key);
 ALTER TABLE "transaction"
 ALTER COLUMN transaction_hash DROP NOT NULL;
 
+-- Add the FK as NOT VALID, then validate separately, so existing `account`
+-- rows aren't scanned under a heavier lock while the constraint is added.
 ALTER TABLE account
-ADD CONSTRAINT fk__account__transaction FOREIGN KEY (pending_operation_key) REFERENCES "transaction" (operation_key);
+ADD CONSTRAINT fk__account__transaction FOREIGN KEY (pending_operation_key) REFERENCES "transaction" (operation_key) NOT VALID;
+
+ALTER TABLE account
+VALIDATE CONSTRAINT fk__account__transaction;

@@ -3,7 +3,7 @@ use std::time::Duration;
 use templar_gateway_client::Client as GatewayClient;
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::{common::TxExecutionStatus, IdempotencyKey};
+use templar_gateway_types::{common::TxExecutionStatus, IdempotencyKey, OperationStatus};
 use tokio::{select, sync::watch};
 
 use crate::{
@@ -136,8 +136,15 @@ async fn classify(
     };
 
     let Some(tx_hash) = operation.latest_tx_hash() else {
-        // Submitted but no on-chain hash yet; reconcile on a later sweep.
-        return Ok(Resolution::Defer);
+        // No on-chain hash. If the operation already reached a terminal failure
+        // (rejected before submission), it will never get one, so release the
+        // slot rather than leaking the allowance lock forever. Otherwise it may
+        // still be mid-submission; reconcile on a later sweep.
+        return Ok(if operation.status == OperationStatus::Failed {
+            Resolution::Release
+        } else {
+            Resolution::Defer
+        });
     };
 
     let status = gateway

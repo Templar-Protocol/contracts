@@ -257,12 +257,26 @@ WHERE
             .into());
         }
 
-        // Insert the transaction record and claim the account's pending slot.
-        // The `pending_operation_key IS NULL` guard plus the partial unique
-        // index enforce at most one pending transaction per account.
+        // Claim the account's pending slot *first* (the `pending_operation_key
+        // IS NULL` guard), then insert the transaction row only if the claim
+        // succeeded. Doing it in this order means a contended account never
+        // leaves an orphaned `pending` transaction row behind (which would keep
+        // its allowance reserved forever): if the slot is already taken, the
+        // claim matches no row, so nothing is inserted and none is returned.
         let claimed = sqlx::query!(
             r#"
-WITH inserted AS (
+WITH claimed AS (
+    UPDATE
+        account
+    SET
+        pending_operation_key = $1
+    WHERE
+        account_id = $2
+        AND pending_operation_key IS NULL
+    RETURNING
+        account_id
+),
+inserted AS (
     INSERT INTO
         "transaction" (
             operation_key,
@@ -271,25 +285,21 @@ WITH inserted AS (
             allowance_spent_gas,
             allowance_spent_inner
         )
-    VALUES
-        ($1, $2, 'pending'::transaction_status, $3, $4)
+    SELECT
+        $1,
+        $2,
+        'pending'::transaction_status,
+        $3,
+        $4
+    FROM
+        claimed
     RETURNING
         operation_key
 )
-UPDATE
-    account
-SET
-    pending_operation_key = (
-        SELECT
-            operation_key
-        FROM
-            inserted
-    )
-WHERE
-    account_id = $2
-    AND pending_operation_key IS NULL
-RETURNING
-    pending_operation_key
+SELECT
+    operation_key
+FROM
+    inserted
 "#,
             operation_key,
             account_id.as_str(),
