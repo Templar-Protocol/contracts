@@ -322,7 +322,7 @@ pub async fn create(
     }
 
     // The UA relayer account signs and pays; the new account is charged.
-    let transaction_hash = match app
+    let execution = match app
         .execute_and_account(
             account_id.clone(),
             app.args.ua.account_id.clone(),
@@ -339,7 +339,7 @@ pub async fn create(
         )
         .await
     {
-        Ok(transaction_hash) => transaction_hash,
+        Ok(execution) => execution,
         Err(e) => {
             tracing::error!("Failed to deploy universal account: {e}");
             return SimpleResponse::Failure {
@@ -348,9 +348,21 @@ pub async fn create(
         }
     };
 
+    // The accounting is finalized regardless, but a reverted deploy must not be
+    // reported as a successful account creation.
+    if !execution.succeeded {
+        tracing::warn!(
+            transaction_hash = %execution.transaction_hash,
+            "Universal account deployment reverted on chain"
+        );
+        return SimpleResponse::Failure {
+            error: "Universal account deployment failed".to_string(),
+        };
+    }
+
     SimpleResponse::success(CreateResponse {
         account_id,
-        transaction_hash,
+        transaction_hash: execution.transaction_hash,
     })
 }
 

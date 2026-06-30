@@ -15,7 +15,7 @@ pub use operation::{
 };
 pub use primitive::{
     Base64Bytes, ContractMethodName, CryptoHash, IdempotencyKey, ManagedAccountId, NearGas,
-    NearToken, U128,
+    NearToken, SignedDelegateActionInput, U128,
 };
 pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{

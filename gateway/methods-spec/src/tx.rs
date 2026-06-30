@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::{ContractArgs, TxExecutionStatus},
-    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken, SignedDelegateActionInput,
 };
 
 /// Fetch transaction execution status and result details.
@@ -80,11 +80,12 @@ pub struct Transfer {
 
 /// Relay a NEP-366 signed delegate action (meta-transaction): the signing
 /// account submits a transaction carrying the delegate action and pays its gas.
-/// `signed_delegate_action` is the borsh-encoded `SignedDelegateAction`.
+/// `signed_delegate_action` is the base64-encoded borsh `SignedDelegateAction`,
+/// validated (decoded) at this boundary.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "tx.relaySignedDelegateAction")]
 pub struct RelaySignedDelegateAction {
-    pub signed_delegate_action: Base64Bytes,
+    pub signed_delegate_action: SignedDelegateActionInput,
 }
 
 /// Deploy contract code to an existing account in a single transaction.

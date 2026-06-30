@@ -168,6 +168,73 @@ impl JsonSchema for Base64Bytes {
     }
 }
 
+/// A NEP-366 signed delegate action, validated at the gateway boundary.
+///
+/// The wire form is the base64-encoded borsh serialization (NEAR's
+/// `SignedDelegateAction` encoding); it is borsh-decoded on deserialization, so a
+/// malformed payload is rejected here instead of deep in the write pipeline, and
+/// the dispatch can use the decoded value directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedDelegateActionInput(
+    near_api_types::transaction::delegate_action::SignedDelegateAction,
+);
+
+impl SignedDelegateActionInput {
+    /// Borsh-decode and validate from the NEP-366 byte encoding.
+    ///
+    /// # Errors
+    /// Returns an error if `bytes` is not a valid borsh-encoded
+    /// `SignedDelegateAction`.
+    pub fn from_borsh_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+        use borsh::BorshDeserialize as _;
+        Ok(Self(
+            near_api_types::transaction::delegate_action::SignedDelegateAction::try_from_slice(
+                bytes,
+            )?,
+        ))
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> near_api_types::transaction::delegate_action::SignedDelegateAction {
+        self.0
+    }
+}
+
+impl Serialize for SignedDelegateActionInput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = borsh::to_vec(&self.0).map_err(<S::Error as serde::ser::Error>::custom)?;
+        Base64Bytes(bytes).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignedDelegateActionInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes = Base64Bytes::deserialize(deserializer)?;
+        Self::from_borsh_bytes(&bytes.0).map_err(|error| {
+            D::Error::custom(format!(
+                "invalid borsh-encoded SignedDelegateAction: {error}"
+            ))
+        })
+    }
+}
+
+impl JsonSchema for SignedDelegateActionInput {
+    fn schema_name() -> String {
+        "SignedDelegateActionInput".to_owned()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        // Same wire form as `Base64Bytes`: a base64 string.
+        Base64Bytes::json_schema(generator)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PublicKey(pub near_api_types::PublicKey);

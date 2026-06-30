@@ -1,7 +1,7 @@
 use axum::{extract::State, Json};
 use near_sdk::{borsh, NearToken};
 use templar_gateway_methods_spec::tx;
-use templar_gateway_types::Base64Bytes;
+use templar_gateway_types::SignedDelegateActionInput;
 
 use crate::{app::App, route::SimpleResponse};
 
@@ -101,10 +101,15 @@ pub async fn relay(
     }
 
     // NEP-366: the gateway wraps the user's signed delegate action in a
-    // transaction the relay account signs and pays for. The gateway decodes the
-    // borsh-encoded delegate action (the NEP-366 layout is signer-agnostic).
-    let signed_delegate_action = match borsh::to_vec(&signed_delegate_action) {
-        Ok(bytes) => bytes,
+    // transaction the relay account signs and pays for. Re-encode to borsh and
+    // hand the gateway its validated `SignedDelegateActionInput` (the NEP-366
+    // layout is signer-agnostic, bridging near_primitives -> near_api_types).
+    let signed_delegate_action = match borsh::to_vec(&signed_delegate_action)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            SignedDelegateActionInput::from_borsh_bytes(&bytes).map_err(|error| error.to_string())
+        }) {
+        Ok(payload) => payload,
         Err(e) => {
             tracing::error!("Failed to encode signed delegate action: {e}");
             return SimpleResponse::Failure {
@@ -120,12 +125,12 @@ pub async fn relay(
             cost_of_gas,
             NearToken::from_near(0),
             tx::RelaySignedDelegateAction {
-                signed_delegate_action: Base64Bytes(signed_delegate_action),
+                signed_delegate_action,
             },
         )
         .await
     {
-        Ok(transaction_hash) => transaction_hash,
+        Ok(execution) => execution.transaction_hash,
         Err(e) => {
             tracing::error!("Relay submission failure: {e}");
             return SimpleResponse::Failure {

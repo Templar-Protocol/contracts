@@ -257,7 +257,7 @@ pub async fn relay(
         )
         .await
     {
-        Ok(transaction_hash) => transaction_hash,
+        Ok(execution) => execution.transaction_hash,
         Err(e) => {
             tracing::error!("Universal account relay failure: {e}");
             return SimpleResponse::Failure {

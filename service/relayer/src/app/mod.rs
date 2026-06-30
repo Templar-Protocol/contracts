@@ -776,7 +776,7 @@ impl App {
         gas_cost_estimate: NearToken,
         spend_within_transaction: NearToken,
         body: S,
-    ) -> Result<near_primitives::hash::CryptoHash, SubmitError>
+    ) -> Result<AccountedExecution, SubmitError>
     where
         S: MethodSpec<Output = WriteOperationResult> + Send,
         Dispatch: PlanWrite<S, GatewayContext>,
@@ -842,7 +842,10 @@ impl App {
             )
             .await?;
 
-        Ok(native_tx_hash)
+        Ok(AccountedExecution {
+            transaction_hash: native_tx_hash,
+            succeeded,
+        })
     }
 
     /// Ensure `account_id` holds the relayer's guaranteed-minimum storage
@@ -932,6 +935,16 @@ pub enum StorageDepositError {
     GasEstimationFailure,
     #[error("Error submitting storage deposit: {0}")]
     Submit(#[from] SubmitError),
+}
+
+/// The result of [`App::execute_and_account`]: the on-chain transaction hash
+/// and whether the operation's final status was success. The accounting (gas
+/// charge) is always finalized; `succeeded` lets callers decide whether to
+/// report success (e.g. UA create must not claim success for a reverted deploy).
+#[derive(Debug, Clone, Copy)]
+pub struct AccountedExecution {
+    pub transaction_hash: near_primitives::hash::CryptoHash,
+    pub succeeded: bool,
 }
 
 /// Failure submitting a gateway write and reconciling its allowance.
