@@ -12,4 +12,12 @@ impl AccountClient<'_> {
     ) -> GatewayResult<near_api::types::account::Account> {
         <NearClient as ReadNear>::view_account(self.inner, account_id).await
     }
+
+    pub async fn access_key(
+        &self,
+        account_id: near_account_id::AccountId,
+        public_key: near_api::types::PublicKey,
+    ) -> GatewayResult<near_api::types::transaction::actions::AccessKey> {
+        <NearClient as ReadNear>::view_access_key(self.inner, account_id, public_key).await
+    }
 }

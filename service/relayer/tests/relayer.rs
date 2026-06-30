@@ -82,38 +82,32 @@ struct AccessKeyInfo {
     block_hash: near_primitives::hash::CryptoHash,
 }
 
-/// Fetch an account's access-key nonce and the current block reference directly
-/// from the sandbox RPC (the relayer no longer exposes a bespoke NEAR client).
+/// Fetch an account's access-key nonce and the current block reference through
+/// the gateway's typed specs (`account.getAccessKey` + `chain.getBlock`) — the
+/// same path the relayer itself uses, rather than a bespoke RPC client.
 async fn view_access_key(
-    worker: &Worker<Sandbox>,
+    gateway: &templar_gateway_client::Client,
     account_id: &near_workspaces::AccountId,
     public_key: near_crypto::PublicKey,
 ) -> AccessKeyInfo {
-    use near_jsonrpc_client::{methods, JsonRpcClient};
-    use near_jsonrpc_primitives::types::query::QueryResponseKind;
-    use near_primitives::{
-        types::{BlockReference, Finality},
-        views::QueryRequest,
-    };
+    use templar_gateway_methods_spec::{account, chain};
 
-    let client = JsonRpcClient::connect(worker.rpc_addr());
-    let response = client
-        .call(methods::query::RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: QueryRequest::ViewAccessKey {
-                account_id: account_id.clone(),
-                public_key,
-            },
+    let public_key: near_api::types::PublicKey = public_key.to_string().parse().unwrap();
+    let key = gateway
+        .read(account::GetAccessKey {
+            account_id: account_id.as_str().parse().unwrap(),
+            public_key: public_key.into(),
         })
         .await
         .unwrap();
-    let QueryResponseKind::AccessKey(access_key) = response.kind else {
-        panic!("unexpected query response kind");
-    };
+    let block = gateway
+        .read(chain::GetBlock { block_hash: None })
+        .await
+        .unwrap();
     AccessKeyInfo {
-        nonce: access_key.nonce,
-        block_height: response.block_height,
-        block_hash: response.block_hash,
+        nonce: key.nonce,
+        block_height: block.height,
+        block_hash: near_primitives::hash::CryptoHash(block.hash.0 .0),
     }
 }
 
@@ -500,7 +494,7 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
     // Relay a signed delegate action.
 
     let fetch_nonce = view_access_key(
-        &worker,
+        &app.gateway,
         borrow_user.id(),
         borrow_user.secret_key().public_key().into(),
     )
@@ -986,7 +980,7 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
     // Relay a signed delegate action.
 
     let fetch_nonce = view_access_key(
-        &worker,
+        &app.gateway,
         borrow_user.id(),
         borrow_user.secret_key().public_key().into(),
     )
@@ -1237,7 +1231,7 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
     // Relay a signed delegate action.
 
     let fetch_nonce = view_access_key(
-        &worker,
+        &app.gateway,
         borrow_user.id(),
         borrow_user.secret_key().public_key().into(),
     )

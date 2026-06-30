@@ -44,6 +44,38 @@ impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
 }
 
 #[async_trait]
+impl<C: HasNearClient> DispatchRead<account::GetAccessKey, C> for Dispatch {
+    async fn dispatch(
+        request: account::GetAccessKey,
+        ctx: C,
+    ) -> GatewayResult<account::GetAccessKeyResult> {
+        use near_api::types::transaction::actions::AccessKeyPermission as NearPermission;
+
+        let key = ctx
+            .near_client()
+            .account()
+            .access_key(request.account_id, request.public_key.into())
+            .await?;
+
+        let permission = match key.permission {
+            NearPermission::FullAccess => account::AccessKeyPermission::FullAccess,
+            NearPermission::FunctionCall(function_call) => {
+                account::AccessKeyPermission::FunctionCall {
+                    allowance: function_call.allowance,
+                    receiver_id: function_call.receiver_id,
+                    method_names: function_call.method_names,
+                }
+            }
+        };
+
+        Ok(account::GetAccessKeyResult {
+            nonce: key.nonce.0,
+            permission,
+        })
+    }
+}
+
+#[async_trait]
 impl<C: Send + 'static> PlanWrite<account::Delete, C> for Dispatch {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<account::Delete>,
