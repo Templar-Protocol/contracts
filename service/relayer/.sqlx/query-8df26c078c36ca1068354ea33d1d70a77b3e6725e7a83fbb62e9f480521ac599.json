@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nUPDATE\n    account\nSET\n    pending_operation_key = $2,\n    pending_inner_spend = $3\nWHERE\n    account_id = $1\n    AND pending_operation_key IS NULL\nRETURNING\n    account_id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Numeric"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8df26c078c36ca1068354ea33d1d70a77b3e6725e7a83fbb62e9f480521ac599"
+}

@@ -19,18 +19,10 @@ use templar_gateway_types::{
     CryptoHash, IdempotencyKey, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
 
-/// The Postgres schema the operation store confines itself to unless overridden.
-///
-/// Keeping the store's tables, types, and `_sqlx_migrations` bookkeeping out of
-/// `public` lets it coexist in a database alongside another sqlx-migrated
-/// component without their migration tables colliding.
+/// Default schema for gateway store tables, types, and migrations.
 pub const DEFAULT_SCHEMA: &str = "gateway";
 
-/// Reject anything that isn't a plain, unquoted Postgres identifier, since the
-/// schema name is interpolated into DDL that can't be parameterized. Allows
-/// `[A-Za-z_][A-Za-z0-9_]*` up to Postgres's 63-byte identifier limit (so e.g.
-/// `"public"` and `"gateway"` pass; empty, `"a-b"`, or a quote-bearing value
-/// fail).
+/// Validate the unquoted schema identifier used in `search_path` and DDL.
 fn validate_schema_identifier(schema: &str) -> Result<(), sqlx::Error> {
     let valid = (1..=63).contains(&schema.len())
         && schema.chars().enumerate().all(|(index, character)| {
@@ -52,8 +44,7 @@ fn validate_schema_identifier(schema: &str) -> Result<(), sqlx::Error> {
 #[derive(Debug, Clone)]
 pub struct PostgresStore {
     pool: PgPool,
-    /// The Postgres schema all of the store's objects (tables, types, and the
-    /// sqlx migration bookkeeping) are confined to.
+    /// Schema containing the store's tables, types, and sqlx migrations.
     schema: String,
 }
 
@@ -114,29 +105,16 @@ struct OperationStepRow {
 }
 
 impl PostgresStore {
-    /// Connect with the store confined to its default [`DEFAULT_SCHEMA`].
-    ///
-    /// Isolating the store in its own schema (rather than `public`) means it can
-    /// always share a database with another sqlx-migrated component without their
-    /// `_sqlx_migrations` tables colliding — so consumers get that safety by
-    /// default and never have to think about it. Use [`Self::with_schema`] only
-    /// to override the schema name.
+    /// Connect using [`DEFAULT_SCHEMA`].
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         Self::with_schema(database_url, DEFAULT_SCHEMA)
     }
 
-    /// Connect with all of the store's objects confined to a specific Postgres
-    /// `schema`.
+    /// Connect using a specific Postgres `schema`.
     ///
-    /// The connection's `search_path` puts `schema` first, so the store's
-    /// unqualified DDL and queries resolve there. Pass `"public"` to use the
-    /// database's default schema (only safe when the store owns the database).
-    ///
-    /// `schema` is interpolated into DDL (`search_path` / `CREATE SCHEMA`), which
-    /// can't be parameterized, so it must be a valid unquoted Postgres
-    /// identifier — this is validated up front and an invalid value (empty,
-    /// containing punctuation/quotes, too long) is rejected here rather than
-    /// risking malformed or injectable DDL later.
+    /// Pass `"public"` only for legacy databases whose gateway store already
+    /// lives in the default schema. The identifier is validated because it is
+    /// interpolated into `search_path` and `CREATE SCHEMA`.
     pub fn with_schema(database_url: &str, schema: &str) -> Result<Self, sqlx::Error> {
         validate_schema_identifier(schema)?;
         let options = PgConnectOptions::from_str(database_url)?
@@ -151,10 +129,7 @@ impl PostgresStore {
     }
 
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
-        // Create the schema before sqlx creates `_sqlx_migrations` (and the
-        // store's tables) in it via the connection search_path. `self.schema` was
-        // validated as a plain identifier in `with_schema`, so this interpolation
-        // is safe.
+        // Create the schema before sqlx creates `_sqlx_migrations` in it.
         sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{}\"", self.schema))
             .execute(&self.pool)
             .await?;
@@ -260,7 +235,7 @@ WHERE
             remaining_steps: VecDeque::from(plan.steps),
         };
 
-        match save_operation_tx(&self.pool, &operation, idempotency_key.as_ref(), None).await {
+        match insert_operation_tx(&self.pool, &operation, idempotency_key.as_ref()).await {
             Ok(()) => Ok(CreateOperationResult::Created(operation)),
             Err(GatewayError::Sql(sqlx::Error::Database(database_error)))
                 if database_error.constraint()
@@ -286,7 +261,7 @@ WHERE
     }
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
-        save_operation_tx(&self.pool, &operation, None, Some(&operation.id)).await
+        update_operation_tx(&self.pool, &operation).await
     }
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
@@ -324,46 +299,63 @@ ORDER BY
     }
 }
 
-async fn save_operation_tx(
+/// Insert a brand-new operation row and its planned steps. The identity columns
+/// (`id`, `idempotency_key`, signer, fingerprint, payload) are written once,
+/// here, and never rewritten — see [`update_operation_tx`].
+async fn insert_operation_tx(
     pool: &PgPool,
     operation: &StoredOperation,
     idempotency_key: Option<&IdempotencyKey>,
-    replace_operation_id: Option<&OperationId>,
 ) -> GatewayResult<()> {
     let mut tx = pool.begin().await?;
+    let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
+        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    insert_operation_row(&mut tx, operation_uuid, operation, idempotency_key).await?;
+    insert_operation_steps(&mut tx, operation_uuid, operation).await?;
+    tx.commit().await?;
+    Ok(())
+}
 
-    if let Some(operation_id) = replace_operation_id {
-        let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+/// Persist progress on an existing operation. Only `status` and the step rows
+/// change as an operation runs; its identity columns are immutable, so this
+/// updates the status in place and rewrites the steps without touching the
+/// operation row's other columns — crucially leaving `idempotency_key` intact
+/// (an earlier version re-inserted the whole row with a null key, silently
+/// dropping idempotency and breaking crash recovery).
+async fn update_operation_tx(pool: &PgPool, operation: &StoredOperation) -> GatewayResult<()> {
+    let mut tx = pool.begin().await?;
+    let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
+        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
 
-        sqlx::query!(
-            r#"
+    let status = operation_status_row(operation.status());
+    sqlx::query!(
+        r#"
+UPDATE
+    gateway_operations
+SET
+    STATUS = $2
+WHERE
+    id = $1
+"#,
+        operation_uuid,
+        status as OperationStatusRow,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    // Steps genuinely change shape between saves; replace them wholesale
+    // (receipts cascade-delete with their step rows).
+    sqlx::query!(
+        r#"
 DELETE FROM
     gateway_operation_steps
 WHERE
     operation_id = $1
 "#,
-            operation_uuid,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query!(
-            r#"
-DELETE FROM
-    gateway_operations
-WHERE
-    id = $1
-"#,
-            operation_uuid,
-        )
-        .execute(&mut *tx)
-        .await?;
-    }
-
-    let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
-        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-    insert_operation_row(&mut tx, operation_uuid, operation, idempotency_key).await?;
+        operation_uuid,
+    )
+    .execute(&mut *tx)
+    .await?;
     insert_operation_steps(&mut tx, operation_uuid, operation).await?;
 
     tx.commit().await?;
@@ -556,7 +548,20 @@ INSERT INTO
         outcome_return_value
     )
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        $12
+    )
 "#,
         operation_id,
         step_index,
@@ -585,8 +590,8 @@ INSERT INTO
         step_index,
         receipt_index,
         contract_id,
-        status,
-        logs
+        STATUS,
+        LOGS
     )
 VALUES
     ($1, $2, $3, $4, $5, $6)
@@ -675,8 +680,8 @@ async fn load_step_receipts(
 SELECT
     step_index,
     contract_id,
-    status,
-    logs
+    STATUS,
+    LOGS
 FROM
     gateway_operation_step_receipts
 WHERE
@@ -1006,6 +1011,49 @@ mod tests {
                 remaining_steps: VecDeque::new(),
             },
         }
+    }
+
+    /// A progress save must not drop the operation's idempotency key — the
+    /// relayer's crash recovery (and gateway idempotent retries) look operations
+    /// up by it. A previous version re-inserted the row with a null key on every
+    /// save.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn save_operation_preserves_idempotency_key(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+        let key = IdempotencyKey("op-key-1".to_owned());
+
+        let created = store
+            .create_or_get_operation(
+                "tx.transfer",
+                ManagedAccountId("signer.near".parse().unwrap()),
+                Some(key.clone()),
+                [1; 32],
+                serde_json::to_vec(&serde_json::json!({ "amount": "7" })).unwrap(),
+                OperationPlan {
+                    steps: vec![sample_transaction()],
+                },
+            )
+            .await
+            .unwrap();
+        let CreateOperationResult::Created(operation) = created else {
+            panic!("expected a freshly created operation");
+        };
+
+        // Drive it to a terminal state and persist progress (a step transition).
+        let mut progressed = sample_operation(OperationStatus::Succeeded);
+        progressed.id = operation.id.clone();
+        store.save_operation(progressed).await.unwrap();
+
+        let found = store
+            .get_by_idempotency_key(&key)
+            .await
+            .unwrap()
+            .expect("operation still resolvable by idempotency key after a save");
+        assert_eq!(found.id, operation.id);
+        assert_eq!(found.status(), OperationStatus::Succeeded);
     }
 
     #[test]

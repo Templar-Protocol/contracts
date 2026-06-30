@@ -1,4 +1,3 @@
-use near_primitives::hash::CryptoHash;
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
 use tokio::sync::watch;
@@ -17,18 +16,11 @@ pub enum AccountMark {
     AlwaysDeny,
 }
 
-#[derive(Debug, sqlx::Type, PartialEq, Eq)]
-#[sqlx(type_name = "transaction_status", rename_all = "lowercase")]
-pub enum TransactionStatus {
-    Pending,
-    Succeeded,
-    Failed,
-}
-
-/// A pending transaction whose on-chain hash is already known, ready for the
-/// broom to reconcile against its execution outcome.
+/// An account with a charge in flight, awaiting settlement against its gateway
+/// operation. The broom reconciles each by looking the operation up in the
+/// gateway store by `operation_key`.
 #[derive(Debug, Clone)]
-pub struct PendingTransaction {
+pub struct PendingCharge {
     pub account_id: AccountId,
     pub operation_key: Uuid,
 }
@@ -52,41 +44,22 @@ pub mod error {
     }
 
     #[derive(Debug, Error)]
-    #[error("Account \"{account_id}\" already has a pending transaction")]
-    pub struct PendingTransactionError {
+    #[error("Account \"{account_id}\" already has a charge in flight")]
+    pub struct PendingChargeError {
         pub account_id: AccountId,
     }
 
+    /// Failure to lock allowance for a new charge.
     #[derive(Debug, Error)]
-    #[error("Account \"{account_id}\" does not have a pending transaction")]
-    pub struct MissingPendingTransactionError {
-        pub account_id: AccountId,
-    }
-
-    #[derive(Debug, Error)]
-    pub enum SetPendingTransactionError {
+    pub enum LockError {
         #[error(transparent)]
         AccountDoesNotExist(#[from] AccountDoesNotExistError),
         #[error(transparent)]
         InsufficientAllowance(#[from] InsufficientAllowanceError),
         #[error(transparent)]
-        PendingTransaction(#[from] PendingTransactionError),
+        PendingCharge(#[from] PendingChargeError),
         #[error("SQL error: {0}")]
         Sql(#[from] sqlx::Error),
-        #[error("Unknown error: {0}")]
-        UnknownError(AccountId),
-    }
-
-    #[derive(Debug, Error)]
-    pub enum RecordTransactionError {
-        #[error(transparent)]
-        AccountDoesNotExist(#[from] AccountDoesNotExistError),
-        #[error(transparent)]
-        MissingPendingTransaction(#[from] MissingPendingTransactionError),
-        #[error("SQL error: {0}")]
-        Sql(#[from] sqlx::Error),
-        #[error("Unknown error: {0}")]
-        UnknownError(AccountId),
     }
 }
 
@@ -123,35 +96,35 @@ impl Database {
         sqlx::migrate!("./migrations").run(&self.connection).await
     }
 
-    /// Pending transactions older than `min_age`, oldest first.
+    /// Accounts whose in-flight charge is at least `min_age` old, oldest first.
     ///
-    /// The broom reconciles each against the gateway operation store (keyed by
-    /// `operation_key`). The `min_age` floor skips rows young enough to still be
-    /// mid-submission, so a row whose gateway operation isn't persisted yet is
-    /// never mistaken for an abandoned one.
+    /// The `min_age` floor skips charges young enough to still be mid-submission,
+    /// so a charge whose gateway operation isn't persisted yet is never mistaken
+    /// for an abandoned one. `updated_at` is set when the lock is taken, so it is
+    /// the charge's age.
     ///
     /// # Errors
     ///
     /// - Query errors
     #[tracing::instrument(skip(self), fields(limit = %limit, min_age = ?min_age))]
-    pub async fn get_pending_transactions(
+    pub async fn get_pending_charges(
         &self,
         limit: i64,
         min_age: std::time::Duration,
-    ) -> Result<Vec<PendingTransaction>, sqlx::Error> {
-        tracing::debug!("Fetching pending transactions");
+    ) -> Result<Vec<PendingCharge>, sqlx::Error> {
+        tracing::debug!("Fetching pending charges");
         let results = sqlx::query!(
             r#"
 SELECT
     account_id,
-    operation_key
+    pending_operation_key AS "operation_key!"
 FROM
-    "transaction"
+    account
 WHERE
-    "status" = 'pending'::transaction_status
-    AND created_at < NOW() - make_interval(secs => $2)
+    pending_operation_key IS NOT NULL
+    AND updated_at < NOW() - make_interval(secs => $2)
 ORDER BY
-    created_at ASC
+    updated_at ASC
 LIMIT
     $1
 "#,
@@ -166,7 +139,7 @@ LIMIT
             .filter_map(|r| {
                 // A malformed account id skips the row rather than aborting the
                 // batch; such records should never exist.
-                Some(PendingTransaction {
+                Some(PendingCharge {
                     account_id: r.account_id.parse().ok()?,
                     operation_key: r.operation_key,
                 })
@@ -191,30 +164,33 @@ LIMIT
         }
     }
 
-    /// Lock allowance for a transaction the relayer is about to submit, keyed by
-    /// the gateway idempotency key. The on-chain transaction hash is unknown at
-    /// this point and is attached later via [`Database::attach_transaction_hash`].
+    /// Lock allowance for a charge the relayer is about to submit, keyed by the
+    /// gateway idempotency key (`operation_key`). Claims the account's single
+    /// in-flight slot and records the deposit (`inner_spend`) to bill if the
+    /// operation succeeds; the gas cost is read back from the gateway at
+    /// settlement. `gas_estimate` only gates affordability here and is not
+    /// stored.
     ///
     /// # Errors
     ///
     /// - Query errors
     /// - Account does not exist
-    /// - Pending transaction already exists
+    /// - A charge is already in flight for the account
     /// - Insufficient allowance
     #[tracing::instrument(skip(self), fields(
         account_id = %account_id,
-        allowance_lock_gas = %allowance_lock_gas,
-        allowance_lock_inner = %allowance_lock_inner,
+        gas_estimate = %gas_estimate,
+        inner_spend = %inner_spend,
         operation_key = %operation_key
     ))]
-    pub async fn set_pending_transaction(
+    pub async fn lock_pending(
         &self,
         account_id: &AccountIdRef,
-        allowance_lock_gas: NearToken,
-        allowance_lock_inner: NearToken,
+        gas_estimate: NearToken,
+        inner_spend: NearToken,
         operation_key: Uuid,
-    ) -> Result<(), error::SetPendingTransactionError> {
-        tracing::debug!("Setting pending transaction");
+    ) -> Result<(), error::LockError> {
+        tracing::debug!("Locking allowance for charge");
         let mut tx = self.connection.begin().await?;
 
         let account = sqlx::query!(
@@ -240,300 +216,145 @@ WHERE
             .into());
         };
 
-        let allowance_lock_total = allowance_lock_gas.saturating_add(allowance_lock_inner);
+        let required = gas_estimate.saturating_add(inner_spend);
 
         if account.mark != AccountMark::AlwaysApprove
-            && account.allowance < Decimal::from(allowance_lock_total.as_yoctonear())
+            && account.allowance < Decimal::from(required.as_yoctonear())
         {
             return Err(error::InsufficientAllowanceError {
                 account_id: account_id.to_owned(),
-                required: allowance_lock_total,
+                required,
                 #[allow(
                     clippy::unwrap_used,
-                    reason = "guaranteed to be less than `allowance_lock_total`, which fits in u128"
+                    reason = "guaranteed to be less than `required`, which fits in u128"
                 )]
                 actual: NearToken::from_yoctonear(account.allowance.try_into().unwrap()),
             }
             .into());
         }
 
-        // Claim the account's pending slot *first* (the `pending_operation_key
-        // IS NULL` guard), then insert the transaction row only if the claim
-        // succeeded. Doing it in this order means a contended account never
-        // leaves an orphaned `pending` transaction row behind (which would keep
-        // its allowance reserved forever): if the slot is already taken, the
-        // claim matches no row, so nothing is inserted and none is returned.
+        // Claim the account's single in-flight slot (the `pending_operation_key
+        // IS NULL` guard). If it is already taken, no row matches and nothing is
+        // claimed.
         let claimed = sqlx::query!(
             r#"
-WITH claimed AS (
-    UPDATE
-        account
-    SET
-        pending_operation_key = $1
-    WHERE
-        account_id = $2
-        AND pending_operation_key IS NULL
-    RETURNING
-        account_id
-),
-inserted AS (
-    INSERT INTO
-        "transaction" (
-            operation_key,
-            account_id,
-            "status",
-            allowance_spent_gas,
-            allowance_spent_inner
-        )
-    SELECT
-        $1,
-        $2,
-        'pending'::transaction_status,
-        $3,
-        $4
-    FROM
-        claimed
-    RETURNING
-        operation_key
-)
-SELECT
-    operation_key
-FROM
-    inserted
+UPDATE
+    account
+SET
+    pending_operation_key = $2,
+    pending_inner_spend = $3
+WHERE
+    account_id = $1
+    AND pending_operation_key IS NULL
+RETURNING
+    account_id
 "#,
-            operation_key,
             account_id.as_str(),
-            Decimal::from(allowance_lock_gas.as_yoctonear()),
-            Decimal::from(allowance_lock_inner.as_yoctonear()),
+            operation_key,
+            Decimal::from(inner_spend.as_yoctonear()),
         )
         .fetch_optional(&mut *tx)
         .await?;
 
         if claimed.is_none() {
-            return Err(error::PendingTransactionError {
+            return Err(error::PendingChargeError {
                 account_id: account_id.to_owned(),
             }
             .into());
         }
 
-        Ok(tx.commit().await?)
+        tx.commit().await?;
+        Ok(())
     }
 
+    /// Settle an in-flight charge against its gateway operation's actual cost:
+    /// debit `tokens_burnt` (always) plus the locked `inner_spend` (only if the
+    /// operation succeeded), and release the slot.
+    ///
+    /// Idempotent: the `pending_operation_key = $2` guard means a charge already
+    /// settled (e.g. by the hot path before the broom got to it) matches no row
+    /// and is a no-op.
+    ///
     /// # Errors
     ///
     /// - Query errors
-    pub async fn remove_pending_transaction(
+    #[tracing::instrument(skip(self), fields(
+        account_id = %account_id,
+        operation_key = %operation_key,
+        tokens_burnt = %tokens_burnt,
+        succeeded = succeeded,
+    ))]
+    pub async fn settle(
         &self,
         account_id: &AccountIdRef,
+        operation_key: Uuid,
+        tokens_burnt: NearToken,
+        succeeded: bool,
     ) -> Result<(), sqlx::Error> {
-        let mut tx = self.connection.begin().await?;
-
-        let result = sqlx::query!(
+        tracing::info!("Settling charge");
+        sqlx::query!(
             r#"
-SELECT
-    operation_key,
-    allowance_spent_gas,
-    allowance_spent_inner
-FROM
-    "transaction"
+UPDATE
+    account
+SET
+    allowance = greatest(
+        allowance - (
+            $3 + CASE
+                WHEN $4 THEN coalesce(pending_inner_spend, 0)
+                ELSE 0
+            END
+        ),
+        0
+    ),
+    pending_operation_key = NULL,
+    pending_inner_spend = NULL
 WHERE
     account_id = $1
-    AND "status" = 'pending'::transaction_status
+    AND pending_operation_key = $2
 "#,
-            account_id.to_string(),
+            account_id.as_str(),
+            operation_key,
+            Decimal::from(tokens_burnt.as_yoctonear()),
+            succeeded,
         )
-        .fetch_optional(&mut *tx)
+        .execute(&self.connection)
         .await?;
 
-        let Some(result) = result else {
-            // Pending tx does not exist
-            return Ok(());
-        };
+        Ok(())
+    }
 
-        let allowance_lock_total = result
-            .allowance_spent_gas
-            .saturating_add(result.allowance_spent_inner);
-
-        let update_account = sqlx::query!(
+    /// Release an in-flight charge without billing it — for an operation that
+    /// never reached the chain. Only clears the slot; the allowance was never
+    /// debited at lock time, so nothing is refunded.
+    ///
+    /// Idempotent, like [`Database::settle`].
+    ///
+    /// # Errors
+    ///
+    /// - Query errors
+    #[tracing::instrument(skip(self), fields(account_id = %account_id, operation_key = %operation_key))]
+    pub async fn release_pending(
+        &self,
+        account_id: &AccountIdRef,
+        operation_key: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        tracing::info!("Releasing charge");
+        sqlx::query!(
             r#"
 UPDATE
     account
 SET
     pending_operation_key = NULL,
-    allowance = allowance + $1
-WHERE
-    account_id = $2
-    AND pending_operation_key = $3
-"#,
-            allowance_lock_total,
-            account_id.as_str(),
-            result.operation_key,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        if update_account.rows_affected() != 0 {
-            sqlx::query!(
-                r#"
-DELETE FROM
-    "transaction"
-WHERE
-    operation_key = $1
-    AND account_id = $2
-"#,
-                result.operation_key,
-                account_id.as_str(),
-            )
-            .execute(&mut *tx)
-            .await?;
-        }
-
-        tx.commit().await
-    }
-
-    /// Finalize a pending transaction, deducting its actual cost from the
-    /// account's allowance and releasing the pending slot.
-    ///
-    /// `tokens_burnt` is the true gas cost (summed across the transaction and
-    /// all its receipts); `allowance_spent_inner` (the locked in-transaction
-    /// spend, e.g. a storage deposit) is charged only when the transaction
-    /// succeeded.
-    ///
-    /// # Errors
-    ///
-    /// - Account does not exist
-    /// - Pending transaction does not exist
-    /// - Query errors
-    #[allow(clippy::too_many_lines)]
-    #[tracing::instrument(skip(self), fields(
-        account_id = %account_id,
-        operation_key = %operation_key,
-        transaction_hash = %transaction_hash,
-        tokens_burnt = %tokens_burnt,
-        succeeded = succeeded,
-    ))]
-    pub async fn finalize_pending_transaction(
-        &self,
-        account_id: &AccountIdRef,
-        operation_key: Uuid,
-        transaction_hash: CryptoHash,
-        tokens_burnt: NearToken,
-        succeeded: bool,
-    ) -> Result<(), error::RecordTransactionError> {
-        tracing::info!("Finalizing pending transaction");
-        let allowance_spent_gas = tokens_burnt;
-
-        let transaction_record = sqlx::query!(
-            r#"
-SELECT
-    allowance_spent_inner,
-    "status" AS "status: TransactionStatus"
-FROM
-    "transaction"
-WHERE
-    operation_key = $1
-"#,
-            operation_key,
-        )
-        .fetch_one(&self.connection)
-        .await?;
-
-        if transaction_record.status != TransactionStatus::Pending {
-            // Final status already inserted; do nothing.
-            return Ok(());
-        }
-
-        let allowance_spent_inner = NearToken::from_yoctonear(
-            transaction_record
-                .allowance_spent_inner
-                .try_into()
-                .unwrap_or(u128::MAX),
-        );
-
-        let allowance_spent = if succeeded {
-            allowance_spent_gas.saturating_add(allowance_spent_inner)
-        } else {
-            allowance_spent_gas
-        };
-
-        let mut tx = self.connection.begin().await?;
-        let result = sqlx::query!(
-            "
-UPDATE
-    account
-SET
-    allowance = greatest(allowance - $1, 0),
-    pending_operation_key = NULL
-WHERE
-    account_id = $2
-    AND pending_operation_key = $3
-",
-            Decimal::from(allowance_spent.as_yoctonear()),
-            account_id.as_str(),
-            operation_key,
-        )
-        .execute(&mut *tx)
-        .await?;
-
-        if result.rows_affected() == 0 {
-            tx.rollback().await?;
-
-            tracing::warn!("Failed to unlock allowance for {account_id}");
-            let account = sqlx::query!(
-                "
-SELECT
-    pending_operation_key
-FROM
-    account
+    pending_inner_spend = NULL
 WHERE
     account_id = $1
-",
-                account_id.as_str(),
-            )
-            .fetch_optional(&self.connection)
-            .await?;
-            let account = account.ok_or_else(|| error::AccountDoesNotExistError {
-                account_id: account_id.to_owned(),
-            })?;
-            if account.pending_operation_key.is_none() {
-                return Err(error::MissingPendingTransactionError {
-                    account_id: account_id.to_owned(),
-                }
-                .into());
-            }
-            return Err(error::RecordTransactionError::UnknownError(
-                account_id.to_owned(),
-            ));
-        }
-
-        let (status, allowance_spent_inner) = if succeeded {
-            (TransactionStatus::Succeeded, allowance_spent_inner)
-        } else {
-            (TransactionStatus::Failed, NearToken::from_near(0))
-        };
-
-        sqlx::query!(
-            r#"
-UPDATE
-    "transaction"
-SET
-    "status" = $1,
-    allowance_spent_gas = $2,
-    allowance_spent_inner = $3,
-    transaction_hash = $5
-WHERE
-    operation_key = $4
+    AND pending_operation_key = $2
 "#,
-            status as TransactionStatus,
-            Decimal::from(allowance_spent_gas.as_yoctonear()),
-            Decimal::from(allowance_spent_inner.as_yoctonear()),
+            account_id.as_str(),
             operation_key,
-            transaction_hash.to_string(),
         )
-        .execute(&mut *tx)
+        .execute(&self.connection)
         .await?;
-
-        tx.commit().await?;
 
         Ok(())
     }
@@ -546,12 +367,14 @@ WHERE
         account_id: &AccountIdRef,
         allowance: NearToken,
     ) -> Result<(), sqlx::Error> {
+        // Idempotent: a concurrent or retried create leaves the existing row
+        // (and its allowance) untouched.
         sqlx::query!(
             "
 INSERT INTO
     account (account_id, allowance)
 VALUES
-    ($1, $2)
+    ($1, $2) ON CONFLICT (account_id) DO NOTHING
 ",
             account_id.as_str(),
             Decimal::from(allowance.as_yoctonear()),
@@ -593,5 +416,160 @@ WHERE
                 }
             })
             .map(NearToken::from_yoctonear))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    fn db(pool: PgPool) -> Database {
+        Database { connection: pool }
+    }
+
+    fn acct(id: &str) -> AccountId {
+        id.parse().unwrap()
+    }
+
+    fn near(yocto: u128) -> NearToken {
+        NearToken::from_yoctonear(yocto)
+    }
+
+    async fn allowance(db: &Database, account: &AccountId) -> u128 {
+        db.get_available_allowance(account)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_yoctonear()
+    }
+
+    /// A successful settle debits gas (`tokens_burnt`) and the locked deposit.
+    #[sqlx::test]
+    async fn settle_success_debits_gas_and_inner(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+        // Locking does not touch the allowance.
+        assert_eq!(allowance(&db, &account).await, 100);
+
+        db.settle(&account, key, near(8), true).await.unwrap();
+        assert_eq!(allowance(&db, &account).await, 100 - 8 - 5);
+    }
+
+    /// A reverted settle debits only gas — the deposit is not billed.
+    #[sqlx::test]
+    async fn settle_revert_debits_gas_only(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+        db.settle(&account, key, near(8), false).await.unwrap();
+        assert_eq!(allowance(&db, &account).await, 100 - 8);
+    }
+
+    /// Releasing an unsubmitted charge leaves the allowance untouched (nothing
+    /// was debited at lock time — releasing must not inflate it).
+    #[sqlx::test]
+    async fn release_does_not_change_allowance(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+        db.release_pending(&account, key).await.unwrap();
+        assert_eq!(allowance(&db, &account).await, 100);
+
+        // The slot is free again.
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap();
+    }
+
+    /// Settling twice for the same charge debits once (the slot guard makes the
+    /// second a no-op), so a hot-path/broom race can't double-charge.
+    #[sqlx::test]
+    async fn settle_is_idempotent(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+        db.settle(&account, key, near(8), true).await.unwrap();
+        db.settle(&account, key, near(8), true).await.unwrap();
+        assert_eq!(allowance(&db, &account).await, 100 - 8 - 5);
+    }
+
+    /// Only one charge may be in flight per account.
+    #[sqlx::test]
+    async fn lock_rejects_second_charge(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap();
+        let err = db
+            .lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, error::LockError::PendingCharge(_)));
+    }
+
+    /// A lock whose gas + deposit exceeds the allowance is rejected.
+    #[sqlx::test]
+    async fn lock_rejects_insufficient_allowance(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(10)).await.unwrap();
+
+        let err = db
+            .lock_pending(&account, near(8), near(5), Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, error::LockError::InsufficientAllowance(_)));
+    }
+
+    /// A locked charge is reported as pending (with its key) for the broom.
+    #[sqlx::test]
+    async fn get_pending_charges_lists_locked_account(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(0), key)
+            .await
+            .unwrap();
+
+        let pending = db.get_pending_charges(10, Duration::ZERO).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].account_id, account);
+        assert_eq!(pending[0].operation_key, key);
+
+        // Once settled, it is no longer pending.
+        db.settle(&account, key, near(1), true).await.unwrap();
+        assert!(db
+            .get_pending_charges(10, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

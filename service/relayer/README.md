@@ -72,11 +72,48 @@ make sql-fmt # from project root
    docker compose up -d
    ```
 
+### Upgrade From The Pre-Gateway Relayer
+
+Before deploying this version, stop the old relayer and drain pending work:
+
+```sql
+SELECT account_id, transaction_hash
+FROM "transaction"
+WHERE "status" = 'pending';
+```
+
+Upgrade only after this returns no rows, or manually settle those rows first.
+The new relayer keys pending allowance locks by a gateway `operation_key`;
+legacy pending rows cannot be recovered through the new gateway operation store.
+
+Then back up Postgres and start the new relayer with the same `DATABASE_URL`.
+Startup runs the relayer migrations and creates the gateway operation store in
+the `gateway` schema.
+
+Verify the migrated database:
+
+```sql
+SELECT count(*) FROM "transaction" WHERE operation_key IS NULL;
+SELECT count(*) FROM account WHERE pending_operation_key IS NOT NULL;
+SELECT * FROM gateway._sqlx_migrations ORDER BY installed_on;
+```
+
+The first query should return `0`. The second should normally return `0` if
+pending work was drained. The migrations query should show the gateway store
+migrations.
+
+If the database already contains gateway-store tables in `public`, move that
+gateway state into the `gateway` schema before starting this relayer. Otherwise
+the relayer will not see the old operation/idempotency state.
+
 ## Usage
 
 ```text
-Usage: templar-relayer [OPTIONS] --database-url <DATABASE_URL> --relay-account-id <relay-account-id> --ua-account-id <ua-account-id> --ua-registry-id <ua-registry-id> --ua-version-key <ua-version-key> <--monitor-registry-id <monitor-registry-id>|--monitor-market-id <monitor-market-id>>
+templar-relayer --help
 ```
+
+Use `.env.sample` as the deployment template. The clap definitions in
+`src/app/args.rs` are the source of truth for flags and environment variables.
 
 ## Routes
 

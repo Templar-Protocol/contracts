@@ -1,19 +1,14 @@
-//! Direct, in-process gateway client for Rust consumers (CLIs, bots, services).
+//! Direct, in-process gateway client for Rust consumers.
 //!
-//! This is the lean sibling of [`templar_gateway_runtime`], which provides the
-//! actix actor frontend used by the long-running RPC service. Where the runtime
-//! wraps dispatch in an actor for bounded concurrency, this crate offers a plain
-//! call-it-yourself facade over the same [`templar_gateway_core`] kernel — and,
-//! crucially, **reuses** the kernel's [`OperationDriver`] for writes rather than
-//! re-implementing signing/submission, so direct-client writes get the same
-//! idempotency, multi-step finalization, and replay semantics as the RPC service.
+//! Writes use the same [`OperationDriver`] as the RPC service, so direct clients
+//! get the same idempotency, finalization, and replay behavior.
 //!
 //! [`Client`] owns the read context plus an [`OperationDriver`] (signer set,
 //! executor, and an [`OperationStore`]). Its [`Client::read`] /
 //! [`Client::execute_as`] helpers take the operation type directly (the
 //! operation *is* its input), so call sites carry no turbofish, no request
 //! wrappers, and no method-name repetition. A [`SigningClient`] binds a default
-//! signing account for the common single-signer case:
+//! signing account:
 //!
 //! ```ignore
 //! let client = SigningClient::connect(network, account_id, secret_key)?;
@@ -82,13 +77,9 @@ impl ClientBuilder {
         Ok(self.with_signer(account_id, signer))
     }
 
-    /// Register a multi-key rotating signer for an account from several secret
-    /// keys.
+    /// Register a rotating signer from one or more secret keys.
     ///
-    /// The keys form a single `near_api` signing pool, so writes for this
-    /// account rotate across the keys (each with its own nonce sequence),
-    /// giving nonce-parallel throughput from one account — the model the
-    /// relayer relies on for its relay signer. Errors if no keys are provided.
+    /// Each key keeps its own nonce sequence. Errors if no keys are provided.
     pub async fn secret_keys(
         self,
         account_id: impl Into<ManagedAccountId>,
@@ -232,11 +223,10 @@ impl Client {
             .await
     }
 
-    /// Look up a previously-submitted operation by its idempotency key.
+    /// Look up a stored operation by idempotency key.
     ///
-    /// Lets a caller recover the outcome of work whose result it never recorded
-    /// — e.g. a crash between submitting an operation and persisting its hash —
-    /// by re-reading the durable operation store under the same key.
+    /// Used by callers that need to recover after submitting work but before
+    /// recording the result locally.
     pub async fn operation_by_idempotency_key(
         &self,
         idempotency_key: &IdempotencyKey,
@@ -246,6 +236,14 @@ impl Client {
             .get_by_idempotency_key(idempotency_key)
             .await?
             .map(|operation| operation.record()))
+    }
+
+    /// Drive every operation left mid-flight (e.g. by a crash) to a terminal
+    /// outcome — submitting prepared steps and reconciling submitted ones against
+    /// the chain. Lets a consumer rely on the gateway to finish its own work
+    /// before reading back terminal results (see the relayer's broom).
+    pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
+        self.driver.resume_incomplete_operations().await
     }
 
     /// Plan a write request into the transactions required to fulfil it, without

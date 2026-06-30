@@ -78,10 +78,7 @@ pub struct Transfer {
     pub amount: NearToken,
 }
 
-/// Relay a NEP-366 signed delegate action (meta-transaction): the signing
-/// account submits a transaction carrying the delegate action and pays its gas.
-/// `signed_delegate_action` is the base64-encoded borsh `SignedDelegateAction`,
-/// validated (decoded) at this boundary.
+/// Relay a NEP-366 signed delegate action.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "tx.relaySignedDelegateAction")]
 pub struct RelaySignedDelegateAction {

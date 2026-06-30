@@ -33,10 +33,7 @@ use uuid::Uuid;
 use crate::{
     broom,
     client::{
-        database::{
-            error::{RecordTransactionError, SetPendingTransactionError},
-            Database,
-        },
+        database::{error::LockError, Database},
         oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
@@ -79,10 +76,8 @@ impl App {
     pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
         let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
 
-        // Persist gateway operations in the relayer's Postgres so idempotency
-        // and replay survive restarts — a relay retried after a crash won't
-        // re-submit and double-pay gas. The store confines itself to its own
-        // schema by default, so its migrations don't collide with the relayer's.
+        // Persist gateway operations in the relayer database so idempotency and
+        // replay survive restarts.
         let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
         gateway_store.migrate().await?;
 
@@ -105,6 +100,15 @@ impl App {
             .into_signing(args.relay.account_id.clone())?;
 
         let database = Database::new(&args.database_url, kill.clone())?;
+
+        // Drive any operation a previous run left mid-flight to a terminal
+        // outcome, once, before serving — so the broom (and live requests) only
+        // ever settle terminal operations. Doing this while serving would race
+        // the synchronous execute path on the same operation. Best-effort: a
+        // failure here just defers recovery to the next restart.
+        if let Err(error) = gateway.resume_incomplete_operations().await {
+            tracing::warn!(%error, "Failed to resume incomplete gateway operations at startup");
+        }
 
         let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
 
@@ -747,19 +751,22 @@ impl App {
     /// allowance against the operation's actual cost.
     ///
     /// The allowance is locked up front under a freshly generated gateway
-    /// idempotency key — the on-chain hash isn't known until the gateway
-    /// submits, so the key is the record's identity. The gateway drives the
-    /// operation to completion; the on-chain hash is recorded as soon as it is
-    /// known (so the broom can reconcile even if this is interrupted), the true
-    /// `tokens_burnt` is read back, and the lock is settled. On a submission
-    /// error the lock is released.
+    /// idempotency key — the on-chain hash isn't known until the gateway submits,
+    /// so the key is the charge's identity. The gateway drives the operation to a
+    /// terminal outcome and returns its record, from which the charge is settled
+    /// directly (the recorded `tokens_burnt`, plus the locked deposit on success).
+    ///
+    /// On a gateway error the lock is left in place: the operation may have
+    /// landed on chain, so the broom reconciles it against the gateway's record
+    /// rather than this path guessing. The broom is otherwise only a backstop for
+    /// a request interrupted between submission and settlement.
     ///
     /// `account_id` is the account charged for the operation; `signer_account_id`
     /// is the relayer-controlled account that signs and pays (relay or UA).
     ///
     /// # Errors
     ///
-    /// - Locking or finalizing the allowance in the database
+    /// - Locking or settling the allowance in the database
     /// - Gateway execution
     /// - The operation completing without producing a transaction
     #[tracing::instrument(skip(self, body), fields(
@@ -785,7 +792,7 @@ impl App {
         let operation_key = Uuid::new_v4();
 
         self.database
-            .set_pending_transaction(
+            .lock_pending(
                 &account_id,
                 gas_cost_estimate,
                 spend_within_transaction,
@@ -793,54 +800,42 @@ impl App {
             )
             .await?;
 
-        let result = match self
+        // On any gateway error, leave the locked charge for the broom: the
+        // operation may have reached the chain, and the broom settles it against
+        // the gateway's record.
+        let result = self
             .gateway
             .execute_request(WriteRequest {
-                signer_account_id: signer_account_id.clone().into(),
+                signer_account_id: signer_account_id.into(),
                 idempotency_key: Some(IdempotencyKey(operation_key.to_string())),
                 body,
             })
             .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                // The submission never landed; release the allowance lock.
-                self.database
-                    .remove_pending_transaction(&account_id)
-                    .await?;
-                return Err(SubmitError::Gateway(error));
-            }
-        };
+            .map_err(SubmitError::Gateway)?;
 
-        let succeeded = result.operation.status == OperationStatus::Succeeded;
+        let operation = result.operation;
+        let succeeded = operation.status == OperationStatus::Succeeded;
 
-        let Some(tx_hash) = result.operation.latest_tx_hash() else {
-            self.database
-                .remove_pending_transaction(&account_id)
-                .await?;
+        // `execute_request` drives the operation to a terminal outcome, so its
+        // recorded cost is final. Settle directly: gas (`tokens_burnt`) always,
+        // the locked deposit only on success.
+        self.database
+            .settle(
+                &account_id,
+                operation_key,
+                operation.tokens_burnt(),
+                succeeded,
+            )
+            .await?;
+
+        let Some(tx_hash) = operation.latest_tx_hash() else {
             return Err(SubmitError::NoTransaction {
-                operation_id: result.operation.id.0,
+                operation_id: operation.id.0,
             });
         };
 
         let native_tx_hash = from_gateway_hash(&tx_hash);
         tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
-
-        // The gateway captured each step's execution outcome at submission, so
-        // the true cost is already in the result — no follow-up `tx.get`. Gas
-        // burnt is charged even on failure; the in-transaction spend only on
-        // success (handled by `finalize_pending_transaction`).
-        let tokens_burnt = result.operation.tokens_burnt();
-
-        self.database
-            .finalize_pending_transaction(
-                &account_id,
-                operation_key,
-                native_tx_hash,
-                tokens_burnt,
-                succeeded,
-            )
-            .await?;
 
         Ok(AccountedExecution {
             transaction_hash: native_tx_hash,
@@ -901,19 +896,28 @@ impl App {
             return Err(StorageDepositError::GasEstimationFailure);
         };
 
-        self.execute_and_account(
-            account_id.clone(),
-            self.args.relay.account_id.clone(),
-            cost_of_gas,
-            storage_deposit_amount,
-            storage::Deposit {
-                contract_id,
-                beneficiary_id: Some(account_id),
-                registration_only: false,
-                deposit: storage_deposit_amount,
-            },
-        )
-        .await?;
+        let execution = self
+            .execute_and_account(
+                account_id.clone(),
+                self.args.relay.account_id.clone(),
+                cost_of_gas,
+                storage_deposit_amount,
+                storage::Deposit {
+                    contract_id,
+                    beneficiary_id: Some(account_id),
+                    registration_only: false,
+                    deposit: storage_deposit_amount,
+                },
+            )
+            .await?;
+
+        // A reverted deposit didn't register the account; callers (e.g. relay)
+        // must not proceed as if storage is in place.
+        if !execution.succeeded {
+            return Err(StorageDepositError::Reverted {
+                transaction_hash: execution.transaction_hash,
+            });
+        }
 
         Ok(())
     }
@@ -935,31 +939,33 @@ pub enum StorageDepositError {
     GasEstimationFailure,
     #[error("Error submitting storage deposit: {0}")]
     Submit(#[from] SubmitError),
+    #[error("Storage deposit reverted on chain (transaction {transaction_hash})")]
+    Reverted {
+        transaction_hash: near_primitives::hash::CryptoHash,
+    },
 }
 
 /// The result of [`App::execute_and_account`]: the on-chain transaction hash
-/// and whether the operation's final status was success. The accounting (gas
-/// charge) is always finalized; `succeeded` lets callers decide whether to
-/// report success (e.g. UA create must not claim success for a reverted deploy).
+/// and whether the operation's final status was success. The charge is always
+/// settled; `succeeded` lets callers decide whether to report success (e.g. UA
+/// create must not claim success for a reverted deploy).
 #[derive(Debug, Clone, Copy)]
 pub struct AccountedExecution {
     pub transaction_hash: near_primitives::hash::CryptoHash,
     pub succeeded: bool,
 }
 
-/// Failure submitting a gateway write and reconciling its allowance.
+/// Failure submitting a gateway write and settling its allowance charge.
 #[derive(Debug, thiserror::Error)]
 pub enum SubmitError {
-    #[error("Set pending transaction error: {0}")]
-    SetPending(#[from] SetPendingTransactionError),
+    #[error("Lock allowance error: {0}")]
+    Lock(#[from] LockError),
     #[error("Gateway execution error: {0}")]
     Gateway(GatewayError),
     #[error("Operation {operation_id} completed without a transaction")]
     NoTransaction { operation_id: String },
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
-    #[error("Finalize transaction error: {0}")]
-    Finalize(#[from] RecordTransactionError),
 }
 
 #[derive(Debug, thiserror::Error)]

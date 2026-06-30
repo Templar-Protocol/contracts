@@ -63,10 +63,8 @@ pub async fn relay(
 ) -> SimpleResponse<RelayResponse> {
     tracing::info!("Processing universal account relay");
 
-    // This is a stopgap measure to support the old args passed by the FE.
-    // Once the FE is fully-upgraded to support the new args format, this
-    // should be removed, and we should deserialize `args` to `ExecuteArgs`
-    // directly in `RelayRequest`.
+    // Temporary compatibility for legacy front-end `args` payloads. Once all
+    // clients send the current shape, deserialize `args` in `RelayRequest`.
     let args = match serde_json::to_string(&args_raw)
         .and_then(|s| serde_json::from_str::<ExecuteArgs<Box<[Transaction]>>>(&s))
     {

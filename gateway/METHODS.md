@@ -202,7 +202,7 @@
 | `tx.deployContract` | write | `DeployContract` → `WriteOperationResult` | Deploy contract code to an existing account in a single transaction. |
 | `tx.functionCall` | write | `FunctionCall` → `WriteOperationResult` | Submit a single function-call transaction. |
 | `tx.get` | read | `Get` → `GetResult` | Fetch transaction execution status and result details. |
-| `tx.relaySignedDelegateAction` | write | `RelaySignedDelegateAction` → `WriteOperationResult` | Relay a NEP-366 signed delegate action (meta-transaction): the signing account submits a transaction carrying the delegate action and pays its gas. `signed_delegate_action` is the base64-encoded borsh `SignedDelegateAction`, validated (decoded) at this boundary. |
+| `tx.relaySignedDelegateAction` | write | `RelaySignedDelegateAction` → `WriteOperationResult` | Relay a NEP-366 signed delegate action. |
 | `tx.transfer` | write | `Transfer` → `WriteOperationResult` | Transfer native NEAR to another account. |
 
 ## `ua`

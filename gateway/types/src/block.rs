@@ -3,12 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CryptoHash, NearToken};
 
-/// Header summary for a block. Carries the block's `gas_price`, so callers that
-/// only need a current gas estimate can read it from the latest block instead of
-/// a separate gas-price query.
-///
-/// Shared by the `chain.getBlock` spec result and the core chain client's return
-/// type, so the two can't drift.
+/// Header summary for a block.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BlockSummary {
     pub height: u64,
