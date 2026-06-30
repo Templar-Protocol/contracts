@@ -104,10 +104,24 @@ impl App {
         // Drive any operation a previous run left mid-flight to a terminal
         // outcome, once, before serving — so the broom (and live requests) only
         // ever settle terminal operations. Doing this while serving would race
-        // the synchronous execute path on the same operation. Best-effort: a
-        // failure here just defers recovery to the next restart.
+        // the synchronous execute path on the same operation. Fail fast if it
+        // can't: the container restarts us (retrying recovery) rather than
+        // serving with charges that can never settle — unless the operator opted
+        // into starting anyway for a persistently wedged recovery.
         if let Err(error) = gateway.resume_incomplete_operations().await {
-            tracing::warn!(%error, "Failed to resume incomplete gateway operations at startup");
+            if args.ignore_startup_recovery_failure {
+                tracing::warn!(
+                    %error,
+                    "Failed to resume incomplete gateway operations at startup; serving \
+                     anyway (IGNORE_STARTUP_RECOVERY_FAILURE set). Charges left mid-flight \
+                     will not settle until recovery next succeeds.",
+                );
+            } else {
+                return Err(anyhow::Error::from(error).context(
+                    "Failed to resume incomplete gateway operations at startup \
+                     (set IGNORE_STARTUP_RECOVERY_FAILURE to start anyway)",
+                ));
+            }
         }
 
         let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
@@ -816,6 +830,18 @@ impl App {
         let operation = result.operation;
         let succeeded = operation.status == OperationStatus::Succeeded;
 
+        // Resolve the on-chain hash before charging, so the no-transaction error
+        // path leaves the charge untouched for the broom to reconcile rather than
+        // charging and then returning an error (a degenerate terminal operation
+        // without a hash should never settle on the hot path).
+        let Some(tx_hash) = operation.latest_tx_hash() else {
+            return Err(SubmitError::NoTransaction {
+                operation_id: operation.id.0,
+            });
+        };
+        let native_tx_hash = from_gateway_hash(&tx_hash);
+        tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
+
         // `execute_request` drives the operation to a terminal outcome, so its
         // recorded cost is final. Settle directly: gas (`tokens_burnt`) always,
         // the locked deposit only on success.
@@ -827,15 +853,6 @@ impl App {
                 succeeded,
             )
             .await?;
-
-        let Some(tx_hash) = operation.latest_tx_hash() else {
-            return Err(SubmitError::NoTransaction {
-                operation_id: operation.id.0,
-            });
-        };
-
-        let native_tx_hash = from_gateway_hash(&tx_hash);
-        tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
         Ok(AccountedExecution {
             transaction_hash: native_tx_hash,

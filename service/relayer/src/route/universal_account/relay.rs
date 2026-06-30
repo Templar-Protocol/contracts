@@ -5,7 +5,7 @@ use near_primitives::hash::CryptoHash;
 use near_sdk::{
     json_types::Base58CryptoHash,
     serde::{Deserialize, Serialize},
-    serde_json, AccountId, Gas, NearToken,
+    serde_json, AccountId, NearToken,
 };
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::universal_account as ua;
@@ -111,7 +111,6 @@ pub async fn relay(
 
     let accounts = app.accounts.read().await;
 
-    let mut gas = near_sdk::Gas::from_tgas(app.args.ua.execute_tgas).as_gas();
     let mut interacted_contract_ids = HashSet::with_capacity(payload.len());
     for transaction in payload {
         let receiver_id = &transaction.receiver_id;
@@ -133,22 +132,6 @@ pub async fn relay(
                 }
             }
 
-            // Sum gas for the allowance-lock estimate: each function call's own
-            // gas, plus a flat configured overhead for every other action
-            // (transfer/add_key/etc. carry no explicit gas but still burn some).
-            // Reconciled against actual `tokens_burnt`, so a safe over-estimate.
-            let action_overhead =
-                near_sdk::Gas::from_tgas(app.args.ua.reflexive_action_overhead_tgas).as_gas();
-            gas += transaction
-                .actions
-                .iter()
-                .map(|a| match a {
-                    Action::FunctionCall(call) | Action::FunctionCallWeight { call, .. } => {
-                        call.gas.as_gas()
-                    }
-                    _ => action_overhead,
-                })
-                .sum::<u64>();
             tracing::debug!(transaction = ?transaction, "Transaction is reflexive: allowing.");
             continue;
         }
@@ -200,7 +183,6 @@ pub async fn relay(
         };
         interacted_contract_ids.insert(receiver_id.to_owned());
         interacted_contract_ids.extend(additional_interactions.into_iter());
-        gas += calls.iter().map(|f| f.gas.as_gas()).sum::<u64>();
     }
 
     app.expand_market_related_contracts(&accounts.market_ids, &mut interacted_contract_ids)
@@ -236,7 +218,7 @@ pub async fn relay(
         }
     }
 
-    let Some(cost_of_gas) = app.estimate_cost_of_gas(Gas::from_gas(gas)).await else {
+    let Some(cost_of_gas) = app.estimate_cost_of_gas(super::GATEWAY_UA_WRITE_GAS).await else {
         tracing::error!("Failed to estimate cost of gas");
         return SimpleResponse::Failure {
             error: "Failed to estimate cost of gas".to_string(),

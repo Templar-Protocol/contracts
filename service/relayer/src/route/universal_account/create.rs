@@ -301,9 +301,9 @@ pub async fn create(
         }
     };
 
-    // The deploy-from-registry call is a single function call; lock the cost of
-    // its gas budget (reconciled against actual spend afterwards).
-    let Some(gas_cost_estimate) = app.estimate_cost_of_gas(near_sdk::Gas::from_tgas(50)).await
+    // Lock the cost of the gas budget the gateway attaches to the
+    // deploy-from-registry call (reconciled against actual spend afterwards).
+    let Some(gas_cost_estimate) = app.estimate_cost_of_gas(super::GATEWAY_UA_WRITE_GAS).await
     else {
         return SimpleResponse::Failure {
             error: "Gas cost estimation failure".to_string(),

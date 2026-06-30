@@ -42,6 +42,15 @@ pub struct Configuration {
     /// Broom interval in seconds.
     #[arg(long, env = "BROOM_INTERVAL_SECS", default_value_t = 300)]
     pub broom_interval_secs: u64,
+    /// Start serving even if recovering interrupted gateway operations fails at
+    /// startup, instead of exiting.
+    ///
+    /// Recovery is normally fatal-on-failure so the container restarts and
+    /// retries it; this is an escape hatch for the case where recovery is
+    /// persistently wedged and you need the relayer up regardless. Operations
+    /// left mid-flight won't settle until recovery next succeeds.
+    #[arg(long, env = "IGNORE_STARTUP_RECOVERY_FAILURE", default_value_t = false)]
+    pub ignore_startup_recovery_failure: bool,
 }
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
@@ -218,26 +227,6 @@ pub struct UniversalAccount {
     /// Version key of the universal account contract to deploy from the registry.
     #[arg(id = "ua-version-key", long = "ua-version-key", env = "UA_VERSION_KEY")]
     pub version_key: String,
-    /// How much gas does it take to execute the `execute` receipt on the universal account contract?
-    #[arg(
-        id = "ua-execute-tgas",
-        long = "ua-execute-tgas",
-        env = "UA_EXECUTE_TGAS",
-        default_value_t = 35
-    )]
-    pub execute_tgas: u64,
-    /// Gas (in Tgas) to assume per non-function-call action in a reflexive UA
-    /// payload (e.g. `transfer`, `add_key`, `delete_key`) when sizing the
-    /// allowance lock. These actions carry no explicit gas but still burn gas;
-    /// the lock is reconciled against actual `tokens_burnt`, so this only needs
-    /// to be a safe over-estimate.
-    #[arg(
-        id = "ua-reflexive-action-overhead-tgas",
-        long = "ua-reflexive-action-overhead-tgas",
-        env = "UA_REFLEXIVE_ACTION_OVERHEAD_TGAS",
-        default_value_t = 1
-    )]
-    pub reflexive_action_overhead_tgas: u64,
 }
 
 impl UniversalAccount {
