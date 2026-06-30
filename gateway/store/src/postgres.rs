@@ -76,37 +76,25 @@ enum OperationStepStateRow {
     Failed,
 }
 
+// Row DTOs carry the full table shape (incl. audit columns) for completeness;
+// not every field is read by the domain logic.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "row DTO mirrors the table; some columns unused")]
 struct OperationRow {
     id: uuid::Uuid,
     rpc_method: String,
     signer_account_id: String,
-    #[allow(
-        dead_code,
-        reason = "loaded from the audit table for row-shape completeness"
-    )]
     idempotency_key: Option<String>,
     request_fingerprint_hash: Vec<u8>,
     request_payload: Value,
     status: OperationStatusRow,
-    #[allow(
-        dead_code,
-        reason = "operation audit timestamp retained in the row DTO"
-    )]
     created_at: DateTime<Utc>,
-    #[allow(
-        dead_code,
-        reason = "operation audit timestamp retained in the row DTO"
-    )]
     updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "row DTO mirrors the table; some columns unused")]
 struct OperationStepRow {
-    #[allow(
-        dead_code,
-        reason = "loaded from the audit table for row-shape completeness"
-    )]
     operation_id: uuid::Uuid,
     step_index: i32,
     signer_account_id: String,
@@ -121,9 +109,7 @@ struct OperationStepRow {
     outcome_tokens_burnt: Option<String>,
     outcome_total_gas_burnt: Option<String>,
     outcome_return_value: Option<Vec<u8>>,
-    #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     created_at: DateTime<Utc>,
-    #[allow(dead_code, reason = "step audit timestamp retained in the row DTO")]
     updated_at: DateTime<Utc>,
 }
 
@@ -188,7 +174,8 @@ impl OperationStore for PostgresStore {
     ) -> GatewayResult<Option<StoredOperation>> {
         let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
             .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-        let Some(row) = sqlx::query!(
+        let Some(operation_row) = sqlx::query_as!(
+            OperationRow,
             r#"
 SELECT
     id,
@@ -213,18 +200,6 @@ WHERE
             return Ok(None);
         };
 
-        let operation_row = OperationRow {
-            id: row.id,
-            rpc_method: row.rpc_method,
-            signer_account_id: row.signer_account_id,
-            idempotency_key: row.idempotency_key,
-            request_fingerprint_hash: row.request_fingerprint_hash,
-            request_payload: row.request_payload,
-            status: row.status,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        };
-
         let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
         let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
         rows_to_stored_operation(operation_row, step_rows, receipts).map(Some)
@@ -234,7 +209,8 @@ WHERE
         &self,
         idempotency_key: &IdempotencyKey,
     ) -> GatewayResult<Option<StoredOperation>> {
-        let Some(row) = sqlx::query!(
+        let Some(operation_row) = sqlx::query_as!(
+            OperationRow,
             r#"
 SELECT
     id,
@@ -257,18 +233,6 @@ WHERE
         .await?
         else {
             return Ok(None);
-        };
-
-        let operation_row = OperationRow {
-            id: row.id,
-            rpc_method: row.rpc_method,
-            signer_account_id: row.signer_account_id,
-            idempotency_key: row.idempotency_key,
-            request_fingerprint_hash: row.request_fingerprint_hash,
-            request_payload: row.request_payload,
-            status: row.status,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
         };
 
         let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
@@ -326,7 +290,8 @@ WHERE
     }
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
-        let rows = sqlx::query!(
+        let operation_rows = sqlx::query_as!(
+            OperationRow,
             r#"
 SELECT
     id,
@@ -349,19 +314,8 @@ ORDER BY
         .fetch_all(&self.pool)
         .await?;
 
-        let mut operations = Vec::with_capacity(rows.len());
-        for row in rows {
-            let operation_row = OperationRow {
-                id: row.id,
-                rpc_method: row.rpc_method,
-                signer_account_id: row.signer_account_id,
-                idempotency_key: row.idempotency_key,
-                request_fingerprint_hash: row.request_fingerprint_hash,
-                request_payload: row.request_payload,
-                status: row.status,
-                created_at: row.created_at,
-                updated_at: row.updated_at,
-            };
+        let mut operations = Vec::with_capacity(operation_rows.len());
+        for operation_row in operation_rows {
             let steps = load_step_rows(&self.pool, operation_row.id).await?;
             let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
             operations.push(rows_to_stored_operation(operation_row, steps, receipts)?);
@@ -678,7 +632,8 @@ async fn load_step_rows(
     pool: &PgPool,
     operation_id: uuid::Uuid,
 ) -> GatewayResult<Vec<OperationStepRow>> {
-    let rows = sqlx::query!(
+    sqlx::query_as!(
+        OperationStepRow,
         r#"
 SELECT
     operation_id,
@@ -705,27 +660,8 @@ ORDER BY
         operation_id,
     )
     .fetch_all(pool)
-    .await?;
-
-    Ok(rows
-        .into_iter()
-        .map(|row| OperationStepRow {
-            operation_id: row.operation_id,
-            step_index: row.step_index,
-            signer_account_id: row.signer_account_id,
-            receiver_id: row.receiver_id,
-            wait_until: row.wait_until,
-            actions: row.actions,
-            state: row.state,
-            tx_hash: row.tx_hash,
-            signed_transaction: row.signed_transaction,
-            outcome_tokens_burnt: row.outcome_tokens_burnt,
-            outcome_total_gas_burnt: row.outcome_total_gas_burnt,
-            outcome_return_value: row.outcome_return_value,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        })
-        .collect())
+    .await
+    .map_err(Into::into)
 }
 
 /// Load every step's receipts for an operation, grouped by `step_index` and

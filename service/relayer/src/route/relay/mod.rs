@@ -63,7 +63,7 @@ pub async fn relay(
                 error: format!("Storage deposit error: {e}"),
             };
         }
-    } // end storage deposit
+    }
 
     if update_prices {
         if let Err(error) = app.update_market_prices(&market_ids).await {

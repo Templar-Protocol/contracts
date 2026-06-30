@@ -47,9 +47,6 @@ pub struct ExecutionOutcome {
 }
 
 impl From<near_api_types::transaction::result::ExecutionFinalResult> for ExecutionOutcome {
-    /// Build the outcome from the submission result the RPC already returned —
-    /// the canonical conversion, so every consumer captures cost, per-receipt
-    /// status, logs, and return value the same way.
     fn from(result: near_api_types::transaction::result::ExecutionFinalResult) -> Self {
         let tokens_burnt = result
             .outcomes()

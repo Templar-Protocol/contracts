@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt::Write};
+use std::collections::HashSet;
 
 use axum::{extract::State, Json};
 use near_primitives::hash::CryptoHash;
@@ -191,11 +191,13 @@ pub async fn relay(
             Ok(a) => a,
             Err(e) => {
                 tracing::info!("Rejecting payload for reason: {e:?}");
-                let mut s = e[0].to_string();
-                for err in &e[1..] {
-                    let _ = write!(&mut s, "\n{err}");
-                }
-                return SimpleResponse::Rejected { reason: s };
+                return SimpleResponse::Rejected {
+                    reason: e
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                };
             }
         };
         interacted_contract_ids.insert(receiver_id.to_owned());
@@ -271,9 +273,7 @@ pub async fn relay(
     RelayResponse { transaction_hash }.into()
 }
 
-/// Load a key's execution parameters from a universal account through the
-/// gateway's generic contract view, preserving the relayer's typed handling of
-/// the versioned `get_key` response.
+/// Load a key's execution parameters from a universal account via `ua.getKey`.
 pub async fn load_ua_key(
     app: &App,
     ua_account_id: AccountId,

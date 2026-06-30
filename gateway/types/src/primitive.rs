@@ -168,23 +168,17 @@ impl JsonSchema for Base64Bytes {
     }
 }
 
-/// A NEP-366 signed delegate action, validated at the gateway boundary.
-///
-/// The wire form is the base64-encoded borsh serialization (NEAR's
-/// `SignedDelegateAction` encoding); it is borsh-decoded on deserialization, so a
-/// malformed payload is rejected here instead of deep in the write pipeline, and
-/// the dispatch can use the decoded value directly.
+/// A NEP-366 signed delegate action in its base64-encoded borsh wire form,
+/// decoded on deserialization so a malformed payload is rejected at the spec
+/// boundary. This guarantees well-formedness, not authenticity: the signature
+/// and expiry are verified on-chain by the receiver contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedDelegateActionInput(
     near_api_types::transaction::delegate_action::SignedDelegateAction,
 );
 
 impl SignedDelegateActionInput {
-    /// Borsh-decode and validate from the NEP-366 byte encoding.
-    ///
-    /// # Errors
-    /// Returns an error if `bytes` is not a valid borsh-encoded
-    /// `SignedDelegateAction`.
+    /// Borsh-decode from the NEP-366 byte encoding.
     pub fn from_borsh_bytes(bytes: &[u8]) -> std::io::Result<Self> {
         use borsh::BorshDeserialize as _;
         Ok(Self(
