@@ -13232,6 +13232,7 @@ dependencies = [
  "templar-gateway-methods-dispatch",
  "templar-gateway-store",
  "templar-gateway-types",
+ "tokio",
 ]
 
 [[package]]
@@ -13480,22 +13481,27 @@ dependencies = [
 name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
  "futures",
  "hex",
  "near-account-id",
+ "near-api",
  "near-crypto",
  "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
  "near-sdk",
  "reqwest 0.11.27",
  "serde",
  "templar-common",
- "templar-proxy-oracle-kernel",
+ "templar-gateway-client",
+ "templar-gateway-core",
+ "templar-gateway-methods-spec",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "templar-proxy-oracle-near-common",
+ "test-utils",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

@@ -66,6 +66,10 @@ pub struct PriceFeedExistsArgs {
 pub struct OwnerProposeArgs {
     pub account_id: Option<near_account_id::AccountId>,
 }
+#[derive(serde::Serialize)]
+pub struct UpdatePricesArgs {
+    pub price_ids: Vec<PriceIdentifier>,
+}
 
 impl ProxyOracleClient<'_> {
     pub async fn cached_get_proxy(
@@ -133,5 +137,6 @@ impl ProxyOracleClient<'_> {
         pub fn own_propose_owner(OwnerProposeArgs);
         pub fn own_accept_owner(());
         pub fn own_renounce_owner(());
+        pub fn update_prices(UpdatePricesArgs);
     }
 }

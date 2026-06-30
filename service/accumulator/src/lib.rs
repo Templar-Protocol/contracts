@@ -8,14 +8,15 @@
 //! [`SigningClient::execute`], which signs and submits through the gateway's
 //! operation driver (nonce sequencing, idempotency, and replay come for free).
 
-use std::{collections::HashMap, future::Future};
+use std::collections::HashMap;
+use std::num::NonZeroU32;
 
 use clap::Parser;
 use futures::StreamExt;
 use near_account_id::AccountId;
 use near_api::SecretKey;
 use templar_common::{borrow::BorrowPosition, market::MarketConfiguration};
-use templar_gateway_client::{Network, SigningClient};
+use templar_gateway_client::{collect_paginated, Network, SigningClient};
 use templar_gateway_methods_spec::{account, contract, market, registry};
 use templar_gateway_types::{common::Pagination, Market};
 use tracing::{debug, error, info, instrument};
@@ -24,9 +25,17 @@ use tracing::{debug, error, info, instrument};
 pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 
 /// Page size for listing borrow positions on a market.
-const BORROW_POSITIONS_PAGE_SIZE: u32 = 100;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const BORROW_POSITIONS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(100).unwrap();
 /// Page size for listing deployments on a registry.
-const DEPLOYMENTS_PAGE_SIZE: u32 = 500;
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const DEPLOYMENTS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(500).unwrap();
 
 #[derive(Debug, Clone, Parser)]
 pub struct Args {
@@ -345,36 +354,9 @@ async fn account_exists(client: &SigningClient, account_id: &AccountId) -> bool 
         .is_ok()
 }
 
-/// Collect every page produced by `fetch_page(offset, page_size)`, stopping once
-/// a page is shorter than `page_size`. The offset advances by the number of
-/// items actually returned.
-async fn collect_paginated<T, F, Fut>(page_size: u32, mut fetch_page: F) -> anyhow::Result<Vec<T>>
-where
-    F: FnMut(u32, u32) -> Fut,
-    Fut: Future<Output = anyhow::Result<Vec<T>>>,
-{
-    let mut all = Vec::new();
-    let mut offset = 0;
-
-    loop {
-        let page = fetch_page(offset, page_size).await?;
-        let fetched = u32::try_from(page.len()).unwrap_or(u32::MAX);
-        all.extend(page);
-
-        if fetched < page_size {
-            break;
-        }
-        offset += fetched;
-    }
-
-    Ok(all)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::sync::Mutex;
     use templar_common::{
         asset::FungibleAsset,
         dec,
@@ -445,73 +427,5 @@ mod tests {
     fn static_accounts_is_empty_without_static_weights() {
         let configuration = sample_configuration(YieldWeights::new_with_supply_weight(100));
         assert!(static_accounts(&configuration).is_empty());
-    }
-
-    /// A fetcher over `total` synthetic items returning `page_size`-sized pages,
-    /// recording the (offset, count) of every call.
-    fn paged_fetcher(
-        total: u32,
-        calls: &Mutex<Vec<(u32, u32)>>,
-    ) -> impl FnMut(u32, u32) -> std::future::Ready<anyhow::Result<Vec<u32>>> + '_ {
-        move |offset, count| {
-            calls.lock().unwrap().push((offset, count));
-            let end = (offset + count).min(total);
-            let page = (offset..end).collect::<Vec<_>>();
-            std::future::ready(Ok(page))
-        }
-    }
-
-    #[tokio::test]
-    async fn collect_paginated_stops_on_short_page() {
-        let calls = Mutex::new(Vec::new());
-        // 250 items, page size 100 -> pages of 100, 100, 50 (short -> stop).
-        let items = collect_paginated(100, paged_fetcher(250, &calls))
-            .await
-            .unwrap();
-
-        assert_eq!(items, (0..250).collect::<Vec<_>>());
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![(0, 100), (100, 100), (200, 100)]
-        );
-    }
-
-    #[tokio::test]
-    async fn collect_paginated_stops_on_empty_first_page() {
-        let calls = Mutex::new(Vec::new());
-        let items = collect_paginated(100, paged_fetcher(0, &calls))
-            .await
-            .unwrap();
-
-        assert!(items.is_empty());
-        assert_eq!(*calls.lock().unwrap(), vec![(0, 100)]);
-    }
-
-    #[tokio::test]
-    async fn collect_paginated_makes_extra_call_on_exact_multiple() {
-        let calls = Mutex::new(Vec::new());
-        // Exactly 200 items: a full second page forces a third (empty) call.
-        let items = collect_paginated(100, paged_fetcher(200, &calls))
-            .await
-            .unwrap();
-
-        assert_eq!(items.len(), 200);
-        assert_eq!(
-            *calls.lock().unwrap(),
-            vec![(0, 100), (100, 100), (200, 100)]
-        );
-    }
-
-    #[tokio::test]
-    async fn collect_paginated_propagates_errors() {
-        let attempts = AtomicU32::new(0);
-        let result = collect_paginated(100, |_offset, _count| {
-            attempts.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(anyhow::Result::<Vec<u32>>::Err(anyhow::anyhow!("boom")))
-        })
-        .await;
-
-        assert!(result.is_err());
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

@@ -3,81 +3,68 @@
 //! Integrates with Ref Finance AMM contract for token swaps with automatic routing
 //! through wNEAR for pairs without direct pools.
 
-use std::sync::Arc;
-
-use near_crypto::Signer;
-use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::{
-    action::Action,
-    gas::Gas,
-    transaction::{Transaction, TransactionV0},
-    views::FinalExecutionStatus,
-};
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
-    AccountId, NearToken,
+    AccountId,
 };
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::{ft, ref_finance, storage, tx};
+use templar_gateway_types::{
+    common::TxExecutionStatus, NearToken, OperationStatus, U128 as GatewayU128,
+};
 
-use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
+use crate::rpc::{AppError, AppResult};
 
 use super::SwapProvider;
 
-/// Storage balance bounds from NEP-145
-#[derive(Debug, Deserialize)]
-struct StorageBalanceBounds {
-    /// Minimum storage deposit required
-    min: U128,
-    /// Maximum storage deposit allowed (optional)
-    #[allow(dead_code)]
-    max: Option<U128>,
-}
-
 /// Ref/Rhea Finance swap provider for NEP-141 tokens.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RefSwap {
     /// Ref Finance contract account ID
     pub contract: AccountId,
-    /// JSON-RPC client
-    pub client: JsonRpcClient,
-    /// Transaction signer
-    pub signer: Arc<Signer>,
+    /// Gateway client
+    pub client: SigningClient,
     /// wNEAR contract for routing
     pub wnear_contract: AccountId,
     /// Maximum slippage in basis points
     pub max_slippage_bps: u32,
     /// Ref Finance indexer URL
     pub indexer_url: String,
-    /// Shared nonce tracker for coordinated nonce management
-    pub nonce_tracker: crate::rpc::NonceTracker,
+}
+
+impl std::fmt::Debug for RefSwap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RefSwap")
+            .field("contract", &self.contract)
+            .field("wnear_contract", &self.wnear_contract)
+            .field("max_slippage_bps", &self.max_slippage_bps)
+            .field("indexer_url", &self.indexer_url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RefSwap {
     /// Creates a new Ref Finance swap provider
-    pub fn new(
-        contract: AccountId,
-        client: JsonRpcClient,
-        signer: Arc<Signer>,
-        nonce_tracker: crate::rpc::NonceTracker,
-    ) -> Self {
+    pub fn new(contract: AccountId, client: SigningClient) -> Self {
         #[allow(clippy::expect_used)]
         Self {
             contract,
             client,
-            signer,
             wnear_contract: "wrap.near".parse().expect("wrap.near is a valid AccountId"),
             max_slippage_bps: Self::DEFAULT_MAX_SLIPPAGE_BPS,
             indexer_url: "https://indexer.ref.finance".to_string(),
-            nonce_tracker,
         }
     }
 
     /// Default slippage tolerance (0.5%)
     pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 50;
 
-    /// Default transaction timeout
-    const DEFAULT_TIMEOUT: u64 = 30;
+    /// The bot's account ID (the bound signer on the gateway client).
+    fn our_account(&self) -> AccountId {
+        self.client.account_id().0.clone()
+    }
 
     /// Validates that both assets are NEP-141 tokens
     fn validate_nep141_assets<F: AssetClass, T: AssetClass>(
@@ -99,19 +86,9 @@ impl RefSwap {
         token_in: &AccountId,
         token_out: &AccountId,
     ) -> AppResult<Option<u64>> {
-        #[derive(Deserialize)]
-        struct PoolInfo {
-            token_account_ids: Vec<AccountId>,
-            shares_total_supply: String,
-        }
-
-        use near_jsonrpc_client::methods::query::RpcQueryRequest;
-        use near_primitives::types::{BlockReference, Finality};
-        use near_primitives::views::QueryRequest;
-
         // Search common pool ranges for direct pairs
         let search_ranges = vec![
-            (0, 500),
+            (0u64, 500u64),
             (500, 1500),
             (1500, 2500),
             (2500, 3500),
@@ -121,45 +98,22 @@ impl RefSwap {
         ];
 
         for (start, end) in search_ranges {
-            let batch_size = 100;
+            let batch_size = 100u64;
             let mut from_index = start;
 
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
 
-                let args = near_sdk::serde_json::json!({
-                    "from_index": from_index,
-                    "limit": limit
-                });
-
-                let request = RpcQueryRequest {
-                    block_reference: BlockReference::Finality(Finality::Final),
-                    request: QueryRequest::CallFunction {
-                        account_id: self.contract.clone(),
-                        method_name: "get_pools".to_string(),
-                        args: args.to_string().into_bytes().into(),
-                    },
-                };
-
-                let response = self.client.call(request).await.map_err(|e| {
-                    AppError::ValidationError(format!("Failed to query pools: {e}"))
-                })?;
-
-                let result = match response.kind {
-                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(
-                        result,
-                    ) => result.result,
-                    _ => {
-                        return Err(AppError::ValidationError(
-                            "Unexpected response type".to_string(),
-                        ))
-                    }
-                };
-
-                let pools: Vec<PoolInfo> =
-                    near_sdk::serde_json::from_slice(&result).map_err(|e| {
-                        AppError::SerializationError(format!("Failed to parse pools: {e}"))
-                    })?;
+                let pools = self
+                    .client
+                    .read(ref_finance::GetPools {
+                        exchange_id: self.contract.clone(),
+                        from_index: Some(from_index),
+                        limit: Some(limit),
+                    })
+                    .await
+                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {e}")))?
+                    .pools;
 
                 if pools.is_empty() {
                     break;
@@ -173,7 +127,7 @@ impl RefSwap {
                             && pool.token_account_ids[1] == *token_out)
                             || (pool.token_account_ids[0] == *token_out
                                 && pool.token_account_ids[1] == *token_in))
-                        && pool.shares_total_supply != "0"
+                        && pool.shares_total_supply.0 != 0
                     {
                         tracing::info!(pool_id, "Found direct pool");
                         return Ok(Some(pool_id));
@@ -200,22 +154,12 @@ impl RefSwap {
         token_in: &AccountId,
         token_out: &AccountId,
     ) -> AppResult<Option<(u64, u64)>> {
-        #[derive(Deserialize)]
-        struct PoolInfo {
-            token_account_ids: Vec<AccountId>,
-            shares_total_supply: String,
-        }
-
-        use near_jsonrpc_client::methods::query::RpcQueryRequest;
-        use near_primitives::types::{BlockReference, Finality};
-        use near_primitives::views::QueryRequest;
-
         let mut pool1_opt: Option<u64> = None;
         let mut pool2_opt: Option<u64> = None;
 
         // Search common pool ranges for liquid wNEAR pairs
         let search_ranges = vec![
-            (0, 500),
+            (0u64, 500u64),
             (500, 1500),
             (1500, 2500),
             (2500, 3500),
@@ -225,45 +169,22 @@ impl RefSwap {
         ];
 
         for (start, end) in search_ranges {
-            let batch_size = 100;
+            let batch_size = 100u64;
             let mut from_index = start;
 
             while from_index < end {
                 let limit = std::cmp::min(batch_size, end - from_index);
 
-                let args = near_sdk::serde_json::json!({
-                    "from_index": from_index,
-                    "limit": limit
-                });
-
-                let request = RpcQueryRequest {
-                    block_reference: BlockReference::Finality(Finality::Final),
-                    request: QueryRequest::CallFunction {
-                        account_id: self.contract.clone(),
-                        method_name: "get_pools".to_string(),
-                        args: args.to_string().into_bytes().into(),
-                    },
-                };
-
-                let response = self.client.call(request).await.map_err(|e| {
-                    AppError::ValidationError(format!("Failed to query pools: {e}"))
-                })?;
-
-                let result = match response.kind {
-                    near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(
-                        result,
-                    ) => result.result,
-                    _ => {
-                        return Err(AppError::ValidationError(
-                            "Unexpected response type".to_string(),
-                        ))
-                    }
-                };
-
-                let pools: Vec<PoolInfo> =
-                    near_sdk::serde_json::from_slice(&result).map_err(|e| {
-                        AppError::SerializationError(format!("Failed to parse pools: {e}"))
-                    })?;
+                let pools = self
+                    .client
+                    .read(ref_finance::GetPools {
+                        exchange_id: self.contract.clone(),
+                        from_index: Some(from_index),
+                        limit: Some(limit),
+                    })
+                    .await
+                    .map_err(|e| AppError::ValidationError(format!("Failed to query pools: {e}")))?
+                    .pools;
 
                 if pools.is_empty() {
                     break;
@@ -273,7 +194,7 @@ impl RefSwap {
                 for (idx, pool) in pools.iter().enumerate() {
                     let pool_id = from_index + idx as u64;
 
-                    if pool.token_account_ids.len() == 2 && pool.shares_total_supply != "0" {
+                    if pool.token_account_ids.len() == 2 && pool.shares_total_supply.0 != 0 {
                         // Check for pool1: token_in -> wNEAR
                         if pool1_opt.is_none()
                             && ((pool.token_account_ids[0] == *token_in
@@ -374,7 +295,7 @@ impl SwapProvider for RefSwap {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         amount: FungibleAssetAmount<F>,
-    ) -> AppResult<FinalExecutionStatus> {
+    ) -> AppResult<()> {
         Self::validate_nep141_assets(from_asset, to_asset)?;
 
         let token_in = from_asset.contract_id();
@@ -471,7 +392,7 @@ impl SwapProvider for RefSwap {
         })?;
 
         // Register storage for output token and intermediate token if needed
-        let our_account = self.signer.get_account_id();
+        let our_account = self.our_account();
         self.ensure_storage_registration(to_asset, &our_account)
             .await?;
 
@@ -482,26 +403,56 @@ impl SwapProvider for RefSwap {
                 .await?;
         }
 
-        let (nonce, block_hash) =
-            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
-
         // Execute swap via ft_transfer_call
-        let tx = Transaction::V0(TransactionV0 {
-            nonce,
-            receiver_id: from_asset.contract_id().into(),
-            block_hash,
-            signer_id: self.signer.get_account_id(),
-            public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(
-                from_asset.transfer_call_action(&self.contract, amount, &msg_string),
-            ))],
-        });
+        let result = self
+            .client
+            .execute(ft::TransferCall {
+                contract_id: from_asset.contract_id().into(),
+                receiver_id: self.contract.clone(),
+                amount: GatewayU128(u128::from(amount)),
+                msg: msg_string,
+                memo: None,
+            })
+            .await
+            .map_err(|e| AppError::Rpc(e.into()))?;
 
-        let outcome = send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await?;
+        if result.operation.status != OperationStatus::Succeeded {
+            return Err(AppError::ValidationError(format!(
+                "Ref Finance swap operation {} ended with status {:?}",
+                result.operation.id.0, result.operation.status
+            )));
+        }
+
+        // A Ref swap is an `ft_transfer_call`, so the receiver callback can fail
+        // and be refunded while the top-level transaction still reports success.
+        // Verify no receipt failed (same NEP-141 pattern handled in the
+        // liquidation executor). Fail closed when the hash is missing: without it
+        // we cannot inspect receipts, so we must not declare success.
+        let tx_hash = result.operation.latest_tx_hash().ok_or_else(|| {
+            AppError::ValidationError(format!(
+                "Ref Finance swap operation {} succeeded without a transaction hash; cannot inspect receipts",
+                result.operation.id.0
+            ))
+        })?;
+        let detail = self
+            .client
+            .read(tx::Get {
+                tx_hash,
+                sender_account_id: result.operation.signer_account_id.0.clone(),
+                wait_until: Some(TxExecutionStatus::Executed),
+                encoding: tx::ValueEncoding::Json,
+            })
+            .await
+            .map_err(|e| AppError::Rpc(e.into()))?;
+        if let Some(failed_on) = detail.failed_receipts.first() {
+            return Err(AppError::ValidationError(format!(
+                "Ref Finance swap operation {} succeeded at top level but a receipt on {failed_on} failed (likely refunded)",
+                result.operation.id.0
+            )));
+        }
 
         tracing::info!("Ref Finance swap executed successfully");
-
-        Ok(outcome.status)
+        Ok(())
     }
 
     fn provider_name(&self) -> &'static str {
@@ -524,29 +475,29 @@ impl SwapProvider for RefSwap {
         const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
         // Query storage_balance_bounds to get minimum deposit required
-        let bounds: StorageBalanceBounds = view(
-            &self.client,
-            token_contract.contract_id().into(),
-            "storage_balance_bounds",
-            near_sdk::serde_json::json!({}),
-        )
-        .await
-        .map_err(|e| {
-            tracing::debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
-            AppError::Rpc(e)
-        })?;
+        let bounds = self
+            .client
+            .read(storage::GetBalanceBounds {
+                contract_id: token_contract.contract_id().into(),
+            })
+            .await
+            .map_err(|e| {
+                tracing::debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
+                AppError::Rpc(e.into())
+            })?;
 
-        let min_deposit = bounds.min.0;
+        let min_deposit: NearToken = bounds.bounds.min;
 
         // Validate minimum deposit is reasonable (less than 0.1 NEAR)
-        if min_deposit > MAX_REASONABLE_DEPOSIT {
+        if min_deposit.as_yoctonear() > MAX_REASONABLE_DEPOSIT {
             return Err(AppError::ValidationError(format!(
-                "Storage deposit minimum ({min_deposit} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)"
+                "Storage deposit minimum ({} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)",
+                min_deposit.as_yoctonear()
             )));
         }
 
         #[allow(clippy::cast_precision_loss)]
-        let min_deposit_near = min_deposit as f64 / 1e24;
+        let min_deposit_near = min_deposit.as_yoctonear() as f64 / 1e24;
 
         tracing::debug!(
             token = %token_contract.contract_id(),
@@ -554,41 +505,35 @@ impl SwapProvider for RefSwap {
             "Using storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) =
-            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
-
-        let storage_deposit_action = near_primitives::action::FunctionCallAction {
-            method_name: "storage_deposit".to_string(),
-            args: near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({
-                "account_id": account_id,
-                "registration_only": true,
-            }))
-            .map_err(|e| {
-                AppError::SerializationError(format!(
-                    "Failed to serialize storage_deposit args: {e}"
-                ))
-            })?,
-            gas: Gas::from_teragas(10),
-            deposit: NearToken::from_yoctonear(min_deposit),
-        };
-
-        let tx = Transaction::V0(TransactionV0 {
-            nonce,
-            receiver_id: token_contract.contract_id().into(),
-            block_hash,
-            signer_id: self.signer.get_account_id(),
-            public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(storage_deposit_action))],
-        });
-
-        match send_tx(&self.client, &self.signer, Self::DEFAULT_TIMEOUT, tx).await {
-            Ok(_) => {
+        match self
+            .client
+            .execute(storage::Deposit {
+                contract_id: token_contract.contract_id().into(),
+                beneficiary_id: Some(account_id.clone()),
+                registration_only: true,
+                deposit: min_deposit,
+            })
+            .await
+        {
+            Ok(result) if result.operation.status == OperationStatus::Succeeded => {
                 tracing::debug!(
                     account = %account_id,
                     token = %token_contract.contract_id(),
                     "Storage registration successful"
                 );
                 Ok(())
+            }
+            Ok(result) => {
+                // A non-success status is a genuine registration failure, not a
+                // proxy for "already registered" (an already-registered
+                // `storage_deposit` succeeds and refunds). Proceeding would swap
+                // against an unregistered account, so surface it.
+                Err(AppError::ValidationError(format!(
+                    "Storage registration for {} on {} ended with status {:?}",
+                    account_id,
+                    token_contract.contract_id(),
+                    result.operation.status
+                )))
             }
             Err(e) => {
                 // If already registered, that's fine
@@ -602,7 +547,7 @@ impl SwapProvider for RefSwap {
                     );
                     Ok(())
                 } else {
-                    Err(AppError::Rpc(e))
+                    Err(AppError::Rpc(e.into()))
                 }
             }
         }

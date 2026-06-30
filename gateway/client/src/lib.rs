@@ -29,6 +29,9 @@
 mod network;
 pub use network::Network;
 
+mod pagination;
+pub use pagination::collect_paginated;
+
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -111,6 +114,14 @@ pub struct Client {
     context: GatewayContext,
     driver: OperationDriver,
     signer_account_ids: HashSet<ManagedAccountId>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("signer_account_ids", &self.signer_account_ids)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Client {
@@ -212,6 +223,14 @@ impl Client {
 pub struct SigningClient {
     client: Client,
     signer_account_id: ManagedAccountId,
+}
+
+impl std::fmt::Debug for SigningClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigningClient")
+            .field("signer_account_id", &self.signer_account_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SigningClient {

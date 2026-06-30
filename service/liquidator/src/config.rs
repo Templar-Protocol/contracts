@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use near_sdk::AccountId;
-use templar_common::utils::Network;
+use templar_gateway_client::Network;
 
 use crate::{
     notifier::{Notifier, TelegramConfig},
@@ -63,13 +63,11 @@ pub struct Args {
     #[arg(short, long, env = "NEAR_NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
 
-    /// Custom RPC URL (overrides default network RPC)
+    /// Custom RPC URL (overrides default network RPC). To authenticate with a
+    /// provider, embed the key in the URL, e.g.
+    /// `https://rpc.mainnet.fastnear.com/?apiKey=<key>`.
     #[arg(long, env = "NEAR_RPC_URL")]
     pub near_rpc_url: Option<String>,
-
-    /// API key sent via X-API-Key header for RPC authentication
-    #[arg(long, env = "NEAR_API_KEY")]
-    pub near_api_key: Option<String>,
 
     /// Transaction timeout in seconds
     #[arg(long, env = "TRANSACTION_TIMEOUT", default_value_t = 60)]
@@ -379,11 +377,12 @@ impl Args {
             signer_account: self.signer_account.clone(),
             network: self.network,
             near_rpc_url: self.near_rpc_url.clone(),
-            near_api_key: self.near_api_key.clone(),
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
-            concurrency: self.concurrency,
+            // `0` would make `buffer_unordered` hang forever; a refresh/scan with
+            // no concurrency makes no sense, so floor it at 1.
+            concurrency: self.concurrency.max(1),
             strategy,
             collateral_strategy,
             dry_run: self.dry_run,
@@ -423,7 +422,7 @@ impl Args {
 
 #[cfg(test)]
 mod tests {
-    use templar_common::utils::Network;
+    use templar_gateway_client::Network;
 
     use super::*;
 
@@ -436,7 +435,6 @@ mod tests {
             signer_account: "liquidator.testnet".parse().unwrap(),
             network: Network::Testnet,
             near_rpc_url: None,
-            near_api_key: None,
             transaction_timeout: 60,
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,

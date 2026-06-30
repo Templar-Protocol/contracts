@@ -48,6 +48,12 @@ pub struct GetResult {
     pub total_gas_burnt: NearGas,
     pub logs: Vec<String>,
     pub return_value: Option<ReturnValue>,
+    /// Accounts whose receipts failed, even when the top-level transaction
+    /// succeeded. NEAR reports `status` from the final receipt only, so an
+    /// `ft_transfer_call` whose receiver callback panicked (and was refunded by
+    /// `ft_resolve_transfer`) still shows `Succeeded` here; a consumer that
+    /// requires every receipt to have succeeded must check this is empty.
+    pub failed_receipts: Vec<AccountId>,
 }
 
 /// Submit a single function-call transaction.
