@@ -1,12 +1,9 @@
-use near_api::types::transaction::result::ExecutionFinalResult;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    operation::{
-        ExecutionOutcome, OperationRecord, OperationStatus, ReceiptOutcome, ReceiptStatus,
-    },
-    Base64Bytes, IdempotencyKey, MethodSpec, NearToken, OperationId,
+    operation::{ExecutionOutcome, OperationRecord, OperationStatus},
+    IdempotencyKey, MethodSpec, OperationId,
 };
 
 use crate::{
@@ -271,21 +268,21 @@ impl OperationDriver {
                             // The submission result already carries the full
                             // execution outcome — capture it so callers needn't
                             // re-fetch it with a separate `tx.get`.
-                            let outcome = execution_outcome(full);
+                            let outcome = ExecutionOutcome::from(full);
                             if is_success {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step succeeded"
                                 );
-                                submitted_step.succeed(final_hash, outcome).await?;
+                                submitted_step.mark_succeeded(final_hash, outcome).await?;
                             } else {
                                 tracing::debug!(
                                     operation_id = %operation_id.0,
                                     tx_hash = %final_hash,
                                     "gateway operation step failed"
                                 );
-                                submitted_step.reverted(final_hash, outcome).await?;
+                                submitted_step.mark_reverted(final_hash, outcome).await?;
                             }
                         }
                     }
@@ -296,14 +293,14 @@ impl OperationDriver {
                             %error,
                             "gateway operation step submission failed"
                         );
-                        submitted_step.rejected(tx_hash).await?;
+                        submitted_step.mark_rejected(tx_hash).await?;
                         return Err(error);
                     }
                 }
             }
             Some(CurrentStepRef::Submitted(submitted_step)) => {
                 let tx_hash = submitted_step.tx_hash();
-                submitted_step.rejected(tx_hash).await?;
+                submitted_step.mark_rejected(tx_hash).await?;
             }
             Some(CurrentStepRef::Failed) | None => {}
         }
@@ -324,7 +321,7 @@ impl OperationDriver {
             {
                 Ok(execution) => {
                     let is_success = execution.is_success();
-                    let outcome = execution_outcome(execution);
+                    let outcome = ExecutionOutcome::from(execution);
                     if is_success {
                         operation.succeeded_steps.push(SucceededStep {
                             transaction,
@@ -359,49 +356,6 @@ impl OperationDriver {
                 }
             }
         }
-    }
-}
-
-/// Build an [`ExecutionOutcome`] from a transaction's final result — the data
-/// the RPC already returned on submission, so it needn't be re-fetched.
-fn execution_outcome(result: ExecutionFinalResult) -> ExecutionOutcome {
-    let tokens_burnt = result
-        .outcomes()
-        .iter()
-        .map(|outcome| outcome.tokens_burnt)
-        .fold(NearToken::from_yoctonear(0), NearToken::saturating_add);
-    let total_gas_burnt = result.total_gas_burnt;
-    // A receipt is failed iff `receipt_failures()` (which reads near_api's
-    // private per-receipt status) returns a reference to it; compare by identity
-    // since those references point into the `receipt_outcomes()` slice.
-    let failed: Vec<*const _> = result
-        .receipt_failures()
-        .iter()
-        .map(|outcome| std::ptr::from_ref(*outcome))
-        .collect();
-    // Group logs per receipt with the executing contract, preserving receipt
-    // boundaries so consumers can attribute log content safely. Excludes the
-    // transaction outcome (not a receipt; it emits no logs).
-    let receipts = result
-        .receipt_outcomes()
-        .iter()
-        .map(|outcome| ReceiptOutcome {
-            contract_id: outcome.executor_id.clone(),
-            status: if failed.contains(&std::ptr::from_ref(outcome)) {
-                ReceiptStatus::Failed
-            } else {
-                ReceiptStatus::Succeeded
-            },
-            logs: outcome.logs.clone(),
-        })
-        .collect();
-    // Consume `result` last: `raw_bytes` takes it by value.
-    let return_value = result.raw_bytes().ok().map(Base64Bytes::from);
-    ExecutionOutcome {
-        tokens_burnt,
-        total_gas_burnt,
-        receipts,
-        return_value,
     }
 }
 

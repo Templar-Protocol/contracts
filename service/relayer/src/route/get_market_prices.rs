@@ -59,14 +59,18 @@ pub async fn get_market_prices(
         }
     };
 
-    let mut prices: HashMap<_, _> = result
+    let prices: HashMap<_, _> = result
         .prices
         .into_iter()
         .map(|entry| (entry.price_id, entry.price))
         .collect();
 
+    // Non-consuming lookups: borrow and collateral may share a price ID.
     SimpleResponse::success(ViewMarketPrices {
-        borrow: prices.remove(&cfg.borrow_asset_price_id).flatten(),
-        collateral: prices.remove(&cfg.collateral_asset_price_id).flatten(),
+        borrow: prices.get(&cfg.borrow_asset_price_id).cloned().flatten(),
+        collateral: prices
+            .get(&cfg.collateral_asset_price_id)
+            .cloned()
+            .flatten(),
     })
 }

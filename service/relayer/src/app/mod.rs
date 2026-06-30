@@ -104,8 +104,7 @@ impl App {
             .clone()
             .into_signing(args.relay.account_id.clone())?;
 
-        #[allow(clippy::unwrap_used)]
-        let database = Database::new(&args.database_url, kill.clone()).unwrap();
+        let database = Database::new(&args.database_url, kill.clone())?;
 
         let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
 
@@ -137,8 +136,6 @@ impl App {
     /// affects the pre-flight affordability gate, never the amount charged.
     #[tracing::instrument(skip(self), fields(gas = %gas))]
     pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
-        // The latest block's header carries the gas price, so a dedicated
-        // gas-price read isn't needed.
         let gas_price = match self
             .gateway
             .read(chain::GetBlock { block_hash: None })

@@ -46,6 +46,53 @@ pub struct ExecutionOutcome {
     pub return_value: Option<Base64Bytes>,
 }
 
+impl From<near_api_types::transaction::result::ExecutionFinalResult> for ExecutionOutcome {
+    /// Build the outcome from the submission result the RPC already returned —
+    /// the canonical conversion, so every consumer captures cost, per-receipt
+    /// status, logs, and return value the same way.
+    fn from(result: near_api_types::transaction::result::ExecutionFinalResult) -> Self {
+        let tokens_burnt = result
+            .outcomes()
+            .iter()
+            .map(|outcome| outcome.tokens_burnt)
+            .fold(NearToken::from_yoctonear(0), NearToken::saturating_add);
+        let total_gas_burnt = result.total_gas_burnt;
+        // A receipt is failed iff `receipt_failures()` (which reads near_api's
+        // private per-receipt status) returns a reference to it; compare by
+        // identity since those references point into the `receipt_outcomes()`
+        // slice.
+        let failed: Vec<*const _> = result
+            .receipt_failures()
+            .iter()
+            .map(|outcome| std::ptr::from_ref(*outcome))
+            .collect();
+        // Group logs per receipt with the executing contract, preserving receipt
+        // boundaries so consumers can attribute log content safely. Excludes the
+        // transaction outcome (not a receipt; it emits no logs).
+        let receipts = result
+            .receipt_outcomes()
+            .iter()
+            .map(|outcome| ReceiptOutcome {
+                contract_id: outcome.executor_id.clone(),
+                status: if failed.contains(&std::ptr::from_ref(outcome)) {
+                    ReceiptStatus::Failed
+                } else {
+                    ReceiptStatus::Succeeded
+                },
+                logs: outcome.logs.clone(),
+            })
+            .collect();
+        // Consume `result` last: `raw_bytes` takes it by value.
+        let return_value = result.raw_bytes().ok().map(Base64Bytes::from);
+        Self {
+            tokens_burnt,
+            total_gas_burnt,
+            receipts,
+            return_value,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct OperationId(pub String);
@@ -166,9 +213,12 @@ impl OperationRecord {
     /// The execution outcome of the operation's last executed step, if any.
     #[must_use]
     pub fn final_outcome(&self) -> Option<&ExecutionOutcome> {
+        // Keyed on `index`, not vector position, so an out-of-order `steps`
+        // (see `latest_tx_hash`) still picks the most recent executed step.
         self.steps
             .iter()
-            .rev()
-            .find_map(|step| step.status.outcome())
+            .filter_map(|step| step.status.outcome().map(|outcome| (step.index, outcome)))
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, outcome)| outcome)
     }
 }

@@ -361,7 +361,7 @@ impl SubmittedCurrentStep<'_> {
         &self.transaction
     }
 
-    pub async fn succeed(
+    pub async fn mark_succeeded(
         self,
         tx_hash: CryptoHash,
         outcome: ExecutionOutcome,
@@ -377,7 +377,7 @@ impl SubmittedCurrentStep<'_> {
 
     /// Record the step as having executed on chain but reverted (final outcome
     /// was a failure).
-    pub async fn reverted(
+    pub async fn mark_reverted(
         self,
         tx_hash: CryptoHash,
         outcome: ExecutionOutcome,
@@ -392,7 +392,7 @@ impl SubmittedCurrentStep<'_> {
 
     /// Record the step as having failed before a recorded on-chain execution
     /// (e.g. a submission error).
-    pub async fn rejected(self, tx_hash: CryptoHash) -> GatewayResult<()> {
+    pub async fn mark_rejected(self, tx_hash: CryptoHash) -> GatewayResult<()> {
         self.operation.current_step = Some(CurrentStep::Rejected {
             transaction: self.transaction,
             tx_hash,
