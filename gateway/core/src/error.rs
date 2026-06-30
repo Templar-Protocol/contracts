@@ -10,6 +10,8 @@ pub enum GatewayError {
     HttpRequest(String),
     #[error("near query failed: {0}")]
     NearQuery(String),
+    #[error("account not found: {0}")]
+    AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
     #[error("invalid signer key: {0}")]

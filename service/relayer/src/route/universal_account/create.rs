@@ -9,6 +9,7 @@ use near_sdk::{
     serde::{Deserialize, Serialize},
     serde_json, AccountId, NearToken,
 };
+use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::{account, chain, registry};
 use templar_gateway_types::Base64Bytes;
 
@@ -271,20 +272,30 @@ pub async fn create(
         }
     };
 
-    // A successful account read means the account already exists. A read error
-    // is treated as "does not exist"; if it was instead transient, the deploy
-    // below fails cleanly (the account already exists on chain).
-    if app
+    // The account must not already exist. A successful read means it does; an
+    // `AccountNotFound` read means it doesn't (proceed). Any other read error is
+    // ambiguous (e.g. a transient RPC failure), so fail closed rather than
+    // deploy onto a possibly-existing account, which would revert and charge the
+    // user gas.
+    match app
         .gateway
         .read(account::Get {
             account_id: account_id.clone(),
         })
         .await
-        .is_ok()
     {
-        return SimpleResponse::Rejected {
-            reason: "Account already exists".to_string(),
-        };
+        Ok(_) => {
+            return SimpleResponse::Rejected {
+                reason: "Account already exists".to_string(),
+            };
+        }
+        Err(GatewayError::AccountNotFound(_)) => { /* does not exist: continue */ }
+        Err(error) => {
+            tracing::error!(%error, "Failed to determine whether account exists");
+            return SimpleResponse::Failure {
+                error: "Failed to determine whether account exists".to_string(),
+            };
+        }
     }
 
     let init_args = match serde_json::to_vec(&InitArgs {

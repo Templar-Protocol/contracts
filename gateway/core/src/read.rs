@@ -57,11 +57,17 @@ impl ReadNear for NearClient {
     }
 
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account> {
-        let account = NearAccountView(account_id)
+        let account = NearAccountView(account_id.clone())
             .view()
             .fetch_from(self.network())
             .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+            .map_err(|error| {
+                if is_unknown_account(&error) {
+                    GatewayError::AccountNotFound(account_id)
+                } else {
+                    GatewayError::NearQuery(error.to_string())
+                }
+            })?;
         Ok(account.data)
     }
 
@@ -88,5 +94,37 @@ impl ReadNear for NearClient {
             .fetch_from(self.network())
             .await
             .map_err(|error| GatewayError::NearQuery(error.to_string()))
+    }
+}
+
+/// Whether a view error means the account does not exist (as opposed to a
+/// transient query failure). The node surfaces this inconsistently — sometimes
+/// as a typed `UnknownAccount` query error, sometimes as a plain message (see
+/// near-api's own note about message-form RPC errors) — so match the stable RPC
+/// error name in the rendered error to catch both forms.
+fn is_unknown_account<E: std::fmt::Debug>(error: &E) -> bool {
+    let rendered = format!("{error:?}");
+    rendered.contains("UnknownAccount") || rendered.contains("UNKNOWN_ACCOUNT")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_unknown_account;
+
+    // `&str`'s `Debug` renders its contents, standing in for a real error's
+    // rendered form without constructing the deeply nested near-api error types.
+    #[test]
+    fn detects_unknown_account_in_both_error_forms() {
+        // Typed query-error form (Rust variant name in the Debug output).
+        assert!(is_unknown_account(
+            &"ServerError(UnknownAccount { requested_account_id: alice.near })"
+        ));
+        // Message form the node sometimes returns instead of a typed object.
+        assert!(is_unknown_account(&"handler error: UNKNOWN_ACCOUNT"));
+        // Unrelated failures must not be mistaken for non-existence.
+        assert!(!is_unknown_account(&"TransportError(connection timed out)"));
+        assert!(!is_unknown_account(
+            &"ServerError(MethodNotFound { method_name: foo })"
+        ));
     }
 }
