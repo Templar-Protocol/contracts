@@ -334,12 +334,19 @@ impl LiquidationExecutor {
     /// receipt, so a rejected `ft_transfer_call` — whose receiver callback
     /// panicked and was refunded by `ft_resolve_transfer` — reports success.
     /// This fetches the receipt outcomes so the caller can detect that.
+    ///
+    /// Fails closed if the completed operation carries no transaction hash:
+    /// without it the receipts can't be inspected, so success must not be
+    /// assumed.
     async fn first_failed_receipt(
         &self,
         result: &templar_gateway_types::common::WriteOperationResult,
     ) -> LiquidatorResult<Option<String>> {
         let Some(tx_hash) = result.operation.latest_tx_hash() else {
-            return Ok(None);
+            return Err(LiquidatorError::TransactionFailed(format!(
+                "Liquidation operation {} succeeded without a transaction hash; cannot inspect receipts",
+                result.operation.id.0
+            )));
         };
         let detail = self
             .client

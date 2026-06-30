@@ -426,24 +426,29 @@ impl SwapProvider for RefSwap {
         // A Ref swap is an `ft_transfer_call`, so the receiver callback can fail
         // and be refunded while the top-level transaction still reports success.
         // Verify no receipt failed (same NEP-141 pattern handled in the
-        // liquidation executor).
-        if let Some(tx_hash) = result.operation.latest_tx_hash() {
-            let detail = self
-                .client
-                .read(tx::Get {
-                    tx_hash,
-                    sender_account_id: result.operation.signer_account_id.0.clone(),
-                    wait_until: Some(TxExecutionStatus::Executed),
-                    encoding: tx::ValueEncoding::Json,
-                })
-                .await
-                .map_err(|e| AppError::Rpc(e.into()))?;
-            if let Some(failed_on) = detail.failed_receipts.first() {
-                return Err(AppError::ValidationError(format!(
-                    "Ref Finance swap operation {} succeeded at top level but a receipt on {failed_on} failed (likely refunded)",
-                    result.operation.id.0
-                )));
-            }
+        // liquidation executor). Fail closed when the hash is missing: without it
+        // we cannot inspect receipts, so we must not declare success.
+        let tx_hash = result.operation.latest_tx_hash().ok_or_else(|| {
+            AppError::ValidationError(format!(
+                "Ref Finance swap operation {} succeeded without a transaction hash; cannot inspect receipts",
+                result.operation.id.0
+            ))
+        })?;
+        let detail = self
+            .client
+            .read(tx::Get {
+                tx_hash,
+                sender_account_id: result.operation.signer_account_id.0.clone(),
+                wait_until: Some(TxExecutionStatus::Executed),
+                encoding: tx::ValueEncoding::Json,
+            })
+            .await
+            .map_err(|e| AppError::Rpc(e.into()))?;
+        if let Some(failed_on) = detail.failed_receipts.first() {
+            return Err(AppError::ValidationError(format!(
+                "Ref Finance swap operation {} succeeded at top level but a receipt on {failed_on} failed (likely refunded)",
+                result.operation.id.0
+            )));
         }
 
         tracing::info!("Ref Finance swap executed successfully");

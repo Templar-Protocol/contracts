@@ -332,8 +332,10 @@ impl OracleFetcher {
 
         // Proxy oracle: collect Pyth entries from proxy config. A read failure is
         // propagated rather than skipped, so we don't refresh an incomplete set
-        // of feeds.
-        if self.proxy_oracle_cache.read().await.contains(oracle) {
+        // of feeds. Probe via `is_proxy_oracle` (not the raw cache) so a direct
+        // caller that hasn't warmed the cache still classifies correctly; the
+        // probe checks the cache first, keeping the hot path cheap.
+        if self.is_proxy_oracle(oracle).await? {
             for &pid in price_ids {
                 let result = self
                     .client
