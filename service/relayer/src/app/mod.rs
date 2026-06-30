@@ -516,13 +516,14 @@ impl App {
             return Ok(None);
         }
 
+        let requested = price_ids.into_vec();
         let result = self
             .gateway
             .execute_as(
                 self.args.relay.account_id.clone(),
                 proxy_oracle::UpdatePrices {
                     oracle_id,
-                    price_ids: price_ids.into_vec(),
+                    price_ids: requested.clone(),
                 },
             )
             .await
@@ -538,26 +539,35 @@ impl App {
 
         // The proxy's `update_prices` returns a per-price status map and the
         // transaction succeeds even when a price is circuit-breaker-blocked, so
-        // inspect the captured return value and reject before the caller relays
-        // a user action that would price against stale/unavailable data.
-        if let Some(return_value) = result
+        // require EVERY requested price to come back `Accepted` before the caller
+        // relays a user action that would price against stale/unavailable data. A
+        // missing return value, or a missing / non-accepted entry, is unavailable
+        // (only checking the returned entries would let an omitted price slip by).
+        let Some(return_value) = result
             .operation
             .final_outcome()
             .and_then(|outcome| outcome.return_value.as_ref())
-        {
-            let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
-                serde_json::from_slice(return_value)
-                    .map_err(|error| Arc::new(oracle::UpdateError::ProxyResultDecode(error)))?;
-            let blocked: Vec<pyth::PriceIdentifier> = statuses
-                .into_iter()
-                .filter(|(_, status)| !matches!(status, CachedProxyPriceStatus::Accepted { .. }))
-                .map(|(price_id, _)| price_id)
-                .collect();
-            if !blocked.is_empty() {
-                return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
-                    price_ids: blocked,
-                }));
-            }
+        else {
+            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
+                price_ids: requested,
+            }));
+        };
+        let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
+            serde_json::from_slice(return_value)
+                .map_err(|error| Arc::new(oracle::UpdateError::ProxyResultDecode(error)))?;
+        let unavailable: Vec<pyth::PriceIdentifier> = requested
+            .into_iter()
+            .filter(|id| {
+                !matches!(
+                    statuses.get(id),
+                    Some(CachedProxyPriceStatus::Accepted { .. })
+                )
+            })
+            .collect();
+        if !unavailable.is_empty() {
+            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
+                price_ids: unavailable,
+            }));
         }
 
         Ok(result.operation.latest_tx_hash())

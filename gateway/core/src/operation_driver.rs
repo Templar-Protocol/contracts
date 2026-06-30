@@ -343,13 +343,19 @@ impl OperationDriver {
                     }
                 }
                 Err(error) => {
+                    // Transient query failure: the transaction was submitted (we
+                    // hold its hash) and may have executed on chain, so do NOT
+                    // mark it rejected — that would be terminal, dropping it from
+                    // recovery and letting the relayer release a charge for a tx
+                    // that landed. Leave it submitted to reconcile on a later
+                    // recovery.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,
                         %error,
-                        "failed to reconcile submitted gateway transaction"
+                        "failed to reconcile submitted gateway transaction; leaving it submitted to retry"
                     );
-                    operation.current_step = Some(CurrentStep::Rejected {
+                    operation.current_step = Some(CurrentStep::Submitted {
                         transaction,
                         tx_hash,
                     });
