@@ -107,6 +107,15 @@ fn is_unknown_account<E: std::fmt::Debug>(error: &E) -> bool {
     rendered.contains("UnknownAccount") || rendered.contains("UNKNOWN_ACCOUNT")
 }
 
+/// Whether a transaction-status error means the chain has no record of the
+/// transaction (`UnknownTransaction`), as opposed to a transient/transport
+/// failure or a still-pending `TimeoutError`. Matched on the rendered error for
+/// the same reason as [`is_unknown_account`].
+pub(crate) fn is_unknown_transaction<E: std::fmt::Debug>(error: &E) -> bool {
+    let rendered = format!("{error:?}");
+    rendered.contains("UnknownTransaction") || rendered.contains("UNKNOWN_TRANSACTION")
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_unknown_account;
@@ -125,6 +134,21 @@ mod tests {
         assert!(!is_unknown_account(&"TransportError(connection timed out)"));
         assert!(!is_unknown_account(
             &"ServerError(MethodNotFound { method_name: foo })"
+        ));
+    }
+
+    #[test]
+    fn detects_unknown_transaction_but_not_transient_errors() {
+        assert!(super::is_unknown_transaction(
+            &"ServerError(UnknownTransaction { requested_transaction_hash: 11..11 })"
+        ));
+        assert!(super::is_unknown_transaction(
+            &"handler error: UNKNOWN_TRANSACTION"
+        ));
+        // A still-pending or unreachable transaction must NOT look terminal.
+        assert!(!super::is_unknown_transaction(&"ServerError(TimeoutError)"));
+        assert!(!super::is_unknown_transaction(
+            &"TransportError(connection timed out)"
         ));
     }
 }

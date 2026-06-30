@@ -228,7 +228,7 @@ pub async fn relay(
     // The relay account signs and pays; the UA account is charged. `ua.execute`
     // forwards the user's original signed args verbatim (so legacy front-end arg
     // formats keep working). Verification above ran on the parsed args.
-    let transaction_hash = match app
+    let execution = match app
         .execute_and_account(
             account_id.clone(),
             app.args.relay.account_id.clone(),
@@ -241,7 +241,7 @@ pub async fn relay(
         )
         .await
     {
-        Ok(execution) => execution.transaction_hash,
+        Ok(execution) => execution,
         Err(e) => {
             tracing::error!("Universal account relay failure: {e}");
             return SimpleResponse::Failure {
@@ -250,7 +250,19 @@ pub async fn relay(
         }
     };
 
-    RelayResponse { transaction_hash }.into()
+    // The charge is settled either way, but a transaction that reverted on chain
+    // must not be reported to the caller as a success.
+    if !execution.succeeded {
+        tracing::warn!(transaction_hash = %execution.transaction_hash, "Universal account relay reverted on chain");
+        return SimpleResponse::Failure {
+            error: "Universal account relay reverted on chain".to_string(),
+        };
+    }
+
+    RelayResponse {
+        transaction_hash: execution.transaction_hash,
+    }
+    .into()
 }
 
 /// Load a key's execution parameters from a universal account via `ua.getKey`.

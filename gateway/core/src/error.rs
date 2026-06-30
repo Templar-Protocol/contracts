@@ -18,6 +18,8 @@ pub enum GatewayError {
     InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]
     NearTransaction(String),
+    #[error("transaction not found on chain")]
+    TransactionNotFound,
     #[error("external service failed: {0}")]
     ExternalService(String),
     #[error("unsupported feature: {0}")]

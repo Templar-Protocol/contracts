@@ -9,9 +9,9 @@ use templar_gateway_types::{
 };
 
 use crate::{
-    CreateOperationResult, CurrentStep, CurrentStepRef, GatewayResult, HasIdempotencyKey,
-    HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation, SharedOperationStore,
-    SharedSignTransaction, StoredOperation, SucceededStep,
+    CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
+    HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
+    SharedOperationStore, SharedSignTransaction, StoredOperation, SucceededStep,
 };
 
 #[derive(Clone)]
@@ -143,12 +143,25 @@ impl OperationDriver {
 
         // Attach the plan and execute. Each step persists the full remaining set
         // before its first irreversible (on-chain) action, so recovery can
-        // resume a partially-run multi-step operation; a crash before any step
-        // persists leaves a bare reservation, which recovery drops (nothing was
-        // submitted) rather than resuming.
+        // resume a partially-run multi-step operation.
         let mut operation = operation;
         operation.remaining_steps = VecDeque::from(plan.steps);
-        let operation = self.execute_remaining_steps(operation).await?;
+        let operation_id = operation.operation_id().clone();
+        let operation = match self.execute_remaining_steps(operation).await {
+            Ok(operation) => operation,
+            Err(error) => {
+                // If execution failed before persisting any step (e.g. a presign
+                // error), nothing was submitted and the store still holds only
+                // the bare reservation. Drop it so accounting can release the
+                // charge now instead of waiting for startup recovery.
+                if let Ok(Some(stored)) = self.store.get_by_id(&operation_id).await {
+                    if stored.is_reservation() {
+                        let _ = self.store.delete_operation(&operation_id).await;
+                    }
+                }
+                return Err(error);
+            }
+        };
         // Best-effort terminal save: the operation already reached its outcome,
         // so a transient store failure here must not error the caller.
         if let Err(error) = self.store.save_operation(operation.clone()).await {
@@ -203,10 +216,7 @@ impl OperationDriver {
             // A reservation with no steps means a previous run crashed during
             // planning. Planning is read-only, so nothing was submitted: drop
             // the reservation, which lets any charge held for it be released.
-            if operation.current_step.is_none()
-                && operation.succeeded_steps.is_empty()
-                && operation.remaining_steps.is_empty()
-            {
+            if operation.is_reservation() {
                 self.store.delete_operation(&operation_id).await?;
                 continue;
             }
@@ -237,7 +247,12 @@ impl OperationDriver {
             OperationStatus::Pending | OperationStatus::InProgress
         ) {
             operation = self.execute_next_step(operation).await?;
-            if operation.status() == OperationStatus::Failed {
+            // Stop once a step is terminal-failed, or in flight (Submitted with no
+            // captured outcome) — the latter can only be resolved by reconciling
+            // against the chain, not by driving more steps.
+            if operation.status() == OperationStatus::Failed
+                || matches!(operation.current_step, Some(CurrentStep::Submitted { .. }))
+            {
                 break;
             }
         }
@@ -330,22 +345,25 @@ impl OperationDriver {
                         }
                     }
                     Err(error) => {
-                        tracing::debug!(
+                        // The transaction may have reached the chain before this
+                        // error (e.g. an RPC timeout after broadcast). Leave the
+                        // step Submitted and let reconciliation settle its fate by
+                        // querying the chain; rejecting here could release a charge
+                        // for a transaction that landed.
+                        tracing::warn!(
                             operation_id = %operation_id.0,
                             %tx_hash,
                             %error,
-                            "gateway operation step submission failed"
+                            "gateway operation step submission failed; left submitted for reconciliation"
                         );
-                        submitted_step.mark_rejected(tx_hash).await?;
                         return Err(error);
                     }
                 }
             }
-            Some(CurrentStepRef::Submitted(submitted_step)) => {
-                let tx_hash = submitted_step.tx_hash();
-                submitted_step.mark_rejected(tx_hash).await?;
-            }
-            Some(CurrentStepRef::Failed) | None => {}
+            // A step left Submitted (no full outcome at submit time) is in flight:
+            // only reconciliation, querying by hash, can resolve it. The driving
+            // loop stops on a Submitted step, so this is reached only defensively.
+            Some(CurrentStepRef::Submitted(_) | CurrentStepRef::Failed) | None => {}
         }
 
         Ok(operation)
@@ -385,13 +403,27 @@ impl OperationDriver {
                         });
                     }
                 }
+                Err(GatewayError::TransactionNotFound) => {
+                    // The chain has no record of this transaction. By the time
+                    // reconciliation runs, a transaction that landed would
+                    // resolve; an unknown one never reached the chain (e.g. a
+                    // crash between saving Submitted and broadcasting), so it is
+                    // safe to terminate it as rejected, releasing the charge.
+                    tracing::warn!(
+                        operation_id = %operation.id.0,
+                        %tx_hash,
+                        "submitted gateway transaction is unknown to the chain; marking rejected"
+                    );
+                    operation.current_step = Some(CurrentStep::Rejected {
+                        transaction,
+                        tx_hash,
+                    });
+                }
                 Err(error) => {
-                    // Transient query failure: the transaction was submitted (we
-                    // hold its hash) and may have executed on chain, so do NOT
-                    // mark it rejected — that would be terminal, dropping it from
-                    // recovery and letting the relayer release a charge for a tx
-                    // that landed. Leave it submitted to reconcile on a later
-                    // recovery.
+                    // Transient/transport failure: the transaction may have
+                    // executed on chain, so do NOT mark it rejected — that would
+                    // release a charge for a tx that landed. Leave it submitted to
+                    // reconcile on a later recovery.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,

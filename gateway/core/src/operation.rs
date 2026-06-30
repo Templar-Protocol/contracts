@@ -216,6 +216,16 @@ impl StoredOperation {
         )
     }
 
+    /// A bare reservation: created before planning, with no steps at all
+    /// (nothing prepared, submitted, or succeeded). Nothing was submitted, so
+    /// there is nothing on chain to resume — recovery and pre-submit error
+    /// cleanup drop these.
+    pub fn is_reservation(&self) -> bool {
+        self.current_step.is_none()
+            && self.succeeded_steps.is_empty()
+            && self.remaining_steps.is_empty()
+    }
+
     #[must_use]
     pub fn begin_next_preparation(
         &mut self,
@@ -390,16 +400,6 @@ impl SubmittedCurrentStep<'_> {
             transaction: self.transaction,
             tx_hash,
             outcome,
-        });
-        self.store.save_operation(self.operation.clone()).await
-    }
-
-    /// Record the step as having failed before a recorded on-chain execution
-    /// (e.g. a submission error).
-    pub async fn mark_rejected(self, tx_hash: CryptoHash) -> GatewayResult<()> {
-        self.operation.current_step = Some(CurrentStep::Rejected {
-            transaction: self.transaction,
-            tx_hash,
         });
         self.store.save_operation(self.operation.clone()).await
     }

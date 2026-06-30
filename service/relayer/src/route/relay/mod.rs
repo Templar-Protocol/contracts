@@ -118,7 +118,7 @@ pub async fn relay(
         }
     };
 
-    let transaction_hash = match app
+    let execution = match app
         .execute_and_account(
             account_id,
             app.args.relay.account_id.clone(),
@@ -130,7 +130,7 @@ pub async fn relay(
         )
         .await
     {
-        Ok(execution) => execution.transaction_hash,
+        Ok(execution) => execution,
         Err(e) => {
             tracing::error!("Relay submission failure: {e}");
             return SimpleResponse::Failure {
@@ -139,5 +139,17 @@ pub async fn relay(
         }
     };
 
-    RelayResponse { transaction_hash }.into()
+    // The charge is settled either way, but a transaction that reverted on chain
+    // must not be reported to the caller as a success.
+    if !execution.succeeded {
+        tracing::warn!(transaction_hash = %execution.transaction_hash, "Relayed transaction reverted on chain");
+        return SimpleResponse::Failure {
+            error: "Relayed transaction reverted on chain".to_string(),
+        };
+    }
+
+    RelayResponse {
+        transaction_hash: execution.transaction_hash,
+    }
+    .into()
 }
