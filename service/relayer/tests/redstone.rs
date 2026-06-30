@@ -1,6 +1,5 @@
 use std::{path::Path, time::Duration};
 
-use near_sdk::NearToken;
 use near_workspaces::{network::Sandbox, Worker};
 use templar_common::oracle::{
     pyth::PriceIdentifier,
@@ -75,8 +74,6 @@ async fn redstone(#[future(awt)] worker: Worker<Sandbox>) {
 
     let redstone_args = args::RedStoneConfig {
         refresh: Duration::from_secs(25),
-        update_gas: near_sdk::Gas::from_tgas(300),
-        update_deposit: NearToken::from_near(0),
         node_path: Path::new("node").to_owned(),
     };
 

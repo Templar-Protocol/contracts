@@ -1180,8 +1180,6 @@ pub async fn pyth_updates() {
     let pyth_args = args::PythConfig {
         hermes_url: "https://hermes-beta.pyth.network".to_string(),
         refresh: Duration::from_secs(25),
-        update_gas: near_sdk::Gas::from_tgas(300),
-        update_deposit: NearToken::from_near(1).saturating_div(100),
         timeout: Duration::from_secs(10),
     };
 

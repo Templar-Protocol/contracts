@@ -68,22 +68,6 @@ pub struct RedStoneConfig {
         default_value = "3"
     )]
     pub refresh: Duration,
-    /// How much gas (in units of Tgas) to attach to oracle price update calls.
-    #[arg(
-        id = "redstone-update-gas",
-        long = "redstone-update-gas",
-        env = "REDSTONE_UPDATE_GAS",
-        default_value = "300 Tgas"
-    )]
-    pub update_gas: near_sdk::Gas,
-    /// How much NEAR to attach as a deposit to oracle price update calls.
-    #[arg(
-        id = "redstone-update-deposit",
-        long = "redstone-update-deposit",
-        env = "REDSTONE_UPDATE_DEPOSIT",
-        default_value = "0 NEAR"
-    )]
-    pub update_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -114,22 +98,6 @@ pub struct PythConfig {
         default_value = "10"
     )]
     pub timeout: Duration,
-    /// How much gas (in units of Tgas) to attach to oracle price update calls.
-    #[arg(
-        id = "pyth-update-gas",
-        long = "pyth-update-gas",
-        env = "PYTH_UPDATE_GAS",
-        default_value = "300 Tgas"
-    )]
-    pub update_gas: near_sdk::Gas,
-    /// How much NEAR to attach as a deposit to oracle price update calls.
-    #[arg(
-        id = "pyth-update-deposit",
-        long = "pyth-update-deposit",
-        env = "PYTH_UPDATE_DEPOSIT",
-        default_value = "0.01 NEAR"
-    )]
-    pub update_deposit: NearToken,
 }
 
 #[derive(Args, Debug, Clone)]
