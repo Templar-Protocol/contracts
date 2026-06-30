@@ -1,9 +1,40 @@
 use async_trait::async_trait;
-use near_api::types::transaction::actions::{Action, DeleteAccountAction};
-use templar_gateway_core::{DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite};
+use near_api::types::transaction::actions::{
+    AccessKeyPermission as NearAccessKeyPermission, Action, DeleteAccountAction,
+};
+use templar_gateway_core::{
+    GatewayError, {DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite},
+};
 use templar_gateway_methods_spec::account;
+use templar_gateway_types::ContractMethodName;
 
 use crate::Dispatch;
+
+/// Translate near_api's access-key permission into the gateway spec's typed
+/// permission, parsing the function-call `receiver_id` into an `AccountId` and
+/// wrapping method names so the public schema stays strongly typed.
+fn permission_view(
+    permission: NearAccessKeyPermission,
+) -> GatewayResult<account::AccessKeyPermission> {
+    Ok(match permission {
+        NearAccessKeyPermission::FullAccess => account::AccessKeyPermission::FullAccess,
+        NearAccessKeyPermission::FunctionCall(function_call) => {
+            account::AccessKeyPermission::FunctionCall {
+                allowance: function_call.allowance,
+                receiver_id: function_call.receiver_id.parse().map_err(|error| {
+                    GatewayError::NearQuery(format!(
+                        "access key has an invalid function-call receiver_id: {error}"
+                    ))
+                })?,
+                method_names: function_call
+                    .method_names
+                    .into_iter()
+                    .map(ContractMethodName::from)
+                    .collect(),
+            }
+        }
+    })
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<account::Get, C> for Dispatch {
@@ -49,28 +80,15 @@ impl<C: HasNearClient> DispatchRead<account::GetAccessKey, C> for Dispatch {
         request: account::GetAccessKey,
         ctx: C,
     ) -> GatewayResult<account::GetAccessKeyResult> {
-        use near_api::types::transaction::actions::AccessKeyPermission as NearPermission;
-
         let key = ctx
             .near_client()
             .account()
             .access_key(request.account_id, request.public_key.into())
             .await?;
 
-        let permission = match key.permission {
-            NearPermission::FullAccess => account::AccessKeyPermission::FullAccess,
-            NearPermission::FunctionCall(function_call) => {
-                account::AccessKeyPermission::FunctionCall {
-                    allowance: function_call.allowance,
-                    receiver_id: function_call.receiver_id,
-                    method_names: function_call.method_names,
-                }
-            }
-        };
-
         Ok(account::GetAccessKeyResult {
             nonce: key.nonce.0,
-            permission,
+            permission: permission_view(key.permission)?,
         })
     }
 }
@@ -88,5 +106,62 @@ impl<C: Send + 'static> PlanWrite<account::Delete, C> for Dispatch {
                 beneficiary_id: request.body.beneficiary_id,
             })],
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_api::types::transaction::actions::{
+        AccessKeyPermission as NearAccessKeyPermission, FunctionCallPermission,
+    };
+    use near_api::types::NearToken;
+    use templar_gateway_methods_spec::account;
+
+    use super::permission_view;
+
+    #[test]
+    fn full_access_maps_through() {
+        assert!(matches!(
+            permission_view(NearAccessKeyPermission::FullAccess).unwrap(),
+            account::AccessKeyPermission::FullAccess
+        ));
+    }
+
+    #[test]
+    fn function_call_carries_all_fields() {
+        let permission = NearAccessKeyPermission::FunctionCall(FunctionCallPermission {
+            allowance: Some(NearToken::from_near(2)),
+            receiver_id: "market.near".to_owned(),
+            method_names: vec!["borrow".to_owned(), "repay".to_owned()],
+        });
+
+        match permission_view(permission).unwrap() {
+            account::AccessKeyPermission::FunctionCall {
+                allowance,
+                receiver_id,
+                method_names,
+            } => {
+                assert_eq!(allowance, Some(NearToken::from_near(2)));
+                assert_eq!(receiver_id.as_str(), "market.near");
+                assert_eq!(
+                    method_names
+                        .iter()
+                        .map(|m| m.0.as_str())
+                        .collect::<Vec<_>>(),
+                    ["borrow", "repay"]
+                );
+            }
+            account::AccessKeyPermission::FullAccess => panic!("expected FunctionCall"),
+        }
+    }
+
+    #[test]
+    fn function_call_rejects_invalid_receiver_id() {
+        let permission = NearAccessKeyPermission::FunctionCall(FunctionCallPermission {
+            allowance: None,
+            receiver_id: "NOT a valid account".to_owned(),
+            method_names: vec![],
+        });
+        assert!(permission_view(permission).is_err());
     }
 }

@@ -970,6 +970,75 @@ pub enum PriceUpdateError {
     Resolve(GatewayError),
 }
 
+/// Convert a native transaction/block hash into the gateway's hash type. Both
+/// are 32-byte hashes, so this is a total byte-for-byte move.
+#[must_use]
+pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> CryptoHash {
+    CryptoHash::from(near_api::CryptoHash(hash.0))
+}
+
+/// Convert a gateway hash into the native transaction-hash type. Both are
+/// 32-byte hashes, so this is a total byte-for-byte move.
+#[must_use]
+pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash {
+    near_primitives::hash::CryptoHash(hash.0 .0)
+}
+
+/// Page size for draining a registry's deployment list through the gateway.
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const REGISTRY_PAGE_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(100).unwrap();
+
+/// Fold a list of resolved oracle requests into the per-oracle pyth/redstone
+/// update sets.
+fn accumulate_oracle_requests(
+    requests: &[OracleRequest],
+    pyth: &mut PythUpdatesByOracle,
+    redstone: &mut RedstoneUpdatesByOracle,
+) {
+    for request in requests {
+        match request {
+            OracleRequest::Pyth(request) => {
+                pyth.entry(request.oracle_id.clone())
+                    .or_default()
+                    .insert(request.price_id);
+            }
+            OracleRequest::RedStone(request) => {
+                redstone
+                    .entry(request.oracle_id.clone())
+                    .or_default()
+                    .insert(request.price_id.clone());
+            }
+        }
+    }
+}
+
+/// Drain every deployment account from a registry via the gateway.
+async fn load_registry_deployments(
+    gateway: &GatewayClient,
+    registry_id: AccountId,
+) -> GatewayResult<Vec<AccountId>> {
+    collect_paginated(REGISTRY_PAGE_SIZE, move |offset, count| {
+        let gateway = gateway.clone();
+        let registry_id = registry_id.clone();
+        async move {
+            let result = gateway
+                .read(registry::ListDeployments {
+                    registry_id,
+                    args: Pagination {
+                        offset: Some(offset),
+                        limit: Some(count),
+                    },
+                })
+                .await?;
+            Ok(result.account_ids)
+        }
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1163,73 +1232,4 @@ mod tests {
                 if matches!(&*error, oracle::UpdateError::NotSucceeded { .. })
         ));
     }
-}
-
-/// Convert a native transaction/block hash into the gateway's hash type. Both
-/// are 32-byte hashes, so this is a total byte-for-byte move.
-#[must_use]
-pub fn to_gateway_hash(hash: &near_primitives::hash::CryptoHash) -> CryptoHash {
-    CryptoHash::from(near_api::CryptoHash(hash.0))
-}
-
-/// Convert a gateway hash into the native transaction-hash type. Both are
-/// 32-byte hashes, so this is a total byte-for-byte move.
-#[must_use]
-pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash {
-    near_primitives::hash::CryptoHash(hash.0 .0)
-}
-
-/// Page size for draining a registry's deployment list through the gateway.
-#[allow(
-    clippy::unwrap_used,
-    reason = "compile-time const; a zero literal would fail to compile"
-)]
-const REGISTRY_PAGE_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(100).unwrap();
-
-/// Fold a list of resolved oracle requests into the per-oracle pyth/redstone
-/// update sets.
-fn accumulate_oracle_requests(
-    requests: &[OracleRequest],
-    pyth: &mut PythUpdatesByOracle,
-    redstone: &mut RedstoneUpdatesByOracle,
-) {
-    for request in requests {
-        match request {
-            OracleRequest::Pyth(request) => {
-                pyth.entry(request.oracle_id.clone())
-                    .or_default()
-                    .insert(request.price_id);
-            }
-            OracleRequest::RedStone(request) => {
-                redstone
-                    .entry(request.oracle_id.clone())
-                    .or_default()
-                    .insert(request.price_id.clone());
-            }
-        }
-    }
-}
-
-/// Drain every deployment account from a registry via the gateway.
-async fn load_registry_deployments(
-    gateway: &GatewayClient,
-    registry_id: AccountId,
-) -> GatewayResult<Vec<AccountId>> {
-    collect_paginated(REGISTRY_PAGE_SIZE, move |offset, count| {
-        let gateway = gateway.clone();
-        let registry_id = registry_id.clone();
-        async move {
-            let result = gateway
-                .read(registry::ListDeployments {
-                    registry_id,
-                    args: Pagination {
-                        offset: Some(offset),
-                        limit: Some(count),
-                    },
-                })
-                .await?;
-            Ok(result.account_ids)
-        }
-    })
-    .await
 }

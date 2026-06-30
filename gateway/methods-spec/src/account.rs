@@ -2,7 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::{primitive::PublicKey, NearToken};
+use templar_gateway_types::{primitive::PublicKey, ContractMethodName, NearToken};
 
 /// Get chain state for a NEAR account.
 ///
@@ -50,8 +50,8 @@ pub enum AccessKeyPermission {
     /// `method_names` and a remaining `allowance`).
     FunctionCall {
         allowance: Option<NearToken>,
-        receiver_id: String,
-        method_names: Vec<String>,
+        receiver_id: AccountId,
+        method_names: Vec<ContractMethodName>,
     },
 }
 
