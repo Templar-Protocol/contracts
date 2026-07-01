@@ -93,12 +93,13 @@ the `gateway` schema.
 Verify the migrated database:
 
 ```sql
-SELECT count(*) FROM "transaction" WHERE operation_key IS NULL;
+SELECT to_regclass('"transaction"') IS NULL AS transaction_table_dropped;
 SELECT count(*) FROM account WHERE pending_operation_key IS NOT NULL;
 SELECT * FROM gateway._sqlx_migrations ORDER BY installed_on;
 ```
 
-The first query should return `0`. The second should normally return `0` if
+The first query should return `true` (the legacy `transaction` table is dropped
+by the slim-accounting migration). The second should normally return `0` if
 pending work was drained. The migrations query should show the gateway store
 migrations.
 

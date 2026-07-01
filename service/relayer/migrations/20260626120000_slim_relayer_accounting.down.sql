@@ -1,7 +1,22 @@
 -- down
--- Restore the pre-slim shape (an empty "transaction" table + status enum). The
--- rows dropped by the up migration are not recoverable; this only restores the
--- structure.
+-- Restore the pre-slim shape (an empty "transaction" table + status enum). This
+-- only restores the structure, not data.
+
+-- Refuse to roll back while UUID-backed charges are still in flight: the
+-- restored (old) schema can't reconcile them, so they would leak. Let them
+-- settle first.
+DO
+$$
+BEGIN
+    IF EXISTS (SELECT 1 FROM account WHERE pending_operation_key IS NOT NULL) THEN
+        RAISE EXCEPTION
+            'refusing rollback: % account(s) have an in-flight charge; let them settle first',
+            (SELECT count(*) FROM account WHERE pending_operation_key IS NOT NULL);
+    END IF;
+END
+$$
+;
+
 DO
 $$
 BEGIN
