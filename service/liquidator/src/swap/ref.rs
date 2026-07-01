@@ -9,11 +9,10 @@ use near_sdk::{
     AccountId,
 };
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
+use templar_common::SU128;
 use templar_gateway_client::SigningClient;
 use templar_gateway_methods_spec::{ft, ref_finance, storage, tx};
-use templar_gateway_types::{
-    common::TxExecutionStatus, NearToken, OperationStatus, U128 as GatewayU128,
-};
+use templar_gateway_types::{common::TxExecutionStatus, NearToken, OperationStatus};
 
 use crate::rpc::{AppError, AppResult};
 
@@ -409,7 +408,7 @@ impl SwapProvider for RefSwap {
             .execute(ft::TransferCall {
                 contract_id: from_asset.contract_id().into(),
                 receiver_id: self.contract.clone(),
-                amount: GatewayU128(u128::from(amount)),
+                amount: SU128::from(u128::from(amount)),
                 msg: msg_string,
                 memo: None,
             })
