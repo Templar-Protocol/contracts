@@ -1,4 +1,4 @@
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 use crate::client::{
     macros::{contract_views, contract_writes},
@@ -39,7 +39,7 @@ pub struct Approval {
 pub struct TransferArgs {
     pub receiver_id: near_account_id::AccountId,
     pub token_id: String,
-    pub amount: U128,
+    pub amount: SU128,
     pub approval: Option<Approval>,
     pub memo: Option<String>,
 }
@@ -48,7 +48,7 @@ pub struct TransferArgs {
 pub struct TransferCallArgs {
     pub receiver_id: near_account_id::AccountId,
     pub token_id: String,
-    pub amount: U128,
+    pub amount: SU128,
     pub approval: Option<Approval>,
     pub memo: Option<String>,
     pub msg: String,
@@ -72,10 +72,10 @@ impl BoundContractClient for MtClient<'_> {
 
 impl MtClient<'_> {
     contract_views! {
-        pub fn mt_balance_of(GetBalanceOfArgs) -> U128;
-        pub fn mt_batch_balance_of(GetBatchBalanceOfArgs) -> Vec<U128>;
-        pub fn mt_supply(GetSupplyArgs) -> Option<U128>;
-        pub fn mt_batch_supply(GetBatchSupplyArgs) -> Vec<Option<U128>>;
+        pub fn mt_balance_of(GetBalanceOfArgs) -> SU128;
+        pub fn mt_batch_balance_of(GetBatchBalanceOfArgs) -> Vec<SU128>;
+        pub fn mt_supply(GetSupplyArgs) -> Option<SU128>;
+        pub fn mt_batch_supply(GetBatchSupplyArgs) -> Vec<Option<SU128>>;
     }
 
     contract_writes! {

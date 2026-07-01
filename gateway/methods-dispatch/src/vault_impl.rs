@@ -1,0 +1,724 @@
+use async_trait::async_trait;
+use near_account_id::AccountId;
+use templar_common::{
+    vault::{self as common_vault, DepositMsg, VaultConfiguration},
+    SU64,
+};
+use templar_gateway_core::{
+    client::{
+        vault::{
+            AccountArg, AllocatorArg, CapArgs, CapGroupUpdateArg, CapGroupUpdateKeyArg,
+            CapMarketArg, DeltaArg, ExecuteMarketWithdrawalArgs, ExecuteRebalanceWithdrawalArgs,
+            ExecuteWithdrawalArgs, FeesArg, MarketAccountArg, MarketIdArg, MarketsArg, RedeemArgs,
+            RestrictionsArg, SubmitTimelockArgs, TokenArg, U128AssetsArg, U128SharesArg,
+            WithdrawArgs,
+        },
+        ContractWriteOptions,
+    },
+    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite, PlannedTransaction,
+};
+use templar_gateway_methods_spec::vault;
+use templar_gateway_types::ManagedAccountId;
+use templar_primitives::SU128;
+
+use crate::token_ops::{ensure_storage_registration, transfer_call_asset};
+use crate::Dispatch;
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetConfiguration, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetConfiguration,
+        ctx: C,
+    ) -> GatewayResult<VaultConfiguration> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_configuration(())
+            .await
+    }
+}
+
+macro_rules! passthrough_read {
+    ($spec:ty, $method:ident, $output:ty) => {
+        #[async_trait]
+        impl<C: HasNearClient> DispatchRead<$spec, C> for Dispatch {
+            async fn dispatch(request: $spec, ctx: C) -> GatewayResult<$output> {
+                ctx.near_client().vault(request.vault_id).$method(()).await
+            }
+        }
+    };
+}
+
+passthrough_read!(vault::GetTotalAssets, get_total_assets, SU128);
+passthrough_read!(vault::GetLastTotalAssets, get_last_total_assets, SU128);
+passthrough_read!(vault::GetIdleBalance, get_idle_balance, SU128);
+passthrough_read!(vault::GetTotalSupply, get_total_supply, SU128);
+passthrough_read!(vault::GetMaxDeposit, get_max_deposit, SU128);
+passthrough_read!(
+    vault::GetMaxSingleMarketDeposit,
+    get_max_single_market_deposit,
+    SU128
+);
+passthrough_read!(vault::GetFees, get_fees, common_vault::Fees<SU128>);
+passthrough_read!(
+    vault::HasPendingMarketWithdrawal,
+    has_pending_market_withdrawal,
+    bool
+);
+passthrough_read!(
+    vault::BuildRealAssetsReport,
+    build_real_assets_report,
+    common_vault::RealAssetsReport
+);
+
+// The contract does not export a bare `get_fee_anchor_timestamp`; read the full
+// `get_fee_anchor` view (an exported method) and project out the timestamp.
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetFeeAnchorTimestamp, C> for Dispatch {
+    async fn dispatch(request: vault::GetFeeAnchorTimestamp, ctx: C) -> GatewayResult<SU64> {
+        let anchor = ctx
+            .near_client()
+            .vault(request.vault_id)
+            .get_fee_anchor(())
+            .await?;
+        Ok(SU64::from(anchor.timestamp_ns))
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::ConvertToShares, C> for Dispatch {
+    async fn dispatch(request: vault::ConvertToShares, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .convert_to_shares(U128AssetsArg {
+                assets: request.assets,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::ConvertToAssets, C> for Dispatch {
+    async fn dispatch(request: vault::ConvertToAssets, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .convert_to_assets(U128SharesArg {
+                shares: request.shares,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::PreviewDeposit, C> for Dispatch {
+    async fn dispatch(request: vault::PreviewDeposit, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .preview_deposit(U128AssetsArg {
+                assets: request.assets,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::PreviewMint, C> for Dispatch {
+    async fn dispatch(request: vault::PreviewMint, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .preview_mint(U128SharesArg {
+                shares: request.shares,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::PreviewWithdraw, C> for Dispatch {
+    async fn dispatch(request: vault::PreviewWithdraw, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .preview_withdraw(U128AssetsArg {
+                assets: request.assets,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::PreviewRedeem, C> for Dispatch {
+    async fn dispatch(request: vault::PreviewRedeem, ctx: C) -> GatewayResult<SU128> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .preview_redeem(U128SharesArg {
+                shares: request.shares,
+            })
+            .await
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetCapGroups, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetCapGroups,
+        ctx: C,
+    ) -> GatewayResult<vault::GetCapGroupsResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_cap_groups(())
+            .await
+            .map(|cap_groups| vault::GetCapGroupsResult { cap_groups })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetRestrictions, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetRestrictions,
+        ctx: C,
+    ) -> GatewayResult<vault::GetRestrictionsResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_restrictions(())
+            .await
+            .map(|restrictions| vault::GetRestrictionsResult { restrictions })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetWithdrawingOpId, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetWithdrawingOpId,
+        ctx: C,
+    ) -> GatewayResult<vault::GetWithdrawingOpIdResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_withdrawing_op_id(())
+            .await
+            .map(|op_id| vault::GetWithdrawingOpIdResult { op_id })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetCurrentWithdrawRequestId, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetCurrentWithdrawRequestId,
+        ctx: C,
+    ) -> GatewayResult<vault::GetCurrentWithdrawRequestIdResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_current_withdraw_request_id(())
+            .await
+            .map(|request_id| vault::GetCurrentWithdrawRequestIdResult { request_id })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::PeekNextPendingWithdrawalId, C> for Dispatch {
+    async fn dispatch(
+        request: vault::PeekNextPendingWithdrawalId,
+        ctx: C,
+    ) -> GatewayResult<vault::PeekNextPendingWithdrawalIdResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .peek_next_pending_withdrawal_id(())
+            .await
+            .map(|request_id| vault::PeekNextPendingWithdrawalIdResult {
+                request_id: request_id.map(SU64::from),
+            })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::QueueTail, C> for Dispatch {
+    async fn dispatch(request: vault::QueueTail, ctx: C) -> GatewayResult<SU64> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .queue_tail(())
+            .await
+            .map(SU64::from)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetMarketIdOfAccount, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetMarketIdOfAccount,
+        ctx: C,
+    ) -> GatewayResult<vault::GetMarketIdOfAccountResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_market_id_of_account(MarketAccountArg {
+                market: request.market,
+            })
+            .await
+            .map(|market_id| vault::GetMarketIdOfAccountResult { market_id })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::GetMarketAccountById, C> for Dispatch {
+    async fn dispatch(
+        request: vault::GetMarketAccountById,
+        ctx: C,
+    ) -> GatewayResult<vault::GetMarketAccountByIdResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .get_market_account_by_id(MarketIdArg {
+                market_id: request.market_id,
+            })
+            .await
+            .map(|account_id| vault::GetMarketAccountByIdResult { account_id })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<vault::ListMarketsWithIds, C> for Dispatch {
+    async fn dispatch(
+        request: vault::ListMarketsWithIds,
+        ctx: C,
+    ) -> GatewayResult<vault::ListMarketsWithIdsResult> {
+        ctx.near_client()
+            .vault(request.vault_id)
+            .list_markets_with_ids(())
+            .await
+            .map(|markets| vault::ListMarketsWithIdsResult { markets })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::Deposit, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::Deposit>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let configuration = ctx
+            .near_client()
+            .vault(body.vault_id.clone())
+            .cached_get_configuration()
+            .await?;
+        let mut steps = Vec::new();
+
+        // The vault must be registered on the underlying token to receive the
+        // transfer, and the depositor must be registered on the vault share
+        // token to receive minted shares (mirrors `market::Supply`).
+        if let Some(asset_id) = configuration.underlying_token.clone().into_nep141() {
+            if let Some(tx_result) = ensure_storage_registration(
+                &ctx,
+                request.signer_account_id.clone(),
+                asset_id,
+                body.vault_id.clone(),
+            )
+            .await?
+            {
+                steps.push(tx_result);
+            }
+        }
+
+        if let Some(tx_result) = ensure_storage_registration(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.vault_id.clone(),
+            request.signer_account_id.0.clone(),
+        )
+        .await?
+        {
+            steps.push(tx_result);
+        }
+
+        steps.push(transfer_call_asset(
+            &ctx,
+            request.signer_account_id,
+            configuration.underlying_token,
+            body.vault_id,
+            body.amount.0,
+            &DepositMsg::Supply,
+        )?);
+
+        Ok(OperationPlan { steps })
+    }
+}
+
+macro_rules! direct_write {
+    ($spec:ty, $method:ident, $args:expr, $tgas:expr $(, $deposit:expr)?) => {
+        #[async_trait]
+        impl<C: HasNearClient> PlanWrite<$spec, C> for Dispatch {
+            async fn plan(
+                request: templar_gateway_types::common::WriteRequest<$spec>,
+                ctx: C,
+            ) -> GatewayResult<OperationPlan> {
+                let body = request.body;
+                let vault_id = body.vault_id.clone();
+                let options = ContractWriteOptions::new(request.signer_account_id)
+                    .tgas($tgas)
+                    $(.deposit($deposit))?;
+                ctx.near_client()
+                    .vault(vault_id)
+                    .$method(options, ($args)(body))
+                    .map(OperationPlan::from)
+            }
+        }
+    };
+}
+
+direct_write!(
+    vault::Allocate,
+    allocate,
+    |body: vault::Allocate| DeltaArg { delta: body.delta },
+    300
+);
+// Creating a withdraw/redeem request touches two NEP-141 ledgers that each reject
+// unregistered accounts, so the plan pre-registers both parties (mirroring
+// `vault::Deposit` and the `market::Liquidate` collateral pre-registration):
+//
+//   1. The vault escrows the redeemed shares to *itself* while the request is
+//      pending, so it must be registered on its own share token (the vault
+//      contract). The contract test harness does the same via
+//      `storage_deposits(vault_account)` before withdrawing.
+//   2. The eventual payout sends the underlying via `ft_transfer`, which fails
+//      unless the receiver is registered on the underlying token (the contract
+//      then refunds the escrowed shares and the assets are never delivered).
+async fn withdraw_registration_steps<C: HasNearClient>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    vault_id: AccountId,
+    receiver: AccountId,
+) -> GatewayResult<Vec<PlannedTransaction>> {
+    let configuration = ctx
+        .near_client()
+        .vault(vault_id.clone())
+        .cached_get_configuration()
+        .await?;
+    let mut steps = Vec::new();
+
+    // (1) Register the vault on its own share token so it can hold escrowed shares.
+    if let Some(step) =
+        ensure_storage_registration(ctx, signer_account_id.clone(), vault_id.clone(), vault_id)
+            .await?
+    {
+        steps.push(step);
+    }
+
+    // (2) Register the payout receiver on the underlying token. `ft_transfer`
+    // payout only applies to NEP-141 underlyings; NEP-245/MT have no per-receiver
+    // storage registration, so there is nothing to pre-register.
+    if let Some(asset_id) = configuration.underlying_token.into_nep141() {
+        if let Some(step) =
+            ensure_storage_registration(ctx, signer_account_id, asset_id, receiver).await?
+        {
+            steps.push(step);
+        }
+    }
+
+    Ok(steps)
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::Withdraw, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::Withdraw>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let mut steps = withdraw_registration_steps(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.vault_id.clone(),
+            body.receiver.clone(),
+        )
+        .await?;
+        steps.push(
+            ctx.near_client().vault(body.vault_id).withdraw(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(30)
+                    .deposit(vault::WITHDRAW_REQUEST_DEPOSIT),
+                WithdrawArgs {
+                    amount: body.amount,
+                    receiver: body.receiver,
+                },
+            )?,
+        );
+        Ok(OperationPlan { steps })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::Redeem, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::Redeem>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let mut steps = withdraw_registration_steps(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.vault_id.clone(),
+            body.receiver.clone(),
+        )
+        .await?;
+        steps.push(
+            ctx.near_client().vault(body.vault_id).redeem(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(300)
+                    .deposit(vault::WITHDRAW_REQUEST_DEPOSIT),
+                RedeemArgs {
+                    shares: body.shares,
+                    receiver: body.receiver,
+                },
+            )?,
+        );
+        Ok(OperationPlan { steps })
+    }
+}
+direct_write!(
+    vault::ExecuteWithdrawal,
+    execute_withdrawal,
+    |body: vault::ExecuteWithdrawal| ExecuteWithdrawalArgs { route: body.route },
+    300
+);
+direct_write!(
+    vault::ExecuteMarketWithdrawal,
+    execute_market_withdrawal,
+    |body: vault::ExecuteMarketWithdrawal| ExecuteMarketWithdrawalArgs {
+        op_id: body.op_id,
+        market: body.market,
+        batch_limit: body.batch_limit
+    },
+    300
+);
+direct_write!(
+    vault::ExecuteRebalanceWithdrawal,
+    execute_rebalance_withdrawal,
+    |body: vault::ExecuteRebalanceWithdrawal| ExecuteRebalanceWithdrawalArgs {
+        market_id: body.market_id,
+        batch_limit: body.batch_limit
+    },
+    300
+);
+direct_write!(
+    vault::ResyncIdleBalance,
+    resync_idle_balance,
+    |_body: vault::ResyncIdleBalance| (),
+    30
+);
+direct_write!(
+    vault::RefreshMarkets,
+    refresh_markets,
+    |body: vault::RefreshMarkets| MarketsArg {
+        markets: body.markets
+    },
+    300
+);
+direct_write!(vault::Unbrick, unbrick, |_body: vault::Unbrick| (), 300);
+direct_write!(
+    vault::Skim,
+    skim,
+    |body: vault::Skim| TokenArg { token: body.token },
+    50
+);
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<vault::SetSupplyQueue, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<vault::SetSupplyQueue>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let vault_id = body.vault_id.clone();
+        // The contract only charges storage for markets newly added to the queue.
+        // Attaching one entry's worth per requested market is a safe upper bound:
+        // it never under-pays, and any excess accrues to the vault's own balance.
+        let deposit = templar_gateway_types::NearToken::from_yoctonear(
+            vault::SET_SUPPLY_QUEUE_DEPOSIT
+                .as_yoctonear()
+                .saturating_mul(body.markets.len() as u128),
+        );
+        ctx.near_client()
+            .vault(vault_id)
+            .set_supply_queue(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(50)
+                    .deposit(deposit),
+                MarketsArg {
+                    markets: body.markets,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
+direct_write!(
+    vault::SubmitCap,
+    submit_cap,
+    |body: vault::SubmitCap| CapArgs {
+        market: body.market,
+        new_cap: body.new_cap
+    },
+    5
+);
+direct_write!(
+    vault::AcceptCap,
+    accept_cap,
+    |body: vault::AcceptCap| CapMarketArg {
+        market: body.market
+    },
+    5
+);
+direct_write!(
+    vault::RevokePendingCap,
+    revoke_pending_cap,
+    |body: vault::RevokePendingCap| CapMarketArg {
+        market: body.market
+    },
+    5
+);
+direct_write!(
+    vault::SubmitCapGroupUpdate,
+    submit_cap_group_update,
+    |body: vault::SubmitCapGroupUpdate| CapGroupUpdateArg {
+        update: body.update
+    },
+    50
+);
+direct_write!(
+    vault::AcceptCapGroupUpdate,
+    accept_cap_group_update,
+    |body: vault::AcceptCapGroupUpdate| CapGroupUpdateKeyArg {
+        update: body.update
+    },
+    50
+);
+direct_write!(
+    vault::RevokePendingCapGroupUpdate,
+    revoke_pending_cap_group_update,
+    |body: vault::RevokePendingCapGroupUpdate| CapGroupUpdateKeyArg {
+        update: body.update
+    },
+    50
+);
+direct_write!(
+    vault::SubmitMarketRemoval,
+    submit_market_removal,
+    |body: vault::SubmitMarketRemoval| CapMarketArg {
+        market: body.market
+    },
+    50
+);
+direct_write!(
+    vault::AcceptMarketRemoval,
+    accept_market_removal,
+    |body: vault::AcceptMarketRemoval| CapMarketArg {
+        market: body.market
+    },
+    50
+);
+direct_write!(
+    vault::RevokePendingMarketRemoval,
+    revoke_pending_market_removal,
+    |body: vault::RevokePendingMarketRemoval| CapMarketArg {
+        market: body.market
+    },
+    50
+);
+direct_write!(
+    vault::SetCurator,
+    set_curator,
+    |body: vault::SetCurator| AccountArg {
+        account: body.account
+    },
+    50
+);
+direct_write!(
+    vault::SetIsAllocator,
+    set_is_allocator,
+    |body: vault::SetIsAllocator| AllocatorArg {
+        account: body.account,
+        allowed: body.allowed
+    },
+    50
+);
+direct_write!(
+    vault::SubmitSentinel,
+    submit_sentinel,
+    |body: vault::SubmitSentinel| AccountArg {
+        account: body.account
+    },
+    50
+);
+direct_write!(
+    vault::AcceptSentinel,
+    accept_sentinel,
+    |_body: vault::AcceptSentinel| (),
+    50
+);
+direct_write!(
+    vault::RevokePendingSentinel,
+    revoke_pending_sentinel,
+    |_body: vault::RevokePendingSentinel| (),
+    50
+);
+direct_write!(
+    vault::SetSkimRecipient,
+    set_skim_recipient,
+    |body: vault::SetSkimRecipient| AccountArg {
+        account: body.account
+    },
+    50
+);
+direct_write!(
+    vault::SetFees,
+    set_fees,
+    |body: vault::SetFees| FeesArg { fees: body.fees },
+    50
+);
+direct_write!(
+    vault::AcceptFees,
+    accept_fees,
+    |_body: vault::AcceptFees| (),
+    50
+);
+direct_write!(
+    vault::RevokePendingFees,
+    revoke_pending_fees,
+    |_body: vault::RevokePendingFees| (),
+    50
+);
+direct_write!(
+    vault::SetRestrictions,
+    set_restrictions,
+    |body: vault::SetRestrictions| RestrictionsArg {
+        restrictions: body.restrictions
+    },
+    50
+);
+direct_write!(
+    vault::AcceptRestrictions,
+    accept_restrictions,
+    |_body: vault::AcceptRestrictions| (),
+    50
+);
+direct_write!(
+    vault::RevokePendingRestrictions,
+    revoke_pending_restrictions,
+    |_body: vault::RevokePendingRestrictions| (),
+    50
+);
+direct_write!(
+    vault::SubmitTimelock,
+    submit_timelock,
+    |body: vault::SubmitTimelock| SubmitTimelockArgs {
+        new_timelock_ns: body.new_timelock_ns,
+        kind: body.kind
+    },
+    50
+);
+direct_write!(
+    vault::AcceptTimelock,
+    accept_timelock,
+    |_body: vault::AcceptTimelock| (),
+    50
+);
+direct_write!(
+    vault::RevokePendingTimelock,
+    revoke_pending_timelock,
+    |_body: vault::RevokePendingTimelock| (),
+    50
+);

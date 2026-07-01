@@ -27,9 +27,10 @@ use near_sdk::{
 };
 
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
+use templar_common::SU128;
 use templar_gateway_client::SigningClient;
 use templar_gateway_methods_spec::{storage, token, tx};
-use templar_gateway_types::{CryptoHash, NearToken, OperationStatus, U128 as GatewayU128};
+use templar_gateway_types::{CryptoHash, NearToken, OperationStatus};
 
 use crate::rpc::{AppError, AppResult};
 use crate::swap::SwapProvider;
@@ -781,7 +782,7 @@ impl OneClickSwap {
             .execute(token::Transfer {
                 token: token::TokenReference::from(from_asset),
                 receiver_id: deposit_account.clone(),
-                amount: GatewayU128(amount.0),
+                amount: SU128::from(amount.0),
                 memo: None,
             })
             .await

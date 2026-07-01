@@ -1,9 +1,5 @@
 use async_trait::async_trait;
-use near_account_id::AccountId;
-use templar_common::{
-    asset::{AssetClass, FungibleAsset},
-    market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg},
-};
+use templar_common::market::{DepositMsg, LiquidateMsg, MarketConfiguration, RepayAccountMsg};
 use templar_gateway_core::{
     client::{
         market::{
@@ -11,16 +7,14 @@ use templar_gateway_core::{
             GetBorrowPositionPendingInterestArgs, GetBorrowStatusArgs,
             GetSupplyPositionPendingYieldArgs, HarvestYieldArgs, StaticYieldRecord,
         },
-        storage::{StorageBalanceBoundsView, StorageBalanceOfArgs, StorageDepositArgs},
         ContractWriteOptions,
     },
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
-    PlannedTransaction,
 };
 use templar_gateway_methods_spec::{market, registry::Deploy};
-use templar_gateway_types::ManagedAccountId;
 
 use crate::registry_impl::plan_deploy_from_registry;
+use crate::token_ops::{ensure_storage_registration, transfer_call_asset};
 use crate::Dispatch;
 
 #[derive(serde::Serialize)]
@@ -701,68 +695,4 @@ impl<C: HasNearClient> PlanWrite<market::WithdrawStaticYield, C> for Dispatch {
             )
             .map(OperationPlan::from)
     }
-}
-
-async fn ensure_storage_registration<C: HasNearClient>(
-    ctx: &C,
-    signer_account_id: ManagedAccountId,
-    contract_id: AccountId,
-    account_id: AccountId,
-) -> GatewayResult<Option<PlannedTransaction>> {
-    let Some(bounds) = storage_balance_bounds_if_supported(ctx, contract_id.clone()).await? else {
-        return Ok(None);
-    };
-
-    let balance = ctx
-        .near_client()
-        .storage(contract_id.clone())
-        .storage_balance_of(StorageBalanceOfArgs {
-            account_id: account_id.clone(),
-        })
-        .await?;
-
-    if balance.is_some() {
-        return Ok(None);
-    }
-
-    let tx_result = ctx.near_client().storage(contract_id).storage_deposit(
-        ContractWriteOptions::new(signer_account_id)
-            .tgas(100)
-            .deposit(templar_gateway_types::NearToken::from_yoctonear(
-                bounds.min.as_yoctonear(),
-            )),
-        StorageDepositArgs {
-            account_id: Some(account_id),
-            registration_only: true,
-        },
-    )?;
-    Ok(Some(tx_result))
-}
-
-async fn storage_balance_bounds_if_supported<C: HasNearClient>(
-    ctx: &C,
-    contract_id: AccountId,
-) -> GatewayResult<Option<StorageBalanceBoundsView>> {
-    ctx.near_client()
-        .storage(contract_id)
-        .cached_storage_balance_bounds_if_supported()
-        .await
-}
-
-fn transfer_call_asset<C: HasNearClient, T: AssetClass>(
-    ctx: &C,
-    signer_account_id: ManagedAccountId,
-    asset: FungibleAsset<T>,
-    receiver_id: AccountId,
-    amount: impl Into<u128>,
-    msg: &DepositMsg,
-) -> GatewayResult<PlannedTransaction> {
-    ctx.near_client().token(asset).transfer_call(
-        ContractWriteOptions::new(signer_account_id)
-            .tgas(300)
-            .one_yocto(),
-        receiver_id,
-        amount,
-        serde_json::to_string(msg)?,
-    )
 }

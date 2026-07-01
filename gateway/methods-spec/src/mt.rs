@@ -2,7 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MtApproval {
@@ -21,7 +21,7 @@ pub struct GetBalanceOf {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceOfResult {
-    pub balance: U128,
+    pub balance: SU128,
 }
 
 /// Get multiple multi-token balances.
@@ -36,7 +36,7 @@ pub struct GetBatchBalanceOf {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct BalanceEntry {
     pub token_id: String,
-    pub balance: U128,
+    pub balance: SU128,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -54,7 +54,7 @@ pub struct GetSupply {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetSupplyResult {
-    pub supply: Option<U128>,
+    pub supply: Option<SU128>,
 }
 
 /// Get total supply for multiple multi-token IDs.
@@ -68,7 +68,7 @@ pub struct GetBatchSupply {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SupplyEntry {
     pub token_id: String,
-    pub supply: Option<U128>,
+    pub supply: Option<SU128>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -83,7 +83,7 @@ pub struct Transfer {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub token_id: String,
-    pub amount: U128,
+    pub amount: SU128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<MtApproval>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,7 +97,7 @@ pub struct TransferCall {
     pub contract_id: AccountId,
     pub receiver_id: AccountId,
     pub token_id: String,
-    pub amount: U128,
+    pub amount: SU128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<MtApproval>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

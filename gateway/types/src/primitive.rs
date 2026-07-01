@@ -63,48 +63,6 @@ impl JsonSchema for CryptoHash {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct U128(pub u128);
-
-impl Serialize for U128 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for U128 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-        let value = encoded.parse().map_err(D::Error::custom)?;
-        Ok(Self(value))
-    }
-}
-
-impl JsonSchema for U128 {
-    fn schema_name() -> String {
-        "U128".to_owned()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            string: Some(Box::new(StringValidation::default())),
-            metadata: Some(Box::new(Metadata {
-                title: Some("Unsigned 128-bit integer".to_owned()),
-                description: Some("Base-10 encoded unsigned integer payload.".to_owned()),
-                ..Metadata::default()
-            })),
-            ..SchemaObject::default()
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Base64Bytes(pub Vec<u8>);
 
