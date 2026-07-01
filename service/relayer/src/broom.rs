@@ -1,9 +1,8 @@
 use std::time::Duration;
 
-use near_sdk::NearToken;
 use templar_gateway_client::Client as GatewayClient;
 use templar_gateway_core::GatewayError;
-use templar_gateway_types::{IdempotencyKey, OperationRecord, OperationStatus};
+use templar_gateway_types::IdempotencyKey;
 use tokio::{select, sync::watch};
 
 use crate::client::database::{Database, PendingCharge};
@@ -103,63 +102,11 @@ async fn reconcile(
         return Ok(());
     };
 
-    match settlement(&operation) {
-        Settlement::Settle {
-            tokens_burnt,
-            succeeded,
-        } => {
-            database
-                .settle(
-                    &charge.account_id,
-                    charge.operation_key,
-                    tokens_burnt,
-                    succeeded,
-                )
-                .await?;
-        }
-        Settlement::Release => {
-            database
-                .release_pending(&charge.account_id, charge.operation_key)
-                .await?;
-        }
-        Settlement::Defer => {}
-    }
+    // Resolve the charge from the operation's recorded status — the same decision
+    // the hot path uses. A terminal operation settles (or releases); a still
+    // in-flight one is left locked and reconciled on a later sweep.
+    database
+        .resolve_charge(&charge.account_id, charge.operation_key, &operation)
+        .await?;
     Ok(())
-}
-
-/// How a charge should be settled, decided from the gateway operation's recorded
-/// outcome — no chain query needed (the gateway captured the cost at execution).
-enum Settlement {
-    /// The operation reached a terminal outcome; charge the recorded cost.
-    Settle {
-        tokens_burnt: NearToken,
-        succeeded: bool,
-    },
-    /// The operation failed before executing on chain; release the slot uncharged.
-    Release,
-    /// Still in flight after `resume`; reconcile on a later sweep.
-    Defer,
-}
-
-fn settlement(operation: &OperationRecord) -> Settlement {
-    match operation.status {
-        OperationStatus::Succeeded => Settlement::Settle {
-            tokens_burnt: operation.tokens_burnt(),
-            succeeded: true,
-        },
-        // A failed operation that recorded an execution outcome reverted on chain
-        // (gas was burnt — charge it); one without an outcome was rejected before
-        // execution (nothing landed — release).
-        OperationStatus::Failed => {
-            if operation.final_outcome().is_some() {
-                Settlement::Settle {
-                    tokens_burnt: operation.tokens_burnt(),
-                    succeeded: false,
-                }
-            } else {
-                Settlement::Release
-            }
-        }
-        OperationStatus::Pending | OperationStatus::InProgress => Settlement::Defer,
-    }
 }

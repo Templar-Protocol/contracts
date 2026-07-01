@@ -3,7 +3,7 @@ use near_sdk::{borsh, NearToken};
 use templar_gateway_methods_spec::tx;
 use templar_gateway_types::SignedDelegateActionInput;
 
-use crate::{app::App, route::SimpleResponse};
+use crate::{app::App, client::database::AccountedStatus, route::SimpleResponse};
 
 mod message;
 pub use message::{RelayRequest, RelayResponse};
@@ -142,7 +142,7 @@ pub async fn relay(
     // The relayer's job is to land the caller's signed transaction on chain; if
     // it then reverts, that is the caller's transaction to fix, not a relay
     // failure. Report success with the hash so the caller can inspect the outcome.
-    if !execution.succeeded {
+    if execution.status == AccountedStatus::Failed {
         tracing::warn!(transaction_hash = %execution.transaction_hash, "Relayed transaction reverted on chain");
     }
 

@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::{
     broom,
     client::{
-        database::{error::LockError, Database},
+        database::{error::LockError, AccountedStatus, Database},
         oracle,
     },
     error::{FunctionCallRejectionReason, PayloadRejectionReason},
@@ -838,7 +838,6 @@ impl App {
             .map_err(SubmitError::Gateway)?;
 
         let operation = result.operation;
-        let succeeded = operation.status == OperationStatus::Succeeded;
 
         // Resolve the on-chain hash before charging, so the no-transaction error
         // path leaves the charge untouched for the broom to reconcile rather than
@@ -852,21 +851,17 @@ impl App {
         let native_tx_hash = from_gateway_hash(&tx_hash);
         tracing::Span::current().record("transaction_hash", tracing::field::display(&tx_hash));
 
-        // `execute_request` drives the operation to a terminal outcome, so its
-        // recorded cost is final. Settle directly: gas (`tokens_burnt`) always,
-        // the locked deposit only on success.
-        self.database
-            .settle(
-                &account_id,
-                operation_key,
-                operation.tokens_burnt(),
-                succeeded,
-            )
+        // Resolve the charge from the operation's recorded status. A terminal
+        // operation settles now; a still in-flight one is left locked for the
+        // broom, so its (not-yet-final) cost is never lost.
+        let status = self
+            .database
+            .resolve_charge(&account_id, operation_key, &operation)
             .await?;
 
         Ok(AccountedExecution {
             transaction_hash: native_tx_hash,
-            succeeded,
+            status,
         })
     }
 
@@ -938,15 +933,18 @@ impl App {
             )
             .await?;
 
-        // A reverted deposit didn't register the account; callers (e.g. relay)
-        // must not proceed as if storage is in place.
-        if !execution.succeeded {
-            return Err(StorageDepositError::Reverted {
+        // Only a confirmed deposit registers storage; the caller (e.g. relay) must
+        // not proceed as if storage is in place otherwise. A reverted deposit
+        // failed outright; a still-pending one isn't confirmed yet.
+        match execution.status {
+            AccountedStatus::Succeeded => Ok(()),
+            AccountedStatus::Failed => Err(StorageDepositError::Reverted {
                 transaction_hash: execution.transaction_hash,
-            });
+            }),
+            AccountedStatus::Pending => Err(StorageDepositError::NotFinalized {
+                transaction_hash: execution.transaction_hash,
+            }),
         }
-
-        Ok(())
     }
 }
 
@@ -970,16 +968,21 @@ pub enum StorageDepositError {
     Reverted {
         transaction_hash: near_primitives::hash::CryptoHash,
     },
+    #[error("Storage deposit not yet finalized (transaction {transaction_hash})")]
+    NotFinalized {
+        transaction_hash: near_primitives::hash::CryptoHash,
+    },
 }
 
-/// The result of [`App::execute_and_account`]: the on-chain transaction hash
-/// and whether the operation's final status was success. The charge is always
-/// settled; `succeeded` lets callers decide whether to report success (e.g. UA
-/// create must not claim success for a reverted deploy).
+/// The result of [`App::execute_and_account`]: the on-chain transaction hash and
+/// the operation's disposition. `status` lets callers distinguish a terminal
+/// success from an on-chain failure and from a still-in-flight operation (whose
+/// charge is deferred to the broom) — e.g. UA create must not claim success for a
+/// reverted deploy, and storage deposit must not proceed unless it is confirmed.
 #[derive(Debug, Clone, Copy)]
 pub struct AccountedExecution {
     pub transaction_hash: near_primitives::hash::CryptoHash,
-    pub succeeded: bool,
+    pub status: AccountedStatus,
 }
 
 /// Failure submitting a gateway write and settling its allowance charge.

@@ -28,6 +28,7 @@ use templar_universal_account::{
 
 use crate::{
     app::{to_gateway_hash, App},
+    client::database::AccountedStatus,
     route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
 };
 
@@ -359,9 +360,11 @@ pub async fn create(
         }
     };
 
-    // The accounting is finalized regardless, but a reverted deploy must not be
-    // reported as a successful account creation.
-    if !execution.succeeded {
+    // A reverted deploy must not be reported as a successful account creation. A
+    // still-pending deploy has landed on chain and is finalizing, so report it as
+    // success with the hash (like the relay endpoints) — the broom settles the
+    // charge once it is terminal.
+    if execution.status == AccountedStatus::Failed {
         tracing::warn!(
             transaction_hash = %execution.transaction_hash,
             "Universal account deployment reverted on chain"

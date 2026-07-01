@@ -14,7 +14,7 @@ use templar_universal_account::{
     ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
 
-use crate::{app::App, route::SimpleResponse};
+use crate::{app::App, client::database::AccountedStatus, route::SimpleResponse};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -253,7 +253,7 @@ pub async fn relay(
     // The relayer's job is to land the caller's signed transaction on chain; a
     // revert after that is the caller's transaction to fix, not a relay failure.
     // Report success with the hash so the caller can inspect the outcome.
-    if !execution.succeeded {
+    if execution.status == AccountedStatus::Failed {
         tracing::warn!(transaction_hash = %execution.transaction_hash, "Universal account relay reverted on chain");
     }
 

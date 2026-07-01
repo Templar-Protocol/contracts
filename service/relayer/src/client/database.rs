@@ -1,11 +1,27 @@
 use near_sdk::{AccountId, AccountIdRef, NearToken};
 use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
+use templar_gateway_types::{OperationRecord, OperationStatus};
 use tokio::sync::watch;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Database {
     connection: PgPool,
+}
+
+/// How an accounted gateway operation resolved, from the caller's perspective.
+/// A terminal operation has had its charge settled (or released); a non-terminal
+/// one is still in flight, its charge left locked for the broom to reconcile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountedStatus {
+    /// Terminal success: the recorded cost (gas + inner spend) was charged.
+    Succeeded,
+    /// Terminal failure: either reverted on chain (gas charged) or rejected
+    /// before execution (charge released). Nothing more will be billed.
+    Failed,
+    /// Not yet terminal: the charge is left locked and settled later by the broom
+    /// against the gateway's final record — never billed off a non-final cost.
+    Pending,
 }
 
 #[derive(Debug, sqlx::Type, PartialEq, Eq)]
@@ -267,24 +283,63 @@ RETURNING
         Ok(())
     }
 
-    /// Settle an in-flight charge against its gateway operation's actual cost:
-    /// debit `tokens_burnt` (always) plus the locked `inner_spend` (only if the
-    /// operation succeeded), and release the slot.
+    /// Resolve an in-flight charge from its gateway operation's recorded status —
+    /// the single place a charge is settled, so a charge is only ever billed off a
+    /// *terminal* operation's final cost.
     ///
-    /// Idempotent: the `pending_operation_key = $2` guard means a charge already
-    /// settled (e.g. by the hot path before the broom got to it) matches no row
-    /// and is a no-op.
+    /// - `Succeeded`: settle the recorded cost (gas + inner spend).
+    /// - `Failed`: reverted on chain (recorded an outcome) settles the gas;
+    ///   rejected before execution (no outcome) releases the slot uncharged.
+    /// - `Pending`/`InProgress`: not terminal, so the cost isn't final — leave the
+    ///   charge locked for the broom to reconcile once the operation settles. This
+    ///   is what makes undercharging a still-in-flight operation impossible: there
+    ///   is no path that settles a non-terminal record.
     ///
     /// # Errors
     ///
     /// - Query errors
+    pub async fn resolve_charge(
+        &self,
+        account_id: &AccountIdRef,
+        operation_key: Uuid,
+        operation: &OperationRecord,
+    ) -> Result<AccountedStatus, sqlx::Error> {
+        match operation.status {
+            OperationStatus::Succeeded => {
+                self.settle(account_id, operation_key, operation.tokens_burnt(), true)
+                    .await?;
+                Ok(AccountedStatus::Succeeded)
+            }
+            OperationStatus::Failed => {
+                if operation.final_outcome().is_some() {
+                    self.settle(account_id, operation_key, operation.tokens_burnt(), false)
+                        .await?;
+                } else {
+                    self.release_pending(account_id, operation_key).await?;
+                }
+                Ok(AccountedStatus::Failed)
+            }
+            OperationStatus::Pending | OperationStatus::InProgress => Ok(AccountedStatus::Pending),
+        }
+    }
+
+    /// Settle an in-flight charge against its gateway operation's actual cost:
+    /// debit `tokens_burnt` (always) plus the locked `inner_spend` (only if the
+    /// operation succeeded), and release the slot.
+    ///
+    /// Private: the only caller is [`Database::resolve_charge`], which alone
+    /// decides whether an operation is terminal enough to settle.
+    ///
+    /// Idempotent: the `pending_operation_key = $2` guard means a charge already
+    /// settled (e.g. by the hot path before the broom got to it) matches no row
+    /// and is a no-op.
     #[tracing::instrument(skip(self), fields(
         account_id = %account_id,
         operation_key = %operation_key,
         tokens_burnt = %tokens_burnt,
         succeeded = succeeded,
     ))]
-    pub async fn settle(
+    async fn settle(
         &self,
         account_id: &AccountIdRef,
         operation_key: Uuid,
@@ -423,6 +478,8 @@ WHERE
 mod tests {
     use std::time::Duration;
 
+    use templar_gateway_types::{ManagedAccountId, OperationId};
+
     use super::*;
 
     fn db(pool: PgPool) -> Database {
@@ -435,6 +492,18 @@ mod tests {
 
     fn near(yocto: u128) -> NearToken {
         NearToken::from_yoctonear(yocto)
+    }
+
+    /// A step-less operation record with the given status (so `tokens_burnt` is 0
+    /// and `final_outcome` is `None`) — enough to exercise resolve_charge's
+    /// settle/release/defer branches.
+    fn operation(status: OperationStatus) -> OperationRecord {
+        OperationRecord {
+            id: OperationId("op".to_owned()),
+            signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+            status,
+            steps: vec![],
+        }
     }
 
     async fn allowance(db: &Database, account: &AccountId) -> u128 {
@@ -514,6 +583,80 @@ mod tests {
         db.settle(&account, key, near(8), true).await.unwrap();
         db.settle(&account, key, near(8), true).await.unwrap();
         assert_eq!(allowance(&db, &account).await, 100 - 8 - 5);
+    }
+
+    /// A non-terminal operation is never settled on the spot: resolve_charge
+    /// defers it, leaving the charge locked so the broom later bills the final
+    /// cost rather than the (currently zero) recorded one.
+    #[sqlx::test]
+    async fn resolve_charge_defers_non_terminal(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        let status = db
+            .resolve_charge(&account, key, &operation(OperationStatus::InProgress))
+            .await
+            .unwrap();
+        assert_eq!(status, AccountedStatus::Pending);
+        // Allowance untouched, and the slot is still locked (a second lock fails).
+        assert_eq!(allowance(&db, &account).await, 100);
+        let err = db
+            .lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, error::LockError::PendingCharge(_)));
+    }
+
+    /// A succeeded operation settles its recorded cost (here just the locked
+    /// deposit, with zero-step gas).
+    #[sqlx::test]
+    async fn resolve_charge_settles_succeeded(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        let status = db
+            .resolve_charge(&account, key, &operation(OperationStatus::Succeeded))
+            .await
+            .unwrap();
+        assert_eq!(status, AccountedStatus::Succeeded);
+        assert_eq!(allowance(&db, &account).await, 100 - 5);
+    }
+
+    /// A failed operation with no execution outcome (rejected before running)
+    /// releases its charge uncharged.
+    #[sqlx::test]
+    async fn resolve_charge_releases_rejected(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        let status = db
+            .resolve_charge(&account, key, &operation(OperationStatus::Failed))
+            .await
+            .unwrap();
+        assert_eq!(status, AccountedStatus::Failed);
+        assert_eq!(allowance(&db, &account).await, 100);
+        // The slot is free again.
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap();
     }
 
     /// Only one charge may be in flight per account.
