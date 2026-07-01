@@ -104,23 +104,21 @@ impl NetworkConfigBuilder {
 
     /// Set the RPC API key, sent as an `Authorization` header. Takes precedence
     /// over a key embedded in the URL; `None` falls back to that embedded key.
+    ///
+    /// A blank or whitespace-only value (e.g. an empty env var parsed as
+    /// `Some("")`) is treated as unset, so it doesn't suppress an embedded key.
     #[must_use]
     pub fn api_key(mut self, api_key: Option<String>) -> Self {
-        self.api_key = api_key;
+        self.api_key = api_key
+            .map(|key| key.trim().to_owned())
+            .filter(|key| !key.is_empty());
         self
     }
 
     /// Resolve the configuration, moving any API key onto the endpoint header.
     #[must_use]
     pub fn build(mut self) -> NetworkConfig {
-        let embedded_key = self
-            .rpc_url
-            .query_pairs()
-            .find(|(key, _)| key == "apiKey")
-            .map(|(_, value)| value.into_owned());
-        if embedded_key.is_some() {
-            self.rpc_url.set_query(None);
-        }
+        let embedded_key = self.take_embedded_api_key();
 
         let mut network = NetworkConfig::from_rpc_url(&self.network_name, self.rpc_url);
         if let Some(api_key) = self.api_key.or(embedded_key) {
@@ -132,6 +130,37 @@ impl NetworkConfigBuilder {
         }
 
         network
+    }
+
+    /// Remove and return an `apiKey` query parameter from the RPC URL, leaving
+    /// any other query parameters intact.
+    fn take_embedded_api_key(&mut self) -> Option<String> {
+        let mut api_key = None;
+        let remaining: Vec<(String, String)> = self
+            .rpc_url
+            .query_pairs()
+            .filter_map(|(key, value)| {
+                if key == "apiKey" {
+                    api_key = Some(value.into_owned());
+                    None
+                } else {
+                    Some((key.into_owned(), value.into_owned()))
+                }
+            })
+            .collect();
+
+        if api_key.is_some() {
+            if remaining.is_empty() {
+                self.rpc_url.set_query(None);
+            } else {
+                self.rpc_url
+                    .query_pairs_mut()
+                    .clear()
+                    .extend_pairs(remaining);
+            }
+        }
+
+        api_key
     }
 }
 
@@ -152,6 +181,50 @@ mod tests {
         let endpoint = &network.rpc_endpoints[0];
         assert_eq!(endpoint.url.as_str(), "https://rpc.mainnet.fastnear.com/");
         assert_eq!(endpoint.bearer_header.as_deref(), Some("Bearer SECRET"));
+    }
+
+    #[test]
+    fn embedded_api_key_extraction_preserves_other_query_params() {
+        let network = NetworkConfigBuilder::from_url(
+            "mainnet",
+            "https://rpc.mainnet.fastnear.com/?apiKey=SECRET&foo=bar"
+                .parse()
+                .unwrap(),
+        )
+        .build();
+
+        let endpoint = &network.rpc_endpoints[0];
+        assert_eq!(
+            endpoint.url.as_str(),
+            "https://rpc.mainnet.fastnear.com/?foo=bar"
+        );
+        assert_eq!(endpoint.bearer_header.as_deref(), Some("Bearer SECRET"));
+    }
+
+    #[test]
+    fn blank_api_key_falls_back_to_embedded() {
+        let network = NetworkConfigBuilder::from_url(
+            "mainnet",
+            "https://rpc.mainnet.fastnear.com/?apiKey=EMBEDDED"
+                .parse()
+                .unwrap(),
+        )
+        .api_key(Some(String::new()))
+        .build();
+
+        assert_eq!(
+            network.rpc_endpoints[0].bearer_header.as_deref(),
+            Some("Bearer EMBEDDED")
+        );
+    }
+
+    #[test]
+    fn blank_api_key_without_embedded_leaves_bare() {
+        let network = NetworkConfigBuilder::new(super::Network::Testnet)
+            .api_key(Some("   ".to_owned()))
+            .build();
+
+        assert!(network.rpc_endpoints[0].bearer_header.is_none());
     }
 
     #[test]
