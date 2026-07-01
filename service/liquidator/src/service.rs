@@ -8,7 +8,7 @@
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 use near_sdk::AccountId;
-use templar_gateway_client::{collect_paginated, Network, SigningClient};
+use templar_gateway_client::{collect_paginated, Network, NetworkConfigBuilder, SigningClient};
 use templar_gateway_methods_spec::{contract, market, registry};
 use templar_gateway_types::common::Pagination;
 use tokio::{
@@ -60,8 +60,10 @@ pub struct ServiceConfig {
     pub signer_account: AccountId,
     /// Network to operate on
     pub network: Network,
-    /// RPC URL (embed any provider key in the URL, e.g. `…/?apiKey=<key>`)
+    /// Custom RPC URL (overrides the network default)
     pub near_rpc_url: Option<String>,
+    /// API key for the RPC endpoint, sent as an `Authorization` header
+    pub near_rpc_api_key: Option<String>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
     /// Interval between liquidation scans in seconds
@@ -133,23 +135,19 @@ impl LiquidatorService {
     /// client cannot be constructed for the configured signer.
     #[allow(clippy::expect_used)]
     pub fn new(config: ServiceConfig) -> Self {
-        let near_rpc_url = config
-            .near_rpc_url
-            .clone()
-            .unwrap_or_else(|| config.network.rpc_url().to_string());
-
-        // Don't log `near_rpc_url`: operators embed their provider `apiKey` in
-        // it, so the URL is secret-bearing.
+        // Don't log the resolved RPC URL: an embedded `apiKey` makes it
+        // secret-bearing.
         tracing::info!(
             network = %config.network,
             custom_rpc = config.near_rpc_url.is_some(),
             "Connecting to RPC"
         );
 
-        let network = near_api::NetworkConfig::from_rpc_url(
-            &config.network.to_string(),
-            near_rpc_url.parse().expect("invalid NEAR_RPC_URL"),
-        );
+        let network = NetworkConfigBuilder::new(config.network)
+            .rpc_url(config.near_rpc_url.as_deref())
+            .expect("invalid NEAR_RPC_URL")
+            .api_key(config.near_rpc_api_key.clone())
+            .build();
 
         // The gateway client signs with `near_api::SecretKey`; the CLI parses a
         // `near_crypto::SecretKey`, so round-trip through the shared string form.

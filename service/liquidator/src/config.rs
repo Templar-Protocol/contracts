@@ -63,11 +63,14 @@ pub struct Args {
     #[arg(short, long, env = "NEAR_NETWORK", default_value_t = Network::Testnet)]
     pub network: Network,
 
-    /// Custom RPC URL (overrides default network RPC). To authenticate with a
-    /// provider, embed the key in the URL, e.g.
-    /// `https://rpc.mainnet.fastnear.com/?apiKey=<key>`.
+    /// Custom RPC URL (overrides default network RPC).
     #[arg(long, env = "NEAR_RPC_URL")]
     pub near_rpc_url: Option<String>,
+
+    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
+    #[arg(long, env = "NEAR_RPC_API_KEY")]
+    pub near_rpc_api_key: Option<String>,
 
     /// Transaction timeout in seconds
     #[arg(long, env = "TRANSACTION_TIMEOUT", default_value_t = 60)]
@@ -377,6 +380,7 @@ impl Args {
             signer_account: self.signer_account.clone(),
             network: self.network,
             near_rpc_url: self.near_rpc_url.clone(),
+            near_rpc_api_key: self.near_rpc_api_key.clone(),
             transaction_timeout: self.transaction_timeout,
             liquidation_scan_interval: self.liquidation_scan_interval,
             registry_refresh_interval: self.registry_refresh_interval,
@@ -435,6 +439,7 @@ mod tests {
             signer_account: "liquidator.testnet".parse().unwrap(),
             network: Network::Testnet,
             near_rpc_url: None,
+            near_rpc_api_key: None,
             transaction_timeout: 60,
             liquidation_scan_interval: 600,
             registry_refresh_interval: 3600,
