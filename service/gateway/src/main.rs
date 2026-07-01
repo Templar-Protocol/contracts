@@ -6,7 +6,7 @@ mod rpc;
 use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
-use near_api::NetworkConfig;
+use templar_gateway_client::NetworkConfigBuilder;
 use templar_gateway_core::GatewayContext;
 use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
 use tokio::signal;
@@ -23,12 +23,14 @@ async fn main() -> anyhow::Result<()> {
 
     let signers = config.build_signers().await?;
     let store = config.build_store().await?;
-    let context =
-        GatewayContext::builder(NetworkConfig::from_rpc_url("gateway", config.near_rpc_url))
-            .with_pyth_source(config.pyth_hermes_url)
-            .with_redstone_source(&config.redstone_node_path)
-            .map_err(anyhow::Error::from)?
-            .build();
+    let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
+        .api_key(config.near_rpc_api_key)
+        .build();
+    let context = GatewayContext::builder(network)
+        .with_pyth_source(config.pyth_hermes_url)
+        .with_redstone_source(&config.redstone_node_path)
+        .map_err(anyhow::Error::from)?
+        .build();
     let service = GatewayService::spawn(context, signers, store)?;
 
     let server = ServerBuilder::default().build(config.listen_addr).await?;

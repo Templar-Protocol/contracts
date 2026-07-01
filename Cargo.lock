@@ -13233,6 +13233,7 @@ dependencies = [
  "templar-gateway-store",
  "templar-gateway-types",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -13395,6 +13396,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "templar-common",
+ "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",

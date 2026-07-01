@@ -2,9 +2,8 @@ use std::{collections::HashMap, future::Future, time::Duration};
 
 use anyhow::Context;
 use clap::Parser;
-use near_api::NetworkConfig;
 use templar_accumulator::{list_all_deployments, Accumulator, Args};
-use templar_gateway_client::SigningClient;
+use templar_gateway_client::{NetworkConfigBuilder, SigningClient};
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -108,17 +107,18 @@ async fn run_service(
     args: Args,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
-    let rpc_url = args
-        .rpc_url
-        .clone()
-        .unwrap_or_else(|| args.network.rpc_url().to_owned());
-
-    info!(network = %args.network, %rpc_url, "Connecting to RPC");
-
-    let network = NetworkConfig::from_rpc_url(
-        &args.network.to_string(),
-        rpc_url.parse().context("invalid RPC URL")?,
+    // Don't log the resolved RPC URL: an embedded `apiKey` makes it secret-bearing.
+    info!(
+        network = %args.network,
+        custom_rpc = args.rpc_url.is_some(),
+        "Connecting to RPC"
     );
+
+    let network = NetworkConfigBuilder::new(args.network)
+        .rpc_url(args.rpc_url.as_deref())
+        .context("invalid RPC URL")?
+        .api_key(args.rpc_api_key.clone())
+        .build();
 
     let client = SigningClient::connect(
         network,
