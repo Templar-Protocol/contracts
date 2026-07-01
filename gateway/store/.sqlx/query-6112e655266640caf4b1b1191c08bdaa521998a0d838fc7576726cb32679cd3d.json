@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    id,\n    rpc_method,\n    signer_account_id,\n    idempotency_key,\n    request_fingerprint_hash,\n    request_payload,\n    STATUS AS \"status: OperationStatusRow\",\n    created_at,\n    updated_at\nFROM\n    gateway_operations\nWHERE\n    STATUS IN ('pending', 'in_progress')\nORDER BY\n    created_at ASC\n",
+  "query": "\nSELECT\n    id,\n    rpc_method,\n    signer_account_id,\n    idempotency_key,\n    request_fingerprint_hash,\n    request_payload,\n    STATUS AS \"status: OperationStatusRow\",\n    planned_at,\n    created_at,\n    updated_at\nFROM\n    gateway_operations\nWHERE\n    id = $1\n",
   "describe": {
     "columns": [
       {
@@ -52,17 +52,24 @@
       },
       {
         "ordinal": 7,
-        "name": "created_at",
+        "name": "planned_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
@@ -72,9 +79,10 @@
       false,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "4dcb32edd79fc4403ce3f7d4b8e19c6ae3d5c33370087284bd222b05fde70127"
+  "hash": "6112e655266640caf4b1b1191c08bdaa521998a0d838fc7576726cb32679cd3d"
 }

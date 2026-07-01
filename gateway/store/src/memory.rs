@@ -152,6 +152,9 @@ impl OperationStore for MemoryStore {
             request_payload,
             id: OperationId(Uuid::new_v4().to_string()),
             signer_account_id,
+            // An empty plan here is a reservation; a step-bearing plan is already
+            // planned. (A no-op is promoted from a reservation, not created here.)
+            planned: !plan.steps.is_empty(),
             succeeded_steps: vec![],
             current_step: None,
             remaining_steps: VecDeque::from(plan.steps),
@@ -182,8 +185,16 @@ impl OperationStore for MemoryStore {
         Ok(())
     }
 
-    async fn delete_operation(&self, operation_id: &OperationId) -> GatewayResult<()> {
+    async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
         let mut state = self.state.lock().await;
+        // Only remove a reservation; leave any operation that ran a step intact.
+        if !state
+            .operations
+            .get(operation_id)
+            .is_some_and(StoredOperation::is_reservation)
+        {
+            return Ok(());
+        }
         state.operations.remove(operation_id);
         state.completed.shift_remove(operation_id);
         if let Some(key) = state.idempotency_by_id.remove(operation_id) {
@@ -232,7 +243,8 @@ mod tests {
         }
     }
 
-    /// An operation with no steps at all — a bare reservation (`Pending`).
+    /// A planned operation with no steps yet — the base the helpers below add a
+    /// succeeded or remaining step to. (`planned`, so not a reservation.)
     fn operation_skeleton(id: &str) -> StoredOperation {
         StoredOperation {
             rpc_method: "market.applyInterest".to_owned(),
@@ -240,6 +252,7 @@ mod tests {
             request_payload: Vec::new(),
             id: OperationId(id.to_owned()),
             signer_account_id: signer(),
+            planned: true,
             succeeded_steps: Vec::new(),
             current_step: None,
             remaining_steps: VecDeque::new(),
@@ -248,6 +261,8 @@ mod tests {
 
     /// Push a succeeded step, making an operation terminal (`Succeeded`).
     fn mark_succeeded(operation: &mut StoredOperation) {
+        // A succeeded step implies planning completed.
+        operation.planned = true;
         operation.succeeded_steps.push(SucceededStep {
             transaction: planned_tx(),
             tx_hash: CryptoHash(NearCryptoHash::default()),
@@ -480,7 +495,7 @@ mod tests {
 
         // Deleting it clears every index, including the idempotency mapping.
         store
-            .delete_operation(reserved.operation_id())
+            .delete_reservation(reserved.operation_id())
             .await
             .unwrap();
         assert!(store
@@ -493,5 +508,24 @@ mod tests {
         assert!(state.operations.is_empty());
         assert!(state.idempotency.is_empty());
         assert!(state.idempotency_by_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_reservation_leaves_executed_operations() {
+        let store = MemoryStore::new();
+        // A terminal (executed) operation has succeeded steps, not a reservation.
+        let executed = terminal_operation("executed");
+        store.save_operation(executed.clone()).await.unwrap();
+
+        // delete_reservation must refuse to touch it.
+        store
+            .delete_reservation(executed.operation_id())
+            .await
+            .unwrap();
+        assert!(store
+            .get_by_id(executed.operation_id())
+            .await
+            .unwrap()
+            .is_some());
     }
 }

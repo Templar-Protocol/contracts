@@ -140,6 +140,11 @@ pub struct StoredOperation {
     pub request_payload: Vec<u8>,
     pub id: OperationId,
     pub signer_account_id: ManagedAccountId,
+    /// Whether planning has completed. A reservation (created to hold the
+    /// idempotency key before planning) is `false`; it flips to `true` once a
+    /// plan is attached — including an empty (no-op) plan, so a no-op is a real
+    /// terminal operation rather than being indistinguishable from a reservation.
+    pub planned: bool,
     pub succeeded_steps: Vec<SucceededStep>,
     pub current_step: Option<CurrentStep>,
     pub remaining_steps: VecDeque<PlannedTransaction>,
@@ -192,6 +197,12 @@ impl StoredOperation {
     }
 
     pub fn status(&self) -> OperationStatus {
+        // A reservation (planning not yet complete) is never terminal, whatever
+        // its steps. Once planned, status derives purely from the steps -- so a
+        // planned operation with no steps is a (terminal) no-op success.
+        if !self.planned {
+            return OperationStatus::Pending;
+        }
         match &self.current_step {
             Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. }) => {
                 OperationStatus::Failed
@@ -199,11 +210,7 @@ impl StoredOperation {
             Some(CurrentStep::Prepared { .. } | CurrentStep::Submitted { .. }) => {
                 OperationStatus::InProgress
             }
-            // No steps at all = reserved before planning (or never planned): not
-            // terminal. Succeeded requires at least one step to have succeeded.
-            None if self.remaining_steps.is_empty() && !self.succeeded_steps.is_empty() => {
-                OperationStatus::Succeeded
-            }
+            None if self.remaining_steps.is_empty() => OperationStatus::Succeeded,
             None if self.succeeded_steps.is_empty() => OperationStatus::Pending,
             None => OperationStatus::InProgress,
         }
@@ -216,14 +223,12 @@ impl StoredOperation {
         )
     }
 
-    /// A bare reservation: created before planning, with no steps at all
-    /// (nothing prepared, submitted, or succeeded). Nothing was submitted, so
-    /// there is nothing on chain to resume — recovery and pre-submit error
-    /// cleanup drop these.
+    /// A bare reservation: created to hold the idempotency key before planning,
+    /// with planning not yet complete. Nothing was submitted, so there is
+    /// nothing on chain to resume — recovery and pre-submit error cleanup drop
+    /// these. A planned no-op (`planned`, no steps) is *not* a reservation.
     pub fn is_reservation(&self) -> bool {
-        self.current_step.is_none()
-            && self.succeeded_steps.is_empty()
-            && self.remaining_steps.is_empty()
+        !self.planned
     }
 
     #[must_use]

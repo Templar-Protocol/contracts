@@ -79,6 +79,7 @@ struct OperationRow {
     request_fingerprint_hash: Vec<u8>,
     request_payload: Value,
     status: OperationStatusRow,
+    planned_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -160,6 +161,7 @@ SELECT
     request_fingerprint_hash,
     request_payload,
     STATUS AS "status: OperationStatusRow",
+    planned_at,
     created_at,
     updated_at
 FROM
@@ -195,6 +197,7 @@ SELECT
     request_fingerprint_hash,
     request_payload,
     STATUS AS "status: OperationStatusRow",
+    planned_at,
     created_at,
     updated_at
 FROM
@@ -230,6 +233,10 @@ WHERE
             request_payload,
             id: OperationId(uuid::Uuid::new_v4().to_string()),
             signer_account_id,
+            // A step-bearing plan is already planned; an empty plan here is a
+            // reservation (the no-op case is promoted from a reservation later,
+            // never created directly).
+            planned: !plan.steps.is_empty(),
             succeeded_steps: vec![],
             current_step: None,
             remaining_steps: VecDeque::from(plan.steps),
@@ -264,12 +271,14 @@ WHERE
         update_operation_tx(&self.pool, &operation).await
     }
 
-    async fn delete_operation(&self, operation_id: &OperationId) -> GatewayResult<()> {
+    async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
         let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
             .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-        // Steps (and their receipts) cascade via the FK ON DELETE CASCADE.
+        // Only delete a reservation (planning not yet complete). A planned
+        // operation -- including a no-op, which also has no steps -- is left
+        // intact. No-op if the row is planned or does not exist.
         sqlx::query!(
-            "DELETE FROM gateway_operations WHERE id = $1",
+            "DELETE FROM gateway_operations WHERE id = $1 AND planned_at IS NULL",
             operation_uuid
         )
         .execute(&self.pool)
@@ -289,6 +298,7 @@ SELECT
     request_fingerprint_hash,
     request_payload,
     STATUS AS "status: OperationStatusRow",
+    planned_at,
     created_at,
     updated_at
 FROM
@@ -346,12 +356,15 @@ async fn update_operation_tx(pool: &PgPool, operation: &StoredOperation) -> Gate
 UPDATE
     gateway_operations
 SET
-    STATUS = $2
+    STATUS = $2,
+    -- Set the planning timestamp once, when the reservation becomes planned.
+    planned_at = CASE WHEN $3 THEN COALESCE(planned_at, NOW()) ELSE planned_at END
 WHERE
     id = $1
 "#,
         operation_uuid,
         status as OperationStatusRow,
+        operation.planned,
     )
     .execute(&mut *tx)
     .await?;
@@ -395,10 +408,11 @@ INSERT INTO
         idempotency_key,
         request_fingerprint_hash,
         request_payload,
-        STATUS
+        STATUS,
+        planned_at
     )
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7)
+    ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN NOW() END)
 "#,
         operation_uuid,
         operation.rpc_method,
@@ -407,6 +421,7 @@ VALUES
         operation.request_fingerprint_hash.as_slice(),
         request_payload,
         status as OperationStatusRow,
+        operation.planned,
     )
     .execute(&mut **tx)
     .await?;
@@ -770,6 +785,7 @@ fn rows_to_stored_operation(
         request_payload,
         id,
         signer_account_id,
+        planned: operation_row.planned_at.is_some(),
         succeeded_steps,
         current_step,
         remaining_steps,
@@ -977,6 +993,7 @@ mod tests {
                 request_payload: serde_json::to_vec(&serde_json::json!({ "amount": "7" })).unwrap(),
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+                planned: true,
                 succeeded_steps: vec![],
                 current_step: None,
                 remaining_steps: VecDeque::from([transaction]),
@@ -987,6 +1004,7 @@ mod tests {
                 request_payload: serde_json::to_vec(&serde_json::json!({ "amount": "8" })).unwrap(),
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+                planned: true,
                 succeeded_steps: vec![],
                 current_step: Some(CurrentStep::Submitted {
                     transaction,
@@ -1000,6 +1018,7 @@ mod tests {
                 request_payload: serde_json::to_vec(&serde_json::json!({ "amount": "9" })).unwrap(),
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+                planned: true,
                 succeeded_steps: vec![SucceededStep {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
@@ -1015,6 +1034,7 @@ mod tests {
                     .unwrap(),
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+                planned: true,
                 succeeded_steps: vec![],
                 current_step: Some(CurrentStep::Reverted {
                     transaction,
@@ -1069,17 +1089,17 @@ mod tests {
         assert_eq!(found.status(), OperationStatus::Succeeded);
     }
 
-    /// A reservation (no steps) is non-terminal, and deleting it removes the row
-    /// and its steps and clears the idempotency mapping — the path the driver
-    /// uses for a no-op plan or an abandoned reservation.
+    /// `delete_reservation` removes a bare reservation (clearing its idempotency
+    /// mapping) but refuses to touch an operation that ran any step.
     #[sqlx::test(migrations = "./migrations")]
-    async fn delete_operation_removes_reservation(pool: PgPool) {
+    async fn delete_reservation_only_removes_reservations(pool: PgPool) {
         let store = PostgresStore {
             pool,
             schema: "public".to_owned(),
         };
-        let key = IdempotencyKey("del-key".to_owned());
 
+        // A reservation: created with an empty plan, no steps.
+        let key = IdempotencyKey("del-key".to_owned());
         let CreateOperationResult::Created(reserved) = store
             .create_or_get_operation(
                 "tx.transfer",
@@ -1095,12 +1115,155 @@ mod tests {
             panic!("expected a freshly created reservation");
         };
         assert_eq!(reserved.status(), OperationStatus::Pending);
-        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_some());
 
-        store.delete_operation(&reserved.id).await.unwrap();
+        // An executed operation: created then driven to a succeeded step.
+        let executed = persist_failed_step(
+            &store,
+            [6; 32],
+            CurrentStep::Reverted {
+                transaction: sample_transaction(),
+                tx_hash: CryptoHash(NearCryptoHash::default()),
+                outcome: sample_outcome(),
+            },
+        )
+        .await;
 
+        // The reservation is removed and its idempotency mapping cleared.
+        store.delete_reservation(&reserved.id).await.unwrap();
         assert!(store.get_by_id(&reserved.id).await.unwrap().is_none());
         assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
+
+        // The executed operation is left untouched (delete is a no-op).
+        store.delete_reservation(&executed.id).await.unwrap();
+        assert!(store.get_by_id(&executed.id).await.unwrap().is_some());
+    }
+
+    /// Reconstructing a failed operation must preserve the billing-relevant
+    /// distinction the broom keys on: `Reverted` carries an outcome (settle the
+    /// gas burnt), `Rejected` carries none (release the charge).
+    #[sqlx::test(migrations = "./migrations")]
+    async fn reconstructs_rejected_distinct_from_reverted(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+
+        let reverted = persist_failed_step(
+            &store,
+            [10; 32],
+            CurrentStep::Reverted {
+                transaction: sample_transaction(),
+                tx_hash: CryptoHash(NearCryptoHash::default()),
+                outcome: sample_outcome(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            reverted.current_step,
+            Some(CurrentStep::Reverted { .. })
+        ));
+        assert_eq!(reverted.status(), OperationStatus::Failed);
+        assert!(
+            reverted.record().final_outcome().is_some(),
+            "a reverted step must settle the gas burnt"
+        );
+
+        let rejected = persist_failed_step(
+            &store,
+            [11; 32],
+            CurrentStep::Rejected {
+                transaction: sample_transaction(),
+                tx_hash: CryptoHash(NearCryptoHash::default()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            rejected.current_step,
+            Some(CurrentStep::Rejected { .. })
+        ));
+        assert_eq!(rejected.status(), OperationStatus::Failed);
+        assert!(
+            rejected.record().final_outcome().is_none(),
+            "a rejected step must release the charge"
+        );
+    }
+
+    /// A planned no-op (empty plan) persists as a terminal `Succeeded` operation
+    /// with no steps, keeps resolving by idempotency key (so a retry dedups
+    /// instead of re-planning), and is not removed by `delete_reservation`.
+    #[sqlx::test(migrations = "./migrations")]
+    async fn planned_noop_persists_and_dedups(pool: PgPool) {
+        let store = PostgresStore {
+            pool,
+            schema: "public".to_owned(),
+        };
+        let key = IdempotencyKey("noop-key".to_owned());
+
+        // Reserve, then promote with an empty plan (planning produced a no-op).
+        let CreateOperationResult::Created(mut operation) = store
+            .create_or_get_operation(
+                "storage.ensureDeposit",
+                ManagedAccountId("signer.near".parse().unwrap()),
+                Some(key.clone()),
+                [7; 32],
+                serde_json::to_vec(&serde_json::json!({})).unwrap(),
+                OperationPlan { steps: vec![] },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created reservation");
+        };
+        assert_eq!(operation.status(), OperationStatus::Pending);
+        operation.planned = true;
+        store.save_operation(operation.clone()).await.unwrap();
+
+        // Terminal, step-less, and still resolvable by idempotency key.
+        let reloaded = store
+            .get_by_idempotency_key(&key)
+            .await
+            .unwrap()
+            .expect("no-op persisted");
+        assert_eq!(reloaded.status(), OperationStatus::Succeeded);
+        assert!(reloaded.record().steps.is_empty());
+
+        // delete_reservation must not remove a planned no-op.
+        store.delete_reservation(&operation.id).await.unwrap();
+        assert!(store.get_by_id(&operation.id).await.unwrap().is_some());
+    }
+
+    /// Persist a failed operation with the given terminal `current_step` and read
+    /// it back, exercising the store's step reconstruction.
+    async fn persist_failed_step(
+        store: &PostgresStore,
+        fingerprint: [u8; 32],
+        current_step: CurrentStep,
+    ) -> StoredOperation {
+        let CreateOperationResult::Created(created) = store
+            .create_or_get_operation(
+                "tx.transfer",
+                ManagedAccountId("signer.near".parse().unwrap()),
+                None,
+                fingerprint,
+                serde_json::to_vec(&serde_json::json!({})).unwrap(),
+                OperationPlan {
+                    steps: vec![sample_transaction()],
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created operation");
+        };
+        let mut operation = sample_operation(OperationStatus::Failed);
+        operation.id = created.id.clone();
+        operation.current_step = Some(current_step);
+        store.save_operation(operation).await.unwrap();
+        store
+            .get_by_id(&created.id)
+            .await
+            .unwrap()
+            .expect("operation persisted")
     }
 
     #[test]
@@ -1157,6 +1320,7 @@ mod tests {
             request_fingerprint_hash: operation.request_fingerprint_hash.to_vec(),
             request_payload: serde_json::from_slice(&operation.request_payload).unwrap(),
             status: OperationStatusRow::Succeeded,
+            planned_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

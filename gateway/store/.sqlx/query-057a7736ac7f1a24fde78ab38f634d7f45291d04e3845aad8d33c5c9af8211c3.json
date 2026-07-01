@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nUPDATE\n    gateway_operations\nSET\n    STATUS = $2\nWHERE\n    id = $1\n",
+  "query": "\nUPDATE\n    gateway_operations\nSET\n    STATUS = $2,\n    -- Set the planning timestamp once, when the reservation becomes planned.\n    planned_at = CASE WHEN $3 THEN COALESCE(planned_at, NOW()) ELSE planned_at END\nWHERE\n    id = $1\n",
   "describe": {
     "columns": [],
     "parameters": {
@@ -18,10 +18,11 @@
               ]
             }
           }
-        }
+        },
+        "Bool"
       ]
     },
     "nullable": []
   },
-  "hash": "4da7fc5520fc876d25349aee4711a230d0c46f5edf47f4c545d63521b2321577"
+  "hash": "057a7736ac7f1a24fde78ab38f634d7f45291d04e3845aad8d33c5c9af8211c3"
 }

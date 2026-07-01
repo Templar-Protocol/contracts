@@ -105,7 +105,11 @@ impl OperationDriver {
         let plan = match <Impl as PlanWrite<Spec, Ctx>>::plan(request, context).await {
             Ok(plan) => plan,
             Err(error) => {
-                if let Err(cleanup) = self.store.delete_operation(operation.operation_id()).await {
+                if let Err(cleanup) = self
+                    .store
+                    .delete_reservation(operation.operation_id())
+                    .await
+                {
                     tracing::warn!(
                         operation_id = %operation.operation_id().0,
                         %cleanup,
@@ -120,31 +124,27 @@ impl OperationDriver {
     }
 
     /// Attach a plan to a reserved operation and run it to a terminal outcome.
-    /// An empty plan is a no-op: nothing executes, so the reservation is removed
-    /// and no operation record is left behind (a true no-op has nothing to
-    /// record).
+    /// Planning has completed, so the reservation is promoted to a real
+    /// operation — including for an empty (no-op) plan, which becomes a terminal
+    /// `Succeeded` operation with no steps so the idempotency key keeps resolving
+    /// to that result on retry (rather than re-planning a possibly-changed world).
     async fn finish_reserved(
         &self,
         operation: StoredOperation,
         plan: OperationPlan,
     ) -> GatewayResult<WriteOperationResult> {
+        let mut operation = operation;
+        operation.planned = true;
+
         if plan.steps.is_empty() {
-            self.store
-                .delete_operation(operation.operation_id())
-                .await?;
-            return Ok(OperationRecord {
-                id: operation.id,
-                signer_account_id: operation.signer_account_id,
-                status: OperationStatus::Succeeded,
-                steps: vec![],
-            }
-            .into());
+            // No-op: persist the terminal, step-less operation for idempotency.
+            self.store.save_operation(operation.clone()).await?;
+            return Ok(operation.record().into());
         }
 
         // Attach the plan and execute. Each step persists the full remaining set
         // before its first irreversible (on-chain) action, so recovery can
         // resume a partially-run multi-step operation.
-        let mut operation = operation;
         operation.remaining_steps = VecDeque::from(plan.steps);
         let operation_id = operation.operation_id().clone();
         let operation = match self.execute_remaining_steps(operation).await {
@@ -156,7 +156,7 @@ impl OperationDriver {
                 // charge now instead of waiting for startup recovery.
                 if let Ok(Some(stored)) = self.store.get_by_id(&operation_id).await {
                     if stored.is_reservation() {
-                        let _ = self.store.delete_operation(&operation_id).await;
+                        let _ = self.store.delete_reservation(&operation_id).await;
                     }
                 }
                 return Err(error);
@@ -217,7 +217,7 @@ impl OperationDriver {
             // planning. Planning is read-only, so nothing was submitted: drop
             // the reservation, which lets any charge held for it be released.
             if operation.is_reservation() {
-                self.store.delete_operation(&operation_id).await?;
+                self.store.delete_reservation(&operation_id).await?;
                 continue;
             }
 
