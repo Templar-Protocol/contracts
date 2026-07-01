@@ -20,6 +20,17 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Query(GetMarketPricesRequest { market_id }): Query<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
+    // Only serve markets the relayer has discovered/allowlisted — the same policy
+    // boundary /update_prices enforces. (Scope the guard so it isn't held across
+    // the gateway read below.)
+    let known_market = app.accounts.read().await.market_ids.contains(&market_id);
+    if !known_market {
+        tracing::info!(%market_id, "Rejecting price request for unknown market");
+        return SimpleResponse::Rejected {
+            reason: format!("Unknown market: {market_id}"),
+        };
+    }
+
     // Fetch the market's oracle config on demand — the gateway caches the read,
     // so there's no relayer-side market state to go stale.
     let config = match app

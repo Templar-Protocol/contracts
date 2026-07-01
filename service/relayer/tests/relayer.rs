@@ -597,6 +597,26 @@ pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 
 #[rstest]
 #[tokio::test]
+pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
+    let InitTest { app, .. } = init_test;
+
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Query(GetMarketPricesRequest {
+            market_id: "unknown-market.test.near".parse().unwrap(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Unknown market should be rejected");
+    };
+
+    assert_eq!(reason, "Unknown market: unknown-market.test.near");
+}
+
+#[rstest]
+#[tokio::test]
 pub async fn requires_network_router_serves_price_routes(#[future(awt)] mut init_test: InitTest) {
     let (market, _proxy_oracle, _redstone_adapter) = init_test.market_proxy_redstone().await;
     let InitTest { app, .. } = init_test;
