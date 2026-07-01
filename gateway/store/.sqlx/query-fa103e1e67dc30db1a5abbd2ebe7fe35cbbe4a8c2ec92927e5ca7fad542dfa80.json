@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    operation_id,\n    step_index,\n    signer_account_id,\n    receiver_id,\n    wait_until,\n    actions,\n    state AS \"state: OperationStepStateRow\",\n    tx_hash,\n    signed_transaction,\n    outcome_tokens_burnt,\n    outcome_total_gas_burnt,\n    outcome_return_value,\n    created_at,\n    updated_at\nFROM\n    gateway_operation_steps\nWHERE\n    operation_id = $1\nORDER BY\n    step_index ASC\n",
+  "query": "\nSELECT\n    operation_id,\n    step_index,\n    signer_account_id,\n    receiver_id,\n    submitted_at,\n    actions,\n    state AS \"state: OperationStepStateRow\",\n    tx_hash,\n    signed_transaction,\n    outcome_tokens_burnt,\n    outcome_total_gas_burnt,\n    outcome_return_value,\n    created_at,\n    updated_at\nFROM\n    gateway_operation_steps\nWHERE\n    operation_id = $1\nORDER BY\n    step_index ASC\n",
   "describe": {
     "columns": [
       {
@@ -25,8 +25,8 @@
       },
       {
         "ordinal": 4,
-        "name": "wait_until",
-        "type_info": "Text"
+        "name": "submitted_at",
+        "type_info": "Timestamptz"
       },
       {
         "ordinal": 5,
@@ -97,7 +97,7 @@
       false,
       false,
       false,
-      false,
+      true,
       false,
       false,
       true,
@@ -109,5 +109,5 @@
       false
     ]
   },
-  "hash": "905e0c7b658d2a57f17f7749833abf8a8cd7691950555585dfb06315b093ef93"
+  "hash": "fa103e1e67dc30db1a5abbd2ebe7fe35cbbe4a8c2ec92927e5ca7fad542dfa80"
 }

@@ -62,12 +62,12 @@ impl StepOutcome {
 
 #[async_trait]
 pub trait ExecuteOperation: Send + Sync {
-    /// Submit a signed transaction. `Ok(None)` means it was broadcast but no full
-    /// outcome is available yet (still in flight); `Ok(Some)` carries the result.
+    /// Submit a signed transaction, waiting for final execution. `Ok(None)` means
+    /// it was broadcast but no full outcome is available yet (still in flight);
+    /// `Ok(Some)` carries the result.
     async fn submit_transaction(
         &self,
         signed_transaction: SignedTransaction,
-        wait_until: templar_gateway_types::common::TxExecutionStatus,
     ) -> GatewayResult<Option<StepOutcome>>;
 
     /// Look up an already-submitted transaction by hash, returning
@@ -149,7 +149,7 @@ impl SignTransaction for NearTransactionSigner {
             },
             signer,
         )
-        .wait_until(transaction.wait_until.into())
+        .wait_until(near_api::types::TxExecutionStatus::Final)
         .presign_with(&self.network)
         .await
         .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
@@ -174,7 +174,6 @@ impl ExecuteOperation for NearOperationExecutor {
     async fn submit_transaction(
         &self,
         signed_transaction: SignedTransaction,
-        wait_until: templar_gateway_types::common::TxExecutionStatus,
     ) -> GatewayResult<Option<StepOutcome>> {
         let prepopulated = PrepopulateTransaction {
             signer_id: signed_transaction.transaction.signer_id().clone(),
@@ -188,7 +187,7 @@ impl ExecuteOperation for NearOperationExecutor {
                 Box::new(PrepopulatedTransactionCarrier(prepopulated)),
             )),
             signer: null_signer(),
-            wait_until: wait_until.into(),
+            wait_until: near_api::types::TxExecutionStatus::Final,
         }
         .send_to(&self.network)
         .await

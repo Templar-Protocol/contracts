@@ -1,12 +1,12 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use chrono::{DateTime, Utc};
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
     AccountId,
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
-    common::TxExecutionStatus,
     operation::{ExecutionOutcome, OperationRecord},
     CryptoHash, ManagedAccountId, OperationId, OperationStatus, StepStatus,
 };
@@ -16,7 +16,6 @@ use crate::{GatewayResult, OperationStore};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTransaction {
     pub signer_account_id: ManagedAccountId,
-    pub wait_until: TxExecutionStatus,
     pub receiver_id: AccountId,
     pub actions: Vec<Action>,
 }
@@ -32,13 +31,11 @@ impl PlannedTransaction {
     #[must_use]
     pub fn new(
         signer_account_id: ManagedAccountId,
-        wait_until: TxExecutionStatus,
         receiver_id: AccountId,
         actions: Vec<Action>,
     ) -> Self {
         Self {
             signer_account_id,
-            wait_until,
             receiver_id,
             actions,
         }
@@ -47,17 +44,10 @@ impl PlannedTransaction {
     #[must_use]
     pub fn single_action(
         signer_account_id: ManagedAccountId,
-        wait_until: TxExecutionStatus,
         receiver_id: AccountId,
         action: Action,
     ) -> Self {
-        Self::new(signer_account_id, wait_until, receiver_id, vec![action])
-    }
-
-    #[must_use]
-    pub fn with_wait_until(mut self, wait_until: TxExecutionStatus) -> Self {
-        self.wait_until = wait_until;
-        self
+        Self::new(signer_account_id, receiver_id, vec![action])
     }
 }
 
@@ -72,10 +62,9 @@ impl OperationPlan {
         Self { steps: vec![step] }
     }
 
-    /// A single-step plan that waits for `ExecutedOptimistic` — the default for
-    /// gateway writes. Collapses the common
-    /// `OperationPlan::single(PlannedTransaction { …, wait_until: ExecutedOptimistic, … })`
-    /// boilerplate in `PlanWrite` impls.
+    /// A single-step plan. Collapses the common
+    /// `OperationPlan::single(PlannedTransaction { … })` boilerplate in
+    /// `PlanWrite` impls.
     #[must_use]
     pub fn execute(
         signer_account_id: ManagedAccountId,
@@ -84,7 +73,6 @@ impl OperationPlan {
     ) -> Self {
         Self::single(PlannedTransaction {
             signer_account_id,
-            wait_until: TxExecutionStatus::ExecutedOptimistic,
             receiver_id,
             actions,
         })
@@ -118,6 +106,10 @@ pub enum CurrentStep {
     Submitted {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
+        /// When the step was submitted, used to age out a transaction the chain
+        /// never records into a rejection. Stamped once at submission and
+        /// preserved across reconciliation sweeps.
+        submitted_at: DateTime<Utc>,
     },
     /// The transaction executed on chain but its final outcome was a failure.
     Reverted {
@@ -241,11 +233,6 @@ impl StoredOperation {
         }
 
         let transaction = self.remaining_steps.pop_front()?;
-        let transaction = if self.remaining_steps.is_empty() {
-            transaction
-        } else {
-            transaction.with_wait_until(TxExecutionStatus::Final)
-        };
 
         Some(PendingPreparation {
             operation: self,
@@ -271,6 +258,7 @@ impl StoredOperation {
             Some(CurrentStep::Submitted {
                 transaction,
                 tx_hash,
+                submitted_at: _,
             }) => Some(CurrentStepRef::Submitted(Box::new(SubmittedCurrentStep {
                 operation: self,
                 store,
@@ -354,9 +342,11 @@ impl PendingPreparation<'_> {
 
 impl<'a> PreparedCurrentStep<'a> {
     pub async fn submit(self) -> GatewayResult<(SignedTransaction, SubmittedCurrentStep<'a>)> {
+        let submitted_at = Utc::now();
         self.operation.current_step = Some(CurrentStep::Submitted {
             transaction: self.transaction.clone(),
             tx_hash: self.tx_hash,
+            submitted_at,
         });
         self.store.save_operation(self.operation.clone()).await?;
         Ok((
@@ -368,10 +358,6 @@ impl<'a> PreparedCurrentStep<'a> {
                 tx_hash: self.tx_hash,
             },
         ))
-    }
-
-    pub fn wait_until(&self) -> TxExecutionStatus {
-        self.transaction.wait_until
     }
 }
 

@@ -91,7 +91,7 @@ struct OperationStepRow {
     step_index: i32,
     signer_account_id: String,
     receiver_id: String,
-    wait_until: String,
+    submitted_at: Option<DateTime<Utc>>,
     actions: Value,
     state: OperationStepStateRow,
     tx_hash: Option<String>,
@@ -444,6 +444,7 @@ async fn insert_operation_steps(
             Some(step.tx_hash),
             None,
             Some(&step.outcome),
+            None,
         )
         .await?;
     }
@@ -453,7 +454,7 @@ async fn insert_operation_steps(
         // Reverted and Rejected share the `failed` row state; the presence of an
         // outcome distinguishes them on load (reverted executed and carries one;
         // rejected never executed).
-        let (transaction, state, tx_hash, signed, outcome) = match current_step {
+        let (transaction, state, tx_hash, signed, outcome, submitted_at) = match current_step {
             CurrentStep::Prepared {
                 transaction,
                 signed_transaction,
@@ -464,16 +465,19 @@ async fn insert_operation_steps(
                 *tx_hash,
                 Some(signed_transaction.as_ref()),
                 None,
+                None,
             ),
             CurrentStep::Submitted {
                 transaction,
                 tx_hash,
+                submitted_at,
             } => (
                 transaction,
                 OperationStepStateRow::Submitted,
                 *tx_hash,
                 None,
                 None,
+                Some(*submitted_at),
             ),
             CurrentStep::Reverted {
                 transaction,
@@ -485,6 +489,7 @@ async fn insert_operation_steps(
                 *tx_hash,
                 None,
                 Some(outcome),
+                None,
             ),
             CurrentStep::Rejected {
                 transaction,
@@ -493,6 +498,7 @@ async fn insert_operation_steps(
                 transaction,
                 OperationStepStateRow::Failed,
                 *tx_hash,
+                None,
                 None,
                 None,
             ),
@@ -506,6 +512,7 @@ async fn insert_operation_steps(
             Some(tx_hash),
             signed,
             outcome,
+            submitted_at,
         )
         .await?;
         current_index += 1;
@@ -518,6 +525,7 @@ async fn insert_operation_steps(
             current_index + step_index(offset)?,
             step,
             OperationStepStateRow::NotStarted,
+            None,
             None,
             None,
             None,
@@ -547,6 +555,7 @@ async fn insert_step_row(
     tx_hash: Option<CryptoHash>,
     signed_transaction: Option<&SignedTransaction>,
     outcome: Option<&ExecutionOutcome>,
+    submitted_at: Option<DateTime<Utc>>,
 ) -> GatewayResult<()> {
     let actions = serde_json::to_value(&transaction.actions)?;
     let signed_transaction = signed_transaction
@@ -566,7 +575,7 @@ INSERT INTO
         step_index,
         signer_account_id,
         receiver_id,
-        wait_until,
+        submitted_at,
         actions,
         state,
         tx_hash,
@@ -595,7 +604,7 @@ VALUES
         step_index,
         transaction.signer_account_id.0.to_string(),
         transaction.receiver_id.to_string(),
-        serde_json::to_string(&transaction.wait_until).map_err(GatewayError::JsonSerialization)?,
+        submitted_at,
         actions,
         state as OperationStepStateRow,
         tx_hash.map(|hash| hash.0.to_string()),
@@ -673,7 +682,7 @@ SELECT
     step_index,
     signer_account_id,
     receiver_id,
-    wait_until,
+    submitted_at,
     actions,
     state AS "state: OperationStepStateRow",
     tx_hash,
@@ -836,9 +845,15 @@ fn apply_step_row(
         }
         OperationStepStateRow::Submitted => {
             let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "submitted")?;
+            let submitted_at = row.submitted_at.ok_or_else(|| {
+                GatewayError::InvalidStoredOperation(
+                    "submitted step is missing its submitted_at timestamp".to_owned(),
+                )
+            })?;
             *current_step = Some(CurrentStep::Submitted {
                 transaction,
                 tx_hash,
+                submitted_at,
             });
         }
         // A `failed` row is `Reverted` if it executed (carries an outcome) and
@@ -897,8 +912,6 @@ fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransact
                 .parse::<near_account_id::AccountId>()
                 .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
         ),
-        wait_until: serde_json::from_str(&row.wait_until)
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
         receiver_id: row
             .receiver_id
             .parse::<near_account_id::AccountId>()
@@ -949,14 +962,13 @@ fn operation_status_row(status: OperationStatus) -> OperationStatusRow {
 mod tests {
     use near_api::types::transaction::actions::{Action, TransferAction};
     use near_api::types::CryptoHash as NearCryptoHash;
-    use templar_gateway_types::{common::TxExecutionStatus, NearGas, NearToken};
+    use templar_gateway_types::{NearGas, NearToken};
 
     use super::*;
 
     fn sample_transaction() -> PlannedTransaction {
         PlannedTransaction::single_action(
             ManagedAccountId("signer.near".parse().unwrap()),
-            TxExecutionStatus::Final,
             "receiver.near".parse().unwrap(),
             Action::Transfer(TransferAction {
                 deposit: NearToken::from_yoctonear(7),
@@ -1009,6 +1021,7 @@ mod tests {
                 current_step: Some(CurrentStep::Submitted {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
+                    submitted_at: Utc::now(),
                 }),
                 remaining_steps: VecDeque::new(),
             },
@@ -1335,15 +1348,7 @@ mod tests {
                 .transaction
                 .receiver_id
                 .to_string(),
-            wait_until: serde_json::to_string(
-                &operation
-                    .succeeded_steps
-                    .first()
-                    .unwrap()
-                    .transaction
-                    .wait_until,
-            )
-            .unwrap(),
+            submitted_at: None,
             actions: serde_json::to_value(
                 &operation
                     .succeeded_steps

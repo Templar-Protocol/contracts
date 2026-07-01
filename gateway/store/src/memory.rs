@@ -228,7 +228,7 @@ mod tests {
     use near_api::types::CryptoHash as NearCryptoHash;
     use templar_gateway_core::{PlannedTransaction, SucceededStep};
     use templar_gateway_types::operation::ExecutionOutcome;
-    use templar_gateway_types::{common::TxExecutionStatus, CryptoHash, NearGas, NearToken};
+    use templar_gateway_types::{CryptoHash, NearGas, NearToken};
 
     fn signer() -> ManagedAccountId {
         "signer.near".parse::<AccountId>().unwrap().into()
@@ -237,7 +237,6 @@ mod tests {
     fn planned_tx() -> PlannedTransaction {
         PlannedTransaction {
             signer_account_id: signer(),
-            wait_until: TxExecutionStatus::Final,
             receiver_id: "market.near".parse().unwrap(),
             actions: Vec::new(),
         }

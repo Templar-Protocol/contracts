@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
@@ -13,6 +14,13 @@ use crate::{
     HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
     SharedOperationStore, SharedSignTransaction, StoredOperation, SucceededStep,
 };
+
+/// How long a submitted step whose transaction the chain has no record of is
+/// left in flight before reconciliation rejects it. A transaction that never
+/// appears within this window is treated as dropped (never landed), so its
+/// charge can be released. Sized well past normal broadcast propagation so a
+/// still-pending transaction is never rejected prematurely.
+const SUBMITTED_STEP_MAX_AGE_SECS: i64 = 60;
 
 #[derive(Clone)]
 pub struct OperationDriver {
@@ -223,9 +231,7 @@ impl OperationDriver {
                 continue;
             }
 
-            // Never reject a still-unknown transaction during recovery (it may be
-            // moments old): reject_if_unknown = false leaves it for the broom.
-            if let Err(error) = self.advance_operation(operation, false).await {
+            if let Err(error) = self.advance_operation(operation).await {
                 tracing::warn!(
                     operation_id = %operation_id.0,
                     %error,
@@ -238,16 +244,15 @@ impl OperationDriver {
 
     /// Drive an in-flight operation toward a terminal outcome and persist it:
     /// reconcile a submitted step against the chain (if any), then run the
-    /// remaining steps. Shared by startup recovery and the broom's reconcile, so
-    /// both resolve a submitted step *and* continue a multi-step plan.
+    /// remaining steps. Shared by startup recovery, the broom's reconcile, and
+    /// idempotent retries, so all resolve a submitted step *and* continue a
+    /// multi-step plan.
     async fn advance_operation(
         &self,
         mut operation: StoredOperation,
-        reject_if_unknown: bool,
     ) -> GatewayResult<StoredOperation> {
         if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
-            self.reconcile_submitted_step(&mut operation, reject_if_unknown)
-                .await;
+            self.reconcile_submitted_step(&mut operation).await;
         }
         let operation = self.execute_remaining_steps(operation).await?;
         self.store.save_operation(operation.clone()).await?;
@@ -289,11 +294,10 @@ impl OperationDriver {
 
         if let Some(CurrentStepRef::Prepared(prepared_step)) = operation.current(self.store.clone())
         {
-            let wait_until = prepared_step.wait_until();
             let (signed_transaction, submitted_step) = prepared_step.submit().await?;
             let _ = self
                 .operation_executor
-                .submit_transaction(signed_transaction, wait_until)
+                .submit_transaction(signed_transaction)
                 .await?;
             drop(submitted_step);
         }
@@ -320,19 +324,17 @@ impl OperationDriver {
         let operation_id = operation.operation_id().clone();
         match operation.current(self.store.clone()) {
             Some(CurrentStepRef::Prepared(prepared_step)) => {
-                let wait_until = prepared_step.wait_until();
                 let (signed_transaction, submitted_step) = prepared_step.submit().await?;
                 let tx_hash = submitted_step.tx_hash();
                 tracing::debug!(
                     operation_id = %operation_id.0,
                     %tx_hash,
-                    ?wait_until,
                     "submitting gateway operation step"
                 );
 
                 match self
                     .operation_executor
-                    .submit_transaction(signed_transaction, wait_until)
+                    .submit_transaction(signed_transaction)
                     .await
                 {
                     // The submission already carries the full execution outcome,
@@ -389,9 +391,7 @@ impl OperationDriver {
     /// Reconcile a single in-flight operation (looked up by idempotency key)
     /// against the chain and return its current record — used by the relayer's
     /// broom to drive a stuck operation toward terminal without waiting for the
-    /// next startup. `reject_if_unknown` is forwarded to submitted-step
-    /// reconciliation; the broom passes `true` because it only reconciles charges
-    /// old enough that an unknown transaction has aged out.
+    /// next startup.
     ///
     /// Returns `None` when there is no such operation. A reservation is left
     /// untouched (its owning request is still planning it); only startup recovery
@@ -399,7 +399,6 @@ impl OperationDriver {
     pub async fn reconcile_operation(
         &self,
         idempotency_key: &IdempotencyKey,
-        reject_if_unknown: bool,
     ) -> GatewayResult<Option<OperationRecord>> {
         let Some(operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
             return Ok(None);
@@ -407,28 +406,21 @@ impl OperationDriver {
         if operation.is_reservation() {
             return Ok(Some(operation.record()));
         }
-        Ok(Some(
-            self.advance_operation(operation, reject_if_unknown)
-                .await?
-                .record(),
-        ))
+        Ok(Some(self.advance_operation(operation).await?.record()))
     }
 
-    /// Query a submitted step's on-chain fate and record it. `reject_if_unknown`
-    /// controls the ambiguous case: a transaction the chain has no record of has
-    /// either never landed or not yet propagated. Only a caller that knows the
-    /// step has aged past propagation (the broom, which acts only on charges
-    /// older than its minimum age) passes `true` to terminate it as rejected;
-    /// startup recovery — which may run moments after a crash — passes `false`
-    /// and leaves it submitted to reconcile once it has aged.
-    async fn reconcile_submitted_step(
-        &self,
-        operation: &mut StoredOperation,
-        reject_if_unknown: bool,
-    ) {
+    /// Query a submitted step's on-chain fate and record it. The ambiguous case —
+    /// a transaction the chain has no record of — has either never landed or not
+    /// yet propagated; it is rejected (releasing its charge) only once it has aged
+    /// past [`SUBMITTED_STEP_MAX_AGE_SECS`], and otherwise left submitted to
+    /// reconcile on a later sweep. This makes reconciliation self-sufficient for
+    /// every caller (startup recovery, the broom, idempotent retries) without a
+    /// per-caller "is it old enough to reject" flag.
+    async fn reconcile_submitted_step(&self, operation: &mut StoredOperation) {
         if let Some(CurrentStep::Submitted {
             transaction,
             tx_hash,
+            submitted_at,
         }) = operation.current_step.take()
         {
             match self
@@ -457,7 +449,10 @@ impl OperationDriver {
                         });
                     }
                 }
-                Err(GatewayError::TransactionNotFound) if reject_if_unknown => {
+                Err(GatewayError::TransactionNotFound)
+                    if Utc::now().signed_duration_since(submitted_at).num_seconds()
+                        >= SUBMITTED_STEP_MAX_AGE_SECS =>
+                {
                     // No record of the transaction, and it has aged past the point
                     // where a broadcast would have propagated: it never landed, so
                     // terminate it as rejected, releasing the charge.
@@ -486,6 +481,7 @@ impl OperationDriver {
                     operation.current_step = Some(CurrentStep::Submitted {
                         transaction,
                         tx_hash,
+                        submitted_at,
                     });
                 }
             }

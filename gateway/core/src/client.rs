@@ -51,7 +51,6 @@ trait BoundContractClient {
 #[derive(Clone)]
 pub struct ContractWriteOptions {
     signer_account_id: ManagedAccountId,
-    wait_until: templar_gateway_types::common::TxExecutionStatus,
     gas: NearGas,
     deposit: NearToken,
 }
@@ -60,19 +59,9 @@ impl ContractWriteOptions {
     pub fn new(signer_account_id: ManagedAccountId) -> Self {
         Self {
             signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
             gas: NearGas::from_tgas(30),
             deposit: NearToken::from_yoctonear(0),
         }
-    }
-
-    #[must_use]
-    pub fn wait_until(
-        mut self,
-        wait_until: templar_gateway_types::common::TxExecutionStatus,
-    ) -> Self {
-        self.wait_until = wait_until;
-        self
     }
 
     #[must_use]

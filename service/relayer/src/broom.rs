@@ -92,10 +92,10 @@ async fn reconcile(
 
     // Drive the operation toward terminal (reconciling a submitted step against
     // the chain) before settling. The charge is already past `MIN_PENDING_AGE`,
-    // so this cannot race the live execute path and any unknown transaction has
-    // aged out — hence `reject_if_unknown = true`. A reservation is left as-is
-    // (its request is still planning) and deferred to a later sweep.
-    let Some(operation) = gateway.reconcile_operation(&key, true).await? else {
+    // so this cannot race the live execute path; the driver ages out an unknown
+    // transaction on its own. A reservation is left as-is (its request is still
+    // planning) and deferred to a later sweep.
+    let Some(operation) = gateway.reconcile_operation(&key).await? else {
         // The operation never reached the gateway; release the slot.
         database
             .release_pending(&charge.account_id, charge.operation_key)

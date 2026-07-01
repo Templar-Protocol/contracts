@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 actix.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures.workspace = true
 hex.workspace = true
 moka.workspace = true
