@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 clap = { workspace = true, optional = true }
 near-api.workspace = true
+url.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-store.workspace = true

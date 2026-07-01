@@ -54,6 +54,10 @@ pub struct Args {
     /// Custom RPC URL (overrides default network RPC).
     #[arg(long, env = "RPC_URL")]
     pub rpc_url: Option<String>,
+    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// be supplied as an `apiKey` query parameter on `--rpc-url`.
+    #[arg(long, env = "RPC_API_KEY")]
+    pub rpc_api_key: Option<String>,
     /// Interval between accumulations in seconds.
     #[arg(short, long, default_value_t = 600, env = "INTERVAL")]
     pub interval: u64,

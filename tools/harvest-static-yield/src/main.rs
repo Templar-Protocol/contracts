@@ -1,56 +1,15 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Display,
-    str::FromStr,
-};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
 use clap::Parser;
 use near_account_id::AccountId;
-use near_api::{NetworkConfig, SecretKey};
+use near_api::SecretKey;
 use templar_common::asset::{BorrowAsset, BorrowAssetAmount, FungibleAsset};
 use templar_common::SU128;
-use templar_gateway_client::{Client, SigningClient};
+use templar_gateway_client::{Client, Network, NetworkConfigBuilder, SigningClient};
 use templar_gateway_methods_spec::{contract, market, registry, storage, token};
 use templar_gateway_types::{common::Pagination, Market, MarketVersion, NearToken};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-#[derive(Clone, Debug)]
-enum Network {
-    Mainnet,
-    Testnet,
-}
-
-impl Network {
-    pub fn rpc_url(&self) -> &str {
-        match self {
-            Self::Mainnet => "https://rpc.mainnet.near.org",
-            Self::Testnet => "https://rpc.testnet.near.org",
-        }
-    }
-}
-
-impl FromStr for Network {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().trim() {
-            "mainnet" => Ok(Self::Mainnet),
-            "testnet" => Ok(Self::Testnet),
-            _ => Err("expected \"mainnet\" or \"testnet\""),
-        }
-    }
-}
-
-impl Display for Network {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Mainnet => "mainnet",
-            Self::Testnet => "testnet",
-        }
-        .fmt(f)
-    }
-}
 
 #[derive(Debug, Clone, Parser)]
 struct Cli {
@@ -66,6 +25,10 @@ struct Cli {
     /// Specify a custom RPC URL.
     #[arg(long, env = "RPC_URL")]
     pub rpc_url: Option<String>,
+    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// be supplied as an `apiKey` query parameter on `--rpc-url`.
+    #[arg(long, env = "RPC_API_KEY")]
+    pub rpc_api_key: Option<String>,
     /// Account ID to harvest static yield for.
     #[arg(short, long, env = "ACCOUNT_ID")]
     pub account_id: AccountId,
@@ -115,17 +78,18 @@ pub async fn main() -> anyhow::Result<()> {
 
     tracing::info!(account_id = %args.account_id, "Harvesting static yield");
 
-    let rpc_url = args
-        .rpc_url
-        .as_deref()
-        .unwrap_or_else(|| args.network.rpc_url());
-
-    tracing::info!(network = %args.network, rpc_url = %rpc_url, "Connecting to RPC");
-
-    let network = NetworkConfig::from_rpc_url(
-        &args.network.to_string(),
-        rpc_url.parse().context("invalid RPC URL")?,
+    // Don't log the resolved RPC URL: an embedded `apiKey` makes it secret-bearing.
+    tracing::info!(
+        network = %args.network,
+        custom_rpc = args.rpc_url.is_some(),
+        "Connecting to RPC"
     );
+
+    let network = NetworkConfigBuilder::new(args.network)
+        .rpc_url(args.rpc_url.as_deref())
+        .context("invalid RPC URL")?
+        .api_key(args.rpc_api_key.clone())
+        .build();
 
     let client = SigningClient::connect(network, args.account_id.clone(), args.secret_key.clone())?;
 

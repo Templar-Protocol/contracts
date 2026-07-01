@@ -66,6 +66,11 @@ pub struct Config {
     )]
     pub near_rpc_url: Url,
 
+    /// API key for the RPC endpoint, sent as an `Authorization` header. May also
+    /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
+    #[arg(long, env = "NEAR_RPC_API_KEY")]
+    pub near_rpc_api_key: Option<String>,
+
     /// Postgres database URL for durable gateway operation storage.
     #[arg(long, env = "GATEWAY_DATABASE_URL")]
     pub database_url: Option<String>,

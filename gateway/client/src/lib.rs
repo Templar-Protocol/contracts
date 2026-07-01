@@ -27,7 +27,7 @@
 //! [`OperationStore`]: templar_gateway_core::OperationStore
 
 mod network;
-pub use network::Network;
+pub use network::{Network, NetworkConfigBuilder};
 
 mod pagination;
 pub use pagination::collect_paginated;
