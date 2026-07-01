@@ -17,13 +17,13 @@ const MIN_PENDING_AGE: Duration = Duration::from_secs(60);
 /// (e.g. a request interrupted between submission and settlement), reconciling
 /// each account's allowance against the gateway's recorded cost.
 ///
-/// A sweep only reads the gateway's record — never the chain. Driving an
-/// interrupted operation to a terminal outcome (crash recovery) happens once at
-/// startup instead (`App::new` calls `resume_incomplete_operations`); doing it
-/// here would race the synchronous execute path on the same operation. So a
-/// sweep settles charges whose operation already reached a terminal outcome,
-/// releases those whose operation never landed, and defers the rest to a later
-/// sweep (or the next startup's resume).
+/// Each charge is only touched once it is past `MIN_PENDING_AGE`, so a sweep
+/// never races the synchronous execute path. At that point the sweep drives the
+/// operation toward terminal — reconciling a submitted step against the chain,
+/// or dropping a stale reservation — then settles charges whose operation
+/// reached a terminal outcome, releases those whose operation never landed, and
+/// defers the rest to a later sweep. (Startup still runs one `resume` pass so
+/// recovery does not wait for the first sweep.)
 #[tracing::instrument(skip_all, fields(batch_size = %batch_size, delay = ?delay))]
 pub async fn start(
     database: Database,
@@ -90,8 +90,13 @@ async fn reconcile(
 ) -> Result<(), RecoverError> {
     let key = IdempotencyKey(charge.operation_key.to_string());
 
-    let Some(operation) = gateway.operation_by_idempotency_key(&key).await? else {
-        // The operation never reached the gateway; release the slot.
+    // Drive the operation toward terminal (reconciling a submitted step against
+    // the chain, or dropping a stale reservation) before settling. The charge is
+    // already past `MIN_PENDING_AGE`, so this cannot race the live execute path
+    // and any unknown transaction has aged out — hence `reject_if_unknown = true`.
+    let Some(operation) = gateway.reconcile_operation(&key, true).await? else {
+        // The operation never reached the gateway (or was a stale reservation);
+        // release the slot.
         database
             .release_pending(&charge.account_id, charge.operation_key)
             .await?;

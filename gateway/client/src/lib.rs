@@ -246,6 +246,20 @@ impl Client {
         self.driver.resume_incomplete_operations().await
     }
 
+    /// Reconcile a single in-flight operation by idempotency key against the
+    /// chain and return its current record. The broom
+    /// calls this to drive a stuck operation to terminal between startups; it
+    /// passes `reject_if_unknown = true` since it only reconciles aged charges.
+    pub async fn reconcile_operation(
+        &self,
+        idempotency_key: &IdempotencyKey,
+        reject_if_unknown: bool,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        self.driver
+            .reconcile_operation(idempotency_key, reject_if_unknown)
+            .await
+    }
+
     /// Plan a write request into the transactions required to fulfil it, without
     /// executing them.
     pub async fn plan_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<OperationPlan>

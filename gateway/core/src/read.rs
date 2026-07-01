@@ -76,11 +76,17 @@ impl ReadNear for NearClient {
         account_id: near_account_id::AccountId,
         public_key: PublicKey,
     ) -> GatewayResult<AccessKey> {
-        let key = NearAccountView(account_id)
+        let key = NearAccountView(account_id.clone())
             .access_key(public_key)
             .fetch_from(self.network())
             .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?;
+            .map_err(|error| {
+                if is_unknown_account(&error) {
+                    GatewayError::AccountNotFound(account_id)
+                } else {
+                    GatewayError::NearQuery(error.to_string())
+                }
+            })?;
         Ok(key.data)
     }
 

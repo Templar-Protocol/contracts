@@ -222,7 +222,10 @@ impl OperationDriver {
             }
 
             if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
-                self.reconcile_submitted_step(&mut operation).await;
+                // Startup may run moments after a crash, so never reject a
+                // still-unknown transaction here — leave it for the broom to age
+                // out and reconcile.
+                self.reconcile_submitted_step(&mut operation, false).await;
                 self.store.save_operation(operation).await?;
                 continue;
             }
@@ -369,7 +372,53 @@ impl OperationDriver {
         Ok(operation)
     }
 
-    async fn reconcile_submitted_step(&self, operation: &mut StoredOperation) {
+    /// Reconcile a single in-flight operation (looked up by idempotency key)
+    /// against the chain and return its current record — used by the relayer's
+    /// broom to drive a stuck operation toward terminal without waiting for the
+    /// next startup. `reject_if_unknown` is forwarded to submitted-step
+    /// reconciliation; the broom passes `true` because it only reconciles charges
+    /// old enough that an unknown transaction has aged out.
+    ///
+    /// Returns `None` when there is no such operation, or when it is a stale
+    /// reservation (planning never completed) that is dropped here so its charge
+    /// can be released.
+    pub async fn reconcile_operation(
+        &self,
+        idempotency_key: &IdempotencyKey,
+        reject_if_unknown: bool,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        let Some(mut operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
+            return Ok(None);
+        };
+
+        if operation.is_reservation() {
+            self.store
+                .delete_reservation(operation.operation_id())
+                .await?;
+            return Ok(None);
+        }
+
+        if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
+            self.reconcile_submitted_step(&mut operation, reject_if_unknown)
+                .await;
+            self.store.save_operation(operation.clone()).await?;
+        }
+
+        Ok(Some(operation.record()))
+    }
+
+    /// Query a submitted step's on-chain fate and record it. `reject_if_unknown`
+    /// controls the ambiguous case: a transaction the chain has no record of has
+    /// either never landed or not yet propagated. Only a caller that knows the
+    /// step has aged past propagation (the broom, which acts only on charges
+    /// older than its minimum age) passes `true` to terminate it as rejected;
+    /// startup recovery — which may run moments after a crash — passes `false`
+    /// and leaves it submitted to reconcile once it has aged.
+    async fn reconcile_submitted_step(
+        &self,
+        operation: &mut StoredOperation,
+        reject_if_unknown: bool,
+    ) {
         if let Some(CurrentStep::Submitted {
             transaction,
             tx_hash,
@@ -403,16 +452,14 @@ impl OperationDriver {
                         });
                     }
                 }
-                Err(GatewayError::TransactionNotFound) => {
-                    // The chain has no record of this transaction. By the time
-                    // reconciliation runs, a transaction that landed would
-                    // resolve; an unknown one never reached the chain (e.g. a
-                    // crash between saving Submitted and broadcasting), so it is
-                    // safe to terminate it as rejected, releasing the charge.
+                Err(GatewayError::TransactionNotFound) if reject_if_unknown => {
+                    // No record of the transaction, and it has aged past the point
+                    // where a broadcast would have propagated: it never landed, so
+                    // terminate it as rejected, releasing the charge.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,
-                        "submitted gateway transaction is unknown to the chain; marking rejected"
+                        "submitted gateway transaction is unknown to the chain and aged out; marking rejected"
                     );
                     operation.current_step = Some(CurrentStep::Rejected {
                         transaction,
@@ -420,15 +467,16 @@ impl OperationDriver {
                     });
                 }
                 Err(error) => {
-                    // Transient/transport failure: the transaction may have
-                    // executed on chain, so do NOT mark it rejected — that would
-                    // release a charge for a tx that landed. Leave it submitted to
-                    // reconcile on a later recovery.
+                    // A transient failure, or an unknown transaction still too
+                    // fresh to call never-landed: the transaction may have
+                    // executed, so do NOT reject (that would release a charge for a
+                    // tx that landed). Leave it submitted to reconcile on a later
+                    // sweep.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,
                         %error,
-                        "failed to reconcile submitted gateway transaction; leaving it submitted to retry"
+                        "leaving submitted gateway transaction for a later reconciliation"
                     );
                     operation.current_step = Some(CurrentStep::Submitted {
                         transaction,
