@@ -13,6 +13,7 @@ serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-macros.workspace = true
 templar-gateway-types.workspace = true
+templar-primitives = { workspace = true, features = ["schemars", "serde"] }
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
 templar-proxy-oracle-near-common.workspace = true
 templar-proxy-oracle-near-governance-common.workspace = true

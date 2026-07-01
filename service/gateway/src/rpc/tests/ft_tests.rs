@@ -34,7 +34,7 @@ async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
             body: ft::TransferCall {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: receiver_id.clone(),
-                amount: templar_gateway_types::U128(7),
+                amount: templar_common::SU128::from(7),
                 msg: "ok".to_owned(),
                 memo: Some("gateway-test".to_owned()),
             },

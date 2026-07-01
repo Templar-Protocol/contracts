@@ -139,7 +139,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
             body: ft::Transfer {
                 contract_id: stack.harness.ft_contract_id.clone(),
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
-                amount: templar_gateway_types::U128(3),
+                amount: templar_common::SU128::from(3),
                 memo: None,
             },
         })
@@ -153,7 +153,7 @@ async fn tx_transfer_unregister_and_account_delete_endpoints_work_against_sandbo
         })
         .await?;
 
-    assert_eq!(balance.balance, templar_gateway_types::U128(0));
+    assert_eq!(balance.balance, templar_common::SU128::from(0));
 
     let _ = stack
         .controller

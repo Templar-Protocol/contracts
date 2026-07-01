@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "standard", rename_all = "snake_case")]
@@ -40,7 +40,7 @@ pub struct GetBalanceOf {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetBalanceOfResult {
-    pub balance: U128,
+    pub balance: SU128,
 }
 
 /// Transfer a token across supported standards.
@@ -49,7 +49,7 @@ pub struct GetBalanceOfResult {
 pub struct Transfer {
     pub token: TokenReference,
     pub receiver_id: AccountId,
-    pub amount: U128,
+    pub amount: SU128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,
 }
@@ -60,7 +60,7 @@ pub struct Transfer {
 pub struct TransferCall {
     pub token: TokenReference,
     pub receiver_id: AccountId,
-    pub amount: U128,
+    pub amount: SU128,
     pub msg: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<String>,

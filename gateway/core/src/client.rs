@@ -17,6 +17,7 @@ pub mod storage;
 pub mod token;
 pub mod tx;
 pub mod universal_account;
+pub mod vault;
 
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ use templar_gateway_types::{ManagedAccountId, NearGas, NearToken};
 use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
+use vault::VaultClient;
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -214,6 +216,13 @@ impl NearClient {
 
     pub fn market(&self, contract_id: AccountId) -> MarketClient<'_> {
         MarketClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn vault(&self, contract_id: AccountId) -> VaultClient<'_> {
+        VaultClient {
             inner: self,
             contract_id,
         }

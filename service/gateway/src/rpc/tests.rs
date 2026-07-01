@@ -19,6 +19,7 @@ mod storage_tests;
 mod token_tests;
 mod tx_tests;
 mod universal_account_tests;
+mod vault_tests;
 
 use super::*;
 
@@ -39,7 +40,7 @@ use templar_gateway_core::GatewayContext;
 use templar_gateway_methods_spec::{
     account, contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
     proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
-    universal_account,
+    universal_account, vault,
 };
 use templar_gateway_oracle_updates_dispatch::{
     GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource,
