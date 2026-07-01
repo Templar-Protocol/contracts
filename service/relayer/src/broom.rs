@@ -94,19 +94,15 @@ async fn reconcile(
     // so this cannot race the live execute path; the driver ages out an unknown
     // transaction on its own. A reservation is left as-is (its request is still
     // planning) and deferred to a later sweep.
-    let Some(operation) = gateway.reconcile_operation(&key).await? else {
-        // The operation never reached the gateway; release the slot.
-        database
-            .release_pending(&charge.account_id, charge.operation_key)
-            .await?;
-        return Ok(());
-    };
+    let operation = gateway.reconcile_operation(&key).await?;
 
-    // Resolve the charge from the operation's recorded status — the same decision
-    // the hot path uses. A terminal operation settles (or releases); a still
-    // in-flight one is left locked and reconciled on a later sweep.
+    // Resolve the charge through the exact rule the dispatching endpoint uses:
+    // a missing operation releases the slot, a terminal one settles, and a still
+    // in-flight one is left locked for a later sweep. The broom carries no
+    // resolution logic of its own — it only picks up charges the endpoint could
+    // not settle synchronously.
     database
-        .resolve_charge(&charge.account_id, charge.operation_key, &operation)
+        .resolve_charge(&charge.account_id, charge.operation_key, operation.as_ref())
         .await?;
     Ok(())
 }

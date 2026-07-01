@@ -283,10 +283,12 @@ RETURNING
         Ok(())
     }
 
-    /// Resolve an in-flight charge from its gateway operation's recorded status —
-    /// the single place a charge is settled, so a charge is only ever billed off a
-    /// *terminal* operation's final cost.
+    /// Resolve an in-flight charge from the gateway's knowledge of its operation —
+    /// the single rule every caller (the dispatching endpoint and the broom) uses,
+    /// so a charge is only ever billed off a *terminal* operation's final cost.
     ///
+    /// - `None` (no operation persisted — planning failed, or a reservation was
+    ///   reaped): nothing reached the chain, so release the slot uncharged.
     /// - `Succeeded`: settle the recorded cost (gas + inner spend).
     /// - `Failed`: reverted on chain (recorded an outcome) settles the gas;
     ///   rejected before execution (no outcome) releases the slot uncharged.
@@ -302,8 +304,12 @@ RETURNING
         &self,
         account_id: &AccountIdRef,
         operation_key: Uuid,
-        operation: &OperationRecord,
+        operation: Option<&OperationRecord>,
     ) -> Result<AccountedStatus, sqlx::Error> {
+        let Some(operation) = operation else {
+            self.release_pending(account_id, operation_key).await?;
+            return Ok(AccountedStatus::Failed);
+        };
         match operation.status {
             OperationStatus::Succeeded => {
                 self.settle(account_id, operation_key, operation.tokens_burnt(), true)
@@ -600,7 +606,7 @@ mod tests {
             .unwrap();
 
         let status = db
-            .resolve_charge(&account, key, &operation(OperationStatus::InProgress))
+            .resolve_charge(&account, key, Some(&operation(OperationStatus::InProgress)))
             .await
             .unwrap();
         assert_eq!(status, AccountedStatus::Pending);
@@ -627,7 +633,7 @@ mod tests {
             .unwrap();
 
         let status = db
-            .resolve_charge(&account, key, &operation(OperationStatus::Succeeded))
+            .resolve_charge(&account, key, Some(&operation(OperationStatus::Succeeded)))
             .await
             .unwrap();
         assert_eq!(status, AccountedStatus::Succeeded);
@@ -648,9 +654,32 @@ mod tests {
             .unwrap();
 
         let status = db
-            .resolve_charge(&account, key, &operation(OperationStatus::Failed))
+            .resolve_charge(&account, key, Some(&operation(OperationStatus::Failed)))
             .await
             .unwrap();
+        assert_eq!(status, AccountedStatus::Failed);
+        assert_eq!(allowance(&db, &account).await, 100);
+        // The slot is free again.
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap();
+    }
+
+    /// No operation (planning failed, or a reservation was reaped) releases the
+    /// charge uncharged — the rule the dispatching endpoint's error path relies on
+    /// so a failed plan never strands the account's single slot.
+    #[sqlx::test]
+    async fn resolve_charge_releases_missing_operation(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        let status = db.resolve_charge(&account, key, None).await.unwrap();
         assert_eq!(status, AccountedStatus::Failed);
         assert_eq!(allowance(&db, &account).await, 100);
         // The slot is free again.

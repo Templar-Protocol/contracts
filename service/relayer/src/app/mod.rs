@@ -780,10 +780,10 @@ impl App {
     /// terminal outcome and returns its record, from which the charge is settled
     /// directly (the recorded `tokens_burnt`, plus the locked deposit on success).
     ///
-    /// On a gateway error the lock is left in place: the operation may have
-    /// landed on chain, so the broom reconciles it against the gateway's record
-    /// rather than this path guessing. The broom is otherwise only a backstop for
-    /// a request interrupted between submission and settlement.
+    /// On a gateway error this path reconciles against any operation the gateway
+    /// persisted for the idempotency key. If the gateway failed before persisting
+    /// an operation, the lock is released immediately. If the lookup fails, the
+    /// broom remains the backstop for later reconciliation.
     ///
     /// `account_id` is the account charged for the operation; `signer_account_id`
     /// is the relayer-controlled account that signs and pays (relay or UA).
@@ -824,18 +824,36 @@ impl App {
             )
             .await?;
 
-        // On any gateway error, leave the locked charge for the broom: the
-        // operation may have reached the chain, and the broom settles it against
-        // the gateway's record.
-        let result = self
+        let idempotency_key = IdempotencyKey(operation_key.to_string());
+        let result = match self
             .gateway
             .execute_request(WriteRequest {
                 signer_account_id: signer_account_id.into(),
-                idempotency_key: Some(IdempotencyKey(operation_key.to_string())),
+                idempotency_key: Some(idempotency_key.clone()),
                 body,
             })
             .await
-            .map_err(SubmitError::Gateway)?;
+        {
+            Ok(result) => result,
+            Err(error) => {
+                // Resolve the charge from whatever the gateway persisted, using the
+                // same rule the broom applies: a planning/presign failure leaves no
+                // operation (nothing reached the chain) so the slot is released now
+                // rather than stranded until the broom's delayed sweep; a persisted
+                // operation is settled or deferred by its status. If the lookup
+                // itself fails we cannot tell, so leave the charge for the broom.
+                if let Ok(operation) = self
+                    .gateway
+                    .operation_by_idempotency_key(&idempotency_key)
+                    .await
+                {
+                    self.database
+                        .resolve_charge(&account_id, operation_key, operation.as_ref())
+                        .await?;
+                }
+                return Err(SubmitError::Gateway(error));
+            }
+        };
 
         let operation = result.operation;
 
@@ -856,7 +874,7 @@ impl App {
         // broom, so its (not-yet-final) cost is never lost.
         let status = self
             .database
-            .resolve_charge(&account_id, operation_key, &operation)
+            .resolve_charge(&account_id, operation_key, Some(&operation))
             .await?;
 
         Ok(AccountedExecution {
