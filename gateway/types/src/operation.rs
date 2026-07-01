@@ -24,10 +24,33 @@ pub enum StepStatus {
     Failed { tx_hash: CryptoHash },
 }
 
+impl StepStatus {
+    /// The transaction hash for this step, if it has reached a stage that has
+    /// one (`NotStarted` has none).
+    #[must_use]
+    pub fn tx_hash(&self) -> Option<CryptoHash> {
+        match self {
+            Self::Prepared { tx_hash }
+            | Self::Submitted { tx_hash }
+            | Self::Succeeded { tx_hash }
+            | Self::Failed { tx_hash } => Some(*tx_hash),
+            Self::NotStarted => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransactionStepRecord {
     pub index: u32,
     pub status: StepStatus,
+}
+
+impl TransactionStepRecord {
+    /// The transaction hash for this step, if any.
+    #[must_use]
+    pub fn tx_hash(&self) -> Option<CryptoHash> {
+        self.status.tx_hash()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -36,4 +59,20 @@ pub struct OperationRecord {
     pub signer_account_id: ManagedAccountId,
     pub status: OperationStatus,
     pub steps: Vec<TransactionStepRecord>,
+}
+
+impl OperationRecord {
+    /// The transaction hash of the highest-`index` step that has one, or `None`
+    /// if no step has been prepared yet.
+    ///
+    /// Keyed on `index` rather than vector position so a record whose steps
+    /// arrived out of order still identifies the most recent transaction.
+    #[must_use]
+    pub fn latest_tx_hash(&self) -> Option<CryptoHash> {
+        self.steps
+            .iter()
+            .filter_map(|step| step.tx_hash().map(|tx_hash| (step.index, tx_hash)))
+            .max_by_key(|(index, _)| *index)
+            .map(|(_, tx_hash)| tx_hash)
+    }
 }

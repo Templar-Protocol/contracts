@@ -184,6 +184,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::vault::RevokePendingTimelock);
         $callback!($crate::mt::Transfer);
         $callback!($crate::mt::TransferCall);
+        $callback!($crate::proxy_oracle::UpdatePrices);
         $callback!($crate::proxy_oracle_governance::CreateProposal);
         $callback!($crate::proxy_oracle_governance::CancelProposal);
         $callback!($crate::proxy_oracle_governance::ExecuteProposal);

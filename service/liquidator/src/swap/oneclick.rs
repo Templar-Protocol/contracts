@@ -17,27 +17,21 @@
 //! 2. **Deposit**: Transfer tokens to deposit address
 //! 3. **Poll**: Monitor swap status until completion
 
-use std::{fmt::Write, sync::Arc};
+use std::fmt::Write;
 
 use near_account_id::AccountType;
-use near_crypto::Signer;
-use near_jsonrpc_client::JsonRpcClient;
-use near_primitives::{
-    action::Action,
-    gas::Gas,
-    transaction::{Transaction, TransactionV0},
-    types::AccountId,
-    views::FinalExecutionStatus,
-};
 use near_sdk::{
     json_types::U128,
     serde::{Deserialize, Serialize},
-    NearToken,
+    AccountId,
 };
 
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::{storage, token, tx};
+use templar_gateway_types::{CryptoHash, NearToken, OperationStatus, U128 as GatewayU128};
 
-use crate::rpc::{get_access_key_data, send_tx, view, AppError, AppResult};
+use crate::rpc::{AppError, AppResult};
 use crate::swap::SwapProvider;
 
 /// 1-Click API base URL
@@ -67,16 +61,6 @@ pub enum SwapType {
     FlexInput,
     /// Any input amount
     AnyInput,
-}
-
-/// Storage balance bounds from NEP-145
-#[derive(Debug, Deserialize)]
-struct StorageBalanceBounds {
-    /// Minimum storage deposit required
-    min: U128,
-    /// Maximum storage deposit allowed (optional)
-    #[allow(dead_code)]
-    max: Option<U128>,
 }
 
 /// Quote request for the 1-Click API
@@ -287,16 +271,56 @@ struct TokenInfo {
     asset_id: String,
 }
 
+/// A NEP-297 event envelope (`EVENT_JSON:{…}`) as emitted in transaction logs,
+/// typed just enough to read NEP-141 `ft_transfer` and NEP-245 `mt_transfer`
+/// events.
+#[derive(Debug, Deserialize)]
+struct Nep297Event {
+    standard: String,
+    event: String,
+    #[serde(default)]
+    data: Vec<TransferEvent>,
+}
+
+/// One entry in an `ft_transfer` (NEP-141) or `mt_transfer` (NEP-245) event's
+/// `data` array. NEP-141 carries a single `amount`; NEP-245 carries parallel
+/// `amounts` (one per token id).
+#[derive(Debug, Deserialize)]
+struct TransferEvent {
+    old_owner_id: Option<AccountId>,
+    new_owner_id: Option<AccountId>,
+    #[serde(default)]
+    amount: Option<U128>,
+    #[serde(default)]
+    amounts: Vec<U128>,
+}
+
+impl TransferEvent {
+    /// Total transferred in this entry, across NEP-141's single `amount` and
+    /// NEP-245's `amounts`.
+    fn total_amount(&self) -> u128 {
+        self.amount.map_or(0, |a| a.0) + self.amounts.iter().map(|a| a.0).sum::<u128>()
+    }
+}
+
+/// Parse a single transaction log line into a typed NEP-297 event, if it is one.
+///
+/// Logs are formatted `EVENT_JSON:{…json…}` (NEP-297); anything that isn't a
+/// well-formed event envelope yields `None`.
+fn parse_nep297_event(log: &str) -> Option<Nep297Event> {
+    let json = &log[log.find("EVENT_JSON:")? + "EVENT_JSON:".len()..];
+    near_sdk::serde_json::from_str(json).ok()
+}
+
 /// 1-Click API swap provider
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OneClickSwap {
-    /// NEAR RPC client
-    client: JsonRpcClient,
-    /// Transaction signer
-    signer: Arc<Signer>,
+    /// Gateway client (also carries the bound signer)
+    client: SigningClient,
     /// Maximum slippage in basis points
     max_slippage_bps: u32,
     /// Transaction timeout
+    #[allow(dead_code)]
     timeout: u64,
     /// HTTP client for API calls
     http_client: reqwest::Client,
@@ -304,8 +328,16 @@ pub struct OneClickSwap {
     api_token: Option<String>,
     /// Cached set of 1-Click supported token `assetId` values
     supported_tokens: std::sync::Arc<std::sync::RwLock<std::collections::HashSet<String>>>,
-    /// Shared nonce tracker for coordinated nonce management
-    nonce_tracker: crate::rpc::NonceTracker,
+}
+
+impl std::fmt::Debug for OneClickSwap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OneClickSwap")
+            .field("max_slippage_bps", &self.max_slippage_bps)
+            .field("timeout", &self.timeout)
+            .field("api_token", &self.api_token.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl OneClickSwap {
@@ -313,20 +345,16 @@ impl OneClickSwap {
     ///
     /// # Arguments
     ///
-    /// * `client` - NEAR RPC client for transaction submission
-    /// * `signer` - Transaction signer
+    /// * `client` - Gateway client for transaction submission (binds the signer)
     /// * `max_slippage_bps` - Maximum slippage in basis points (default: 300 = 3%)
     /// * `api_token` - Optional API token to avoid 0.1% fee
     pub fn new(
-        client: JsonRpcClient,
-        signer: Arc<Signer>,
+        client: SigningClient,
         max_slippage_bps: Option<u32>,
         api_token: Option<String>,
-        nonce_tracker: crate::rpc::NonceTracker,
     ) -> Self {
         Self {
             client,
-            signer,
             max_slippage_bps: max_slippage_bps.unwrap_or(DEFAULT_MAX_SLIPPAGE_BPS),
             timeout: DEFAULT_TIMEOUT,
             http_client: reqwest::Client::new(),
@@ -334,8 +362,12 @@ impl OneClickSwap {
             supported_tokens: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashSet::new(),
             )),
-            nonce_tracker,
         }
+    }
+
+    /// The bot's account ID (the bound signer on the gateway client).
+    fn our_account(&self) -> AccountId {
+        self.client.account_id().0.clone()
     }
 
     /// Fetches the list of supported tokens from the 1-Click API `/v0/tokens`
@@ -422,7 +454,7 @@ impl OneClickSwap {
     ) -> AppResult<QuoteResponse> {
         let from_asset_id = Self::to_oneclick_asset_id(from_asset);
         let to_asset_id = Self::to_oneclick_asset_id(to_asset);
-        let recipient = self.signer.get_account_id().to_string();
+        let recipient = self.our_account().to_string();
 
         let from_str = from_asset.to_string();
         let to_str = to_asset.to_string();
@@ -568,8 +600,6 @@ impl OneClickSwap {
         token_contract: &FungibleAsset<F>,
         account_id: &AccountId,
     ) -> AppResult<()> {
-        use near_primitives::transaction::{Action, FunctionCallAction};
-
         const MAX_REASONABLE_DEPOSIT: u128 = 100_000_000_000_000_000_000_000; // 0.1 NEAR
 
         tracing::debug!(
@@ -579,81 +609,68 @@ impl OneClickSwap {
         );
 
         // Query storage_balance_bounds to get minimum deposit required
-        let bounds: StorageBalanceBounds = view(
-            &self.client,
-            token_contract.contract_id().into(),
-            "storage_balance_bounds",
-            near_sdk::serde_json::json!({}),
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
-            AppError::Rpc(e)
-        })?;
+        let bounds = self
+            .client
+            .read(storage::GetBalanceBounds {
+                contract_id: token_contract.contract_id().into(),
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
+                AppError::Rpc(e.into())
+            })?;
 
-        let min_deposit = bounds.min.0;
+        let min_deposit: NearToken = bounds.bounds.min;
 
         // Validate minimum deposit is reasonable (less than 0.1 NEAR)
-        if min_deposit > MAX_REASONABLE_DEPOSIT {
+        if min_deposit.as_yoctonear() > MAX_REASONABLE_DEPOSIT {
             return Err(AppError::ValidationError(format!(
-                "Storage deposit minimum ({min_deposit} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)"
+                "Storage deposit minimum ({} yoctoNEAR) exceeds reasonable limit ({MAX_REASONABLE_DEPOSIT} yoctoNEAR / 0.1 NEAR)",
+                min_deposit.as_yoctonear()
             )));
         }
 
         #[allow(clippy::cast_precision_loss)]
-        let min_deposit_near = min_deposit as f64 / 1e24;
+        let min_deposit_near = min_deposit.as_yoctonear() as f64 / 1e24;
 
         tracing::debug!(
             min_deposit_near = %min_deposit_near,
             "Storage deposit minimum from contract"
         );
 
-        let (nonce, block_hash) =
-            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
-
-        let storage_deposit_action = FunctionCallAction {
-            method_name: "storage_deposit".to_string(),
-            args: near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({
-                "account_id": account_id,
-                "registration_only": true,
-            }))
-            .map_err(|e| AppError::ValidationError(format!("Failed to serialize args: {e}")))?,
-            gas: Gas::from_teragas(10),
-            deposit: NearToken::from_yoctonear(min_deposit),
-        };
-
-        let tx = Transaction::V0(TransactionV0 {
-            nonce,
-            receiver_id: token_contract.contract_id().into(),
-            block_hash,
-            signer_id: self.signer.get_account_id(),
-            public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(storage_deposit_action))],
-        });
-
-        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx).await?;
-
-        match outcome.status {
-            FinalExecutionStatus::SuccessValue(_) => {
-                tracing::debug!(account = %account_id, "Storage deposit successful");
-                Ok(())
-            }
-            FinalExecutionStatus::Failure(failure) => {
-                // Storage deposit can fail if:
-                // 1. Already registered (common)
-                // 2. Contract doesn't support storage_deposit (NEP-245 multi-tokens)
-                // Both cases are fine - we can proceed with the transfer
+        // Storage deposit can fail (already registered, or NEP-245 contracts that
+        // handle storage internally). Both are non-fatal — we proceed regardless
+        // of the resulting operation status, and only surface submission errors.
+        match self
+            .client
+            .execute(storage::Deposit {
+                contract_id: token_contract.contract_id().into(),
+                beneficiary_id: Some(account_id.clone()),
+                registration_only: true,
+                deposit: min_deposit,
+            })
+            .await
+        {
+            Ok(result) if result.operation.status == OperationStatus::Succeeded => {
                 tracing::debug!(
                     account = %account_id,
-                    failure = ?failure,
-                    "Storage deposit failed (likely already registered or not required)"
+                    "Storage deposit completed"
                 );
                 Ok(())
             }
-            _ => {
-                tracing::debug!(status = ?outcome.status, "Unexpected storage deposit status");
+            Ok(result) => {
+                // NEP-245 tokens are excluded upstream and an already-registered
+                // `storage_deposit` succeeds, so a non-success status is a genuine
+                // registration failure. The deposit may then be refunded (refund
+                // detection backstops it); surface it loudly rather than ignoring.
+                tracing::warn!(
+                    account = %account_id,
+                    status = ?result.operation.status,
+                    "Storage deposit did not succeed; deposit may be refunded (refund detection backstops)"
+                );
                 Ok(())
             }
+            Err(e) => Err(AppError::Rpc(e.into())),
         }
     }
 
@@ -701,26 +718,30 @@ impl OneClickSwap {
                     "Creating implicit account"
                 );
 
-                let (nonce, block_hash) =
-                    get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker))
-                        .await?;
-
-                // Send 1 yoctoNEAR to create the implicit account (minimum amount needed)
-                let create_account_tx = Transaction::V0(TransactionV0 {
-                    nonce,
-                    receiver_id: deposit_account.clone(),
-                    block_hash,
-                    signer_id: self.signer.get_account_id(),
-                    public_key: self.signer.public_key().clone(),
-                    actions: vec![Action::Transfer(near_primitives::action::TransferAction {
-                        deposit: NearToken::from_yoctonear(1),
-                    })],
-                });
-
-                // Send transaction but don't fail if account already exists
-                match send_tx(&self.client, &self.signer, self.timeout, create_account_tx).await {
-                    Ok(_) => {
-                        tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
+                // Send 1 yoctoNEAR to create the implicit account (minimum amount needed).
+                // Don't fail if the account already exists.
+                match self
+                    .client
+                    .execute(tx::Transfer {
+                        receiver_id: deposit_account.clone(),
+                        amount: NearToken::from_yoctonear(1),
+                    })
+                    .await
+                {
+                    Ok(result) => {
+                        // A non-success status (the account already exists is a
+                        // success) means creation failed; the later token deposit
+                        // would then be refunded, which refund detection catches,
+                        // but surface it loudly rather than logging "created".
+                        if result.operation.status == OperationStatus::Succeeded {
+                            tracing::debug!(deposit_account = %deposit_account, "Implicit account created");
+                        } else {
+                            tracing::warn!(
+                                deposit_account = %deposit_account,
+                                status = ?result.operation.status,
+                                "Implicit account creation did not succeed; proceeding (refund detection backstops)"
+                            );
+                        }
 
                         // Wait for account creation to propagate (1-2 blocks)
                         // This prevents race conditions with storage registration
@@ -730,7 +751,7 @@ impl OneClickSwap {
                         // If account already exists, that's fine
                         tracing::warn!(
                             deposit_account = %deposit_account,
-                            error = ?e,
+                            error = %e,
                             "Failed to create implicit account (may already exist)"
                         );
                     }
@@ -751,71 +772,70 @@ impl OneClickSwap {
             );
         }
 
-        // Get transaction parameters
-        let (nonce, block_hash) =
-            get_access_key_data(&self.client, &self.signer, Some(&self.nonce_tracker)).await?;
+        // Create deposit transaction.
+        // Use a simple transfer (not transfer_call) for INTENTS depositType
+        // because the implicit account doesn't have a contract to handle callbacks.
+        // `token::Transfer` is standard-agnostic so NEP-245 collateral works too.
+        let operation_result = self
+            .client
+            .execute(token::Transfer {
+                token: token::TokenReference::from(from_asset),
+                receiver_id: deposit_account.clone(),
+                amount: GatewayU128(amount.0),
+                memo: None,
+            })
+            .await
+            .map_err(|e| AppError::Rpc(e.into()))?;
 
-        // Create deposit transaction
-        // Use simple ft_transfer (not ft_transfer_call) for INTENTS depositType
-        // because the implicit account doesn't have a contract to handle callbacks
-        let tx = Transaction::V0(TransactionV0 {
-            nonce,
-            receiver_id: from_asset.contract_id().into(),
-            block_hash,
-            signer_id: self.signer.get_account_id(),
-            public_key: self.signer.public_key().clone(),
-            actions: vec![Action::FunctionCall(Box::new(
-                from_asset.transfer_action(&deposit_account, amount.into()),
-            ))],
-        });
+        let operation = &operation_result.operation;
 
-        // Get the transaction hash before sending
-        let (tx_hash, _) = tx.get_hash_and_size();
-        let tx_hash_str = tx_hash.to_string();
-
-        let outcome = send_tx(&self.client, &self.signer, self.timeout, tx).await?;
-
-        match &outcome.status {
-            FinalExecutionStatus::SuccessValue(_) => {
-                let account_type_str = match deposit_account.get_account_type() {
-                    AccountType::NamedAccount => "named",
-                    AccountType::NearImplicitAccount => "implicit",
-                    AccountType::EthImplicitAccount => "eth-implicit",
-                    AccountType::NearDeterministicAccount => "deterministic",
-                };
-                tracing::info!(
-                    tx_hash = %tx_hash_str,
-                    asset = %asset_str,
-                    amount_raw = %amount.0,
-                    deposit_address = %deposit_address,
-                    account_type = %account_type_str,
-                    "Deposit transaction succeeded"
-                );
-            }
-            FinalExecutionStatus::Failure(failure) => {
+        match operation.status {
+            OperationStatus::Succeeded => {}
+            failed_status => {
                 tracing::error!(
-                    tx_hash = %tx_hash_str,
-                    failure = ?failure,
-                    "Deposit transaction failed with detailed error"
+                    operation_id = %operation.id.0,
+                    status = ?failed_status,
+                    "Deposit transaction failed"
                 );
                 return Err(AppError::ValidationError(format!(
-                    "Deposit transaction failed: {failure:?}"
+                    "Deposit transaction failed: operation {} ended with status {failed_status:?}",
+                    operation.id.0
                 )));
-            }
-            _ => {
-                tracing::warn!(
-                    tx_hash = %tx_hash_str,
-                    status = ?outcome.status,
-                    "Unexpected transaction status"
-                );
             }
         }
 
-        // Check if the deposit was refunded by fetching transaction outcome and checking receipts
-        match self
-            .check_deposit_refunded(&tx_hash_str, &deposit_account, amount)
-            .await
-        {
+        // A succeeded deposit must carry a transaction hash; never fall back to
+        // the operation id, which is not a valid tx hash for the 1-Click API.
+        let tx_hash = operation.latest_tx_hash().ok_or_else(|| {
+            AppError::ValidationError(format!(
+                "Deposit operation {} succeeded without a transaction hash",
+                operation.id.0
+            ))
+        })?;
+        let tx_hash_str = tx_hash.to_string();
+
+        let account_type_str = match deposit_account.get_account_type() {
+            AccountType::NamedAccount => "named",
+            AccountType::NearImplicitAccount => "implicit",
+            AccountType::EthImplicitAccount => "eth-implicit",
+            AccountType::NearDeterministicAccount => "deterministic",
+        };
+        tracing::info!(
+            tx_hash = %tx_hash_str,
+            asset = %asset_str,
+            amount_raw = %amount.0,
+            deposit_address = %deposit_address,
+            account_type = %account_type_str,
+            "Deposit transaction succeeded"
+        );
+
+        // Always run refund detection now that the hash is known (no silent
+        // "assume accepted" path when the hash is absent).
+        let refunded = self
+            .check_deposit_refunded(tx_hash, &deposit_account, amount)
+            .await;
+
+        match refunded {
             Ok(Some(refund_amount)) => {
                 tracing::error!(
                     tx_hash = %tx_hash_str,
@@ -842,86 +862,56 @@ impl OneClickSwap {
         Ok(tx_hash_str)
     }
 
-    /// Checks if a deposit was refunded by examining transaction receipts.
+    /// Checks if a deposit was refunded by examining the transaction logs.
     ///
     /// Returns the amount refunded if the deposit was rejected, or None if successful.
     async fn check_deposit_refunded(
         &self,
-        tx_hash: &str,
+        tx_hash: CryptoHash,
         deposit_account: &AccountId,
         _amount: U128,
     ) -> AppResult<Option<U128>> {
-        use near_jsonrpc_client::methods::tx::{RpcTransactionStatusRequest, TransactionInfo};
-        use near_primitives::views::TxExecutionStatus;
+        let our_account = self.our_account();
 
-        // Parse tx hash
-        let tx_hash_parsed = tx_hash
-            .parse()
-            .map_err(|e| AppError::ValidationError(format!("Invalid tx hash: {e}")))?;
-
-        // Fetch transaction outcome
+        // Fetch the transaction (aggregated receipt logs) through the gateway.
         let tx_result = self
             .client
-            .call(RpcTransactionStatusRequest {
-                transaction_info: TransactionInfo::TransactionId {
-                    sender_account_id: self.signer.get_account_id(),
-                    tx_hash: tx_hash_parsed,
-                },
-                wait_until: TxExecutionStatus::Final,
+            .read(tx::Get {
+                tx_hash,
+                sender_account_id: our_account.clone(),
+                wait_until: Some(templar_gateway_types::common::TxExecutionStatus::Final),
+                encoding: tx::ValueEncoding::default(),
             })
             .await
             .map_err(|e| AppError::Rpc(e.into()))?;
 
-        // Check receipt outcomes for token transfers
-        // If we see a transfer TO deposit_account followed by a transfer FROM deposit_account
-        // back to us, extract the refund amount
+        // Check transfer events. If we see a transfer TO deposit_account followed
+        // by a transfer FROM deposit_account back to us, extract the refund amount.
         let mut tokens_sent = false;
         let mut refund_amount: Option<U128> = None;
 
-        // Get receipts from the transaction result
-        let receipts = match &tx_result.final_execution_outcome {
-            Some(outcome) => {
-                match outcome {
-                    near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(o) => {
-                        &o.receipts_outcome
-                    }
-                    near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcomeWithReceipt(_o) => {
-                        // For this variant, we need to construct a vec with the single receipt
-                        // Since we can't easily return different types, let's just return empty
-                        // and check the transaction outcome logs instead
-                        &Vec::new()
-                    }
+        for log in &tx_result.logs {
+            let Some(event) = parse_nep297_event(log) else {
+                continue;
+            };
+            // This provider deposits NEP-141 (`ft_transfer`) and NEP-245
+            // (`mt_transfer`, via `token::Transfer`) assets, so a refund can be
+            // emitted under either standard.
+            let is_transfer = (event.standard == "nep141" && event.event == "ft_transfer")
+                || (event.standard == "nep245" && event.event == "mt_transfer");
+            if !is_transfer {
+                continue;
+            }
+            for transfer in &event.data {
+                // Tokens leaving our account toward the deposit address.
+                if transfer.new_owner_id.as_ref() == Some(deposit_account) {
+                    tokens_sent = true;
                 }
-            }
-            None => {
-                return Err(AppError::ValidationError(
-                    "No execution outcome".to_string(),
-                ))
-            }
-        };
-
-        for receipt in receipts {
-            for log in &receipt.outcome.logs {
-                // Check for NEP-141 transfer events
-                if log.contains("EVENT_JSON") && log.contains("ft_transfer") {
-                    // Parse the event to check direction and extract amount
-                    if log.contains(&format!("\"new_owner_id\":\"{deposit_account}\"")) {
-                        tokens_sent = true;
-                    }
-                    if log.contains(&format!("\"old_owner_id\":\"{deposit_account}\""))
-                        && log.contains(&format!(
-                            "\"new_owner_id\":\"{}\"",
-                            self.signer.get_account_id()
-                        ))
-                    {
-                        // Extract amount from the event JSON
-                        // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"..."}]}
-                        if let Some(amount_str) = Self::extract_transfer_amount(log) {
-                            if let Ok(amount_value) = amount_str.parse::<u128>() {
-                                refund_amount = Some(U128(amount_value));
-                            }
-                        }
-                    }
+                // A refund: deposit address → us.
+                if transfer.old_owner_id.as_ref() == Some(deposit_account)
+                    && transfer.new_owner_id.as_ref() == Some(&our_account)
+                {
+                    refund_amount = Some(U128(transfer.total_amount()));
                 }
             }
         }
@@ -934,19 +924,6 @@ impl OneClickSwap {
         }
     }
 
-    /// Extracts the transfer amount from a NEP-141 `EVENT_JSON` log entry.
-    fn extract_transfer_amount(log: &str) -> Option<String> {
-        // Format: EVENT_JSON:{"standard":"nep141",...,"data":[{"amount":"12345",...}]}
-        // Find the "amount" field value
-        if let Some(amount_start) = log.find(r#""amount":""#) {
-            let amount_start = amount_start + r#""amount":""#.len();
-            if let Some(amount_end) = log[amount_start..].find('"') {
-                return Some(log[amount_start..amount_start + amount_end].to_string());
-            }
-        }
-        None
-    }
-
     /// Notifies 1-Click API of the deposit.
     async fn submit_deposit(
         &self,
@@ -957,7 +934,7 @@ impl OneClickSwap {
         let request = DepositSubmitRequest {
             tx_hash: tx_hash.to_string(),
             deposit_address: deposit_address.to_string(),
-            near_sender_account: Some(self.signer.get_account_id().to_string()),
+            near_sender_account: Some(self.our_account().to_string()),
             memo: memo.map(String::from),
         };
 
@@ -1000,7 +977,7 @@ impl OneClickSwap {
         tracing::info!(
             tx_hash = %tx_hash,
             deposit_address = %deposit_address,
-            near_sender = %self.signer.get_account_id(),
+            near_sender = %self.our_account(),
             memo = ?memo,
             "Deposit submitted to 1-Click API"
         );
@@ -1222,7 +1199,7 @@ impl SwapProvider for OneClickSwap {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         amount: FungibleAssetAmount<F>,
-    ) -> AppResult<FinalExecutionStatus> {
+    ) -> AppResult<()> {
         let swap_start = std::time::Instant::now();
 
         tracing::info!(
@@ -1266,7 +1243,7 @@ impl SwapProvider for OneClickSwap {
                 duration_ms = swap_duration.as_millis(),
                 "1-Click swap completed successfully"
             );
-            Ok(FinalExecutionStatus::SuccessValue("".as_bytes().to_vec()))
+            Ok(())
         } else {
             tracing::error!(
                 deposit_address = %deposit_address,

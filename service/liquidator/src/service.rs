@@ -5,12 +5,12 @@
 //! - Inventory refresh (updating asset balances)
 //! - Liquidation rounds (scanning and executing liquidations)
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc, time::Duration};
 
-use near_crypto::{InMemorySigner, Signer};
-use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::AccountId;
-use templar_common::utils::Network;
+use templar_gateway_client::{collect_paginated, Network, SigningClient};
+use templar_gateway_methods_spec::{contract, market, registry};
+use templar_gateway_types::common::Pagination;
 use tokio::{
     select,
     sync::RwLock,
@@ -24,12 +24,16 @@ use templar_common::{
 };
 
 use crate::{
-    inventory::InventoryManager,
-    liquidation_strategy::LiquidationStrategy,
-    rpc::{list_all_deployments, view},
-    swap::SwapProvider,
+    inventory::InventoryManager, liquidation_strategy::LiquidationStrategy, swap::SwapProvider,
     CollateralStrategy, Liquidator, LiquidatorError,
 };
+
+/// Page size for listing registry deployments.
+#[allow(
+    clippy::unwrap_used,
+    reason = "compile-time const; a zero literal would fail to compile"
+)]
+const DEPLOYMENTS_PAGE_SIZE: NonZeroU32 = NonZeroU32::new(500).unwrap();
 
 /// Information needed to price a collateral asset and determine its swap target.
 #[derive(Debug, Clone)]
@@ -56,10 +60,8 @@ pub struct ServiceConfig {
     pub signer_account: AccountId,
     /// Network to operate on
     pub network: Network,
-    /// RPC URL
+    /// RPC URL (embed any provider key in the URL, e.g. `…/?apiKey=<key>`)
     pub near_rpc_url: Option<String>,
-    /// API key sent via X-API-Key header for RPC authentication
-    pub near_api_key: Option<String>,
     /// Transaction timeout in seconds
     pub transaction_timeout: u64,
     /// Interval between liquidation scans in seconds
@@ -109,8 +111,7 @@ pub struct ServiceConfig {
 /// Liquidator service that manages the bot lifecycle
 pub struct LiquidatorService {
     config: ServiceConfig,
-    client: JsonRpcClient,
-    signer: Signer,
+    client: SigningClient,
     inventory: Arc<RwLock<InventoryManager>>,
     markets: HashMap<AccountId, Liquidator>,
     /// Swap provider passed to liquidators for immediate post-liquidation swaps
@@ -119,55 +120,62 @@ pub struct LiquidatorService {
     oracle_fetcher: crate::OracleFetcher,
     /// Collateral asset → price / swap target info (built from market configs)
     collateral_price_map: HashMap<String, CollateralPriceInfo>,
-    /// Shared nonce tracker for all transactions from this signer
-    nonce_tracker: crate::rpc::NonceTracker,
     /// Consecutive scan failure count per market (reset on success)
     scan_failure_counts: HashMap<AccountId, u32>,
 }
 
 impl LiquidatorService {
     /// Create a new liquidator service
+    ///
+    /// # Panics
+    ///
+    /// Panics if the RPC URL or signing key cannot be parsed, or if the gateway
+    /// client cannot be constructed for the configured signer.
+    #[allow(clippy::expect_used)]
     pub fn new(config: ServiceConfig) -> Self {
         let near_rpc_url = config
             .near_rpc_url
-            .as_deref()
-            .unwrap_or_else(|| config.network.rpc_url());
+            .clone()
+            .unwrap_or_else(|| config.network.rpc_url().to_string());
 
-        tracing::info!(near_rpc_url = %near_rpc_url, "Connecting to RPC");
-
-        let mut client = JsonRpcClient::connect(near_rpc_url);
-        if let Some(ref api_key) = config.near_api_key {
-            let header = near_jsonrpc_client::auth::ApiKey::new(api_key).unwrap_or_else(|e| {
-                panic!("Invalid NEAR_API_KEY value: {e}");
-            });
-            client = client.header(header);
-            tracing::info!("RPC API key configured via X-API-Key header");
-        }
-        let signer = InMemorySigner::from_secret_key(
-            config.signer_account.clone(),
-            config.signer_key.clone(),
+        // Don't log `near_rpc_url`: operators embed their provider `apiKey` in
+        // it, so the URL is secret-bearing.
+        tracing::info!(
+            network = %config.network,
+            custom_rpc = config.near_rpc_url.is_some(),
+            "Connecting to RPC"
         );
+
+        let network = near_api::NetworkConfig::from_rpc_url(
+            &config.network.to_string(),
+            near_rpc_url.parse().expect("invalid NEAR_RPC_URL"),
+        );
+
+        // The gateway client signs with `near_api::SecretKey`; the CLI parses a
+        // `near_crypto::SecretKey`, so round-trip through the shared string form.
+        let secret_key: near_api::SecretKey = config
+            .signer_key
+            .to_string()
+            .parse()
+            .expect("invalid signer secret key");
+
+        let client = SigningClient::connect(network, config.signer_account.clone(), secret_key)
+            .expect("failed to construct gateway client");
 
         let inventory = Arc::new(RwLock::new(InventoryManager::new(
             client.clone(),
             config.signer_account.clone(),
         )));
 
-        // Shared nonce tracker for all transactions from this signer
-        let nonce_tracker = crate::rpc::NonceTracker::default();
-
         // Create swap provider for executor
-        let (_, oneclick_provider) =
-            Self::create_swap_providers(&config, &client, Arc::new(signer.clone()), &nonce_tracker);
+        let (_, oneclick_provider) = Self::create_swap_providers(&config, &client);
 
-        // Create oracle fetcher for batch swap price checks (no signer needed for reads)
+        // Create oracle fetcher for batch swap price checks
         let oracle_fetcher = crate::OracleFetcher::new(
             client.clone(),
             Some(config.hermes_url.clone()),
             Some(config.redstone_gateway_url.clone()),
             None,
-            None,
-            nonce_tracker.clone(),
         );
 
         // Log swap configuration
@@ -182,13 +190,11 @@ impl LiquidatorService {
         Self {
             config,
             client,
-            signer,
             inventory,
             markets: HashMap::new(),
             oneclick_provider,
             oracle_fetcher,
             collateral_price_map: HashMap::new(),
-            nonce_tracker,
             scan_failure_counts: HashMap::new(),
         }
     }
@@ -196,9 +202,7 @@ impl LiquidatorService {
     /// Creates swap providers for collateral rebalancing
     fn create_swap_providers(
         config: &ServiceConfig,
-        client: &JsonRpcClient,
-        signer: Arc<near_crypto::Signer>,
-        nonce_tracker: &crate::rpc::NonceTracker,
+        client: &SigningClient,
     ) -> (
         Option<crate::swap::SwapProviderImpl>,
         Option<crate::swap::SwapProviderImpl>,
@@ -217,12 +221,7 @@ impl LiquidatorService {
         let ref_provider = if let Some(ref contract_str) = config.ref_contract {
             match contract_str.parse::<AccountId>() {
                 Ok(contract) => {
-                    let ref_swap = RefSwap::new(
-                        contract.clone(),
-                        client.clone(),
-                        signer.clone(),
-                        nonce_tracker.clone(),
-                    );
+                    let ref_swap = RefSwap::new(contract.clone(), client.clone());
                     tracing::info!(
                         contract = %contract,
                         "Ref Finance provider initialized"
@@ -247,13 +246,8 @@ impl LiquidatorService {
 
         // Initialize OneClick provider for NEP-245 and NEP-141 tokens
         let oneclick_provider = {
-            let oneclick = OneClickSwap::new(
-                client.clone(),
-                signer,
-                None,
-                config.oneclick_api_token.clone(),
-                nonce_tracker.clone(),
-            );
+            let oneclick =
+                OneClickSwap::new(client.clone(), None, config.oneclick_api_token.clone());
             if config.oneclick_api_token.is_some() {
                 tracing::info!("1-Click API provider initialized with authentication");
             } else {
@@ -429,12 +423,12 @@ impl LiquidatorService {
             );
 
             let all_markets = list_all_deployments(
-                self.client.clone(),
+                &self.client,
                 self.config.registries.clone(),
                 self.config.concurrency,
             )
             .await
-            .map_err(LiquidatorError::ListDeploymentsError)?;
+            .map_err(|e| LiquidatorError::ListDeploymentsError(e.into()))?;
 
             tracing::info!(
                 market_count = all_markets.len(),
@@ -457,13 +451,12 @@ impl LiquidatorService {
                 // Step 1: Fetch market configuration — this is the definitive check
                 // for whether a deployment is a market contract. Non-market contracts
                 // (proxy-oracles, redstone-adapters) won't have this method.
-                let config = match view::<templar_common::market::MarketConfiguration>(
-                    &self.client,
-                    market.clone(),
-                    "get_configuration",
-                    near_sdk::serde_json::json!({}),
-                )
-                .await
+                let config = match self
+                    .client
+                    .read(market::GetConfiguration {
+                        market_id: market.clone(),
+                    })
+                    .await
                 {
                     Ok(config) => {
                         tracing::debug!(
@@ -475,10 +468,7 @@ impl LiquidatorService {
                         config
                     }
                     Err(e) => {
-                        let err_msg = format!("{e:?}");
-                        if err_msg.contains("MethodNotFound")
-                            || err_msg.contains("MethodResolveError")
-                        {
+                        if crate::rpc::gateway_is_method_not_found(&e) {
                             tracing::info!(
                                 deployment = %market,
                                 "Skipping non-market deployment (no get_configuration method)"
@@ -486,7 +476,7 @@ impl LiquidatorService {
                         } else {
                             tracing::warn!(
                                 market = %market,
-                                error = ?e,
+                                error = %e,
                                 "Failed to fetch market configuration, skipping"
                             );
                         }
@@ -495,7 +485,14 @@ impl LiquidatorService {
                 };
 
                 // Step 2: Check contract version using NEP-330
-                let version_result = crate::rpc::get_contract_version(&self.client, market).await;
+                let version_result = self
+                    .client
+                    .read(contract::GetVersion {
+                        contract_id: market.clone(),
+                    })
+                    .await
+                    .ok()
+                    .map(|result| result.version_string);
 
                 if let Some(version) = version_result {
                     let parts: Vec<&str> = version.split('.').collect();
@@ -565,18 +562,13 @@ impl LiquidatorService {
             for (market, config) in market_configs {
                 tracing::debug!(market = %market, "Creating liquidator for market");
 
-                // Clone Signer enum
-                let signer = Arc::new(self.signer.clone());
-
                 let mut liquidator = Liquidator::new(
                     &self.client,
-                    signer,
                     &self.inventory,
                     market.clone(),
                     config,
                     self.config.strategy.clone(),
                     self.config.collateral_strategy.clone(),
-                    self.config.transaction_timeout,
                     self.config.dry_run,
                     self.oneclick_provider.clone(),
                     self.config.loop_liquidation,
@@ -586,12 +578,7 @@ impl LiquidatorService {
                     self.config.swap_retry_config.clone(),
                     self.config.min_swap_value_usd,
                     Some(self.oracle_fetcher.proxy_oracle_cache()),
-                    Some((
-                        self.config.signer_account.clone(),
-                        self.config.signer_key.clone(),
-                    )),
                     self.config.notifier.clone(),
-                    self.nonce_tracker.clone(),
                 );
 
                 // Fetch market version for version-specific liquidation logic
@@ -864,7 +851,6 @@ impl LiquidatorService {
                     provider
                         .swap(&coll, &borrow, swap_amount)
                         .await
-                        .map(|_| ())
                         .map_err(|e| {
                             // Classify the AppError into SwapError
                             let msg = e.to_string();
@@ -1015,6 +1001,51 @@ impl LiquidatorService {
         .instrument(liquidation_span)
         .await;
     }
+}
+
+/// Fetch every deployment across `registries` (paginated, concurrently).
+///
+/// Propagates the first read error encountered, matching the pre-migration
+/// behaviour where a registry failure fails the whole refresh.
+async fn list_all_deployments(
+    client: &SigningClient,
+    registries: Vec<AccountId>,
+    concurrency: usize,
+) -> templar_gateway_core::GatewayResult<Vec<AccountId>> {
+    use futures::{StreamExt, TryStreamExt};
+
+    futures::stream::iter(registries)
+        .map(|registry| {
+            let client = client.clone();
+            async move { list_deployments(&client, registry).await }
+        })
+        .buffer_unordered(concurrency)
+        .try_concat()
+        .await
+}
+
+/// List all deployments from a single registry, paginating until a short page.
+async fn list_deployments(
+    client: &SigningClient,
+    registry: AccountId,
+) -> templar_gateway_core::GatewayResult<Vec<AccountId>> {
+    collect_paginated(DEPLOYMENTS_PAGE_SIZE, move |offset, count| {
+        let client = client.clone();
+        let registry = registry.clone();
+        async move {
+            let result = client
+                .read(registry::ListDeployments {
+                    registry_id: registry,
+                    args: Pagination {
+                        offset: Some(offset),
+                        limit: Some(count),
+                    },
+                })
+                .await?;
+            Ok(result.account_ids)
+        }
+    })
+    .await
 }
 
 /// Check if an asset is a USDC variant (preferred swap target for rebalancing).

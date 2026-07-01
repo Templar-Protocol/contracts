@@ -715,7 +715,11 @@ async fn deploy_contract(
     Ok(())
 }
 
-fn test_secret_key() -> Result<SecretKey> {
+/// The fixed secret key every harness-created account is provisioned with
+/// (signer accounts and `create_account_signer` contract accounts alike).
+/// Exposed so external consumers can build their own gateway client against the
+/// sandbox using the same key the harness deploys with.
+pub fn test_secret_key() -> Result<SecretKey> {
     Ok("ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
         .parse()?)
 }

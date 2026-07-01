@@ -13081,20 +13081,18 @@ name = "templar-accumulator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "clap",
  "futures",
+ "near-account-id",
+ "near-api",
  "near-crypto",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
- "near-sdk",
  "templar-common",
- "thiserror 2.0.18",
+ "templar-gateway-client",
+ "templar-gateway-methods-spec",
+ "templar-gateway-types",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "wiremock",
 ]
 
 [[package]]
@@ -13228,11 +13226,13 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "near-api",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-store",
  "templar-gateway-types",
+ "tokio",
 ]
 
 [[package]]
@@ -13484,22 +13484,27 @@ dependencies = [
 name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
  "futures",
  "hex",
  "near-account-id",
+ "near-api",
  "near-crypto",
  "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
  "near-sdk",
  "reqwest 0.11.27",
  "serde",
  "templar-common",
- "templar-proxy-oracle-kernel",
+ "templar-gateway-client",
+ "templar-gateway-core",
+ "templar-gateway-methods-spec",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "templar-proxy-oracle-near-common",
+ "test-utils",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

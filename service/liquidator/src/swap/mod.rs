@@ -16,14 +16,12 @@
 //!
 //! ```ignore
 //! use templar_liquidator::swap::{SwapProvider, RefSwap};
-//! use near_jsonrpc_client::JsonRpcClient;
+//! use templar_gateway_client::SigningClient;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+//! # async fn example(client: SigningClient) -> Result<(), Box<dyn std::error::Error>> {
 //! let swap_provider = RefSwap::new(
 //!     "v2.ref-finance.near".parse()?,
 //!     client,
-//!     signer,
 //! );
 //!
 //! // Get quote
@@ -46,7 +44,6 @@ pub use provider::SwapProviderImpl;
 pub use r#ref::RefSwap;
 pub use retry::{SwapError, SwapErrorKind, SwapRetryConfig};
 
-use near_primitives::views::FinalExecutionStatus;
 use near_sdk::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 
@@ -103,7 +100,7 @@ pub trait SwapProvider: Send + Sync {
     ///
     /// # Returns
     ///
-    /// The final execution status of the swap transaction.
+    /// `Ok(())` once the swap transaction has completed successfully.
     ///
     /// # Errors
     ///
@@ -116,7 +113,7 @@ pub trait SwapProvider: Send + Sync {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         amount: FungibleAssetAmount<F>,
-    ) -> AppResult<FinalExecutionStatus>;
+    ) -> AppResult<()>;
 
     /// Returns the name of the swap provider for logging and debugging.
     fn provider_name(&self) -> &'static str;

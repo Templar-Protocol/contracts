@@ -32,6 +32,17 @@ impl<C: HasNearClient> DispatchRead<tx::Get, C> for Dispatch {
             },
             total_gas_burnt: result.total_gas_burnt,
             logs: result.logs().into_iter().map(ToString::to_string).collect(),
+            // The distinct contracts whose receipts failed, even when the
+            // transaction's final status is success (e.g. a refunded
+            // `ft_transfer_call`). Deduped: the set of failing contracts is the
+            // logical signal, independent of how many receipts each produced.
+            failed_receipts: result
+                .receipt_failures()
+                .iter()
+                .map(|outcome| outcome.executor_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             return_value: match request.encoding {
                 tx::ValueEncoding::Json => result.json().ok().map(tx::ReturnValue::Json),
                 tx::ValueEncoding::Base64 => result
