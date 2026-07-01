@@ -250,13 +250,11 @@ pub async fn relay(
         }
     };
 
-    // The charge is settled either way, but a transaction that reverted on chain
-    // must not be reported to the caller as a success.
+    // The relayer's job is to land the caller's signed transaction on chain; a
+    // revert after that is the caller's transaction to fix, not a relay failure.
+    // Report success with the hash so the caller can inspect the outcome.
     if !execution.succeeded {
         tracing::warn!(transaction_hash = %execution.transaction_hash, "Universal account relay reverted on chain");
-        return SimpleResponse::Failure {
-            error: "Universal account relay reverted on chain".to_string(),
-        };
     }
 
     RelayResponse {

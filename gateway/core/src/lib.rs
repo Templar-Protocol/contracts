@@ -22,7 +22,7 @@ pub use contract_kind::query_contract_kind;
 pub use error::{GatewayError, GatewayResult};
 pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
-    SharedSignTransaction, SignTransaction,
+    SharedSignTransaction, SignTransaction, StepOutcome,
 };
 pub use near_client_provider::HasNearClient;
 pub use operation::{

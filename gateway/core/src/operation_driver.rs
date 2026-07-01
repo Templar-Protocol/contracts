@@ -4,7 +4,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    operation::{ExecutionOutcome, OperationRecord, OperationStatus},
+    operation::{OperationRecord, OperationStatus},
     IdempotencyKey, MethodSpec, OperationId,
 };
 
@@ -210,27 +210,22 @@ impl OperationDriver {
             operation_count = operations.len(),
             "resuming incomplete gateway operations"
         );
-        for mut operation in operations {
+        for operation in operations {
             let operation_id = operation.operation_id().clone();
 
-            // A reservation with no steps means a previous run crashed during
-            // planning. Planning is read-only, so nothing was submitted: drop
-            // the reservation, which lets any charge held for it be released.
+            // Recovery runs before this process serves traffic, so any reservation
+            // is from a previous run that died mid-planning: planning is read-only,
+            // nothing was submitted, so drop it and release its charge. (This is
+            // the only place reservations are reaped — a live one being planned is
+            // never visible here.)
             if operation.is_reservation() {
                 self.store.delete_reservation(&operation_id).await?;
                 continue;
             }
 
-            if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
-                // Startup may run moments after a crash, so never reject a
-                // still-unknown transaction here — leave it for the broom to age
-                // out and reconcile.
-                self.reconcile_submitted_step(&mut operation, false).await;
-                self.store.save_operation(operation).await?;
-                continue;
-            }
-
-            if let Err(error) = self.execute_remaining_steps(operation).await {
+            // Never reject a still-unknown transaction during recovery (it may be
+            // moments old): reject_if_unknown = false leaves it for the broom.
+            if let Err(error) = self.advance_operation(operation, false).await {
                 tracing::warn!(
                     operation_id = %operation_id.0,
                     %error,
@@ -239,6 +234,24 @@ impl OperationDriver {
             }
         }
         Ok(())
+    }
+
+    /// Drive an in-flight operation toward a terminal outcome and persist it:
+    /// reconcile a submitted step against the chain (if any), then run the
+    /// remaining steps. Shared by startup recovery and the broom's reconcile, so
+    /// both resolve a submitted step *and* continue a multi-step plan.
+    async fn advance_operation(
+        &self,
+        mut operation: StoredOperation,
+        reject_if_unknown: bool,
+    ) -> GatewayResult<StoredOperation> {
+        if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
+            self.reconcile_submitted_step(&mut operation, reject_if_unknown)
+                .await;
+        }
+        let operation = self.execute_remaining_steps(operation).await?;
+        self.store.save_operation(operation.clone()).await?;
+        Ok(operation)
     }
 
     pub async fn execute_remaining_steps(
@@ -322,31 +335,32 @@ impl OperationDriver {
                     .submit_transaction(signed_transaction, wait_until)
                     .await
                 {
-                    Ok(tx_result) => {
-                        if let Some(full) = tx_result.into_full() {
-                            let final_hash = full.outcome().transaction_hash.into();
-                            let is_success = full.is_success();
-                            // The submission result already carries the full
-                            // execution outcome — capture it so callers needn't
-                            // re-fetch it with a separate `tx.get`.
-                            let outcome = ExecutionOutcome::from(full);
-                            if is_success {
-                                tracing::debug!(
-                                    operation_id = %operation_id.0,
-                                    tx_hash = %final_hash,
-                                    "gateway operation step succeeded"
-                                );
-                                submitted_step.mark_succeeded(final_hash, outcome).await?;
-                            } else {
-                                tracing::debug!(
-                                    operation_id = %operation_id.0,
-                                    tx_hash = %final_hash,
-                                    "gateway operation step failed"
-                                );
-                                submitted_step.mark_reverted(final_hash, outcome).await?;
-                            }
+                    // The submission already carries the full execution outcome,
+                    // so callers needn't re-fetch it with a separate `tx.get`.
+                    Ok(Some(step)) => {
+                        if step.is_success {
+                            tracing::debug!(
+                                operation_id = %operation_id.0,
+                                tx_hash = %step.tx_hash,
+                                "gateway operation step succeeded"
+                            );
+                            submitted_step
+                                .mark_succeeded(step.tx_hash, step.outcome)
+                                .await?;
+                        } else {
+                            tracing::debug!(
+                                operation_id = %operation_id.0,
+                                tx_hash = %step.tx_hash,
+                                "gateway operation step reverted"
+                            );
+                            submitted_step
+                                .mark_reverted(step.tx_hash, step.outcome)
+                                .await?;
                         }
                     }
+                    // Broadcast but no full outcome yet: leave it Submitted for
+                    // reconciliation to resolve by querying the chain.
+                    Ok(None) => {}
                     Err(error) => {
                         // The transaction may have reached the chain before this
                         // error (e.g. an RPC timeout after broadcast). Leave the
@@ -379,32 +393,25 @@ impl OperationDriver {
     /// reconciliation; the broom passes `true` because it only reconciles charges
     /// old enough that an unknown transaction has aged out.
     ///
-    /// Returns `None` when there is no such operation, or when it is a stale
-    /// reservation (planning never completed) that is dropped here so its charge
-    /// can be released.
+    /// Returns `None` when there is no such operation. A reservation is left
+    /// untouched (its owning request is still planning it); only startup recovery
+    /// reaps reservations.
     pub async fn reconcile_operation(
         &self,
         idempotency_key: &IdempotencyKey,
         reject_if_unknown: bool,
     ) -> GatewayResult<Option<OperationRecord>> {
-        let Some(mut operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
+        let Some(operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
             return Ok(None);
         };
-
         if operation.is_reservation() {
-            self.store
-                .delete_reservation(operation.operation_id())
-                .await?;
-            return Ok(None);
+            return Ok(Some(operation.record()));
         }
-
-        if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
-            self.reconcile_submitted_step(&mut operation, reject_if_unknown)
-                .await;
-            self.store.save_operation(operation.clone()).await?;
-        }
-
-        Ok(Some(operation.record()))
+        Ok(Some(
+            self.advance_operation(operation, reject_if_unknown)
+                .await?
+                .record(),
+        ))
     }
 
     /// Query a submitted step's on-chain fate and record it. `reject_if_unknown`
@@ -429,14 +436,12 @@ impl OperationDriver {
                 .query_transaction(&transaction.signer_account_id, tx_hash)
                 .await
             {
-                Ok(execution) => {
-                    let is_success = execution.is_success();
-                    let outcome = ExecutionOutcome::from(execution);
-                    if is_success {
+                Ok(step) => {
+                    if step.is_success {
                         operation.succeeded_steps.push(SucceededStep {
                             transaction,
                             tx_hash,
-                            outcome,
+                            outcome: step.outcome,
                         });
                         operation.current_step = None;
                     } else {
@@ -448,7 +453,7 @@ impl OperationDriver {
                         operation.current_step = Some(CurrentStep::Reverted {
                             transaction,
                             tx_hash,
-                            outcome,
+                            outcome: step.outcome,
                         });
                     }
                 }

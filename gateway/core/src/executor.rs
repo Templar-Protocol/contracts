@@ -22,7 +22,7 @@ use near_api::{
 };
 use std::collections::HashMap;
 
-use templar_gateway_types::{CryptoHash, ManagedAccountId};
+use templar_gateway_types::{operation::ExecutionOutcome, CryptoHash, ManagedAccountId};
 
 use crate::{
     read::is_unknown_transaction, GatewayError, GatewayResult, PlannedTransaction,
@@ -40,19 +40,43 @@ pub trait SignTransaction: Send + Sync {
     ) -> GatewayResult<PreparedTransactionResult>;
 }
 
+/// The chain-side result of a single operation step: the executing transaction's
+/// hash, whether it succeeded, and its captured outcome. Isolating this behind
+/// the trait keeps near-api's result shapes out of the driver, and lets tests
+/// drive an operation without a live chain.
+pub struct StepOutcome {
+    pub tx_hash: CryptoHash,
+    pub is_success: bool,
+    pub outcome: ExecutionOutcome,
+}
+
+impl StepOutcome {
+    fn from_final(result: ExecutionFinalResult) -> Self {
+        Self {
+            tx_hash: result.outcome().transaction_hash.into(),
+            is_success: result.is_success(),
+            outcome: ExecutionOutcome::from(result),
+        }
+    }
+}
+
 #[async_trait]
 pub trait ExecuteOperation: Send + Sync {
+    /// Submit a signed transaction. `Ok(None)` means it was broadcast but no full
+    /// outcome is available yet (still in flight); `Ok(Some)` carries the result.
     async fn submit_transaction(
         &self,
         signed_transaction: SignedTransaction,
         wait_until: templar_gateway_types::common::TxExecutionStatus,
-    ) -> GatewayResult<TransactionResult>;
+    ) -> GatewayResult<Option<StepOutcome>>;
 
+    /// Look up an already-submitted transaction by hash, returning
+    /// [`GatewayError::TransactionNotFound`] when the chain has no record of it.
     async fn query_transaction(
         &self,
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
-    ) -> GatewayResult<ExecutionFinalResult>;
+    ) -> GatewayResult<StepOutcome>;
 }
 
 #[derive(Clone)]
@@ -151,14 +175,14 @@ impl ExecuteOperation for NearOperationExecutor {
         &self,
         signed_transaction: SignedTransaction,
         wait_until: templar_gateway_types::common::TxExecutionStatus,
-    ) -> GatewayResult<TransactionResult> {
+    ) -> GatewayResult<Option<StepOutcome>> {
         let prepopulated = PrepopulateTransaction {
             signer_id: signed_transaction.transaction.signer_id().clone(),
             receiver_id: signed_transaction.transaction.receiver_id().clone(),
             actions: signed_transaction.transaction.actions().to_vec(),
         };
 
-        ExecuteSignedTransaction {
+        let result: TransactionResult = ExecuteSignedTransaction {
             transaction: TransactionableOrSigned::Signed((
                 signed_transaction,
                 Box::new(PrepopulatedTransactionCarrier(prepopulated)),
@@ -168,14 +192,16 @@ impl ExecuteOperation for NearOperationExecutor {
         }
         .send_to(&self.network)
         .await
-        .map_err(|error| GatewayError::NearTransaction(error.to_string()))
+        .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+
+        Ok(result.into_full().map(StepOutcome::from_final))
     }
 
     async fn query_transaction(
         &self,
         signer_account_id: &ManagedAccountId,
         tx_hash: CryptoHash,
-    ) -> GatewayResult<ExecutionFinalResult> {
+    ) -> GatewayResult<StepOutcome> {
         RequestBuilder::new(
             TransactionStatusRpc,
             TransactionStatusRef {
@@ -197,6 +223,7 @@ impl ExecuteOperation for NearOperationExecutor {
                 GatewayError::NearTransaction(error.to_string())
             }
         })
+        .map(StepOutcome::from_final)
     }
 }
 

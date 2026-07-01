@@ -91,7 +91,8 @@ impl TestStack {
             context,
             harness.gateway_signers.clone(),
             Arc::new(MemoryStore::new()),
-        )?;
+        )
+        .await?;
 
         let server = ServerBuilder::default().build("127.0.0.1:0").await?;
         let local_addr = server.local_addr()?;

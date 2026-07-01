@@ -8,3 +8,13 @@ ALTER TABLE
     gateway_operations
 ADD
     COLUMN IF NOT EXISTS planned_at timestamptz;
+
+-- Backfill: every row that predates this column was already planned
+-- (reservations are new). Without this, existing rows read back as bare
+-- reservations -- reaped by recovery or given the wrong status.
+UPDATE
+    gateway_operations
+SET
+    planned_at = created_at
+WHERE
+    planned_at IS NULL;

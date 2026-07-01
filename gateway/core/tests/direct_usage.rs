@@ -91,7 +91,11 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
         .submit_transaction(prepared.signed_transaction, prepared.transaction.wait_until)
         .await?;
 
-    assert!(result.is_success());
+    assert!(
+        result
+            .expect("submission should carry a full outcome")
+            .is_success
+    );
 
     let rate: near_api::Data<String> = Contract(ft_contract_id)
         .call_function("redemption_rate", ())
