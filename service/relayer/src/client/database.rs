@@ -744,4 +744,51 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    /// Locking a charge refreshes the account's `updated_at` (via the
+    /// `updated_at_trigger`), so a just-locked slot is never immediately
+    /// broom-eligible — even on a long-idle account whose previous `updated_at`
+    /// predates `min_age`. Guards the broom-vs-live-path race: the broom must not
+    /// reclaim a slot before the gateway has persisted its operation.
+    #[sqlx::test]
+    async fn lock_pending_refreshes_charge_age(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        // Backdate the account well past `min_age` to simulate a long-idle
+        // account. The trigger overrides `updated_at` on any UPDATE, so disable it
+        // just for this setup step.
+        sqlx::query("ALTER TABLE account DISABLE TRIGGER updated_at_trigger")
+            .execute(&db.connection)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE account SET updated_at = NOW() - INTERVAL '1 hour' WHERE account_id = $1",
+        )
+        .bind(account.to_string())
+        .execute(&db.connection)
+        .await
+        .unwrap();
+        sqlx::query("ALTER TABLE account ENABLE TRIGGER updated_at_trigger")
+            .execute(&db.connection)
+            .await
+            .unwrap();
+
+        // Locking fires the trigger, stamping `updated_at = NOW()`.
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        // Despite the stale account, the fresh lock is not yet broom-eligible.
+        let pending = db
+            .get_pending_charges(10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "a just-locked charge must not be broom-eligible until it ages past min_age"
+        );
+    }
 }
