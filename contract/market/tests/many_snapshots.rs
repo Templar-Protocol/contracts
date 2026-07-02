@@ -49,7 +49,7 @@ async fn many_snapshots(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let mut gas_record = Vec::with_capacity(256);
     for i in 0..256u32 {
         let result = harness.borrow(&borrow_user, &market, 100).await?;
-        let gas = harness.operation_gas_burnt(&result).await?;
+        let gas = harness.operation_gas_burnt(&result);
         #[allow(clippy::cast_precision_loss)]
         gas_record.push((f64::from(i), gas as f64));
     }

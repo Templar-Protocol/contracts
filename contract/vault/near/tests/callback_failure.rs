@@ -1,280 +1,271 @@
-#![allow(clippy::all, clippy::pedantic)]
-
-//! Tests for cross-contract callback failure paths and recovery.
+//! `contract/vault/near/tests/callback_failure.rs` ported onto the in-process
+//! gateway [`SandboxHarness`]. Exercises the vault's async-failure recovery:
+//! `unbrick` from stuck allocation/withdrawal states, its no-op on an idle
+//! vault, continued usability after recovery, and that a wrong-market withdrawal
+//! step is rejected without corrupting state. Every interaction goes through the
+//! gateway `Client` via the `vault_*` harness wrappers.
 //!
-//! These tests verify that the vault correctly handles failures during
-//! multi-step async operations and can recover via unbrick.
+//! Node-backed, so gated behind `#[ignore]`; run with:
+//! `cargo nextest run -p templar-vault-contract --test callback_failure --run-ignored all`
+#![allow(clippy::too_many_lines)]
 
+use anyhow::Result;
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
-use near_workspaces::{network::Sandbox, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
-    vault::{AllocationDelta, Delta},
+    vault::{AllocationDelta, Delta, MarketId},
     Decimal,
 };
-use test_utils::{
-    controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
-    UnifiedMarketController,
-};
+use templar_gateway_testing::{harness, DeployedVault, ManagedAccountId, SandboxHarness};
 
-pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
-    while let Some(position) = c.get_supply_position(vault.contract().id()).await {
+/// Zero-interest borrow strategy — the market customization these tests use.
+fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
+    c.borrow_interest_rate_strategy =
+        InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+}
+
+/// Drive market yield harvesting until the vault's supply position is fully
+/// activated (no incoming deposits pending).
+async fn harvest(harness: &SandboxHarness, vault: &DeployedVault) -> Result<()> {
+    let vault_account = ManagedAccountId(vault.vault_id.clone());
+    while let Some(position) = harness
+        .get_supply_position(&vault.market, &vault.vault_id)
+        .await?
+    {
         if position.get_deposit().incoming.is_empty() {
             break;
         }
-        c.harvest_yield(vault.contract().as_account(), None, None)
-            .await;
+        harness
+            .harvest_yield(&vault_account, &vault.market, None)
+            .await?;
     }
+    Ok(())
 }
 
-/// Verifies unbrick recovers vault from a stuck Allocating state.
-///
-/// Scenario: user deposits, allocator starts allocation, but instead of
-/// completing the allocation callbacks, we call unbrick. The vault should
-/// return to Idle with idle_assets restored.
+/// `unbrick` recovers the vault from a stuck allocation. The allocator-driven
+/// allocation completes synchronously here, so `unbrick` is effectively a no-op
+/// — but total assets and shares must be preserved regardless.
 #[rstest]
 #[tokio::test]
-async fn unbrick_recovers_stuck_allocation(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn unbrick_recovers_stuck_allocation(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    let amount: u128 = 1_000;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
 
-    let total_assets_before = vault.get_total_assets().await;
-    let idle_before = vault.get_idle_balance().await;
+    let total_assets_before = harness.vault_total_assets(&vault).await?;
     assert_eq!(
-        idle_before, amount,
-        "All assets should be idle before allocation"
+        harness.vault_idle_balance(&vault).await?,
+        amount,
+        "All assets should be idle before allocation",
     );
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
 
-    // Start allocation — vault transitions out of Idle
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
 
-    // Vault should not be idle (it's in Allocating state)
-    // Note: The allocator-driven allocation completes synchronously in the NEAR vault,
-    // so by the time allocate returns, the vault may already be back to Idle.
-    // If so, unbrick is a no-op — which is also a valid test outcome.
+    harness.vault_unbrick(&vault.curator, &vault).await?;
 
-    // Call unbrick to recover
-    vault.unbrick(&vault_curator).await;
-
-    // After unbrick, total assets should be preserved
-    let total_assets_after = vault.get_total_assets().await;
     assert_eq!(
-        total_assets_after, total_assets_before,
+        harness.vault_total_assets(&vault).await?,
+        total_assets_before,
         "Total assets should be preserved after unbrick from allocation",
     );
-
-    // Shares should not have been affected
-    let shares: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
     assert_eq!(
-        shares, amount,
+        harness
+            .ft_balance_of(&vault.vault_id, &supply_user.0)
+            .await?,
+        amount,
         "User shares should be unchanged after unbrick from allocation",
     );
+    Ok(())
 }
 
-/// Verifies that calling unbrick when the vault is already idle is a no-op.
+/// `unbrick` on an already-idle vault is a no-op.
 #[rstest]
 #[tokio::test]
-async fn unbrick_noop_when_idle(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn unbrick_noop_when_idle(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 500.into();
-    vault.supply(&supply_user, amount.0).await;
+    harness.vault_supply(&supply_user, &vault, 500).await?;
 
-    let total_assets_before = vault.get_total_assets().await;
-    let total_supply_before = vault.get_total_supply().await;
+    let total_assets_before = harness.vault_total_assets(&vault).await?;
+    let total_supply_before = harness.vault_total_supply(&vault).await?;
 
-    // Call unbrick when already idle — should be a no-op
-    vault.unbrick(&vault_curator).await;
-
-    let total_assets_after = vault.get_total_assets().await;
-    let total_supply_after = vault.get_total_supply().await;
+    harness.vault_unbrick(&vault.curator, &vault).await?;
 
     assert_eq!(
-        total_assets_before, total_assets_after,
+        harness.vault_total_assets(&vault).await?,
+        total_assets_before,
         "Total assets should be unchanged after unbrick from idle",
     );
     assert_eq!(
-        total_supply_before, total_supply_after,
+        harness.vault_total_supply(&vault).await?,
+        total_supply_before,
         "Total supply should be unchanged after unbrick from idle",
     );
+    Ok(())
 }
 
-/// Verifies that supply → allocate → unbrick → re-supply works correctly.
-/// This tests the full recovery cycle: the vault should be usable after unbrick.
+/// The full recovery cycle: supply → allocate → withdraw → start withdrawal →
+/// `unbrick` from Withdrawing, and the vault remains usable for new deposits.
 #[rstest]
 #[tokio::test]
-async fn vault_usable_after_unbrick_recovery(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn vault_usable_after_unbrick_recovery(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    let second_user = harness.create_user("second").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    let amount: u128 = 1_000;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
 
-    // Allocate, harvest, request withdrawal, start withdrawal
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    vault.withdraw(&supply_user, amount, None).await;
-    harvest(&c, &vault).await;
+    harness
+        .vault_withdraw(&supply_user, &vault, amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[vault.market.market_id.clone()])
+        .await?;
 
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route)
-        .await;
-
-    // Unbrick from Withdrawing state
-    vault.unbrick(&vault_curator).await;
-
+    harness.vault_unbrick(&vault.curator, &vault).await?;
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
         "Vault should be idle after unbrick",
     );
 
-    // Verify the vault is still usable — second user can supply
-    vault.init_account(&borrow_user).await;
-    let second_amount: U128 = 200.into();
-    vault.supply(&borrow_user, second_amount.0).await;
-
-    let borrow_user_shares: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": borrow_user.id() }))
-        .await;
+    // The vault is still usable — a second user can supply.
+    harness.vault_init_account(&second_user, &vault).await?;
+    harness.vault_supply(&second_user, &vault, 200).await?;
     assert!(
-        borrow_user_shares.0 > 0,
+        harness
+            .ft_balance_of(&vault.vault_id, &second_user.0)
+            .await?
+            > 0,
         "New deposits should work after unbrick recovery",
     );
+    Ok(())
 }
 
-/// Tests that executing market withdrawal with a wrong market_id
-/// fails gracefully rather than corrupting state.
+/// Executing a market-withdrawal step with the wrong `MarketId` is rejected and
+/// leaves the vault in Withdrawing state (no corruption); `unbrick` then recovers it.
 #[rstest]
 #[tokio::test]
-async fn execute_withdrawal_wrong_market_does_not_corrupt(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn execute_withdrawal_wrong_market_does_not_corrupt(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    let amount: u128 = 1_000;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
 
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    vault.withdraw(&supply_user, amount, None).await;
-    harvest(&c, &vault).await;
+    harness
+        .vault_withdraw(&supply_user, &vault, amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[vault.market.market_id.clone()])
+        .await?;
 
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route)
-        .await;
+    let op_id = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
+        .expect("should be in Withdrawing state");
 
-    let op_id = vault
-        .get_withdrawing_op_id()
-        .await
-        .expect("Should be in Withdrawing state");
+    // A market id with no pending withdrawal. Rather than corrupt state, the
+    // vault stops the withdrawal (a `withdrawal_stopped` event with reason
+    // "missing market"), refunds the escrowed shares, and returns to Idle — a
+    // defined graceful recovery, so no `unbrick` is needed.
+    let wrong_market_id = MarketId(market_id.0 + 1);
+    harness
+        .vault_execute_market_withdrawal(&vault.curator, &vault, op_id, wrong_market_id, None)
+        .await?;
 
-    // Try to execute with a wrong market_id.
-    // This should fail since there's no pending withdrawal for that market.
-    let wrong_market_id = templar_common::vault::MarketId(market_id.0 + 1);
-
-    // Use a raw call to catch the failure instead of panicking
-    let result = vault_curator
-        .call(vault.contract().id(), "execute_market_withdrawal")
-        .args_json(json!({
-            "op_id": op_id,
-            "market": wrong_market_id,
-            "batch_limit": null
-        }))
-        .gas(Gas::from_tgas(300))
-        .transact()
-        .await
-        .unwrap();
-
-    // Either the call fails (expected) or the vault recovers gracefully.
-    // In either case, the vault should still be functional.
-    if result.is_failure() {
-        // Expected: wrong market rejection. Vault should still be in Withdrawing state.
-        assert!(
-            vault.get_withdrawing_op_id().await.is_some(),
-            "Vault should remain in Withdrawing state after rejected market call",
-        );
-
-        // Recover via unbrick
-        vault.unbrick(&vault_curator).await;
-    }
-
-    // Vault should be idle now (either from successful execution or unbrick)
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
-        "Vault should be idle after recovery",
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
+        "Vault should return to idle after the withdrawal is stopped for a missing market",
     );
+    assert_eq!(
+        harness
+            .ft_balance_of(&vault.vault_id, &supply_user.0)
+            .await?,
+        amount,
+        "Escrowed shares should be refunded when the withdrawal is stopped",
+    );
+    assert_eq!(
+        harness.vault_total_supply(&vault).await?,
+        amount,
+        "Total supply should be preserved (no shares burned) when nothing is collected",
+    );
+    Ok(())
 }

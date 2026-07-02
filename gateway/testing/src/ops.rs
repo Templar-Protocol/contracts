@@ -458,6 +458,26 @@ impl SandboxHarness {
         .await
     }
 
+    /// Attempt a vault deposit, returning the (possibly refunded/failed)
+    /// operation result for tests where the vault rejects it (e.g. while paused
+    /// or for a blacklisted depositor — the deposit is an `ft_transfer_call`, so
+    /// a rejecting `ft_on_transfer` refunds and the operation reports `Failed`).
+    pub async fn try_vault_supply(
+        &self,
+        user: &ManagedAccountId,
+        vault: &DeployedVault,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            vault::Deposit {
+                vault_id: vault.vault_id.clone(),
+                amount: SU128::from(amount),
+            },
+        )
+        .await
+    }
+
     /// Allocate or withdraw vault principal to/from a market (curator op).
     pub async fn vault_allocate(
         &self,
@@ -684,6 +704,77 @@ impl SandboxHarness {
             owner,
             vault::AcceptRestrictions {
                 vault_id: vault.vault_id.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Submit a sentinel role change (owner-gated, timelocked).
+    pub async fn vault_submit_sentinel(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+        account: &AccountId,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::SubmitSentinel {
+                vault_id: vault.vault_id.clone(),
+                account: account.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Accept a pending sentinel role change.
+    pub async fn vault_accept_sentinel(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::AcceptSentinel {
+                vault_id: vault.vault_id.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Submit a supply-cap change for `market` (owner-gated; a decrease needs no
+    /// timelock).
+    pub async fn vault_submit_cap(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+        market: &AccountId,
+        new_cap: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::SubmitCap {
+                vault_id: vault.vault_id.clone(),
+                market: market.clone(),
+                new_cap: SU128::from(new_cap),
+            },
+        )
+        .await
+    }
+
+    /// Grant or revoke the allocator role for `account` (owner-gated).
+    pub async fn vault_set_is_allocator(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+        account: &AccountId,
+        allowed: bool,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::SetIsAllocator {
+                vault_id: vault.vault_id.clone(),
+                account: account.clone(),
+                allowed,
             },
         )
         .await
@@ -1564,51 +1655,23 @@ impl SandboxHarness {
         }
     }
 
-    /// Total gas burnt across every transaction an operation produced (the
-    /// transaction plus its receipts), summed over the operation's steps. Used by
-    /// the gas-regression tests; queried via the JSON-RPC `tx` status method
-    /// since the gateway result carries only step transaction hashes.
-    pub async fn operation_gas_burnt(&self, result: &WriteOperationResult) -> Result<u64> {
-        let url = self.network.rpc_endpoints[0].url.clone();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let sender = result.operation.signer_account_id.0.to_string();
-
-        let mut total = 0u64;
-        for step in &result.operation.steps {
-            let tx_hash = match &step.status {
-                StepStatus::Succeeded { tx_hash, .. } | StepStatus::Reverted { tx_hash, .. } => {
-                    tx_hash.to_string()
+    /// Total gas burnt across every transaction an operation produced (each
+    /// transaction plus its receipts), summed over the operation's steps. Read
+    /// directly from each step's inline [`ExecutionOutcome`], whose
+    /// `total_gas_burnt` already covers the transaction and all its receipts — no
+    /// follow-up `tx` query needed. Used by the gas-regression tests.
+    pub fn operation_gas_burnt(&self, result: &WriteOperationResult) -> u64 {
+        result
+            .operation
+            .steps
+            .iter()
+            .filter_map(|step| match &step.status {
+                StepStatus::Succeeded { outcome, .. } | StepStatus::Reverted { outcome, .. } => {
+                    Some(outcome.total_gas_burnt.as_gas())
                 }
-                _ => continue,
-            };
-            let response: serde_json::Value = client
-                .post(url.clone())
-                .json(&serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": "tx",
-                    "method": "tx",
-                    "params": [tx_hash, sender],
-                }))
-                .send()
-                .await?
-                .json()
-                .await?;
-            if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-                anyhow::bail!("tx status error: {error}");
-            }
-            let outcome = &response["result"];
-            total += outcome["transaction_outcome"]["outcome"]["gas_burnt"]
-                .as_u64()
-                .context("missing transaction gas_burnt in tx status")?;
-            if let Some(receipts) = outcome["receipts_outcome"].as_array() {
-                for receipt in receipts {
-                    total += receipt["outcome"]["gas_burnt"].as_u64().unwrap_or(0);
-                }
-            }
-        }
-        Ok(total)
+                _ => None,
+            })
+            .sum()
     }
 
     /// Fetch the market's current oracle prices (the `OracleResponse` shape the

@@ -3,10 +3,9 @@
 //! The original also asserts on the `WithdrawalQueueStatus` *returned* by
 //! `execute_next_supply_withdrawal_request`; the gateway write op surfaces only
 //! the transaction result, so here we assert the same outcomes via the queue
-//! status *read* plus balances/positions. `measure_gas` reads gas via the
-//! harness `operation_gas_burnt` helper (the gateway result carries only tx
-//! hashes). The mock `patch_storage_unregister` is replaced with the gateway
-//! `storage::unregister`.
+//! status *read* plus balances/positions. Gas is read via the harness
+//! `operation_gas_burnt` helper. The mock `patch_storage_unregister` is replaced
+//! with the gateway `storage::unregister`.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -503,13 +502,11 @@ async fn measure_gas(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     harness
         .create_supply_withdrawal_request(&users[0], &market, 1_000)
         .await?;
-    let one = harness
-        .operation_gas_burnt(
-            &harness
-                .execute_next_supply_withdrawal_request(&users[0], &market, None)
-                .await?,
-        )
-        .await?;
+    let one = harness.operation_gas_burnt(
+        &harness
+            .execute_next_supply_withdrawal_request(&users[0], &market, None)
+            .await?,
+    );
 
     // Gas for fulfilling four requests in one batch.
     for user in &users {
@@ -517,13 +514,11 @@ async fn measure_gas(#[future(awt)] harness: SandboxHarness) -> Result<()> {
             .create_supply_withdrawal_request(user, &market, 1_000)
             .await?;
     }
-    let four = harness
-        .operation_gas_burnt(
-            &harness
-                .execute_next_supply_withdrawal_request(&users[0], &market, Some(100))
-                .await?,
-        )
-        .await?;
+    let four = harness.operation_gas_burnt(
+        &harness
+            .execute_next_supply_withdrawal_request(&users[0], &market, Some(100))
+            .await?,
+    );
 
     // one = base + 1*per_request, four = base + 4*per_request.
     let base = (4 * one).saturating_sub(four) / 3;
