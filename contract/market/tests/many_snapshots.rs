@@ -7,7 +7,7 @@ use rstest::rstest;
 use templar_common::time_chunk::TimeChunkConfiguration;
 use templar_gateway_testing::{harness, SandboxHarness};
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::cast_precision_loss, clippy::similar_names)]
 fn linear_regression_slope(data: &[(f64, f64)]) -> f64 {
     let n = data.len() as f64;
     let mut sum_x = 0.0;

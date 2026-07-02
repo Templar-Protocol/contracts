@@ -952,6 +952,7 @@ async fn create_tenant_root(
     genesis_signer: &Arc<Signer>,
 ) -> Result<(AccountId, Arc<Signer>)> {
     static TENANT_SEQ: AtomicU64 = AtomicU64::new(0);
+    const MAX_ATTEMPTS: u32 = 5;
     let seq = TENANT_SEQ.fetch_add(1, Ordering::Relaxed);
     let account_id: AccountId = format!("t{}-{seq}.{FUNDER_ACCOUNT_ID}", std::process::id())
         .parse()
@@ -960,7 +961,6 @@ async fn create_tenant_root(
     let secret_key = test_secret_key()?;
     let public_key = secret_key.public_key();
 
-    const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
         // First attempt reuses the passed signer; retries rebuild it so its
         // nonce cache re-queries the chain after the contending tx finalized.
@@ -972,7 +972,7 @@ async fn create_tenant_root(
         };
         let result = Account::create_account(account_id.clone())
             .fund_myself(funder_id.clone(), NearToken::from_near(5_000))
-            .with_public_key(public_key.clone())
+            .with_public_key(public_key)
             .with_signer(signer)
             .send_to(network)
             .await;

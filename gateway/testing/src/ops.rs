@@ -1166,6 +1166,7 @@ impl SandboxHarness {
 
     /// Deploy a contract from a registry version. The deployed contract lives at
     /// the sub-account `{name}.{registry_id}`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn registry_deploy(
         &self,
         caller: &ManagedAccountId,

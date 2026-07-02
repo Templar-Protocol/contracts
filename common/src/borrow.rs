@@ -852,6 +852,8 @@ mod tests {
         const T1_MS: u64 = T0_MS + DURATION_1_MS;
         const T2_MS: u64 = T1_MS + DURATION_2_MS;
         const PRINCIPAL: u128 = 1_000_000_000_000;
+        // Pin the exact integer so this is not merely a re-run of the impl.
+        const EXPECTED: u128 = 41_068_605_104;
 
         let rate_1 = templar_primitives::dec!("0.10");
         let rate_2 = templar_primitives::dec!("0.20");
@@ -895,8 +897,6 @@ mod tests {
         expected_acc += principal * rate_2 * Decimal::from(DURATION_2_MS) * YEAR_PER_MS;
         let expected = expected_acc.to_u128_floor().unwrap();
 
-        // Pin the exact integer so this is not merely a re-run of the impl.
-        const EXPECTED: u128 = 41_068_605_104;
         assert_eq!(
             expected, EXPECTED,
             "hand-derived Decimal computation drifted from the pinned literal",

@@ -33,6 +33,7 @@ fn account_to_kernel_address(account: &near_api::types::AccountId) -> Address {
 }
 
 /// Zero-interest borrow strategy — the market customization the allocation test uses.
+#[allow(clippy::unwrap_used)] // infallible zero/zero strategy, in a non-`#[test]` helper
 fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
     c.borrow_interest_rate_strategy =
         InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();

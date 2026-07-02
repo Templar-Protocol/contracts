@@ -19,6 +19,7 @@ struct Fixture {
 
 /// Deploy a high-interest market with `protocol`/`insurance` as static-yield
 /// recipients, supply liquidity, and post collateral.
+#[allow(clippy::unwrap_used)] // infallible strategy construction, in a non-`#[test]` helper
 async fn setup(harness: &SandboxHarness) -> Result<Fixture> {
     let protocol = harness.create_user("protocol").await?;
     let insurance = harness.create_user("insurance").await?;

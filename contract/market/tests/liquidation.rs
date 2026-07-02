@@ -927,8 +927,10 @@ async fn successful_liquidation_good_debt_under_mcr(
         .ft_balance_of(&market.borrow_ft_id, &liquidator.0)
         .await?;
 
+    #[allow(clippy::cast_precision_loss)] // `collateral_price_pct` is a small percentage
+    let collateral_price = collateral_price_pct as f64 / 100.0;
     harness
-        .set_asset_prices(&market, 1.0, (collateral_price_pct as f64) / 100.0)
+        .set_asset_prices(&market, 1.0, collateral_price)
         .await?;
     let (liquidate, fmv_price) = harness
         .liquidatable_collateral_fmv(&market, &borrow_user.0)

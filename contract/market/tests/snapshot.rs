@@ -359,7 +359,11 @@ async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Res
         harness.collateralize(&users[3], &market, collaterals[3]),
         harness.collateralize(&users[4], &market, collaterals[4]),
     );
-    (a?, b?, c?, d?, e?);
+    a?;
+    b?;
+    c?;
+    d?;
+    e?;
 
     harness.fast_forward(1000).await?;
     let borrows = [150_000u128, 120_000, 100_000, 80_000, 60_000];
@@ -370,7 +374,11 @@ async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Res
         harness.borrow(&users[3], &market, borrows[3]),
         harness.borrow(&users[4], &market, borrows[4]),
     );
-    (a?, b?, c?, d?, e?);
+    a?;
+    b?;
+    c?;
+    d?;
+    e?;
 
     harness.fast_forward(1000).await?;
 

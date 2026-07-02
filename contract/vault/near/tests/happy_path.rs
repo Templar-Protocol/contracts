@@ -22,6 +22,7 @@ use templar_gateway_testing::{harness, DeployedVault, ManagedAccountId, SandboxH
 use templar_primitives::SU128;
 
 /// Zero-interest borrow strategy — the common market customization these tests use.
+#[allow(clippy::unwrap_used)] // infallible zero/zero strategy, in a non-`#[test]` helper
 fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
     c.borrow_interest_rate_strategy =
         InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();

@@ -1,4 +1,4 @@
-#![allow(clippy::pedantic, clippy::unwrap_used)]
+#![allow(clippy::pedantic, clippy::unwrap_used, clippy::expect_used)]
 
 //! Gas benchmark for the core vault operations, driven through the in-process
 //! gateway [`SandboxHarness`] — the same path the services use. Prints a
