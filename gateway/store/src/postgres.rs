@@ -9,7 +9,7 @@ use near_api::types::CryptoHash as NearCryptoHash;
 use serde_json::Value;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
-    PgPool,
+    FromRow, PgPool,
 };
 use templar_gateway_core::{
     CreateOperationResult, CurrentStep, GatewayError, GatewayResult, OperationPlan, OperationStore,
@@ -17,7 +17,7 @@ use templar_gateway_core::{
 };
 use templar_gateway_types::{
     operation::{ExecutionOutcome, OperationId, ReceiptOutcome, ReceiptStatus},
-    CryptoHash, IdempotencyKey, ManagedAccountId, NearGas, NearToken, OperationStatus,
+    CryptoHash, IdempotencyKey, ManagedAccountId, NearGas, NearToken,
 };
 
 /// Default schema for gateway store tables, types, and migrations.
@@ -50,28 +50,17 @@ pub struct PostgresStore {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "gateway_operation_status", rename_all = "snake_case")]
-enum OperationStatusRow {
-    Pending,
-    InProgress,
+#[sqlx(type_name = "gateway_outcome_status", rename_all = "snake_case")]
+enum OutcomeStatusRow {
     Succeeded,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "gateway_operation_step_state", rename_all = "snake_case")]
-enum OperationStepStateRow {
-    NotStarted,
-    Prepared,
-    Submitted,
-    Succeeded,
-    Failed,
-}
-
-// Row DTOs carry the full table shape (incl. audit columns) for completeness;
-// not every field is read by the domain logic.
-#[derive(Debug, Clone)]
-#[allow(dead_code, reason = "row DTO mirrors the table; some columns unused")]
+#[derive(Debug, Clone, FromRow)]
+#[allow(
+    dead_code,
+    reason = "row DTO mirrors the query shape; audit columns unused"
+)]
 struct OperationRow {
     id: uuid::Uuid,
     rpc_method: String,
@@ -79,35 +68,79 @@ struct OperationRow {
     idempotency_key: Option<String>,
     request_fingerprint_hash: Vec<u8>,
     request_payload: Value,
-    status: OperationStatusRow,
-    planned_at: Option<DateTime<Utc>>,
+    plan_created_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code, reason = "row DTO mirrors the table; some columns unused")]
-struct OperationStepRow {
+#[derive(Debug, Clone, FromRow)]
+#[allow(
+    dead_code,
+    reason = "row DTO mirrors the query shape; audit columns unused"
+)]
+struct StepLifecycleRow {
     operation_id: uuid::Uuid,
     step_index: i32,
     signer_account_id: String,
     receiver_id: String,
-    submitted_at: Option<DateTime<Utc>>,
     actions: Value,
-    state: OperationStepStateRow,
-    tx_hash: Option<String>,
+    execution_tx_hash: Option<String>,
     signed_transaction: Option<Vec<u8>>,
-    // Execution-outcome scalars (present iff the step executed); the per-receipt
-    // detail lives in `gateway_operation_step_receipts`.
-    outcome_tokens_burnt: Option<String>,
-    outcome_total_gas_burnt: Option<String>,
-    outcome_return_value: Option<Vec<u8>>,
+    submitted_at: Option<DateTime<Utc>>,
+    result_tx_hash: Option<String>,
+    outcome_status: Option<OutcomeStatusRow>,
+    tokens_burnt: Option<String>,
+    total_gas_burnt: Option<String>,
+    return_value: Option<Vec<u8>>,
     created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct ReceiptRow {
+    step_index: i32,
+    contract_id: String,
+    status: OutcomeStatusRow,
+    logs: Vec<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct ExistingExecutionRow {
+    step_index: i32,
+    signed_transaction: Vec<u8>,
+    prepared_at: DateTime<Utc>,
+    submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct ExistingExecution {
+    signed_transaction: Vec<u8>,
+    prepared_at: DateTime<Utc>,
+    submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct StepExecution<'a> {
+    tx_hash: CryptoHash,
+    signed_transaction: &'a [u8],
+    prepared_at: DateTime<Utc>,
+    submitted_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StepResult {
+    tx_hash: CryptoHash,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StepOutcome<'a> {
+    status: OutcomeStatusRow,
+    outcome: &'a ExecutionOutcome,
 }
 
 /// Receipt outcomes grouped by step index.
 type ReceiptMap = HashMap<i32, Vec<ReceiptOutcome>>;
+
+type ExistingExecutionsByStep = HashMap<i32, ExistingExecution>;
 
 impl PostgresStore {
     /// Connect using [`DEFAULT_SCHEMA`].
@@ -153,72 +186,28 @@ impl OperationStore for PostgresStore {
         operation_id: &OperationId,
     ) -> GatewayResult<Option<StoredOperation>> {
         let operation_uuid = parse_operation_uuid(operation_id)?;
-        let Some(operation_row) = sqlx::query_as!(
-            OperationRow,
-            r#"
-SELECT
-    id,
-    rpc_method,
-    signer_account_id,
-    idempotency_key,
-    request_fingerprint_hash,
-    request_payload,
-    STATUS AS "status: OperationStatusRow",
-    planned_at,
-    created_at,
-    updated_at
-FROM
-    gateway_operations
-WHERE
-    id = $1
-"#,
-            operation_uuid,
-        )
-        .fetch_optional(&self.pool)
-        .await?
-        else {
+        let Some(operation_row) = load_operation_by_id(&self.pool, operation_uuid).await? else {
             return Ok(None);
         };
 
-        let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
-        let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
-        rows_to_stored_operation(operation_row, step_rows, receipts).map(Some)
+        load_stored_operation(&self.pool, operation_row)
+            .await
+            .map(Some)
     }
 
     async fn get_by_idempotency_key(
         &self,
         idempotency_key: &IdempotencyKey,
     ) -> GatewayResult<Option<StoredOperation>> {
-        let Some(operation_row) = sqlx::query_as!(
-            OperationRow,
-            r#"
-SELECT
-    id,
-    rpc_method,
-    signer_account_id,
-    idempotency_key,
-    request_fingerprint_hash,
-    request_payload,
-    STATUS AS "status: OperationStatusRow",
-    planned_at,
-    created_at,
-    updated_at
-FROM
-    gateway_operations
-WHERE
-    idempotency_key = $1
-"#,
-            idempotency_key.0.as_str(),
-        )
-        .fetch_optional(&self.pool)
-        .await?
+        let Some(operation_row) =
+            load_operation_by_idempotency_key(&self.pool, idempotency_key).await?
         else {
             return Ok(None);
         };
 
-        let step_rows = load_step_rows(&self.pool, operation_row.id).await?;
-        let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
-        rows_to_stored_operation(operation_row, step_rows, receipts).map(Some)
+        load_stored_operation(&self.pool, operation_row)
+            .await
+            .map(Some)
     }
 
     async fn create_or_get_operation(
@@ -276,57 +265,142 @@ WHERE
 
     async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
         let operation_uuid = parse_operation_uuid(operation_id)?;
-        // Only delete a reservation (planning not yet complete). A planned
-        // operation -- including a no-op, which also has no steps -- is left
-        // intact. No-op if the row is planned or does not exist.
-        sqlx::query!(
-            "DELETE FROM gateway_operations WHERE id = $1 AND planned_at IS NULL",
-            operation_uuid
+        // Only delete a reservation: an operation row with no structural plan.
+        // Planned no-ops have a plan row and are intentionally retained.
+        sqlx::query(
+            r"
+DELETE FROM
+    gateway_operations AS operation
+WHERE
+    operation.id = $1
+    AND NOT EXISTS (
+        SELECT
+            1
+        FROM
+            gateway_operation_plans AS plan
+        WHERE
+            plan.operation_id = operation.id
+    )
+",
         )
+        .bind(operation_uuid)
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>> {
-        let operation_rows = sqlx::query_as!(
-            OperationRow,
-            r#"
-SELECT
-    id,
-    rpc_method,
-    signer_account_id,
-    idempotency_key,
-    request_fingerprint_hash,
-    request_payload,
-    STATUS AS "status: OperationStatusRow",
-    planned_at,
-    created_at,
-    updated_at
-FROM
-    gateway_operations
-WHERE
-    STATUS IN ('pending', 'in_progress')
-ORDER BY
-    created_at ASC
-"#,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
+        let operation_rows = load_operations_ordered(&self.pool).await?;
         let mut operations = Vec::with_capacity(operation_rows.len());
         for operation_row in operation_rows {
-            let steps = load_step_rows(&self.pool, operation_row.id).await?;
-            let receipts = load_step_receipts(&self.pool, operation_row.id).await?;
-            operations.push(rows_to_stored_operation(operation_row, steps, receipts)?);
+            let operation = load_stored_operation(&self.pool, operation_row).await?;
+            if matches!(
+                operation.status(),
+                templar_gateway_types::OperationStatus::Pending
+                    | templar_gateway_types::OperationStatus::InProgress
+            ) {
+                operations.push(operation);
+            }
         }
         Ok(operations)
     }
 }
 
-/// Insert a brand-new operation row and its planned steps. The identity columns
-/// (`id`, `idempotency_key`, signer, fingerprint, payload) are written once,
-/// here, and never rewritten — see [`update_operation_tx`].
+async fn load_operation_by_id(
+    pool: &PgPool,
+    operation_id: uuid::Uuid,
+) -> GatewayResult<Option<OperationRow>> {
+    sqlx::query_as::<_, OperationRow>(OPERATION_SELECT_BY_ID)
+        .bind(operation_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_operation_by_idempotency_key(
+    pool: &PgPool,
+    idempotency_key: &IdempotencyKey,
+) -> GatewayResult<Option<OperationRow>> {
+    sqlx::query_as::<_, OperationRow>(OPERATION_SELECT_BY_IDEMPOTENCY_KEY)
+        .bind(idempotency_key.0.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_operations_ordered(pool: &PgPool) -> GatewayResult<Vec<OperationRow>> {
+    sqlx::query_as::<_, OperationRow>(OPERATION_SELECT_ORDERED)
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+const OPERATION_SELECT_BY_ID: &str = r"
+SELECT
+    operation.id,
+    operation.rpc_method,
+    operation.signer_account_id,
+    operation.idempotency_key,
+    operation.request_fingerprint_hash,
+    operation.request_payload,
+    plan.created_at AS plan_created_at,
+    operation.created_at,
+    operation.updated_at
+FROM
+    gateway_operations AS operation
+    LEFT JOIN gateway_operation_plans AS plan ON plan.operation_id = operation.id
+WHERE
+    operation.id = $1
+";
+
+const OPERATION_SELECT_BY_IDEMPOTENCY_KEY: &str = r"
+SELECT
+    operation.id,
+    operation.rpc_method,
+    operation.signer_account_id,
+    operation.idempotency_key,
+    operation.request_fingerprint_hash,
+    operation.request_payload,
+    plan.created_at AS plan_created_at,
+    operation.created_at,
+    operation.updated_at
+FROM
+    gateway_operations AS operation
+    LEFT JOIN gateway_operation_plans AS plan ON plan.operation_id = operation.id
+WHERE
+    operation.idempotency_key = $1
+";
+
+const OPERATION_SELECT_ORDERED: &str = r"
+SELECT
+    operation.id,
+    operation.rpc_method,
+    operation.signer_account_id,
+    operation.idempotency_key,
+    operation.request_fingerprint_hash,
+    operation.request_payload,
+    plan.created_at AS plan_created_at,
+    operation.created_at,
+    operation.updated_at
+FROM
+    gateway_operations AS operation
+    LEFT JOIN gateway_operation_plans AS plan ON plan.operation_id = operation.id
+ORDER BY
+    operation.created_at ASC
+";
+
+async fn load_stored_operation(
+    pool: &PgPool,
+    operation_row: OperationRow,
+) -> GatewayResult<StoredOperation> {
+    let step_rows = load_step_rows(pool, operation_row.id).await?;
+    let receipts = load_step_receipts(pool, operation_row.id).await?;
+    rows_to_stored_operation(operation_row, step_rows, receipts)
+}
+
+/// Insert a brand-new operation row and its initial structural plan, if any. The
+/// identity columns (`id`, `idempotency_key`, signer, fingerprint, payload) are
+/// written once here and never rewritten.
 async fn insert_operation_tx(
     pool: &PgPool,
     operation: &StoredOperation,
@@ -335,57 +409,90 @@ async fn insert_operation_tx(
     let mut tx = pool.begin().await?;
     let operation_uuid = parse_operation_uuid(&operation.id)?;
     insert_operation_row(&mut tx, operation_uuid, operation, idempotency_key).await?;
-    insert_operation_steps(&mut tx, operation_uuid, operation).await?;
+    if operation.planned {
+        insert_plan(&mut tx, operation_uuid).await?;
+        insert_operation_steps(&mut tx, operation_uuid, operation, &HashMap::new()).await?;
+    }
     tx.commit().await?;
     Ok(())
 }
 
-/// Persist progress on an existing operation. Only `status` and the step rows
-/// change as an operation runs; its identity columns are immutable, so this
-/// updates the status in place and rewrites the steps without touching the
-/// operation row's other columns — crucially leaving `idempotency_key` intact
-/// (an earlier version re-inserted the whole row with a null key, silently
-/// dropping idempotency and breaking crash recovery).
+/// Persist progress on an existing operation. The operation row remains identity
+/// only; lifecycle is rewritten structurally under the plan row. Existing signed
+/// transactions are read before replacing plan steps so transitions from
+/// Prepared into Submitted/terminal states retain the original bytes.
 async fn update_operation_tx(pool: &PgPool, operation: &StoredOperation) -> GatewayResult<()> {
     let mut tx = pool.begin().await?;
     let operation_uuid = parse_operation_uuid(&operation.id)?;
 
-    let status = operation_status_row(operation.status());
-    sqlx::query!(
-        r#"
+    sqlx::query(
+        r"
 UPDATE
     gateway_operations
 SET
-    STATUS = $2,
-    -- Set the planning timestamp once, when the reservation becomes planned.
-    planned_at = CASE WHEN $3 THEN COALESCE(planned_at, NOW()) ELSE planned_at END
+    updated_at = NOW()
 WHERE
     id = $1
-"#,
-        operation_uuid,
-        status as OperationStatusRow,
-        operation.planned,
+",
     )
+    .bind(operation_uuid)
     .execute(&mut *tx)
     .await?;
 
-    // Steps genuinely change shape between saves; replace them wholesale
-    // (receipts cascade-delete with their step rows).
-    sqlx::query!(
-        r#"
-DELETE FROM
-    gateway_operation_steps
-WHERE
-    operation_id = $1
-"#,
-        operation_uuid,
-    )
-    .execute(&mut *tx)
-    .await?;
-    insert_operation_steps(&mut tx, operation_uuid, operation).await?;
+    if !operation.planned {
+        sqlx::query("DELETE FROM gateway_operation_plans WHERE operation_id = $1")
+            .bind(operation_uuid)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    let existing_executions = load_existing_executions(&mut tx, operation_uuid).await?;
+    insert_plan(&mut tx, operation_uuid).await?;
+    sqlx::query("DELETE FROM gateway_plan_steps WHERE operation_id = $1")
+        .bind(operation_uuid)
+        .execute(&mut *tx)
+        .await?;
+    insert_operation_steps(&mut tx, operation_uuid, operation, &existing_executions).await?;
 
     tx.commit().await?;
     Ok(())
+}
+
+async fn load_existing_executions(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+) -> GatewayResult<ExistingExecutionsByStep> {
+    let rows = sqlx::query_as::<_, ExistingExecutionRow>(
+        r"
+SELECT
+    step_index,
+    signed_transaction,
+    prepared_at,
+    submitted_at
+FROM
+    gateway_step_executions
+WHERE
+    operation_id = $1
+",
+    )
+    .bind(operation_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut executions = HashMap::with_capacity(rows.len());
+    for row in rows {
+        executions.insert(
+            row.step_index,
+            ExistingExecution {
+                signed_transaction: row.signed_transaction,
+                prepared_at: row.prepared_at,
+                submitted_at: row.submitted_at,
+            },
+        );
+    }
+    Ok(executions)
 }
 
 async fn insert_operation_row(
@@ -394,12 +501,11 @@ async fn insert_operation_row(
     operation: &StoredOperation,
     idempotency_key: Option<&IdempotencyKey>,
 ) -> GatewayResult<()> {
-    let status = operation_status_row(operation.status());
     let request_payload = serde_json::from_slice::<Value>(&operation.request_payload)
         .map_err(GatewayError::JsonSerialization)?;
 
-    sqlx::query!(
-        r#"
+    sqlx::query(
+        r"
 INSERT INTO
     gateway_operations (
         id,
@@ -407,25 +513,40 @@ INSERT INTO
         signer_account_id,
         idempotency_key,
         request_fingerprint_hash,
-        request_payload,
-        STATUS,
-        planned_at
+        request_payload
     )
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $8 THEN NOW() END)
-"#,
-        operation_uuid,
-        operation.rpc_method,
-        operation.signer_account_id.0.to_string(),
-        idempotency_key.map(|key| key.0.as_str()),
-        operation.request_fingerprint_hash.as_slice(),
-        request_payload,
-        status as OperationStatusRow,
-        operation.planned,
+    ($1, $2, $3, $4, $5, $6)
+",
     )
+    .bind(operation_uuid)
+    .bind(&operation.rpc_method)
+    .bind(operation.signer_account_id.0.to_string())
+    .bind(idempotency_key.map(|key| key.0.as_str()))
+    .bind(operation.request_fingerprint_hash.as_slice())
+    .bind(request_payload)
     .execute(&mut **tx)
     .await?;
 
+    Ok(())
+}
+
+async fn insert_plan(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+) -> GatewayResult<()> {
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_operation_plans (operation_id)
+VALUES
+    ($1)
+ON CONFLICT (operation_id) DO NOTHING
+",
+    )
+    .bind(operation_uuid)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -433,106 +554,185 @@ async fn insert_operation_steps(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     operation_uuid: uuid::Uuid,
     operation: &StoredOperation,
+    existing_executions: &ExistingExecutionsByStep,
 ) -> GatewayResult<()> {
+    let current_index =
+        insert_succeeded_steps(tx, operation_uuid, operation, existing_executions).await?;
+    let remaining_start = insert_current_step(
+        tx,
+        operation_uuid,
+        operation.current_step.as_ref(),
+        current_index,
+        existing_executions,
+    )
+    .await?;
+    insert_remaining_steps(
+        tx,
+        operation_uuid,
+        remaining_start,
+        &operation.remaining_steps,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn insert_succeeded_steps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    operation: &StoredOperation,
+    existing_executions: &ExistingExecutionsByStep,
+) -> GatewayResult<i32> {
     for (index, step) in operation.succeeded_steps.iter().enumerate() {
-        insert_step_row(
+        let step_index = step_index(index)?;
+        let existing_execution = existing_execution(existing_executions, step_index)?;
+        insert_step_lifecycle(
             tx,
             operation_uuid,
-            step_index(index)?,
+            step_index,
             &step.transaction,
-            OperationStepStateRow::Succeeded,
-            Some(step.tx_hash),
-            None,
-            Some(&step.outcome),
-            None,
+            Some(StepExecution {
+                tx_hash: step.tx_hash,
+                signed_transaction: &existing_execution.signed_transaction,
+                prepared_at: existing_execution.prepared_at,
+                submitted_at: existing_execution.submitted_at,
+            }),
+            Some(StepResult {
+                tx_hash: step.tx_hash,
+            }),
+            Some(StepOutcome {
+                status: OutcomeStatusRow::Succeeded,
+                outcome: &step.outcome,
+            }),
         )
         .await?;
     }
+    step_index(operation.succeeded_steps.len())
+}
 
-    let mut current_index = step_index(operation.succeeded_steps.len())?;
-    if let Some(current_step) = &operation.current_step {
-        // Reverted and Rejected share the `failed` row state; the presence of an
-        // outcome distinguishes them on load (reverted executed and carries one;
-        // rejected never executed).
-        let (transaction, state, tx_hash, signed, outcome, submitted_at) = match current_step {
-            CurrentStep::Prepared {
-                transaction,
-                signed_transaction,
-                tx_hash,
-            } => (
-                transaction,
-                OperationStepStateRow::Prepared,
-                *tx_hash,
-                Some(signed_transaction.as_ref()),
-                None,
-                None,
-            ),
-            CurrentStep::Submitted {
-                transaction,
-                tx_hash,
-                submitted_at,
-            } => (
-                transaction,
-                OperationStepStateRow::Submitted,
-                *tx_hash,
-                None,
-                None,
-                Some(*submitted_at),
-            ),
-            CurrentStep::Reverted {
-                transaction,
-                tx_hash,
-                outcome,
-            } => (
-                transaction,
-                OperationStepStateRow::Failed,
-                *tx_hash,
-                None,
-                Some(outcome),
-                None,
-            ),
-            CurrentStep::Rejected {
-                transaction,
-                tx_hash,
-            } => (
-                transaction,
-                OperationStepStateRow::Failed,
-                *tx_hash,
-                None,
-                None,
-                None,
-            ),
-        };
-        insert_step_row(
-            tx,
-            operation_uuid,
-            current_index,
+async fn insert_current_step(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    current_step: Option<&CurrentStep>,
+    current_index: i32,
+    existing_executions: &ExistingExecutionsByStep,
+) -> GatewayResult<i32> {
+    let Some(current_step) = current_step else {
+        return Ok(current_index);
+    };
+    match current_step {
+        CurrentStep::Prepared {
             transaction,
-            state,
-            Some(tx_hash),
-            signed,
-            outcome,
+            signed_transaction,
+            tx_hash,
+        } => {
+            let signed_transaction = to_vec(signed_transaction.as_ref())
+                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+            insert_step_lifecycle(
+                tx,
+                operation_uuid,
+                current_index,
+                transaction,
+                Some(StepExecution {
+                    tx_hash: *tx_hash,
+                    signed_transaction: &signed_transaction,
+                    prepared_at: Utc::now(),
+                    submitted_at: None,
+                }),
+                None,
+                None,
+            )
+            .await?;
+        }
+        CurrentStep::Submitted {
+            transaction,
+            tx_hash,
             submitted_at,
-        )
-        .await?;
-        current_index += 1;
+        } => {
+            let existing_execution = existing_execution(existing_executions, current_index)?;
+            insert_step_lifecycle(
+                tx,
+                operation_uuid,
+                current_index,
+                transaction,
+                Some(StepExecution {
+                    tx_hash: *tx_hash,
+                    signed_transaction: &existing_execution.signed_transaction,
+                    prepared_at: existing_execution.prepared_at,
+                    submitted_at: Some(*submitted_at),
+                }),
+                None,
+                None,
+            )
+            .await?;
+        }
+        CurrentStep::Reverted {
+            transaction,
+            tx_hash,
+            outcome,
+        } => {
+            let existing_execution = existing_execution(existing_executions, current_index)?;
+            insert_step_lifecycle(
+                tx,
+                operation_uuid,
+                current_index,
+                transaction,
+                Some(StepExecution {
+                    tx_hash: *tx_hash,
+                    signed_transaction: &existing_execution.signed_transaction,
+                    prepared_at: existing_execution.prepared_at,
+                    submitted_at: existing_execution.submitted_at,
+                }),
+                Some(StepResult { tx_hash: *tx_hash }),
+                Some(StepOutcome {
+                    status: OutcomeStatusRow::Failed,
+                    outcome,
+                }),
+            )
+            .await?;
+        }
+        CurrentStep::Rejected {
+            transaction,
+            tx_hash,
+        } => {
+            let existing_execution = existing_execution(existing_executions, current_index)?;
+            insert_step_lifecycle(
+                tx,
+                operation_uuid,
+                current_index,
+                transaction,
+                Some(StepExecution {
+                    tx_hash: *tx_hash,
+                    signed_transaction: &existing_execution.signed_transaction,
+                    prepared_at: existing_execution.prepared_at,
+                    submitted_at: existing_execution.submitted_at,
+                }),
+                Some(StepResult { tx_hash: *tx_hash }),
+                None,
+            )
+            .await?;
+        }
     }
+    Ok(current_index + 1)
+}
 
-    for (offset, step) in operation.remaining_steps.iter().enumerate() {
-        insert_step_row(
+async fn insert_remaining_steps(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    start_index: i32,
+    remaining_steps: &VecDeque<PlannedTransaction>,
+) -> GatewayResult<()> {
+    for (offset, step) in remaining_steps.iter().enumerate() {
+        insert_step_lifecycle(
             tx,
             operation_uuid,
-            current_index + step_index(offset)?,
+            start_index + step_index(offset)?,
             step,
-            OperationStepStateRow::NotStarted,
-            None,
             None,
             None,
             None,
         )
         .await?;
     }
-
     Ok(())
 }
 
@@ -540,6 +740,201 @@ fn step_index(index: usize) -> GatewayResult<i32> {
     i32::try_from(index).map_err(|_| {
         GatewayError::InvalidStoredOperation("operation step index exceeds i32 range".to_owned())
     })
+}
+
+fn existing_execution(
+    existing_executions: &ExistingExecutionsByStep,
+    step_index: i32,
+) -> GatewayResult<&ExistingExecution> {
+    existing_executions.get(&step_index).ok_or_else(|| {
+        GatewayError::InvalidStoredOperation(format!(
+            "step {step_index} cannot be persisted without its prepared signed transaction"
+        ))
+    })
+}
+
+async fn insert_step_lifecycle(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    transaction: &PlannedTransaction,
+    execution: Option<StepExecution<'_>>,
+    result: Option<StepResult>,
+    outcome: Option<StepOutcome<'_>>,
+) -> GatewayResult<()> {
+    insert_plan_step(tx, operation_id, step_index, transaction).await?;
+    if let Some(execution) = execution {
+        insert_step_execution(tx, operation_id, step_index, execution).await?;
+    }
+    if let Some(result) = result {
+        insert_step_result(tx, operation_id, step_index, result).await?;
+    }
+    if let Some(outcome) = outcome {
+        insert_step_outcome(tx, operation_id, step_index, outcome).await?;
+    }
+    Ok(())
+}
+
+async fn insert_plan_step(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    transaction: &PlannedTransaction,
+) -> GatewayResult<()> {
+    let actions = serde_json::to_value(&transaction.actions)?;
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_plan_steps (
+        operation_id,
+        step_index,
+        signer_account_id,
+        receiver_id,
+        actions
+    )
+VALUES
+    ($1, $2, $3, $4, $5)
+",
+    )
+    .bind(operation_id)
+    .bind(step_index)
+    .bind(transaction.signer_account_id.0.to_string())
+    .bind(transaction.receiver_id.to_string())
+    .bind(actions)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_step_execution(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    execution: StepExecution<'_>,
+) -> GatewayResult<()> {
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_step_executions (
+        operation_id,
+        step_index,
+        tx_hash,
+        signed_transaction,
+        prepared_at,
+        submitted_at
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6)
+",
+    )
+    .bind(operation_id)
+    .bind(step_index)
+    .bind(execution.tx_hash.0.to_string())
+    .bind(execution.signed_transaction)
+    .bind(execution.prepared_at)
+    .bind(execution.submitted_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_step_result(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    result: StepResult,
+) -> GatewayResult<()> {
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_step_results (operation_id, step_index, tx_hash)
+VALUES
+    ($1, $2, $3)
+",
+    )
+    .bind(operation_id)
+    .bind(step_index)
+    .bind(result.tx_hash.0.to_string())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_step_outcome(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    outcome: StepOutcome<'_>,
+) -> GatewayResult<()> {
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_step_outcomes (
+        operation_id,
+        step_index,
+        status,
+        tokens_burnt,
+        total_gas_burnt,
+        return_value
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6)
+",
+    )
+    .bind(operation_id)
+    .bind(step_index)
+    .bind(outcome.status)
+    .bind(outcome.outcome.tokens_burnt.as_yoctonear().to_string())
+    .bind(outcome.outcome.total_gas_burnt.as_gas().to_string())
+    .bind(
+        outcome
+            .outcome
+            .return_value
+            .as_ref()
+            .map(|bytes| bytes.0.clone()),
+    )
+    .execute(&mut **tx)
+    .await?;
+
+    for (receipt_index, receipt) in outcome.outcome.receipts.iter().enumerate() {
+        insert_step_receipt(tx, operation_id, step_index, receipt_index, receipt).await?;
+    }
+    Ok(())
+}
+
+async fn insert_step_receipt(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    receipt_index: usize,
+    receipt: &ReceiptOutcome,
+) -> GatewayResult<()> {
+    sqlx::query(
+        r"
+INSERT INTO
+    gateway_step_receipts (
+        operation_id,
+        step_index,
+        receipt_index,
+        contract_id,
+        status,
+        logs
+    )
+VALUES
+    ($1, $2, $3, $4, $5, $6)
+",
+    )
+    .bind(operation_id)
+    .bind(step_index)
+    .bind(i32::try_from(receipt_index).map_err(|_| {
+        GatewayError::InvalidStoredOperation("receipt index exceeds i32 range".to_owned())
+    })?)
+    .bind(receipt.contract_id.to_string())
+    .bind(outcome_status_row(receipt.status))
+    .bind(&receipt.logs)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn parse_operation_uuid(operation_id: &OperationId) -> GatewayResult<uuid::Uuid> {
@@ -553,165 +948,56 @@ fn parse_account_id(value: &str) -> GatewayResult<near_account_id::AccountId> {
         .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a step row is a flat record; grouping its columns would obscure the 1:1 INSERT"
-)]
-async fn insert_step_row(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    operation_id: uuid::Uuid,
-    step_index: i32,
-    transaction: &PlannedTransaction,
-    state: OperationStepStateRow,
-    tx_hash: Option<CryptoHash>,
-    signed_transaction: Option<&SignedTransaction>,
-    outcome: Option<&ExecutionOutcome>,
-    submitted_at: Option<DateTime<Utc>>,
-) -> GatewayResult<()> {
-    let actions = serde_json::to_value(&transaction.actions)?;
-    let signed_transaction = signed_transaction
-        .map(to_vec)
-        .transpose()
-        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-    // u128/u64 amounts as lossless decimal text; return value as raw bytes.
-    let tokens_burnt = outcome.map(|o| o.tokens_burnt.as_yoctonear().to_string());
-    let total_gas_burnt = outcome.map(|o| o.total_gas_burnt.as_gas().to_string());
-    let return_value = outcome.and_then(|o| o.return_value.as_ref().map(|b| b.0.clone()));
-
-    sqlx::query!(
-        r#"
-INSERT INTO
-    gateway_operation_steps (
-        operation_id,
-        step_index,
-        signer_account_id,
-        receiver_id,
-        submitted_at,
-        actions,
-        state,
-        tx_hash,
-        signed_transaction,
-        outcome_tokens_burnt,
-        outcome_total_gas_burnt,
-        outcome_return_value
-    )
-VALUES
-    (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-        $9,
-        $10,
-        $11,
-        $12
-    )
-"#,
-        operation_id,
-        step_index,
-        transaction.signer_account_id.0.to_string(),
-        transaction.receiver_id.to_string(),
-        submitted_at,
-        actions,
-        state as OperationStepStateRow,
-        tx_hash.map(|hash| hash.0.to_string()),
-        signed_transaction,
-        tokens_burnt,
-        total_gas_burnt,
-        return_value,
-    )
-    .execute(&mut **tx)
-    .await?;
-
-    // One row per receipt (the outcome's per-receipt detail).
-    if let Some(outcome) = outcome {
-        for (receipt_index, receipt) in outcome.receipts.iter().enumerate() {
-            sqlx::query!(
-                r#"
-INSERT INTO
-    gateway_operation_step_receipts (
-        operation_id,
-        step_index,
-        receipt_index,
-        contract_id,
-        STATUS,
-        LOGS
-    )
-VALUES
-    ($1, $2, $3, $4, $5, $6)
-"#,
-                operation_id,
-                step_index,
-                i32::try_from(receipt_index).map_err(|_| {
-                    GatewayError::InvalidStoredOperation(
-                        "receipt index exceeds i32 range".to_owned(),
-                    )
-                })?,
-                receipt.contract_id.to_string(),
-                receipt_status_str(receipt.status),
-                &receipt.logs,
-            )
-            .execute(&mut **tx)
-            .await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// The `status` text stored for a receipt (DB CHECK enforces this set).
-fn receipt_status_str(status: ReceiptStatus) -> &'static str {
+fn outcome_status_row(status: ReceiptStatus) -> OutcomeStatusRow {
     match status {
-        ReceiptStatus::Succeeded => "succeeded",
-        ReceiptStatus::Failed => "failed",
+        ReceiptStatus::Succeeded => OutcomeStatusRow::Succeeded,
+        ReceiptStatus::Failed => OutcomeStatusRow::Failed,
     }
 }
 
-fn parse_receipt_status(value: &str) -> GatewayResult<ReceiptStatus> {
-    match value {
-        "succeeded" => Ok(ReceiptStatus::Succeeded),
-        "failed" => Ok(ReceiptStatus::Failed),
-        other => Err(GatewayError::InvalidStoredOperation(format!(
-            "invalid receipt status {other:?}"
-        ))),
+fn parse_receipt_status(status: OutcomeStatusRow) -> ReceiptStatus {
+    match status {
+        OutcomeStatusRow::Succeeded => ReceiptStatus::Succeeded,
+        OutcomeStatusRow::Failed => ReceiptStatus::Failed,
     }
 }
 
 async fn load_step_rows(
     pool: &PgPool,
     operation_id: uuid::Uuid,
-) -> GatewayResult<Vec<OperationStepRow>> {
-    sqlx::query_as!(
-        OperationStepRow,
-        r#"
+) -> GatewayResult<Vec<StepLifecycleRow>> {
+    sqlx::query_as::<_, StepLifecycleRow>(
+        r"
 SELECT
-    operation_id,
-    step_index,
-    signer_account_id,
-    receiver_id,
-    submitted_at,
-    actions,
-    state AS "state: OperationStepStateRow",
-    tx_hash,
-    signed_transaction,
-    outcome_tokens_burnt,
-    outcome_total_gas_burnt,
-    outcome_return_value,
-    created_at,
-    updated_at
+    step.operation_id,
+    step.step_index,
+    step.signer_account_id,
+    step.receiver_id,
+    step.actions,
+    execution.tx_hash AS execution_tx_hash,
+    execution.signed_transaction,
+    execution.submitted_at,
+    result.tx_hash AS result_tx_hash,
+    outcome.status AS outcome_status,
+    outcome.tokens_burnt,
+    outcome.total_gas_burnt,
+    outcome.return_value,
+    step.created_at
 FROM
-    gateway_operation_steps
+    gateway_plan_steps AS step
+    LEFT JOIN gateway_step_executions AS execution ON execution.operation_id = step.operation_id
+        AND execution.step_index = step.step_index
+    LEFT JOIN gateway_step_results AS result ON result.operation_id = step.operation_id
+        AND result.step_index = step.step_index
+    LEFT JOIN gateway_step_outcomes AS outcome ON outcome.operation_id = step.operation_id
+        AND outcome.step_index = step.step_index
 WHERE
-    operation_id = $1
+    step.operation_id = $1
 ORDER BY
-    step_index ASC
-"#,
-        operation_id,
+    step.step_index ASC
+",
     )
+    .bind(operation_id)
     .fetch_all(pool)
     .await
     .map_err(Into::into)
@@ -720,23 +1006,23 @@ ORDER BY
 /// Load every step's receipts for an operation, grouped by `step_index` and
 /// ordered by `receipt_index`.
 async fn load_step_receipts(pool: &PgPool, operation_id: uuid::Uuid) -> GatewayResult<ReceiptMap> {
-    let rows = sqlx::query!(
-        r#"
+    let rows = sqlx::query_as::<_, ReceiptRow>(
+        r"
 SELECT
     step_index,
     contract_id,
-    STATUS,
-    LOGS
+    status,
+    logs
 FROM
-    gateway_operation_step_receipts
+    gateway_step_receipts
 WHERE
     operation_id = $1
 ORDER BY
     step_index ASC,
     receipt_index ASC
-"#,
-        operation_id,
+",
     )
+    .bind(operation_id)
     .fetch_all(pool)
     .await?;
 
@@ -748,7 +1034,7 @@ ORDER BY
             .or_default()
             .push(ReceiptOutcome {
                 contract_id,
-                status: parse_receipt_status(&row.status)?,
+                status: parse_receipt_status(row.status),
                 logs: row.logs,
             });
     }
@@ -757,7 +1043,7 @@ ORDER BY
 
 fn rows_to_stored_operation(
     operation_row: OperationRow,
-    step_rows: Vec<OperationStepRow>,
+    step_rows: Vec<StepLifecycleRow>,
     mut receipts_by_step: ReceiptMap,
 ) -> GatewayResult<StoredOperation> {
     let mut succeeded_steps = Vec::new();
@@ -787,54 +1073,31 @@ fn rows_to_stored_operation(
     }
     request_fingerprint_hash.copy_from_slice(&operation_row.request_fingerprint_hash);
 
-    let operation = StoredOperation {
+    Ok(StoredOperation {
         rpc_method: operation_row.rpc_method,
         request_fingerprint_hash,
         request_payload,
         id,
         signer_account_id,
-        planned: operation_row.planned_at.is_some(),
+        planned: operation_row.plan_created_at.is_some(),
         succeeded_steps,
         current_step,
         remaining_steps,
-    };
-
-    let expected_status = operation_status_row(operation.status());
-    if operation_row.status != expected_status {
-        return Err(GatewayError::InvalidStoredOperation(format!(
-            "operation status mismatch: row={:?} computed={:?}",
-            operation_row.status, expected_status
-        )));
-    }
-
-    Ok(operation)
+    })
 }
 
 fn apply_step_row(
-    row: OperationStepRow,
+    row: StepLifecycleRow,
     receipts: Vec<ReceiptOutcome>,
     succeeded_steps: &mut Vec<SucceededStep>,
-    current_step: &mut Option<templar_gateway_core::CurrentStep>,
+    current_step: &mut Option<CurrentStep>,
     remaining_steps: &mut VecDeque<PlannedTransaction>,
 ) -> GatewayResult<()> {
     let transaction = step_row_transaction(&row)?;
-    let outcome = build_outcome(&row, receipts)?;
-    match row.state {
-        OperationStepStateRow::Succeeded => {
-            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "succeeded")?;
-            let outcome = outcome.ok_or_else(|| {
-                GatewayError::InvalidStoredOperation(
-                    "succeeded step is missing its execution outcome".to_owned(),
-                )
-            })?;
-            succeeded_steps.push(SucceededStep {
-                transaction,
-                tx_hash,
-                outcome,
-            });
-        }
-        OperationStepStateRow::Prepared => {
-            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "prepared")?;
+
+    match row_lifecycle(&row)? {
+        RowLifecycle::Remaining => remaining_steps.push_back(transaction),
+        RowLifecycle::Prepared { tx_hash } => {
             let signed_transaction = parse_signed_transaction(row.signed_transaction)?;
             *current_step = Some(CurrentStep::Prepared {
                 transaction,
@@ -842,79 +1105,126 @@ fn apply_step_row(
                 tx_hash,
             });
         }
-        OperationStepStateRow::Submitted => {
-            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "submitted")?;
-            let submitted_at = row.submitted_at.ok_or_else(|| {
-                GatewayError::InvalidStoredOperation(
-                    "submitted step is missing its submitted_at timestamp".to_owned(),
-                )
-            })?;
+        RowLifecycle::Submitted {
+            tx_hash,
+            submitted_at,
+        } => {
             *current_step = Some(CurrentStep::Submitted {
                 transaction,
                 tx_hash,
                 submitted_at,
             });
         }
-        // A `failed` row is `Reverted` if it executed (carries an outcome) and
-        // `Rejected` otherwise.
-        OperationStepStateRow::Failed => {
-            let tx_hash = parse_required_crypto_hash(row.tx_hash.as_deref(), "failed")?;
-            *current_step = Some(match outcome {
-                Some(outcome) => CurrentStep::Reverted {
-                    transaction,
-                    tx_hash,
-                    outcome,
-                },
-                None => CurrentStep::Rejected {
-                    transaction,
-                    tx_hash,
-                },
+        RowLifecycle::Rejected { tx_hash } => {
+            *current_step = Some(CurrentStep::Rejected {
+                transaction,
+                tx_hash,
             });
         }
-        OperationStepStateRow::NotStarted => remaining_steps.push_back(transaction),
+        RowLifecycle::Reverted { tx_hash } => {
+            *current_step = Some(CurrentStep::Reverted {
+                transaction,
+                tx_hash,
+                outcome: build_outcome(&row, receipts)?,
+            });
+        }
+        RowLifecycle::Succeeded { tx_hash } => {
+            succeeded_steps.push(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome: build_outcome(&row, receipts)?,
+            });
+        }
     }
     Ok(())
 }
 
-/// Reconstruct a step's [`ExecutionOutcome`] from its scalar columns and loaded
-/// receipts. Returns `None` when the step never executed (no scalars stored).
-fn build_outcome(
-    row: &OperationStepRow,
-    receipts: Vec<ReceiptOutcome>,
-) -> GatewayResult<Option<ExecutionOutcome>> {
-    // The two scalars are written together (DB CHECK), so either both are
-    // present (the step executed) or neither is.
-    let (Some(tokens), Some(gas)) = (
-        row.outcome_tokens_burnt.as_deref(),
-        row.outcome_total_gas_burnt.as_deref(),
-    ) else {
-        return Ok(None);
+enum RowLifecycle {
+    Remaining,
+    Prepared {
+        tx_hash: CryptoHash,
+    },
+    Submitted {
+        tx_hash: CryptoHash,
+        submitted_at: DateTime<Utc>,
+    },
+    Rejected {
+        tx_hash: CryptoHash,
+    },
+    Reverted {
+        tx_hash: CryptoHash,
+    },
+    Succeeded {
+        tx_hash: CryptoHash,
+    },
+}
+
+fn row_lifecycle(row: &StepLifecycleRow) -> GatewayResult<RowLifecycle> {
+    let Some(execution_tx_hash) = parse_crypto_hash(row.execution_tx_hash.as_deref())? else {
+        return Ok(RowLifecycle::Remaining);
     };
+
+    let Some(result_tx_hash) = parse_crypto_hash(row.result_tx_hash.as_deref())? else {
+        return Ok(match row.submitted_at {
+            Some(submitted_at) => RowLifecycle::Submitted {
+                tx_hash: execution_tx_hash,
+                submitted_at,
+            },
+            None => RowLifecycle::Prepared {
+                tx_hash: execution_tx_hash,
+            },
+        });
+    };
+
+    if result_tx_hash != execution_tx_hash {
+        return Err(GatewayError::InvalidStoredOperation(format!(
+            "step {} result tx_hash does not match execution tx_hash",
+            row.step_index
+        )));
+    }
+
+    Ok(match row.outcome_status {
+        None => RowLifecycle::Rejected {
+            tx_hash: result_tx_hash,
+        },
+        Some(OutcomeStatusRow::Failed) => RowLifecycle::Reverted {
+            tx_hash: result_tx_hash,
+        },
+        Some(OutcomeStatusRow::Succeeded) => RowLifecycle::Succeeded {
+            tx_hash: result_tx_hash,
+        },
+    })
+}
+
+fn build_outcome(
+    row: &StepLifecycleRow,
+    receipts: Vec<ReceiptOutcome>,
+) -> GatewayResult<ExecutionOutcome> {
+    let tokens = row.tokens_burnt.as_deref().ok_or_else(|| {
+        GatewayError::InvalidStoredOperation("executed step missing tokens_burnt".to_owned())
+    })?;
+    let gas = row.total_gas_burnt.as_deref().ok_or_else(|| {
+        GatewayError::InvalidStoredOperation("executed step missing total_gas_burnt".to_owned())
+    })?;
     let tokens_burnt = NearToken::from_yoctonear(tokens.parse().map_err(|_| {
         GatewayError::InvalidStoredOperation(format!("invalid tokens_burnt {tokens:?}"))
     })?);
     let total_gas_burnt = NearGas::from_gas(gas.parse().map_err(|_| {
         GatewayError::InvalidStoredOperation(format!("invalid total_gas_burnt {gas:?}"))
     })?);
-    Ok(Some(ExecutionOutcome {
+    Ok(ExecutionOutcome {
         tokens_burnt,
         total_gas_burnt,
         receipts,
-        return_value: row.outcome_return_value.clone().map(Into::into),
-    }))
+        return_value: row.return_value.clone().map(Into::into),
+    })
 }
 
-fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransaction> {
+fn step_row_transaction(row: &StepLifecycleRow) -> GatewayResult<PlannedTransaction> {
     Ok(PlannedTransaction {
         signer_account_id: ManagedAccountId(parse_account_id(&row.signer_account_id)?),
         receiver_id: parse_account_id(&row.receiver_id)?,
         actions: serde_json::from_value(row.actions.clone())?,
-    })
-}
-
-fn parse_required_crypto_hash(value: Option<&str>, state: &str) -> GatewayResult<CryptoHash> {
-    parse_crypto_hash(value)?.ok_or_else(|| {
-        GatewayError::InvalidStoredOperation(format!("{state} step missing transaction hash"))
     })
 }
 
@@ -941,20 +1251,14 @@ fn parse_crypto_hash(value: Option<&str>) -> GatewayResult<Option<CryptoHash>> {
         .transpose()
 }
 
-fn operation_status_row(status: OperationStatus) -> OperationStatusRow {
-    match status {
-        OperationStatus::Pending => OperationStatusRow::Pending,
-        OperationStatus::InProgress => OperationStatusRow::InProgress,
-        OperationStatus::Succeeded => OperationStatusRow::Succeeded,
-        OperationStatus::Failed => OperationStatusRow::Failed,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use near_api::types::transaction::actions::{Action, TransferAction};
+    use near_api::types::transaction::{
+        actions::{Action, TransferAction},
+        SignedTransaction, Transaction, TransactionV0,
+    };
     use near_api::types::CryptoHash as NearCryptoHash;
-    use templar_gateway_types::{NearGas, NearToken};
+    use templar_gateway_types::{NearGas, NearToken, OperationStatus};
 
     use super::*;
 
@@ -966,6 +1270,21 @@ mod tests {
                 deposit: NearToken::from_yoctonear(7),
             }),
         )
+    }
+
+    fn dummy_signed_transaction() -> SignedTransaction {
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: "signer.near".parse().unwrap(),
+            public_key: "ed25519:11111111111111111111111111111111".parse().unwrap(),
+            nonce: 1,
+            receiver_id: "receiver.near".parse().unwrap(),
+            block_hash: NearCryptoHash::default(),
+            actions: vec![],
+        });
+        let signature = "ed25519:1111111111111111111111111111111111111111111111111111111111111111"
+            .parse()
+            .unwrap();
+        SignedTransaction::new(signature, transaction)
     }
 
     fn sample_outcome() -> ExecutionOutcome {
@@ -1051,10 +1370,22 @@ mod tests {
         }
     }
 
+    async fn prepare_first_step(store: &PostgresStore, operation: &mut StoredOperation) {
+        let transaction = operation
+            .remaining_steps
+            .pop_front()
+            .expect("sample operation has a first step");
+        operation.current_step = Some(CurrentStep::Prepared {
+            transaction,
+            signed_transaction: Box::new(dummy_signed_transaction()),
+            tx_hash: CryptoHash(NearCryptoHash::default()),
+        });
+        store.save_operation(operation.clone()).await.unwrap();
+    }
+
     /// A progress save must not drop the operation's idempotency key — the
     /// relayer's crash recovery (and gateway idempotent retries) look operations
-    /// up by it. A previous version re-inserted the row with a null key on every
-    /// save.
+    /// up by it.
     #[sqlx::test(migrations = "./migrations")]
     async fn save_operation_preserves_idempotency_key(pool: PgPool) {
         let store = PostgresStore {
@@ -1076,14 +1407,26 @@ mod tests {
             )
             .await
             .unwrap();
-        let CreateOperationResult::Created(operation) = created else {
+        let CreateOperationResult::Created(mut operation) = created else {
             panic!("expected a freshly created operation");
         };
 
-        // Drive it to a terminal state and persist progress (a step transition).
-        let mut progressed = sample_operation(OperationStatus::Succeeded);
-        progressed.id = operation.id.clone();
-        store.save_operation(progressed).await.unwrap();
+        prepare_first_step(&store, &mut operation).await;
+        let prepared = operation.current_step.take().unwrap();
+        let CurrentStep::Prepared {
+            transaction,
+            tx_hash,
+            ..
+        } = prepared
+        else {
+            panic!("expected prepared step");
+        };
+        operation.succeeded_steps.push(SucceededStep {
+            transaction,
+            tx_hash,
+            outcome: sample_outcome(),
+        });
+        store.save_operation(operation.clone()).await.unwrap();
 
         let found = store
             .get_by_idempotency_key(&key)
@@ -1095,7 +1438,7 @@ mod tests {
     }
 
     /// `delete_reservation` removes a bare reservation (clearing its idempotency
-    /// mapping) but refuses to touch an operation that ran any step.
+    /// mapping) but refuses to touch an operation that has a structural plan.
     #[sqlx::test(migrations = "./migrations")]
     async fn delete_reservation_only_removes_reservations(pool: PgPool) {
         let store = PostgresStore {
@@ -1103,7 +1446,7 @@ mod tests {
             schema: "public".to_owned(),
         };
 
-        // A reservation: created with an empty plan, no steps.
+        // A reservation: created with an empty plan, no plan row.
         let key = IdempotencyKey("del-key".to_owned());
         let CreateOperationResult::Created(reserved) = store
             .create_or_get_operation(
@@ -1121,7 +1464,6 @@ mod tests {
         };
         assert_eq!(reserved.status(), OperationStatus::Pending);
 
-        // An executed operation: created then driven to a succeeded step.
         let executed = persist_failed_step(
             &store,
             [6; 32],
@@ -1133,12 +1475,10 @@ mod tests {
         )
         .await;
 
-        // The reservation is removed and its idempotency mapping cleared.
         store.delete_reservation(&reserved.id).await.unwrap();
         assert!(store.get_by_id(&reserved.id).await.unwrap().is_none());
         assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
 
-        // The executed operation is left untouched (delete is a no-op).
         store.delete_reservation(&executed.id).await.unwrap();
         assert!(store.get_by_id(&executed.id).await.unwrap().is_some());
     }
@@ -1204,7 +1544,6 @@ mod tests {
         };
         let key = IdempotencyKey("noop-key".to_owned());
 
-        // Reserve, then promote with an empty plan (planning produced a no-op).
         let CreateOperationResult::Created(mut operation) = store
             .create_or_get_operation(
                 "storage.ensureDeposit",
@@ -1223,7 +1562,6 @@ mod tests {
         operation.planned = true;
         store.save_operation(operation.clone()).await.unwrap();
 
-        // Terminal, step-less, and still resolvable by idempotency key.
         let reloaded = store
             .get_by_idempotency_key(&key)
             .await
@@ -1232,19 +1570,18 @@ mod tests {
         assert_eq!(reloaded.status(), OperationStatus::Succeeded);
         assert!(reloaded.record().steps.is_empty());
 
-        // delete_reservation must not remove a planned no-op.
         store.delete_reservation(&operation.id).await.unwrap();
         assert!(store.get_by_id(&operation.id).await.unwrap().is_some());
     }
 
     /// Persist a failed operation with the given terminal `current_step` and read
-    /// it back, exercising the store's step reconstruction.
+    /// it back, exercising the store's structural step reconstruction.
     async fn persist_failed_step(
         store: &PostgresStore,
         fingerprint: [u8; 32],
         current_step: CurrentStep,
     ) -> StoredOperation {
-        let CreateOperationResult::Created(created) = store
+        let CreateOperationResult::Created(mut operation) = store
             .create_or_get_operation(
                 "tx.transfer",
                 ManagedAccountId("signer.near".parse().unwrap()),
@@ -1260,12 +1597,11 @@ mod tests {
         else {
             panic!("expected a freshly created operation");
         };
-        let mut operation = sample_operation(OperationStatus::Failed);
-        operation.id = created.id.clone();
+        prepare_first_step(store, &mut operation).await;
         operation.current_step = Some(current_step);
-        store.save_operation(operation).await.unwrap();
+        store.save_operation(operation.clone()).await.unwrap();
         store
-            .get_by_id(&created.id)
+            .get_by_id(&operation.id)
             .await
             .unwrap()
             .expect("operation persisted")
@@ -1295,28 +1631,21 @@ mod tests {
     }
 
     #[test]
-    fn operation_status_row_matches_status() {
+    fn outcome_status_row_matches_receipt_status() {
         assert_eq!(
-            operation_status_row(OperationStatus::Pending),
-            OperationStatusRow::Pending
+            outcome_status_row(ReceiptStatus::Succeeded),
+            OutcomeStatusRow::Succeeded
         );
         assert_eq!(
-            operation_status_row(OperationStatus::InProgress),
-            OperationStatusRow::InProgress
-        );
-        assert_eq!(
-            operation_status_row(OperationStatus::Succeeded),
-            OperationStatusRow::Succeeded
-        );
-        assert_eq!(
-            operation_status_row(OperationStatus::Failed),
-            OperationStatusRow::Failed
+            outcome_status_row(ReceiptStatus::Failed),
+            OutcomeStatusRow::Failed
         );
     }
 
     #[test]
     fn rows_round_trip_preserves_succeeded_operation() {
         let operation = sample_operation(OperationStatus::Succeeded);
+        let succeeded_step = operation.succeeded_steps.first().unwrap();
         let operation_row = OperationRow {
             id: uuid::Uuid::from_str(&operation.id.0).unwrap(),
             rpc_method: operation.rpc_method.clone(),
@@ -1324,48 +1653,25 @@ mod tests {
             idempotency_key: None,
             request_fingerprint_hash: operation.request_fingerprint_hash.to_vec(),
             request_payload: serde_json::from_slice(&operation.request_payload).unwrap(),
-            status: OperationStatusRow::Succeeded,
-            planned_at: Some(Utc::now()),
+            plan_created_at: Some(Utc::now()),
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        let step_rows = vec![OperationStepRow {
+        let step_rows = vec![StepLifecycleRow {
             operation_id: operation_row.id,
             step_index: 0,
             signer_account_id: operation.signer_account_id.0.to_string(),
-            receiver_id: operation
-                .succeeded_steps
-                .first()
-                .unwrap()
-                .transaction
-                .receiver_id
-                .to_string(),
-            submitted_at: None,
-            actions: serde_json::to_value(
-                &operation
-                    .succeeded_steps
-                    .first()
-                    .unwrap()
-                    .transaction
-                    .actions,
-            )
-            .unwrap(),
-            state: OperationStepStateRow::Succeeded,
-            tx_hash: Some(
-                operation
-                    .succeeded_steps
-                    .first()
-                    .unwrap()
-                    .tx_hash
-                    .0
-                    .to_string(),
-            ),
-            signed_transaction: None,
-            outcome_tokens_burnt: Some(sample_outcome().tokens_burnt.as_yoctonear().to_string()),
-            outcome_total_gas_burnt: Some(sample_outcome().total_gas_burnt.as_gas().to_string()),
-            outcome_return_value: None,
+            receiver_id: succeeded_step.transaction.receiver_id.to_string(),
+            actions: serde_json::to_value(&succeeded_step.transaction.actions).unwrap(),
+            execution_tx_hash: Some(succeeded_step.tx_hash.0.to_string()),
+            signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
+            submitted_at: Some(Utc::now()),
+            result_tx_hash: Some(succeeded_step.tx_hash.0.to_string()),
+            outcome_status: Some(OutcomeStatusRow::Succeeded),
+            tokens_burnt: Some(sample_outcome().tokens_burnt.as_yoctonear().to_string()),
+            total_gas_burnt: Some(sample_outcome().total_gas_burnt.as_gas().to_string()),
+            return_value: None,
             created_at: Utc::now(),
-            updated_at: Utc::now(),
         }];
         let receipts = ReceiptMap::from([(0_i32, sample_outcome().receipts)]);
 
