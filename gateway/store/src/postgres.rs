@@ -155,6 +155,16 @@ struct StepOutcome<'a> {
     outcome: &'a ExecutionOutcome,
 }
 
+struct StepLifecycleInsert<'a> {
+    operation_id: uuid::Uuid,
+    step_index: i32,
+    transaction: &'a PlannedTransaction,
+    execution: Option<StepExecution<'a>>,
+    result: Option<StepResult>,
+    outcome: Option<StepOutcome<'a>>,
+    existing_state: Option<&'a ExistingStepState>,
+}
+
 /// Receipt outcomes grouped by step index.
 type ReceiptMap = HashMap<i32, Vec<ReceiptOutcome>>;
 
@@ -682,23 +692,25 @@ async fn insert_succeeded_steps(
         let existing_execution = existing_execution(existing_step_state, step_index)?;
         insert_step_lifecycle(
             tx,
-            operation_uuid,
-            step_index,
-            &step.transaction,
-            Some(StepExecution {
-                tx_hash: step.tx_hash,
-                signed_transaction: &existing_execution.signed_transaction,
-                prepared_at: existing_execution.prepared_at,
-                submitted_at: existing_execution.submitted_at,
-            }),
-            Some(StepResult {
-                tx_hash: step.tx_hash,
-            }),
-            Some(StepOutcome {
-                status: OutcomeStatusRow::Succeeded,
-                outcome: &step.outcome,
-            }),
-            existing_step_state.get(&step_index),
+            StepLifecycleInsert {
+                operation_id: operation_uuid,
+                step_index,
+                transaction: &step.transaction,
+                execution: Some(StepExecution {
+                    tx_hash: step.tx_hash,
+                    signed_transaction: &existing_execution.signed_transaction,
+                    prepared_at: existing_execution.prepared_at,
+                    submitted_at: existing_execution.submitted_at,
+                }),
+                result: Some(StepResult {
+                    tx_hash: step.tx_hash,
+                }),
+                outcome: Some(StepOutcome {
+                    status: OutcomeStatusRow::Succeeded,
+                    outcome: &step.outcome,
+                }),
+                existing_state: existing_step_state.get(&step_index),
+            },
         )
         .await?;
     }
@@ -715,27 +727,37 @@ async fn insert_current_step(
     let Some(current_step) = current_step else {
         return Ok(current_index);
     };
+    insert_current_step_lifecycle(
+        tx,
+        operation_uuid,
+        current_index,
+        current_step,
+        existing_step_state,
+    )
+    .await?;
+    Ok(current_index + 1)
+}
+
+async fn insert_current_step_lifecycle(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    current_index: i32,
+    current_step: &CurrentStep,
+    existing_step_state: &ExistingStepStateByStep,
+) -> GatewayResult<()> {
     match current_step {
         CurrentStep::Prepared {
             transaction,
             signed_transaction,
             tx_hash,
         } => {
-            let signed_transaction = to_vec(signed_transaction.as_ref())
-                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
-            insert_step_lifecycle(
+            insert_prepared_current_step(
                 tx,
                 operation_uuid,
                 current_index,
                 transaction,
-                Some(StepExecution {
-                    tx_hash: *tx_hash,
-                    signed_transaction: &signed_transaction,
-                    prepared_at: Utc::now(),
-                    submitted_at: None,
-                }),
-                None,
-                None,
+                signed_transaction,
+                *tx_hash,
                 existing_step_state.get(&current_index),
             )
             .await?;
@@ -745,21 +767,14 @@ async fn insert_current_step(
             tx_hash,
             submitted_at,
         } => {
-            let existing_execution = existing_execution(existing_step_state, current_index)?;
-            insert_step_lifecycle(
+            insert_submitted_current_step(
                 tx,
                 operation_uuid,
                 current_index,
                 transaction,
-                Some(StepExecution {
-                    tx_hash: *tx_hash,
-                    signed_transaction: &existing_execution.signed_transaction,
-                    prepared_at: existing_execution.prepared_at,
-                    submitted_at: Some(*submitted_at),
-                }),
-                None,
-                None,
-                existing_step_state.get(&current_index),
+                *tx_hash,
+                *submitted_at,
+                existing_step_state,
             )
             .await?;
         }
@@ -768,24 +783,17 @@ async fn insert_current_step(
             tx_hash,
             outcome,
         } => {
-            let existing_execution = existing_execution(existing_step_state, current_index)?;
-            insert_step_lifecycle(
+            insert_finished_current_step(
                 tx,
                 operation_uuid,
                 current_index,
                 transaction,
-                Some(StepExecution {
-                    tx_hash: *tx_hash,
-                    signed_transaction: &existing_execution.signed_transaction,
-                    prepared_at: existing_execution.prepared_at,
-                    submitted_at: existing_execution.submitted_at,
-                }),
-                Some(StepResult { tx_hash: *tx_hash }),
+                *tx_hash,
                 Some(StepOutcome {
                     status: OutcomeStatusRow::Failed,
                     outcome,
                 }),
-                existing_step_state.get(&current_index),
+                existing_step_state,
             )
             .await?;
         }
@@ -793,26 +801,110 @@ async fn insert_current_step(
             transaction,
             tx_hash,
         } => {
-            let existing_execution = existing_execution(existing_step_state, current_index)?;
-            insert_step_lifecycle(
+            insert_finished_current_step(
                 tx,
                 operation_uuid,
                 current_index,
                 transaction,
-                Some(StepExecution {
-                    tx_hash: *tx_hash,
-                    signed_transaction: &existing_execution.signed_transaction,
-                    prepared_at: existing_execution.prepared_at,
-                    submitted_at: existing_execution.submitted_at,
-                }),
-                Some(StepResult { tx_hash: *tx_hash }),
+                *tx_hash,
                 None,
-                existing_step_state.get(&current_index),
+                existing_step_state,
             )
             .await?;
         }
     }
-    Ok(current_index + 1)
+    Ok(())
+}
+
+async fn insert_prepared_current_step(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    current_index: i32,
+    transaction: &PlannedTransaction,
+    signed_transaction: &SignedTransaction,
+    tx_hash: CryptoHash,
+    existing_state: Option<&ExistingStepState>,
+) -> GatewayResult<()> {
+    let signed_transaction = to_vec(signed_transaction)
+        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    insert_step_lifecycle(
+        tx,
+        StepLifecycleInsert {
+            operation_id: operation_uuid,
+            step_index: current_index,
+            transaction,
+            execution: Some(StepExecution {
+                tx_hash,
+                signed_transaction: &signed_transaction,
+                prepared_at: Utc::now(),
+                submitted_at: None,
+            }),
+            result: None,
+            outcome: None,
+            existing_state,
+        },
+    )
+    .await
+}
+
+async fn insert_submitted_current_step(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    current_index: i32,
+    transaction: &PlannedTransaction,
+    tx_hash: CryptoHash,
+    submitted_at: DateTime<Utc>,
+    existing_step_state: &ExistingStepStateByStep,
+) -> GatewayResult<()> {
+    let existing_execution = existing_execution(existing_step_state, current_index)?;
+    insert_step_lifecycle(
+        tx,
+        StepLifecycleInsert {
+            operation_id: operation_uuid,
+            step_index: current_index,
+            transaction,
+            execution: Some(StepExecution {
+                tx_hash,
+                signed_transaction: &existing_execution.signed_transaction,
+                prepared_at: existing_execution.prepared_at,
+                submitted_at: Some(submitted_at),
+            }),
+            result: None,
+            outcome: None,
+            existing_state: existing_step_state.get(&current_index),
+        },
+    )
+    .await
+}
+
+async fn insert_finished_current_step(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    operation_uuid: uuid::Uuid,
+    current_index: i32,
+    transaction: &PlannedTransaction,
+    tx_hash: CryptoHash,
+    outcome: Option<StepOutcome<'_>>,
+    existing_step_state: &ExistingStepStateByStep,
+) -> GatewayResult<()> {
+    let existing_execution = existing_execution(existing_step_state, current_index)?;
+    insert_step_lifecycle(
+        tx,
+        StepLifecycleInsert {
+            operation_id: operation_uuid,
+            step_index: current_index,
+            transaction,
+            execution: Some(StepExecution {
+                tx_hash,
+                signed_transaction: &existing_execution.signed_transaction,
+                prepared_at: existing_execution.prepared_at,
+                submitted_at: existing_execution.submitted_at,
+            }),
+            result: Some(StepResult { tx_hash }),
+            outcome,
+            existing_state: existing_step_state.get(&current_index),
+        },
+    )
+    .await
 }
 
 async fn insert_remaining_steps(
@@ -826,13 +918,15 @@ async fn insert_remaining_steps(
         let step_index = start_index + step_index(offset)?;
         insert_step_lifecycle(
             tx,
-            operation_uuid,
-            step_index,
-            step,
-            None,
-            None,
-            None,
-            existing_step_state.get(&step_index),
+            StepLifecycleInsert {
+                operation_id: operation_uuid,
+                step_index,
+                transaction: step,
+                execution: None,
+                result: None,
+                outcome: None,
+                existing_state: existing_step_state.get(&step_index),
+            },
         )
         .await?;
     }
@@ -861,37 +955,39 @@ fn existing_execution(
 
 async fn insert_step_lifecycle(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    operation_id: uuid::Uuid,
-    step_index: i32,
-    transaction: &PlannedTransaction,
-    execution: Option<StepExecution<'_>>,
-    result: Option<StepResult>,
-    outcome: Option<StepOutcome<'_>>,
-    existing_state: Option<&ExistingStepState>,
+    step: StepLifecycleInsert<'_>,
 ) -> GatewayResult<()> {
     insert_plan_step(
         tx,
-        operation_id,
-        step_index,
-        transaction,
-        existing_state.map(|state| state.created_at),
+        step.operation_id,
+        step.step_index,
+        step.transaction,
+        step.existing_state.map(|state| state.created_at),
     )
     .await?;
-    if let Some(execution) = execution {
-        insert_step_execution(tx, operation_id, step_index, execution).await?;
+    if let Some(execution) = step.execution {
+        insert_step_execution(tx, step.operation_id, step.step_index, execution).await?;
     }
-    if let Some(result) = result {
+    if let Some(result) = step.result {
         insert_step_result(
             tx,
-            operation_id,
-            step_index,
+            step.operation_id,
+            step.step_index,
             result,
-            existing_state.and_then(|state| state.result_completed_at),
+            step.existing_state
+                .and_then(|state| state.result_completed_at),
         )
         .await?;
     }
-    if let Some(outcome) = outcome {
-        insert_step_outcome(tx, operation_id, step_index, outcome, existing_state).await?;
+    if let Some(outcome) = step.outcome {
+        insert_step_outcome(
+            tx,
+            step.operation_id,
+            step.step_index,
+            outcome,
+            step.existing_state,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -1244,34 +1340,50 @@ fn apply_step_row(
         RowLifecycle::Remaining => remaining_steps.push_back(transaction),
         RowLifecycle::Prepared { tx_hash } => {
             let signed_transaction = parse_signed_transaction(row.signed_transaction)?;
-            *current_step = Some(CurrentStep::Prepared {
-                transaction,
-                signed_transaction: Box::new(signed_transaction),
-                tx_hash,
-            });
+            set_current_step(
+                current_step,
+                row.step_index,
+                CurrentStep::Prepared {
+                    transaction,
+                    signed_transaction: Box::new(signed_transaction),
+                    tx_hash,
+                },
+            )?;
         }
         RowLifecycle::Submitted {
             tx_hash,
             submitted_at,
         } => {
-            *current_step = Some(CurrentStep::Submitted {
-                transaction,
-                tx_hash,
-                submitted_at,
-            });
+            set_current_step(
+                current_step,
+                row.step_index,
+                CurrentStep::Submitted {
+                    transaction,
+                    tx_hash,
+                    submitted_at,
+                },
+            )?;
         }
         RowLifecycle::Rejected { tx_hash } => {
-            *current_step = Some(CurrentStep::Rejected {
-                transaction,
-                tx_hash,
-            });
+            set_current_step(
+                current_step,
+                row.step_index,
+                CurrentStep::Rejected {
+                    transaction,
+                    tx_hash,
+                },
+            )?;
         }
         RowLifecycle::Reverted { tx_hash } => {
-            *current_step = Some(CurrentStep::Reverted {
-                transaction,
-                tx_hash,
-                outcome: build_outcome(&row, receipts)?,
-            });
+            set_current_step(
+                current_step,
+                row.step_index,
+                CurrentStep::Reverted {
+                    transaction,
+                    tx_hash,
+                    outcome: build_outcome(&row, receipts)?,
+                },
+            )?;
         }
         RowLifecycle::Succeeded { tx_hash } => {
             succeeded_steps.push(SucceededStep {
@@ -1281,6 +1393,20 @@ fn apply_step_row(
             });
         }
     }
+    Ok(())
+}
+
+fn set_current_step(
+    current_step: &mut Option<CurrentStep>,
+    step_index: i32,
+    next_step: CurrentStep,
+) -> GatewayResult<()> {
+    if current_step.is_some() {
+        return Err(GatewayError::InvalidStoredOperation(format!(
+            "operation has multiple current lifecycle rows; step {step_index} conflicts with an earlier current step"
+        )));
+    }
+    *current_step = Some(next_step);
     Ok(())
 }
 
@@ -2102,5 +2228,63 @@ ORDER BY step_index, receipt_index
             restored.succeeded_steps.first().unwrap().outcome,
             sample_outcome()
         );
+    }
+
+    #[test]
+    fn rows_to_stored_operation_rejects_multiple_current_like_steps() {
+        let operation = sample_operation(OperationStatus::Pending);
+        let operation_row = OperationRow {
+            id: uuid::Uuid::from_str(&operation.id.0).unwrap(),
+            rpc_method: operation.rpc_method.clone(),
+            signer_account_id: operation.signer_account_id.0.to_string(),
+            idempotency_key: None,
+            request_fingerprint_hash: operation.request_fingerprint_hash.to_vec(),
+            request_payload: serde_json::from_slice(&operation.request_payload).unwrap(),
+            plan_created_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+        let first_transaction = sample_transaction();
+        let second_transaction = sample_transaction();
+        let tx_hash = NearCryptoHash::default().to_string();
+        let step_rows = vec![
+            StepLifecycleRow {
+                operation_id: operation_row.id,
+                step_index: 0,
+                signer_account_id: operation.signer_account_id.0.to_string(),
+                receiver_id: first_transaction.receiver_id.to_string(),
+                actions: serde_json::to_value(&first_transaction.actions).unwrap(),
+                execution_tx_hash: Some(tx_hash.clone()),
+                signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
+                submitted_at: None,
+                result_tx_hash: None,
+                outcome_status: None,
+                tokens_burnt: None,
+                total_gas_burnt: None,
+                return_value: None,
+                created_at: Utc::now(),
+            },
+            StepLifecycleRow {
+                operation_id: operation_row.id,
+                step_index: 1,
+                signer_account_id: operation.signer_account_id.0.to_string(),
+                receiver_id: second_transaction.receiver_id.to_string(),
+                actions: serde_json::to_value(&second_transaction.actions).unwrap(),
+                execution_tx_hash: Some(tx_hash),
+                signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
+                submitted_at: None,
+                result_tx_hash: None,
+                outcome_status: None,
+                tokens_burnt: None,
+                total_gas_burnt: None,
+                return_value: None,
+                created_at: Utc::now(),
+            },
+        ];
+
+        let error = rows_to_stored_operation(operation_row, step_rows, ReceiptMap::new())
+            .expect_err("multiple current-like rows must be rejected");
+        assert!(matches!(error, GatewayError::InvalidStoredOperation(_)));
     }
 }
