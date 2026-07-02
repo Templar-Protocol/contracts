@@ -14,9 +14,6 @@ use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
 
-const DEFAULT_PYTH_LAZER_WS_URL: &str = "wss://pyth-lazer-0.dourolabs.app/v1/stream";
-const DEFAULT_PYTH_LAZER_MAX_PAYLOAD_AGE_MS: u64 = 5_000;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSignerConfig {
     pub account_id: AccountId,
@@ -95,13 +92,17 @@ pub struct Config {
     #[arg(long, env = "REDSTONE_NODE_PATH", default_value = "node")]
     pub redstone_node_path: PathBuf,
 
-    /// Bearer token for optional Pyth Pro/Lazer websocket payload updates.
+    /// Bearer token for Pyth Pro/Lazer websocket payload updates.
     #[arg(long, env = "PYTH_LAZER_API_KEY")]
-    pub pyth_lazer_api_key: Option<String>,
+    pub pyth_lazer_api_key: String,
 
-    /// Pyth Pro/Lazer websocket endpoint for optional payload updates.
-    #[arg(long, env = "PYTH_LAZER_WS_URL")]
-    pub pyth_lazer_ws_url: Option<Url>,
+    /// Pyth Pro/Lazer websocket endpoint for payload updates.
+    #[arg(
+        long,
+        env = "PYTH_LAZER_WS_URL",
+        default_value = "wss://pyth-lazer-0.dourolabs.app/v1/stream"
+    )]
+    pub pyth_lazer_ws_url: Url,
 
     /// Comma-separated Pyth Pro/Lazer u32 feed ids to subscribe to.
     #[arg(long, env = "PYTH_LAZER_FEED_IDS", value_delimiter = ',')]
@@ -112,8 +113,8 @@ pub struct Config {
     pub pyth_lazer_channel: Option<String>,
 
     /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
-    #[arg(long, env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS")]
-    pub pyth_lazer_max_payload_age_ms: Option<u64>,
+    #[arg(long, env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS", default_value = "5000")]
+    pub pyth_lazer_max_payload_age_ms: u64,
 
     /// Managed signer entries as `<account_id>=<secret_key>[,<secret_key>...]`.
     #[arg(
@@ -155,49 +156,16 @@ impl Config {
         Ok(Arc::new(store))
     }
 
-    pub fn build_lazer_source_config(&self) -> Result<Option<LazerSourceConfig>> {
-        let has_required_config =
-            self.pyth_lazer_api_key.is_some() && !self.pyth_lazer_feed_ids.is_empty();
-        let has_any_lazer_config = self.pyth_lazer_api_key.is_some()
-            || self.pyth_lazer_ws_url.is_some()
-            || !self.pyth_lazer_feed_ids.is_empty()
-            || self.pyth_lazer_channel.is_some()
-            || self.pyth_lazer_max_payload_age_ms.is_some();
-
-        if !has_any_lazer_config {
-            return Ok(None);
-        }
-        if !has_required_config {
-            bail!(
-                "partial Pyth Lazer config: set both PYTH_LAZER_API_KEY and PYTH_LAZER_FEED_IDS, or unset all PYTH_LAZER_* options"
-            );
-        }
-
-        let ws_url = match &self.pyth_lazer_ws_url {
-            Some(url) => url.clone(),
-            None => DEFAULT_PYTH_LAZER_WS_URL
-                .parse()
-                .context("default Pyth Lazer websocket URL is invalid")?,
-        };
-        let api_token = self
-            .pyth_lazer_api_key
-            .clone()
-            .context("PYTH_LAZER_API_KEY is required when Pyth Lazer is enabled")?;
-        let max_payload_age = Duration::from_millis(
-            self.pyth_lazer_max_payload_age_ms
-                .unwrap_or(DEFAULT_PYTH_LAZER_MAX_PAYLOAD_AGE_MS),
-        );
-
+    pub fn build_lazer_source_config(&self) -> Result<LazerSourceConfig> {
         LazerSourceConfig::new(
-            ws_url,
-            api_token,
+            self.pyth_lazer_ws_url.clone(),
+            self.pyth_lazer_api_key.clone(),
             LazerSubscriptionConfig {
                 price_feed_ids: self.pyth_lazer_feed_ids.clone(),
                 channel: self.pyth_lazer_channel.clone(),
-                max_payload_age,
+                max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
             },
         )
-        .map(Some)
         .map_err(anyhow::Error::from)
     }
 }
@@ -205,6 +173,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn parses_minimal_config() {
@@ -214,6 +183,10 @@ mod tests {
             "https://rpc.mainnet.near.org",
             "--listen-addr",
             "1.2.3.4:3333",
+            "--pyth-lazer-api-key",
+            "secret-token",
+            "--pyth-lazer-feed-ids",
+            "7,8",
             "--managed-signer",
             "test.near=ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q,ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q",
         ])
@@ -231,7 +204,6 @@ mod tests {
             "https://hermes-beta.pyth.network/"
         );
         assert_eq!(config.redstone_node_path, PathBuf::from("node"));
-        assert!(config.build_lazer_source_config().unwrap().is_none());
         assert_eq!(config.managed_signers.len(), 1);
         assert_eq!(config.managed_signers[0].account_id.as_str(), "test.near");
         assert_eq!(config.managed_signers[0].secret_keys.len(), 2);
@@ -239,8 +211,15 @@ mod tests {
 
     #[tokio::test]
     async fn migrate_requires_database_url() {
-        let config = Config::try_parse_from(["templar-gateway-service", "--migrate-database"])
-            .expect("config should parse");
+        let config = Config::try_parse_from([
+            "templar-gateway-service",
+            "--migrate-database",
+            "--pyth-lazer-api-key",
+            "secret-token",
+            "--pyth-lazer-feed-ids",
+            "7",
+        ])
+        .expect("config should parse");
 
         let error = match config.build_store().await {
             Ok(_) => panic!("migration without a database URL should fail"),
@@ -253,8 +232,14 @@ mod tests {
 
     #[tokio::test]
     async fn build_store_defaults_to_memory_without_database_url() {
-        let config =
-            Config::try_parse_from(["templar-gateway-service"]).expect("config should parse");
+        let config = Config::try_parse_from([
+            "templar-gateway-service",
+            "--pyth-lazer-api-key",
+            "secret-token",
+            "--pyth-lazer-feed-ids",
+            "7",
+        ])
+        .expect("config should parse");
 
         match config.build_store().await {
             Ok(_) => {}
@@ -262,67 +247,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lazer_config_is_disabled_without_env_or_args() {
-        let config =
-            Config::try_parse_from(["templar-gateway-service"]).expect("config should parse");
+    #[rstest]
+    #[case::full_config(
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7,8", "--pyth-lazer-ws-url", "wss://example.com/v1/stream"],
+        Ok(())
+    )]
+    #[case::blank_api_key(
+        &["--pyth-lazer-api-key", "  ", "--pyth-lazer-feed-ids", "7"],
+        Err("API token must not be empty")
+    )]
+    #[case::insecure_ws_url(
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7", "--pyth-lazer-ws-url", "ws://example.com/v1/stream"],
+        Err("websocket URL must use wss://")
+    )]
+    #[case::zero_max_payload_age(
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7", "--pyth-lazer-max-payload-age-ms", "0"],
+        Err("max payload age must be greater than zero")
+    )]
+    fn lazer_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
+        let mut args = vec!["templar-gateway-service"];
+        args.extend_from_slice(extra_args);
+        let config = Config::try_parse_from(args).expect("config should parse");
 
-        assert!(config
-            .build_lazer_source_config()
-            .expect("missing Lazer config should be valid")
-            .is_none());
-    }
-
-    #[test]
-    fn full_lazer_config_is_enabled() {
-        let config = Config::try_parse_from([
-            "templar-gateway-service",
-            "--pyth-lazer-api-key",
-            "secret-token",
-            "--pyth-lazer-feed-ids",
-            "7,8",
-            "--pyth-lazer-ws-url",
-            "wss://example.com/v1/stream",
-        ])
-        .expect("config should parse");
-
-        assert!(config
-            .build_lazer_source_config()
-            .expect("full Lazer config should build")
-            .is_some());
-    }
-
-    #[test]
-    fn partial_lazer_config_fails_clearly() {
-        let config = Config::try_parse_from([
-            "templar-gateway-service",
-            "--pyth-lazer-api-key",
-            "secret-token",
-        ])
-        .expect("config should parse");
-
-        let error = config
-            .build_lazer_source_config()
-            .expect_err("partial Lazer config should fail");
-
-        assert!(error.to_string().contains("partial Pyth Lazer config"));
-    }
-
-    #[test]
-    fn blank_lazer_api_key_fails_clearly() {
-        let config = Config::try_parse_from([
-            "templar-gateway-service",
-            "--pyth-lazer-api-key",
-            "  ",
-            "--pyth-lazer-feed-ids",
-            "7",
-        ])
-        .expect("config should parse");
-
-        let error = config
-            .build_lazer_source_config()
-            .expect_err("blank Lazer token should fail");
-
-        assert!(error.to_string().contains("API token must not be empty"));
+        match expected {
+            Ok(()) => {
+                config
+                    .build_lazer_source_config()
+                    .expect("valid Lazer config should build");
+            }
+            Err(expected_msg) => {
+                let error = config
+                    .build_lazer_source_config()
+                    .expect_err("invalid Lazer config should fail");
+                assert!(error.to_string().contains(expected_msg));
+            }
+        }
     }
 }

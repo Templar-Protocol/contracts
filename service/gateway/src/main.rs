@@ -9,7 +9,7 @@ use jsonrpsee::server::ServerBuilder;
 use templar_gateway_client::NetworkConfigBuilder;
 use templar_gateway_core::{GatewayContext, HasNearClient, SharedOperationStore};
 use templar_gateway_oracle_updates_dispatch::{
-    GatewayContextBuilderOracleExt, ProvidesPythSource, ProvidesRedStoneSource,
+    GatewayContextBuilderOracleExt, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource,
 };
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::ManagedAccountId;
@@ -34,15 +34,12 @@ async fn main() -> anyhow::Result<()> {
     let context = GatewayContext::builder(network)
         .with_pyth_source(config.pyth_hermes_url)
         .with_redstone_source(&config.redstone_node_path)
-        .map_err(anyhow::Error::from)?;
-    if let Some(lazer_config) = lazer_config {
-        tracing::info!("Pyth Lazer payload source enabled");
-        let context = context.with_lazer_source(lazer_config).build();
-        serve(context, signers, store, config.listen_addr).await
-    } else {
-        let context = context.build();
-        serve(context, signers, store, config.listen_addr).await
-    }
+        .map_err(anyhow::Error::from)?
+        .with_lazer_source(lazer_config)
+        .build();
+
+    tracing::info!("Pyth Lazer payload source enabled");
+    serve(context, signers, store, config.listen_addr).await
 }
 
 async fn serve<ContextType>(
@@ -55,6 +52,7 @@ where
     ContextType: HasNearClient
         + ProvidesPythSource
         + ProvidesRedStoneSource
+        + ProvidesLazerSource
         + Clone
         + Send
         + Unpin
