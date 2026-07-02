@@ -5,8 +5,23 @@ use templar_gateway_methods_spec::{
     chain::GetBlock,
     market::*,
     registry::{Deploy, ListDeploymentsByKind},
+    universal_account::Create as UniversalAccountCreate,
 };
 use templar_gateway_types::{common::Pagination, contract::ContractKind, Base64Bytes, NearToken};
+use templar_primitives::SU128;
+use templar_universal_account::{transaction::Transaction, KeyId};
+
+type UniversalAccountCreateConstructor = fn(
+    AccountId,
+    String,
+    String,
+    KeyId,
+    SU128,
+    Option<Box<[Transaction]>>,
+    NearToken,
+) -> UniversalAccountCreate;
+
+fn assert_universal_account_create_constructor(_: UniversalAccountCreateConstructor) {}
 
 #[test]
 fn liquidate_new_requires_collateral_amount_argument() {
@@ -145,6 +160,11 @@ fn deploy_new_defaults_full_access_keys_to_none() {
             "deposit": NearToken::from_near(1).as_yoctonear().to_string(),
         }),
     );
+}
+
+#[test]
+fn universal_account_create_new_accepts_seven_required_arguments() {
+    assert_universal_account_create_constructor(UniversalAccountCreate::new);
 }
 
 #[test]
