@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\nSELECT\n    allowance,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n    AND mark <> 'always_deny'\n",
+  "query": "\nSELECT\n    allowance,\n    mark AS \"mark: AccountMark\"\nFROM\n    account\nWHERE\n    account_id = $1\n    AND mark <> 'always_deny'\nFOR UPDATE\n",
   "describe": {
     "columns": [
       {
@@ -35,5 +35,5 @@
       false
     ]
   },
-  "hash": "459eb309f26465d8266e513a2b285fc5ca885923259f03a0741140f8e0cbbed8"
+  "hash": "f740ddc064f911c4a8315bd862f6f6f24d3ca93f6fc9fd0ac946f348e497fd02"
 }

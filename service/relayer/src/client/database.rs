@@ -1,5 +1,5 @@
 use near_sdk::{AccountId, AccountIdRef, NearToken};
-use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool, Row};
+use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
 use templar_gateway_types::{OperationRecord, OperationStatus};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -129,7 +129,7 @@ impl Database {
         min_age: std::time::Duration,
     ) -> Result<Vec<PendingCharge>, sqlx::Error> {
         tracing::debug!("Fetching pending charges");
-        let results = sqlx::query(
+        let results = sqlx::query!(
             r#"
 SELECT
     account_id,
@@ -143,19 +143,18 @@ ORDER BY
 LIMIT
     $1
 "#,
+            limit,
+            min_age.as_secs_f64(),
         )
-        .bind(limit)
-        .bind(min_age.as_secs_f64())
         .fetch_all(&self.connection)
         .await?;
 
         Ok(results
             .into_iter()
             .filter_map(|r| {
-                let account_id: String = r.try_get("account_id").ok()?;
                 Some(PendingCharge {
-                    account_id: account_id.parse().ok()?,
-                    operation_key: r.try_get("operation_key").ok()?,
+                    account_id: r.account_id.parse().ok()?,
+                    operation_key: r.operation_key,
                 })
             })
             .collect())
@@ -230,17 +229,17 @@ FOR UPDATE
 
         let required = gas_estimate.saturating_add(inner_spend);
 
-        let reserved: Decimal = sqlx::query_scalar(
+        let reserved = sqlx::query_scalar!(
             r#"
 SELECT
-    coalesce(sum(gas_estimate + inner_spend), 0)
+    coalesce(sum(gas_estimate + inner_spend), 0) AS "reserved!: Decimal"
 FROM
     pending_gateway_charge
 WHERE
     account_id = $1
 "#,
+            account_id.as_str(),
         )
-        .bind(account_id.as_str())
         .fetch_one(&mut *tx)
         .await?;
         let available = account.allowance - reserved;
@@ -256,18 +255,18 @@ WHERE
             .into());
         }
 
-        sqlx::query(
+        sqlx::query!(
             r#"
 INSERT INTO
     pending_gateway_charge (operation_key, account_id, gas_estimate, inner_spend)
 VALUES
     ($1, $2, $3, $4)
 "#,
+            operation_key,
+            account_id.as_str(),
+            Decimal::from(gas_estimate.as_yoctonear()),
+            Decimal::from(inner_spend.as_yoctonear()),
         )
-        .bind(operation_key)
-        .bind(account_id.as_str())
-        .bind(Decimal::from(gas_estimate.as_yoctonear()))
-        .bind(Decimal::from(inner_spend.as_yoctonear()))
         .execute(&mut *tx)
         .await?;
 
@@ -354,7 +353,7 @@ VALUES
         succeeded: bool,
     ) -> Result<(), sqlx::Error> {
         tracing::info!("Settling charge");
-        sqlx::query(
+        sqlx::query!(
             r#"
 WITH charge AS (
     DELETE FROM pending_gateway_charge
@@ -380,11 +379,11 @@ WHERE
     account_id = $1
     AND EXISTS (SELECT 1 FROM charge)
 "#,
+            account_id.as_str(),
+            operation_key,
+            Decimal::from(tokens_burnt.as_yoctonear()),
+            succeeded,
         )
-        .bind(account_id.as_str())
-        .bind(operation_key)
-        .bind(Decimal::from(tokens_burnt.as_yoctonear()))
-        .bind(succeeded)
         .execute(&self.connection)
         .await?;
 
@@ -407,7 +406,7 @@ WHERE
         operation_key: Uuid,
     ) -> Result<(), sqlx::Error> {
         tracing::info!("Releasing charge");
-        sqlx::query(
+        sqlx::query!(
             r#"
 DELETE FROM
     pending_gateway_charge
@@ -415,9 +414,9 @@ WHERE
     account_id = $1
     AND operation_key = $2
 "#,
+            account_id.as_str(),
+            operation_key,
         )
-        .bind(account_id.as_str())
-        .bind(operation_key)
         .execute(&self.connection)
         .await?;
 
@@ -457,12 +456,12 @@ VALUES
         &self,
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
-        let result = sqlx::query(
+        let result = sqlx::query!(
             r#"
 SELECT
     account.allowance,
-    account.mark,
-    coalesce(sum(pending_gateway_charge.gas_estimate + pending_gateway_charge.inner_spend), 0) AS reserved
+    account.mark AS "mark: AccountMark",
+    coalesce(sum(pending_gateway_charge.gas_estimate + pending_gateway_charge.inner_spend), 0) AS "reserved!: Decimal"
 FROM
     account
 LEFT JOIN
@@ -472,24 +471,21 @@ WHERE
 GROUP BY
     account.account_id
 "#,
+            account_id.as_str(),
         )
-        .bind(account_id.as_str())
         .fetch_optional(&self.connection)
         .await?;
 
         result
             .map(|row| {
-                let mark: AccountMark = row.try_get("mark")?;
-                if mark == AccountMark::AlwaysDeny {
+                if row.mark == AccountMark::AlwaysDeny {
                     return Ok(NearToken::from_yoctonear(0));
                 }
 
-                let allowance: Decimal = row.try_get("allowance")?;
-                let reserved: Decimal = row.try_get("reserved")?;
-                let available = if mark == AccountMark::AlwaysApprove {
-                    allowance
+                let available = if row.mark == AccountMark::AlwaysApprove {
+                    row.allowance
                 } else {
-                    allowance - reserved
+                    row.allowance - row.reserved
                 };
                 Ok(NearToken::from_yoctonear(
                     u128::try_from(available).unwrap_or(0),
