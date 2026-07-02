@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
+use pyth_lazer_protocol::{api::Channel, time::FixedRate};
 use templar_gateway_core::OraclePayloadSource;
 use thiserror::Error;
 use tokio::{sync::RwLock, task::JoinHandle, time::Instant};
@@ -18,7 +19,7 @@ use url::Url;
 
 use crate::lazer_wire::{decode_stream_message, subscription_frame};
 
-const DEFAULT_CHANNEL: &str = "fixed_rate@200ms";
+const DEFAULT_CHANNEL: Channel = Channel::FixedRate(FixedRate::RATE_200_MS);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_LAZER_STREAM_MESSAGE_BYTES: usize = 1_048_576;
 
@@ -30,7 +31,7 @@ pub struct LazerSourceConfig {
     ws_url: Url,
     api_token: String,
     price_feed_ids: BTreeSet<u32>,
-    channel: String,
+    channel: Channel,
     max_payload_age: Duration,
 }
 
@@ -72,13 +73,12 @@ impl LazerSourceConfig {
         if price_feed_ids.is_empty() {
             return Err(LazerClientError::EmptySubscription);
         }
+        let channel = parse_channel(subscription.channel)?;
         Ok(Self {
             ws_url,
             api_token,
             price_feed_ids,
-            channel: subscription
-                .channel
-                .unwrap_or_else(|| DEFAULT_CHANNEL.to_owned()),
+            channel,
             max_payload_age: subscription.max_payload_age,
         })
     }
@@ -87,9 +87,17 @@ impl LazerSourceConfig {
         &self.price_feed_ids
     }
 
-    pub(crate) fn channel(&self) -> &str {
-        &self.channel
+    pub(crate) fn channel(&self) -> Channel {
+        self.channel
     }
+}
+
+fn parse_channel(channel: Option<String>) -> LazerResult<Channel> {
+    let Some(channel) = channel else {
+        return Ok(DEFAULT_CHANNEL);
+    };
+    serde_json::from_value(serde_json::Value::String(channel.clone()))
+        .map_err(|_| LazerClientError::InvalidChannel(channel))
 }
 
 #[derive(Debug, Error)]
@@ -100,6 +108,8 @@ pub enum LazerClientError {
     EmptyApiToken,
     #[error("Pyth Lazer subscription must include at least one price feed id")]
     EmptySubscription,
+    #[error("unsupported Pyth Lazer channel: {0}")]
+    InvalidChannel(String),
     #[error("Pyth Lazer request failed: {0}")]
     Request(String),
     #[error("Pyth Lazer stream message is missing solana payload")]

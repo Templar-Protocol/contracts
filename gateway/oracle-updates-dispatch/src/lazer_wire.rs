@@ -1,7 +1,15 @@
 use std::{collections::BTreeSet, io::Cursor};
 
-use pyth_lazer_protocol::{message::SolanaMessage, payload::PayloadData};
-use serde::{Deserialize, Serialize};
+use pyth_lazer_protocol::{
+    api::{
+        DeliveryFormat, Format, JsonBinaryData, JsonBinaryEncoding, SubscribeRequest,
+        SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, WsRequest, WsResponse,
+    },
+    message::SolanaMessage,
+    payload::PayloadData,
+    PriceFeedId, PriceFeedProperty,
+};
+use serde_json::Value;
 
 use crate::{LazerClientError, LazerResult, LazerSourceConfig};
 
@@ -9,50 +17,38 @@ const MAX_SOLANA_PAYLOAD_BYTES: usize = 1_048_576;
 const MAX_SOLANA_PAYLOAD_HEX_CHARS: usize = MAX_SOLANA_PAYLOAD_BYTES * 2;
 const MAX_SOLANA_PAYLOAD_BASE64_CHARS: usize = ((MAX_SOLANA_PAYLOAD_BYTES + 2) / 3) * 4;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SubscribeFrame<'a> {
-    #[serde(rename = "type")]
-    frame_type: &'static str,
-    subscription_id: u32,
-    price_feed_ids: Vec<u32>,
-    properties: [&'static str; 6],
-    formats: [&'static str; 1],
-    channel: &'a str,
-    ignore_invalid_feeds: bool,
-}
-
 pub(crate) fn subscription_frame(config: &LazerSourceConfig) -> LazerResult<String> {
-    let frame = SubscribeFrame {
-        frame_type: "subscribe",
-        subscription_id: 1,
-        price_feed_ids: config.price_feed_ids().iter().copied().collect(),
-        properties: [
-            "price",
-            "confidence",
-            "exponent",
-            "emaPrice",
-            "emaConfidence",
-            "feedUpdateTimestamp",
+    let params = SubscriptionParams::new(SubscriptionParamsRepr {
+        price_feed_ids: Some(
+            config
+                .price_feed_ids()
+                .iter()
+                .copied()
+                .map(PriceFeedId)
+                .collect(),
+        ),
+        symbols: None,
+        properties: vec![
+            PriceFeedProperty::Price,
+            PriceFeedProperty::Confidence,
+            PriceFeedProperty::Exponent,
+            PriceFeedProperty::EmaPrice,
+            PriceFeedProperty::EmaConfidence,
+            PriceFeedProperty::FeedUpdateTimestamp,
         ],
-        formats: ["solana"],
+        formats: vec![Format::Solana],
+        delivery_format: DeliveryFormat::Json,
+        json_binary_encoding: JsonBinaryEncoding::Base64,
+        parsed: false,
         channel: config.channel(),
         ignore_invalid_feeds: true,
-    };
-    serde_json::to_string(&frame).map_err(|error| LazerClientError::Decode(error.to_string()))
-}
-
-#[derive(Deserialize)]
-struct StreamMessage {
-    #[serde(rename = "type")]
-    message_type: String,
-    solana: Option<SolanaPayload>,
-}
-
-#[derive(Deserialize)]
-struct SolanaPayload {
-    data: String,
-    encoding: Option<String>,
+    })
+    .map_err(|error| LazerClientError::Decode(error.to_owned()))?;
+    let request = WsRequest::Subscribe(SubscribeRequest {
+        subscription_id: SubscriptionId(1),
+        params,
+    });
+    serde_json::to_string(&request).map_err(|error| LazerClientError::Decode(error.to_string()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,30 +58,60 @@ pub(crate) struct DecodedLazerPayload {
 }
 
 pub(crate) fn decode_stream_message(text: &str) -> LazerResult<Option<DecodedLazerPayload>> {
-    let message = serde_json::from_str::<StreamMessage>(text)
+    let mut value = serde_json::from_str::<Value>(text)
         .map_err(|error| LazerClientError::Decode(error.to_string()))?;
-    if message.message_type != "streamUpdated" {
-        return Ok(None);
+    normalize_solana_encoding(&mut value)?;
+    match serde_json::from_value::<WsResponse>(value)
+        .map_err(|error| LazerClientError::Decode(error.to_string()))?
+    {
+        WsResponse::StreamUpdated(message) => {
+            let solana = message
+                .payload
+                .solana
+                .ok_or(LazerClientError::MissingSolanaPayload)?;
+            decode_solana_payload(&solana)
+        }
+        WsResponse::Error(_)
+        | WsResponse::Subscribed(_)
+        | WsResponse::SubscribedWithInvalidFeedIdsIgnored(_)
+        | WsResponse::Unsubscribed(_)
+        | WsResponse::SubscriptionError(_) => Ok(None),
     }
-    let solana = message
-        .solana
-        .ok_or(LazerClientError::MissingSolanaPayload)?;
-    decode_solana_payload(&solana)
 }
 
-fn decode_solana_payload(payload: &SolanaPayload) -> LazerResult<Option<DecodedLazerPayload>> {
+fn normalize_solana_encoding(value: &mut Value) -> LazerResult<()> {
+    let Some(message) = value.as_object_mut() else {
+        return Ok(());
+    };
+    if message.get("type").and_then(Value::as_str) != Some("streamUpdated") {
+        return Ok(());
+    }
+    let Some(solana) = message.get_mut("solana").and_then(Value::as_object_mut) else {
+        return Ok(());
+    };
+    match solana.get("encoding").and_then(Value::as_str) {
+        Some("hex" | "base64") => Ok(()),
+        Some(encoding) => Err(LazerClientError::UnsupportedEncoding(encoding.to_owned())),
+        None => {
+            solana.insert("encoding".to_owned(), Value::String("hex".to_owned()));
+            Ok(())
+        }
+    }
+}
+
+fn decode_solana_payload(payload: &JsonBinaryData) -> LazerResult<Option<DecodedLazerPayload>> {
     let bytes = decode_solana_payload_bytes(payload)?;
     let feed_ids = parse_solana_feed_ids(&bytes)?;
     Ok(Some(DecodedLazerPayload { bytes, feed_ids }))
 }
 
-fn decode_solana_payload_bytes(payload: &SolanaPayload) -> LazerResult<Vec<u8>> {
-    let bytes = match payload.encoding.as_deref().unwrap_or("hex") {
-        "hex" => {
+fn decode_solana_payload_bytes(payload: &JsonBinaryData) -> LazerResult<Vec<u8>> {
+    let bytes = match payload.encoding {
+        JsonBinaryEncoding::Hex => {
             reject_oversized_encoded_payload(payload.data.len(), MAX_SOLANA_PAYLOAD_HEX_CHARS)?;
             hex::decode(&payload.data).map_err(|error| LazerClientError::Decode(error.to_string()))
         }
-        "base64" => {
+        JsonBinaryEncoding::Base64 => {
             use base64::Engine as _;
 
             reject_oversized_encoded_payload(payload.data.len(), MAX_SOLANA_PAYLOAD_BASE64_CHARS)?;
@@ -93,7 +119,6 @@ fn decode_solana_payload_bytes(payload: &SolanaPayload) -> LazerResult<Vec<u8>> 
                 .decode(&payload.data)
                 .map_err(|error| LazerClientError::Decode(error.to_string()))
         }
-        encoding => Err(LazerClientError::UnsupportedEncoding(encoding.to_owned())),
     }?;
     if bytes.len() > MAX_SOLANA_PAYLOAD_BYTES {
         return Err(LazerClientError::PayloadTooLarge);
@@ -132,4 +157,54 @@ fn parse_solana_feed_ids(raw_message: &[u8]) -> LazerResult<BTreeSet<u32>> {
         .into_iter()
         .map(|feed| feed.feed_id.0)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use pyth_lazer_protocol::{api::Channel, time::FixedRate};
+
+    use super::*;
+    use crate::LazerSubscriptionConfig;
+
+    #[test]
+    fn subscription_frame_uses_protocol_request_types() {
+        let config = LazerSourceConfig::new(
+            "wss://example.com/v1/stream".parse().expect("valid URL"),
+            "secret-token".to_owned(),
+            LazerSubscriptionConfig {
+                price_feed_ids: vec![8, 7],
+                channel: None,
+                max_payload_age: Duration::from_secs(5),
+            },
+        )
+        .expect("valid Lazer config");
+
+        let frame = subscription_frame(&config).expect("frame should serialize");
+        let request = serde_json::from_str::<WsRequest>(&frame).expect("protocol request");
+
+        match request {
+            WsRequest::Subscribe(request) => {
+                assert_eq!(request.subscription_id, SubscriptionId(1));
+                assert_eq!(
+                    request.params.price_feed_ids,
+                    Some(vec![PriceFeedId(7), PriceFeedId(8)])
+                );
+                assert_eq!(request.params.symbols, None);
+                assert_eq!(request.params.formats, vec![Format::Solana]);
+                assert_eq!(request.params.delivery_format, DeliveryFormat::Json);
+                assert_eq!(
+                    request.params.json_binary_encoding,
+                    JsonBinaryEncoding::Base64
+                );
+                assert_eq!(
+                    request.params.channel,
+                    Channel::FixedRate(FixedRate::RATE_200_MS)
+                );
+                assert!(request.params.ignore_invalid_feeds);
+            }
+            WsRequest::Unsubscribe(_) => panic!("expected subscribe request"),
+        }
+    }
 }

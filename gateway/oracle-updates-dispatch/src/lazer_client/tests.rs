@@ -42,6 +42,7 @@ fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
 fn stream_message(solana: serde_json::Value) -> String {
     serde_json::json!({
         "type": "streamUpdated",
+        "subscriptionId": 1,
         "solana": solana,
     })
     .to_string()
