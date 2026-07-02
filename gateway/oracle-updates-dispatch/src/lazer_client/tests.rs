@@ -39,7 +39,7 @@ fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
     .expect("valid config")
 }
 
-fn stream_message(solana: serde_json::Value) -> String {
+fn stream_message(solana: &serde_json::Value) -> String {
     serde_json::json!({
         "type": "streamUpdated",
         "subscriptionId": 1,
@@ -60,7 +60,7 @@ fn signer_of(raw: &[u8]) -> [u8; 32] {
         .public_key
 }
 
-fn verifier_params<'a>(trusted_signers: &'a [TrustedSigner]) -> VerifyParams<'a> {
+fn verifier_params(trusted_signers: &[TrustedSigner]) -> VerifyParams<'_> {
     VerifyParams {
         trusted_signers,
         now_s: PAYLOAD_001_TIMESTAMP_US / 1_000_000,
@@ -73,7 +73,7 @@ fn verifier_params<'a>(trusted_signers: &'a [TrustedSigner]) -> VerifyParams<'a>
 #[test]
 fn decodes_hex_when_encoding_is_omitted() {
     let fixture = fixture_bytes();
-    let message = stream_message(serde_json::json!({ "data": hex::encode(&fixture) }));
+    let message = stream_message(&serde_json::json!({ "data": hex::encode(&fixture) }));
 
     let payload = decode_stream_message(&message)
         .expect("message should decode")
@@ -86,11 +86,11 @@ fn decodes_hex_when_encoding_is_omitted() {
 #[test]
 fn decodes_explicit_hex_and_base64() {
     let fixture = fixture_bytes();
-    let hex_message = stream_message(serde_json::json!({
+    let hex_message = stream_message(&serde_json::json!({
         "encoding": "hex",
         "data": hex::encode(&fixture),
     }));
-    let base64_message = stream_message(serde_json::json!({
+    let base64_message = stream_message(&serde_json::json!({
         "encoding": "base64",
         "data": PAYLOAD_001,
     }));
@@ -111,7 +111,7 @@ fn decodes_explicit_hex_and_base64() {
 
 #[test]
 fn unsupported_encoding_returns_error() {
-    let message = stream_message(serde_json::json!({
+    let message = stream_message(&serde_json::json!({
         "encoding": "base58",
         "data": "abc",
     }));
@@ -125,7 +125,7 @@ fn unsupported_encoding_returns_error() {
 
 #[test]
 fn oversized_payload_returns_error_before_decode() {
-    let message = stream_message(serde_json::json!({
+    let message = stream_message(&serde_json::json!({
         "encoding": "hex",
         "data": "00".repeat(1_048_577),
     }));
@@ -138,7 +138,7 @@ fn oversized_payload_returns_error_before_decode() {
 #[test]
 fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
     let raw = fixture_bytes();
-    let message = stream_message(serde_json::json!({
+    let message = stream_message(&serde_json::json!({
         "encoding": "base64",
         "data": PAYLOAD_001,
     }));

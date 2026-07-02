@@ -17,11 +17,10 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::lazer_wire::{decode_stream_message, subscription_frame};
+use crate::lazer_wire::{decode_stream_message, subscription_frame, MAX_STREAM_JSON_MESSAGE_BYTES};
 
 const DEFAULT_CHANNEL: Channel = Channel::FixedRate(FixedRate::RATE_200_MS);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
-const MAX_LAZER_STREAM_MESSAGE_BYTES: usize = 1_048_576;
 
 #[cfg(test)]
 mod config_tests;
@@ -237,18 +236,15 @@ impl LazerPayloadSourceInner {
     async fn run(self: Arc<Self>) {
         let mut backoff = Duration::from_secs(1);
         loop {
-            match self.connect_and_stream().await {
-                Ok(()) => backoff = Duration::from_secs(1),
-                Err(error) => {
-                    tracing::warn!(%error, "Pyth Lazer stream disconnected");
-                    tokio::time::sleep(backoff).await;
-                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
-                }
+            if let Err(error) = self.connect_and_stream(&mut backoff).await {
+                tracing::warn!(%error, "Pyth Lazer stream disconnected");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
             }
         }
     }
 
-    async fn connect_and_stream(&self) -> LazerResult<()> {
+    async fn connect_and_stream(&self, backoff: &mut Duration) -> LazerResult<()> {
         let mut request = self
             .config
             .ws_url
@@ -263,8 +259,8 @@ impl LazerPayloadSourceInner {
             request,
             Some(
                 WebSocketConfig::default()
-                    .max_message_size(Some(MAX_LAZER_STREAM_MESSAGE_BYTES))
-                    .max_frame_size(Some(MAX_LAZER_STREAM_MESSAGE_BYTES)),
+                    .max_message_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES))
+                    .max_frame_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES)),
             ),
             false,
         )
@@ -274,6 +270,7 @@ impl LazerPayloadSourceInner {
             .send(Message::Text(subscription_frame(&self.config)?.into()))
             .await
             .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        *backoff = Duration::from_secs(1);
 
         while let Some(message) = stream.next().await {
             let message = message.map_err(|error| LazerClientError::Request(error.to_string()))?;

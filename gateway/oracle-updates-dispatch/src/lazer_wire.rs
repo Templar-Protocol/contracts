@@ -13,9 +13,12 @@ use serde_json::Value;
 
 use crate::{LazerClientError, LazerResult, LazerSourceConfig};
 
+const JSON_WRAPPER_BYTES: usize = 4_096;
 const MAX_SOLANA_PAYLOAD_BYTES: usize = 1_048_576;
 const MAX_SOLANA_PAYLOAD_HEX_CHARS: usize = MAX_SOLANA_PAYLOAD_BYTES * 2;
-const MAX_SOLANA_PAYLOAD_BASE64_CHARS: usize = ((MAX_SOLANA_PAYLOAD_BYTES + 2) / 3) * 4;
+const MAX_SOLANA_PAYLOAD_BASE64_CHARS: usize = MAX_SOLANA_PAYLOAD_BYTES.div_ceil(3) * 4;
+pub(crate) const MAX_STREAM_JSON_MESSAGE_BYTES: usize =
+    MAX_SOLANA_PAYLOAD_HEX_CHARS + JSON_WRAPPER_BYTES;
 
 pub(crate) fn subscription_frame(config: &LazerSourceConfig) -> LazerResult<String> {
     let params = SubscriptionParams::new(SubscriptionParamsRepr {
