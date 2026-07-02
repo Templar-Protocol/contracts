@@ -270,7 +270,6 @@ impl LazerPayloadSourceInner {
             .send(Message::Text(subscription_frame(&self.config)?.into()))
             .await
             .map_err(|error| LazerClientError::Request(error.to_string()))?;
-        *backoff = Duration::from_secs(1);
 
         while let Some(message) = stream.next().await {
             let message = message.map_err(|error| LazerClientError::Request(error.to_string()))?;
@@ -279,6 +278,7 @@ impl LazerPayloadSourceInner {
             };
             match decode_stream_message(text.as_ref()) {
                 Ok(Some(payload)) => {
+                    *backoff = Duration::from_secs(1);
                     *self.cache.write().await = Some(CachedPayload {
                         payload: payload.bytes,
                         feed_ids: payload.feed_ids,
