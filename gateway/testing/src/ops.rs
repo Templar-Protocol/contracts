@@ -18,7 +18,7 @@ use templar_common::{
     price::Convert,
     snapshot::Snapshot,
     supply::SupplyPosition,
-    vault::{AllocationDelta, MarketId, VaultConfiguration},
+    vault::{AllocationDelta, Fees, MarketId, Restrictions, VaultConfiguration},
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
@@ -29,7 +29,7 @@ use templar_gateway_types::{
     Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus,
 };
 
-use templar_primitives::SU128;
+use templar_primitives::{SU128, SU64};
 use test_utils::to_price;
 
 use crate::sandbox::SandboxHarness;
@@ -509,6 +509,239 @@ impl SandboxHarness {
             .await
             .map_err(|error| anyhow::anyhow!("get_idle_balance failed: {error}"))?
             .0)
+    }
+
+    /// Withdraw underlying by asset amount (receiver defaults to `user`).
+    pub async fn vault_withdraw(
+        &self,
+        user: &ManagedAccountId,
+        vault: &DeployedVault,
+        amount: u128,
+        receiver: Option<AccountId>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            vault::Withdraw {
+                vault_id: vault.vault_id.clone(),
+                amount: SU128::from(amount),
+                receiver: receiver.unwrap_or_else(|| user.0.clone()),
+            },
+        )
+        .await
+    }
+
+    /// Execute the next user withdrawal over `route` (market accounts).
+    pub async fn vault_execute_withdrawal(
+        &self,
+        allocator: &ManagedAccountId,
+        vault: &DeployedVault,
+        route: &[AccountId],
+    ) -> Result<WriteOperationResult> {
+        let route = self.resolve_market_ids(vault, route).await?;
+        self.execute(
+            allocator,
+            vault::ExecuteWithdrawal {
+                vault_id: vault.vault_id.clone(),
+                route,
+            },
+        )
+        .await
+    }
+
+    /// Execute a market withdrawal step for the given op and market id.
+    pub async fn vault_execute_market_withdrawal(
+        &self,
+        allocator: &ManagedAccountId,
+        vault: &DeployedVault,
+        op_id: u64,
+        market_id: MarketId,
+        batch_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            allocator,
+            vault::ExecuteMarketWithdrawal {
+                vault_id: vault.vault_id.clone(),
+                op_id: SU64::from(op_id),
+                market: market_id,
+                batch_limit,
+            },
+        )
+        .await
+    }
+
+    /// Execute an allocator rebalance withdrawal from `market` (a market account).
+    pub async fn vault_execute_rebalance_withdrawal(
+        &self,
+        allocator: &ManagedAccountId,
+        vault: &DeployedVault,
+        market: &AccountId,
+        batch_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        let market_id = self
+            .vault_market_id_of(&vault.vault_id, market)
+            .await?
+            .with_context(|| format!("unknown market: {market}"))?;
+        self.execute(
+            allocator,
+            vault::ExecuteRebalanceWithdrawal {
+                vault_id: vault.vault_id.clone(),
+                market_id,
+                batch_limit,
+            },
+        )
+        .await
+    }
+
+    /// Recover the vault from a stuck withdrawing state.
+    pub async fn vault_unbrick(
+        &self,
+        caller: &ManagedAccountId,
+        vault: &DeployedVault,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            vault::Unbrick {
+                vault_id: vault.vault_id.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Resync the vault's idle balance from its underlying token balance.
+    pub async fn vault_resync_idle_balance(
+        &self,
+        caller: &ManagedAccountId,
+        vault: &DeployedVault,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            caller,
+            vault::ResyncIdleBalance {
+                vault_id: vault.vault_id.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Set the vault's supply queue from `markets` (market accounts).
+    pub async fn vault_set_supply_queue(
+        &self,
+        caller: &ManagedAccountId,
+        vault: &DeployedVault,
+        markets: &[AccountId],
+    ) -> Result<WriteOperationResult> {
+        let markets = self.resolve_market_ids(vault, markets).await?;
+        self.execute(
+            caller,
+            vault::SetSupplyQueue {
+                vault_id: vault.vault_id.clone(),
+                markets,
+            },
+        )
+        .await
+    }
+
+    /// Set the vault fees (owner-gated governance).
+    pub async fn vault_set_fees(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+        fees: Fees<SU128>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::SetFees {
+                vault_id: vault.vault_id.clone(),
+                fees,
+            },
+        )
+        .await
+    }
+
+    /// Submit a restrictions change (owner-gated, timelocked).
+    pub async fn vault_set_restrictions(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+        restrictions: Option<Restrictions>,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::SetRestrictions {
+                vault_id: vault.vault_id.clone(),
+                restrictions,
+            },
+        )
+        .await
+    }
+
+    /// Accept a pending restrictions change.
+    pub async fn vault_accept_restrictions(
+        &self,
+        owner: &ManagedAccountId,
+        vault: &DeployedVault,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            owner,
+            vault::AcceptRestrictions {
+                vault_id: vault.vault_id.clone(),
+            },
+        )
+        .await
+    }
+
+    /// The vault's current fees.
+    pub async fn vault_get_fees(&self, vault: &DeployedVault) -> Result<Fees<SU128>> {
+        self.client()?
+            .read(vault::GetFees {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_fees failed: {error}"))
+    }
+
+    /// The vault's current restrictions, if any.
+    pub async fn vault_get_restrictions(
+        &self,
+        vault: &DeployedVault,
+    ) -> Result<Option<Restrictions>> {
+        Ok(self
+            .client()?
+            .read(vault::GetRestrictions {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_restrictions failed: {error}"))?
+            .restrictions)
+    }
+
+    /// The id of the in-flight user withdrawal op, if any.
+    pub async fn vault_get_withdrawing_op_id(&self, vault: &DeployedVault) -> Result<Option<u64>> {
+        Ok(self
+            .client()?
+            .read(vault::GetWithdrawingOpId {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_withdrawing_op_id failed: {error}"))?
+            .op_id
+            .map(|id| id.0))
+    }
+
+    /// Resolve market account ids to the vault's internal [`MarketId`]s.
+    async fn resolve_market_ids(
+        &self,
+        vault: &DeployedVault,
+        markets: &[AccountId],
+    ) -> Result<Vec<MarketId>> {
+        let mut ids = Vec::with_capacity(markets.len());
+        for market in markets {
+            ids.push(
+                self.vault_market_id_of(&vault.vault_id, market)
+                    .await?
+                    .with_context(|| format!("unknown market: {market}"))?,
+            );
+        }
+        Ok(ids)
     }
 
     /// Supply borrow-asset liquidity to the market.
