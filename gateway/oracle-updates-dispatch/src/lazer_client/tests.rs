@@ -71,38 +71,6 @@ fn verifier_params<'a>(trusted_signers: &'a [TrustedSigner]) -> VerifyParams<'a>
 }
 
 #[test]
-fn rejects_insecure_websocket_url() {
-    let error = LazerSourceConfig::new(
-        "ws://example.com/v1/stream".parse().expect("valid URL"),
-        "secret-token".to_owned(),
-        LazerSubscriptionConfig {
-            price_feed_ids: vec![7],
-            channel: None,
-            max_payload_age: Duration::from_secs(5),
-        },
-    )
-    .expect_err("ws:// should be rejected");
-
-    assert!(matches!(error, LazerClientError::InsecureWebSocketUrl));
-}
-
-#[test]
-fn rejects_empty_api_token() {
-    let error = LazerSourceConfig::new(
-        "wss://example.com/v1/stream".parse().expect("valid URL"),
-        "  ".to_owned(),
-        LazerSubscriptionConfig {
-            price_feed_ids: vec![7],
-            channel: None,
-            max_payload_age: Duration::from_secs(5),
-        },
-    )
-    .expect_err("blank token should be rejected");
-
-    assert!(matches!(error, LazerClientError::EmptyApiToken));
-}
-
-#[test]
 fn decodes_hex_when_encoding_is_omitted() {
     let fixture = fixture_bytes();
     let message = stream_message(serde_json::json!({ "data": hex::encode(&fixture) }));
@@ -233,11 +201,11 @@ async fn requested_feed_outside_subscription_returns_error() {
 #[tokio::test]
 async fn stale_cache_returns_error() {
     let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_millis(0)),
+        test_config(Duration::from_secs(5)),
         Some(CachedPayload {
             payload: vec![1, 2, 3],
             feed_ids: [7, 8].into_iter().collect(),
-            received_at: Instant::now() - Duration::from_secs(1),
+            received_at: Instant::now() - Duration::from_secs(6),
         }),
     );
 

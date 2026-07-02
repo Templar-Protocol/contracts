@@ -24,6 +24,8 @@ const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_LAZER_STREAM_MESSAGE_BYTES: usize = 1_048_576;
 
 #[cfg(test)]
+mod config_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone)]
@@ -73,6 +75,9 @@ impl LazerSourceConfig {
         if price_feed_ids.is_empty() {
             return Err(LazerClientError::EmptySubscription);
         }
+        if subscription.max_payload_age.is_zero() {
+            return Err(LazerClientError::InvalidMaxPayloadAge);
+        }
         let channel = parse_channel(subscription.channel)?;
         Ok(Self {
             ws_url,
@@ -110,6 +115,8 @@ pub enum LazerClientError {
     EmptySubscription,
     #[error("unsupported Pyth Lazer channel: {0}")]
     InvalidChannel(String),
+    #[error("Pyth Lazer max payload age must be greater than zero")]
+    InvalidMaxPayloadAge,
     #[error("Pyth Lazer request failed: {0}")]
     Request(String),
     #[error("Pyth Lazer stream message is missing solana payload")]
