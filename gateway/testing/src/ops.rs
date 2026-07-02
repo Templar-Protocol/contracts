@@ -18,10 +18,11 @@ use templar_common::{
     price::Convert,
     snapshot::Snapshot,
     supply::SupplyPosition,
+    vault::{AllocationDelta, MarketId, VaultConfiguration},
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{ft, market, registry, storage, tx};
+use templar_gateway_methods_spec::{ft, market, registry, storage, tx, vault};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
     primitive::PublicKey,
@@ -40,6 +41,22 @@ pub struct DeployedMarket {
     pub borrow_ft_id: AccountId,
     pub collateral_ft_id: AccountId,
     pub configuration: MarketConfiguration,
+}
+
+/// A vault deployed by [`SandboxHarness::deploy_vault_with_market`], wired to a
+/// live [`DeployedMarket`] (the vault's underlying is the market's borrow asset)
+/// with its market registered and capped in the supply queue — the harness
+/// equivalent of the retired `setup_test! extract(vault, c, vault_curator)`.
+///
+/// `owner` and `curator` are distinct, signable accounts: `owner` drives
+/// governance (fees, caps), `curator` drives allocation and withdrawals.
+pub struct DeployedVault {
+    pub vault_id: AccountId,
+    pub market: DeployedMarket,
+    pub owner: ManagedAccountId,
+    pub curator: ManagedAccountId,
+    pub sentinel: ManagedAccountId,
+    pub configuration: VaultConfiguration,
 }
 
 impl SandboxHarness {
@@ -247,6 +264,251 @@ impl SandboxHarness {
         self.mint(user, &market.collateral_ft_id, MINT_AMOUNT)
             .await?;
         Ok(())
+    }
+
+    /// Deploy a vault wired to a fresh market with default configs. See
+    /// [`deploy_vault_with_market_with`](Self::deploy_vault_with_market_with).
+    pub async fn deploy_vault_with_market(&self) -> Result<DeployedVault> {
+        self.deploy_vault_with_market_with(|_| {}, |_| {}).await
+    }
+
+    /// Deploy a market, then a vault whose underlying is that market's borrow
+    /// asset, with distinct signable owner/curator/sentinel accounts. Registers
+    /// the vault (and fee/skim recipients) for storage, then caps and enqueues
+    /// the market through the gateway so allocation/withdrawal work. This is the
+    /// harness analogue of the retired `setup_everything`; the hooks customize
+    /// the market and vault configurations before deployment.
+    pub async fn deploy_vault_with_market_with(
+        &self,
+        customize_market: impl FnOnce(&mut MarketConfiguration),
+        customize_vault: impl FnOnce(&mut VaultConfiguration),
+    ) -> Result<DeployedVault> {
+        let market = self.deploy_full_market_with(customize_market).await?;
+        self.set_asset_prices(&market, 1.0, 1.0).await?;
+
+        // The market must be registered to receive its own assets — the vault
+        // transfers underlying to it on allocation (mirrors `setup_everything`'s
+        // `c.storage_deposits(mkt)`).
+        let ft_registration = NearToken::from_near(1).saturating_div(100);
+        let market_account = ManagedAccountId(market.market_id.clone());
+        self.storage_deposit(&market_account, &market.borrow_ft_id, ft_registration)
+            .await?;
+        self.storage_deposit(&market_account, &market.collateral_ft_id, ft_registration)
+            .await?;
+
+        let operator = NearToken::from_near(100);
+        let (owner_id, _) = self.create_account("vault-owner", operator).await?;
+        let (curator_id, _) = self.create_account("vault-curator", operator).await?;
+        let (sentinel_id, _) = self.create_account("vault-sentinel", operator).await?;
+        let (skim_id, _) = self.create_account("vault-skim", operator).await?;
+        let (fee_id, _) = self.create_account("vault-fee", operator).await?;
+
+        // The vault's underlying MUST be the market's borrow asset for the two to
+        // integrate. Guardian is unused by the ported tests, so reuse `owner`.
+        let mut configuration = test_utils::vault_configuration(
+            owner_id.clone(),
+            curator_id.clone(),
+            owner_id.clone(),
+            sentinel_id.clone(),
+            market.borrow_ft_id.clone(),
+            skim_id.clone(),
+            fee_id.clone(),
+        );
+        customize_vault(&mut configuration);
+
+        let (vault_id, signer) = self.create_account("vault", operator).await?;
+        crate::sandbox::deploy_contract(
+            &self.network,
+            vault_id.clone(),
+            signer,
+            test_utils::controller::vault::load_wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "configuration": configuration.clone() }),
+        )
+        .await?;
+
+        // Storage opt-ins (mirrors `UnifiedVaultController::storage_deposits`): the
+        // vault itself and the fee/skim recipients must be registered on the vault
+        // share ledger, the market, and both FTs.
+        let owner = ManagedAccountId(owner_id);
+        let vault_account = ManagedAccountId(vault_id.clone());
+        for account in [
+            &vault_account,
+            &ManagedAccountId(skim_id),
+            &ManagedAccountId(fee_id),
+        ] {
+            self.register_for_vault(account, &vault_id, &market).await?;
+        }
+
+        // Cap and enqueue the market through the gateway, owner-signed.
+        self.execute(
+            &owner,
+            vault::SubmitCap {
+                vault_id: vault_id.clone(),
+                market: market.market_id.clone(),
+                new_cap: SU128::from(u128::MAX),
+            },
+        )
+        .await?;
+        self.execute(
+            &owner,
+            vault::AcceptCap {
+                vault_id: vault_id.clone(),
+                market: market.market_id.clone(),
+            },
+        )
+        .await?;
+        let market_id = self
+            .vault_market_id_of(&vault_id, &market.market_id)
+            .await?
+            .context("market not registered on vault after accept_cap")?;
+        self.execute(
+            &owner,
+            vault::SetSupplyQueue {
+                vault_id: vault_id.clone(),
+                markets: vec![market_id],
+            },
+        )
+        .await?;
+
+        Ok(DeployedVault {
+            vault_id,
+            market,
+            owner,
+            curator: ManagedAccountId(curator_id),
+            sentinel: ManagedAccountId(sentinel_id),
+            configuration,
+        })
+    }
+
+    /// Register `account` for storage on the vault share ledger, the market, and
+    /// both FTs — everything a vault participant (or the vault itself) needs.
+    async fn register_for_vault(
+        &self,
+        account: &ManagedAccountId,
+        vault_id: &AccountId,
+        market: &DeployedMarket,
+    ) -> Result<()> {
+        let ft_registration = NearToken::from_near(1).saturating_div(100);
+        // The vault's reported registration min covers registration only; holding
+        // a share balance needs more, so over-deposit rather than the bare min.
+        self.storage_deposit(
+            account,
+            vault_id,
+            NearToken::from_near(1).saturating_div(20),
+        )
+        .await?;
+        self.storage_deposit_min(account, &market.market_id).await?;
+        self.storage_deposit(account, &market.borrow_ft_id, ft_registration)
+            .await?;
+        self.storage_deposit(account, &market.collateral_ft_id, ft_registration)
+            .await?;
+        Ok(())
+    }
+
+    /// Register `user` for vault participation and mint it underlying — the vault
+    /// analogue of [`fund_user`](Self::fund_user), mirroring
+    /// `UnifiedVaultController::init_account`.
+    pub async fn vault_init_account(
+        &self,
+        user: &ManagedAccountId,
+        vault: &DeployedVault,
+    ) -> Result<()> {
+        const MINT_AMOUNT: u128 = 100_000_000;
+        self.register_for_vault(user, &vault.vault_id, &vault.market)
+            .await?;
+        self.mint(user, &vault.market.borrow_ft_id, MINT_AMOUNT)
+            .await?;
+        self.mint(user, &vault.market.collateral_ft_id, MINT_AMOUNT)
+            .await?;
+        Ok(())
+    }
+
+    /// The vault's internal market id for `market_account`, if registered.
+    pub async fn vault_market_id_of(
+        &self,
+        vault_id: &AccountId,
+        market_account: &AccountId,
+    ) -> Result<Option<MarketId>> {
+        Ok(self
+            .client()?
+            .read(vault::GetMarketIdOfAccount {
+                vault_id: vault_id.clone(),
+                market: market_account.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_market_id_of_account failed: {error}"))?
+            .market_id)
+    }
+
+    /// Deposit underlying into the vault (mints shares to `user`).
+    pub async fn vault_supply(
+        &self,
+        user: &ManagedAccountId,
+        vault: &DeployedVault,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            vault::Deposit {
+                vault_id: vault.vault_id.clone(),
+                amount: SU128::from(amount),
+            },
+        )
+        .await
+    }
+
+    /// Allocate or withdraw vault principal to/from a market (curator op).
+    pub async fn vault_allocate(
+        &self,
+        allocator: &ManagedAccountId,
+        vault: &DeployedVault,
+        delta: AllocationDelta,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            allocator,
+            vault::Allocate {
+                vault_id: vault.vault_id.clone(),
+                delta,
+            },
+        )
+        .await
+    }
+
+    /// Vault total assets (idle + market principal).
+    pub async fn vault_total_assets(&self, vault: &DeployedVault) -> Result<u128> {
+        Ok(self
+            .client()?
+            .read(vault::GetTotalAssets {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_total_assets failed: {error}"))?
+            .0)
+    }
+
+    /// Vault total share supply.
+    pub async fn vault_total_supply(&self, vault: &DeployedVault) -> Result<u128> {
+        Ok(self
+            .client()?
+            .read(vault::GetTotalSupply {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_total_supply failed: {error}"))?
+            .0)
+    }
+
+    /// Vault idle balance (unallocated underlying).
+    pub async fn vault_idle_balance(&self, vault: &DeployedVault) -> Result<u128> {
+        Ok(self
+            .client()?
+            .read(vault::GetIdleBalance {
+                vault_id: vault.vault_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_idle_balance failed: {error}"))?
+            .0)
     }
 
     /// Supply borrow-asset liquidity to the market.

@@ -1020,7 +1020,7 @@ fn label_of(account_id: &AccountId) -> &str {
     account_id.as_str().split('.').next().unwrap_or("account")
 }
 
-async fn deploy_contract(
+pub(crate) async fn deploy_contract(
     network: &NetworkConfig,
     account_id: AccountId,
     signer: Arc<Signer>,

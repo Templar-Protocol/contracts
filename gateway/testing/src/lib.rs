@@ -5,8 +5,8 @@ pub mod ops;
 pub mod sandbox;
 
 pub use controller::TestController;
-pub use ops::DeployedMarket;
-pub use sandbox::SandboxHarness;
+pub use ops::{DeployedMarket, DeployedVault};
+pub use sandbox::{test_secret_key, SandboxHarness};
 pub use test_utils::test_signer::TestSigner;
 
 /// An [`rstest`] fixture yielding a started [`SandboxHarness`], so tests keep
