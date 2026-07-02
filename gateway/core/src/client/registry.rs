@@ -118,3 +118,44 @@ impl RegistryClient<'_> {
         pub fn remove_version(RemoveVersionArgs);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_PUBLIC_KEY: &str = "ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB";
+
+    /// The wire form of `DeployArgs.full_access_keys` must be the
+    /// `"ed25519:<bs58>"` string the registry contract's `near_sdk::PublicKey`
+    /// parameter deserializes from. This guards the gateway serialization path
+    /// against a `near_api`-side format regression (ENG-404).
+    #[test]
+    fn deploy_args_serializes_full_access_keys_as_curve_prefixed_string() {
+        let key: near_api::PublicKey = TEST_PUBLIC_KEY.parse().unwrap();
+        let args = DeployArgs {
+            name: "market".to_owned(),
+            version_key: "market@0.0.0".to_owned(),
+            init_args: Base64Bytes(b"{}".to_vec()),
+            full_access_keys: Some(vec![key]),
+        };
+
+        let value = serde_json::to_value(&args).unwrap();
+        assert_eq!(
+            value["full_access_keys"],
+            serde_json::json!([TEST_PUBLIC_KEY]),
+        );
+    }
+
+    /// The gateway path (`near_api::PublicKey`) and the direct near-workspaces
+    /// path (`near_sdk::PublicKey`) must emit byte-identical JSON, otherwise the
+    /// contract would receive a key it cannot parse.
+    #[test]
+    fn near_api_and_near_sdk_public_key_json_match() {
+        let near_api_key: near_api::PublicKey = TEST_PUBLIC_KEY.parse().unwrap();
+        let near_sdk_key: near_sdk::PublicKey = TEST_PUBLIC_KEY.parse().unwrap();
+        assert_eq!(
+            serde_json::to_string(&near_api_key).unwrap(),
+            serde_json::to_string(&near_sdk_key).unwrap(),
+        );
+    }
+}

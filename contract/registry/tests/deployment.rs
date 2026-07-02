@@ -125,18 +125,11 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
         "the market should deploy with a full-access key requested",
     );
 
-    // TODO(ENG-388 follow-up): assert the deployed market has exactly the
-    // requested full-access key. The registry contract adds the keys
-    // (contract/registry/src/lib.rs add_full_access_key), but the gateway
-    // `registry.deploy` op currently yields a market with zero keys here — the
-    // typed `full_access_keys` appears to be dropped between the op and the
-    // contract call (likely a near_api<->near_sdk PublicKey serialization
-    // round-trip). Restore the key-count assertions once the gateway path is
-    // fixed:
-    //   let keys = harness.view_access_keys(&market_id).await?;
-    //   assert_eq!(keys.len(), 1);
-    //   assert_eq!(keys[0].0, TEST_PUBLIC_KEY);
-    //   assert!(keys[0].1);
+    // The deployed market carries exactly the requested full-access key.
+    let keys = harness.view_access_keys(&market_id).await?;
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].0, TEST_PUBLIC_KEY);
+    assert!(keys[0].1, "the key should have full access");
 
     Ok(())
 }
