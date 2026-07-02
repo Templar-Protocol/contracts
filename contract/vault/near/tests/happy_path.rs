@@ -1,8 +1,16 @@
-#![allow(clippy::all, clippy::pedantic)]
+//! `contract/vault/near/tests/happy_path.rs` ported onto the in-process gateway
+//! [`SandboxHarness`]. Every vault interaction goes through the gateway `Client`
+//! (via the `vault_*` harness wrappers), the same path the services use — except
+//! the one deliberately-invalid atomic batch in
+//! [`state_machine_is_locked_when_another_op_is_running`], which has no
+//! legitimate gateway op and so uses `near-api` directly.
+//!
+//! Node-backed, so gated behind `#[ignore]`; run with:
+//! `cargo nextest run -p templar-vault-contract --run-ignored all`
+#![allow(clippy::too_many_lines)]
 
+use anyhow::Result;
 use near_sdk::json_types::U128;
-use near_sdk::serde_json::json;
-use near_workspaces::{network::Sandbox, operations::Function, types::Gas, Worker};
 use rstest::rstest;
 use templar_common::vault::prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::{
@@ -10,233 +18,294 @@ use templar_common::{
     vault::{AllocationDelta, Delta},
     Decimal,
 };
+use templar_gateway_testing::{harness, DeployedVault, ManagedAccountId, SandboxHarness};
+use templar_primitives::SU128;
+
+/// Zero-interest borrow strategy — the common market customization these tests use.
+fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
+    c.borrow_interest_rate_strategy =
+        InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+}
+
+/// Drive market yield harvesting until the vault's supply position is fully
+/// activated (no incoming deposits pending).
+async fn harvest(harness: &SandboxHarness, vault: &DeployedVault) -> Result<()> {
+    let vault_account = ManagedAccountId(vault.vault_id.clone());
+    while let Some(position) = harness
+        .get_supply_position(&vault.market, &vault.vault_id)
+        .await?
+    {
+        if position.get_deposit().incoming.is_empty() {
+            break;
+        }
+        harness
+            .harvest_yield(&vault_account, &vault.market, None)
+            .await?;
+    }
+    Ok(())
+}
 
 #[rstest]
 #[tokio::test]
-async fn donation_does_not_change_aum_until_resync(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn donation_does_not_change_aum_until_resync(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    harness.vault_supply(&supply_user, &vault, 1_000).await?;
 
-    let total_assets_before_donation = vault.get_total_assets().await;
-    let idle_before_donation = vault.get_idle_balance().await;
+    let total_before = harness.vault_total_assets(&vault).await?;
+    let idle_before = harness.vault_idle_balance(&vault).await?;
 
-    c.borrow_asset
-        .transfer(&supply_user, vault.contract().id(), 123)
-        .await;
+    // Donate raw tokens straight to the vault account (bypasses the deposit path).
+    harness
+        .ft_transfer(
+            &supply_user,
+            &vault.market.borrow_ft_id,
+            &vault.vault_id,
+            123,
+        )
+        .await?;
 
     assert_eq!(
-        vault.get_total_assets().await,
-        total_assets_before_donation,
+        harness.vault_total_assets(&vault).await?,
+        total_before,
         "Donation should not change accounting until resync",
     );
     assert_eq!(
-        vault.get_idle_balance().await,
-        idle_before_donation,
+        harness.vault_idle_balance(&vault).await?,
+        idle_before,
         "Donation should not change idle accounting until resync",
     );
 
-    vault.resync_idle_balance(&supply_user).await;
+    harness
+        .vault_resync_idle_balance(&supply_user, &vault)
+        .await?;
 
     assert_eq!(
-        vault.get_total_assets().await.0,
-        total_assets_before_donation.0.saturating_add(123),
+        harness.vault_total_assets(&vault).await?,
+        total_before + 123,
         "After resync, total assets should include the donation",
     );
     assert_eq!(
-        vault.get_idle_balance().await.0,
-        idle_before_donation.0.saturating_add(123),
+        harness.vault_idle_balance(&vault).await?,
+        idle_before + 123,
         "After resync, idle balance should include the donation",
     );
-}
-use test_utils::{
-    controller::vault::UnifiedVaultController, setup_test, worker, ContractController,
-    UnifiedMarketController,
-};
-
-#[rstest]
-#[tokio::test]
-#[should_panic = "Duplicate market"]
-async fn supply_queue_mustnt_have_duplicates(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-    );
-    let m = c.market.contract().id().clone();
-
-    let queue = vec![m.clone(), m.clone()];
-    vault.set_supply_queue(&vault_curator, &queue).await;
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "management fee too high"]
-async fn set_fees_rejects_management_fee_above_cap(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, vault_owner)
-        accounts(supply_user, borrow_user)
+#[ignore = "requires NEAR sandbox"]
+async fn supply_queue_mustnt_have_duplicates(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+    let m = vault.market.market_id.clone();
+
+    let err = harness
+        .vault_set_supply_queue(&vault.curator, &vault, &[m.clone(), m])
+        .await
+        .expect_err("duplicate market in supply queue should be rejected");
+    assert!(
+        err.to_string().contains("Duplicate market"),
+        "expected 'Duplicate market', got: {err}"
     );
-
-    let mut fees = vault.get_fees().await;
-    fees.management.fee = U128(MAX_MANAGEMENT_FEE_WAD + 1);
-
-    vault.set_fees(&vault_owner, fees).await;
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-#[should_panic = "performance fee too high"]
-async fn set_fees_rejects_performance_fee_above_cap(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, vault_owner)
-        accounts(supply_user, borrow_user)
+#[ignore = "requires NEAR sandbox"]
+async fn set_fees_rejects_management_fee_above_cap(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+
+    let mut fees = harness.vault_get_fees(&vault).await?;
+    fees.management.fee = SU128::from(MAX_MANAGEMENT_FEE_WAD + 1);
+
+    let err = harness
+        .vault_set_fees(&vault.owner, &vault, fees)
+        .await
+        .expect_err("management fee above cap should be rejected");
+    assert!(
+        err.to_string().contains("management fee too high"),
+        "expected 'management fee too high', got: {err}"
     );
-
-    let mut fees = vault.get_fees().await;
-    fees.performance.fee = U128(MAX_PERFORMANCE_FEE_WAD + 1);
-
-    vault.set_fees(&vault_owner, fees).await;
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn set_fees_accepts_max_total_assets_growth_rate(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, vault_owner)
-        accounts(supply_user, borrow_user)
-    );
+#[ignore = "requires NEAR sandbox"]
+async fn set_fees_rejects_performance_fee_above_cap(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
 
-    let mut fees = vault.get_fees().await;
+    let mut fees = harness.vault_get_fees(&vault).await?;
+    fees.performance.fee = SU128::from(MAX_PERFORMANCE_FEE_WAD + 1);
+
+    let err = harness
+        .vault_set_fees(&vault.owner, &vault, fees)
+        .await
+        .expect_err("performance fee above cap should be rejected");
+    assert!(
+        err.to_string().contains("performance fee too high"),
+        "expected 'performance fee too high', got: {err}"
+    );
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn set_fees_accepts_max_total_assets_growth_rate(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+
+    let mut fees = harness.vault_get_fees(&vault).await?;
     assert_eq!(fees.max_total_assets_growth_rate, None);
 
-    fees.max_total_assets_growth_rate = Some(U128(u128::from(Wad::one() / 5)));
-    vault.set_fees(&vault_owner, fees.clone()).await;
+    let rate = SU128::from(u128::from(Wad::one() / 5));
+    fees.max_total_assets_growth_rate = Some(rate);
+    harness.vault_set_fees(&vault.owner, &vault, fees).await?;
 
-    let updated = vault.get_fees().await;
+    let updated = harness.vault_get_fees(&vault).await?;
     assert_eq!(
-        updated.max_total_assets_growth_rate, fees.max_total_assets_growth_rate,
+        updated.max_total_assets_growth_rate,
+        Some(rate),
         "max_total_assets_growth_rate should persist",
     );
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
+#[ignore = "requires NEAR sandbox"]
 async fn state_machine_is_locked_when_another_op_is_running(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_owner)
-        accounts(supply_user, borrow_user)
-    );
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    use near_api::{
+        types::transaction::actions::{Action, FunctionCallAction},
+        Signer, Transaction,
+    };
+    use near_sdk::NearToken;
 
-    vault.supply(&supply_user, 1).await;
+    let vault = harness.deploy_vault_with_market().await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let market_id = vault
-        .market_id_of(vault.market.market.contract().id())
-        .await;
+    harness.vault_supply(&supply_user, &vault, 1).await?;
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
 
-    let tx = vault_owner
-        .batch(vault.contract().id())
-        .call(Function::new("resync_idle_balance").gas(Gas::from_tgas(30)))
-        .call(
-            Function::new("allocate")
-                .args_json(near_sdk::serde_json::json!({
-                    "delta": AllocationDelta::Supply(Delta::new(market_id, U128(1))),
-                }))
-                .gas(Gas::from_tgas(270)),
-        )
-        .transact()
-        .await
-        .unwrap();
+    // Deliberately-invalid atomic batch: `resync_idle_balance` starts an op and
+    // `allocate` immediately attempts another in the same transaction, tripping
+    // the "only one op in flight" invariant. There is no (and should be no)
+    // gateway op for this always-invalid composition, so drive it via near-api.
+    let signer = Signer::from_secret_key(templar_gateway_testing::test_secret_key()?)?;
+    let result = Transaction::construct(vault.owner.0.clone(), vault.vault_id.clone())
+        .add_action(Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "resync_idle_balance".to_owned(),
+            args: Vec::new(),
+            gas: near_sdk::Gas::from_tgas(30),
+            deposit: NearToken::from_yoctonear(0),
+        })))
+        .add_action(Action::FunctionCall(Box::new(FunctionCallAction {
+            method_name: "allocate".to_owned(),
+            args: near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({
+                "delta": AllocationDelta::Supply(Delta::new(market_id, U128(1))),
+            }))?,
+            gas: near_sdk::Gas::from_tgas(270),
+            deposit: NearToken::from_yoctonear(0),
+        })))
+        .with_signer(signer)
+        .send_to(&harness.network)
+        .await?;
 
-    assert!(tx.is_failure(), "Batch transaction should fail");
-
-    let failure_text = format!("{:#?}", tx.failures());
+    assert!(result.is_failure(), "batch transaction should fail");
+    let failures = format!("{result:#?}");
     assert!(
-        failure_text.contains("Invariant: Only one op in flight"),
-        "Expected ensure_idle invariant failure, got failures: {failure_text}"
+        failures.contains("Invariant: Only one op in flight"),
+        "expected ensure_idle invariant failure, got: {failures}"
     );
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
+    harness.vault_init_account(&borrow_user, &vault).await?;
 
-    let initial_user_balance = c.borrow_asset.balance_of(supply_user.id()).await;
-    println!("Initial supply_user balance: {initial_user_balance}");
-
-    let v = vault.contract().id();
-    let amount: U128 = 1000.into();
+    let v = vault.vault_id.clone();
+    let amount: u128 = 1_000;
 
     assert_eq!(
-        vault.get_total_assets().await.0,
+        harness.vault_total_assets(&vault).await?,
         0,
         "Vault should appropriately track assets"
     );
 
-    vault.supply(&supply_user, amount.0).await;
-    let after_supply_balance = c.borrow_asset.balance_of(supply_user.id()).await;
-    println!("After supply of {}: {}", amount.0, after_supply_balance);
+    harness.vault_supply(&supply_user, &vault, amount).await?;
+    harness
+        .collateralize(&borrow_user, &vault.market, 2_000)
+        .await?;
 
-    c.collateralize(&borrow_user, 2000).await;
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
-
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
 
     assert_eq!(
-        c.borrow_asset.balance_of(vault.contract().id()).await,
+        harness
+            .ft_balance_of(&vault.market.borrow_ft_id, &vault.vault_id)
+            .await?,
         0,
         "Vault should not have any assets leftover after rebalancing 100%"
     );
     assert_eq!(
-        vault.get_total_supply().await,
+        harness.vault_total_supply(&vault).await?,
         amount,
         "Vault should have issued shares to the supplier"
     );
     assert_eq!(
-        vault.get_idle_balance().await.0,
+        harness.vault_idle_balance(&vault).await?,
         0,
         "Vault should not have idle balance after allocation"
     );
     assert_eq!(
-        vault.get_total_assets().await,
+        harness.vault_total_assets(&vault).await?,
         amount,
         "Vault should appropriately track assets"
     );
     assert_eq!(
-        c.get_supply_position(v)
-            .await
+        harness
+            .get_supply_position(&vault.market, &v)
+            .await?
             .unwrap()
             .get_deposit()
             .total(),
@@ -244,495 +313,453 @@ async fn happy(#[future(awt)] worker: Worker<Sandbox>) {
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    harvest(&c, &vault).await;
+    harvest(&harness, &vault).await?;
 
     assert_eq!(
-        u128::from(c.get_supply_position(v).await.unwrap().get_deposit().active),
-        amount.0,
+        u128::from(
+            harness
+                .get_supply_position(&vault.market, &v)
+                .await?
+                .unwrap()
+                .get_deposit()
+                .active
+        ),
+        amount,
         "Supply position should match amount of tokens supplied to contract",
     );
 
-    let balance_before_withdraw = c.borrow_asset.balance_of(supply_user.id()).await;
+    let balance_before_withdraw = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+        .await?;
 
-    vault.withdraw(&supply_user, amount, None).await;
+    harness
+        .vault_withdraw(&supply_user, &vault, amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    harvest(&c, &vault).await;
-
-    let mkt = c.market.contract().id();
-    let mkt_id = vault.market_id_of(mkt).await;
-
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
+    let mkt = vault.market.market_id.clone();
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
 
-    // Plan the withdraw route (single market) and execute it via allocator methods
-    let withdraw_route = vec![mkt.clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route.clone())
-        .await;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[mkt.clone()])
+        .await?;
 
-    let op_id = vault
-        .vault
-        .get_withdrawing_op_id()
-        .await
-        .expect("Failed to get withdrawing op id");
-    vault
-        .execute_market_withdrawal(&vault_curator, op_id, mkt_id, Some(10))
-        .await;
+    let op_id = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
+        .expect("withdrawing op id");
+    harness
+        .vault_execute_market_withdrawal(&vault.curator, &vault, op_id, market_id, Some(10))
+        .await?;
 
     assert_eq!(
-        c.borrow_asset.balance_of(supply_user.id()).await,
-        amount.0 + balance_before_withdraw,
+        harness
+            .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+            .await?,
+        amount + balance_before_withdraw,
         "Supply user should have received their tokens back"
     );
-
-    let supply_position = c.get_supply_position(v).await;
     assert!(
-        supply_position.is_none(),
+        harness
+            .get_supply_position(&vault.market, &v)
+            .await?
+            .is_none(),
         "Supply position should be closed"
     );
 
-    c.storage_deposits(vault.contract().as_account()).await;
-
-    // Resupply and wait
-    vault.supply(&supply_user, amount.0).await;
-    let mkt = c.market.contract().id();
-    let mkt_id = vault.market_id_of(mkt).await;
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(mkt_id, amount)),
+    // Re-register the vault for a fresh supply position, then re-supply and wait.
+    harness
+        .storage_deposit_min(&ManagedAccountId(v.clone()), &vault.market.market_id)
+        .await?;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
     // --- Allocator-only rebalance withdrawal into idle (no user withdrawal) ---
-    let total_assets_before_rebalance = vault.get_total_assets().await;
-    assert_eq!(
-        total_assets_before_rebalance, amount,
-        "Sanity: total assets should equal supplied amount before rebalance",
-    );
-    assert_eq!(
-        vault.get_idle_balance().await.0,
-        0,
-        "Idle balance should be zero before rebalance withdrawal",
-    );
+    let total_before_rebalance = harness.vault_total_assets(&vault).await?;
+    assert_eq!(total_before_rebalance, amount);
+    assert_eq!(harness.vault_idle_balance(&vault).await?, 0);
 
-    // Create a market-side withdrawal request via allocator reallocation.
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(mkt_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(amount))),
         )
-        .await;
-
-    // Executing the rebalance withdrawal should pull funds back to idle without
-    // touching the user withdrawal queue.
-    vault
-        .execute_rebalance_withdrawal(&vault_curator, mkt.clone(), None)
-        .await;
+        .await?;
+    harness
+        .vault_execute_rebalance_withdrawal(&vault.curator, &vault, &mkt, None)
+        .await?;
 
     assert_eq!(
-        vault.get_total_assets().await,
-        total_assets_before_rebalance,
+        harness.vault_total_assets(&vault).await?,
+        total_before_rebalance,
         "Rebalance withdrawal must preserve total assets",
     );
     assert_eq!(
-        vault.get_total_supply().await,
+        harness.vault_total_supply(&vault).await?,
         amount,
         "Rebalance withdrawal must not mint or burn shares",
     );
     assert_eq!(
-        vault.get_idle_balance().await.0,
-        amount.0,
+        harness.vault_idle_balance(&vault).await?,
+        amount,
         "Rebalance withdrawal should move principal back to idle",
     );
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
         "Rebalance withdrawal must not create a user withdrawing op",
     );
 
-    // Re-allocate idle back into the market so the later borrow/withdraw path
-    // in this test continues to exercise the existing state machine behavior.
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(mkt_id, amount)),
+    // Re-allocate idle back into the market, then exercise a borrow + withdraw.
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    println!(
-        "Balance of the market for the collateral asset: {}",
-        c.borrow_asset.balance_of(c.market.contract().id()).await
-    );
+    let borrowed = amount / 2;
+    harness
+        .borrow(&borrow_user, &vault.market, borrowed)
+        .await?;
 
-    let borrowed = amount.0 / 2;
+    harness
+        .vault_withdraw(&supply_user, &vault, amount - borrowed, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    c.borrow(&borrow_user, borrowed).await;
-
-    vault
-        .withdraw(&supply_user, (amount.0 - borrowed).into(), None)
-        .await;
-
-    // Ensure deposits are activated before we attempt to route and execute the withdrawal
-    harvest(&c, &vault).await;
-    // Plan the withdraw route (single market) and execute it via allocator methods
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route.clone())
-        .await;
-    let op_id = vault
-        .vault
-        .get_withdrawing_op_id()
-        .await
-        .expect("Failed to get withdrawing operation ID");
-    vault
-        .execute_market_withdrawal(&vault_curator, op_id, mkt_id, None)
-        .await;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[mkt.clone()])
+        .await?;
+    let op_id = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
+        .expect("withdrawing op id");
+    harness
+        .vault_execute_market_withdrawal(&vault.curator, &vault, op_id, market_id, None)
+        .await?;
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn deposit_allowed_during_withdrawal_op(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, second_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
-    vault.init_account(&second_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn deposit_allowed_during_withdrawal_op(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    let second_user = harness.create_user("second").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
+    harness.vault_init_account(&second_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    let amount: u128 = 1_000;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    let withdraw_amount: U128 = 400.into();
-    let balance_before_withdraw = c.borrow_asset.balance_of(supply_user.id()).await;
-    vault.withdraw(&supply_user, withdraw_amount, None).await;
-    harvest(&c, &vault).await;
+    let withdraw_amount: u128 = 400;
+    let balance_before_withdraw = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+        .await?;
+    harness
+        .vault_withdraw(&supply_user, &vault, withdraw_amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(market_id, withdraw_amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(withdraw_amount))),
         )
-        .await;
+        .await?;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[vault.market.market_id.clone()])
+        .await?;
 
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route)
-        .await;
-
-    let op_id_before = vault
-        .get_withdrawing_op_id()
-        .await
+    let op_id_before = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
         .expect("withdraw op should exist");
 
     let deposit_amount: u128 = 250;
-    let second_before = c.borrow_asset.balance_of(second_user.id()).await;
-    vault.supply(&second_user, deposit_amount).await;
-    let second_after = c.borrow_asset.balance_of(second_user.id()).await;
+    let second_before = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &second_user.0)
+        .await?;
+    harness
+        .vault_supply(&second_user, &vault, deposit_amount)
+        .await?;
+    let second_after = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &second_user.0)
+        .await?;
     let transferred = second_before.saturating_sub(second_after);
     assert!(
         transferred <= deposit_amount,
         "Second user should never transfer more than requested",
     );
 
-    let op_id_after = vault
-        .get_withdrawing_op_id()
-        .await
+    let op_id_after = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
         .expect("withdraw op should remain active");
     assert_eq!(
         op_id_before, op_id_after,
         "Concurrent deposit must not reset withdrawing op"
     );
 
-    let second_shares: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": second_user.id() }))
-        .await;
+    let second_shares = harness
+        .ft_balance_of(&vault.vault_id, &second_user.0)
+        .await?;
     if transferred > 0 {
         assert!(
-            second_shares.0 > 0,
+            second_shares > 0,
             "Deposit during withdrawal should mint shares when assets are accepted",
         );
     }
 
-    vault
-        .execute_market_withdrawal(&vault_curator, op_id_before, market_id, None)
-        .await;
+    harness
+        .vault_execute_market_withdrawal(&vault.curator, &vault, op_id_before, market_id, None)
+        .await?;
 
     assert_eq!(
-        c.borrow_asset.balance_of(supply_user.id()).await,
-        balance_before_withdraw + withdraw_amount.0,
+        harness
+            .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+            .await?,
+        balance_before_withdraw + withdraw_amount,
         "Withdrawer should receive assets after concurrent deposit"
     );
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
         "Withdraw op should complete"
     );
+    Ok(())
 }
 
-/// Tests partial withdrawal when market has insufficient liquidity.
-///
-/// Scenario: user deposits 1000, vault allocates all to market, borrower takes 600.
-/// User requests full 1000 withdrawal. The allocator creates a market withdrawal
-/// request for only 400 (the available liquidity). The vault collects 400 from the
-/// market but the user requested 1000, so the route is exhausted with remaining=600.
-/// Verifies that the vault performs a partial payout of 400, burns proportional
-/// shares (40%), refunds remaining escrow shares (60%) to the user, and returns
-/// to idle.
 #[rstest]
 #[tokio::test]
+#[ignore = "requires NEAR sandbox"]
 async fn partial_withdrawal_when_market_has_insufficient_liquidity(
-    #[future(awt)] worker: Worker<Sandbox>,
-) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
+    harness.vault_init_account(&borrow_user, &vault).await?;
 
-    let deposit_amount: u128 = 1000;
-    vault.supply(&supply_user, deposit_amount).await;
+    let deposit_amount: u128 = 1_000;
+    harness
+        .vault_supply(&supply_user, &vault, deposit_amount)
+        .await?;
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
-
-    // Allocate everything to the market
-    vault
-        .allocate(
-            &vault_curator,
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
             AllocationDelta::Supply(Delta::new(market_id, U128(deposit_amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
-
+        .await?;
+    harvest(&harness, &vault).await?;
     assert_eq!(
-        vault.get_idle_balance().await.0,
+        harness.vault_idle_balance(&vault).await?,
         0,
-        "All funds should be in the market",
+        "All funds in market"
     );
 
-    // Reduce market liquidity: borrower takes 600, leaving ~400 available
-    c.collateralize(&borrow_user, 2000).await;
+    // Reduce market liquidity: borrower takes 600, leaving ~400 available.
+    harness
+        .collateralize(&borrow_user, &vault.market, 2_000)
+        .await?;
     let borrow_amount: u128 = 600;
-    c.borrow(&borrow_user, borrow_amount).await;
+    harness
+        .borrow(&borrow_user, &vault.market, borrow_amount)
+        .await?;
 
-    let balance_before = c.borrow_asset.balance_of(supply_user.id()).await;
-    let shares_before: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
+    let balance_before = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+        .await?;
+    let shares_before = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
 
-    // User requests full withdrawal of 1000
-    vault
-        .withdraw(&supply_user, deposit_amount.into(), None)
-        .await;
-    harvest(&c, &vault).await;
+    harness
+        .vault_withdraw(&supply_user, &vault, deposit_amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    // Shares should be escrowed (moved to vault contract)
-    let shares_after_request: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
+    let shares_after_request = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
     assert_eq!(
-        shares_after_request.0, 0,
+        shares_after_request, 0,
         "All shares should be escrowed during withdrawal",
     );
 
-    // Create market-side withdrawal request for only the available liquidity.
-    // The market cannot partially fill a request, so we request only what the
-    // market can return (deposit - borrowed = 400).
     let available = deposit_amount - borrow_amount; // 400
-    vault
-        .allocate(
-            &vault_curator,
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
             AllocationDelta::Withdraw(Delta::new(market_id, U128(available))),
         )
-        .await;
+        .await?;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[vault.market.market_id.clone()])
+        .await?;
 
-    // Execute withdrawal route through the market
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route)
-        .await;
+    let op_id = harness
+        .vault_get_withdrawing_op_id(&vault)
+        .await?
+        .expect("withdrawing op");
+    harness
+        .vault_execute_market_withdrawal(&vault.curator, &vault, op_id, market_id, None)
+        .await?;
 
-    let op_id = vault
-        .get_withdrawing_op_id()
-        .await
-        .expect("Should have withdrawing op");
-
-    // Execute market withdrawal — market returns 400 (all available liquidity)
-    vault
-        .execute_market_withdrawal(&vault_curator, op_id, market_id, None)
-        .await;
-
-    // --- Assertions ---
-    let balance_after = c.borrow_asset.balance_of(supply_user.id()).await;
-    let tokens_received = balance_after - balance_before;
-
-    // User should receive the partial payout (~400)
+    let balance_after = harness
+        .ft_balance_of(&vault.market.borrow_ft_id, &supply_user.0)
+        .await?;
     assert_eq!(
-        tokens_received, available,
+        balance_after - balance_before,
+        available,
         "User should receive partial payout equal to available market liquidity",
     );
-
-    // Vault should be back to idle (route exhausted → partial payout → pop head → idle)
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
         "Vault should return to idle after partial payout",
     );
 
-    // User should have some shares refunded (proportional to uncollected portion)
-    let shares_after: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
-    let expected_refund = shares_before.0 * borrow_amount / deposit_amount; // 600/1000 of original shares
-    assert!(
-        shares_after.0 > 0,
-        "User should have some shares refunded for the uncollected portion",
-    );
+    let shares_after = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
+    let expected_refund = shares_before * borrow_amount / deposit_amount;
+    assert!(shares_after > 0, "User should have some shares refunded");
     assert_eq!(
-        shares_after.0, expected_refund,
-        "Refunded shares should be proportional to the uncollected amount ({borrow_amount}/{deposit_amount})",
+        shares_after, expected_refund,
+        "Refunded shares should be proportional to the uncollected amount",
     );
 
-    // Total supply should have decreased by the burned shares (proportional to collected)
-    let total_supply = vault.get_total_supply().await;
-    let expected_burned = shares_before.0 * available / deposit_amount; // 400/1000 of original shares
+    let total_supply = harness.vault_total_supply(&vault).await?;
+    let expected_burned = shares_before * available / deposit_amount;
     assert_eq!(
-        total_supply.0,
-        shares_before.0 - expected_burned,
+        total_supply,
+        shares_before - expected_burned,
         "Total supply should decrease by burned shares (proportional to payout)",
     );
+    Ok(())
 }
 
-/// Tests that `unbrick` recovers the vault from a stuck Withdrawing state.
-///
-/// Scenario: user deposits 1000, vault allocates all to market, user requests
-/// withdrawal. The vault enters Withdrawing state via `execute_withdrawal`, but
-/// instead of completing with `execute_market_withdrawal`, we call `unbrick`.
-/// Verifies that escrowed shares are refunded, the queue head is dequeued, and
-/// the vault returns to idle.
 #[rstest]
 #[tokio::test]
-async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(vault, c, vault_curator)
-        accounts(supply_user, borrow_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-        })
-    );
-    vault.init_account(&supply_user).await;
+#[ignore = "requires NEAR sandbox"]
+async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness
+        .deploy_vault_with_market_with(zero_interest, |_| {})
+        .await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.vault_init_account(&supply_user, &vault).await?;
 
-    let amount: U128 = 1000.into();
-    vault.supply(&supply_user, amount.0).await;
+    let amount: u128 = 1_000;
+    harness.vault_supply(&supply_user, &vault, amount).await?;
 
-    let shares_before: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
+    let shares_before = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
     assert_eq!(
         shares_before, amount,
         "Shares should equal deposited amount (1:1)"
     );
 
-    let market_id = vault.market_id_of(c.market.contract().id()).await;
-
-    // Allocate everything to market
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Supply(Delta::new(market_id, amount)),
+    let market_id = harness
+        .vault_market_id_of(&vault.vault_id, &vault.market.market_id)
+        .await?
+        .expect("market registered");
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Supply(Delta::new(market_id, U128(amount))),
         )
-        .await;
-    harvest(&c, &vault).await;
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    // Request full withdrawal
-    vault.withdraw(&supply_user, amount, None).await;
-    harvest(&c, &vault).await;
+    harness
+        .vault_withdraw(&supply_user, &vault, amount, None)
+        .await?;
+    harvest(&harness, &vault).await?;
 
-    // Shares should be escrowed
-    let shares_after_request: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
-    assert_eq!(shares_after_request.0, 0, "Shares should be escrowed");
+    let shares_after_request = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
+    assert_eq!(shares_after_request, 0, "Shares should be escrowed");
 
-    // Create market-side withdrawal request
-    vault
-        .allocate(
-            &vault_curator,
-            AllocationDelta::Withdraw(Delta::new(market_id, amount)),
+    harness
+        .vault_allocate(
+            &vault.curator,
+            &vault,
+            AllocationDelta::Withdraw(Delta::new(market_id, U128(amount))),
         )
-        .await;
+        .await?;
+    harness
+        .vault_execute_withdrawal(&vault.curator, &vault, &[vault.market.market_id.clone()])
+        .await?;
 
-    // Start withdrawal execution — vault enters Withdrawing state
-    let withdraw_route = vec![c.market.contract().id().clone()];
-    vault
-        .execute_withdrawal(&vault_curator, withdraw_route)
-        .await;
-
-    // Vault should be in Withdrawing state now
     assert!(
-        vault.get_withdrawing_op_id().await.is_some(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_some(),
         "Vault should be in Withdrawing state",
     );
 
-    // Instead of completing the withdrawal, call unbrick to recover
-    vault.unbrick(&vault_curator).await;
+    harness.vault_unbrick(&vault.curator, &vault).await?;
 
-    // --- Recovery assertions ---
-
-    // Vault should be back to idle
     assert!(
-        vault.get_withdrawing_op_id().await.is_none(),
+        harness.vault_get_withdrawing_op_id(&vault).await?.is_none(),
         "Vault should return to idle after unbrick",
     );
-
-    // Escrowed shares should be refunded to the user
-    let shares_after_unbrick: U128 = vault
-        .view("ft_balance_of", json!({ "account_id": supply_user.id() }))
-        .await;
+    let shares_after_unbrick = harness
+        .ft_balance_of(&vault.vault_id, &supply_user.0)
+        .await?;
     assert_eq!(
         shares_after_unbrick, shares_before,
         "All escrowed shares should be refunded after unbrick",
     );
-
-    // Total supply should be preserved (no shares burned or lost)
-    let total_supply = vault.get_total_supply().await;
     assert_eq!(
-        total_supply, shares_before,
+        harness.vault_total_supply(&vault).await?,
+        shares_before,
         "Total supply should be preserved after unbrick (no burn)",
     );
-}
-
-pub async fn harvest(c: &UnifiedMarketController, vault: &UnifiedVaultController) {
-    // Wait for activation.
-    while let Some(position) = c.get_supply_position(vault.contract().id()).await {
-        if position.get_deposit().incoming.is_empty() {
-            break;
-        }
-        c.harvest_yield(vault.contract().as_account(), None, None)
-            .await;
-    }
+    Ok(())
 }

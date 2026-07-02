@@ -7,6 +7,7 @@ pub mod sandbox;
 pub use controller::TestController;
 pub use ops::{DeployedMarket, DeployedVault};
 pub use sandbox::{test_secret_key, SandboxHarness};
+pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;
 
 /// An [`rstest`] fixture yielding a started [`SandboxHarness`], so tests keep
