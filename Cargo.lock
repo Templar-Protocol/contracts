@@ -13431,6 +13431,7 @@ dependencies = [
  "indexmap 2.13.1",
  "near-account-id",
  "near-api",
+ "rstest",
  "serde_json",
  "sqlx",
  "templar-gateway-core",

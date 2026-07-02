@@ -312,8 +312,17 @@ RETURNING
         };
         match operation.status {
             OperationStatus::Succeeded => {
-                self.settle(account_id, operation_key, operation.tokens_burnt(), true)
-                    .await?;
+                // Bill the locked deposit only when the operation actually executed.
+                // A planned no-op is terminal `Succeeded` with no outcome and never
+                // attached the deposit, so settling it must not charge `inner_spend`.
+                let executed = operation.final_outcome().is_some();
+                self.settle(
+                    account_id,
+                    operation_key,
+                    operation.tokens_burnt(),
+                    executed,
+                )
+                .await?;
                 Ok(AccountedStatus::Succeeded)
             }
             OperationStatus::Failed => {
@@ -484,7 +493,11 @@ WHERE
 mod tests {
     use std::time::Duration;
 
-    use templar_gateway_types::{ManagedAccountId, OperationId};
+    use near_api::types::CryptoHash as NearCryptoHash;
+    use templar_gateway_types::{
+        operation::{ExecutionOutcome, StepStatus, TransactionStepRecord},
+        CryptoHash, ManagedAccountId, NearGas, OperationId,
+    };
 
     use super::*;
 
@@ -501,14 +514,37 @@ mod tests {
     }
 
     /// A step-less operation record with the given status (so `tokens_burnt` is 0
-    /// and `final_outcome` is `None`) — enough to exercise resolve_charge's
-    /// settle/release/defer branches.
+    /// and `final_outcome` is `None`) — a planned no-op / reservation, enough to
+    /// exercise resolve_charge's release/defer branches.
     fn operation(status: OperationStatus) -> OperationRecord {
         OperationRecord {
             id: OperationId("op".to_owned()),
             signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
             status,
             steps: vec![],
+        }
+    }
+
+    /// A single-step operation that executed and succeeded, carrying an outcome (so
+    /// `final_outcome` is `Some` and the locked deposit is billed) that burnt
+    /// `tokens_burnt` in gas.
+    fn executed_success(tokens_burnt: NearToken) -> OperationRecord {
+        OperationRecord {
+            id: OperationId("op".to_owned()),
+            signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
+            status: OperationStatus::Succeeded,
+            steps: vec![TransactionStepRecord {
+                index: 0,
+                status: StepStatus::Succeeded {
+                    tx_hash: CryptoHash(NearCryptoHash::default()),
+                    outcome: ExecutionOutcome {
+                        tokens_burnt,
+                        total_gas_burnt: NearGas::from_gas(0),
+                        receipts: vec![],
+                        return_value: None,
+                    },
+                },
+            }],
         }
     }
 
@@ -619,10 +655,32 @@ mod tests {
         assert!(matches!(err, error::LockError::PendingCharge(_)));
     }
 
-    /// A succeeded operation settles its recorded cost (here just the locked
-    /// deposit, with zero-step gas).
+    /// A succeeded operation that executed settles its recorded cost — here the
+    /// locked deposit (5), with zero gas burnt in the outcome.
     #[sqlx::test]
     async fn resolve_charge_settles_succeeded(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let key = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), key)
+            .await
+            .unwrap();
+
+        let status = db
+            .resolve_charge(&account, key, Some(&executed_success(near(0))))
+            .await
+            .unwrap();
+        assert_eq!(status, AccountedStatus::Succeeded);
+        assert_eq!(allowance(&db, &account).await, 100 - 5);
+    }
+
+    /// A planned no-op is terminal `Succeeded` with no outcome: it never attached
+    /// the locked deposit, so settling clears the slot without billing
+    /// `inner_spend`. Guards against overcharging a no-op.
+    #[sqlx::test]
+    async fn resolve_charge_no_op_success_bills_nothing(pool: PgPool) {
         let db = db(pool);
         let account = acct("a.near");
         db.create_account(&account, near(100)).await.unwrap();
@@ -637,7 +695,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status, AccountedStatus::Succeeded);
-        assert_eq!(allowance(&db, &account).await, 100 - 5);
+        // The no-op spent nothing, so the locked deposit is not billed.
+        assert_eq!(allowance(&db, &account).await, 100);
+        // The slot is free again.
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+            .await
+            .unwrap();
     }
 
     /// A failed operation with no execution outcome (rejected before running)

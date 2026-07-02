@@ -15,6 +15,7 @@ use near_api::types::transaction::{
     SignedTransaction, Transaction, TransactionV0,
 };
 use near_api::types::CryptoHash as NearCryptoHash;
+use rstest::rstest;
 use templar_gateway_core::{
     CreateOperationResult, CurrentStep, ExecuteOperation, GatewayError, GatewayResult,
     OperationDriver, OperationPlan, OperationStore, PlannedTransaction, PreparedTransactionResult,
@@ -81,6 +82,16 @@ fn fresh_submitted_step() -> CurrentStep {
 /// A step submitted long enough ago that an unknown transaction has aged out.
 fn aged_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now() - TimeDelta::seconds(600))
+}
+
+/// An aged, unknown transaction never landed, so its step is rejected.
+fn is_rejected(step: &Option<CurrentStep>) -> bool {
+    matches!(step, Some(CurrentStep::Rejected { .. }))
+}
+
+/// A fresh, unknown transaction may still land, so its step is left submitted.
+fn is_submitted(step: &Option<CurrentStep>) -> bool {
+    matches!(step, Some(CurrentStep::Submitted { .. }))
 }
 
 // A well-formed (not cryptographically valid) signed transaction for the fake
@@ -350,15 +361,20 @@ async fn reconcile_operation_resolves_submitted_step_revert() {
     ));
 }
 
+/// Reconciling an unknown (chain-has-no-record) submitted transaction depends on
+/// its age: aged past the propagation window it never landed and is rejected
+/// (charge released); still fresh it may yet land and is left submitted.
+#[rstest]
+#[case::aged(aged_submitted_step(), OperationStatus::Failed, is_rejected)]
+#[case::fresh(fresh_submitted_step(), OperationStatus::InProgress, is_submitted)]
 #[tokio::test]
-async fn aged_out_unknown_transaction_is_rejected() {
+async fn reconcile_resolves_unknown_transaction_by_age(
+    #[case] step: CurrentStep,
+    #[case] expected_status: OperationStatus,
+    #[case] expected_step: fn(&Option<CurrentStep>) -> bool,
+) {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(
-        &store,
-        "sub",
-        stored(true, Some(aged_submitted_step()), vec![], vec![]),
-    )
-    .await;
+    let key = seed_keyed(&store, "sub", stored(true, Some(step), vec![], vec![])).await;
     let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
 
     let record = driver(store.clone(), executor)
@@ -366,39 +382,9 @@ async fn aged_out_unknown_transaction_is_rejected() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(record.status, OperationStatus::Failed);
-    // Rejected: never landed, so no outcome (its charge is released).
+    assert_eq!(record.status, expected_status);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert!(matches!(
-        op.current_step,
-        Some(CurrentStep::Rejected { .. })
-    ));
-}
-
-#[tokio::test]
-async fn fresh_unknown_transaction_is_left_submitted() {
-    // Not yet aged past the propagation window: an unknown tx may still land, so
-    // it is left submitted rather than rejected.
-    let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(
-        &store,
-        "sub",
-        stored(true, Some(fresh_submitted_step()), vec![], vec![]),
-    )
-    .await;
-    let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
-
-    let record = driver(store.clone(), executor)
-        .reconcile_operation(&key)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(record.status, OperationStatus::InProgress);
-    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert!(matches!(
-        op.current_step,
-        Some(CurrentStep::Submitted { .. })
-    ));
+    assert!(expected_step(&op.current_step));
 }
 
 #[tokio::test]
@@ -430,13 +416,20 @@ async fn transient_query_error_leaves_step_submitted() {
     ));
 }
 
+/// Startup recovery is self-sufficient — it ages out an unknown submitted step on
+/// its own (no caller-supplied "reject if unknown" flag): aged → rejected, fresh
+/// → left submitted, the same age rule reconciliation uses.
+#[rstest]
+#[case::aged(aged_submitted_step(), is_rejected)]
+#[case::fresh(fresh_submitted_step(), is_submitted)]
 #[tokio::test]
-async fn startup_recovery_ages_out_an_unknown_submitted_step() {
-    // The P2 fix: recovery is now self-sufficient — an aged unknown tx is rejected
-    // without a caller-supplied "reject if unknown" flag.
+async fn startup_recovery_resolves_unknown_submitted_step_by_age(
+    #[case] step: CurrentStep,
+    #[case] expected_step: fn(&Option<CurrentStep>) -> bool,
+) {
     let store = Arc::new(MemoryStore::new());
-    let mut op = stored(true, Some(aged_submitted_step()), vec![], vec![]);
-    op.id = OperationId("aged".to_owned());
+    let mut op = stored(true, Some(step), vec![], vec![]);
+    op.id = OperationId("op".to_owned());
     store.save_operation(op.clone()).await.unwrap();
     let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
 
@@ -446,30 +439,7 @@ async fn startup_recovery_ages_out_an_unknown_submitted_step() {
         .unwrap();
 
     let op = store.get_by_id(&op.id).await.unwrap().unwrap();
-    assert!(matches!(
-        op.current_step,
-        Some(CurrentStep::Rejected { .. })
-    ));
-}
-
-#[tokio::test]
-async fn startup_recovery_leaves_a_fresh_unknown_submitted_step() {
-    let store = Arc::new(MemoryStore::new());
-    let mut op = stored(true, Some(fresh_submitted_step()), vec![], vec![]);
-    op.id = OperationId("fresh".to_owned());
-    store.save_operation(op.clone()).await.unwrap();
-    let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
-
-    driver(store.clone(), executor)
-        .resume_incomplete_operations()
-        .await
-        .unwrap();
-
-    let op = store.get_by_id(&op.id).await.unwrap().unwrap();
-    assert!(matches!(
-        op.current_step,
-        Some(CurrentStep::Submitted { .. })
-    ));
+    assert!(expected_step(&op.current_step));
 }
 
 // ---- multi-step operations are driven to completion ----

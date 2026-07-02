@@ -63,12 +63,14 @@ pub trait OperationStore: Send + Sync {
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()>;
 
-    /// Remove a *reservation*: an operation that never executed anything (a plan
-    /// that was a no-op, or one abandoned because planning failed). The
+    /// Remove a *reservation*: an operation reserved before planning completed and
+    /// then abandoned because planning failed. A planned no-op is *not* a
+    /// reservation — it is a terminal success retained for idempotency. The
     /// reservation-only precondition is *enforced* by every implementation, not
-    /// merely assumed of the caller: an operation with any persisted step is left
-    /// untouched, so this cannot destroy the record of work that reached the chain
-    /// even if called on a non-reservation.
+    /// merely assumed of the caller: an operation that is planned (including a
+    /// no-op) or has any persisted step is left untouched, so this cannot destroy
+    /// the record of work that reached the chain even if called on a
+    /// non-reservation.
     async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()>;
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>>;

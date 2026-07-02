@@ -146,7 +146,16 @@ impl OperationDriver {
 
         if plan.steps.is_empty() {
             // No-op: persist the terminal, step-less operation for idempotency.
-            self.store.save_operation(operation.clone()).await?;
+            // Best-effort like the terminal save below — the operation already
+            // reached its (Succeeded, no-action) outcome, so a transient store
+            // failure must not error the caller.
+            if let Err(error) = self.store.save_operation(operation.clone()).await {
+                tracing::warn!(
+                    operation_id = %operation.operation_id().0,
+                    %error,
+                    "failed to persist terminal no-op operation state for store book-keeping"
+                );
+            }
             return Ok(operation.record().into());
         }
 
@@ -161,11 +170,25 @@ impl OperationDriver {
                 // If execution failed before persisting any step (e.g. a presign
                 // error), nothing was submitted and the store still holds only
                 // the bare reservation. Drop it so accounting can release the
-                // charge now instead of waiting for startup recovery.
-                if let Ok(Some(stored)) = self.store.get_by_id(&operation_id).await {
-                    if stored.is_reservation() {
-                        let _ = self.store.delete_reservation(&operation_id).await;
+                // charge now instead of waiting for startup recovery. Log a failed
+                // cleanup (like the planning-error path) so a leaked reservation is
+                // observable rather than lingering silently until the next sweep.
+                match self.store.get_by_id(&operation_id).await {
+                    Ok(Some(stored)) if stored.is_reservation() => {
+                        if let Err(cleanup) = self.store.delete_reservation(&operation_id).await {
+                            tracing::warn!(
+                                operation_id = %operation_id.0,
+                                %cleanup,
+                                "failed to remove reservation after execution error"
+                            );
+                        }
                     }
+                    Ok(_) => {}
+                    Err(lookup) => tracing::warn!(
+                        operation_id = %operation_id.0,
+                        %lookup,
+                        "failed to look up operation for reservation cleanup after execution error"
+                    ),
                 }
                 return Err(error);
             }
