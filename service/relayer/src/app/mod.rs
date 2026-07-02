@@ -842,8 +842,8 @@ impl App {
             Err(error) => {
                 // Resolve the charge from whatever the gateway persisted, using the
                 // same rule the broom applies: a planning/presign failure leaves no
-                // operation (nothing reached the chain) so the slot is released now
-                // rather than stranded until the broom's delayed sweep; a persisted
+                // operation (nothing reached the chain) so the reservation is released
+                // now rather than stranded until the broom's delayed sweep; a persisted
                 // operation is settled or deferred by its status. If the lookup
                 // itself fails we cannot tell, so leave the charge for the broom.
                 if let Ok(operation) = self

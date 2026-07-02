@@ -616,17 +616,17 @@ pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 }
 
 /// A gateway planning failure deletes the reservation before anything is signed,
-/// so the account's single in-flight slot must be released immediately rather than
+/// so the account's in-flight reservation must be released immediately rather than
 /// stranded until the broom's delayed sweep. Exercises the endpoint error path that
 /// resolves the charge through the same rule the broom uses.
 #[rstest]
 #[tokio::test]
-async fn planning_failure_releases_the_accounts_slot(#[future(awt)] init_test: InitTest) {
+async fn planning_failure_releases_the_accounts_reservation(#[future(awt)] init_test: InitTest) {
     use templar_gateway_methods_spec::storage;
 
     let InitTest { app, .. } = init_test;
 
-    // Seed a funded account so execute_and_account can lock its slot.
+    // Seed a funded account so execute_and_account can lock a reservation.
     let payer: AccountId = "payer.test.near".parse().unwrap();
     app.database
         .create_account(&payer, NearToken::from_near(100))
@@ -655,8 +655,8 @@ async fn planning_failure_releases_the_accounts_slot(#[future(awt)] init_test: I
         "planning should fail: {result:?}",
     );
 
-    // The single slot must be free again: a fresh lock succeeds because the error
-    // path released it instead of leaving it for the broom.
+    // A fresh lock succeeds because the error path released its reservation
+    // instead of leaving it for the broom.
     app.database
         .lock_pending(
             &payer,
@@ -665,7 +665,7 @@ async fn planning_failure_releases_the_accounts_slot(#[future(awt)] init_test: I
             uuid::Uuid::new_v4(),
         )
         .await
-        .expect("slot should be released immediately after a planning failure");
+        .expect("reservation should be released immediately after a planning failure");
 }
 
 #[rstest]

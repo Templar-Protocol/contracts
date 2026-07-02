@@ -97,8 +97,8 @@ async fn reconcile(
     let operation = gateway.reconcile_operation(&key).await?;
 
     // Resolve the charge through the exact rule the dispatching endpoint uses:
-    // a missing operation releases the slot, a terminal one settles, and a still
-    // in-flight one is left locked for a later sweep. The broom carries no
+    // a missing operation releases the reservation, a terminal one settles, and a
+    // still in-flight one is left locked for a later sweep. The broom carries no
     // resolution logic of its own — it only picks up charges the endpoint could
     // not settle synchronously.
     database
