@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS gateway_operations (
     request_payload jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT NOW(),
     updated_at timestamptz NOT NULL DEFAULT NOW(),
+    completed_at timestamptz,
     CONSTRAINT gateway_operations_request_fingerprint_hash_length_check
         CHECK (octet_length(request_fingerprint_hash) = 32),
     CONSTRAINT gateway_operations_request_payload_object_check
@@ -18,3 +19,7 @@ WHERE
     idempotency_key IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS gateway_operations_signer_account_id_created_at_idx ON gateway_operations (signer_account_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS gateway_operations_incomplete_created_at_idx ON gateway_operations (created_at ASC)
+WHERE
+    completed_at IS NULL;

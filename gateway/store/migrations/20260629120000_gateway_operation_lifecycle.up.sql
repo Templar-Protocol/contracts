@@ -100,5 +100,3 @@ CREATE TABLE IF NOT EXISTS gateway_step_receipts (
         REFERENCES gateway_step_outcomes (operation_id, step_index) ON DELETE CASCADE,
     CONSTRAINT gateway_step_receipts_receipt_index_check CHECK (receipt_index >= 0)
 );
-
-CREATE INDEX IF NOT EXISTS gateway_plan_steps_operation_id_step_index_idx ON gateway_plan_steps (operation_id, step_index);
