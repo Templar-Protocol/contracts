@@ -7,8 +7,12 @@ use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use templar_gateway_client::NetworkConfigBuilder;
-use templar_gateway_core::GatewayContext;
-use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
+use templar_gateway_core::{GatewayContext, HasNearClient, SharedOperationStore};
+use templar_gateway_oracle_updates_dispatch::{
+    GatewayContextBuilderOracleExt, ProvidesPythSource, ProvidesRedStoneSource,
+};
+use templar_gateway_runtime::ManagedSigner;
+use templar_gateway_types::ManagedAccountId;
 use tokio::signal;
 
 use crate::config::Config;
@@ -23,17 +27,42 @@ async fn main() -> anyhow::Result<()> {
 
     let signers = config.build_signers().await?;
     let store = config.build_store().await?;
+    let lazer_config = config.build_lazer_source_config()?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
         .api_key(config.near_rpc_api_key)
         .build();
     let context = GatewayContext::builder(network)
         .with_pyth_source(config.pyth_hermes_url)
         .with_redstone_source(&config.redstone_node_path)
-        .map_err(anyhow::Error::from)?
-        .build();
+        .map_err(anyhow::Error::from)?;
+    if let Some(lazer_config) = lazer_config {
+        tracing::info!("Pyth Lazer payload source enabled");
+        let context = context.with_lazer_source(lazer_config).build();
+        serve(context, signers, store, config.listen_addr).await
+    } else {
+        let context = context.build();
+        serve(context, signers, store, config.listen_addr).await
+    }
+}
+
+async fn serve<ContextType>(
+    context: ContextType,
+    signers: std::collections::HashMap<ManagedAccountId, ManagedSigner>,
+    store: SharedOperationStore,
+    listen_addr: std::net::SocketAddr,
+) -> anyhow::Result<()>
+where
+    ContextType: HasNearClient
+        + ProvidesPythSource
+        + ProvidesRedStoneSource
+        + Clone
+        + Send
+        + Unpin
+        + 'static,
+{
     let service = GatewayService::spawn(context, signers, store).await?;
 
-    let server = ServerBuilder::default().build(config.listen_addr).await?;
+    let server = ServerBuilder::default().build(listen_addr).await?;
     let local_addr = server.local_addr()?;
     let module = attach_gateway(service.clone())?;
     let handle = server.start(module);
