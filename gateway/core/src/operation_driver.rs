@@ -1,6 +1,8 @@
-use std::collections::VecDeque;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
-use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use templar_gateway_types::{
@@ -14,19 +16,32 @@ use crate::{
     HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
     SharedOperationStore, SharedSignTransaction, StoredOperation, SucceededStep,
 };
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
-/// How long a submitted step whose transaction the chain has no record of is
-/// left in flight before reconciliation rejects it. A transaction that never
-/// appears within this window is treated as dropped (never landed), so its
-/// charge can be released. Sized well past normal broadcast propagation so a
-/// still-pending transaction is never rejected prematurely.
-const SUBMITTED_STEP_MAX_AGE_SECS: i64 = 60;
+#[derive(Default)]
+struct OperationLocks {
+    locks: Mutex<HashMap<OperationId, Arc<Mutex<()>>>>,
+}
+
+impl OperationLocks {
+    async fn lock(&self, operation_id: &OperationId) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks
+                .entry(operation_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        lock.lock_owned().await
+    }
+}
 
 #[derive(Clone)]
 pub struct OperationDriver {
     store: SharedOperationStore,
     transaction_signer: SharedSignTransaction,
     operation_executor: SharedExecuteOperation,
+    operation_locks: Arc<OperationLocks>,
 }
 
 impl OperationDriver {
@@ -39,6 +54,7 @@ impl OperationDriver {
             store,
             transaction_signer,
             operation_executor,
+            operation_locks: Arc::new(OperationLocks::default()),
         }
     }
 
@@ -141,7 +157,18 @@ impl OperationDriver {
         operation: StoredOperation,
         plan: OperationPlan,
     ) -> GatewayResult<WriteOperationResult> {
-        let mut operation = operation;
+        let operation_id = operation.operation_id().clone();
+        let _operation_guard = self.operation_locks.lock(&operation_id).await;
+        let mut operation = self
+            .store
+            .get_by_id(&operation_id)
+            .await?
+            .unwrap_or(operation);
+
+        if !operation.is_reservation() {
+            return Ok(operation.record().into());
+        }
+
         operation.planned = true;
 
         if plan.steps.is_empty() {
@@ -163,8 +190,7 @@ impl OperationDriver {
         // before its first irreversible (on-chain) action, so recovery can
         // resume a partially-run multi-step operation.
         operation.remaining_steps = VecDeque::from(plan.steps);
-        let operation_id = operation.operation_id().clone();
-        let operation = match self.execute_remaining_steps(operation).await {
+        let operation = match self.execute_remaining_steps_unlocked(operation).await {
             Ok(operation) => operation,
             Err(error) => {
                 // If execution failed before persisting any step (e.g. a presign
@@ -250,6 +276,10 @@ impl OperationDriver {
         let mut failures = 0_usize;
         for operation in operations {
             let operation_id = operation.operation_id().clone();
+            let _operation_guard = self.operation_locks.lock(&operation_id).await;
+            let Some(operation) = self.store.get_by_id(&operation_id).await? else {
+                continue;
+            };
 
             // Recovery runs before this process serves traffic, so any reservation
             // is from a previous run that died mid-planning: planning is read-only,
@@ -268,7 +298,7 @@ impl OperationDriver {
                 continue;
             }
 
-            if let Err(error) = self.advance_operation(operation).await {
+            if let Err(error) = self.advance_operation_unlocked(operation).await {
                 failures += 1;
                 tracing::warn!(
                     operation_id = %operation_id.0,
@@ -290,19 +320,33 @@ impl OperationDriver {
     /// remaining steps. Shared by startup recovery, the broom's reconcile, and
     /// idempotent retries, so all resolve a submitted step *and* continue a
     /// multi-step plan.
-    async fn advance_operation(
+    async fn advance_operation_unlocked(
         &self,
         mut operation: StoredOperation,
     ) -> GatewayResult<StoredOperation> {
         if matches!(operation.current_step, Some(CurrentStep::Submitted { .. })) {
             self.reconcile_submitted_step(&mut operation).await;
         }
-        let operation = self.execute_remaining_steps(operation).await?;
+        let operation = self.execute_remaining_steps_unlocked(operation).await?;
         self.store.save_operation(operation.clone()).await?;
         Ok(operation)
     }
 
     pub async fn execute_remaining_steps(
+        &self,
+        operation: StoredOperation,
+    ) -> GatewayResult<StoredOperation> {
+        let operation_id = operation.operation_id().clone();
+        let _operation_guard = self.operation_locks.lock(&operation_id).await;
+        let operation = self
+            .store
+            .get_by_id(&operation_id)
+            .await?
+            .unwrap_or(operation);
+        self.execute_remaining_steps_unlocked(operation).await
+    }
+
+    async fn execute_remaining_steps_unlocked(
         &self,
         mut operation: StoredOperation,
     ) -> GatewayResult<StoredOperation> {
@@ -325,8 +369,16 @@ impl OperationDriver {
 
     pub async fn submit_next_step_unchecked(
         &self,
-        mut operation: StoredOperation,
+        operation: StoredOperation,
     ) -> GatewayResult<StoredOperation> {
+        let operation_id = operation.operation_id().clone();
+        let _operation_guard = self.operation_locks.lock(&operation_id).await;
+        let mut operation = self
+            .store
+            .get_by_id(&operation_id)
+            .await?
+            .unwrap_or(operation);
+
         if let Some(pending) = operation.begin_next_preparation(self.store.clone()) {
             let prepared = self
                 .transaction_signer
@@ -446,19 +498,22 @@ impl OperationDriver {
         let Some(operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
             return Ok(None);
         };
+        let operation_id = operation.operation_id().clone();
+        let _operation_guard = self.operation_locks.lock(&operation_id).await;
+        let Some(operation) = self.store.get_by_idempotency_key(idempotency_key).await? else {
+            return Ok(None);
+        };
         if operation.is_reservation() {
             return Ok(Some(operation.record()));
         }
-        Ok(Some(self.advance_operation(operation).await?.record()))
+        Ok(Some(
+            self.advance_operation_unlocked(operation).await?.record(),
+        ))
     }
 
     /// Query a submitted step's on-chain fate and record it. The ambiguous case —
-    /// a transaction the chain has no record of — has either never landed or not
-    /// yet propagated; it is rejected (releasing its charge) only once it has aged
-    /// past [`SUBMITTED_STEP_MAX_AGE_SECS`], and otherwise left submitted to
-    /// reconcile on a later sweep. This makes reconciliation self-sufficient for
-    /// every caller (startup recovery, the broom, idempotent retries) without a
-    /// per-caller "is it old enough to reject" flag.
+    /// a transaction the chain has no record of — is left submitted because NEAR
+    /// `UNKNOWN_TRANSACTION` is not proof that the transaction never landed.
     async fn reconcile_submitted_step(&self, operation: &mut StoredOperation) {
         if let Some(CurrentStep::Submitted {
             transaction,
@@ -492,29 +547,10 @@ impl OperationDriver {
                         });
                     }
                 }
-                Err(GatewayError::TransactionNotFound)
-                    if Utc::now().signed_duration_since(submitted_at).num_seconds()
-                        >= SUBMITTED_STEP_MAX_AGE_SECS =>
-                {
-                    // No record of the transaction, and it has aged past the point
-                    // where a broadcast would have propagated: it never landed, so
-                    // terminate it as rejected, releasing the charge.
-                    tracing::warn!(
-                        operation_id = %operation.id.0,
-                        %tx_hash,
-                        "submitted gateway transaction is unknown to the chain and aged out; marking rejected"
-                    );
-                    operation.current_step = Some(CurrentStep::Rejected {
-                        transaction,
-                        tx_hash,
-                    });
-                }
                 Err(error) => {
-                    // A transient failure, or an unknown transaction still too
-                    // fresh to call never-landed: the transaction may have
-                    // executed, so do NOT reject (that would release a charge for a
-                    // tx that landed). Leave it submitted to reconcile on a later
-                    // sweep.
+                    // A transient failure or unknown transaction may still have
+                    // executed, so do NOT reject. Leave it submitted to reconcile
+                    // on a later sweep.
                     tracing::warn!(
                         operation_id = %operation.id.0,
                         %tx_hash,

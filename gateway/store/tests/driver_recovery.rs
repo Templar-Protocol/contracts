@@ -1,12 +1,17 @@
 //! Recovery/reconciliation behaviour of `OperationDriver` (gateway-core) driven
 //! against a real `MemoryStore`, with fake signing/execution so the on-chain
-//! results are scripted. Covers reservation reaping (only at startup), age-based
-//! rejection of a submitted step the chain never records, and continuing a
-//! multi-step plan after reconciling a submitted step.
+//! results are scripted. Covers reservation reaping (only at startup), ambiguous
+//! submitted steps the chain does not know about, per-operation reconciliation
+//! serialization, and continuing a multi-step plan after reconciling a submitted
+//! step.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -26,6 +31,8 @@ use templar_gateway_types::{
     operation::{ExecutionOutcome, OperationStatus},
     CryptoHash, IdempotencyKey, ManagedAccountId, NearGas, NearToken, OperationId,
 };
+use tokio::sync::Notify;
+use tokio::time::{sleep, timeout};
 
 fn signer_id() -> ManagedAccountId {
     ManagedAccountId("signer.near".parse().unwrap())
@@ -74,12 +81,13 @@ fn submitted_step_at(submitted_at: DateTime<Utc>) -> CurrentStep {
     }
 }
 
-/// A step submitted just now — an unknown transaction here has not yet aged out.
+/// A step submitted just now — an unknown transaction here remains ambiguous.
 fn fresh_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now())
 }
 
-/// A step submitted long enough ago that an unknown transaction has aged out.
+/// A step submitted long ago. `UNKNOWN_TRANSACTION` is still not proof that it
+/// never landed, so this remains recoverable rather than rejected.
 fn aged_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now() - TimeDelta::seconds(600))
 }
@@ -89,12 +97,7 @@ fn step_op(step: CurrentStep) -> StoredOperation {
     stored(true, Some(step), vec![], vec![])
 }
 
-/// An aged, unknown transaction never landed, so its step is rejected.
-fn is_rejected(step: Option<&CurrentStep>) -> bool {
-    matches!(step, Some(CurrentStep::Rejected { .. }))
-}
-
-/// A fresh, unknown transaction may still land, so its step is left submitted.
+/// An unknown transaction may still have landed, so its step is left submitted.
 fn is_submitted(step: Option<&CurrentStep>) -> bool {
     matches!(step, Some(CurrentStep::Submitted { .. }))
 }
@@ -140,6 +143,68 @@ struct FakeExecutor {
     queries: Mutex<VecDeque<GatewayResult<StepOutcome>>>,
 }
 
+#[derive(Default)]
+struct QueryProbe {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    queries: AtomicUsize,
+    entered: Notify,
+}
+
+impl QueryProbe {
+    async fn wait_for_query(&self) {
+        timeout(Duration::from_secs(1), self.entered.notified())
+            .await
+            .expect("query did not start");
+    }
+
+    fn enter_query(&self) {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.queries.fetch_add(1, Ordering::SeqCst);
+        self.max_active.fetch_max(active, Ordering::SeqCst);
+        self.entered.notify_waiters();
+    }
+
+    fn exit_query(&self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct ProbeExecutor {
+    probe: Arc<QueryProbe>,
+    query_delay: Duration,
+}
+
+impl ProbeExecutor {
+    fn new(probe: Arc<QueryProbe>) -> Self {
+        Self {
+            probe,
+            query_delay: Duration::from_millis(100),
+        }
+    }
+}
+
+#[async_trait]
+impl ExecuteOperation for ProbeExecutor {
+    async fn submit_transaction(
+        &self,
+        _signed: SignedTransaction,
+    ) -> GatewayResult<Option<StepOutcome>> {
+        panic!("unexpected submit_transaction")
+    }
+
+    async fn query_transaction(
+        &self,
+        _signer: &ManagedAccountId,
+        _tx_hash: CryptoHash,
+    ) -> GatewayResult<StepOutcome> {
+        self.probe.enter_query();
+        sleep(self.query_delay).await;
+        self.probe.exit_query();
+        Ok(step_outcome(true))
+    }
+}
+
 impl FakeExecutor {
     fn new(
         submits: Vec<GatewayResult<Option<StepOutcome>>>,
@@ -180,6 +245,13 @@ impl ExecuteOperation for FakeExecutor {
 
 fn driver(store: Arc<MemoryStore>, executor: FakeExecutor) -> OperationDriver {
     OperationDriver::new(store, Arc::new(FakeSigner), Arc::new(executor))
+}
+
+fn driver_with_executor(
+    store: Arc<MemoryStore>,
+    executor: Arc<dyn ExecuteOperation>,
+) -> OperationDriver {
+    OperationDriver::new(store, Arc::new(FakeSigner), executor)
 }
 
 fn stored(
@@ -350,14 +422,14 @@ async fn reconcile_resolves_submitted_step(
     }
 }
 
-/// Reconciling an unknown (chain-has-no-record) submitted transaction depends on
-/// its age: aged past the propagation window it never landed and is rejected
-/// (charge released); still fresh it may yet land and is left submitted.
+/// Reconciling an unknown (chain-has-no-record) submitted transaction leaves it
+/// submitted regardless of age: NEAR `UNKNOWN_TRANSACTION` is not proof that it
+/// never landed, so the ambiguity must remain recoverable.
 #[rstest]
-#[case::aged(aged_submitted_step(), OperationStatus::Failed, is_rejected)]
 #[case::fresh(fresh_submitted_step(), OperationStatus::InProgress, is_submitted)]
+#[case::aged(aged_submitted_step(), OperationStatus::InProgress, is_submitted)]
 #[tokio::test]
-async fn reconcile_resolves_unknown_transaction_by_age(
+async fn reconcile_keeps_unknown_submitted_transaction_recoverable(
     #[case] step: CurrentStep,
     #[case] expected_status: OperationStatus,
     #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
@@ -400,14 +472,13 @@ async fn transient_query_error_leaves_step_submitted() {
     ));
 }
 
-/// Startup recovery is self-sufficient — it ages out an unknown submitted step on
-/// its own (no caller-supplied "reject if unknown" flag): aged → rejected, fresh
-/// → left submitted, the same age rule reconciliation uses.
+/// Startup recovery is self-sufficient, but an unknown submitted step remains
+/// recoverable regardless of age because `UNKNOWN_TRANSACTION` is ambiguous.
 #[rstest]
-#[case::aged(aged_submitted_step(), is_rejected)]
 #[case::fresh(fresh_submitted_step(), is_submitted)]
+#[case::aged(aged_submitted_step(), is_submitted)]
 #[tokio::test]
-async fn startup_recovery_resolves_unknown_submitted_step_by_age(
+async fn startup_recovery_leaves_unknown_submitted_step_recoverable(
     #[case] step: CurrentStep,
     #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
 ) {
@@ -424,6 +495,60 @@ async fn startup_recovery_resolves_unknown_submitted_step_by_age(
 
     let op = store.get_by_id(&op.id).await.unwrap().unwrap();
     assert!(expected_step(op.current_step.as_ref()));
+}
+
+#[tokio::test]
+async fn concurrent_reconcile_for_same_operation_serializes_and_reloads() {
+    let store = Arc::new(MemoryStore::new());
+    let key = seed_keyed(&store, "same-op", step_op(fresh_submitted_step())).await;
+    let probe = Arc::new(QueryProbe::default());
+    let driver = driver_with_executor(store, Arc::new(ProbeExecutor::new(probe.clone())));
+
+    // Given: one reconcile has entered the chain query for the operation.
+    let first_query = probe.entered.notified();
+    let first_driver = driver.clone();
+    let first_key = key.clone();
+    let first = tokio::spawn(async move { first_driver.reconcile_operation(&first_key).await });
+    first_query.await;
+
+    // When: a second reconcile for the same idempotency key races it.
+    let second_driver = driver.clone();
+    let second_key = key.clone();
+    let second = tokio::spawn(async move { second_driver.reconcile_operation(&second_key).await });
+
+    // Then: the second caller waits, reloads the terminal operation, and does not
+    // issue a duplicate chain query from stale Submitted state.
+    first.await.unwrap().unwrap().unwrap();
+    second.await.unwrap().unwrap().unwrap();
+    assert_eq!(probe.queries.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.max_active.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn concurrent_reconcile_for_different_operations_is_not_globally_serialized() {
+    let store = Arc::new(MemoryStore::new());
+    let first_key = seed_keyed(&store, "first-op", step_op(fresh_submitted_step())).await;
+    let second_key = seed_keyed(&store, "second-op", step_op(fresh_submitted_step())).await;
+    let probe = Arc::new(QueryProbe::default());
+    let driver = driver_with_executor(store, Arc::new(ProbeExecutor::new(probe.clone())));
+
+    // Given: one operation is already reconciling and waiting on the chain query.
+    let first_query = probe.entered.notified();
+    let first_driver = driver.clone();
+    let first = tokio::spawn(async move { first_driver.reconcile_operation(&first_key).await });
+    first_query.await;
+
+    // When: a different operation reconciles concurrently.
+    let second_driver = driver.clone();
+    let second = tokio::spawn(async move { second_driver.reconcile_operation(&second_key).await });
+    probe.wait_for_query().await;
+
+    // Then: both operations can be in their chain queries at once; the driver did
+    // not use a process-wide advancement lock.
+    first.await.unwrap().unwrap().unwrap();
+    second.await.unwrap().unwrap().unwrap();
+    assert_eq!(probe.queries.load(Ordering::SeqCst), 2);
+    assert_eq!(probe.max_active.load(Ordering::SeqCst), 2);
 }
 
 // ---- multi-step operations are driven to completion ----

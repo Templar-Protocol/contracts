@@ -248,8 +248,9 @@ impl Client {
 
     /// Reconcile a single in-flight operation by idempotency key against the
     /// chain and return its current record. The broom calls this to drive a stuck
-    /// operation to terminal between startups; reconciliation ages out an unknown
-    /// transaction on its own.
+    /// operation toward terminal between startups; an unknown submitted
+    /// transaction remains submitted because the chain's absence of a record is
+    /// not proof that the transaction never landed.
     pub async fn reconcile_operation(
         &self,
         idempotency_key: &IdempotencyKey,
