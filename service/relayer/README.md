@@ -94,7 +94,7 @@ Verify the migrated database:
 
 ```sql
 SELECT to_regclass('"transaction"') IS NULL AS transaction_table_dropped;
-SELECT count(*) FROM account WHERE pending_operation_key IS NOT NULL;
+SELECT count(*) FROM pending_gateway_charge;
 SELECT * FROM gateway._sqlx_migrations ORDER BY installed_on;
 ```
 
