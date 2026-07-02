@@ -18,14 +18,6 @@ pub struct Configuration {
     /// NEAR RPC connection URL.
     #[arg(long, env = "RPC_URL", default_value_t = String::from("https://rpc.testnet.near.org"))]
     pub rpc_url: String,
-    /// Timeout for NEAR RPC calls that wait for final transaction execution.
-    #[arg(
-        long = "rpc-timeout-secs",
-        env = "RPC_TIMEOUT_SECS",
-        value_parser = duration_from_secs,
-        default_value = "30"
-    )]
-    pub rpc_timeout: Duration,
     #[clap(flatten)]
     pub monitor: Monitor,
     #[clap(flatten)]
@@ -207,6 +199,7 @@ pub struct UniversalAccount {
         default_value = "600"
     )]
     pub blockref_max_age: Duration,
+    // CLIPPY-ALLOW: `clientDataJSON` is the WebAuthn field spelling.
     #[allow(clippy::doc_markdown)]
     /// From which origins are the payloads allowed to come?
     ///
@@ -257,4 +250,40 @@ fn default_allowed_methods() -> Vec<String> {
     .into_iter()
     .map(|method_name| method_name.to_string())
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{error::ErrorKind, Parser};
+
+    use super::Configuration;
+
+    fn minimal_args() -> Vec<&'static str> {
+        vec![
+            "relayer",
+            "--database-url",
+            "postgres://relayeruser:password@localhost:5432/relayer",
+            "--monitor-registry-id",
+            "registry.test.near",
+            "--relay-account-id",
+            "relay.test.near",
+            "--ua-account-id",
+            "ua.test.near",
+            "--ua-registry-id",
+            "ua-registry.test.near",
+            "--ua-version-key",
+            "latest",
+        ]
+    }
+
+    #[test]
+    fn rpc_timeout_secs_is_not_supported() {
+        let mut args = minimal_args();
+        args.extend(["--rpc-timeout-secs", "1"]);
+
+        let error = Configuration::try_parse_from(args)
+            .expect_err("rpc timeout flag should not be accepted");
+
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
 }
