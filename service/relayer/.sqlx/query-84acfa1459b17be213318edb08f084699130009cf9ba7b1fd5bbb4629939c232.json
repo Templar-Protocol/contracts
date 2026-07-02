@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nDELETE FROM\n    pending_gateway_charge\nWHERE\n    account_id = $1\n    AND operation_key = $2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "84acfa1459b17be213318edb08f084699130009cf9ba7b1fd5bbb4629939c232"
+}

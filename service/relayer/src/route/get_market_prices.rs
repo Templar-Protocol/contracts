@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use axum::extract::{Query, State};
 use near_sdk::{
     serde::{Deserialize, Serialize},
     AccountId,
 };
+use templar_gateway_methods_spec::{market, oracle};
 
 use crate::{app::App, route::SimpleResponse, ViewMarketPrices};
 
@@ -17,22 +20,48 @@ pub async fn get_market_prices(
     State(app): State<App>,
     Query(GetMarketPricesRequest { market_id }): Query<GetMarketPricesRequest>,
 ) -> SimpleResponse<ViewMarketPrices> {
-    let Some(market) = app
-        .accounts
-        .read()
-        .await
-        .market_data
-        .get(&market_id)
-        .cloned()
-    else {
-        tracing::debug!(%market_id, "Unknown market");
+    // Only serve markets the relayer has discovered/allowlisted — the same policy
+    // boundary /update_prices enforces. (Scope the guard so it isn't held across
+    // the gateway read below.)
+    let known_market = app.accounts.read().await.market_ids.contains(&market_id);
+    if !known_market {
+        tracing::info!(%market_id, "Rejecting price request for unknown market");
         return SimpleResponse::Rejected {
             reason: format!("Unknown market: {market_id}"),
         };
+    }
+
+    // Fetch the market's oracle config on demand — the gateway caches the read,
+    // so there's no relayer-side market state to go stale.
+    let config = match app
+        .gateway
+        .read(market::GetConfiguration {
+            market_id: market_id.clone(),
+        })
+        .await
+    {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(%market_id, %error, "Failed to load known market configuration");
+            return SimpleResponse::Failure {
+                error: "Failed to load market configuration".to_string(),
+            };
+        }
     };
 
-    let market_prices = match app.relay_near.load_market_prices(&market).await {
-        Ok(p) => p,
+    // Resolve current on-chain prices through the gateway, which classifies the
+    // oracle (direct / LST / proxy) and applies transformers internally.
+    let cfg = &config.price_oracle_configuration;
+    let result = match app
+        .gateway
+        .read(oracle::GetPrices {
+            oracle_id: cfg.account_id.clone(),
+            price_ids: vec![cfg.borrow_asset_price_id, cfg.collateral_asset_price_id],
+            age: u64::from(cfg.price_maximum_age_s),
+        })
+        .await
+    {
+        Ok(result) => result,
         Err(error) => {
             tracing::error!(%error, "Failed to load market prices");
             return SimpleResponse::Failure {
@@ -41,5 +70,18 @@ pub async fn get_market_prices(
         }
     };
 
-    SimpleResponse::success(market_prices)
+    let prices: HashMap<_, _> = result
+        .prices
+        .into_iter()
+        .map(|entry| (entry.price_id, entry.price))
+        .collect();
+
+    // Non-consuming lookups: borrow and collateral may share a price ID.
+    SimpleResponse::success(ViewMarketPrices {
+        borrow: prices.get(&cfg.borrow_asset_price_id).cloned().flatten(),
+        collateral: prices
+            .get(&cfg.collateral_asset_price_id)
+            .cloned()
+            .flatten(),
+    })
 }

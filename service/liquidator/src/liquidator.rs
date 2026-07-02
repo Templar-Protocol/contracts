@@ -111,6 +111,8 @@ pub enum LiquidatorError {
     LiquidationTransactionError(rpc::RpcError),
     #[error("Transaction failed: {0}")]
     TransactionFailed(String),
+    #[error("Operation completed without a transaction hash: {0}")]
+    MissingTransactionHash(String),
     #[error("Failed to list borrow positions: {0}")]
     ListBorrowPositionsError(rpc::RpcError),
     #[error("Failed to fetch balance: {0}")]
@@ -240,6 +242,7 @@ impl LiquidatorError {
 
             Self::LiquidationTransactionError(_)
             | Self::TransactionFailed(_)
+            | Self::MissingTransactionHash(_)
             | Self::SwapProviderError(_) => ErrorPhase::Execution,
         }
     }
@@ -256,7 +259,9 @@ impl LiquidatorError {
             Self::LiquidationTransactionError(rpc::RpcError::TimeoutError(_, _)) => {
                 NotificationKind::TxTimeout
             }
-            Self::LiquidationTransactionError(_) => NotificationKind::TxSubmissionError,
+            Self::LiquidationTransactionError(_) | Self::MissingTransactionHash(_) => {
+                NotificationKind::TxSubmissionError
+            }
             Self::SwapProviderError(_) => NotificationKind::SwapError,
             Self::FetchBorrowStatus(_) => NotificationKind::FetchBorrowStatus,
             Self::PricePairError(_) => NotificationKind::PricePair,

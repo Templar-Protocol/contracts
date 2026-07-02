@@ -29,7 +29,9 @@ async fn main() {
     let kill = watch::Sender::default();
 
     #[allow(clippy::expect_used)]
-    let mut app = App::new(args, kill.clone()).expect("Failed to initialize app");
+    let mut app = App::new(args, kill.clone())
+        .await
+        .expect("Failed to initialize app");
     app.database.migrate().await.unwrap();
     app.load_markets().await;
 

@@ -92,7 +92,8 @@ impl TestStack {
             context,
             harness.gateway_signers.clone(),
             Arc::new(MemoryStore::new()),
-        )?;
+        )
+        .await?;
 
         let server = ServerBuilder::default().build("127.0.0.1:0").await?;
         let local_addr = server.local_addr()?;
@@ -152,15 +153,10 @@ async fn register_ft_account(
 }
 
 fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> CryptoHash {
-    match &result.operation.steps[0].status {
-        templar_gateway_types::StepStatus::Prepared { tx_hash }
-        | templar_gateway_types::StepStatus::Submitted { tx_hash }
-        | templar_gateway_types::StepStatus::Succeeded { tx_hash }
-        | templar_gateway_types::StepStatus::Failed { tx_hash } => *tx_hash,
-        templar_gateway_types::StepStatus::NotStarted => {
-            panic!("transaction hash should be present for final execution")
-        }
-    }
+    result.operation.steps[0]
+        .status
+        .tx_hash()
+        .expect("transaction hash should be present for final execution")
 }
 
 async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {

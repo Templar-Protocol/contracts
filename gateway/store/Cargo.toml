@@ -19,5 +19,9 @@ templar-gateway-types.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+rstest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
 [lints]
 workspace = true

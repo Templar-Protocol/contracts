@@ -1,13 +1,14 @@
 use std::{collections::VecDeque, sync::Arc};
 
+use chrono::{DateTime, Utc};
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
     AccountId,
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
-    common::TxExecutionStatus, operation::OperationRecord, CryptoHash, ManagedAccountId,
-    OperationId, OperationStatus, StepStatus,
+    operation::{ExecutionOutcome, OperationRecord},
+    CryptoHash, ManagedAccountId, OperationId, OperationStatus, StepStatus,
 };
 
 use crate::{GatewayResult, OperationStore};
@@ -15,7 +16,6 @@ use crate::{GatewayResult, OperationStore};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTransaction {
     pub signer_account_id: ManagedAccountId,
-    pub wait_until: TxExecutionStatus,
     pub receiver_id: AccountId,
     pub actions: Vec<Action>,
 }
@@ -31,13 +31,11 @@ impl PlannedTransaction {
     #[must_use]
     pub fn new(
         signer_account_id: ManagedAccountId,
-        wait_until: TxExecutionStatus,
         receiver_id: AccountId,
         actions: Vec<Action>,
     ) -> Self {
         Self {
             signer_account_id,
-            wait_until,
             receiver_id,
             actions,
         }
@@ -46,17 +44,10 @@ impl PlannedTransaction {
     #[must_use]
     pub fn single_action(
         signer_account_id: ManagedAccountId,
-        wait_until: TxExecutionStatus,
         receiver_id: AccountId,
         action: Action,
     ) -> Self {
-        Self::new(signer_account_id, wait_until, receiver_id, vec![action])
-    }
-
-    #[must_use]
-    pub fn with_wait_until(mut self, wait_until: TxExecutionStatus) -> Self {
-        self.wait_until = wait_until;
-        self
+        Self::new(signer_account_id, receiver_id, vec![action])
     }
 }
 
@@ -69,6 +60,22 @@ impl OperationPlan {
     #[must_use]
     pub fn single(step: PlannedTransaction) -> Self {
         Self { steps: vec![step] }
+    }
+
+    /// A single-step plan. Collapses the common
+    /// `OperationPlan::single(PlannedTransaction { … })` boilerplate in
+    /// `PlanWrite` impls.
+    #[must_use]
+    pub fn execute(
+        signer_account_id: ManagedAccountId,
+        receiver_id: AccountId,
+        actions: Vec<Action>,
+    ) -> Self {
+        Self::single(PlannedTransaction {
+            signer_account_id,
+            receiver_id,
+            actions,
+        })
     }
 
     pub fn push(&mut self, step: PlannedTransaction) {
@@ -86,6 +93,7 @@ impl From<PlannedTransaction> for OperationPlan {
 pub struct SucceededStep {
     pub transaction: PlannedTransaction,
     pub tx_hash: CryptoHash,
+    pub outcome: ExecutionOutcome,
 }
 
 #[derive(Debug, Clone)]
@@ -98,8 +106,20 @@ pub enum CurrentStep {
     Submitted {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
+        /// When the step was submitted, used to age out a transaction the chain
+        /// never records into a rejection. Stamped once at submission and
+        /// preserved across reconciliation sweeps.
+        submitted_at: DateTime<Utc>,
     },
-    Failed {
+    /// The transaction executed on chain but its final outcome was a failure.
+    Reverted {
+        transaction: PlannedTransaction,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    },
+    /// The step failed before a recorded on-chain execution (e.g. a submission
+    /// error).
+    Rejected {
         transaction: PlannedTransaction,
         tx_hash: CryptoHash,
     },
@@ -112,6 +132,11 @@ pub struct StoredOperation {
     pub request_payload: Vec<u8>,
     pub id: OperationId,
     pub signer_account_id: ManagedAccountId,
+    /// Whether planning has completed. A reservation (created to hold the
+    /// idempotency key before planning) is `false`; it flips to `true` once a
+    /// plan is attached — including an empty (no-op) plan, so a no-op is a real
+    /// terminal operation rather than being indistinguishable from a reservation.
+    pub planned: bool,
     pub succeeded_steps: Vec<SucceededStep>,
     pub current_step: Option<CurrentStep>,
     pub remaining_steps: VecDeque<PlannedTransaction>,
@@ -164,8 +189,16 @@ impl StoredOperation {
     }
 
     pub fn status(&self) -> OperationStatus {
+        // A reservation (planning not yet complete) is never terminal, whatever
+        // its steps. Once planned, status derives purely from the steps -- so a
+        // planned operation with no steps is a (terminal) no-op success.
+        if !self.planned {
+            return OperationStatus::Pending;
+        }
         match &self.current_step {
-            Some(CurrentStep::Failed { .. }) => OperationStatus::Failed,
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. }) => {
+                OperationStatus::Failed
+            }
             Some(CurrentStep::Prepared { .. } | CurrentStep::Submitted { .. }) => {
                 OperationStatus::InProgress
             }
@@ -176,7 +209,18 @@ impl StoredOperation {
     }
 
     pub fn current_step_is_failed(&self) -> bool {
-        matches!(self.current_step, Some(CurrentStep::Failed { .. }))
+        matches!(
+            self.current_step,
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. })
+        )
+    }
+
+    /// A bare reservation: created to hold the idempotency key before planning,
+    /// with planning not yet complete. Nothing was submitted, so there is
+    /// nothing on chain to resume — recovery and pre-submit error cleanup drop
+    /// these. A planned no-op (`planned`, no steps) is *not* a reservation.
+    pub fn is_reservation(&self) -> bool {
+        !self.planned
     }
 
     #[must_use]
@@ -189,11 +233,6 @@ impl StoredOperation {
         }
 
         let transaction = self.remaining_steps.pop_front()?;
-        let transaction = if self.remaining_steps.is_empty() {
-            transaction
-        } else {
-            transaction.with_wait_until(TxExecutionStatus::Final)
-        };
 
         Some(PendingPreparation {
             operation: self,
@@ -219,13 +258,16 @@ impl StoredOperation {
             Some(CurrentStep::Submitted {
                 transaction,
                 tx_hash,
+                submitted_at: _,
             }) => Some(CurrentStepRef::Submitted(Box::new(SubmittedCurrentStep {
                 operation: self,
                 store,
                 transaction,
                 tx_hash,
             }))),
-            Some(CurrentStep::Failed { .. }) => Some(CurrentStepRef::Failed),
+            Some(CurrentStep::Reverted { .. } | CurrentStep::Rejected { .. }) => {
+                Some(CurrentStepRef::Failed)
+            }
             None => None,
         }
     }
@@ -243,6 +285,7 @@ impl StoredOperation {
                 index: next_index,
                 status: StepStatus::Succeeded {
                     tx_hash: step.tx_hash,
+                    outcome: step.outcome.clone(),
                 },
             });
             next_index = next_index.saturating_add(1);
@@ -254,7 +297,13 @@ impl StoredOperation {
                 CurrentStep::Submitted { tx_hash, .. } => {
                     StepStatus::Submitted { tx_hash: *tx_hash }
                 }
-                CurrentStep::Failed { tx_hash, .. } => StepStatus::Failed { tx_hash: *tx_hash },
+                CurrentStep::Reverted {
+                    tx_hash, outcome, ..
+                } => StepStatus::Reverted {
+                    tx_hash: *tx_hash,
+                    outcome: outcome.clone(),
+                },
+                CurrentStep::Rejected { tx_hash, .. } => StepStatus::Rejected { tx_hash: *tx_hash },
             };
             steps.push(templar_gateway_types::TransactionStepRecord {
                 index: next_index,
@@ -293,9 +342,11 @@ impl PendingPreparation<'_> {
 
 impl<'a> PreparedCurrentStep<'a> {
     pub async fn submit(self) -> GatewayResult<(SignedTransaction, SubmittedCurrentStep<'a>)> {
+        let submitted_at = Utc::now();
         self.operation.current_step = Some(CurrentStep::Submitted {
             transaction: self.transaction.clone(),
             tx_hash: self.tx_hash,
+            submitted_at,
         });
         self.store.save_operation(self.operation.clone()).await?;
         Ok((
@@ -308,10 +359,6 @@ impl<'a> PreparedCurrentStep<'a> {
             },
         ))
     }
-
-    pub fn wait_until(&self) -> TxExecutionStatus {
-        self.transaction.wait_until
-    }
 }
 
 impl SubmittedCurrentStep<'_> {
@@ -319,19 +366,31 @@ impl SubmittedCurrentStep<'_> {
         &self.transaction
     }
 
-    pub async fn succeed(self, tx_hash: CryptoHash) -> GatewayResult<()> {
+    pub async fn mark_succeeded(
+        self,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    ) -> GatewayResult<()> {
         self.operation.succeeded_steps.push(SucceededStep {
             transaction: self.transaction,
             tx_hash,
+            outcome,
         });
         self.operation.current_step = None;
         self.store.save_operation(self.operation.clone()).await
     }
 
-    pub async fn fail(self, tx_hash: CryptoHash) -> GatewayResult<()> {
-        self.operation.current_step = Some(CurrentStep::Failed {
+    /// Record the step as having executed on chain but reverted (final outcome
+    /// was a failure).
+    pub async fn mark_reverted(
+        self,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    ) -> GatewayResult<()> {
+        self.operation.current_step = Some(CurrentStep::Reverted {
             transaction: self.transaction,
             tx_hash,
+            outcome,
         });
         self.store.save_operation(self.operation.clone()).await
     }

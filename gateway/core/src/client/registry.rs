@@ -85,7 +85,6 @@ impl RegistryClient<'_> {
             registry_version.encode_add_version_args(&args.version_key, args.mode, &args.code)?;
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
-            wait_until: options.wait_until,
             receiver_id: self.contract_id().to_owned(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: ContractMethodName("add_version".to_string()).0,
@@ -105,7 +104,6 @@ impl RegistryClient<'_> {
         let method_name = registry_version.deploy_method_name();
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
-            wait_until: options.wait_until,
             receiver_id: self.contract_id().to_owned(),
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: ContractMethodName(method_name.to_string()).0,

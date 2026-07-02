@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nSELECT\n    coalesce(sum(gas_estimate + inner_spend), 0) AS \"reserved!: Decimal\"\nFROM\n    pending_gateway_charge\nWHERE\n    account_id = $1\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reserved!: Decimal",
+        "type_info": "Numeric"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e898c4bff40b5c5402ff742cc1c2b9aacdec062e59b234cc483ea349cbc41c4c"
+}

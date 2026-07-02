@@ -6,6 +6,11 @@ services:
       POSTGRES_USER: relayeruser
       POSTGRES_PASSWORD: password
       POSTGRES_DB: relayer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relayeruser -d relayer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
@@ -20,7 +25,8 @@ services:
     working_dir: /usr/src/relayer
     command: cargo run --package templar-relayer --profile dev
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     environment:

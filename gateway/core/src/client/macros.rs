@@ -34,7 +34,6 @@ macro_rules! contract_writes {
             ) -> $crate::GatewayResult<$crate::operation::PlannedTransaction> {
                 Ok($crate::operation::PlannedTransaction {
                     signer_account_id: options.signer_account_id,
-                    wait_until: options.wait_until,
                     receiver_id: $crate::client::BoundContractClient::contract_id(self).to_owned(),
                     actions: vec![::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
                         ::near_api::types::transaction::actions::FunctionCallAction {

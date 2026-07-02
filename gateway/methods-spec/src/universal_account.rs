@@ -3,7 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::primitive::PublicKey;
-use templar_universal_account::{transaction::Transaction, ExecuteArgs, KeyId};
+use templar_universal_account::{transaction::Transaction, KeyId};
 
 /// Get key parameters from a universal account.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -31,11 +31,16 @@ pub struct GetKeyResult {
 }
 
 /// Execute a universal account payload.
+///
+/// `args` is the user's signed `ExecuteArgs` payload, forwarded to the contract
+/// verbatim (as raw JSON) rather than re-serialized through a typed model: the
+/// payload is signed and targets a specific contract version, so canonicalizing
+/// it risks breaking deserialization or the signature.
 #[derive(MethodSpec, Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[method(write = "ua.execute")]
 pub struct Execute {
     pub account_id: AccountId,
-    pub args: ExecuteArgs<Box<[Transaction]>>,
+    pub args: serde_json::Value,
 }
 
 /// Create a universal account from the registry.

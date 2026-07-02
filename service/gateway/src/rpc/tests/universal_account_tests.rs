@@ -69,7 +69,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
             idempotency_key: None,
             body: universal_account::Execute {
                 account_id: account_id.clone(),
-                args: signer.execute_args(payload),
+                args: serde_json::to_value(signer.execute_args(payload))?,
             },
         })
         .await?;

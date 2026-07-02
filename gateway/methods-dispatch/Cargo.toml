@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+borsh.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
 near-api.workspace = true
 near-contract-standards.workspace = true

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\nWITH charge AS (\n    DELETE FROM pending_gateway_charge\n    WHERE\n        account_id = $1\n        AND operation_key = $2\n    RETURNING\n        inner_spend\n)\nUPDATE\n    account\nSET\n    allowance = greatest(\n        allowance - (\n            $3 + CASE\n                WHEN $4 THEN (SELECT inner_spend FROM charge)\n                ELSE 0\n            END\n        ),\n        0\n    )\nWHERE\n    account_id = $1\n    AND EXISTS (SELECT 1 FROM charge)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Numeric",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7cd76f9142636f9e80612ad80fc327619b951df4fb46c1b9306e0212aa7aeb6"
+}

@@ -28,6 +28,14 @@ pub mod relay;
 
 pub const ACCOUNT_SLUG_LEN: usize = 12;
 
+/// Gas the gateway attaches to a universal-account `execute` and to a registry
+/// `deploy` plan — it commits the network max and reconciles against actual
+/// spend (see the `ContractWriteOptions::tgas(300)` calls in `methods-dispatch`).
+/// The relayer locks the cost of this full budget so the affordability gate
+/// covers what the relayer actually commits to paying, not a lower estimate that
+/// would let an under-funded account through.
+pub const GATEWAY_UA_WRITE_GAS: near_sdk::Gas = near_sdk::Gas::from_tgas(300);
+
 pub fn public_key_to_account_id_slug(public_key: &KeyId) -> String {
     hex::encode(&Sha256::digest(public_key.to_string())[0..ACCOUNT_SLUG_LEN / 2])
 }
