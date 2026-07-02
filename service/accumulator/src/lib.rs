@@ -254,9 +254,7 @@ impl Accumulator {
     async fn get_static_accounts(&self) -> anyhow::Result<Vec<AccountId>> {
         let configuration = self
             .client
-            .read(market::GetConfiguration {
-                market_id: self.market.clone(),
-            })
+            .read(market::GetConfiguration::new(self.market.clone()))
             .await?;
 
         Ok(static_accounts(&configuration))
@@ -348,9 +346,7 @@ async fn list_deployments(
 /// non-existent (best-effort filter), matching the legacy behaviour.
 async fn account_exists(client: &SigningClient, account_id: &AccountId) -> bool {
     client
-        .read(account::Get {
-            account_id: account_id.clone(),
-        })
+        .read(account::Get::new(account_id.clone()))
         .await
         .is_ok()
 }

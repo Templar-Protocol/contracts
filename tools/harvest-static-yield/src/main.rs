@@ -42,9 +42,7 @@ struct Cli {
 
 async fn market_version(client: &Client, market_id: AccountId) -> anyhow::Result<MarketVersion> {
     let version = client
-        .read(contract::GetVersion {
-            contract_id: market_id.clone(),
-        })
+        .read(contract::GetVersion::new(market_id.clone()))
         .await?;
     version
         .parsed
