@@ -84,13 +84,18 @@ fn aged_submitted_step() -> CurrentStep {
     submitted_step_at(Utc::now() - TimeDelta::seconds(600))
 }
 
+/// A planned operation with a single pending step and no remaining or succeeded steps.
+fn step_op(step: CurrentStep) -> StoredOperation {
+    stored(true, Some(step), vec![], vec![])
+}
+
 /// An aged, unknown transaction never landed, so its step is rejected.
-fn is_rejected(step: &Option<CurrentStep>) -> bool {
+fn is_rejected(step: Option<&CurrentStep>) -> bool {
     matches!(step, Some(CurrentStep::Rejected { .. }))
 }
 
 /// A fresh, unknown transaction may still land, so its step is left submitted.
-fn is_submitted(step: &Option<CurrentStep>) -> bool {
+fn is_submitted(step: Option<&CurrentStep>) -> bool {
     matches!(step, Some(CurrentStep::Submitted { .. }))
 }
 
@@ -317,48 +322,32 @@ async fn reconcile_operation_terminal_passes_through_without_chain_calls() {
 
 // ---- submitted-step reconciliation ----
 
+#[rstest]
+#[case::success(true, OperationStatus::Succeeded)]
+#[case::revert(false, OperationStatus::Failed)]
 #[tokio::test]
-async fn reconcile_operation_resolves_submitted_step_success() {
+async fn reconcile_resolves_submitted_step(
+    #[case] is_success: bool,
+    #[case] expected_status: OperationStatus,
+) {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(
-        &store,
-        "sub",
-        stored(true, Some(fresh_submitted_step()), vec![], vec![]),
-    )
-    .await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(step_outcome(true))]);
-
-    let record = driver(store, executor)
-        .reconcile_operation(&key)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(record.status, OperationStatus::Succeeded);
-}
-
-#[tokio::test]
-async fn reconcile_operation_resolves_submitted_step_revert() {
-    let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(
-        &store,
-        "sub",
-        stored(true, Some(fresh_submitted_step()), vec![], vec![]),
-    )
-    .await;
-    let executor = FakeExecutor::new(vec![], vec![Ok(step_outcome(false))]);
+    let key = seed_keyed(&store, "sub", step_op(fresh_submitted_step())).await;
+    let executor = FakeExecutor::new(vec![], vec![Ok(step_outcome(is_success))]);
 
     let record = driver(store.clone(), executor)
         .reconcile_operation(&key)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(record.status, OperationStatus::Failed);
+    assert_eq!(record.status, expected_status);
     // Reverted carries an outcome (gas was burnt on chain).
-    let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert!(matches!(
-        op.current_step,
-        Some(CurrentStep::Reverted { .. })
-    ));
+    if !is_success {
+        let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
+        assert!(matches!(
+            op.current_step,
+            Some(CurrentStep::Reverted { .. })
+        ));
+    }
 }
 
 /// Reconciling an unknown (chain-has-no-record) submitted transaction depends on
@@ -371,10 +360,10 @@ async fn reconcile_operation_resolves_submitted_step_revert() {
 async fn reconcile_resolves_unknown_transaction_by_age(
     #[case] step: CurrentStep,
     #[case] expected_status: OperationStatus,
-    #[case] expected_step: fn(&Option<CurrentStep>) -> bool,
+    #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
 ) {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(&store, "sub", stored(true, Some(step), vec![], vec![])).await;
+    let key = seed_keyed(&store, "sub", step_op(step)).await;
     let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
 
     let record = driver(store.clone(), executor)
@@ -384,18 +373,13 @@ async fn reconcile_resolves_unknown_transaction_by_age(
         .unwrap();
     assert_eq!(record.status, expected_status);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert!(expected_step(&op.current_step));
+    assert!(expected_step(op.current_step.as_ref()));
 }
 
 #[tokio::test]
 async fn transient_query_error_leaves_step_submitted() {
     let store = Arc::new(MemoryStore::new());
-    let key = seed_keyed(
-        &store,
-        "sub",
-        stored(true, Some(aged_submitted_step()), vec![], vec![]),
-    )
-    .await;
+    let key = seed_keyed(&store, "sub", step_op(aged_submitted_step())).await;
     // Even aged, a transient (non-"not found") error must not reject: the tx may
     // have landed.
     let executor = FakeExecutor::new(
@@ -425,10 +409,10 @@ async fn transient_query_error_leaves_step_submitted() {
 #[tokio::test]
 async fn startup_recovery_resolves_unknown_submitted_step_by_age(
     #[case] step: CurrentStep,
-    #[case] expected_step: fn(&Option<CurrentStep>) -> bool,
+    #[case] expected_step: fn(Option<&CurrentStep>) -> bool,
 ) {
     let store = Arc::new(MemoryStore::new());
-    let mut op = stored(true, Some(step), vec![], vec![]);
+    let mut op = step_op(step);
     op.id = OperationId("op".to_owned());
     store.save_operation(op.clone()).await.unwrap();
     let executor = FakeExecutor::new(vec![], vec![Err(GatewayError::TransactionNotFound)]);
@@ -439,7 +423,7 @@ async fn startup_recovery_resolves_unknown_submitted_step_by_age(
         .unwrap();
 
     let op = store.get_by_id(&op.id).await.unwrap().unwrap();
-    assert!(expected_step(&op.current_step));
+    assert!(expected_step(op.current_step.as_ref()));
 }
 
 // ---- multi-step operations are driven to completion ----

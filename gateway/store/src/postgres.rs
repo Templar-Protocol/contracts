@@ -1,4 +1,5 @@
-use std::{collections::VecDeque, str::FromStr};
+use std::collections::{HashMap, VecDeque};
+use std::str::FromStr;
 
 use async_trait::async_trait;
 use borsh::{to_vec, BorshDeserialize};
@@ -105,6 +106,9 @@ struct OperationStepRow {
     updated_at: DateTime<Utc>,
 }
 
+/// Receipt outcomes grouped by step index.
+type ReceiptMap = HashMap<i32, Vec<ReceiptOutcome>>;
+
 impl PostgresStore {
     /// Connect using [`DEFAULT_SCHEMA`].
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
@@ -148,8 +152,7 @@ impl OperationStore for PostgresStore {
         &self,
         operation_id: &OperationId,
     ) -> GatewayResult<Option<StoredOperation>> {
-        let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+        let operation_uuid = parse_operation_uuid(operation_id)?;
         let Some(operation_row) = sqlx::query_as!(
             OperationRow,
             r#"
@@ -272,8 +275,7 @@ WHERE
     }
 
     async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
-        let operation_uuid = uuid::Uuid::from_str(&operation_id.0)
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+        let operation_uuid = parse_operation_uuid(operation_id)?;
         // Only delete a reservation (planning not yet complete). A planned
         // operation -- including a no-op, which also has no steps -- is left
         // intact. No-op if the row is planned or does not exist.
@@ -331,8 +333,7 @@ async fn insert_operation_tx(
     idempotency_key: Option<&IdempotencyKey>,
 ) -> GatewayResult<()> {
     let mut tx = pool.begin().await?;
-    let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
-        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    let operation_uuid = parse_operation_uuid(&operation.id)?;
     insert_operation_row(&mut tx, operation_uuid, operation, idempotency_key).await?;
     insert_operation_steps(&mut tx, operation_uuid, operation).await?;
     tx.commit().await?;
@@ -347,8 +348,7 @@ async fn insert_operation_tx(
 /// dropping idempotency and breaking crash recovery).
 async fn update_operation_tx(pool: &PgPool, operation: &StoredOperation) -> GatewayResult<()> {
     let mut tx = pool.begin().await?;
-    let operation_uuid = uuid::Uuid::from_str(&operation.id.0)
-        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+    let operation_uuid = parse_operation_uuid(&operation.id)?;
 
     let status = operation_status_row(operation.status());
     sqlx::query!(
@@ -542,6 +542,17 @@ fn step_index(index: usize) -> GatewayResult<i32> {
     })
 }
 
+fn parse_operation_uuid(operation_id: &OperationId) -> GatewayResult<uuid::Uuid> {
+    uuid::Uuid::from_str(&operation_id.0)
+        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))
+}
+
+fn parse_account_id(value: &str) -> GatewayResult<near_account_id::AccountId> {
+    value
+        .parse::<near_account_id::AccountId>()
+        .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "a step row is a flat record; grouping its columns would obscure the 1:1 INSERT"
@@ -708,10 +719,7 @@ ORDER BY
 
 /// Load every step's receipts for an operation, grouped by `step_index` and
 /// ordered by `receipt_index`.
-async fn load_step_receipts(
-    pool: &PgPool,
-    operation_id: uuid::Uuid,
-) -> GatewayResult<std::collections::HashMap<i32, Vec<ReceiptOutcome>>> {
+async fn load_step_receipts(pool: &PgPool, operation_id: uuid::Uuid) -> GatewayResult<ReceiptMap> {
     let rows = sqlx::query!(
         r#"
 SELECT
@@ -732,13 +740,9 @@ ORDER BY
     .fetch_all(pool)
     .await?;
 
-    let mut by_step: std::collections::HashMap<i32, Vec<ReceiptOutcome>> =
-        std::collections::HashMap::new();
+    let mut by_step = ReceiptMap::new();
     for row in rows {
-        let contract_id = row
-            .contract_id
-            .parse::<near_account_id::AccountId>()
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?;
+        let contract_id = parse_account_id(&row.contract_id)?;
         by_step
             .entry(row.step_index)
             .or_default()
@@ -754,7 +758,7 @@ ORDER BY
 fn rows_to_stored_operation(
     operation_row: OperationRow,
     step_rows: Vec<OperationStepRow>,
-    mut receipts_by_step: std::collections::HashMap<i32, Vec<ReceiptOutcome>>,
+    mut receipts_by_step: ReceiptMap,
 ) -> GatewayResult<StoredOperation> {
     let mut succeeded_steps = Vec::new();
     let mut current_step = None;
@@ -772,12 +776,7 @@ fn rows_to_stored_operation(
     }
 
     let id = OperationId(operation_row.id.to_string());
-    let signer_account_id = ManagedAccountId(
-        operation_row
-            .signer_account_id
-            .parse::<near_account_id::AccountId>()
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
-    );
+    let signer_account_id = ManagedAccountId(parse_account_id(&operation_row.signer_account_id)?);
     let request_payload = serde_json::to_vec(&operation_row.request_payload)?;
 
     let mut request_fingerprint_hash = [0_u8; 32];
@@ -907,15 +906,8 @@ fn build_outcome(
 
 fn step_row_transaction(row: &OperationStepRow) -> GatewayResult<PlannedTransaction> {
     Ok(PlannedTransaction {
-        signer_account_id: ManagedAccountId(
-            row.signer_account_id
-                .parse::<near_account_id::AccountId>()
-                .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
-        ),
-        receiver_id: row
-            .receiver_id
-            .parse::<near_account_id::AccountId>()
-            .map_err(|error| GatewayError::InvalidStoredOperation(error.to_string()))?,
+        signer_account_id: ManagedAccountId(parse_account_id(&row.signer_account_id)?),
+        receiver_id: parse_account_id(&row.receiver_id)?,
         actions: serde_json::from_value(row.actions.clone())?,
     })
 }
@@ -1375,8 +1367,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }];
-        let receipts =
-            std::collections::HashMap::from([(0_i32, sample_outcome().receipts.clone())]);
+        let receipts = ReceiptMap::from([(0_i32, sample_outcome().receipts)]);
 
         let restored = rows_to_stored_operation(operation_row, step_rows, receipts).unwrap();
         assert_eq!(restored.status(), OperationStatus::Succeeded);
