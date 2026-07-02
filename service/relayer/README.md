@@ -103,9 +103,13 @@ by the slim-accounting migration). The second should normally return `0` if
 pending work was drained. The migrations query should show the gateway store
 migrations.
 
-If the database already contains gateway-store tables in `public`, move that
-gateway state into the `gateway` schema before starting this relayer. Otherwise
-the relayer will not see the old operation/idempotency state.
+The gateway operation store must start empty. The lifecycle migration refuses a
+non-empty `gateway_operations` table: legacy rows predate the
+`planned_at`/`submitted_at`/outcome columns and cannot be reconstructed, so they
+are not carried across. If a prior run left gateway-store tables (in `public` or
+elsewhere) holding rows, drop that gateway state before starting this relayer —
+the store is recreated fresh in the `gateway` schema. There is no released
+gateway consumer, so in practice this only affects in-development databases.
 
 ## Usage
 

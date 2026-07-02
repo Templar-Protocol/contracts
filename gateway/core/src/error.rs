@@ -26,6 +26,8 @@ pub enum GatewayError {
     UnsupportedFeature(String),
     #[error("invalid stored operation: {0}")]
     InvalidStoredOperation(String),
+    #[error("startup recovery incomplete: {0}")]
+    IncompleteRecovery(String),
     #[error("sql error: {0}")]
     Sql(#[from] sqlx::Error),
     #[error("idempotency key conflict")]

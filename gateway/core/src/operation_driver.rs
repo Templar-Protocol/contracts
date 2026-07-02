@@ -235,12 +235,19 @@ impl OperationDriver {
         self.store.get_by_idempotency_key(idempotency_key).await
     }
 
+    /// Drive every incomplete operation toward terminal, best-effort. Failures to
+    /// advance individual operations are logged and counted; if any fail, the whole
+    /// pass returns an error so a caller (e.g. the relayer's fatal startup-recovery
+    /// gate) can fail fast rather than serve with charges recovery could not
+    /// resolve. Every operation is still attempted first, so a single wedged one
+    /// does not block recovering the rest.
     pub async fn resume_incomplete_operations(&self) -> GatewayResult<()> {
         let operations = self.store.list_incomplete_operations().await?;
         tracing::debug!(
             operation_count = operations.len(),
             "resuming incomplete gateway operations"
         );
+        let mut failures = 0_usize;
         for operation in operations {
             let operation_id = operation.operation_id().clone();
 
@@ -250,17 +257,30 @@ impl OperationDriver {
             // the only place reservations are reaped — a live one being planned is
             // never visible here.)
             if operation.is_reservation() {
-                self.store.delete_reservation(&operation_id).await?;
+                if let Err(error) = self.store.delete_reservation(&operation_id).await {
+                    failures += 1;
+                    tracing::warn!(
+                        operation_id = %operation_id.0,
+                        %error,
+                        "failed to reap reservation during startup recovery"
+                    );
+                }
                 continue;
             }
 
             if let Err(error) = self.advance_operation(operation).await {
+                failures += 1;
                 tracing::warn!(
                     operation_id = %operation_id.0,
                     %error,
                     "failed to resume incomplete gateway operation"
                 );
             }
+        }
+        if failures > 0 {
+            return Err(GatewayError::IncompleteRecovery(format!(
+                "{failures} operation(s) failed to resume"
+            )));
         }
         Ok(())
     }

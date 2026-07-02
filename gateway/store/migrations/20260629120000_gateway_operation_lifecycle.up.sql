@@ -4,6 +4,22 @@
 -- execution outcome, and the submitted_at age marker (which replaces the removed
 -- per-step wait_until, since every step now waits for final execution).
 
+-- This migration is NOT upgrade-safe for pre-existing operations: it makes
+-- `planned_at IS NULL` the reservation sentinel and requires `submitted_at` /
+-- outcome columns the base schema never captured, so legacy rows cannot be
+-- reconstructed by the loader. The gateway operation store has no released
+-- consumer, so a real deployment applies this to an empty table. Refuse loudly if
+-- that assumption is violated rather than silently corrupting recovery (a legacy
+-- row would otherwise be read as a reservation and deleted, or fail to load).
+DO
+$$
+BEGIN
+    IF EXISTS (SELECT 1 FROM gateway_operations) THEN
+        RAISE EXCEPTION 'gateway_operation_lifecycle migration requires an empty gateway_operations table: legacy rows predate the planned_at/submitted_at/outcome columns and cannot be migrated. Drain and clear gateway operation state before upgrading.';
+    END IF;
+END
+$$;
+
 -- `updated_at` was NOT NULL but, unlike `created_at`, had no default, so the
 -- store's inserts (which don't set it) violated the constraint. The store
 -- re-inserts on every save, so this tracks the last write time.

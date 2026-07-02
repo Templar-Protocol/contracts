@@ -13,7 +13,7 @@ use templar_common::{
     market::DepositMsg,
     oracle::{pyth, redstone},
 };
-use templar_gateway_client::{collect_paginated, Client as GatewayClient};
+use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
 use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{
@@ -74,7 +74,11 @@ pub struct App {
 
 impl App {
     pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
-        let network = near_api::NetworkConfig::from_rpc_url("relayer", args.rpc_url.parse()?);
+        // Build through `NetworkConfigBuilder` so a FastNear-style `?apiKey=…`
+        // embedded in `RPC_URL` is routed to the endpoint's auth header instead of
+        // being left in the query string (which would produce malformed/401 RPC
+        // requests). The relayer has no separate RPC API-key option.
+        let network = NetworkConfigBuilder::from_url("relayer", args.rpc_url.parse()?).build();
 
         // Persist gateway operations in the relayer database so idempotency and
         // replay survive restarts.
