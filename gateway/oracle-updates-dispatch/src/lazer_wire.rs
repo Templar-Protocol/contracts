@@ -74,11 +74,19 @@ pub(crate) fn decode_stream_message(text: &str) -> LazerResult<Option<DecodedLaz
                 .ok_or(LazerClientError::MissingSolanaPayload)?;
             decode_solana_payload(&solana)
         }
-        WsResponse::Error(_)
-        | WsResponse::Subscribed(_)
-        | WsResponse::SubscribedWithInvalidFeedIdsIgnored(_)
-        | WsResponse::Unsubscribed(_)
-        | WsResponse::SubscriptionError(_) => Ok(None),
+        WsResponse::Error(error) => {
+            tracing::warn!(?error, "Pyth Lazer stream returned an error response");
+            Ok(None)
+        }
+        WsResponse::SubscriptionError(error) => {
+            tracing::warn!(?error, "Pyth Lazer subscription returned an error response");
+            Ok(None)
+        }
+        WsResponse::SubscribedWithInvalidFeedIdsIgnored(message) => {
+            tracing::warn!(?message, "Pyth Lazer subscription ignored invalid feed ids");
+            Ok(None)
+        }
+        WsResponse::Subscribed(_) | WsResponse::Unsubscribed(_) => Ok(None),
     }
 }
 
