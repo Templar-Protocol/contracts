@@ -51,6 +51,7 @@ pub struct Transfer {
     pub receiver_id: AccountId,
     pub amount: SU128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[method(default)]
     pub memo: Option<String>,
 }
 

@@ -451,9 +451,7 @@ impl LiquidatorService {
                 // (proxy-oracles, redstone-adapters) won't have this method.
                 let config = match self
                     .client
-                    .read(market::GetConfiguration {
-                        market_id: market.clone(),
-                    })
+                    .read(market::GetConfiguration::new(market.clone()))
                     .await
                 {
                     Ok(config) => {
@@ -485,9 +483,7 @@ impl LiquidatorService {
                 // Step 2: Check contract version using NEP-330
                 let version_result = self
                     .client
-                    .read(contract::GetVersion {
-                        contract_id: market.clone(),
-                    })
+                    .read(contract::GetVersion::new(market.clone()))
                     .await
                     .ok()
                     .map(|result| result.version_string);

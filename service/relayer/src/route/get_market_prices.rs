@@ -35,9 +35,7 @@ pub async fn get_market_prices(
     // so there's no relayer-side market state to go stale.
     let config = match app
         .gateway
-        .read(market::GetConfiguration {
-            market_id: market_id.clone(),
-        })
+        .read(market::GetConfiguration::new(market_id.clone()))
         .await
     {
         Ok(config) => config,

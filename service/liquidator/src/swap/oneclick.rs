@@ -612,9 +612,7 @@ impl OneClickSwap {
         // Query storage_balance_bounds to get minimum deposit required
         let bounds = self
             .client
-            .read(storage::GetBalanceBounds {
-                contract_id: token_contract.contract_id().into(),
-            })
+            .read(storage::GetBalanceBounds::new(token_contract.contract_id().into()))
             .await
             .map_err(|e| {
                 tracing::error!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
@@ -779,12 +777,11 @@ impl OneClickSwap {
         // `token::Transfer` is standard-agnostic so NEP-245 collateral works too.
         let operation_result = self
             .client
-            .execute(token::Transfer {
-                token: token::TokenReference::from(from_asset),
-                receiver_id: deposit_account.clone(),
-                amount: SU128::from(amount.0),
-                memo: None,
-            })
+            .execute(token::Transfer::new(
+                token::TokenReference::from(from_asset),
+                deposit_account.clone(),
+                SU128::from(amount.0),
+            ))
             .await
             .map_err(|e| AppError::Rpc(e.into()))?;
 
