@@ -69,7 +69,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
             idempotency_key: None,
             body: universal_account::Execute {
                 account_id: account_id.clone(),
-                args: signer.execute_args(payload),
+                args: serde_json::to_value(signer.execute_args(payload))?,
             },
         })
         .await?;
@@ -113,7 +113,7 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                 account_name: "ua-created".to_owned(),
                 version_key: "ua@1.0.0".to_owned(),
                 key: signer.id(),
-                chain_id: templar_gateway_types::U128(NEAR_TESTNET_CHAIN_ID),
+                chain_id: templar_common::SU128::from(NEAR_TESTNET_CHAIN_ID),
                 execute: None,
                 full_access_keys: None,
                 deposit: NearToken::from_near(20),

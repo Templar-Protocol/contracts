@@ -45,7 +45,6 @@ all-actions = [
     "action-allocation-lifecycle",
     "action-refresh-lifecycle",
 ]
-
 [dependencies]
 derive_more.workspace = true
 primitive-types = { version = "0.14.0", default-features = false }
@@ -62,3 +61,6 @@ serde_json.workspace = true
 # Enable all action handlers for integration tests.
 # The `test` cfg only applies to unit tests in src/, not integration tests in tests/.
 templar-vault-kernel = { path = ".", features = ["all-actions"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

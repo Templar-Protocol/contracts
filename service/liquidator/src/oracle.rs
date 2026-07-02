@@ -6,30 +6,25 @@
 //! - LST oracles with price transformers
 //! - Proxy oracles with cached on-chain aggregation
 
-use near_jsonrpc_client::{
-    methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest, JsonRpcClient,
-};
-use near_primitives::{
-    gas::Gas,
-    transaction::{Transaction, TransactionV0},
-    views::FinalExecutionStatus,
-};
-use near_sdk::{serde_json::json, AccountId, NearToken};
+use near_sdk::AccountId;
 use std::collections::{HashMap, HashSet};
 use templar_common::{
     oracle::pyth::{self, OracleResponse, PriceIdentifier},
     Decimal,
 };
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::{contract, lst_oracle, proxy_oracle, pyth as pyth_spec};
+use templar_gateway_types::{
+    common::ContractArgs, Base64Bytes, ContractMethodName, OperationStatus,
+};
 use templar_proxy_oracle_near_common::{
-    cache::CachedProxyPriceStatus,
     input::Source,
     price_transformer::{Call, PriceTransformer},
     request::OracleRequest,
 };
 
 use crate::{
-    rpc::{check_transaction_success, view, NonceTracker, RpcError},
+    rpc::{gateway_is_method_not_found, RpcError},
     LiquidatorError, LiquidatorResult,
 };
 
@@ -78,7 +73,7 @@ pub type ProxyOracleCache =
 /// Supports LST oracles with transformers and proxy oracles with cached on-chain
 /// aggregation.
 pub struct OracleFetcher {
-    client: JsonRpcClient,
+    client: SigningClient,
     /// Cache of which oracles are LST oracles (`oracle_account` -> `underlying_oracle`)
     lst_oracle_cache: std::sync::Arc<tokio::sync::RwLock<HashMap<AccountId, Option<AccountId>>>>,
     /// Cache of detected proxy oracles (oracles that use cross-contract calls).
@@ -89,12 +84,6 @@ pub struct OracleFetcher {
     http_client: reqwest::Client,
     /// Pyth Hermes API URL (e.g., <https://hermes.pyth.network>)
     hermes_url: String,
-    /// Signer account for on-chain oracle price updates
-    signer_id: Option<AccountId>,
-    /// Signer key for on-chain oracle price updates
-    signer_key: Option<near_crypto::SecretKey>,
-    /// Shared nonce tracker to prevent nonce collisions with other transactions
-    nonce_tracker: NonceTracker,
 }
 
 impl OracleFetcher {
@@ -102,18 +91,15 @@ impl OracleFetcher {
     ///
     /// `proxy_oracle_cache` allows sharing the proxy oracle cache across multiple
     /// `OracleFetcher` instances. Pass `None` to create a standalone cache.
+    ///
+    /// On-chain price pushes are signed by the account bound to the shared
+    /// [`SigningClient`].
     pub fn new(
-        client: JsonRpcClient,
+        client: SigningClient,
         hermes_url: Option<String>,
         _redstone_gateway_url: Option<String>,
         proxy_oracle_cache: Option<ProxyOracleCache>,
-        signer_for_oracle: Option<(AccountId, near_crypto::SecretKey)>,
-        nonce_tracker: NonceTracker,
     ) -> Self {
-        let (signer_id, signer_key) = match signer_for_oracle {
-            Some((id, key)) => (Some(id), Some(key)),
-            None => (None, None),
-        };
         Self {
             client,
             lst_oracle_cache: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
@@ -122,9 +108,6 @@ impl OracleFetcher {
             }),
             http_client: reqwest::Client::new(),
             hermes_url: hermes_url.unwrap_or_else(|| "https://hermes.pyth.network".to_string()),
-            signer_id,
-            signer_key,
-            nonce_tracker,
         }
     }
 
@@ -146,13 +129,14 @@ impl OracleFetcher {
             return Ok(true);
         }
 
-        match view::<Vec<PriceIdentifier>>(
-            &self.client,
-            oracle.clone(),
-            "list_proxies",
-            json!({ "count": 1 }),
-        )
-        .await
+        match self
+            .client
+            .read(proxy_oracle::ListProxies {
+                oracle_id: oracle.clone(),
+                offset: None,
+                count: Some(1),
+            })
+            .await
         {
             Ok(_) => {
                 if self.proxy_oracle_cache.write().await.insert(oracle.clone()) {
@@ -160,8 +144,8 @@ impl OracleFetcher {
                 }
                 Ok(true)
             }
-            Err(error) if error.is_method_not_found() => Ok(false),
-            Err(error) => Err(LiquidatorError::PriceFetchError(error)),
+            Err(error) if gateway_is_method_not_found(&error) => Ok(false),
+            Err(error) => Err(LiquidatorError::PriceFetchError(error.into())),
         }
     }
 
@@ -176,20 +160,30 @@ impl OracleFetcher {
             }
         }
 
-        // Try to fetch underlying oracle ID
-        let underlying_oracle: Result<AccountId, _> =
-            view(&self.client, oracle.clone(), "oracle_id", json!({})).await;
-
-        let result = if let Ok(underlying) = underlying_oracle {
-            tracing::debug!(
-                oracle = %oracle,
-                underlying = %underlying,
-                "Detected LST oracle"
-            );
-            Some(underlying)
-        } else {
-            tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
-            None
+        // Try to fetch underlying oracle ID. Only a missing `oracle_id` method
+        // means "not an LST oracle"; any other error (transient RPC, decode) is
+        // propagated and NOT cached, so a blip can't permanently misroute an LST
+        // oracle through the direct Pyth path until restart.
+        let result = match self
+            .client
+            .read(lst_oracle::GetOracleId {
+                oracle_id: oracle.clone(),
+            })
+            .await
+        {
+            Ok(response) => {
+                tracing::debug!(
+                    oracle = %oracle,
+                    underlying = %response.pyth_oracle_id,
+                    "Detected LST oracle"
+                );
+                Some(response.pyth_oracle_id)
+            }
+            Err(error) if gateway_is_method_not_found(&error) => {
+                tracing::debug!(oracle = %oracle, "Standard Pyth oracle (no oracle_id method)");
+                None
+            }
+            Err(error) => return Err(LiquidatorError::PriceFetchError(error.into())),
         };
 
         // Cache the result
@@ -303,61 +297,64 @@ impl OracleFetcher {
         &self,
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
-    ) -> HashMap<AccountId, Vec<PriceIdentifier>> {
+    ) -> LiquidatorResult<HashMap<AccountId, Vec<PriceIdentifier>>> {
         let mut targets: HashMap<AccountId, HashSet<PriceIdentifier>> = HashMap::new();
 
-        // LST oracle: resolve underlying oracle + transform price IDs
-        if let Ok(Some(underlying_oracle)) = self.is_lst_oracle(oracle).await {
+        // LST oracle: resolve underlying oracle + transform price IDs. A read
+        // failure is propagated (not silently mapped to the original feed), so we
+        // never refresh the wrong Pyth feeds; fall back to `pid` only when the
+        // contract explicitly reports no transformer.
+        if let Some(underlying_oracle) = self.is_lst_oracle(oracle).await? {
             let mut underlying_ids = Vec::new();
             for &pid in price_ids {
-                match view::<Option<PriceTransformer>>(
-                    &self.client,
-                    oracle.clone(),
-                    "get_transformer",
-                    json!({ "price_identifier": pid }),
-                )
-                .await
-                {
-                    Ok(Some(transformer)) => underlying_ids.push(transformer.price_id),
-                    _ => underlying_ids.push(pid),
+                let result = self
+                    .client
+                    .read(lst_oracle::GetTransformer {
+                        oracle_id: oracle.clone(),
+                        price_identifier: pid,
+                    })
+                    .await
+                    .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
+                match result.transformer {
+                    Some(transformer) => underlying_ids.push(transformer.price_id),
+                    None => underlying_ids.push(pid),
                 }
             }
             targets
                 .entry(underlying_oracle)
                 .or_default()
                 .extend(underlying_ids);
-            return targets
+            return Ok(targets
                 .into_iter()
                 .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-                .collect();
+                .collect());
         }
 
-        // Proxy oracle: collect Pyth entries from proxy config
-        if self.proxy_oracle_cache.read().await.contains(oracle) {
+        // Proxy oracle: collect Pyth entries from proxy config. A read failure is
+        // propagated rather than skipped, so we don't refresh an incomplete set
+        // of feeds. Probe via `is_proxy_oracle` (not the raw cache) so a direct
+        // caller that hasn't warmed the cache still classifies correctly; the
+        // probe checks the cache first, keeping the hot path cheap.
+        if self.is_proxy_oracle(oracle).await? {
             for &pid in price_ids {
-                match view::<Option<Proxy<Source>>>(
-                    &self.client,
-                    oracle.clone(),
-                    "get_proxy",
-                    json!({ "id": pid }),
-                )
-                .await
-                {
-                    Ok(Some(proxy)) => {
-                        for source in proxy.sources() {
-                            Self::collect_pyth_targets_from_source(source, &mut targets);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(oracle = %oracle, price_id = ?pid, error = %error, "Failed to read proxy configuration while resolving Pyth targets");
+                let result = self
+                    .client
+                    .read(proxy_oracle::GetProxy {
+                        oracle_id: oracle.clone(),
+                        id: pid,
+                    })
+                    .await
+                    .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
+                if let Some(proxy) = result.proxy {
+                    for source in proxy.sources() {
+                        Self::collect_pyth_targets_from_source(source, &mut targets);
                     }
                 }
             }
-            return targets
+            return Ok(targets
                 .into_iter()
                 .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-                .collect();
+                .collect());
         }
 
         // Direct Pyth oracle
@@ -365,10 +362,10 @@ impl OracleFetcher {
             .entry(oracle.clone())
             .or_default()
             .extend(price_ids.iter().copied());
-        targets
+        Ok(targets
             .into_iter()
             .map(|(oracle_id, feed_ids)| (oracle_id, feed_ids.into_iter().collect()))
-            .collect()
+            .collect())
     }
 
     /// Collects Pyth oracle targets from a proxy source entry.
@@ -404,7 +401,7 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
         let is_proxy_oracle = self.is_proxy_oracle(oracle).await?;
-        let targets = self.resolve_pyth_update_targets(oracle, price_ids).await;
+        let targets = self.resolve_pyth_update_targets(oracle, price_ids).await?;
 
         if targets.is_empty() && !is_proxy_oracle {
             tracing::debug!("No Pyth targets to update on-chain");
@@ -434,109 +431,36 @@ impl OracleFetcher {
     }
 
     /// Refreshes a proxy oracle cache by invoking its on-chain `update_prices` flow.
+    ///
+    /// Best-effort: the gateway write returns only the operation status, not the
+    /// per-feed cache result, so an unsuccessful operation surfaces as an error
+    /// that the caller logs and swallows.
     #[tracing::instrument(skip(self), level = "info")]
     async fn update_proxy_prices(
         &self,
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
-        let (Some(signer_id), Some(signer_key)) = (&self.signer_id, &self.signer_key) else {
-            tracing::warn!(oracle = %oracle, "No signer configured, cannot update proxy oracle prices");
-            return Ok(false);
-        };
-
-        let access_key_query_response = self
+        let result = self
             .client
-            .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
-                block_reference: near_primitives::types::BlockReference::latest(),
-                request: near_primitives::views::QueryRequest::ViewAccessKey {
-                    account_id: signer_id.clone(),
-                    public_key: signer_key.public_key(),
-                },
+            .execute(proxy_oracle::UpdatePrices {
+                oracle_id: oracle.clone(),
+                price_ids: price_ids.to_vec(),
             })
             .await
             .map_err(|e| {
-                LiquidatorError::OracleUpdateError(format!("Failed to query access key: {e}"))
+                LiquidatorError::OracleUpdateError(format!("Proxy oracle update failed: {e}"))
             })?;
 
-        let rpc_nonce = match access_key_query_response.kind {
-            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
-                access_key.nonce
-            }
-            _ => {
-                return Err(LiquidatorError::OracleUpdateError(
-                    "Unexpected query response kind".to_string(),
-                ))
-            }
-        };
-
-        let transaction = Transaction::V0(TransactionV0 {
-            signer_id: signer_id.clone(),
-            public_key: signer_key.public_key(),
-            nonce: self.nonce_tracker.next_nonce(rpc_nonce),
-            receiver_id: oracle.clone(),
-            block_hash: access_key_query_response.block_hash,
-            actions: vec![near_primitives::action::FunctionCallAction {
-                method_name: "update_prices".to_string(),
-                args: json!({ "price_ids": price_ids }).to_string().into_bytes(),
-                gas: Gas::from_teragas(100),
-                deposit: NearToken::ZERO,
-            }
-            .into()],
-        });
-
-        let signer =
-            near_crypto::InMemorySigner::from_secret_key(signer_id.clone(), signer_key.clone());
-        let signed_transaction = transaction.sign(&signer);
-
-        let response = self
-            .client
-            .call(RpcBroadcastTxCommitRequest { signed_transaction })
-            .await
-            .map_err(|e| LiquidatorError::OracleUpdateError(format!("Transaction failed: {e}")))?;
-
-        check_transaction_success(&response).map_err(LiquidatorError::OracleUpdateError)?;
-
-        let FinalExecutionStatus::SuccessValue(value) = &response.status else {
-            return Err(LiquidatorError::OracleUpdateError(
-                "Proxy oracle update did not return a success value".to_string(),
-            ));
-        };
-
-        let statuses: HashMap<PriceIdentifier, CachedProxyPriceStatus> =
-            near_sdk::serde_json::from_slice(value).map_err(|e| {
-                LiquidatorError::OracleUpdateError(format!(
-                    "Failed to decode proxy oracle update result: {e}"
-                ))
-            })?;
-
-        let mut processed_updates = false;
-        for price_id in price_ids {
-            let Some(status) = statuses.get(price_id) else {
-                return Err(LiquidatorError::OracleUpdateError(format!(
-                    "Proxy oracle update returned no status for {price_id}"
-                )));
-            };
-            match status {
-                CachedProxyPriceStatus::Accepted { .. } => processed_updates = true,
-                CachedProxyPriceStatus::Blocked { .. } => {
-                    processed_updates = true;
-                    tracing::warn!(
-                        %price_id,
-                        ?status,
-                        "Proxy oracle update returned a blocked price; continuing with remaining updates"
-                    );
-                }
-                CachedProxyPriceStatus::ResolveFailed { .. } => {
-                    return Err(LiquidatorError::OracleUpdateError(format!(
-                        "Proxy oracle update for {price_id} returned {status:?}"
-                    )));
-                }
-            }
+        if result.operation.status != OperationStatus::Succeeded {
+            return Err(LiquidatorError::OracleUpdateError(format!(
+                "Proxy oracle update operation {} ended with status {:?}",
+                result.operation.id.0, result.operation.status
+            )));
         }
 
-        tracing::info!(oracle = %oracle, price_ids = ?price_ids, "Successfully updated proxy oracle prices");
-        Ok(processed_updates)
+        tracing::info!(oracle = %oracle, price_ids = ?price_ids, operation_id = %result.operation.id.0, "Successfully updated proxy oracle prices");
+        Ok(true)
     }
 
     /// Pushes fresh Pyth prices on-chain by fetching a VAA from Hermes and
@@ -546,19 +470,13 @@ impl OracleFetcher {
     /// liquidation execution, so prices must be fresh there — not just in the
     /// liquidator's local HTTP-fetched view.
     ///
-    /// Returns `Ok(true)` if update was sent, `Ok(false)` if no signer configured.
+    /// Returns `Ok(true)` if the update was applied on-chain.
     #[tracing::instrument(skip(self), level = "info")]
-    #[allow(clippy::too_many_lines)]
     async fn update_pyth_prices(
         &self,
         oracle: &AccountId,
         price_ids: &[PriceIdentifier],
     ) -> LiquidatorResult<bool> {
-        let (Some(signer_id), Some(signer_key)) = (&self.signer_id, &self.signer_key) else {
-            tracing::warn!("No signer configured, cannot update Pyth prices");
-            return Ok(false);
-        };
-
         tracing::info!(
             oracle = %oracle,
             price_ids = ?price_ids,
@@ -596,72 +514,47 @@ impl OracleFetcher {
             LiquidatorError::OracleUpdateError("No VAA data in Hermes response".to_string())
         })?;
 
+        // Hermes returns the update payload as a hex string. The gateway's
+        // `pyth.updatePriceFeeds` carries the raw bytes (`Base64Bytes`) and
+        // re-hex-encodes them for the on-chain `update_price_feeds` call, so the
+        // hex string is decoded here to keep the on-chain bytes identical to the
+        // pre-migration behaviour.
+        let vaa_bytes = hex::decode(vaa_hex).map_err(|e| {
+            LiquidatorError::OracleUpdateError(format!("Invalid VAA hex from Hermes: {e}"))
+        })?;
+
         tracing::info!(
-            vaa_size = vaa_hex.len(),
+            vaa_size = vaa_bytes.len(),
             "Fetched VAA from Hermes, submitting to oracle"
         );
 
-        // Get current nonce and block hash
-        let access_key_query_response = self
-            .client
-            .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
-                block_reference: near_primitives::types::BlockReference::latest(),
-                request: near_primitives::views::QueryRequest::ViewAccessKey {
-                    account_id: signer_id.clone(),
-                    public_key: signer_key.public_key(),
-                },
-            })
-            .await
-            .map_err(|e| {
-                LiquidatorError::OracleUpdateError(format!("Failed to query access key: {e}"))
-            })?;
-
-        let rpc_nonce = match access_key_query_response.kind {
-            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
-                access_key.nonce
-            }
-            _ => {
-                return Err(LiquidatorError::OracleUpdateError(
-                    "Unexpected query response kind".to_string(),
-                ))
-            }
-        };
-
-        let block_hash = access_key_query_response.block_hash;
-        let nonce = self.nonce_tracker.next_nonce(rpc_nonce);
-
-        // Construct and send update transaction
-        let transaction = Transaction::V0(TransactionV0 {
-            signer_id: signer_id.clone(),
-            public_key: signer_key.public_key(),
-            nonce,
-            receiver_id: oracle.clone(),
-            block_hash,
-            actions: vec![near_primitives::action::FunctionCallAction {
-                method_name: "update_price_feeds".to_string(),
-                args: json!({ "data": vaa_hex }).to_string().into_bytes(),
-                gas: Gas::from_teragas(100),
-                deposit: NearToken::from_millinear(1),
-            }
-            .into()],
-        });
-
-        let signer =
-            near_crypto::InMemorySigner::from_secret_key(signer_id.clone(), signer_key.clone());
-        let signed_transaction = transaction.sign(&signer);
-
         match self
             .client
-            .call(RpcBroadcastTxCommitRequest { signed_transaction })
+            .execute(pyth_spec::UpdatePriceFeeds {
+                oracle_id: oracle.clone(),
+                data: Base64Bytes(vaa_bytes),
+            })
             .await
         {
-            Ok(response) => {
+            Ok(result) if result.operation.status == OperationStatus::Succeeded => {
                 tracing::info!(
-                    tx_hash = %response.transaction.hash,
+                    operation_id = %result.operation.id.0,
                     oracle = %oracle,
                     "Successfully updated on-chain Pyth prices"
                 );
                 Ok(true)
+            }
+            Ok(result) => {
+                tracing::error!(
+                    operation_id = %result.operation.id.0,
+                    status = ?result.operation.status,
+                    oracle = %oracle,
+                    "Pyth price update did not succeed"
+                );
+                Err(LiquidatorError::OracleUpdateError(format!(
+                    "Pyth price update operation {} ended with status {:?}",
+                    result.operation.id.0, result.operation.status
+                )))
             }
             Err(e) => {
                 tracing::error!(
@@ -742,26 +635,27 @@ impl OracleFetcher {
         let mut underlying_price_ids: Vec<PriceIdentifier> = Vec::new();
 
         for &price_id in price_ids {
-            match view::<Option<PriceTransformer>>(
-                &self.client,
-                lst_oracle.clone(),
-                "get_transformer",
-                json!({ "price_identifier": price_id }),
-            )
-            .await
+            match self
+                .client
+                .read(lst_oracle::GetTransformer {
+                    oracle_id: lst_oracle.clone(),
+                    price_identifier: price_id,
+                })
+                .await
             {
-                Ok(Some(transformer)) => {
-                    tracing::debug!(
-                        price_id = ?price_id,
-                        underlying_id = ?transformer.price_id,
-                        "Found price transformer"
-                    );
-                    underlying_price_ids.push(transformer.price_id);
-                    transformers.insert(price_id, transformer);
-                }
-                Ok(None) => {
-                    tracing::debug!(price_id = ?price_id, "No transformer, using price ID as-is");
-                    underlying_price_ids.push(price_id);
+                Ok(result) => {
+                    if let Some(transformer) = result.transformer {
+                        tracing::debug!(
+                            price_id = ?price_id,
+                            underlying_id = ?transformer.price_id,
+                            "Found price transformer"
+                        );
+                        underlying_price_ids.push(transformer.price_id);
+                        transformers.insert(price_id, transformer);
+                    } else {
+                        tracing::debug!(price_id = ?price_id, "No transformer, using price ID as-is");
+                        underlying_price_ids.push(price_id);
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -865,49 +759,41 @@ impl OracleFetcher {
         price_ids: &[PriceIdentifier],
         age: u32,
     ) -> LiquidatorResult<OracleResponse> {
-        view(
-            &self.client,
-            proxy_oracle,
-            "list_ema_prices_no_older_than",
-            json!({
-                "price_ids": price_ids,
-                "age": age,
-            }),
-        )
-        .await
-        .map_err(LiquidatorError::PriceFetchError)
+        let result = self
+            .client
+            .read(pyth_spec::ListEmaPricesNoOlderThan {
+                oracle_id: proxy_oracle,
+                price_ids: price_ids.to_vec(),
+                age: u64::from(age),
+            })
+            .await
+            .map_err(|e| LiquidatorError::PriceFetchError(e.into()))?;
+
+        Ok(result
+            .prices
+            .into_iter()
+            .map(|entry| (entry.price_id, entry.price))
+            .collect())
     }
 
     // ── Transformers ─────────────────────────────────────────────────────────
 
     /// Fetches the input value needed for price transformation (e.g., LST redemption rate).
     async fn fetch_transformer_input(&self, call: &Call) -> Result<Decimal, RpcError> {
-        let request = near_jsonrpc_client::methods::query::RpcQueryRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::CallFunction {
-                account_id: call.account_id.as_str().parse().map_err(|err| {
-                    RpcError::WrongResponseKind(format!(
-                        "Invalid account ID in transformer call: {err}"
-                    ))
-                })?,
-                method_name: call.method_name.clone(),
-                args: call.args.0.clone().into(),
-            },
-        };
+        let result = self
+            .client
+            .read(contract::ViewFunction {
+                // `near_sdk::AccountId` is a re-export of `near_account_id::AccountId`
+                // (the type the spec uses), so no conversion is needed.
+                contract_id: call.account_id.clone(),
+                method_name: ContractMethodName(call.method_name.clone()),
+                args: ContractArgs::Raw(Base64Bytes(call.args.0.clone())),
+            })
+            .await
+            .map_err(RpcError::from)?;
 
-        let response = self.client.call(request).await.map_err(RpcError::from)?;
-
-        // Parse the result
-        if let near_jsonrpc_primitives::types::query::QueryResponseKind::CallResult(result) =
-            response.kind
-        {
-            let value: Decimal = near_sdk::serde_json::from_slice(&result.result)
-                .map_err(RpcError::DeserializeError)?;
-            Ok(value)
-        } else {
-            Err(RpcError::WrongResponseKind(
-                "Expected CallResult".to_string(),
-            ))
-        }
+        let value: Decimal =
+            near_sdk::serde_json::from_value(result.value).map_err(RpcError::DeserializeError)?;
+        Ok(value)
     }
 }

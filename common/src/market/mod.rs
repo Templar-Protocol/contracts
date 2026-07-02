@@ -136,36 +136,36 @@ mod tests {
     /// and return the parsed message. This is the regression guard for the
     /// `msg` strings passed to `ft_transfer_call`/`mt_transfer_call`: the
     /// contract deserializes `msg` into [`DepositMsg`] through this same path.
-    fn roundtrip(wire: Value) -> DepositMsg {
+    fn roundtrip(wire: &Value) -> DepositMsg {
         let parsed: DepositMsg = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+        assert_eq!(&serde_json::to_value(&parsed).unwrap(), wire);
         parsed
     }
 
     #[test]
     fn deposit_msg_supply() {
-        let msg = roundtrip(json!("Supply"));
+        let msg = roundtrip(&json!("Supply"));
         assert!(matches!(msg, DepositMsg::Supply));
         assert!(msg.expects_borrow_asset());
     }
 
     #[test]
     fn deposit_msg_collateralize() {
-        let msg = roundtrip(json!("Collateralize"));
+        let msg = roundtrip(&json!("Collateralize"));
         assert!(matches!(msg, DepositMsg::Collateralize));
         assert!(!msg.expects_borrow_asset());
     }
 
     #[test]
     fn deposit_msg_repay() {
-        let msg = roundtrip(json!("Repay"));
+        let msg = roundtrip(&json!("Repay"));
         assert!(matches!(msg, DepositMsg::Repay));
         assert!(msg.expects_borrow_asset());
     }
 
     #[test]
     fn deposit_msg_repay_account() {
-        let msg = roundtrip(json!({ "RepayAccount": { "account_id": "borrow_user.near" } }));
+        let msg = roundtrip(&json!({ "RepayAccount": { "account_id": "borrow_user.near" } }));
         let DepositMsg::RepayAccount(RepayAccountMsg { account_id }) = &msg else {
             panic!("expected RepayAccount, got {msg:?}");
         };
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn deposit_msg_liquidate() {
-        let msg = roundtrip(json!({
+        let msg = roundtrip(&json!({
             "Liquidate": { "account_id": "borrow_user.near", "amount": U128(1_000_000) },
         }));
         let DepositMsg::Liquidate(LiquidateMsg { account_id, amount }) = &msg else {

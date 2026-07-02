@@ -7,6 +7,7 @@ pub enum ContractKind {
     Unknown,
     Registry,
     Market,
+    Vault,
     ProxyOracle,
     ProxyGovernance,
     LstOracle,

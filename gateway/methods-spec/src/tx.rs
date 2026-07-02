@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{
     common::{ContractArgs, TxExecutionStatus},
-    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
+    Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken, SignedDelegateActionInput,
 };
 
 /// Fetch transaction execution status and result details.
@@ -46,8 +46,17 @@ pub enum Status {
 pub struct GetResult {
     pub status: Status,
     pub total_gas_burnt: NearGas,
+    /// Total NEAR burnt across the transaction and all its receipts — the
+    /// actual cost the signer paid (not always `gas × gas_price`).
+    pub tokens_burnt: NearToken,
     pub logs: Vec<String>,
     pub return_value: Option<ReturnValue>,
+    /// Accounts whose receipts failed, even when the top-level transaction
+    /// succeeded. NEAR reports `status` from the final receipt only, so an
+    /// `ft_transfer_call` whose receiver callback panicked (and was refunded by
+    /// `ft_resolve_transfer`) still shows `Succeeded` here; a consumer that
+    /// requires every receipt to have succeeded must check this is empty.
+    pub failed_receipts: Vec<AccountId>,
 }
 
 /// Submit a single function-call transaction.
@@ -67,6 +76,13 @@ pub struct FunctionCall {
 pub struct Transfer {
     pub receiver_id: AccountId,
     pub amount: NearToken,
+}
+
+/// Relay a NEP-366 signed delegate action.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "tx.relaySignedDelegateAction")]
+pub struct RelaySignedDelegateAction {
+    pub signed_delegate_action: SignedDelegateActionInput,
 }
 
 /// Deploy contract code to an existing account in a single transaction.

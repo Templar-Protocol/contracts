@@ -20,6 +20,7 @@ use near_token::NearToken;
 use templar_common::{
     market::{MarketConfiguration, YieldWeights},
     oracle::{pyth::PriceIdentifier, redstone::config as redstone_config},
+    vault::VaultConfiguration,
     Nanoseconds,
 };
 use templar_gateway_core::NearClient;
@@ -35,9 +36,9 @@ use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
     market_configuration,
     test_signer::TestSigner,
-    FtController, GovernanceContractController, MarketController, MockOracleController,
-    ProxyOracleController, ReceiverController, RedStoneAdapterController, RefFinanceController,
-    RegistryController, UniversalAccountController,
+    vault_configuration, FtController, GovernanceContractController, MarketController,
+    MockOracleController, ProxyOracleController, ReceiverController, RedStoneAdapterController,
+    RefFinanceController, RegistryController, UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -380,6 +381,35 @@ impl SandboxHarness {
         .await?;
 
         Ok((market_id, configuration))
+    }
+
+    pub async fn deploy_vault(&self) -> Result<(AccountId, VaultConfiguration)> {
+        let (vault_id, signer) = self
+            .create_account("vault", NearToken::from_near(100))
+            .await?;
+        let configuration = vault_configuration(
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.gateway_signer_account_id.0.clone(),
+            self.ft_contract_id.clone(),
+            self.beneficiary_account_id.clone(),
+            self.beneficiary_account_id.clone(),
+        );
+
+        deploy_contract(
+            &self.network,
+            vault_id.clone(),
+            signer,
+            test_utils::controller::vault::load_wasm().await.to_vec(),
+            "new",
+            serde_json::json!({
+                "configuration": configuration.clone(),
+            }),
+        )
+        .await?;
+
+        Ok((vault_id, configuration))
     }
 
     pub async fn deploy_universal_account(&self) -> Result<(AccountId, TestSigner)> {
@@ -1009,7 +1039,11 @@ async fn deploy_contract(
     Ok(())
 }
 
-pub(crate) fn test_secret_key() -> Result<SecretKey> {
+/// The fixed secret key every harness-created account is provisioned with
+/// (signer accounts and `create_account_signer` contract accounts alike).
+/// Exposed so external consumers can build their own gateway client against the
+/// sandbox using the same key the harness deploys with.
+pub fn test_secret_key() -> Result<SecretKey> {
     Ok("ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
         .parse()?)
 }

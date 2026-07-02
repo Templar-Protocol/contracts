@@ -13081,20 +13081,18 @@ name = "templar-accumulator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "clap",
  "futures",
+ "near-account-id",
+ "near-api",
  "near-crypto",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
- "near-sdk",
  "templar-common",
- "thiserror 2.0.18",
+ "templar-gateway-client",
+ "templar-gateway-methods-spec",
+ "templar-gateway-types",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "wiremock",
 ]
 
 [[package]]
@@ -13228,11 +13226,14 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "near-api",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-store",
  "templar-gateway-types",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -13242,6 +13243,7 @@ dependencies = [
  "actix",
  "anyhow",
  "async-trait",
+ "chrono",
  "futures",
  "hex",
  "moka",
@@ -13261,6 +13263,7 @@ dependencies = [
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
  "templar-gateway-types",
+ "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
@@ -13285,6 +13288,7 @@ name = "templar-gateway-methods-dispatch"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "borsh 1.6.1",
  "near-account-id",
  "near-api",
  "near-contract-standards",
@@ -13294,6 +13298,7 @@ dependencies = [
  "templar-gateway-core",
  "templar-gateway-methods-spec",
  "templar-gateway-types",
+ "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-universal-account",
@@ -13310,6 +13315,7 @@ dependencies = [
  "templar-common",
  "templar-gateway-macros",
  "templar-gateway-types",
+ "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
@@ -13392,6 +13398,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "templar-common",
+ "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
@@ -13421,8 +13428,10 @@ dependencies = [
  "async-trait",
  "borsh 1.6.1",
  "chrono",
+ "indexmap 2.13.1",
  "near-account-id",
  "near-api",
+ "rstest",
  "serde_json",
  "sqlx",
  "templar-gateway-core",
@@ -13452,6 +13461,7 @@ dependencies = [
  "templar-gateway-methods-spec",
  "templar-gateway-runtime",
  "templar-gateway-types",
+ "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
@@ -13485,22 +13495,27 @@ dependencies = [
 name = "templar-liquidator"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
  "futures",
  "hex",
  "near-account-id",
+ "near-api",
  "near-crypto",
  "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
  "near-sdk",
  "reqwest 0.11.27",
  "serde",
  "templar-common",
- "templar-proxy-oracle-kernel",
+ "templar-gateway-client",
+ "templar-gateway-core",
+ "templar-gateway-methods-spec",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "templar-proxy-oracle-near-common",
+ "test-utils",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -13867,11 +13882,13 @@ dependencies = [
 name = "templar-relayer"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "clap",
  "dotenvy",
  "futures",
  "hex",
+ "near-api",
  "near-contract-standards",
  "near-crypto",
  "near-jsonrpc-client",
@@ -13887,6 +13904,12 @@ dependencies = [
  "solana-sdk",
  "sqlx",
  "templar-common",
+ "templar-gateway-client",
+ "templar-gateway-core",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
+ "templar-gateway-store",
+ "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-redstone-bridge",
@@ -13898,6 +13921,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid 1.23.0",
 ]
 
 [[package]]

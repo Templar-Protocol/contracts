@@ -1,4 +1,5 @@
 mod account_impl;
+mod chain_impl;
 mod contract_impl;
 mod ft_impl;
 mod lst_oracle_impl;
@@ -14,7 +15,9 @@ mod ref_finance_impl;
 mod registry_impl;
 mod storage_impl;
 mod token_impl;
+mod token_ops;
 mod tx_impl;
 mod universal_account_impl;
+mod vault_impl;
 
 pub struct Dispatch;

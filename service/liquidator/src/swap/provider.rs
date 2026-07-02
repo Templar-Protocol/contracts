@@ -4,7 +4,6 @@
 //! a trait object. This module provides a concrete enum that can be used
 //! for dynamic dispatch while maintaining type safety.
 
-use near_primitives::views::FinalExecutionStatus;
 use near_sdk::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset, FungibleAssetAmount};
 
@@ -62,7 +61,7 @@ impl SwapProvider for SwapProviderImpl {
         from_asset: &FungibleAsset<F>,
         to_asset: &FungibleAsset<T>,
         amount: FungibleAssetAmount<F>,
-    ) -> AppResult<FinalExecutionStatus> {
+    ) -> AppResult<()> {
         match self {
             Self::RefFinance(provider) => provider.swap(from_asset, to_asset, amount).await,
             Self::OneClick(provider) => provider.swap(from_asset, to_asset, amount).await,

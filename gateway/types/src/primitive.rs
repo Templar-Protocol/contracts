@@ -63,48 +63,6 @@ impl JsonSchema for CryptoHash {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct U128(pub u128);
-
-impl Serialize for U128 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for U128 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-        let value = encoded.parse().map_err(D::Error::custom)?;
-        Ok(Self(value))
-    }
-}
-
-impl JsonSchema for U128 {
-    fn schema_name() -> String {
-        "U128".to_owned()
-    }
-
-    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
-        Schema::Object(SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            string: Some(Box::new(StringValidation::default())),
-            metadata: Some(Box::new(Metadata {
-                title: Some("Unsigned 128-bit integer".to_owned()),
-                description: Some("Base-10 encoded unsigned integer payload.".to_owned()),
-                ..Metadata::default()
-            })),
-            ..SchemaObject::default()
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Base64Bytes(pub Vec<u8>);
 
@@ -165,6 +123,67 @@ impl JsonSchema for Base64Bytes {
             format: Some("byte".to_owned()),
             ..SchemaObject::default()
         })
+    }
+}
+
+/// A NEP-366 signed delegate action in its base64-encoded borsh wire form,
+/// decoded on deserialization so a malformed payload is rejected at the spec
+/// boundary. This guarantees well-formedness, not authenticity: the signature
+/// and expiry are verified on-chain by the receiver contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedDelegateActionInput(
+    near_api_types::transaction::delegate_action::SignedDelegateAction,
+);
+
+impl SignedDelegateActionInput {
+    /// Borsh-decode from the NEP-366 byte encoding.
+    pub fn from_borsh_bytes(bytes: &[u8]) -> std::io::Result<Self> {
+        use borsh::BorshDeserialize as _;
+        Ok(Self(
+            near_api_types::transaction::delegate_action::SignedDelegateAction::try_from_slice(
+                bytes,
+            )?,
+        ))
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> near_api_types::transaction::delegate_action::SignedDelegateAction {
+        self.0
+    }
+}
+
+impl Serialize for SignedDelegateActionInput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = borsh::to_vec(&self.0).map_err(<S::Error as serde::ser::Error>::custom)?;
+        Base64Bytes(bytes).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignedDelegateActionInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes = Base64Bytes::deserialize(deserializer)?;
+        Self::from_borsh_bytes(&bytes.0).map_err(|error| {
+            D::Error::custom(format!(
+                "invalid borsh-encoded SignedDelegateAction: {error}"
+            ))
+        })
+    }
+}
+
+impl JsonSchema for SignedDelegateActionInput {
+    fn schema_name() -> String {
+        "SignedDelegateActionInput".to_owned()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        // Same wire form as `Base64Bytes`: a base64 string.
+        Base64Bytes::json_schema(generator)
     }
 }
 

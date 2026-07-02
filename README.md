@@ -1,6 +1,7 @@
 # Templar Protocol
 
 [![Test](https://github.com/Templar-Protocol/contracts/actions/workflows/test.yml/badge.svg)](https://github.com/Templar-Protocol/contracts/actions/workflows/test.yml)
+[![Kani](https://github.com/Templar-Protocol/contracts/actions/workflows/kani.yml/badge.svg)](https://github.com/Templar-Protocol/contracts/actions/workflows/kani.yml)
 [![Coverage](https://codecov.io/gh/Templar-Protocol/contracts/branch/dev/graph/badge.svg)](https://codecov.io/gh/Templar-Protocol/contracts)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 

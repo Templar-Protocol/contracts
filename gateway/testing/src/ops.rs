@@ -25,9 +25,10 @@ use templar_gateway_methods_spec::{ft, market, registry, storage, tx};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
     primitive::PublicKey,
-    Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus, U128,
+    Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus,
 };
 
+use templar_primitives::SU128;
 use test_utils::to_price;
 
 use crate::sandbox::SandboxHarness;
@@ -48,7 +49,7 @@ impl SandboxHarness {
     pub fn client(&self) -> Result<Client> {
         let mut builder = Client::builder(self.network.clone());
         for (account_id, managed) in self.signers_snapshot() {
-            builder = builder.signer(account_id, managed.signer.clone());
+            builder = builder.with_signer(account_id, managed.signer.clone());
         }
         builder
             .build()
@@ -224,7 +225,7 @@ impl SandboxHarness {
             tx::FunctionCall {
                 receiver_id: token_id.clone(),
                 method_name: ContractMethodName("mint".to_owned()),
-                args: ContractArgs::Json(serde_json::json!({ "amount": U128(amount) })),
+                args: ContractArgs::Json(serde_json::json!({ "amount": SU128::from(amount) })),
                 gas: NearGas::from_tgas(20),
                 deposit: NearToken::from_yoctonear(0),
             },
@@ -824,7 +825,7 @@ impl SandboxHarness {
             ft::Transfer {
                 contract_id: token_id.clone(),
                 receiver_id: receiver_id.clone(),
-                amount: U128(amount),
+                amount: SU128::from(amount),
                 memo: None,
             },
         )
@@ -1007,7 +1008,7 @@ impl SandboxHarness {
             ft::TransferCall {
                 contract_id: token_id.clone(),
                 receiver_id: receiver_id.clone(),
-                amount: U128(amount),
+                amount: SU128::from(amount),
                 msg,
                 memo: None,
             },
@@ -1082,7 +1083,7 @@ impl SandboxHarness {
         let mut total = 0u64;
         for step in &result.operation.steps {
             let tx_hash = match &step.status {
-                StepStatus::Succeeded { tx_hash } | StepStatus::Failed { tx_hash, .. } => {
+                StepStatus::Succeeded { tx_hash, .. } | StepStatus::Reverted { tx_hash, .. } => {
                     tx_hash.to_string()
                 }
                 _ => continue,

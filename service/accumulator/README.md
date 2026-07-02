@@ -22,7 +22,7 @@ accumulator \
 | `--signer-key`                | `SIGNER_KEY`                | Required  | Private key (`ed25519:...`)                     |
 | `--signer-account`            | `SIGNER_ACCOUNT_ID`         | Required  | NEAR account for signing                        |
 | `--network`                   | `NETWORK`                   | `testnet` | Network: `testnet` or `mainnet`                 |
-| `--timeout`                   | `TIMEOUT`                   | `60`      | RPC timeout in seconds                          |
+| `--rpc-url`                    | `RPC_URL`                   | Network default | Custom RPC URL (overrides the network default) |
 | `--interval`                  | `INTERVAL`                  | `600`     | Interval between runs (seconds)                 |
 | `--static-interval`           | `STATIC_INTERVAL`           | `86400`   | Interval between static accumulations (seconds) |
 | `--registry-refresh-interval` | `REGISTRY_REFRESH_INTERVAL` | `3600`    | Market refresh interval (seconds)               |
@@ -53,7 +53,6 @@ export REGISTRIES_ACCOUNT_IDS="registry1.near registry2.near"
 export SIGNER_KEY="ed25519:..."
 export SIGNER_ACCOUNT_ID="accumulator.near"
 export NETWORK="mainnet"
-export TIMEOUT="120"
 export INTERVAL="600"
 export CONCURRENCY="10"
 export RUST_LOG="info,templar_accumulator=debug"
@@ -130,8 +129,7 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 
 - Failed accumulation: Logs error, continues processing
 - Failed registry refresh: Uses existing market list
-- RPC errors: Retries with exponential backoff (up to 5s)
-- Transaction timeout: Waits then polls for status
+- Reads/writes go through the in-process gateway library, which handles nonce sequencing, submission, and polling for finality
 
 ## Security
 
@@ -150,9 +148,9 @@ export RUST_LOG="debug,templar_accumulator=trace"  # Development
 
 **High failure rate:**
 
-- Increase `--timeout` (default: 60s)
 - Reduce `--concurrency` (default: 4)
 - Check RPC endpoint health
+- Try a different `--rpc-url`
 
 ## Building
 
@@ -163,13 +161,25 @@ cargo build --release -p templar-accumulator --bin accumulator
 
 ## Development
 
-Self-contained reference implementation. Extend by modifying `src/lib.rs`:
+All NEAR reads and writes go through the in-process gateway library
+(`templar-gateway-client`); the bot carries no bespoke RPC/transaction plumbing.
+Reads use `SigningClient::read` (e.g. `market::ListBorrowPositions`,
+`registry::ListDeployments`, `market::GetConfiguration`); writes use
+`SigningClient::execute` (e.g. `market::ApplyInterest`,
+`market::AccumulateStaticYield`), which signs and submits through the gateway's
+operation driver.
+
+Extend by modifying `src/lib.rs` — e.g. add a write helper on `Accumulator`:
 
 ```rust
-pub async fn accumulate(&self, borrow: AccountId) -> anyhow::Result<()> {
-    // Add custom logic (e.g., skip recent updates)
-    // Execute accumulation
+async fn apply_interest(&self, account_id: AccountId) -> anyhow::Result<()> {
+    self.client
+        .execute(market::ApplyInterest {
+            market_id: self.market.clone(),
+            account_id: Some(account_id),
+            snapshot_limit: None,
+        })
+        .await?;
+    Ok(())
 }
 ```
-
-RPC utilities in `src/rpc.rs`: `view()`, `send_tx()`, `get_access_key_data()`, `list_deployments()`

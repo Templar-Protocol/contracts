@@ -202,3 +202,63 @@ pub trait HashForSigning {
         near_sdk::env::sha256_array(self.preimage_for_signing())
     }
 }
+
+#[cfg(kani)]
+mod kani_proofs {
+    use near_sdk::{json_types::U64, AccountId};
+
+    use crate::{authentication::ed25519::raw, encoding, PayloadExecutionParameters};
+
+    use super::*;
+
+    // These proofs start from a message whose signature has already been accepted.
+    // They prove execution-parameter and payload plumbing, not cryptographic binding.
+    fn account_id() -> AccountId {
+        "account.near".parse().unwrap()
+    }
+
+    fn execution_parameters() -> PayloadExecutionParameters {
+        PayloadExecutionParameters::builder_empty()
+            .block_height(7_u64)
+            .index(3_u64)
+            .nonce(11_u64)
+            .verifying_contract(account_id())
+            .build()
+    }
+
+    fn valid_raw_message(payload: u8) -> MessageWithValidSignature<raw::Message<u8>> {
+        let message = raw::Message::from_parsed(Payload::new(execution_parameters(), payload));
+
+        MessageWithValidSignature(MessageWithSignature {
+            message,
+            signature: encoding::ed25519::Signature([0u8; 64]),
+            auxiliary: (),
+        })
+    }
+
+    #[kani::proof]
+    fn valid_message_execution_returns_exact_signed_payload() {
+        let signed_payload = kani::any::<u8>();
+
+        let returned = valid_raw_message(signed_payload)
+            .verify_execution(&execution_parameters(), |_| true)
+            .unwrap();
+
+        assert_eq!(returned, signed_payload);
+    }
+
+    #[kani::proof]
+    fn valid_message_execution_rejects_parameter_mismatch_before_payload_return() {
+        let signed_payload = kani::any::<u8>();
+        let mut expected_parameters = execution_parameters();
+        expected_parameters.nonce = U64(expected_parameters.nonce.0 + 1);
+
+        let result =
+            valid_raw_message(signed_payload).verify_execution(&expected_parameters, |_| true);
+
+        assert!(matches!(
+            result,
+            Err(ExecutionError::Mismatch { field: "nonce", .. })
+        ));
+    }
+}

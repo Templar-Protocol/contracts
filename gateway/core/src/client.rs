@@ -17,6 +17,7 @@ pub mod storage;
 pub mod token;
 pub mod tx;
 pub mod universal_account;
+pub mod vault;
 
 use std::sync::Arc;
 
@@ -42,6 +43,7 @@ use templar_gateway_types::{ManagedAccountId, NearGas, NearToken};
 use token::TokenClient;
 use tx::TxClient;
 use universal_account::UniversalAccountClient;
+use vault::VaultClient;
 
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
@@ -51,7 +53,6 @@ trait BoundContractClient {
 #[derive(Clone)]
 pub struct ContractWriteOptions {
     signer_account_id: ManagedAccountId,
-    wait_until: templar_gateway_types::common::TxExecutionStatus,
     gas: NearGas,
     deposit: NearToken,
 }
@@ -60,19 +61,9 @@ impl ContractWriteOptions {
     pub fn new(signer_account_id: ManagedAccountId) -> Self {
         Self {
             signer_account_id,
-            wait_until: templar_gateway_types::common::TxExecutionStatus::ExecutedOptimistic,
             gas: NearGas::from_tgas(30),
             deposit: NearToken::from_yoctonear(0),
         }
-    }
-
-    #[must_use]
-    pub fn wait_until(
-        mut self,
-        wait_until: templar_gateway_types::common::TxExecutionStatus,
-    ) -> Self {
-        self.wait_until = wait_until;
-        self
     }
 
     #[must_use]
@@ -214,6 +205,13 @@ impl NearClient {
 
     pub fn market(&self, contract_id: AccountId) -> MarketClient<'_> {
         MarketClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn vault(&self, contract_id: AccountId) -> VaultClient<'_> {
+        VaultClient {
             inner: self,
             contract_id,
         }

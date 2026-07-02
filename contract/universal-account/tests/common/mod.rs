@@ -282,6 +282,42 @@ pub async fn list_keys(network: &NetworkConfig, ua: &AccountId) -> Result<Vec<Ke
         .data)
 }
 
+/// Reflexively add `key` to the universal account. `add_key` is `#[private]`, so
+/// the call is signed by the universal-account itself.
+pub async fn add_key(network: &NetworkConfig, ua: &AccountId, key: &KeyId) -> Result<CallOutcome> {
+    call(
+        network,
+        ua,
+        "add_key",
+        json!({ "key": key }),
+        NearToken::from_near(0),
+        Gas::from_tgas(30),
+        ua,
+        test_signer(),
+    )
+    .await
+}
+
+/// Reflexively remove `key` from the universal account. `remove_key` is
+/// `#[private]`, so the call is signed by the universal-account itself.
+pub async fn remove_key(
+    network: &NetworkConfig,
+    ua: &AccountId,
+    key: &KeyId,
+) -> Result<CallOutcome> {
+    call(
+        network,
+        ua,
+        "remove_key",
+        json!({ "key": key }),
+        NearToken::from_near(0),
+        Gas::from_tgas(30),
+        ua,
+        test_signer(),
+    )
+    .await
+}
+
 pub async fn stored_state_version(network: &NetworkConfig, ua: &AccountId) -> Result<u32> {
     Ok(Contract(ua.clone())
         .call_function("get_stored_state_version", json!({}))

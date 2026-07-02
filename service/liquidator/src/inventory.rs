@@ -10,15 +10,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use near_jsonrpc_client::JsonRpcClient;
 use near_sdk::{json_types::U128, serde::Serialize, AccountId};
 use templar_common::asset::{
     BorrowAsset, BorrowAssetAmount, CollateralAsset, CollateralAssetAmount, FungibleAsset,
     FungibleAssetAmount,
 };
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::token::{self, TokenReference};
 use tokio::sync::RwLock;
 
-use crate::rpc::{view, RpcError};
+use crate::rpc::RpcError;
 
 /// Result type for inventory operations
 pub type InventoryResult<T> = Result<T, InventoryError>;
@@ -94,8 +95,8 @@ impl<T: templar_common::asset::AssetClass> InventoryEntry<T> {
 /// across async tasks. Multiple readers can access inventory state
 /// simultaneously, but writers have exclusive access.
 pub struct InventoryManager {
-    /// RPC client for balance queries
-    client: JsonRpcClient,
+    /// Gateway client for balance queries
+    client: SigningClient,
     /// Bot's account ID
     account_id: AccountId,
     /// Tracked borrow assets and their balances
@@ -113,9 +114,9 @@ impl InventoryManager {
     ///
     /// # Arguments
     ///
-    /// * `client` - JSON-RPC client for blockchain queries
+    /// * `client` - Gateway client for blockchain queries
     /// * `account_id` - Bot's account ID
-    pub fn new(client: JsonRpcClient, account_id: AccountId) -> Self {
+    pub fn new(client: SigningClient, account_id: AccountId) -> Self {
         Self {
             client,
             account_id,
@@ -327,21 +328,16 @@ impl InventoryManager {
 
     /// Fetches current balance for an asset from blockchain
     async fn fetch_balance(&self, asset: &FungibleAsset<BorrowAsset>) -> InventoryResult<U128> {
-        let balance_action = asset.balance_of_action(&self.account_id);
+        let result = self
+            .client
+            .read(token::GetBalanceOf {
+                token: TokenReference::from(asset),
+                account_id: self.account_id.clone(),
+            })
+            .await
+            .map_err(|e| InventoryError::FetchBalanceError(e.into()))?;
 
-        let args: near_sdk::serde_json::Value =
-            near_sdk::serde_json::from_slice(&balance_action.args)
-                .map_err(RpcError::DeserializeError)?;
-
-        let balance = view::<U128>(
-            &self.client,
-            asset.contract_id().into(),
-            &balance_action.method_name,
-            args,
-        )
-        .await?;
-
-        Ok(balance)
+        Ok(U128(result.balance.0))
     }
 
     /// Gets available (unreserved) balance for an asset
@@ -517,21 +513,16 @@ impl InventoryManager {
         &self,
         asset: &FungibleAsset<CollateralAsset>,
     ) -> InventoryResult<U128> {
-        let balance_action = asset.balance_of_action(&self.account_id);
+        let result = self
+            .client
+            .read(token::GetBalanceOf {
+                token: TokenReference::from(asset),
+                account_id: self.account_id.clone(),
+            })
+            .await
+            .map_err(|e| InventoryError::FetchBalanceError(e.into()))?;
 
-        let args: near_sdk::serde_json::Value =
-            near_sdk::serde_json::from_slice(&balance_action.args)
-                .map_err(RpcError::DeserializeError)?;
-
-        let balance = view::<U128>(
-            &self.client,
-            asset.contract_id().into(),
-            &balance_action.method_name,
-            args,
-        )
-        .await?;
-
-        Ok(balance)
+        Ok(U128(result.balance.0))
     }
 
     /// Gets collateral inventory for iteration
@@ -595,6 +586,29 @@ mod tests {
         FungibleAsset::from_str("nep141:usdc.near").unwrap()
     }
 
+    /// Builds a [`SigningClient`] for tests. No network I/O happens at
+    /// construction; the inventory unit tests only exercise in-memory
+    /// reserve/release accounting and never issue reads.
+    fn create_test_client() -> SigningClient {
+        let network = near_api::NetworkConfig::from_rpc_url(
+            "testnet",
+            "https://rpc.testnet.near.org".parse().unwrap(),
+        );
+        // Derive a self-consistent ed25519 keypair so `SigningClient::connect`
+        // (which validates the secret against its embedded public key) accepts it.
+        let secret_key: near_api::SecretKey =
+            near_crypto::SecretKey::from_seed(near_crypto::KeyType::ED25519, "liquidator-test")
+                .to_string()
+                .parse()
+                .unwrap();
+        SigningClient::connect(
+            network,
+            AccountId::from_str("test.near").unwrap(),
+            secret_key,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_inventory_entry_reserve_release() {
         let mut entry: InventoryEntry<BorrowAsset> = InventoryEntry {
@@ -633,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_inventory_manager_reserve_release() {
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let client = create_test_client();
         let account_id = AccountId::from_str("test.near").unwrap();
         let mut inventory = InventoryManager::new(client, account_id);
 
@@ -667,7 +681,7 @@ mod tests {
 
     #[test]
     fn test_inventory_reserve_insufficient_balance() {
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let client = create_test_client();
         let account_id = AccountId::from_str("test.near").unwrap();
         let mut inventory = InventoryManager::new(client, account_id);
 
@@ -689,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_inventory_get_total_balance() {
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let client = create_test_client();
         let account_id = AccountId::from_str("test.near").unwrap();
         let mut inventory = InventoryManager::new(client, account_id);
 
@@ -711,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_collateral_balances_empty() {
-        let client = JsonRpcClient::connect("https://rpc.testnet.near.org");
+        let client = create_test_client();
         let account_id = AccountId::from_str("test.near").unwrap();
         let inventory = InventoryManager::new(client, account_id);
 

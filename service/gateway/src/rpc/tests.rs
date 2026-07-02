@@ -19,6 +19,7 @@ mod storage_tests;
 mod token_tests;
 mod tx_tests;
 mod universal_account_tests;
+mod vault_tests;
 
 use super::*;
 
@@ -39,7 +40,7 @@ use templar_gateway_core::GatewayContext;
 use templar_gateway_methods_spec::{
     account, contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
     proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
-    universal_account,
+    universal_account, vault,
 };
 use templar_gateway_oracle_updates_dispatch::{
     GatewayContextBuilderOracleExt, WithPythSource, WithRedStoneSource,
@@ -91,7 +92,8 @@ impl TestStack {
             context,
             harness.gateway_signers(),
             Arc::new(MemoryStore::new()),
-        )?;
+        )
+        .await?;
 
         let server = ServerBuilder::default().build("127.0.0.1:0").await?;
         let local_addr = server.local_addr()?;
@@ -151,15 +153,10 @@ async fn register_ft_account(
 }
 
 fn tx_hash(result: &templar_gateway_types::common::WriteOperationResult) -> CryptoHash {
-    match &result.operation.steps[0].status {
-        templar_gateway_types::StepStatus::Prepared { tx_hash }
-        | templar_gateway_types::StepStatus::Submitted { tx_hash }
-        | templar_gateway_types::StepStatus::Succeeded { tx_hash }
-        | templar_gateway_types::StepStatus::Failed { tx_hash, .. } => *tx_hash,
-        templar_gateway_types::StepStatus::NotStarted => {
-            panic!("transaction hash should be present for final execution")
-        }
-    }
+    result.operation.steps[0]
+        .status
+        .tx_hash()
+        .expect("transaction hash should be present for final execution")
 }
 
 async fn start_mock_hermes_server(vaa_hex: &str) -> Result<MockServer> {

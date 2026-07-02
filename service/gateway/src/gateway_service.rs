@@ -31,7 +31,7 @@ impl<ContextType> GatewayService<ContextType>
 where
     ContextType: HasNearClient + Clone + Send + std::marker::Unpin + 'static,
 {
-    pub fn spawn(
+    pub async fn spawn(
         context: ContextType,
         signers: HashMap<ManagedAccountId, ManagedSigner>,
         store: SharedOperationStore,
@@ -58,17 +58,15 @@ where
             runtime: Arc::new(Mutex::new(Some(runtime))),
         };
 
-        tokio::spawn({
-            let driver = service.inner.driver.clone();
-            async move {
-                if let Err(error) = driver.resume_incomplete_operations().await {
-                    tracing::warn!(
-                        error = %error,
-                        "failed to list or persist incomplete gateway operations during startup recovery"
-                    );
-                }
-            }
-        });
+        // Recover incomplete operations before returning the service (and thus
+        // before it serves traffic), so recovery never races a live request —
+        // e.g. reaping a reservation another request has just created.
+        if let Err(error) = service.inner.driver.resume_incomplete_operations().await {
+            tracing::warn!(
+                error = %error,
+                "failed to list or persist incomplete gateway operations during startup recovery"
+            );
+        }
 
         Ok(service)
     }
@@ -185,7 +183,8 @@ mod tests {
             context,
             gateway_signers,
             Arc::new(templar_gateway_store::MemoryStore::new()),
-        )?;
+        )
+        .await?;
 
         Ok((
             TestHarness {

@@ -162,10 +162,11 @@ mod tests {
         authentication::{
             ed25519::raw,
             passkey::data::{AuthenticatorData, ClientDataJson},
+            with_raw_string::WithRawString,
             HashForSigning, Payload,
         },
-        transaction::{self, Transaction},
-        KeyParameters, NEAR_TESTNET_CHAIN_ID,
+        transaction::{self, Action, Transaction},
+        KeyParameters, NEAR_MAINNET_CHAIN_ID, NEAR_TESTNET_CHAIN_ID,
     };
 
     use super::*;
@@ -278,6 +279,40 @@ mod tests {
         .into()
     }
 
+    #[test]
+    #[ignore = "ENG-162: enable after PayloadExecutionParameters stores and verifies immutable domain_id"]
+    fn verify_rejects_same_chain_and_contract_with_different_domain_id() {
+        let signed_domain_id = [1u8; 32];
+        let verifier_domain_id = [2u8; 32];
+        assert_ne!(signed_domain_id, verifier_domain_id);
+
+        let expected_parameters = PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
+                block_height: U64(12345),
+                index: U64(1),
+                nonce: U64(44),
+            })
+            .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+            .build_salt();
+
+        let error = passkey_execute_args()
+            .verify(&expected_parameters, |_| true)
+            .expect_err(
+                "same chain_id and verifying_contract must still reject a different domain_id",
+            );
+
+        assert!(
+            matches!(
+                error,
+                VerificationError::Execution(ExecutionError::Mismatch {
+                    field: "domain_id",
+                    ..
+                })
+            ),
+            "expected domain_id mismatch, got {error:?}",
+        );
+    }
+
     #[rstest]
     #[case("my-universal-account.near", 12345, 1, 44)]
     #[should_panic = r#"Execution(Mismatch { field: "verifying_contract", expected: "my-universal-account.nearx", actual: "my-universal-account.near" })"#]
@@ -337,6 +372,189 @@ mod tests {
                 |o| o == Some(allowed_origin),
             )
             .unwrap();
+    }
+
+    #[derive(Clone, Copy)]
+    enum DomainMutation {
+        BlockHeight,
+        ChainId,
+        Index,
+        Name,
+        Nonce,
+        Salt,
+        VerifyingContract,
+        Version,
+    }
+
+    impl DomainMutation {
+        fn field(self) -> &'static str {
+            match self {
+                Self::BlockHeight => "block_height",
+                Self::ChainId => "chain_id",
+                Self::Index => "index",
+                Self::Name => "name",
+                Self::Nonce => "nonce",
+                Self::Salt => "salt",
+                Self::VerifyingContract => "verifying_contract",
+                Self::Version => "version",
+            }
+        }
+
+        fn apply(self, parameters: &mut PayloadExecutionParameters) {
+            match self {
+                Self::BlockHeight => parameters.block_height = U64(parameters.block_height.0 + 1),
+                Self::ChainId => parameters.chain_id = Some(NEAR_MAINNET_CHAIN_ID.into()),
+                Self::Index => parameters.index = U64(parameters.index.0 + 1),
+                Self::Name => parameters.name = Some("Wrong Universal Account".to_string()),
+                Self::Nonce => parameters.nonce = U64(parameters.nonce.0 + 1),
+                Self::Salt => parameters.salt = Some([7u8; 32].into()),
+                Self::VerifyingContract => {
+                    parameters.verifying_contract =
+                        AccountId::from_str("other-universal-account.near").unwrap();
+                }
+                Self::Version => parameters.version = Some("0.0.0".to_string()),
+            }
+        }
+    }
+
+    #[rstest]
+    #[case::block_height(DomainMutation::BlockHeight)]
+    #[case::chain_id(DomainMutation::ChainId)]
+    #[case::index(DomainMutation::Index)]
+    #[case::name(DomainMutation::Name)]
+    #[case::nonce(DomainMutation::Nonce)]
+    #[case::salt(DomainMutation::Salt)]
+    #[case::verifying_contract(DomainMutation::VerifyingContract)]
+    #[case::version(DomainMutation::Version)]
+    #[test]
+    fn verify_rejects_each_execution_domain_mismatch(#[case] mutation: DomainMutation) {
+        let mut expected_parameters = PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+            .with_key_parameters(KeyParameters {
+                block_height: U64(12345),
+                index: U64(1),
+                nonce: U64(44),
+            })
+            .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+            .build_salt();
+        mutation.apply(&mut expected_parameters);
+
+        let error = passkey_execute_args()
+            .verify(&expected_parameters, |_| true)
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                error,
+                VerificationError::Execution(ExecutionError::Mismatch { field, .. })
+                    if field == mutation.field()
+            ),
+            "expected {} mismatch, got {error:?}",
+            mutation.field(),
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    enum SignedPayloadMutation {
+        Receiver,
+        FunctionName,
+        Arguments,
+        Amount,
+        Gas,
+    }
+
+    impl SignedPayloadMutation {
+        fn apply(self, payload: &mut [Transaction]) {
+            let transaction = &mut payload[0];
+
+            match self {
+                Self::Receiver => {
+                    transaction.receiver_id = AccountId::from_str("attacker.near").unwrap();
+                }
+                Self::FunctionName => {
+                    let Action::FunctionCall(call) = &mut transaction.actions[0] else {
+                        panic!("test payload action must be a function call");
+                    };
+                    call.function_name = "ft_transfer_call".to_string();
+                }
+                Self::Arguments => {
+                    let Action::FunctionCall(call) = &mut transaction.actions[0] else {
+                        panic!("test payload action must be a function call");
+                    };
+                    call.arguments =
+                        br#"{"receiver_id":"attacker.near","amount":"100"}"#.to_vec().into();
+                }
+                Self::Amount => {
+                    let Action::FunctionCall(call) = &mut transaction.actions[0] else {
+                        panic!("test payload action must be a function call");
+                    };
+                    call.amount = NearToken::from_yoctonear(2);
+                }
+                Self::Gas => {
+                    let Action::FunctionCall(call) = &mut transaction.actions[0] else {
+                        panic!("test payload action must be a function call");
+                    };
+                    call.gas = near_sdk::Gas::from_tgas(31);
+                }
+            }
+        }
+
+        fn apply_to_execute_args(self, exec_args: &mut ExecuteArgs<Box<[Transaction]>>) {
+            macro_rules! mutate_message {
+                ($args:ident) => {{
+                    let mut payload = $args.mws.message.0.parsed.clone();
+                    self.apply(payload.payload_mut());
+                    $args.mws.message.0 = WithRawString::from_parsed(payload);
+                }};
+            }
+
+            match exec_args {
+                ExecuteArgs::Passkey(args) => mutate_message!(args),
+                ExecuteArgs::Ed25519Raw(args) => mutate_message!(args),
+                ExecuteArgs::Eip712(args) => mutate_message!(args),
+                ExecuteArgs::Sep53(args) => mutate_message!(args),
+                ExecuteArgs::Eip191(args) => mutate_message!(args),
+            }
+        }
+    }
+
+    #[rstest]
+    #[case::receiver(SignedPayloadMutation::Receiver)]
+    #[case::function_name(SignedPayloadMutation::FunctionName)]
+    #[case::arguments(SignedPayloadMutation::Arguments)]
+    #[case::amount(SignedPayloadMutation::Amount)]
+    #[case::gas(SignedPayloadMutation::Gas)]
+    #[test]
+    fn verify_rejects_signed_payload_mutation_for_each_format(
+        #[values(
+            passkey_execute_args(),
+            ed25519_raw_execute_args(),
+            eip712_execute_args(),
+            sep53_execute_args(),
+            eip191_execute_args()
+        )]
+        mut exec_args: ExecuteArgs<Box<[Transaction]>>,
+        #[case] mutation: SignedPayloadMutation,
+    ) {
+        mutation.apply_to_execute_args(&mut exec_args);
+
+        let error = exec_args
+            .verify(
+                &PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
+                    .with_key_parameters(KeyParameters {
+                        block_height: U64(12345),
+                        index: U64(1),
+                        nonce: U64(44),
+                    })
+                    .verifying_contract(AccountId::from_str("my-universal-account.near").unwrap())
+                    .build_salt(),
+                |_| true,
+            )
+            .expect_err("signed payload mutation must invalidate the signature");
+
+        assert!(
+            matches!(error, VerificationError::Signature(_)),
+            "expected signature rejection, got {error:?}",
+        );
     }
 
     #[rstest]

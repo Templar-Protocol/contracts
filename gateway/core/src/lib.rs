@@ -22,7 +22,7 @@ pub use contract_kind::query_contract_kind;
 pub use error::{GatewayError, GatewayResult};
 pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
-    SharedSignTransaction, SignTransaction,
+    SharedSignTransaction, SignTransaction, StepOutcome,
 };
 pub use near_client_provider::HasNearClient;
 pub use operation::{
@@ -62,6 +62,16 @@ pub trait OperationStore: Send + Sync {
     ) -> GatewayResult<CreateOperationResult>;
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()>;
+
+    /// Remove a *reservation*: an operation reserved before planning completed and
+    /// then abandoned because planning failed. A planned no-op is *not* a
+    /// reservation — it is a terminal success retained for idempotency. The
+    /// reservation-only precondition is *enforced* by every implementation, not
+    /// merely assumed of the caller: an operation that is planned (including a
+    /// no-op) or has any persisted step is left untouched, so this cannot destroy
+    /// the record of work that reached the chain even if called on a
+    /// non-reservation.
+    async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()>;
 
     async fn list_incomplete_operations(&self) -> GatewayResult<Vec<StoredOperation>>;
 }

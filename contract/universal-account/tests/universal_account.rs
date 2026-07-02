@@ -4,8 +4,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    create_account, deploy_code, deploy_with_init, execute_as, ft_balance_of, ft_id,
-    ft_storage_deposit, get_counter, get_key, harness, list_keys, migrate, mint_action,
+    add_key, create_account, deploy_code, deploy_with_init, execute_as, ft_balance_of, ft_id,
+    ft_storage_deposit, get_counter, get_key, harness, list_keys, migrate, mint_action, remove_key,
     test_signer, to_sdk, ua_id,
 };
 use near_api::{AccountId, Signer};
@@ -22,7 +22,7 @@ use templar_universal_account::{
     authentication::{with_raw_string::WithRawString, Payload},
     state,
     transaction::{FunctionCallAction, Transaction},
-    InitArgs, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
+    ExecuteArgs, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 use test_utils::test_signer::TestSigner;
 
@@ -111,11 +111,11 @@ async fn setup(
                 .await
                 .to_vec(),
             "new",
-            InitArgs {
-                key: sk.id(),
-                chain_id: NEAR_TESTNET_CHAIN_ID.into(),
-                execute,
-            },
+            serde_json::json!({
+                "key": sk.id(),
+                "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
+                "execute": execute,
+            }),
         )
         .await?;
     }
@@ -135,6 +135,24 @@ async fn setup(
         relayer,
         relayer_signer,
     })
+}
+
+fn signed_mint_execute_args(
+    sk: &TestSigner,
+    ft: &AccountId,
+    parameters: PayloadExecutionParameters,
+    amount: u128,
+) -> ExecuteArgs<Box<[Transaction]>> {
+    let payload = WithRawString::from_parsed(Payload::new(
+        parameters,
+        vec![Transaction {
+            receiver_id: to_sdk(ft),
+            actions: vec![mint_action(amount).into()].into(),
+        }]
+        .into(),
+    ));
+
+    sk.execute_args(payload)
 }
 
 #[rstest]
@@ -468,6 +486,239 @@ async fn reuse_nonce(
     .await?
     .assert_failure_contains(
         "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `1`",
+    );
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn failed_execute_does_not_consume_nonce_and_success_consumes_once(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let sk = TestSigner::random_passkey();
+    let Setup {
+        ua,
+        ft,
+        relayer,
+        relayer_signer,
+    } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    let network = &harness.network;
+
+    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
+    assert_eq!(key_entry.nonce.0, 0);
+
+    // Sign a payload with a skipped nonce (2 rather than the expected 1); the
+    // pre-verification nonce increment must roll back when verification fails.
+    let mut skipped_nonce = key_entry.clone();
+    skipped_nonce.nonce = U64(2);
+    let execute_args = signed_mint_execute_args(&sk, &ft, skipped_nonce, 100);
+
+    let outcome = execute_as(network, &ua, &relayer, relayer_signer.clone(), execute_args).await?;
+    assert!(
+        !outcome.success,
+        "skipped nonce execution should fail: {}",
+        outcome.failures,
+    );
+
+    let key_entry_after_failure = get_key(network, &ua, &sk.id()).await?.unwrap();
+    assert_eq!(
+        key_entry_after_failure.nonce.0, 0,
+        "failed verification must roll back the pre-verification nonce increment",
+    );
+    assert_eq!(
+        ft_balance_of(network, &ft, &ua).await?,
+        0,
+        "failed execution should not mint"
+    );
+
+    let execute_args =
+        signed_mint_execute_args(&sk, &ft, key_entry_after_failure.next_nonce(), 100);
+    execute_as(network, &ua, &relayer, relayer_signer, execute_args)
+        .await?
+        .assert_success();
+
+    let key_entry_after_success = get_key(network, &ua, &sk.id()).await?.unwrap();
+    assert_eq!(
+        key_entry_after_success.nonce.0, 1,
+        "successful execution must consume exactly one nonce",
+    );
+    assert_eq!(
+        ft_balance_of(network, &ft, &ua).await?,
+        100,
+        "successful execution should mint once"
+    );
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn replayed_nonce_fails_without_reexecuting_payload(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let sk = TestSigner::random_passkey();
+    let Setup {
+        ua,
+        ft,
+        relayer,
+        relayer_signer,
+    } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    let network = &harness.network;
+
+    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
+    let execute_args = signed_mint_execute_args(&sk, &ft, key_entry.next_nonce(), 100);
+
+    execute_as(
+        network,
+        &ua,
+        &relayer,
+        relayer_signer.clone(),
+        execute_args.clone(),
+    )
+    .await?
+    .assert_success();
+
+    let key_entry_after_success = get_key(network, &ua, &sk.id()).await?.unwrap();
+    assert_eq!(
+        key_entry_after_success.nonce.0, 1,
+        "successful execution must consume the signed nonce",
+    );
+    assert_eq!(
+        ft_balance_of(network, &ft, &ua).await?,
+        100,
+        "payload should execute once"
+    );
+
+    // Replay the identical signed args: the consumed nonce must reject it.
+    let outcome = execute_as(network, &ua, &relayer, relayer_signer, execute_args).await?;
+    assert!(
+        !outcome.success,
+        "replayed nonce execution should fail: {}",
+        outcome.failures,
+    );
+
+    let key_entry_after_replay = get_key(network, &ua, &sk.id()).await?.unwrap();
+    assert_eq!(
+        key_entry_after_replay.nonce.0, 1,
+        "failed replay must not advance the nonce",
+    );
+    assert_eq!(
+        ft_balance_of(network, &ft, &ua).await?,
+        100,
+        "replayed payload must not execute again"
+    );
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn key_indexes_are_unique_across_remove_and_readd(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let sk1 = TestSigner::random_passkey();
+    let sk2 = TestSigner::random_ed25519_raw();
+    let Setup { ua, .. } = setup(&harness, &sk1, false, ExecuteOnCreate::None).await?;
+    let network = &harness.network;
+
+    let key1 = sk1.id();
+    let key2 = sk2.id();
+
+    let initial_entry = get_key(network, &ua, &key1).await?.unwrap();
+    assert_eq!(initial_entry.index.0, 0);
+
+    add_key(network, &ua, &key2).await?.assert_success();
+    let second_entry = get_key(network, &ua, &key2).await?.unwrap();
+    assert_eq!(second_entry.index.0, 1);
+
+    remove_key(network, &ua, &key1).await?.assert_success();
+    assert!(get_key(network, &ua, &key1).await?.is_none());
+
+    add_key(network, &ua, &key1).await?.assert_success();
+    let readded_entry = get_key(network, &ua, &key1).await?.unwrap();
+    assert_eq!(
+        readded_entry.index.0, 2,
+        "re-added keys must receive a fresh monotonic index",
+    );
+    assert_eq!(readded_entry.nonce.0, 0);
+
+    let listed_keys = list_keys(network, &ua).await?;
+    assert_eq!(listed_keys.len(), 2);
+    assert!(listed_keys.contains(&key1));
+    assert!(listed_keys.contains(&key2));
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn cannot_remove_last_key(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let sk = TestSigner::random_passkey();
+    let Setup { ua, .. } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    let network = &harness.network;
+
+    remove_key(network, &ua, &sk.id())
+        .await?
+        .assert_failure_contains("Cannot remove last key");
+
+    let keys = list_keys(network, &ua).await?;
+    assert_eq!(keys, vec![sk.id()]);
+    assert!(get_key(network, &ua, &sk.id()).await?.is_some());
+
+    Ok(())
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn removed_key_cannot_execute_transaction(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let removed_sk = TestSigner::random_passkey();
+    let retained_sk = TestSigner::random_ed25519_raw();
+    let Setup {
+        ua,
+        ft,
+        relayer,
+        relayer_signer,
+    } = setup(&harness, &removed_sk, false, ExecuteOnCreate::None).await?;
+    let network = &harness.network;
+
+    let removed_key = removed_sk.id();
+    let retained_key = retained_sk.id();
+
+    add_key(network, &ua, &retained_key).await?.assert_success();
+
+    let removed_entry_before = get_key(network, &ua, &removed_key).await?.unwrap();
+    remove_key(network, &ua, &removed_key)
+        .await?
+        .assert_success();
+    assert!(get_key(network, &ua, &removed_key).await?.is_none());
+
+    let execute_args =
+        signed_mint_execute_args(&removed_sk, &ft, removed_entry_before.next_nonce(), 100);
+    let outcome = execute_as(network, &ua, &relayer, relayer_signer, execute_args).await?;
+    assert!(
+        !outcome.success,
+        "removed key execution should fail: {}",
+        outcome.failures,
+    );
+
+    assert!(get_key(network, &ua, &removed_key).await?.is_none());
+    let retained_entry = get_key(network, &ua, &retained_key).await?.unwrap();
+    assert_eq!(
+        retained_entry.nonce.0, 0,
+        "failed removed-key execution must not affect retained key state",
+    );
+    assert_eq!(
+        ft_balance_of(network, &ft, &ua).await?,
+        0,
+        "removed key payload must not execute"
     );
 
     Ok(())

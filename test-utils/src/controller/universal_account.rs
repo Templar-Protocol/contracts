@@ -72,6 +72,10 @@ impl UniversalAccountController {
         #[view]
         pub fn list_keys(offset: Option<u32>, count: Option<u32>) -> Vec<KeyId>;
 
+        #[call(exec, tgas(30))]
+        pub fn add_key(key: KeyId);
+        #[call(exec, tgas(30))]
+        pub fn remove_key(key: KeyId);
         #[call(exec, tgas(300))]
         pub fn execute(args: ExecuteArgs<Box<[Transaction]>>);
     }

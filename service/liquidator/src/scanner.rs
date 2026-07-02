@@ -2,18 +2,17 @@
 //!
 //! Handles scanning markets for borrow positions and checking liquidation status.
 
-use near_jsonrpc_client::JsonRpcClient;
-use near_sdk::{serde_json::json, AccountId};
+use near_sdk::AccountId;
 use std::collections::HashMap;
 use templar_common::{
     borrow::{BorrowPosition, BorrowStatus},
     oracle::pyth::OracleResponse,
 };
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::{contract, market};
+use templar_gateway_types::common::Pagination;
 
-use crate::{
-    rpc::{view, RpcError},
-    LiquidatorError, LiquidatorResult,
-};
+use crate::{rpc::RpcError, LiquidatorError, LiquidatorResult};
 
 /// Type alias for borrow positions map
 pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
@@ -26,7 +25,7 @@ pub type BorrowPositions = HashMap<AccountId, BorrowPosition>;
 /// - Pagination handling for large markets
 /// - Market version compatibility checking (NEP-330)
 pub struct MarketScanner {
-    client: JsonRpcClient,
+    client: SigningClient,
     market: AccountId,
 }
 
@@ -42,7 +41,7 @@ impl MarketScanner {
 
 impl MarketScanner {
     /// Creates a new market scanner.
-    pub fn new(client: JsonRpcClient, market: AccountId) -> Self {
+    pub fn new(client: SigningClient, market: AccountId) -> Self {
         Self { client, market }
     }
 
@@ -53,16 +52,16 @@ impl MarketScanner {
         account_id: &AccountId,
         oracle_response: &OracleResponse,
     ) -> Result<Option<BorrowStatus>, RpcError> {
-        view(
-            &self.client,
-            self.market.clone(),
-            "get_borrow_status",
-            &json!({
-                "account_id": account_id,
-                "oracle_response": oracle_response,
-            }),
-        )
-        .await
+        let result = self
+            .client
+            .read(market::GetBorrowStatus {
+                market_id: self.market.clone(),
+                account_id: account_id.clone(),
+                oracle_response: oracle_response.clone(),
+            })
+            .await
+            .map_err(RpcError::from)?;
+        Ok(result.status)
     }
 
     /// Fetches a single borrow position from the market.
@@ -71,36 +70,39 @@ impl MarketScanner {
         &self,
         account_id: &AccountId,
     ) -> Result<Option<BorrowPosition>, RpcError> {
-        view(
-            &self.client,
-            self.market.clone(),
-            "get_borrow_position",
-            &json!({ "account_id": account_id }),
-        )
-        .await
+        let result = self
+            .client
+            .read(market::GetBorrowPosition {
+                market_id: self.market.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(RpcError::from)?;
+        Ok(result.position)
     }
 
     /// Fetches all borrow positions from the market with pagination.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_all_borrows(&self) -> LiquidatorResult<BorrowPositions> {
         let mut all_positions: BorrowPositions = HashMap::new();
-        let page_size = 500;
-        let mut current_offset = 0;
+        let page_size: u32 = 500;
+        let mut current_offset: u32 = 0;
 
         loop {
-            let page: BorrowPositions = view(
-                &self.client,
-                self.market.clone(),
-                "list_borrow_positions",
-                json!({
-                    "offset": current_offset,
-                    "count": page_size,
-                }),
-            )
-            .await
-            .map_err(LiquidatorError::ListBorrowPositionsError)?;
+            let page = self
+                .client
+                .read(market::ListBorrowPositions {
+                    market_id: self.market.clone(),
+                    args: Pagination {
+                        offset: Some(current_offset),
+                        limit: Some(page_size),
+                    },
+                })
+                .await
+                .map_err(|e| LiquidatorError::ListBorrowPositionsError(e.into()))?
+                .positions;
 
-            let fetched = page.len();
+            let fetched = u32::try_from(page.len()).unwrap_or(u32::MAX);
             if fetched == 0 {
                 break;
             }
@@ -153,6 +155,22 @@ impl MarketScanner {
         }
     }
 
+    /// Fetches the contract version via NEP-330 metadata.
+    ///
+    /// Returns `None` if the contract doesn't implement NEP-330 or the read fails.
+    async fn get_contract_version(&self) -> Option<String> {
+        match self
+            .client
+            .read(contract::GetVersion {
+                contract_id: self.market.clone(),
+            })
+            .await
+        {
+            Ok(result) => Some(result.version_string),
+            Err(_) => None,
+        }
+    }
+
     /// Checks market compatibility and feature support in a single call.
     ///
     /// This method fetches the version once and checks:
@@ -173,9 +191,7 @@ impl MarketScanner {
     /// required features.
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn check_market_compatibility(&self) -> LiquidatorResult<()> {
-        use crate::rpc::get_contract_version;
-
-        let Some(version_string) = get_contract_version(&self.client, &self.market).await else {
+        let Some(version_string) = self.get_contract_version().await else {
             // No NEP-330 metadata - assume compatible and let market contract reject if incompatible
             tracing::debug!(
                 market = %self.market,
@@ -257,9 +273,7 @@ impl MarketScanner {
     /// ```
     #[tracing::instrument(skip(self), level = "debug")]
     pub async fn get_market_version(&self) -> Option<(u32, u32, u32)> {
-        use crate::rpc::get_contract_version;
-
-        let version_string = get_contract_version(&self.client, &self.market).await?;
+        let version_string = self.get_contract_version().await?;
 
         // Parse semver (e.g., "1.2.3" or "0.1.0")
         let parts: Vec<&str> = version_string.split('.').collect();

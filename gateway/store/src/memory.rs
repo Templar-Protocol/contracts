@@ -1,28 +1,95 @@
 use std::collections::{HashMap, VecDeque};
 
 use async_trait::async_trait;
+use indexmap::IndexSet;
 use templar_gateway_core::{
     CreateOperationResult, GatewayError, GatewayResult, OperationPlan, OperationStore,
     StoredOperation,
 };
-use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
+use templar_gateway_types::{
+    operation::OperationId, IdempotencyKey, ManagedAccountId, OperationStatus,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-#[derive(Default)]
+/// Default cap on retained completed (terminal) operations.
+///
+/// In-flight operations are bounded by concurrency and never evicted; this only
+/// limits how many finished operations we keep around for poll-by-id and
+/// idempotency dedup. See [`MemoryStore::with_capacity`].
+pub const DEFAULT_MAX_COMPLETED_OPERATIONS: usize = 4096;
+
+/// In-memory [`OperationStore`] for ephemeral/in-process use.
+///
+/// Completed operations are retained up to a bounded window
+/// ([`MemoryStore::with_capacity`], default
+/// [`DEFAULT_MAX_COMPLETED_OPERATIONS`]) so a long-running consumer that streams
+/// un-keyed operations does not grow without bound. Consumers needing durable
+/// idempotency/replay beyond this window use `PostgresStore`.
 pub struct MemoryStore {
     state: Mutex<MemoryStoreState>,
+    max_completed_operations: usize,
 }
 
 #[derive(Default)]
 struct MemoryStoreState {
     operations: HashMap<OperationId, StoredOperation>,
     idempotency: HashMap<IdempotencyKey, OperationId>,
+    /// Reverse index so an evicted operation can drop its idempotency mapping.
+    idempotency_by_id: HashMap<OperationId, IdempotencyKey>,
+    /// Terminal operations in completion order (oldest first). An ordered set
+    /// gives FIFO eviction *and* O(1) dedupe of repeated terminal saves in a
+    /// single field, so the order/membership invariant can't drift.
+    completed: IndexSet<OperationId>,
 }
 
 impl MemoryStore {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Construct a store retaining at most `max_completed_operations` completed
+    /// operations (clamped to at least 1).
+    #[must_use]
+    pub fn with_capacity(max_completed_operations: usize) -> Self {
+        Self {
+            state: Mutex::new(MemoryStoreState::default()),
+            max_completed_operations: max_completed_operations.max(1),
+        }
+    }
+}
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self::with_capacity(DEFAULT_MAX_COMPLETED_OPERATIONS)
+    }
+}
+
+/// Whether an operation has reached a terminal (`Succeeded`/`Failed`) status.
+fn is_terminal(operation: &StoredOperation) -> bool {
+    matches!(
+        operation.status(),
+        OperationStatus::Succeeded | OperationStatus::Failed
+    )
+}
+
+impl MemoryStoreState {
+    /// Record a terminal operation and evict the oldest completed operations
+    /// beyond the retention cap, dropping their entries from every index.
+    fn record_completion_and_evict(&mut self, operation_id: OperationId, max_completed: usize) {
+        // `insert` keeps insertion order and dedupes a repeated terminal save.
+        self.completed.insert(operation_id);
+
+        while self.completed.len() > max_completed {
+            let Some(evicted) = self.completed.shift_remove_index(0) else {
+                break;
+            };
+            self.operations.remove(&evicted);
+            if let Some(key) = self.idempotency_by_id.remove(&evicted) {
+                self.idempotency.remove(&key);
+            }
+        }
     }
 }
 
@@ -85,6 +152,9 @@ impl OperationStore for MemoryStore {
             request_payload,
             id: OperationId(Uuid::new_v4().to_string()),
             signer_account_id,
+            // An empty plan here is a reservation; a step-bearing plan is already
+            // planned. (A no-op is promoted from a reservation, not created here.)
+            planned: !plan.steps.is_empty(),
             succeeded_steps: vec![],
             current_step: None,
             remaining_steps: VecDeque::from(plan.steps),
@@ -93,7 +163,10 @@ impl OperationStore for MemoryStore {
         if let Some(idempotency_key) = idempotency_key {
             state
                 .idempotency
-                .insert(idempotency_key, operation.operation_id().clone());
+                .insert(idempotency_key.clone(), operation.operation_id().clone());
+            state
+                .idempotency_by_id
+                .insert(operation.operation_id().clone(), idempotency_key);
         }
         state
             .operations
@@ -102,11 +175,31 @@ impl OperationStore for MemoryStore {
     }
 
     async fn save_operation(&self, operation: StoredOperation) -> GatewayResult<()> {
-        self.state
-            .lock()
-            .await
+        let mut state = self.state.lock().await;
+        let operation_id = operation.operation_id().clone();
+        let terminal = is_terminal(&operation);
+        state.operations.insert(operation_id.clone(), operation);
+        if terminal {
+            state.record_completion_and_evict(operation_id, self.max_completed_operations);
+        }
+        Ok(())
+    }
+
+    async fn delete_reservation(&self, operation_id: &OperationId) -> GatewayResult<()> {
+        let mut state = self.state.lock().await;
+        // Only remove a reservation; leave any operation that ran a step intact.
+        if !state
             .operations
-            .insert(operation.operation_id().clone(), operation);
+            .get(operation_id)
+            .is_some_and(StoredOperation::is_reservation)
+        {
+            return Ok(());
+        }
+        state.operations.remove(operation_id);
+        state.completed.shift_remove(operation_id);
+        if let Some(key) = state.idempotency_by_id.remove(operation_id) {
+            state.idempotency.remove(&key);
+        }
         Ok(())
     }
 
@@ -120,11 +213,319 @@ impl OperationStore for MemoryStore {
             .filter(|operation| {
                 matches!(
                     operation.status(),
-                    templar_gateway_types::OperationStatus::Pending
-                        | templar_gateway_types::OperationStatus::InProgress
+                    OperationStatus::Pending | OperationStatus::InProgress
                 )
             })
             .cloned()
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use near_account_id::AccountId;
+    use near_api::types::CryptoHash as NearCryptoHash;
+    use templar_gateway_core::{PlannedTransaction, SucceededStep};
+    use templar_gateway_types::operation::ExecutionOutcome;
+    use templar_gateway_types::{CryptoHash, NearGas, NearToken};
+
+    fn signer() -> ManagedAccountId {
+        "signer.near".parse::<AccountId>().unwrap().into()
+    }
+
+    fn planned_tx() -> PlannedTransaction {
+        PlannedTransaction {
+            signer_account_id: signer(),
+            receiver_id: "market.near".parse().unwrap(),
+            actions: Vec::new(),
+        }
+    }
+
+    /// A planned operation with no steps yet — the base the helpers below add a
+    /// succeeded or remaining step to. (`planned`, so not a reservation.)
+    fn operation_skeleton(id: &str) -> StoredOperation {
+        StoredOperation {
+            rpc_method: "market.applyInterest".to_owned(),
+            request_fingerprint_hash: [0_u8; 32],
+            request_payload: Vec::new(),
+            id: OperationId(id.to_owned()),
+            signer_account_id: signer(),
+            planned: true,
+            succeeded_steps: Vec::new(),
+            current_step: None,
+            remaining_steps: VecDeque::new(),
+        }
+    }
+
+    /// Push a succeeded step, making an operation terminal (`Succeeded`).
+    fn mark_succeeded(operation: &mut StoredOperation) {
+        // A succeeded step implies planning completed.
+        operation.planned = true;
+        operation.succeeded_steps.push(SucceededStep {
+            transaction: planned_tx(),
+            tx_hash: CryptoHash(NearCryptoHash::default()),
+            outcome: ExecutionOutcome {
+                tokens_burnt: NearToken::from_yoctonear(0),
+                total_gas_burnt: NearGas::from_gas(0),
+                receipts: Vec::new(),
+                return_value: None,
+                failure: None,
+            },
+        });
+    }
+
+    /// A finished (terminal `Succeeded`) operation: one succeeded step, nothing
+    /// remaining.
+    fn terminal_operation(id: &str) -> StoredOperation {
+        let mut operation = operation_skeleton(id);
+        mark_succeeded(&mut operation);
+        operation
+    }
+
+    /// An in-flight (`Pending`) operation: one remaining step, nothing run yet.
+    fn pending_operation(id: &str) -> StoredOperation {
+        let mut operation = operation_skeleton(id);
+        operation.remaining_steps.push_back(planned_tx());
+        operation
+    }
+
+    #[tokio::test]
+    async fn evicts_oldest_completed_beyond_capacity() {
+        let store = MemoryStore::with_capacity(3);
+        let ids: Vec<String> = (0..5).map(|i| format!("op-{i}")).collect();
+
+        for id in &ids {
+            store.save_operation(terminal_operation(id)).await.unwrap();
+        }
+
+        // Only the 3 most recent terminal operations are retained.
+        assert!(store
+            .get_by_id(&OperationId(ids[0].clone()))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_by_id(&OperationId(ids[1].clone()))
+            .await
+            .unwrap()
+            .is_none());
+        for id in &ids[2..] {
+            assert!(
+                store
+                    .get_by_id(&OperationId(id.clone()))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "expected {id} to be retained"
+            );
+        }
+
+        let state = store.state.lock().await;
+        assert_eq!(state.operations.len(), 3);
+        assert_eq!(state.completed.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn repeated_terminal_save_does_not_double_count() {
+        let store = MemoryStore::with_capacity(2);
+
+        // Save the same terminal operation several times (mirrors resume/reconcile
+        // re-saving an already-finished operation).
+        for _ in 0..5 {
+            store
+                .save_operation(terminal_operation("op"))
+                .await
+                .unwrap();
+        }
+
+        let state = store.state.lock().await;
+        assert_eq!(state.completed.len(), 1);
+        assert_eq!(state.operations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn does_not_evict_in_flight_operations() {
+        let store = MemoryStore::with_capacity(1);
+
+        // Many in-flight operations: none are terminal, so none are evicted even
+        // though they far exceed the completed-operation cap.
+        for i in 0..10 {
+            store
+                .save_operation(pending_operation(&format!("pending-{i}")))
+                .await
+                .unwrap();
+        }
+
+        let state = store.state.lock().await;
+        assert_eq!(state.operations.len(), 10);
+        assert!(state.completed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn eviction_drops_idempotency_mapping() {
+        let store = MemoryStore::with_capacity(1);
+        let key_a = IdempotencyKey("key-a".to_owned());
+        let key_b = IdempotencyKey("key-b".to_owned());
+
+        let plan = OperationPlan { steps: Vec::new() };
+        let make = |key: &IdempotencyKey| {
+            store.create_or_get_operation(
+                "market.applyInterest",
+                signer(),
+                Some(key.clone()),
+                [0_u8; 32],
+                Vec::new(),
+                OperationPlan {
+                    steps: plan.steps.clone(),
+                },
+            )
+        };
+
+        let CreateOperationResult::Created(mut op_a) = make(&key_a).await.unwrap() else {
+            panic!("expected a freshly created operation");
+        };
+        mark_succeeded(&mut op_a);
+        store.save_operation(op_a.clone()).await.unwrap();
+
+        let CreateOperationResult::Created(mut op_b) = make(&key_b).await.unwrap() else {
+            panic!("expected a freshly created operation");
+        };
+        mark_succeeded(&mut op_b);
+        store.save_operation(op_b.clone()).await.unwrap();
+
+        // op_a was evicted: gone by id and its idempotency mapping is cleared.
+        assert!(store
+            .get_by_id(op_a.operation_id())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_by_idempotency_key(&key_a)
+            .await
+            .unwrap()
+            .is_none());
+
+        // op_b (the survivor) is still reachable both ways.
+        assert!(store
+            .get_by_id(op_b.operation_id())
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get_by_idempotency_key(&key_b)
+            .await
+            .unwrap()
+            .is_some());
+
+        let state = store.state.lock().await;
+        assert_eq!(state.idempotency.len(), 1);
+        assert_eq!(state.idempotency_by_id.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn keyed_op_evicted_by_unkeyed_completions_cleans_idempotency() {
+        let store = MemoryStore::with_capacity(2);
+        let key = IdempotencyKey("keep-me".to_owned());
+
+        // A single keyed terminal operation.
+        let CreateOperationResult::Created(mut keyed) = store
+            .create_or_get_operation(
+                "market.applyInterest",
+                signer(),
+                Some(key.clone()),
+                [0_u8; 32],
+                Vec::new(),
+                OperationPlan { steps: Vec::new() },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created operation");
+        };
+        mark_succeeded(&mut keyed);
+        store.save_operation(keyed.clone()).await.unwrap();
+
+        // Flood the window with un-keyed terminal completions, pushing the keyed
+        // op out of the retention window.
+        for i in 0..5 {
+            store
+                .save_operation(terminal_operation(&format!("unkeyed-{i}")))
+                .await
+                .unwrap();
+        }
+
+        // The keyed op is gone from every index — including both idempotency maps.
+        assert!(store
+            .get_by_id(keyed.operation_id())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
+
+        let state = store.state.lock().await;
+        assert_eq!(state.operations.len(), 2);
+        assert!(state.idempotency.is_empty());
+        assert!(state.idempotency_by_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reservation_is_non_terminal_and_deletable() {
+        let store = MemoryStore::new();
+        let key = IdempotencyKey("reserve-me".to_owned());
+
+        // Reserving an operation persists nothing but its identity — no steps.
+        let CreateOperationResult::Created(reserved) = store
+            .create_or_get_operation(
+                "market.applyInterest",
+                signer(),
+                Some(key.clone()),
+                [0_u8; 32],
+                Vec::new(),
+                OperationPlan { steps: Vec::new() },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected a freshly created reservation");
+        };
+        // A reservation is in-flight, not a (vacuously) succeeded no-op.
+        assert_eq!(reserved.status(), OperationStatus::Pending);
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_some());
+
+        // Deleting it clears every index, including the idempotency mapping.
+        store
+            .delete_reservation(reserved.operation_id())
+            .await
+            .unwrap();
+        assert!(store
+            .get_by_id(reserved.operation_id())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store.get_by_idempotency_key(&key).await.unwrap().is_none());
+        let state = store.state.lock().await;
+        assert!(state.operations.is_empty());
+        assert!(state.idempotency.is_empty());
+        assert!(state.idempotency_by_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_reservation_leaves_executed_operations() {
+        let store = MemoryStore::new();
+        // A terminal (executed) operation has succeeded steps, not a reservation.
+        let executed = terminal_operation("executed");
+        store.save_operation(executed.clone()).await.unwrap();
+
+        // delete_reservation must refuse to touch it.
+        store
+            .delete_reservation(executed.operation_id())
+            .await
+            .unwrap();
+        assert!(store
+            .get_by_id(executed.operation_id())
+            .await
+            .unwrap()
+            .is_some());
     }
 }

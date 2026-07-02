@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+borsh.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
 near-api.workspace = true
 near-contract-standards.workspace = true
@@ -16,6 +17,7 @@ templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-types.workspace = true
+templar-primitives = { workspace = true, features = ["schemars", "serde"] }
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde", "schemars"] }
 templar-proxy-oracle-near-common.workspace = true
 templar-universal-account.workspace = true

@@ -1,4 +1,4 @@
-use templar_gateway_types::U128;
+use templar_primitives::SU128;
 
 use crate::client::{
     macros::{contract_views, contract_writes},
@@ -15,14 +15,14 @@ pub struct GetBalanceOfArgs {
 #[derive(serde::Serialize)]
 pub struct TransferArgs {
     pub receiver_id: near_account_id::AccountId,
-    pub amount: U128,
+    pub amount: SU128,
     pub memo: Option<String>,
 }
 
 #[derive(serde::Serialize)]
 pub struct TransferCallArgs {
     pub receiver_id: near_account_id::AccountId,
-    pub amount: U128,
+    pub amount: SU128,
     pub memo: Option<String>,
     pub msg: String,
 }
@@ -45,7 +45,7 @@ impl BoundContractClient for FtClient<'_> {
 
 impl FtClient<'_> {
     contract_views! {
-        pub fn ft_balance_of(GetBalanceOfArgs) -> U128;
+        pub fn ft_balance_of(GetBalanceOfArgs) -> SU128;
     }
 
     contract_writes! {

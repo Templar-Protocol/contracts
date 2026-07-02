@@ -10,16 +10,24 @@ pub enum GatewayError {
     HttpRequest(String),
     #[error("near query failed: {0}")]
     NearQuery(String),
+    #[error("account not found: {0}")]
+    AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
+    #[error("invalid signer key: {0}")]
+    InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]
     NearTransaction(String),
+    #[error("transaction not found on chain")]
+    TransactionNotFound,
     #[error("external service failed: {0}")]
     ExternalService(String),
     #[error("unsupported feature: {0}")]
     UnsupportedFeature(String),
     #[error("invalid stored operation: {0}")]
     InvalidStoredOperation(String),
+    #[error("startup recovery incomplete: {0}")]
+    IncompleteRecovery(String),
     #[error("sql error: {0}")]
     Sql(#[from] sqlx::Error),
     #[error("idempotency key conflict")]

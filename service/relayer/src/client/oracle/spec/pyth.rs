@@ -1,14 +1,15 @@
 use std::{sync::Arc, time::Duration};
 
-use near_primitives::action::{Action, FunctionCallAction};
-use near_sdk::serde::Deserialize;
+use near_sdk::{serde::Deserialize, AccountId};
 use templar_common::oracle::pyth;
+use templar_gateway_client::SigningClient;
+use templar_gateway_methods_spec::pyth as pyth_spec;
+use templar_gateway_types::{Base64Bytes, CryptoHash};
 use tokio::sync::watch;
 
 use crate::{
     app::args,
-    cache::Cache,
-    client::{near::Near, oracle::Handle},
+    client::oracle::{succeeded_tx_hash, Handle, UpdateError},
 };
 
 use super::Spec;
@@ -36,11 +37,10 @@ impl PythSpec {
 
     pub fn handle(
         config: args::PythConfig,
-        near: Near,
-        cache: Cache,
+        gateway: SigningClient,
         kill: watch::Sender<()>,
     ) -> Handle<Self> {
-        Handle::new(Arc::new(Self::new(config)), near, cache, kill)
+        Handle::new(Arc::new(Self::new(config)), gateway, kill)
     }
 
     /// Fetch just the update payload for a set of price IDs.
@@ -88,7 +88,6 @@ impl PythSpec {
 
 impl Spec for PythSpec {
     type FeedId = pyth::PriceIdentifier;
-    type Error = reqwest::Error;
 
     fn name() -> &'static str {
         "pyth"
@@ -98,20 +97,29 @@ impl Spec for PythSpec {
         self.config.refresh
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn update_actions(&self, feed_ids: &[Self::FeedId]) -> Result<Vec<Action>, Self::Error> {
+    #[tracing::instrument(skip(self, gateway))]
+    async fn execute_update(
+        &self,
+        gateway: &SigningClient,
+        oracle_id: AccountId,
+        feed_ids: &[Self::FeedId],
+    ) -> Result<Option<CryptoHash>, UpdateError> {
         if feed_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(None);
         }
 
-        let vaa = self.latest_vaa(feed_ids).await?;
-        let args = format!(r#"{{"data":"{}"}}"#, hex::encode(vaa)).into_bytes();
-        Ok(vec![FunctionCallAction {
-            method_name: "update_price_feeds".to_string(),
-            args,
-            gas: near_primitives::gas::Gas::from_gas(self.config.update_gas.as_gas()),
-            deposit: self.config.update_deposit,
-        }
-        .into()])
+        let vaa = self
+            .latest_vaa(feed_ids)
+            .await
+            .map_err(|e| UpdateError::Fetch(Box::new(e)))?;
+
+        let result = gateway
+            .execute(pyth_spec::UpdatePriceFeeds {
+                oracle_id,
+                data: Base64Bytes(vaa),
+            })
+            .await?;
+
+        succeeded_tx_hash(result)
     }
 }

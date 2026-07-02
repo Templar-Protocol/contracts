@@ -1,11 +1,31 @@
 use async_trait::async_trait;
 use templar_gateway_core::{
-    client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs},
-    DispatchRead, GatewayResult, HasNearClient,
+    client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs, UpdatePricesArgs},
+    client::ContractWriteOptions,
+    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle;
 
 use crate::Dispatch;
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<proxy_oracle::UpdatePrices, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle::UpdatePrices>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .proxy_oracle(body.oracle_id)
+            .update_prices(
+                ContractWriteOptions::new(request.signer_account_id).tgas(100),
+                UpdatePricesArgs {
+                    price_ids: body.price_ids,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<proxy_oracle::ListProxies, C> for Dispatch {

@@ -55,7 +55,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
-    assert_eq!(ft_balance.balance, templar_gateway_types::U128(5));
+    assert_eq!(ft_balance.balance, templar_common::SU128::from(5));
 
     let mt_balance = stack
         .controller
@@ -67,7 +67,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
             account_id: stack.harness.gateway_signer_account_id.0.clone(),
         })
         .await?;
-    assert_eq!(mt_balance.balance, templar_gateway_types::U128(6));
+    assert_eq!(mt_balance.balance, templar_common::SU128::from(6));
 
     let transfer = stack
         .controller
@@ -79,7 +79,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
                     contract_id: stack.harness.ft_contract_id.clone(),
                 },
                 receiver_id: stack.harness.beneficiary_account_id.clone(),
-                amount: templar_gateway_types::U128(5),
+                amount: templar_common::SU128::from(5),
                 memo: Some("token-transfer".to_owned()),
             },
         })
@@ -100,7 +100,7 @@ async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
                     token_id: "mt_borrow".to_owned(),
                 },
                 receiver_id: receiver_id.clone(),
-                amount: templar_gateway_types::U128(6),
+                amount: templar_common::SU128::from(6),
                 msg: "ok".to_owned(),
                 memo: Some("token-call".to_owned()),
             },

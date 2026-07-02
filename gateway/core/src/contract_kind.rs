@@ -32,6 +32,9 @@ async fn detect_contract_kind<C: HasNearClient>(
     if try_registry_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::Registry);
     }
+    if try_vault_kind(ctx, contract_id.clone()).await? {
+        return Ok(ContractKind::Vault);
+    }
     if try_market_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::Market);
     }
@@ -73,6 +76,15 @@ async fn try_market_kind<C: HasNearClient>(ctx: &C, contract_id: AccountId) -> G
         ctx.near_client()
             .market(contract_id)
             .get_configuration(())
+            .await,
+    )
+}
+
+async fn try_vault_kind<C: HasNearClient>(ctx: &C, contract_id: AccountId) -> GatewayResult<bool> {
+    probe_kind(
+        ctx.near_client()
+            .vault(contract_id)
+            .get_idle_balance(())
             .await,
     )
 }
