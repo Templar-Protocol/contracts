@@ -160,9 +160,7 @@ impl MarketScanner {
     async fn get_contract_version(&self) -> Option<String> {
         match self
             .client
-            .read(contract::GetVersion {
-                contract_id: self.market.clone(),
-            })
+            .read(contract::GetVersion::new(self.market.clone()))
             .await
         {
             Ok(result) => Some(result.version_string),
