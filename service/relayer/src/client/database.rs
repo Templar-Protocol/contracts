@@ -1,5 +1,5 @@
 use near_sdk::{AccountId, AccountIdRef, NearToken};
-use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool};
+use sqlx::{postgres::PgPoolOptions, types::Decimal, PgPool, Row};
 use templar_gateway_types::{OperationRecord, OperationStatus};
 use tokio::sync::watch;
 use uuid::Uuid;
@@ -129,35 +129,33 @@ impl Database {
         min_age: std::time::Duration,
     ) -> Result<Vec<PendingCharge>, sqlx::Error> {
         tracing::debug!("Fetching pending charges");
-        let results = sqlx::query!(
+        let results = sqlx::query(
             r#"
 SELECT
     account_id,
-    pending_operation_key AS "operation_key!"
+    operation_key
 FROM
-    account
+    pending_gateway_charge
 WHERE
-    pending_operation_key IS NOT NULL
-    AND updated_at < NOW() - make_interval(secs => $2)
+    updated_at < NOW() - make_interval(secs => $2)
 ORDER BY
     updated_at ASC
 LIMIT
     $1
 "#,
-            limit,
-            min_age.as_secs_f64(),
         )
+        .bind(limit)
+        .bind(min_age.as_secs_f64())
         .fetch_all(&self.connection)
         .await?;
 
         Ok(results
             .into_iter()
             .filter_map(|r| {
-                // A malformed account id skips the row rather than aborting the
-                // batch; such records should never exist.
+                let account_id: String = r.try_get("account_id").ok()?;
                 Some(PendingCharge {
-                    account_id: r.account_id.parse().ok()?,
-                    operation_key: r.operation_key,
+                    account_id: account_id.parse().ok()?,
+                    operation_key: r.try_get("operation_key").ok()?,
                 })
             })
             .collect())
@@ -181,17 +179,14 @@ LIMIT
     }
 
     /// Lock allowance for a charge the relayer is about to submit, keyed by the
-    /// gateway idempotency key (`operation_key`). Claims the account's single
-    /// in-flight slot and records the deposit (`inner_spend`) to bill if the
-    /// operation succeeds; the gas cost is read back from the gateway at
-    /// settlement. `gas_estimate` only gates affordability here and is not
-    /// stored.
+    /// gateway idempotency key (`operation_key`). Records gas and inner-spend
+    /// reservations so concurrent gateway operations cannot overdraw the account;
+    /// the actual gas cost is read back from the gateway at settlement.
     ///
     /// # Errors
     ///
     /// - Query errors
     /// - Account does not exist
-    /// - A charge is already in flight for the account
     /// - Insufficient allowance
     #[tracing::instrument(skip(self), fields(
         account_id = %account_id,
@@ -219,6 +214,7 @@ FROM
 WHERE
     account_id = $1
     AND mark <> 'always_deny'
+FOR UPDATE
 "#,
             account_id.to_string(),
         )
@@ -234,50 +230,46 @@ WHERE
 
         let required = gas_estimate.saturating_add(inner_spend);
 
+        let reserved: Decimal = sqlx::query_scalar(
+            r#"
+SELECT
+    coalesce(sum(gas_estimate + inner_spend), 0)
+FROM
+    pending_gateway_charge
+WHERE
+    account_id = $1
+"#,
+        )
+        .bind(account_id.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        let available = account.allowance - reserved;
+
         if account.mark != AccountMark::AlwaysApprove
-            && account.allowance < Decimal::from(required.as_yoctonear())
+            && available < Decimal::from(required.as_yoctonear())
         {
             return Err(error::InsufficientAllowanceError {
                 account_id: account_id.to_owned(),
                 required,
-                #[allow(
-                    clippy::unwrap_used,
-                    reason = "guaranteed to be less than `required`, which fits in u128"
-                )]
-                actual: NearToken::from_yoctonear(account.allowance.try_into().unwrap()),
+                actual: NearToken::from_yoctonear(u128::try_from(available).unwrap_or(0)),
             }
             .into());
         }
 
-        // Claim the account's single in-flight slot (the `pending_operation_key
-        // IS NULL` guard). If it is already taken, no row matches and nothing is
-        // claimed.
-        let claimed = sqlx::query!(
+        sqlx::query(
             r#"
-UPDATE
-    account
-SET
-    pending_operation_key = $2,
-    pending_inner_spend = $3
-WHERE
-    account_id = $1
-    AND pending_operation_key IS NULL
-RETURNING
-    account_id
+INSERT INTO
+    pending_gateway_charge (operation_key, account_id, gas_estimate, inner_spend)
+VALUES
+    ($1, $2, $3, $4)
 "#,
-            account_id.as_str(),
-            operation_key,
-            Decimal::from(inner_spend.as_yoctonear()),
         )
-        .fetch_optional(&mut *tx)
+        .bind(operation_key)
+        .bind(account_id.as_str())
+        .bind(Decimal::from(gas_estimate.as_yoctonear()))
+        .bind(Decimal::from(inner_spend.as_yoctonear()))
+        .execute(&mut *tx)
         .await?;
-
-        if claimed.is_none() {
-            return Err(error::PendingChargeError {
-                account_id: account_id.to_owned(),
-            }
-            .into());
-        }
 
         tx.commit().await?;
         Ok(())
@@ -288,10 +280,10 @@ RETURNING
     /// so a charge is only ever billed off a *terminal* operation's final cost.
     ///
     /// - `None` (no operation persisted — planning failed, or a reservation was
-    ///   reaped): nothing reached the chain, so release the slot uncharged.
+    ///   reaped): nothing reached the chain, so release the reservation uncharged.
     /// - `Succeeded`: settle the recorded cost (gas + inner spend).
     /// - `Failed`: reverted on chain (recorded an outcome) settles the gas;
-    ///   rejected before execution (no outcome) releases the slot uncharged.
+    ///   rejected before execution (no outcome) releases the reservation uncharged.
     /// - `Pending`/`InProgress`: not terminal, so the cost isn't final — leave the
     ///   charge locked for the broom to reconcile once the operation settles. This
     ///   is what makes undercharging a still-in-flight operation impossible: there
@@ -338,14 +330,14 @@ RETURNING
         }
     }
 
-    /// Settle an in-flight charge against its gateway operation's actual cost:
+    /// Settle a pending charge against its gateway operation's actual cost:
     /// debit `tokens_burnt` (always) plus the locked `inner_spend` (only if the
-    /// operation succeeded), and release the slot.
+    /// operation succeeded), and release the reservation.
     ///
     /// Private: the only caller is [`Database::resolve_charge`], which alone
     /// decides whether an operation is terminal enough to settle.
     ///
-    /// Idempotent: the `pending_operation_key = $2` guard means a charge already
+    /// Idempotent: the ledger delete means a charge already
     /// settled (e.g. by the hot path before the broom got to it) matches no row
     /// and is a no-op.
     #[tracing::instrument(skip(self), fields(
@@ -362,31 +354,37 @@ RETURNING
         succeeded: bool,
     ) -> Result<(), sqlx::Error> {
         tracing::info!("Settling charge");
-        sqlx::query!(
+        sqlx::query(
             r#"
+WITH charge AS (
+    DELETE FROM pending_gateway_charge
+    WHERE
+        account_id = $1
+        AND operation_key = $2
+    RETURNING
+        inner_spend
+)
 UPDATE
     account
 SET
     allowance = greatest(
         allowance - (
             $3 + CASE
-                WHEN $4 THEN coalesce(pending_inner_spend, 0)
+                WHEN $4 THEN (SELECT inner_spend FROM charge)
                 ELSE 0
             END
         ),
         0
-    ),
-    pending_operation_key = NULL,
-    pending_inner_spend = NULL
+    )
 WHERE
     account_id = $1
-    AND pending_operation_key = $2
+    AND EXISTS (SELECT 1 FROM charge)
 "#,
-            account_id.as_str(),
-            operation_key,
-            Decimal::from(tokens_burnt.as_yoctonear()),
-            succeeded,
         )
+        .bind(account_id.as_str())
+        .bind(operation_key)
+        .bind(Decimal::from(tokens_burnt.as_yoctonear()))
+        .bind(succeeded)
         .execute(&self.connection)
         .await?;
 
@@ -394,7 +392,7 @@ WHERE
     }
 
     /// Release an in-flight charge without billing it — for an operation that
-    /// never reached the chain. Only clears the slot; the allowance was never
+    /// never reached the chain. Only clears the ledger row; the allowance was never
     /// debited at lock time, so nothing is refunded.
     ///
     /// Idempotent, like [`Database::settle`].
@@ -409,20 +407,17 @@ WHERE
         operation_key: Uuid,
     ) -> Result<(), sqlx::Error> {
         tracing::info!("Releasing charge");
-        sqlx::query!(
+        sqlx::query(
             r#"
-UPDATE
-    account
-SET
-    pending_operation_key = NULL,
-    pending_inner_spend = NULL
+DELETE FROM
+    pending_gateway_charge
 WHERE
     account_id = $1
-    AND pending_operation_key = $2
+    AND operation_key = $2
 "#,
-            account_id.as_str(),
-            operation_key,
         )
+        .bind(account_id.as_str())
+        .bind(operation_key)
         .execute(&self.connection)
         .await?;
 
@@ -462,30 +457,45 @@ VALUES
         &self,
         account_id: &AccountIdRef,
     ) -> Result<Option<NearToken>, sqlx::Error> {
-        let result = sqlx::query!(
+        let result = sqlx::query(
             r#"
 SELECT
-    allowance,
-    mark AS "mark: AccountMark"
+    account.allowance,
+    account.mark,
+    coalesce(sum(pending_gateway_charge.gas_estimate + pending_gateway_charge.inner_spend), 0) AS reserved
 FROM
     account
+LEFT JOIN
+    pending_gateway_charge ON pending_gateway_charge.account_id = account.account_id
 WHERE
-    account_id = $1
+    account.account_id = $1
+GROUP BY
+    account.account_id
 "#,
-            account_id.as_str(),
         )
+        .bind(account_id.as_str())
         .fetch_optional(&self.connection)
         .await?;
 
-        Ok(result
-            .and_then(|r| {
-                if r.mark == AccountMark::AlwaysDeny {
-                    Some(0)
-                } else {
-                    u128::try_from(r.allowance).ok()
+        result
+            .map(|row| {
+                let mark: AccountMark = row.try_get("mark")?;
+                if mark == AccountMark::AlwaysDeny {
+                    return Ok(NearToken::from_yoctonear(0));
                 }
+
+                let allowance: Decimal = row.try_get("allowance")?;
+                let reserved: Decimal = row.try_get("reserved")?;
+                let available = if mark == AccountMark::AlwaysApprove {
+                    allowance
+                } else {
+                    allowance - reserved
+                };
+                Ok(NearToken::from_yoctonear(
+                    u128::try_from(available).unwrap_or(0),
+                ))
             })
-            .map(NearToken::from_yoctonear))
+            .transpose()
     }
 }
 
@@ -567,8 +577,7 @@ mod tests {
         db.lock_pending(&account, near(10), near(5), key)
             .await
             .unwrap();
-        // Locking does not touch the allowance.
-        assert_eq!(allowance(&db, &account).await, 100);
+        assert_eq!(allowance(&db, &account).await, 85);
 
         db.settle(&account, key, near(8), true).await.unwrap();
         assert_eq!(allowance(&db, &account).await, 100 - 8 - 5);
@@ -604,13 +613,12 @@ mod tests {
         db.release_pending(&account, key).await.unwrap();
         assert_eq!(allowance(&db, &account).await, 100);
 
-        // The slot is free again.
         db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
             .await
             .unwrap();
     }
 
-    /// Settling twice for the same charge debits once (the slot guard makes the
+    /// Settling twice for the same charge debits once (the ledger delete makes the
     /// second a no-op), so a hot-path/broom race can't double-charge.
     #[sqlx::test]
     async fn settle_is_idempotent(pool: PgPool) {
@@ -646,13 +654,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status, AccountedStatus::Pending);
-        // Allowance untouched, and the slot is still locked (a second lock fails).
-        assert_eq!(allowance(&db, &account).await, 100);
-        let err = db
-            .lock_pending(&account, near(10), near(0), Uuid::new_v4())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, error::LockError::PendingCharge(_)));
+        // The reservation remains outstanding while the operation is pending.
+        assert_eq!(allowance(&db, &account).await, 85);
     }
 
     /// A succeeded operation that executed settles its recorded cost — here the
@@ -677,7 +680,7 @@ mod tests {
     }
 
     /// A planned no-op is terminal `Succeeded` with no outcome: it never attached
-    /// the locked deposit, so settling clears the slot without billing
+    /// the locked deposit, so settling clears the reservation without billing
     /// `inner_spend`. Guards against overcharging a no-op.
     #[sqlx::test]
     async fn resolve_charge_no_op_success_bills_nothing(pool: PgPool) {
@@ -697,7 +700,6 @@ mod tests {
         assert_eq!(status, AccountedStatus::Succeeded);
         // The no-op spent nothing, so the locked deposit is not billed.
         assert_eq!(allowance(&db, &account).await, 100);
-        // The slot is free again.
         db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
             .await
             .unwrap();
@@ -722,7 +724,6 @@ mod tests {
             .unwrap();
         assert_eq!(status, AccountedStatus::Failed);
         assert_eq!(allowance(&db, &account).await, 100);
-        // The slot is free again.
         db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
             .await
             .unwrap();
@@ -730,7 +731,7 @@ mod tests {
 
     /// No operation (planning failed, or a reservation was reaped) releases the
     /// charge uncharged — the rule the dispatching endpoint's error path relies on
-    /// so a failed plan never strands the account's single slot.
+    /// so a failed plan never strands the account's reservation.
     #[sqlx::test]
     async fn resolve_charge_releases_missing_operation(pool: PgPool) {
         let db = db(pool);
@@ -745,27 +746,43 @@ mod tests {
         let status = db.resolve_charge(&account, key, None).await.unwrap();
         assert_eq!(status, AccountedStatus::Failed);
         assert_eq!(allowance(&db, &account).await, 100);
-        // The slot is free again.
         db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
             .await
             .unwrap();
     }
 
-    /// Only one charge may be in flight per account.
+    /// Multiple gateway operations may reserve allowance for the same account.
     #[sqlx::test]
-    async fn lock_rejects_second_charge(pool: PgPool) {
+    async fn lock_allows_multiple_pending_charges_for_same_account(pool: PgPool) {
         let db = db(pool);
         let account = acct("a.near");
         db.create_account(&account, near(100)).await.unwrap();
 
-        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+
+        db.lock_pending(&account, near(10), near(5), first)
             .await
             .unwrap();
-        let err = db
-            .lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        db.lock_pending(&account, near(20), near(7), second)
             .await
-            .unwrap_err();
-        assert!(matches!(err, error::LockError::PendingCharge(_)));
+            .unwrap();
+
+        let mut pending = db.get_pending_charges(10, Duration::ZERO).await.unwrap();
+        pending.sort_by_key(|charge| charge.operation_key);
+        let mut keys = [first, second];
+        keys.sort();
+
+        assert_eq!(pending.len(), 2);
+        assert!(pending.iter().all(|charge| charge.account_id == account));
+        assert_eq!(
+            pending
+                .iter()
+                .map(|charge| charge.operation_key)
+                .collect::<Vec<_>>(),
+            keys
+        );
+        assert_eq!(allowance(&db, &account).await, 58);
     }
 
     /// A lock whose gas + deposit exceeds the allowance is rejected.
@@ -780,6 +797,74 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, error::LockError::InsufficientAllowance(_)));
+    }
+
+    /// Existing reservations reduce what a later gateway operation can reserve.
+    #[sqlx::test]
+    async fn lock_rejects_when_existing_reservations_exhaust_allowance(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(30)).await.unwrap();
+
+        db.lock_pending(&account, near(10), near(5), Uuid::new_v4())
+            .await
+            .unwrap();
+
+        let err = db
+            .lock_pending(&account, near(12), near(4), Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, error::LockError::InsufficientAllowance(_)));
+        assert_eq!(allowance(&db, &account).await, 15);
+    }
+
+    /// Available allowance reports the spendable balance after pending reservations.
+    #[sqlx::test]
+    async fn available_allowance_subtracts_pending_reservations(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        db.lock_pending(&account, near(10), near(5), Uuid::new_v4())
+            .await
+            .unwrap();
+        db.lock_pending(&account, near(20), near(7), Uuid::new_v4())
+            .await
+            .unwrap();
+
+        assert_eq!(allowance(&db, &account).await, 58);
+    }
+
+    /// Settling or releasing one operation key leaves sibling reservations intact.
+    #[sqlx::test]
+    async fn settle_and_release_one_charge_leave_other_pending(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let settled = Uuid::new_v4();
+        let released = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(5), settled)
+            .await
+            .unwrap();
+        db.lock_pending(&account, near(20), near(7), released)
+            .await
+            .unwrap();
+
+        db.settle(&account, settled, near(8), true).await.unwrap();
+
+        let pending = db.get_pending_charges(10, Duration::ZERO).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation_key, released);
+        assert_eq!(allowance(&db, &account).await, 60);
+
+        db.release_pending(&account, released).await.unwrap();
+        assert!(db
+            .get_pending_charges(10, Duration::ZERO)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(allowance(&db, &account).await, 87);
     }
 
     /// A locked charge is reported as pending (with its key) for the broom.
@@ -808,20 +893,14 @@ mod tests {
             .is_empty());
     }
 
-    /// Locking a charge refreshes the account's `updated_at` (via the
-    /// `updated_at_trigger`), so a just-locked slot is never immediately
-    /// broom-eligible — even on a long-idle account whose previous `updated_at`
-    /// predates `min_age`. Guards the broom-vs-live-path race: the broom must not
-    /// reclaim a slot before the gateway has persisted its operation.
+    /// Locking a charge stamps the ledger row's `updated_at`, so a new reservation
+    /// is never immediately broom-eligible.
     #[sqlx::test]
     async fn lock_pending_refreshes_charge_age(pool: PgPool) {
         let db = db(pool);
         let account = acct("a.near");
         db.create_account(&account, near(100)).await.unwrap();
 
-        // Backdate the account well past `min_age` to simulate a long-idle
-        // account. The trigger overrides `updated_at` on any UPDATE, so disable it
-        // just for this setup step.
         sqlx::query("ALTER TABLE account DISABLE TRIGGER updated_at_trigger")
             .execute(&db.connection)
             .await
@@ -838,13 +917,11 @@ mod tests {
             .await
             .unwrap();
 
-        // Locking fires the trigger, stamping `updated_at = NOW()`.
         let key = Uuid::new_v4();
         db.lock_pending(&account, near(10), near(5), key)
             .await
             .unwrap();
 
-        // Despite the stale account, the fresh lock is not yet broom-eligible.
         let pending = db
             .get_pending_charges(10, Duration::from_secs(60))
             .await
@@ -853,5 +930,45 @@ mod tests {
             pending.is_empty(),
             "a just-locked charge must not be broom-eligible until it ages past min_age"
         );
+    }
+
+    /// Broom age is evaluated per ledger row rather than per account.
+    #[sqlx::test]
+    async fn get_pending_charges_filters_by_ledger_updated_at(pool: PgPool) {
+        let db = db(pool);
+        let account = acct("a.near");
+        db.create_account(&account, near(100)).await.unwrap();
+
+        let stale = Uuid::new_v4();
+        let fresh = Uuid::new_v4();
+        db.lock_pending(&account, near(10), near(0), stale)
+            .await
+            .unwrap();
+        db.lock_pending(&account, near(10), near(0), fresh)
+            .await
+            .unwrap();
+
+        sqlx::query("ALTER TABLE pending_gateway_charge DISABLE TRIGGER updated_at_trigger")
+            .execute(&db.connection)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE pending_gateway_charge SET updated_at = NOW() - INTERVAL '1 hour' WHERE operation_key = $1",
+        )
+        .bind(stale)
+        .execute(&db.connection)
+        .await
+        .unwrap();
+        sqlx::query("ALTER TABLE pending_gateway_charge ENABLE TRIGGER updated_at_trigger")
+            .execute(&db.connection)
+            .await
+            .unwrap();
+
+        let pending = db
+            .get_pending_charges(10, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation_key, stale);
     }
 }
