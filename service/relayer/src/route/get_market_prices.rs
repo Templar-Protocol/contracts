@@ -42,9 +42,9 @@ pub async fn get_market_prices(
     {
         Ok(config) => config,
         Err(error) => {
-            tracing::debug!(%market_id, %error, "Unknown or unreadable market");
-            return SimpleResponse::Rejected {
-                reason: format!("Unknown market: {market_id}"),
+            tracing::warn!(%market_id, %error, "Failed to load known market configuration");
+            return SimpleResponse::Failure {
+                error: "Failed to load market configuration".to_string(),
             };
         }
     };

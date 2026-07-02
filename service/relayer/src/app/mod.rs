@@ -625,7 +625,7 @@ impl App {
         receiver_id: &AccountIdRef,
         contract_data: &ContractData,
         calls: impl IntoIterator<Item = &'a FunctionCallAction>,
-    ) -> Result<Vec<AccountId>, Vec<FunctionCallRejectionReason>> {
+    ) -> Result<Vec<AccountId>, ActionAllowanceError> {
         let mut other_interactions = Vec::new();
         let mut errors = vec![];
 
@@ -650,19 +650,16 @@ impl App {
                 }
 
                 // Resolve the market's assets on demand to validate the deposit.
-                let Ok(configuration) = self
+                let configuration = self
                     .gateway
                     .read(market::GetConfiguration {
                         market_id: market_id.to_owned(),
                     })
                     .await
-                else {
-                    errors.push(FunctionCallRejectionReason::UnknownTransferReceiverId {
+                    .map_err(|source| ActionAllowanceError::MarketConfigurationRead {
                         account_id: market_id.to_owned(),
-                        index,
-                    });
-                    continue;
-                };
+                        source,
+                    })?;
 
                 let msg = transfer.args.msg();
                 let Ok(msg) = serde_json::from_str::<DepositMsg>(msg) else {
@@ -698,7 +695,7 @@ impl App {
         if errors.is_empty() {
             Ok(other_interactions)
         } else {
-            Err(errors)
+            Err(ActionAllowanceError::Rejected(errors))
         }
     }
 
@@ -719,19 +716,23 @@ impl App {
     pub async fn sda_check_and_calculate_gas(
         &self,
         signed_delegate_action: &SignedDelegateAction,
-    ) -> Result<SdaCheckResult, PayloadRejectionReason> {
+    ) -> Result<SdaCheckResult, SdaCheckError> {
         tracing::debug!("Checking and calculating gas for delegate action");
         if !signed_delegate_action.verify() {
-            return Err(PayloadRejectionReason::SignatureVerificationFailure);
+            return Err(SdaCheckError::Rejected(
+                PayloadRejectionReason::SignatureVerificationFailure,
+            ));
         }
 
         let receiver_id = &signed_delegate_action.delegate_action.receiver_id;
         let accounts = self.accounts.read().await;
 
         let Some(contract_data) = accounts.allowed_contract_data.get(receiver_id).cloned() else {
-            return Err(PayloadRejectionReason::UnknownTransactionReceiverId {
-                account_id: receiver_id.clone(),
-            });
+            return Err(SdaCheckError::Rejected(
+                PayloadRejectionReason::UnknownTransactionReceiverId {
+                    account_id: receiver_id.clone(),
+                },
+            ));
         };
 
         let actions = signed_delegate_action.delegate_action.get_actions();
@@ -747,7 +748,9 @@ impl App {
                     Err(i)
                 }
             })
-            .map_err(|index| PayloadRejectionReason::UnsupportedAction { index })?;
+            .map_err(|index| {
+                SdaCheckError::Rejected(PayloadRejectionReason::UnsupportedAction { index })
+            })?;
 
         let additional_interactions = self
             .actions_are_allowed(
@@ -757,7 +760,7 @@ impl App {
                 calls.iter().map(Borrow::borrow),
             )
             .await
-            .map_err(PayloadRejectionReason::FunctionCallRejection)?;
+            .map_err(SdaCheckError::from)?;
 
         let (interacted_contract_ids, market_ids) = Self::derive_sda_interactions(
             &accounts.market_ids,
@@ -976,6 +979,41 @@ pub struct SdaCheckResult {
     pub contract_data: ContractData,
     pub interacted_contract_ids: HashSet<AccountId>,
     pub market_ids: HashSet<AccountId>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ActionAllowanceError {
+    #[error("Function call rejected")]
+    Rejected(Vec<FunctionCallRejectionReason>),
+    #[error("Failed to load configuration for known market {account_id}: {source}")]
+    MarketConfigurationRead {
+        account_id: AccountId,
+        source: GatewayError,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SdaCheckError {
+    #[error(transparent)]
+    Rejected(PayloadRejectionReason),
+    #[error("Failed to load configuration for known market {account_id}: {source}")]
+    MarketConfigurationRead {
+        account_id: AccountId,
+        source: GatewayError,
+    },
+}
+
+impl From<ActionAllowanceError> for SdaCheckError {
+    fn from(error: ActionAllowanceError) -> Self {
+        match error {
+            ActionAllowanceError::Rejected(reasons) => {
+                Self::Rejected(PayloadRejectionReason::FunctionCallRejection(reasons))
+            }
+            ActionAllowanceError::MarketConfigurationRead { account_id, source } => {
+                Self::MarketConfigurationRead { account_id, source }
+            }
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

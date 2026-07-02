@@ -615,6 +615,32 @@ pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: Init
     assert_eq!(reason, "Unknown market: unknown-market.test.near");
 }
 
+#[rstest]
+#[tokio::test]
+pub async fn market_prices_fails_when_known_market_configuration_cannot_be_read(
+    #[future(awt)] init_test: InitTest,
+) {
+    let InitTest { app, .. } = init_test;
+    let market_id: AccountId = "missing-known-market.test.near".parse().unwrap();
+    app.accounts
+        .write()
+        .await
+        .market_ids
+        .insert(market_id.clone());
+
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Query(GetMarketPricesRequest { market_id }),
+    )
+    .await;
+
+    let SimpleResponse::Failure { error } = response else {
+        panic!("Known market configuration read failure should be a route failure");
+    };
+
+    assert_eq!(error, "Failed to load market configuration");
+}
+
 /// A gateway planning failure deletes the reservation before anything is signed,
 /// so the account's in-flight reservation must be released immediately rather than
 /// stranded until the broom's delayed sweep. Exercises the endpoint error path that

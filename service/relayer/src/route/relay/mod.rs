@@ -3,7 +3,11 @@ use near_sdk::{borsh, NearToken};
 use templar_gateway_methods_spec::tx;
 use templar_gateway_types::SignedDelegateActionInput;
 
-use crate::{app::App, client::database::AccountedStatus, route::SimpleResponse};
+use crate::{
+    app::{App, SdaCheckError},
+    client::database::AccountedStatus,
+    route::SimpleResponse,
+};
 
 mod message;
 pub use message::{RelayRequest, RelayResponse};
@@ -35,10 +39,16 @@ pub async fn relay(
             tracing::info!(gas = %x.gas, "Gas check passed");
             x
         }
-        Err(e) => {
-            tracing::info!(error = %e, "Gas check failed");
+        Err(SdaCheckError::Rejected(reason)) => {
+            tracing::info!(error = %reason, "Gas check rejected payload");
             return SimpleResponse::Rejected {
-                reason: e.to_string(),
+                reason: reason.to_string(),
+            };
+        }
+        Err(error @ SdaCheckError::MarketConfigurationRead { .. }) => {
+            tracing::warn!(%error, "Gas check failed while reading market configuration");
+            return SimpleResponse::Failure {
+                error: "Failed to load market configuration".to_string(),
             };
         }
     };

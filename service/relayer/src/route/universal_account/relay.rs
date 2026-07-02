@@ -14,7 +14,11 @@ use templar_universal_account::{
     ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
 
-use crate::{app::App, client::database::AccountedStatus, route::SimpleResponse};
+use crate::{
+    app::{ActionAllowanceError, App},
+    client::database::AccountedStatus,
+    route::SimpleResponse,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -170,7 +174,7 @@ pub async fn relay(
             .await
         {
             Ok(a) => a,
-            Err(e) => {
+            Err(ActionAllowanceError::Rejected(e)) => {
                 tracing::info!("Rejecting payload for reason: {e:?}");
                 return SimpleResponse::Rejected {
                     reason: e
@@ -178,6 +182,12 @@ pub async fn relay(
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
                         .join("\n"),
+                };
+            }
+            Err(error @ ActionAllowanceError::MarketConfigurationRead { .. }) => {
+                tracing::warn!(%error, "Failed to validate payload market configuration");
+                return SimpleResponse::Failure {
+                    error: "Failed to load market configuration".to_string(),
                 };
             }
         };
