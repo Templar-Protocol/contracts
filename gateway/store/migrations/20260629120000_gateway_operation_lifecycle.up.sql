@@ -1,73 +1,104 @@
--- up
--- Operation-lifecycle columns layered on the base operation-store schema:
--- updated_at defaults, the planned-vs-reservation marker, the relational step
--- execution outcome, and the submitted_at age marker (which replaces the removed
--- per-step wait_until, since every step now waits for final execution).
+DO
+$$
+BEGIN
+CREATE TYPE gateway_outcome_status AS ENUM (
+    'succeeded',
+    'failed'
+);
 
--- This migration is NOT upgrade-safe for pre-existing operations: it makes
--- `planned_at IS NULL` the reservation sentinel and requires `submitted_at` /
--- outcome columns the base schema never captured, so legacy rows cannot be
--- reconstructed by the loader. The gateway operation store has no released
--- consumer, so a real deployment applies this to an empty table. Refuse loudly if
--- that assumption is violated rather than silently corrupting recovery (a legacy
--- row would otherwise be read as a reservation and deleted, or fail to load).
+EXCEPTION
+WHEN duplicate_object THEN NULL;
+
+END
+$$
+;
+
+-- This migration is intentionally greenfield for gateway operation state. If a
+-- database has operation rows from an earlier operation-store shape, they cannot
+-- be reconstructed into structural plans/executions/results safely. Refuse
+-- loudly instead of treating legacy rows as unplanned reservations.
 DO
 $$
 BEGIN
     IF EXISTS (SELECT 1 FROM gateway_operations) THEN
-        RAISE EXCEPTION 'gateway_operation_lifecycle migration requires an empty gateway_operations table: legacy rows predate the planned_at/submitted_at/outcome columns and cannot be migrated. Drain and clear gateway operation state before upgrading.';
+        RAISE EXCEPTION 'gateway_operation_lifecycle migration requires an empty gateway_operations table: legacy rows predate structural plan/execution/result tables and cannot be migrated. Drain and clear gateway operation state before upgrading.';
     END IF;
 END
-$$;
+$$
+;
 
--- `updated_at` was NOT NULL but, unlike `created_at`, had no default, so the
--- store's inserts (which don't set it) violated the constraint. The store
--- re-inserts on every save, so this tracks the last write time.
-ALTER TABLE gateway_operations
-    ALTER COLUMN updated_at SET DEFAULT NOW();
+CREATE TABLE IF NOT EXISTS gateway_operation_plans (
+    operation_id uuid PRIMARY KEY REFERENCES gateway_operations(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT NOW()
+);
 
-ALTER TABLE gateway_operation_steps
-    ALTER COLUMN updated_at SET DEFAULT NOW();
+CREATE TABLE IF NOT EXISTS gateway_plan_steps (
+    operation_id uuid NOT NULL,
+    step_index integer NOT NULL,
+    signer_account_id text NOT NULL,
+    receiver_id text NOT NULL,
+    actions jsonb NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (operation_id, step_index),
+    FOREIGN KEY (operation_id)
+        REFERENCES gateway_operation_plans (operation_id) ON DELETE CASCADE,
+    CONSTRAINT gateway_plan_steps_step_index_check CHECK (step_index >= 0),
+    CONSTRAINT gateway_plan_steps_actions_array_check CHECK (jsonb_typeof(actions) = 'array')
+);
 
--- `planned_at`: NULL marks a reservation (the row was created to hold the
--- idempotency key before planning ran). It is set once planning completes — even
--- for a no-op plan — so a planned no-op (0 steps, terminal) is distinguishable
--- from a bare reservation (0 steps, in flight).
-ALTER TABLE gateway_operations
-    ADD COLUMN planned_at timestamptz;
+CREATE TABLE IF NOT EXISTS gateway_step_executions (
+    operation_id uuid NOT NULL,
+    step_index integer NOT NULL,
+    tx_hash text NOT NULL,
+    signed_transaction bytea NOT NULL,
+    prepared_at timestamptz NOT NULL DEFAULT NOW(),
+    submitted_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (operation_id, step_index),
+    FOREIGN KEY (operation_id, step_index)
+        REFERENCES gateway_plan_steps (operation_id, step_index) ON DELETE CASCADE,
+    CONSTRAINT gateway_step_executions_submitted_after_prepared_check
+        CHECK (submitted_at IS NULL OR submitted_at >= prepared_at)
+);
 
--- A step's execution outcome, persisted relationally (DB-enforced shape) rather
--- than as an opaque blob: scalar fields on the step row, and one row per receipt
--- in a child table. Present for succeeded and reverted steps, absent for steps
--- that never executed. u128/u64 amounts are lossless decimal text; the return
--- value is the raw success bytes.
---
--- `submitted_at` records when a step entered the 'submitted' state, so
--- reconciliation can age a transaction the chain never records into a rejection.
--- NULL for every non-submitted state. `wait_until` is dropped: all steps now wait
--- for final execution.
-ALTER TABLE gateway_operation_steps
-    DROP COLUMN wait_until,
-    ADD COLUMN submitted_at timestamptz,
-    ADD COLUMN outcome_tokens_burnt text,
-    ADD COLUMN outcome_total_gas_burnt text,
-    ADD COLUMN outcome_return_value bytea,
-    ADD CONSTRAINT gateway_operation_steps_outcome_check CHECK (
-        -- All-or-nothing: a step either has an execution outcome or it doesn't.
-        (outcome_tokens_burnt IS NULL) = (outcome_total_gas_burnt IS NULL)
-    );
+CREATE TABLE IF NOT EXISTS gateway_step_results (
+    operation_id uuid NOT NULL,
+    step_index integer NOT NULL,
+    tx_hash text NOT NULL,
+    completed_at timestamptz NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (operation_id, step_index),
+    FOREIGN KEY (operation_id, step_index)
+        REFERENCES gateway_step_executions (operation_id, step_index) ON DELETE CASCADE
+);
 
-CREATE TABLE gateway_operation_step_receipts (
+CREATE TABLE IF NOT EXISTS gateway_step_outcomes (
+    operation_id uuid NOT NULL,
+    step_index integer NOT NULL,
+    status gateway_outcome_status NOT NULL,
+    tokens_burnt text NOT NULL,
+    total_gas_burnt text NOT NULL,
+    return_value bytea,
+    PRIMARY KEY (operation_id, step_index),
+    FOREIGN KEY (operation_id, step_index)
+        REFERENCES gateway_step_results (operation_id, step_index) ON DELETE CASCADE,
+    CONSTRAINT gateway_step_outcomes_tokens_burnt_unsigned_decimal_check
+        CHECK (tokens_burnt ~ '^[0-9]+$'),
+    CONSTRAINT gateway_step_outcomes_total_gas_burnt_unsigned_decimal_check
+        CHECK (total_gas_burnt ~ '^[0-9]+$')
+);
+
+CREATE TABLE IF NOT EXISTS gateway_step_receipts (
     operation_id uuid NOT NULL,
     step_index integer NOT NULL,
     receipt_index integer NOT NULL,
     contract_id text NOT NULL,
-    status text NOT NULL,
-    logs text[] NOT NULL,
+    status gateway_outcome_status NOT NULL,
+    logs text[] NOT NULL DEFAULT '{}',
     created_at timestamptz NOT NULL DEFAULT NOW(),
     PRIMARY KEY (operation_id, step_index, receipt_index),
     FOREIGN KEY (operation_id, step_index)
-        REFERENCES gateway_operation_steps (operation_id, step_index) ON DELETE CASCADE,
-    CONSTRAINT gateway_operation_step_receipts_status_check
-        CHECK (status IN ('succeeded', 'failed'))
+        REFERENCES gateway_step_outcomes (operation_id, step_index) ON DELETE CASCADE,
+    CONSTRAINT gateway_step_receipts_receipt_index_check CHECK (receipt_index >= 0)
 );
+
+CREATE INDEX IF NOT EXISTS gateway_plan_steps_operation_id_step_index_idx ON gateway_plan_steps (operation_id, step_index);
