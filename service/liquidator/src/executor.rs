@@ -172,12 +172,12 @@ impl LiquidationExecutor {
         let tx_start = std::time::Instant::now();
         let tx_result = self
             .client
-            .execute(market::Liquidate {
-                market_id: self.market.clone(),
-                account_id: borrow_account.clone(),
+            .execute(market::Liquidate::new(
+                self.market.clone(),
+                borrow_account.clone(),
                 liquidation_amount,
-                collateral_amount: Some(collateral_amount), // Request specific collateral amount calculated by strategy
-            })
+                Some(collateral_amount),
+            ))
             .await;
 
         match tx_result {

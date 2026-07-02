@@ -30,6 +30,7 @@ pub struct GetConfiguration {
 pub struct ListBorrowPositions {
     pub market_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
 }
 
@@ -58,6 +59,7 @@ pub struct GetFinalizedSnapshotsLen {
 pub struct ListFinalizedSnapshots {
     pub market_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
 }
 
@@ -120,6 +122,7 @@ pub struct GetBorrowStatusResult {
 pub struct ListSupplyPositions {
     pub market_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
 }
 

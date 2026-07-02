@@ -13,11 +13,14 @@
 //! ```ignore
 //! let client = SigningClient::connect(network, account_id, secret_key)?;
 //!
-//! let config = client.read(market::GetConfiguration { market_id }).await?;
+//! let config = client.read(market::GetConfiguration::new(market_id)).await?;
 //! let result = client
-//!     .execute(market::WithdrawStaticYield { market_id, amount: None })
+//!     .execute(market::WithdrawStaticYield::new(market_id, None))
 //!     .await?;
 //! ```
+//!
+//! The request structs keep their public fields, so explicit struct literals
+//! remain available when they are clearer.
 //!
 //! [`OperationStore`]: templar_gateway_core::OperationStore
 

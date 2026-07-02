@@ -244,10 +244,7 @@ pub async fn relay(
             app.args.relay.account_id.clone(),
             cost_of_gas,
             NearToken::from_near(0),
-            ua::Execute {
-                account_id,
-                args: args_raw,
-            },
+            ua::Execute::new(account_id, args_raw),
         )
         .await
     {
