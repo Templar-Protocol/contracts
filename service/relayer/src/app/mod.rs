@@ -158,11 +158,7 @@ impl App {
     /// affects the pre-flight affordability gate, never the amount charged.
     #[tracing::instrument(skip(self), fields(gas = %gas))]
     pub async fn estimate_cost_of_gas(&self, gas: Gas) -> Option<NearToken> {
-        let gas_price = match self
-            .gateway
-            .read(chain::GetBlock { block_hash: None })
-            .await
-        {
+        let gas_price = match self.gateway.read(chain::GetBlock::new()).await {
             Ok(result) => result.gas_price,
             Err(error) => {
                 tracing::error!(%error, "Failed to fetch gas price");
@@ -215,9 +211,7 @@ impl App {
                 let gateway = self.gateway.clone();
                 async move {
                     match gateway
-                        .read(market::GetConfiguration {
-                            market_id: market.clone(),
-                        })
+                        .read(market::GetConfiguration::new(market.clone()))
                         .await
                     {
                         Ok(configuration) => Some((market, configuration)),
@@ -290,9 +284,7 @@ impl App {
                         // simply never storage-deposited.
                         let storage_balance_bounds = self
                             .gateway
-                            .read(storage::GetBalanceBounds {
-                                contract_id: contract_id.clone(),
-                            })
+                            .read(storage::GetBalanceBounds::new(contract_id.clone()))
                             .await
                             .ok()
                             .map(|result| result.bounds);
@@ -340,9 +332,7 @@ impl App {
         {
             match self
                 .gateway
-                .read(market::GetConfiguration {
-                    market_id: market_id.clone(),
-                })
+                .read(market::GetConfiguration::new(market_id.clone()))
                 .await
             {
                 Ok(configuration) => {
@@ -400,9 +390,7 @@ impl App {
         for market_id in market_ids {
             let configuration = self
                 .gateway
-                .read(market::GetConfiguration {
-                    market_id: market_id.clone(),
-                })
+                .read(market::GetConfiguration::new(market_id.clone()))
                 .await?;
             let oracle_cfg = configuration.price_oracle_configuration;
             let oracle_id = oracle_cfg.account_id.clone();
