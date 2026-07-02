@@ -1,7 +1,52 @@
 use proc_macro::TokenStream;
 
-use quote::quote;
-use syn::{parse_macro_input, Attribute, DeriveInput, Expr, ExprLit, Lit, LitStr, Meta, Type};
+use quote::{format_ident, quote};
+use syn::{
+    parse_macro_input, punctuated::Punctuated, Attribute, Data, DeriveInput, Expr, ExprLit, Fields,
+    GenericArgument, Lit, LitStr, Meta, PathArguments, Token, Type,
+};
+
+fn has_constructor_default(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut has_default = false;
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("method")) {
+        let entries = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for entry in entries {
+            match entry {
+                Meta::Path(path) => {
+                    if path.is_ident("default") {
+                        has_default = true;
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "expected `default` for field-level `#[method(...)]`",
+                        ));
+                    }
+                }
+                other => return Err(syn::Error::new_spanned(other, "expected `default`")),
+            }
+        }
+    }
+
+    Ok(has_default)
+}
+
+fn option_inner_ty(ty: &Type) -> Option<&Type> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(inner)
+}
 
 fn cleaned_doc_text(attrs: &[Attribute]) -> String {
     let mut lines = Vec::new();
@@ -41,6 +86,69 @@ fn summary_from_doc(doc: &str) -> String {
         .join(" ")
 }
 
+fn constructor_impl(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let ident = &input.ident;
+    let Data::Struct(data) = &input.data else {
+        return Ok(quote! {});
+    };
+    let Fields::Named(fields) = &data.fields else {
+        return Ok(quote! {});
+    };
+
+    let mut new_params = Vec::new();
+    let mut initializers = Vec::new();
+    let mut setters = Vec::new();
+
+    for field in &fields.named {
+        let field_ident = field.ident.as_ref().ok_or_else(|| {
+            syn::Error::new_spanned(field, "MethodSpec constructors require named fields")
+        })?;
+        let has_constructor_default = has_constructor_default(&field.attrs)?;
+        let option_inner = option_inner_ty(&field.ty);
+
+        if !has_constructor_default {
+            let field_ty = &field.ty;
+            new_params.push(quote!(#field_ident: #field_ty));
+            initializers.push(quote!(#field_ident));
+            continue;
+        }
+
+        let default_value = if option_inner.is_some() {
+            quote!(None)
+        } else {
+            quote!(::core::default::Default::default())
+        };
+        initializers.push(quote!(#field_ident: #default_value));
+
+        let setter_ident = format_ident!("with_{}", field_ident);
+        let setter_ty = option_inner.unwrap_or(&field.ty);
+        let setter_value = if option_inner.is_some() {
+            quote!(Some(value))
+        } else {
+            quote!(value)
+        };
+        setters.push(quote! {
+            #[must_use]
+            pub fn #setter_ident(mut self, value: #setter_ty) -> Self {
+                self.#field_ident = #setter_value;
+                self
+            }
+        });
+    }
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    Ok(quote! {
+        impl #impl_generics #ident #ty_generics #where_clause {
+            #[must_use]
+            pub fn new(#(#new_params),*) -> Self {
+                Self { #(#initializers),* }
+            }
+
+            #(#setters)*
+        }
+    })
+}
+
 /// Attach a gateway method spec to an operation struct.
 ///
 /// The operation struct *is* the method input. A `#[method(..)]` helper
@@ -58,6 +166,11 @@ fn summary_from_doc(doc: &str) -> String {
 /// #[method(write = "market.withdrawStaticYield")]
 /// pub struct WithdrawStaticYield { /* .. */ }
 /// ```
+///
+/// The derive also emits an inherent `new(...)` constructor. Fields are
+/// constructor parameters unless they opt into `Default::default()` with
+/// `#[method(default)]`; opted-in fields also get a fluent `with_<field>(...)`
+/// setter. Public fields remain available for explicit struct literals.
 ///
 /// Reads require `output = <Type>`; writes take no output (their output is
 /// always `WriteOperationResult`).
@@ -156,8 +269,11 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         .attrs
         .iter()
         .any(|attr| attr.path().is_ident("deprecated"));
+    let constructor_impl = constructor_impl(input)?;
 
     Ok(quote! {
+        #constructor_impl
+
         impl templar_gateway_types::MethodSpec for #ident {
             type Output = #output_ty;
 

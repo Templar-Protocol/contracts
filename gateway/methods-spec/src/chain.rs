@@ -10,5 +10,6 @@ use templar_gateway_types::{BlockSummary, CryptoHash};
 #[method(read = "chain.getBlock", output = BlockSummary)]
 pub struct GetBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[method(default)]
     pub block_hash: Option<CryptoHash>,
 }

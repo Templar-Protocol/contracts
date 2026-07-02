@@ -53,6 +53,7 @@ pub struct Create {
     pub key: KeyId,
     pub chain_id: templar_primitives::SU128,
     pub execute: Option<Box<[Transaction]>>,
+    #[method(default)]
     pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: templar_gateway_types::NearToken,
 }

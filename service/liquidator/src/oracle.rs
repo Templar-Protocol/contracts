@@ -166,9 +166,7 @@ impl OracleFetcher {
         // oracle through the direct Pyth path until restart.
         let result = match self
             .client
-            .read(lst_oracle::GetOracleId {
-                oracle_id: oracle.clone(),
-            })
+            .read(lst_oracle::GetOracleId::new(oracle.clone()))
             .await
         {
             Ok(response) => {
@@ -309,10 +307,7 @@ impl OracleFetcher {
             for &pid in price_ids {
                 let result = self
                     .client
-                    .read(lst_oracle::GetTransformer {
-                        oracle_id: oracle.clone(),
-                        price_identifier: pid,
-                    })
+                    .read(lst_oracle::GetTransformer::new(oracle.clone(), pid))
                     .await
                     .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
                 match result.transformer {
@@ -339,10 +334,7 @@ impl OracleFetcher {
             for &pid in price_ids {
                 let result = self
                     .client
-                    .read(proxy_oracle::GetProxy {
-                        oracle_id: oracle.clone(),
-                        id: pid,
-                    })
+                    .read(proxy_oracle::GetProxy::new(oracle.clone(), pid))
                     .await
                     .map_err(|error| LiquidatorError::PriceFetchError(error.into()))?;
                 if let Some(proxy) = result.proxy {
