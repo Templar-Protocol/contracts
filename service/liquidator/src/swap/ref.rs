@@ -476,9 +476,7 @@ impl SwapProvider for RefSwap {
         // Query storage_balance_bounds to get minimum deposit required
         let bounds = self
             .client
-            .read(storage::GetBalanceBounds {
-                contract_id: token_contract.contract_id().into(),
-            })
+            .read(storage::GetBalanceBounds::new(token_contract.contract_id().into()))
             .await
             .map_err(|e| {
                 tracing::debug!(?e, token = %token_contract.contract_id(), "Failed to query storage_balance_bounds");
