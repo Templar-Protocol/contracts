@@ -54,11 +54,11 @@ impl MarketScanner {
     ) -> Result<Option<BorrowStatus>, RpcError> {
         let result = self
             .client
-            .read(market::GetBorrowStatus {
-                market_id: self.market.clone(),
-                account_id: account_id.clone(),
-                oracle_response: oracle_response.clone(),
-            })
+            .read(market::GetBorrowStatus::new(
+                self.market.clone(),
+                account_id.clone(),
+                oracle_response.clone(),
+            ))
             .await
             .map_err(RpcError::from)?;
         Ok(result.status)
@@ -72,10 +72,10 @@ impl MarketScanner {
     ) -> Result<Option<BorrowPosition>, RpcError> {
         let result = self
             .client
-            .read(market::GetBorrowPosition {
-                market_id: self.market.clone(),
-                account_id: account_id.clone(),
-            })
+            .read(market::GetBorrowPosition::new(
+                self.market.clone(),
+                account_id.clone(),
+            ))
             .await
             .map_err(RpcError::from)?;
         Ok(result.position)
@@ -91,13 +91,12 @@ impl MarketScanner {
         loop {
             let page = self
                 .client
-                .read(market::ListBorrowPositions {
-                    market_id: self.market.clone(),
-                    args: Pagination {
+                .read(
+                    market::ListBorrowPositions::new(self.market.clone()).with_args(Pagination {
                         offset: Some(current_offset),
                         limit: Some(page_size),
-                    },
-                })
+                    }),
+                )
                 .await
                 .map_err(|e| LiquidatorError::ListBorrowPositionsError(e.into()))?
                 .positions;

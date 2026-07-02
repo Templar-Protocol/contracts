@@ -12,6 +12,7 @@ use templar_gateway_types::{
 pub struct ListDeployments {
     pub registry_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
 }
 
@@ -26,6 +27,7 @@ pub struct ListDeploymentsResult {
 pub struct ListDeploymentsByKind {
     pub registry_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
     pub kind: ContractKind,
 }
@@ -36,6 +38,7 @@ pub struct ListDeploymentsByKind {
 pub struct ListVersions {
     pub registry_id: AccountId,
     #[serde(flatten)]
+    #[method(default)]
     pub args: Pagination,
 }
 
@@ -77,6 +80,7 @@ pub struct Deploy {
     pub version_key: String,
     pub init_args: Base64Bytes,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[method(default)]
     pub full_access_keys: Option<Vec<PublicKey>>,
     pub deposit: NearToken,
 }

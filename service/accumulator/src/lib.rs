@@ -115,13 +115,12 @@ impl Accumulator {
             let market = market.clone();
             async move {
                 let result = client
-                    .read(market::ListBorrowPositions {
-                        market_id: market,
-                        args: Pagination {
+                    .read(
+                        market::ListBorrowPositions::new(market).with_args(Pagination {
                             offset: Some(offset),
                             limit: Some(count),
-                        },
-                    })
+                        }),
+                    )
                     .await?;
                 anyhow::Ok(result.positions.into_iter().collect::<Vec<_>>())
             }
@@ -135,11 +134,11 @@ impl Accumulator {
     async fn apply_interest(&self, account_id: AccountId) -> anyhow::Result<()> {
         let result = self
             .client
-            .execute(market::ApplyInterest {
-                market_id: self.market.clone(),
-                account_id: Some(account_id),
-                snapshot_limit: None,
-            })
+            .execute(market::ApplyInterest::new(
+                self.market.clone(),
+                Some(account_id),
+                None,
+            ))
             .await?;
         info!(operation_id = %result.operation.id.0, "Applied interest");
         Ok(())
@@ -183,9 +182,7 @@ impl Accumulator {
     async fn supports_static_yield(&self) -> bool {
         let version = match self
             .client
-            .read(contract::GetVersion {
-                contract_id: self.market.clone(),
-            })
+            .read(contract::GetVersion::new(self.market.clone()))
             .await
         {
             Ok(version) => version,
@@ -205,11 +202,11 @@ impl Accumulator {
     async fn accumulate_static_yield(&self, account_id: AccountId) -> anyhow::Result<()> {
         let result = self
             .client
-            .execute(market::AccumulateStaticYield {
-                market_id: self.market.clone(),
-                account_id: Some(account_id),
-                snapshot_limit: None,
-            })
+            .execute(market::AccumulateStaticYield::new(
+                self.market.clone(),
+                Some(account_id),
+                None,
+            ))
             .await?;
         info!(operation_id = %result.operation.id.0, "Accumulated static yield");
         Ok(())
