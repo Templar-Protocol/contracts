@@ -61,6 +61,7 @@ axum = "0.8.8"
 base64 = "0.22.1"
 borsh = { version = "1.5", features = ["unstable__schema"] }
 bs58 = "0.5.1"
+byteorder = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.6.0", features = ["derive", "env"] }
 console = "0.16.3"
@@ -162,6 +163,7 @@ templar-vault-macros = { path = "./contract/vault/macros" }
 test-utils = { path = "./test-utils" }
 thiserror = "2.0.18"
 tokio = { version = "1.51.0", features = ["full"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 tower = "0.5.3"
 tower-http = { version = "0.6.8", features = ["full"] }
 tracing = "0.1.44"
