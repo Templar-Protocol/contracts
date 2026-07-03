@@ -12,6 +12,7 @@ mod oracle_write;
 mod payload;
 mod planning;
 mod read;
+mod redacted_string;
 
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
@@ -35,6 +36,7 @@ pub use oracle_write::{plan_pyth_update, plan_redstone_write_prices};
 pub use payload::OraclePayloadSource;
 pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use read::ReadNear;
+pub use redacted_string::RedactedString;
 
 pub enum CreateOperationResult {
     Created(StoredOperation),

@@ -20,13 +20,15 @@ const MAX_SOLANA_PAYLOAD_BASE64_CHARS: usize = MAX_SOLANA_PAYLOAD_BYTES.div_ceil
 pub(crate) const MAX_STREAM_JSON_MESSAGE_BYTES: usize =
     MAX_SOLANA_PAYLOAD_HEX_CHARS + JSON_WRAPPER_BYTES;
 
-pub(crate) fn subscription_frame(config: &LazerSourceConfig) -> LazerResult<String> {
+pub(crate) fn subscription_frame_for_feeds(
+    config: &LazerSourceConfig,
+    subscription_id: SubscriptionId,
+    price_feed_ids: BTreeSet<u32>,
+) -> LazerResult<String> {
     let params = SubscriptionParams::new(SubscriptionParamsRepr {
         price_feed_ids: Some(
-            config
-                .price_feed_ids()
-                .iter()
-                .copied()
+            price_feed_ids
+                .into_iter()
                 .map(PriceFeedId)
                 .collect(),
         ),
@@ -48,7 +50,7 @@ pub(crate) fn subscription_frame(config: &LazerSourceConfig) -> LazerResult<Stri
     })
     .map_err(|error| LazerClientError::Decode(error.to_owned()))?;
     let request = WsRequest::Subscribe(SubscribeRequest {
-        subscription_id: SubscriptionId(1),
+        subscription_id,
         params,
     });
     serde_json::to_string(&request).map_err(|error| LazerClientError::Decode(error.to_string()))
@@ -175,6 +177,7 @@ mod tests {
     use std::time::Duration;
 
     use pyth_lazer_protocol::{api::Channel, time::FixedRate};
+    use templar_gateway_core::RedactedString;
 
     use super::*;
     use crate::LazerSubscriptionConfig;
@@ -183,16 +186,20 @@ mod tests {
     fn subscription_frame_uses_protocol_request_types() {
         let config = LazerSourceConfig::new(
             "wss://example.com/v1/stream".parse().expect("valid URL"),
-            "secret-token".to_owned(),
+            RedactedString::from("secret-token"),
             LazerSubscriptionConfig {
-                price_feed_ids: vec![8, 7],
                 channel: None,
                 max_payload_age: Duration::from_secs(5),
             },
         )
         .expect("valid Lazer config");
 
-        let frame = subscription_frame(&config).expect("frame should serialize");
+        let frame = subscription_frame_for_feeds(
+            &config,
+            SubscriptionId(1),
+            vec![8, 7].into_iter().collect(),
+        )
+        .expect("frame should serialize");
         let request = serde_json::from_str::<WsRequest>(&frame).expect("protocol request");
 
         match request {

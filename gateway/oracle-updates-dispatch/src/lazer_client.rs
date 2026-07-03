@@ -1,11 +1,18 @@
-use std::{collections::BTreeSet, fmt, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, collections::BTreeSet, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use pyth_lazer_protocol::{api::Channel, time::FixedRate};
-use templar_gateway_core::OraclePayloadSource;
+use pyth_lazer_protocol::{
+    api::{Channel, SubscriptionId},
+    time::FixedRate,
+};
+use templar_gateway_core::{OraclePayloadSource, RedactedString};
 use thiserror::Error;
-use tokio::{sync::RwLock, task::JoinHandle, time::Instant};
+use tokio::{
+    sync::{mpsc, oneshot, watch, RwLock},
+    task::JoinHandle,
+    time::Instant,
+};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{
@@ -17,7 +24,9 @@ use tokio_tungstenite::{
 };
 use url::Url;
 
-use crate::lazer_wire::{decode_stream_message, subscription_frame, MAX_STREAM_JSON_MESSAGE_BYTES};
+use crate::lazer_wire::{
+    decode_stream_message, subscription_frame_for_feeds, MAX_STREAM_JSON_MESSAGE_BYTES,
+};
 
 const DEFAULT_CHANNEL: Channel = Channel::FixedRate(FixedRate::RATE_200_MS);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
@@ -27,52 +36,27 @@ mod config_tests;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LazerSourceConfig {
     ws_url: Url,
-    api_token: String,
-    price_feed_ids: BTreeSet<u32>,
+    api_token: RedactedString,
     channel: Channel,
     max_payload_age: Duration,
 }
 
 #[derive(Debug, Clone)]
 pub struct LazerSubscriptionConfig {
-    pub price_feed_ids: Vec<u32>,
     pub channel: Option<String>,
     pub max_payload_age: Duration,
 }
 
-impl fmt::Debug for LazerSourceConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LazerSourceConfig")
-            .field("ws_url", &self.ws_url)
-            .field("api_token", &"<redacted>")
-            .field("price_feed_ids", &self.price_feed_ids)
-            .field("channel", &self.channel)
-            .field("max_payload_age", &self.max_payload_age)
-            .finish()
-    }
-}
-
 impl LazerSourceConfig {
-    pub fn new(
-        ws_url: Url,
-        api_token: String,
-        subscription: LazerSubscriptionConfig,
-    ) -> LazerResult<Self> {
+    pub fn new(ws_url: Url, api_token: RedactedString, subscription: LazerSubscriptionConfig) -> LazerResult<Self> {
         if ws_url.scheme() != "wss" {
             return Err(LazerClientError::InsecureWebSocketUrl);
         }
         if api_token.trim().is_empty() {
             return Err(LazerClientError::EmptyApiToken);
-        }
-        let price_feed_ids = subscription
-            .price_feed_ids
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        if price_feed_ids.is_empty() {
-            return Err(LazerClientError::EmptySubscription);
         }
         if subscription.max_payload_age.is_zero() {
             return Err(LazerClientError::InvalidMaxPayloadAge);
@@ -81,14 +65,9 @@ impl LazerSourceConfig {
         Ok(Self {
             ws_url,
             api_token,
-            price_feed_ids,
             channel,
             max_payload_age: subscription.max_payload_age,
         })
-    }
-
-    pub(crate) fn price_feed_ids(&self) -> &BTreeSet<u32> {
-        &self.price_feed_ids
     }
 
     pub(crate) fn channel(&self) -> Channel {
@@ -110,8 +89,6 @@ pub enum LazerClientError {
     InsecureWebSocketUrl,
     #[error("Pyth Lazer API token must not be empty")]
     EmptyApiToken,
-    #[error("Pyth Lazer subscription must include at least one price feed id")]
-    EmptySubscription,
     #[error("unsupported Pyth Lazer channel: {0}")]
     InvalidChannel(String),
     #[error("Pyth Lazer max payload age must be greater than zero")]
@@ -130,10 +107,10 @@ pub enum LazerClientError {
     CacheMiss,
     #[error("Pyth Lazer payload request must include at least one feed id")]
     EmptyRequest,
-    #[error("Pyth Lazer cache does not cover requested feed id {0}")]
-    FeedNotCovered(u32),
     #[error("Pyth Lazer cached payload is stale")]
     StalePayload,
+    #[error("Pyth Lazer subscription failed: {0}")]
+    SubscriptionFailed(String),
 }
 
 pub type LazerResult<T> = Result<T, LazerClientError>;
@@ -141,13 +118,27 @@ pub type LazerResult<T> = Result<T, LazerClientError>;
 #[derive(Debug, Clone)]
 pub struct LazerPayloadSource {
     inner: Arc<LazerPayloadSourceInner>,
+    subscribe_tx: mpsc::Sender<SubscribeRequest>,
     _task: Arc<TaskGuard>,
 }
 
 #[derive(Debug)]
 struct LazerPayloadSourceInner {
     config: LazerSourceConfig,
-    cache: RwLock<Option<CachedPayload>>,
+    subscriptions: RwLock<SubscriptionState>,
+}
+
+#[derive(Debug, Default)]
+struct SubscriptionState {
+    active: BTreeMap<SubscriptionId, SubscriptionInfo>,
+    next_id: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SubscriptionInfo {
+    feed_ids: BTreeSet<u32>,
+    cache: watch::Receiver<Option<CachedPayload>>,
+    cache_tx: Arc<watch::Sender<Option<CachedPayload>>>,
 }
 
 #[derive(Debug)]
@@ -162,30 +153,54 @@ struct CachedPayload {
     received_at: Instant,
 }
 
+struct SubscribeRequest {
+    feed_ids: BTreeSet<u32>,
+    response_tx: oneshot::Sender<LazerResult<SubscriptionId>>,
+}
+
 impl LazerPayloadSource {
     pub fn spawn(config: LazerSourceConfig) -> Self {
         let inner = Arc::new(LazerPayloadSourceInner {
             config,
-            cache: RwLock::new(None),
+            subscriptions: RwLock::new(SubscriptionState::default()),
         });
+        let (subscribe_tx, subscribe_rx) = mpsc::channel(32);
         let task_inner = Arc::clone(&inner);
-        let handle = tokio::spawn(async move { task_inner.run().await });
+        let handle = tokio::spawn(async move { task_inner.run(subscribe_rx).await });
         let task = Arc::new(TaskGuard {
             task: std::sync::Mutex::new(None),
         });
         if let Ok(mut slot) = task.task.lock() {
             *slot = Some(handle);
         }
-        Self { inner, _task: task }
+        Self {
+            inner,
+            subscribe_tx,
+            _task: task,
+        }
     }
 
     #[cfg(test)]
     fn from_cached(config: LazerSourceConfig, payload: Option<CachedPayload>) -> Self {
+        let (subscribe_tx, _) = mpsc::channel(32);
+        let mut subscriptions = SubscriptionState::default();
+        let (cache_tx, cache_rx) = watch::channel(payload.clone());
+        let feed_ids = payload.map(|p| p.feed_ids).unwrap_or_default();
+        subscriptions.active.insert(
+            SubscriptionId(1),
+            SubscriptionInfo {
+                feed_ids,
+                cache: cache_rx,
+                cache_tx: Arc::new(cache_tx),
+            },
+        );
+        subscriptions.next_id = 2;
         Self {
             inner: Arc::new(LazerPayloadSourceInner {
                 config,
-                cache: RwLock::new(payload),
+                subscriptions: RwLock::new(subscriptions),
             }),
+            subscribe_tx,
             _task: Arc::new(TaskGuard {
                 task: std::sync::Mutex::new(None),
             }),
@@ -212,31 +227,64 @@ impl OraclePayloadSource for LazerPayloadSource {
         if price_ids.is_empty() {
             return Err(LazerClientError::EmptyRequest);
         }
-        for price_id in price_ids {
-            if !self.inner.config.price_feed_ids.contains(price_id) {
-                return Err(LazerClientError::FeedNotCovered(*price_id));
-            }
-        }
 
-        let cache = self.inner.cache.read().await;
-        let cached = cache.as_ref().ok_or(LazerClientError::CacheMiss)?;
-        for price_id in price_ids {
-            if !cached.feed_ids.contains(price_id) {
-                return Err(LazerClientError::FeedNotCovered(*price_id));
-            }
-        }
+        let requested_feeds: BTreeSet<u32> = price_ids.iter().copied().collect();
+
+        let subscription_id = self.ensure_subscription(requested_feeds.clone()).await?;
+
+        let subscriptions = self.inner.subscriptions.read().await;
+        let subscription = subscriptions
+            .active
+            .get(&subscription_id)
+            .ok_or_else(|| LazerClientError::CacheMiss)?;
+
+        let cache_rx = subscription.cache.clone();
+        drop(subscriptions);
+
+        let cached = cache_rx
+            .borrow()
+            .clone()
+            .ok_or(LazerClientError::CacheMiss)?;
+
         if cached.received_at.elapsed() > self.inner.config.max_payload_age {
             return Err(LazerClientError::StalePayload);
         }
-        Ok(cached.payload.clone())
+
+        Ok(cached.payload)
+    }
+}
+
+impl LazerPayloadSource {
+    async fn ensure_subscription(&self, feed_ids: BTreeSet<u32>) -> LazerResult<SubscriptionId> {
+        {
+            let subscriptions = self.inner.subscriptions.read().await;
+            for (id, info) in &subscriptions.active {
+                if feed_ids.is_subset(&info.feed_ids) {
+                    return Ok(*id);
+                }
+            }
+        }
+
+        let (response_tx, response_rx) = oneshot::channel();
+        self.subscribe_tx
+            .send(SubscribeRequest {
+                feed_ids,
+                response_tx,
+            })
+            .await
+            .map_err(|_| LazerClientError::Request("subscription channel closed".to_owned()))?;
+
+        response_rx
+            .await
+            .map_err(|_| LazerClientError::Request("subscription response channel closed".to_owned()))?
     }
 }
 
 impl LazerPayloadSourceInner {
-    async fn run(self: Arc<Self>) {
+    async fn run(self: Arc<Self>, mut subscribe_rx: mpsc::Receiver<SubscribeRequest>) {
         let mut backoff = Duration::from_secs(1);
         loop {
-            if let Err(error) = self.connect_and_stream(&mut backoff).await {
+            if let Err(error) = self.connect_and_stream(&mut subscribe_rx, &mut backoff).await {
                 tracing::warn!(%error, "Pyth Lazer stream disconnected");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
@@ -244,14 +292,18 @@ impl LazerPayloadSourceInner {
         }
     }
 
-    async fn connect_and_stream(&self, backoff: &mut Duration) -> LazerResult<()> {
+    async fn connect_and_stream(
+        &self,
+        subscribe_rx: &mut mpsc::Receiver<SubscribeRequest>,
+        backoff: &mut Duration,
+    ) -> LazerResult<()> {
         let mut request = self
             .config
             .ws_url
             .as_str()
             .into_client_request()
             .map_err(|error| LazerClientError::Request(error.to_string()))?;
-        let authorization = HeaderValue::from_str(&format!("Bearer {}", self.config.api_token))
+        let authorization = HeaderValue::from_str(&format!("Bearer {}", self.config.api_token.as_ref()))
             .map_err(|error| LazerClientError::Request(error.to_string()))?;
         request.headers_mut().insert(AUTHORIZATION, authorization);
 
@@ -266,29 +318,82 @@ impl LazerPayloadSourceInner {
         )
         .await
         .map_err(|error| LazerClientError::Request(error.to_string()))?;
-        stream
-            .send(Message::Text(subscription_frame(&self.config)?.into()))
-            .await
-            .map_err(|error| LazerClientError::Request(error.to_string()))?;
 
-        while let Some(message) = stream.next().await {
-            let message = message.map_err(|error| LazerClientError::Request(error.to_string()))?;
-            let Message::Text(text) = message else {
-                continue;
-            };
-            match decode_stream_message(text.as_ref()) {
-                Ok(Some(payload)) => {
-                    *backoff = Duration::from_secs(1);
-                    *self.cache.write().await = Some(CachedPayload {
-                        payload: payload.bytes,
-                        feed_ids: payload.feed_ids,
-                        received_at: Instant::now(),
-                    });
+        loop {
+            tokio::select! {
+                message = stream.next() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    let message = message.map_err(|error| LazerClientError::Request(error.to_string()))?;
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    match decode_stream_message(text.as_ref()) {
+                        Ok(Some(payload)) => {
+                            *backoff = Duration::from_secs(1);
+                            self.update_subscription_cache(payload).await;
+                        }
+                        Ok(None) => tracing::debug!("ignored non-update Pyth Lazer stream message"),
+                        Err(error) => tracing::warn!(%error, "ignored invalid Pyth Lazer stream message"),
+                    }
                 }
-                Ok(None) => tracing::debug!("ignored non-update Pyth Lazer stream message"),
-                Err(error) => tracing::warn!(%error, "ignored invalid Pyth Lazer stream message"),
+                req = subscribe_rx.recv() => {
+                    let Some(req) = req else {
+                        break;
+                    };
+                    self.handle_subscribe_request(&mut stream, req).await?;
+                }
             }
         }
         Err(LazerClientError::Request("websocket closed".to_owned()))
+    }
+
+    async fn handle_subscribe_request(
+        &self,
+        stream: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        req: SubscribeRequest,
+    ) -> LazerResult<()> {
+        let subscription_id = {
+            let mut subscriptions = self.subscriptions.write().await;
+            let id = SubscriptionId(subscriptions.next_id);
+            subscriptions.next_id += 1;
+            let (cache_tx, cache_rx) = watch::channel(None);
+            subscriptions.active.insert(
+                id,
+                SubscriptionInfo {
+                    feed_ids: req.feed_ids.clone(),
+                    cache: cache_rx,
+                    cache_tx: Arc::new(cache_tx),
+                },
+            );
+            id
+        };
+
+        let frame = subscription_frame_for_feeds(&self.config, subscription_id, req.feed_ids.clone())?;
+        stream
+            .send(Message::Text(frame.into()))
+            .await
+            .map_err(|error| LazerClientError::Request(error.to_string()))?;
+
+        let _ = req.response_tx.send(Ok(subscription_id));
+        Ok(())
+    }
+
+    async fn update_subscription_cache(&self, payload: crate::lazer_wire::DecodedLazerPayload) {
+        let subscriptions = self.subscriptions.read().await;
+        for (id, info) in &subscriptions.active {
+            if payload.feed_ids.is_subset(&info.feed_ids) {
+                let cached = CachedPayload {
+                    payload: payload.bytes.clone(),
+                    feed_ids: payload.feed_ids.clone(),
+                    received_at: Instant::now(),
+                };
+                if let Err(error) = info.cache_tx.send(Some(cached)) {
+                    tracing::warn!(subscription_id = id.0, %error, "failed to update subscription cache");
+                }
+                break;
+            }
+        }
     }
 }

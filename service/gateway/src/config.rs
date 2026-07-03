@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -7,12 +8,48 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
-use templar_gateway_core::SharedOperationStore;
+use templar_gateway_core::{RedactedString, SharedOperationStore};
 use templar_gateway_oracle_updates_dispatch::{LazerSourceConfig, LazerSubscriptionConfig};
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LazerChannel {
+    RealTime,
+    FixedRate50Ms,
+    FixedRate200Ms,
+    FixedRate1000Ms,
+}
+
+impl FromStr for LazerChannel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "real_time" => Ok(Self::RealTime),
+            "fixed_rate@50ms" => Ok(Self::FixedRate50Ms),
+            "fixed_rate@200ms" => Ok(Self::FixedRate200Ms),
+            "fixed_rate@1000ms" => Ok(Self::FixedRate1000Ms),
+            _ => Err(format!(
+                "invalid channel '{}', must be one of: real_time, fixed_rate@50ms, fixed_rate@200ms, fixed_rate@1000ms",
+                s
+            )),
+        }
+    }
+}
+
+impl fmt::Display for LazerChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RealTime => write!(f, "real_time"),
+            Self::FixedRate50Ms => write!(f, "fixed_rate@50ms"),
+            Self::FixedRate200Ms => write!(f, "fixed_rate@200ms"),
+            Self::FixedRate1000Ms => write!(f, "fixed_rate@1000ms"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSignerConfig {
@@ -53,7 +90,7 @@ impl FromStr for ManagedSignerConfig {
     }
 }
 
-#[derive(Clone, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct Config {
     /// TCP address for the Templar Gateway JSON-RPC server.
     #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:9944")]
@@ -70,7 +107,7 @@ pub struct Config {
     /// API key for the RPC endpoint, sent as an `Authorization` header. May also
     /// be supplied as an `apiKey` query parameter on `--near-rpc-url`.
     #[arg(long, env = "NEAR_RPC_API_KEY")]
-    pub near_rpc_api_key: Option<String>,
+    pub near_rpc_api_key: Option<RedactedString>,
 
     /// Postgres database URL for durable gateway operation storage.
     #[arg(long, env = "GATEWAY_DATABASE_URL")]
@@ -94,7 +131,7 @@ pub struct Config {
 
     /// Bearer token for Pyth Pro/Lazer websocket payload updates.
     #[arg(long, env = "PYTH_LAZER_API_KEY")]
-    pub pyth_lazer_api_key: String,
+    pub pyth_lazer_api_key: RedactedString,
 
     /// Pyth Pro/Lazer websocket endpoint for payload updates.
     #[arg(
@@ -104,13 +141,10 @@ pub struct Config {
     )]
     pub pyth_lazer_ws_url: Url,
 
-    /// Comma-separated Pyth Pro/Lazer u32 feed ids to subscribe to.
-    #[arg(long, env = "PYTH_LAZER_FEED_IDS", value_delimiter = ',')]
-    pub pyth_lazer_feed_ids: Vec<u32>,
-
     /// Pyth Pro/Lazer websocket channel.
-    #[arg(long, env = "PYTH_LAZER_CHANNEL")]
-    pub pyth_lazer_channel: Option<String>,
+    /// Available options: "real_time", "fixed_rate@50ms", "fixed_rate@200ms", "fixed_rate@1000ms"
+    #[arg(long, env = "PYTH_LAZER_CHANNEL", default_value = "fixed_rate@200ms")]
+    pub pyth_lazer_channel: LazerChannel,
 
     /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
     #[arg(long, env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS", default_value = "5000")]
@@ -123,26 +157,6 @@ pub struct Config {
         value_delimiter = ';'
     )]
     pub managed_signers: Vec<ManagedSignerConfig>,
-}
-
-impl std::fmt::Debug for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config")
-            .field("listen_addr", &self.listen_addr)
-            .field("near_rpc_url", &self.near_rpc_url)
-            .field("near_rpc_api_key", &self.near_rpc_api_key.as_ref().map(|_| "<redacted>"))
-            .field("database_url", &self.database_url)
-            .field("migrate_database", &self.migrate_database)
-            .field("pyth_hermes_url", &self.pyth_hermes_url)
-            .field("redstone_node_path", &self.redstone_node_path)
-            .field("pyth_lazer_api_key", &"<redacted>")
-            .field("pyth_lazer_ws_url", &self.pyth_lazer_ws_url)
-            .field("pyth_lazer_feed_ids", &self.pyth_lazer_feed_ids)
-            .field("pyth_lazer_channel", &self.pyth_lazer_channel)
-            .field("pyth_lazer_max_payload_age_ms", &self.pyth_lazer_max_payload_age_ms)
-            .field("managed_signers", &self.managed_signers)
-            .finish()
-    }
 }
 
 impl Config {
@@ -181,8 +195,7 @@ impl Config {
             self.pyth_lazer_ws_url.clone(),
             self.pyth_lazer_api_key.clone(),
             LazerSubscriptionConfig {
-                price_feed_ids: self.pyth_lazer_feed_ids.clone(),
-                channel: self.pyth_lazer_channel.clone(),
+                channel: Some(self.pyth_lazer_channel.to_string()),
                 max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
             },
         )
@@ -205,8 +218,6 @@ mod tests {
             "1.2.3.4:3333",
             "--pyth-lazer-api-key",
             "secret-token",
-            "--pyth-lazer-feed-ids",
-            "7,8",
             "--managed-signer",
             "test.near=ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q,ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q",
         ])
@@ -236,8 +247,6 @@ mod tests {
             "--migrate-database",
             "--pyth-lazer-api-key",
             "secret-token",
-            "--pyth-lazer-feed-ids",
-            "7",
         ])
         .expect("config should parse");
 
@@ -256,8 +265,6 @@ mod tests {
             "templar-gateway-service",
             "--pyth-lazer-api-key",
             "secret-token",
-            "--pyth-lazer-feed-ids",
-            "7",
         ])
         .expect("config should parse");
 
@@ -269,24 +276,20 @@ mod tests {
 
     #[rstest]
     #[case::full_config(
-        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7,8", "--pyth-lazer-ws-url", "wss://example.com/v1/stream"],
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-ws-url", "wss://example.com/v1/stream"],
         Ok(())
     )]
     #[case::blank_api_key(
-        &["--pyth-lazer-api-key", "  ", "--pyth-lazer-feed-ids", "7"],
+        &["--pyth-lazer-api-key", "  "],
         Err("API token must not be empty")
     )]
     #[case::insecure_ws_url(
-        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7", "--pyth-lazer-ws-url", "ws://example.com/v1/stream"],
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-ws-url", "ws://example.com/v1/stream"],
         Err("websocket URL must use wss://")
     )]
     #[case::zero_max_payload_age(
-        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7", "--pyth-lazer-max-payload-age-ms", "0"],
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-max-payload-age-ms", "0"],
         Err("max payload age must be greater than zero")
-    )]
-    #[case::empty_feed_ids(
-        &["--pyth-lazer-api-key", "secret-token"],
-        Err("at least one price feed id")
     )]
     fn lazer_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
         let mut args = vec!["templar-gateway-service"];

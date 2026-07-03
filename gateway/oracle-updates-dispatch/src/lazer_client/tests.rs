@@ -29,9 +29,8 @@ impl Crypto for TestCrypto {
 fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
     LazerSourceConfig::new(
         "wss://example.com/v1/stream".parse().expect("valid URL"),
-        "secret-token".to_owned(),
+        RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            price_feed_ids: vec![7, 8],
             channel: None,
             max_payload_age,
         },
@@ -176,26 +175,9 @@ async fn cache_miss_returns_error() {
         .await
         .expect_err("empty cache should miss");
 
-    assert!(matches!(error, LazerClientError::CacheMiss));
-}
-
-#[tokio::test]
-async fn requested_feed_outside_subscription_returns_error() {
-    let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_secs(5)),
-        Some(CachedPayload {
-            payload: vec![1, 2, 3],
-            feed_ids: [7, 8].into_iter().collect(),
-            received_at: Instant::now(),
-        }),
-    );
-
-    let error = source
-        .fetch_payload(&[9])
-        .await
-        .expect_err("uncovered feed should fail");
-
-    assert!(matches!(error, LazerClientError::FeedNotCovered(9)));
+    // With dynamic subscriptions, when there's no background task running,
+    // attempting to subscribe will fail with a request error
+    assert!(matches!(error, LazerClientError::Request(_)));
 }
 
 #[tokio::test]
@@ -234,25 +216,6 @@ async fn fresh_cache_returns_payload_for_covered_feeds() {
         .expect("fresh payload should be returned");
 
     assert_eq!(payload, vec![1, 2, 3]);
-}
-
-#[tokio::test]
-async fn cached_payload_must_cover_requested_feed() {
-    let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_secs(5)),
-        Some(CachedPayload {
-            payload: vec![1, 2, 3],
-            feed_ids: [7].into_iter().collect(),
-            received_at: Instant::now(),
-        }),
-    );
-
-    let error = source
-        .fetch_payload(&[7, 8])
-        .await
-        .expect_err("payload missing feed 8 should fail");
-
-    assert!(matches!(error, LazerClientError::FeedNotCovered(8)));
 }
 
 #[tokio::test]
