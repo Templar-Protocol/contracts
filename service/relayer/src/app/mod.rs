@@ -1095,6 +1095,9 @@ fn accumulate_oracle_requests(
                     .or_default()
                     .insert(request.price_id.clone());
             }
+            // Lazer routing is added by a later worker; relayer does not yet plan
+            // Lazer writes here.
+            OracleRequest::Lazer(_) => {}
         }
     }
 }

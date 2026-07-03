@@ -86,6 +86,8 @@ impl<'a> CallbackHandler<'a> {
         match request {
             OracleRequest::Pyth(p) => self.pyth(p),
             OracleRequest::RedStone(p) => self.redstone(p),
+            // Lazer reads resolve through the gateway, not this callback handler.
+            OracleRequest::Lazer(_) => None,
         }
     }
 }

@@ -197,6 +197,9 @@ impl Contract {
                             .or_default()
                             .insert(p.price_id.clone());
                     }
+                    // Lazer writes are planned and dispatched off-chain via the
+                    // gateway, never via the contract's own async ext fetches.
+                    OracleRequest::Lazer(_) => {}
                 }
             }
         }

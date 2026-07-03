@@ -408,6 +408,9 @@ fn fetch_oracle_request(
             .and_then(|response| response.get(&request.price_id))
             .cloned()
             .and_then(|feed| feed.to_pyth_price()),
+        // Lazer reads are wired by a later worker; no pre-fetched input is
+        // available in the current ResolutionInputs shape.
+        OracleRequest::Lazer(_) => None,
     }?;
     validate_price_age(fetched_price, max_age)
 }
@@ -437,6 +440,8 @@ async fn fetch_oracle_request_onchain<C: HasNearClient>(
             .await?
             .remove(&request.price_id)
             .and_then(|feed| feed.to_pyth_price()),
+        // Lazer onchain reads are wired by a later worker.
+        OracleRequest::Lazer(_) => None,
     };
     Ok(fetched_price.and_then(|price| validate_price_age(price, max_age)))
 }
