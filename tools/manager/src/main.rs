@@ -1,4 +1,6 @@
+mod gateway_cli;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    templar_manager::run().await
+    gateway_cli::run().await
 }
