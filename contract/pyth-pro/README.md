@@ -39,6 +39,11 @@ adapter stores by `u32` and translates at read time through one isolated module
 identifier (`admin_set_feed_mapping`) to stay drop-in. That module is the *only* coupling between
 the two spaces, so the mapping can later move to the proxy-oracle by deleting it alone.
 
+Mapping invariant: `OracleRequest::Lazer.feed_id` is authoritative for gateway update fetching.
+The adapter's `admin_set_feed_mapping(price_id, feed_id)` must map that same `price_id` to the same
+`feed_id` for reads to resolve. If they diverge, update writes still store feed data by `u32`, but
+reads by `PriceIdentifier` remain unavailable or stale until the mapping is fixed.
+
 ## Governance
 
 Single owner (`near_sdk_contract_tools::Owner`); all privileged methods are `admin_*`, each
