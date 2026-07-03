@@ -32,7 +32,7 @@ pub use operation::{
     SubmittedCurrentStep, SucceededStep,
 };
 pub use operation_driver::{request_fingerprint, OperationDriver};
-pub use oracle_write::{plan_pyth_update, plan_redstone_write_prices};
+pub use oracle_write::{plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices};
 pub use payload::OraclePayloadSource;
 pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use read::ReadNear;
