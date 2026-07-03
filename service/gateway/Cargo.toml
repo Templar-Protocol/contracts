@@ -34,8 +34,11 @@ url.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
 near-sandbox.workspace = true
+thiserror.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 near-token.workspace = true
 reqwest.workspace = true
