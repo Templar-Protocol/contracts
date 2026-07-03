@@ -3,7 +3,8 @@ use std::{collections::BTreeSet, io::Cursor};
 use pyth_lazer_protocol::{
     api::{
         DeliveryFormat, Format, JsonBinaryData, JsonBinaryEncoding, SubscribeRequest,
-        SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, WsRequest, WsResponse,
+        SubscriptionId, SubscriptionParams, SubscriptionParamsRepr, UnsubscribeRequest, WsRequest,
+        WsResponse,
     },
     message::SolanaMessage,
     payload::PayloadData,
@@ -51,13 +52,41 @@ pub(crate) fn subscription_frame_for_feeds(
     serde_json::to_string(&request).map_err(|error| LazerClientError::Decode(error.to_string()))
 }
 
+pub(crate) fn unsubscription_frame(subscription_id: SubscriptionId) -> LazerResult<String> {
+    let request = WsRequest::Unsubscribe(UnsubscribeRequest { subscription_id });
+    serde_json::to_string(&request).map_err(|error| LazerClientError::Decode(error.to_string()))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedLazerPayload {
+    pub(crate) subscription_id: SubscriptionId,
     pub(crate) bytes: Vec<u8>,
     pub(crate) feed_ids: BTreeSet<u32>,
 }
 
-pub(crate) fn decode_stream_message(text: &str) -> LazerResult<Option<DecodedLazerPayload>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LazerStreamEvent {
+    Payload(DecodedLazerPayload),
+    Subscribed {
+        subscription_id: SubscriptionId,
+    },
+    SubscribedWithInvalidFeedIdsIgnored {
+        subscription_id: SubscriptionId,
+        subscribed_feed_ids: BTreeSet<u32>,
+    },
+    Unsubscribed {
+        subscription_id: SubscriptionId,
+    },
+    SubscriptionError {
+        subscription_id: SubscriptionId,
+        error: String,
+    },
+    Error {
+        error: String,
+    },
+}
+
+pub(crate) fn decode_stream_message(text: &str) -> LazerResult<LazerStreamEvent> {
     let mut value = serde_json::from_str::<Value>(text)
         .map_err(|error| LazerClientError::Decode(error.to_string()))?;
     normalize_solana_encoding(&mut value)?;
@@ -69,21 +98,29 @@ pub(crate) fn decode_stream_message(text: &str) -> LazerResult<Option<DecodedLaz
                 .payload
                 .solana
                 .ok_or(LazerClientError::MissingSolanaPayload)?;
-            decode_solana_payload(&solana)
+            decode_solana_payload(message.subscription_id, &solana).map(LazerStreamEvent::Payload)
         }
-        WsResponse::Error(error) => {
-            tracing::warn!(?error, "Pyth Lazer stream returned an error response");
-            Ok(None)
-        }
-        WsResponse::SubscriptionError(error) => {
-            tracing::warn!(?error, "Pyth Lazer subscription returned an error response");
-            Ok(None)
-        }
+        WsResponse::Error(error) => Ok(LazerStreamEvent::Error { error: error.error }),
+        WsResponse::SubscriptionError(error) => Ok(LazerStreamEvent::SubscriptionError {
+            subscription_id: error.subscription_id,
+            error: error.error,
+        }),
         WsResponse::SubscribedWithInvalidFeedIdsIgnored(message) => {
-            tracing::warn!(?message, "Pyth Lazer subscription ignored invalid feed ids");
-            Ok(None)
+            Ok(LazerStreamEvent::SubscribedWithInvalidFeedIdsIgnored {
+                subscription_id: message.subscription_id,
+                subscribed_feed_ids: message
+                    .subscribed_feed_ids
+                    .into_iter()
+                    .map(|feed| feed.0)
+                    .collect(),
+            })
         }
-        WsResponse::Subscribed(_) | WsResponse::Unsubscribed(_) => Ok(None),
+        WsResponse::Subscribed(message) => Ok(LazerStreamEvent::Subscribed {
+            subscription_id: message.subscription_id,
+        }),
+        WsResponse::Unsubscribed(message) => Ok(LazerStreamEvent::Unsubscribed {
+            subscription_id: message.subscription_id,
+        }),
     }
 }
 
@@ -107,10 +144,17 @@ fn normalize_solana_encoding(value: &mut Value) -> LazerResult<()> {
     }
 }
 
-fn decode_solana_payload(payload: &JsonBinaryData) -> LazerResult<Option<DecodedLazerPayload>> {
+fn decode_solana_payload(
+    subscription_id: SubscriptionId,
+    payload: &JsonBinaryData,
+) -> LazerResult<DecodedLazerPayload> {
     let bytes = decode_solana_payload_bytes(payload)?;
     let feed_ids = parse_solana_feed_ids(&bytes)?;
-    Ok(Some(DecodedLazerPayload { bytes, feed_ids }))
+    Ok(DecodedLazerPayload {
+        subscription_id,
+        bytes,
+        feed_ids,
+    })
 }
 
 fn decode_solana_payload_bytes(payload: &JsonBinaryData) -> LazerResult<Vec<u8>> {

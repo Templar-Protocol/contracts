@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
@@ -11,7 +15,7 @@ use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot, watch, RwLock},
     task::JoinHandle,
-    time::Instant,
+    time::{timeout, Instant},
 };
 use tokio_tungstenite::{
     connect_async_with_config,
@@ -25,11 +29,14 @@ use tokio_tungstenite::{
 use url::Url;
 
 use crate::lazer_wire::{
-    decode_stream_message, subscription_frame_for_feeds, MAX_STREAM_JSON_MESSAGE_BYTES,
+    decode_stream_message, subscription_frame_for_feeds, unsubscription_frame, LazerStreamEvent,
+    MAX_STREAM_JSON_MESSAGE_BYTES,
 };
 
 const DEFAULT_CHANNEL: Channel = Channel::FixedRate(FixedRate::RATE_200_MS);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
+const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 mod config_tests;
@@ -134,10 +141,23 @@ struct LazerPayloadSourceInner {
     subscriptions: RwLock<SubscriptionState>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct SubscriptionState {
     active: BTreeMap<SubscriptionId, SubscriptionInfo>,
+    pending: BTreeMap<SubscriptionId, PendingSubscription>,
+    fifo: VecDeque<SubscriptionId>,
     next_id: u64,
+}
+
+impl Default for SubscriptionState {
+    fn default() -> Self {
+        Self {
+            active: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            fifo: VecDeque::new(),
+            next_id: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -159,9 +179,15 @@ struct CachedPayload {
     received_at: Instant,
 }
 
-struct SubscribeRequest {
-    feed_ids: BTreeSet<u32>,
+#[derive(Debug)]
+struct PendingSubscription {
     response_tx: oneshot::Sender<LazerResult<SubscriptionId>>,
+}
+
+struct SubscribeRequest {
+    subscription_id: SubscriptionId,
+    feed_ids: BTreeSet<u32>,
+    evicted_ids: Vec<SubscriptionId>,
 }
 
 impl LazerPayloadSource {
@@ -200,6 +226,7 @@ impl LazerPayloadSource {
                 cache_tx: Arc::new(cache_tx),
             },
         );
+        subscriptions.fifo.push_back(SubscriptionId(1));
         subscriptions.next_id = 2;
         Self {
             inner: Arc::new(LazerPayloadSourceInner {
@@ -238,19 +265,50 @@ impl OraclePayloadSource for LazerPayloadSource {
 
         let subscription_id = self.ensure_subscription(requested_feeds.clone()).await?;
 
+        let mut cache_rx = self.cache_receiver(subscription_id).await?;
+        if let Some(payload) = self.payload_from_cache(&cache_rx, &requested_feeds)? {
+            return Ok(payload);
+        }
+
+        let wait_for_payload = async {
+            loop {
+                cache_rx
+                    .changed()
+                    .await
+                    .map_err(|_| LazerClientError::CacheMiss)?;
+                if let Some(payload) = self.payload_from_cache(&cache_rx, &requested_feeds)? {
+                    return Ok(payload);
+                }
+            }
+        };
+
+        timeout(self.inner.config.max_payload_age, wait_for_payload)
+            .await
+            .map_err(|_| LazerClientError::CacheMiss)?
+    }
+}
+
+impl LazerPayloadSource {
+    async fn cache_receiver(
+        &self,
+        subscription_id: SubscriptionId,
+    ) -> LazerResult<watch::Receiver<Option<CachedPayload>>> {
         let subscriptions = self.inner.subscriptions.read().await;
-        let subscription = subscriptions
+        subscriptions
             .active
             .get(&subscription_id)
-            .ok_or(LazerClientError::CacheMiss)?;
+            .map(|subscription| subscription.cache.clone())
+            .ok_or(LazerClientError::CacheMiss)
+    }
 
-        let cache_rx = subscription.cache.clone();
-        drop(subscriptions);
-
-        let cached = cache_rx
-            .borrow()
-            .clone()
-            .ok_or(LazerClientError::CacheMiss)?;
+    fn payload_from_cache(
+        &self,
+        cache_rx: &watch::Receiver<Option<CachedPayload>>,
+        requested_feeds: &BTreeSet<u32>,
+    ) -> LazerResult<Option<Vec<u8>>> {
+        let Some(cached) = cache_rx.borrow().clone() else {
+            return Ok(None);
+        };
 
         if cached.received_at.elapsed() > self.inner.config.max_payload_age {
             return Err(LazerClientError::StalePayload);
@@ -260,37 +318,108 @@ impl OraclePayloadSource for LazerPayloadSource {
             return Err(LazerClientError::FeedNotCovered);
         }
 
-        Ok(cached.payload)
+        Ok(Some(cached.payload))
     }
-}
 
-impl LazerPayloadSource {
     async fn ensure_subscription(&self, feed_ids: BTreeSet<u32>) -> LazerResult<SubscriptionId> {
         {
             let subscriptions = self.inner.subscriptions.read().await;
             for (id, info) in &subscriptions.active {
-                if feed_ids.is_subset(&info.feed_ids) {
+                if !subscriptions.pending.contains_key(id) && feed_ids.is_subset(&info.feed_ids) {
                     return Ok(*id);
                 }
             }
         }
 
         let (response_tx, response_rx) = oneshot::channel();
-        self.subscribe_tx
+        let (subscription_id, evicted_ids) = self
+            .inner
+            .register_pending_subscription(feed_ids.clone(), response_tx)
+            .await;
+        if self
+            .subscribe_tx
             .send(SubscribeRequest {
+                subscription_id,
                 feed_ids,
-                response_tx,
+                evicted_ids,
             })
             .await
-            .map_err(|_| LazerClientError::Request("subscription channel closed".to_owned()))?;
+            .is_err()
+        {
+            self.inner
+                .fail_pending_subscription(
+                    subscription_id,
+                    "subscription channel closed".to_owned(),
+                )
+                .await;
+            return Err(LazerClientError::Request(
+                "subscription channel closed".to_owned(),
+            ));
+        }
 
-        response_rx.await.map_err(|_| {
-            LazerClientError::Request("subscription response channel closed".to_owned())
-        })?
+        match timeout(self.inner.config.max_payload_age, response_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(LazerClientError::Request(
+                "subscription response channel closed".to_owned(),
+            )),
+            Err(_) => {
+                self.inner
+                    .fail_pending_subscription(
+                        subscription_id,
+                        "subscription acknowledgement timed out".to_owned(),
+                    )
+                    .await;
+                Err(LazerClientError::SubscriptionFailed(
+                    "subscription acknowledgement timed out".to_owned(),
+                ))
+            }
+        }
     }
 }
 
 impl LazerPayloadSourceInner {
+    async fn register_pending_subscription(
+        &self,
+        feed_ids: BTreeSet<u32>,
+        response_tx: oneshot::Sender<LazerResult<SubscriptionId>>,
+    ) -> (SubscriptionId, Vec<SubscriptionId>) {
+        let mut subscriptions = self.subscriptions.write().await;
+        let subscription_id = SubscriptionId(subscriptions.next_id);
+        subscriptions.next_id += 1;
+
+        let mut evicted_ids = Vec::new();
+        while subscriptions.active.len() >= MAX_ACTIVE_SUBSCRIPTIONS {
+            let Some(evicted_id) = subscriptions.fifo.pop_front() else {
+                break;
+            };
+            subscriptions.active.remove(&evicted_id);
+            if let Some(pending) = subscriptions.pending.remove(&evicted_id) {
+                let _ = pending
+                    .response_tx
+                    .send(Err(LazerClientError::SubscriptionFailed(
+                        "subscription evicted before acknowledgement".to_owned(),
+                    )));
+            }
+            evicted_ids.push(evicted_id);
+        }
+
+        let (cache_tx, cache_rx) = watch::channel(None);
+        subscriptions.active.insert(
+            subscription_id,
+            SubscriptionInfo {
+                feed_ids,
+                cache: cache_rx,
+                cache_tx: Arc::new(cache_tx),
+            },
+        );
+        subscriptions.fifo.push_back(subscription_id);
+        subscriptions
+            .pending
+            .insert(subscription_id, PendingSubscription { response_tx });
+
+        (subscription_id, evicted_ids)
+    }
+
     async fn run(self: Arc<Self>, mut subscribe_rx: mpsc::Receiver<SubscribeRequest>) {
         let mut backoff = Duration::from_secs(1);
         loop {
@@ -298,6 +427,8 @@ impl LazerPayloadSourceInner {
                 .connect_and_stream(&mut subscribe_rx, &mut backoff)
                 .await
             {
+                self.fail_pending_subscriptions("websocket disconnected")
+                    .await;
                 tracing::warn!(%error, "Pyth Lazer stream disconnected");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
@@ -338,7 +469,8 @@ impl LazerPayloadSourceInner {
 
         loop {
             tokio::select! {
-                message = stream.next() => {
+                message = timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
+                    let message = message.map_err(|_| LazerClientError::Request("websocket idle timeout".to_owned()))?;
                     let Some(message) = message else {
                         break;
                     };
@@ -347,11 +479,7 @@ impl LazerPayloadSourceInner {
                         continue;
                     };
                     match decode_stream_message(text.as_ref()) {
-                        Ok(Some(payload)) => {
-                            *backoff = Duration::from_secs(1);
-                            self.update_subscription_cache(payload).await;
-                        }
-                        Ok(None) => tracing::debug!("ignored non-update Pyth Lazer stream message"),
+                        Ok(event) => self.handle_stream_event(event, backoff).await,
                         Err(error) => tracing::warn!(%error, "ignored invalid Pyth Lazer stream message"),
                     }
                 }
@@ -372,15 +500,22 @@ impl LazerPayloadSourceInner {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     ) -> LazerResult<()> {
-        let subscriptions = self.subscriptions.read().await;
-        for (id, info) in &subscriptions.active {
-            let frame = subscription_frame_for_feeds(&self.config, *id, info.feed_ids.clone())?;
+        let active = {
+            let subscriptions = self.subscriptions.read().await;
+            subscriptions
+                .active
+                .iter()
+                .map(|(id, info)| (*id, info.feed_ids.clone(), Arc::clone(&info.cache_tx)))
+                .collect::<Vec<_>>()
+        };
+
+        for (id, feed_ids, cache_tx) in active {
+            let frame = subscription_frame_for_feeds(&self.config, id, feed_ids)?;
             stream
                 .send(Message::Text(frame.into()))
                 .await
                 .map_err(|error| LazerClientError::Request(error.to_string()))?;
-            // Clear cache since we need fresh data after reconnect
-            let _ = info.cache_tx.send(None);
+            let _ = cache_tx.send(None);
         }
         Ok(())
     }
@@ -392,47 +527,168 @@ impl LazerPayloadSourceInner {
         >,
         req: SubscribeRequest,
     ) -> LazerResult<()> {
-        let subscription_id = {
-            let mut subscriptions = self.subscriptions.write().await;
-            let id = SubscriptionId(subscriptions.next_id);
-            subscriptions.next_id += 1;
-            let (cache_tx, cache_rx) = watch::channel(None);
-            subscriptions.active.insert(
-                id,
-                SubscriptionInfo {
-                    feed_ids: req.feed_ids.clone(),
-                    cache: cache_rx,
-                    cache_tx: Arc::new(cache_tx),
-                },
-            );
-            id
-        };
+        if !self.subscription_is_pending(req.subscription_id).await {
+            return Ok(());
+        }
+
+        for evicted_id in req.evicted_ids {
+            let frame = unsubscription_frame(evicted_id)?;
+            stream
+                .send(Message::Text(frame.into()))
+                .await
+                .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        }
 
         let frame =
-            subscription_frame_for_feeds(&self.config, subscription_id, req.feed_ids.clone())?;
-        stream
-            .send(Message::Text(frame.into()))
-            .await
-            .map_err(|error| LazerClientError::Request(error.to_string()))?;
-
-        let _ = req.response_tx.send(Ok(subscription_id));
+            subscription_frame_for_feeds(&self.config, req.subscription_id, req.feed_ids.clone())?;
+        if let Err(error) = stream.send(Message::Text(frame.into())).await {
+            let message = error.to_string();
+            self.fail_pending_subscription(req.subscription_id, message.clone())
+                .await;
+            return Err(LazerClientError::Request(message));
+        }
         Ok(())
+    }
+
+    async fn subscription_is_pending(&self, subscription_id: SubscriptionId) -> bool {
+        let subscriptions = self.subscriptions.read().await;
+        subscriptions.pending.contains_key(&subscription_id)
+    }
+
+    async fn handle_stream_event(&self, event: LazerStreamEvent, backoff: &mut Duration) {
+        match event {
+            LazerStreamEvent::Payload(payload) => {
+                *backoff = Duration::from_secs(1);
+                self.update_subscription_cache(payload).await;
+            }
+            LazerStreamEvent::Subscribed { subscription_id } => {
+                self.acknowledge_subscription(subscription_id).await;
+            }
+            LazerStreamEvent::SubscribedWithInvalidFeedIdsIgnored {
+                subscription_id,
+                subscribed_feed_ids,
+            } => {
+                self.acknowledge_partial_subscription(subscription_id, subscribed_feed_ids)
+                    .await;
+            }
+            LazerStreamEvent::SubscriptionError {
+                subscription_id,
+                error,
+            } => {
+                self.fail_pending_subscription(subscription_id, error).await;
+            }
+            LazerStreamEvent::Unsubscribed { subscription_id } => {
+                tracing::debug!(
+                    subscription_id = subscription_id.0,
+                    "Pyth Lazer subscription removed"
+                );
+            }
+            LazerStreamEvent::Error { error } => {
+                tracing::warn!(%error, "Pyth Lazer stream returned an error response");
+            }
+        }
+    }
+
+    async fn acknowledge_subscription(&self, subscription_id: SubscriptionId) {
+        let pending = {
+            let mut subscriptions = self.subscriptions.write().await;
+            subscriptions.pending.remove(&subscription_id)
+        };
+        if let Some(pending) = pending {
+            let _ = pending.response_tx.send(Ok(subscription_id));
+        }
+    }
+
+    async fn acknowledge_partial_subscription(
+        &self,
+        subscription_id: SubscriptionId,
+        subscribed_feed_ids: BTreeSet<u32>,
+    ) {
+        let result = {
+            let mut subscriptions = self.subscriptions.write().await;
+            let covers_requested = subscriptions
+                .active
+                .get(&subscription_id)
+                .is_some_and(|info| info.feed_ids.is_subset(&subscribed_feed_ids));
+            if covers_requested {
+                subscriptions
+                    .pending
+                    .remove(&subscription_id)
+                    .map(|pending| (pending, Ok(subscription_id)))
+            } else {
+                subscriptions.active.remove(&subscription_id);
+                subscriptions.fifo.retain(|id| *id != subscription_id);
+                subscriptions
+                    .pending
+                    .remove(&subscription_id)
+                    .map(|pending| {
+                        (
+                            pending,
+                            Err(LazerClientError::SubscriptionFailed(
+                                "subscription ignored requested feed ids".to_owned(),
+                            )),
+                        )
+                    })
+            }
+        };
+
+        if let Some((pending, result)) = result {
+            let _ = pending.response_tx.send(result);
+        }
+    }
+
+    async fn fail_pending_subscription(&self, subscription_id: SubscriptionId, error: String) {
+        let pending = {
+            let mut subscriptions = self.subscriptions.write().await;
+            subscriptions.active.remove(&subscription_id);
+            subscriptions.fifo.retain(|id| *id != subscription_id);
+            subscriptions.pending.remove(&subscription_id)
+        };
+        if let Some(pending) = pending {
+            let _ = pending
+                .response_tx
+                .send(Err(LazerClientError::SubscriptionFailed(error)));
+        }
+    }
+
+    async fn fail_pending_subscriptions(&self, error: &str) {
+        let pending = {
+            let mut subscriptions = self.subscriptions.write().await;
+            let ids = subscriptions.pending.keys().copied().collect::<Vec<_>>();
+            for id in &ids {
+                subscriptions.active.remove(id);
+            }
+            subscriptions
+                .fifo
+                .retain(|queued_id| !ids.contains(queued_id));
+            std::mem::take(&mut subscriptions.pending)
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+
+        for pending in pending {
+            let _ = pending
+                .response_tx
+                .send(Err(LazerClientError::SubscriptionFailed(error.to_owned())));
+        }
     }
 
     async fn update_subscription_cache(&self, payload: crate::lazer_wire::DecodedLazerPayload) {
         let subscriptions = self.subscriptions.read().await;
-        for (id, info) in &subscriptions.active {
-            if payload.feed_ids.is_subset(&info.feed_ids) {
-                let cached = CachedPayload {
-                    payload: payload.bytes.clone(),
-                    feed_ids: payload.feed_ids.clone(),
-                    received_at: Instant::now(),
-                };
-                if let Err(error) = info.cache_tx.send(Some(cached)) {
-                    tracing::warn!(subscription_id = id.0, %error, "failed to update subscription cache");
-                }
-                break;
-            }
+        let Some(info) = subscriptions.active.get(&payload.subscription_id) else {
+            tracing::warn!(
+                subscription_id = payload.subscription_id.0,
+                "ignored Pyth Lazer payload for unknown subscription"
+            );
+            return;
+        };
+        let cached = CachedPayload {
+            payload: payload.bytes,
+            feed_ids: payload.feed_ids,
+            received_at: Instant::now(),
+        };
+        if let Err(error) = info.cache_tx.send(Some(cached)) {
+            tracing::warn!(subscription_id = payload.subscription_id.0, %error, "failed to update subscription cache");
         }
     }
 }

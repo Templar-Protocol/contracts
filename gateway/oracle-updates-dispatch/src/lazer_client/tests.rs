@@ -8,7 +8,7 @@ use templar_pyth_pro_verifier::{verify_solana_update, Crypto, TrustedSigner, Ver
 use tokio::time::Instant;
 
 use super::*;
-use crate::lazer_wire::decode_stream_message;
+use crate::lazer_wire::{decode_stream_message, DecodedLazerPayload, LazerStreamEvent};
 
 const PAYLOAD_001: &str = "uQEagohEipEVyTiNYf6VaHJFux40+GmgzXaVUuzszi4nJMWpoMH4WZB0W3SMzUM41gQlkeJYJDydLouwjUDVBbksHwqA78H0gMVhWvP7Zz1CKH6ZPan7w1BrbkHfoylQggwubBwBddPHk0AKB5JsVAYAAwUHAAAABgD4hPUFAAAAAAUwKwAAAAAAAAT4/wqlkfUFAAAAAAsGNgAAAAAAAAwBQAoHkmxUBgAIAAAABgAvcfQFAAAAAAVeLAAAAAAAAAT4/wpWYvQFAAAAAAt1NwAAAAAAAAwBQAoHkmxUBgABAAAABgAqfglX/QUAAAV2rg9cAQAAAAT4/wqgFefA+wUAAAv8FrtEAQAAAAwBQAoHkmxUBgAbAAAABgC9d+INAAAAAAU27QEAAAAAAAT4/wqQi9sNAAAAAAu07wAAAAAAAAwBQAoHkmxUBgAXAAAABgDQwVgBAAAAAAWSGAAAAAAAAAT4/wqs8FYBAAAAAAvgGAAAAAAAAAwBQAoHkmxUBgA=";
 const EXPECTED_FEEDS: [u32; 5] = [7, 8, 1, 27, 23];
@@ -47,6 +47,13 @@ fn stream_message(solana: &serde_json::Value) -> String {
     .to_string()
 }
 
+fn decoded_payload(message: &str) -> DecodedLazerPayload {
+    match decode_stream_message(message).expect("message should decode") {
+        LazerStreamEvent::Payload(payload) => payload,
+        event => panic!("expected streamUpdated payload event, got {event:?}"),
+    }
+}
+
 fn fixture_bytes() -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(PAYLOAD_001)
@@ -74,10 +81,9 @@ fn decodes_hex_when_encoding_is_omitted() {
     let fixture = fixture_bytes();
     let message = stream_message(&serde_json::json!({ "data": hex::encode(&fixture) }));
 
-    let payload = decode_stream_message(&message)
-        .expect("message should decode")
-        .expect("streamUpdated should produce payload");
+    let payload = decoded_payload(&message);
 
+    assert_eq!(payload.subscription_id, SubscriptionId(1));
     assert_eq!(payload.bytes, fixture);
     assert_eq!(payload.feed_ids, EXPECTED_FEEDS.into_iter().collect());
 }
@@ -94,12 +100,8 @@ fn decodes_explicit_hex_and_base64() {
         "data": PAYLOAD_001,
     }));
 
-    let hex_payload = decode_stream_message(&hex_message)
-        .expect("hex should decode")
-        .expect("streamUpdated should produce payload");
-    let base64_payload = decode_stream_message(&base64_message)
-        .expect("base64 should decode")
-        .expect("streamUpdated should produce payload");
+    let hex_payload = decoded_payload(&hex_message);
+    let base64_payload = decoded_payload(&base64_message);
 
     assert_eq!(hex_payload.bytes, fixture);
     assert_eq!(
@@ -141,9 +143,7 @@ fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
         "encoding": "base64",
         "data": PAYLOAD_001,
     }));
-    let decoded = decode_stream_message(&message)
-        .expect("message should decode")
-        .expect("streamUpdated should produce payload");
+    let decoded = decoded_payload(&message);
     let trusted_signers = [TrustedSigner {
         public_key: signer_of(&raw),
         expires_at_s: PAYLOAD_001_TIMESTAMP_US / 1_000_000 + 3_600,
@@ -163,6 +163,71 @@ fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
             .map(|feed| feed.feed_id)
             .collect::<Vec<_>>(),
         EXPECTED_FEEDS
+    );
+}
+
+#[test]
+fn decodes_subscription_events_with_ids() {
+    let cases = [
+        (
+            serde_json::json!({"type": "subscribed", "subscriptionId": 3}).to_string(),
+            LazerStreamEvent::Subscribed {
+                subscription_id: SubscriptionId(3),
+            },
+        ),
+        (
+            serde_json::json!({"type": "unsubscribed", "subscriptionId": 4}).to_string(),
+            LazerStreamEvent::Unsubscribed {
+                subscription_id: SubscriptionId(4),
+            },
+        ),
+        (
+            serde_json::json!({"type": "subscriptionError", "subscriptionId": 5, "error": "denied"})
+                .to_string(),
+            LazerStreamEvent::SubscriptionError {
+                subscription_id: SubscriptionId(5),
+                error: "denied".to_owned(),
+            },
+        ),
+        (
+            serde_json::json!({"type": "error", "error": "bad request"}).to_string(),
+            LazerStreamEvent::Error {
+                error: "bad request".to_owned(),
+            },
+        ),
+    ];
+
+    for (message, expected) in cases {
+        let event = decode_stream_message(&message).expect("event should decode");
+
+        assert_eq!(event, expected);
+    }
+}
+
+#[test]
+fn decodes_partial_subscription_acknowledgement() {
+    let message = serde_json::json!({
+        "type": "subscribedWithInvalidFeedIdsIgnored",
+        "subscriptionId": 6,
+        "subscribedFeedIds": [7, 8],
+        "ignoredInvalidFeedIds": {
+            "unknownIds": [9],
+            "unknownSymbols": [],
+            "unsupportedChannels": [],
+            "unstable": [],
+            "notEntitled": []
+        }
+    })
+    .to_string();
+
+    let event = decode_stream_message(&message).expect("event should decode");
+
+    assert_eq!(
+        event,
+        LazerStreamEvent::SubscribedWithInvalidFeedIdsIgnored {
+            subscription_id: SubscriptionId(6),
+            subscribed_feed_ids: [7, 8].into_iter().collect(),
+        }
     );
 }
 
