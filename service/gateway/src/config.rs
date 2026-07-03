@@ -53,7 +53,7 @@ impl FromStr for ManagedSignerConfig {
     }
 }
 
-#[derive(Debug, Clone, Parser)]
+#[derive(Clone, Parser)]
 pub struct Config {
     /// TCP address for the Templar Gateway JSON-RPC server.
     #[arg(long, env = "LISTEN_ADDR", default_value = "127.0.0.1:9944")]
@@ -123,6 +123,26 @@ pub struct Config {
         value_delimiter = ';'
     )]
     pub managed_signers: Vec<ManagedSignerConfig>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("listen_addr", &self.listen_addr)
+            .field("near_rpc_url", &self.near_rpc_url)
+            .field("near_rpc_api_key", &self.near_rpc_api_key.as_ref().map(|_| "<redacted>"))
+            .field("database_url", &self.database_url)
+            .field("migrate_database", &self.migrate_database)
+            .field("pyth_hermes_url", &self.pyth_hermes_url)
+            .field("redstone_node_path", &self.redstone_node_path)
+            .field("pyth_lazer_api_key", &"<redacted>")
+            .field("pyth_lazer_ws_url", &self.pyth_lazer_ws_url)
+            .field("pyth_lazer_feed_ids", &self.pyth_lazer_feed_ids)
+            .field("pyth_lazer_channel", &self.pyth_lazer_channel)
+            .field("pyth_lazer_max_payload_age_ms", &self.pyth_lazer_max_payload_age_ms)
+            .field("managed_signers", &self.managed_signers)
+            .finish()
+    }
 }
 
 impl Config {
@@ -263,6 +283,10 @@ mod tests {
     #[case::zero_max_payload_age(
         &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-feed-ids", "7", "--pyth-lazer-max-payload-age-ms", "0"],
         Err("max payload age must be greater than zero")
+    )]
+    #[case::empty_feed_ids(
+        &["--pyth-lazer-api-key", "secret-token"],
+        Err("at least one price feed id")
     )]
     fn lazer_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
         let mut args = vec!["templar-gateway-service"];
