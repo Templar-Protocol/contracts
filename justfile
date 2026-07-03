@@ -22,7 +22,7 @@ test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
-    cargo nextest run --profile sandbox --run-ignored all {{args}}
+    cargo nextest run --profile sandbox --run-ignored only {{args}}
 
 # Start the out-of-band sandbox neard (prints its RPC url).
 sandbox-up:

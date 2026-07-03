@@ -446,7 +446,7 @@ async fn liquidators_race(#[future(awt)] harness: SandboxHarness) -> Result<()> 
         harness
             .ft_balance_of(&market.collateral_ft_id, &liquidator.0)
             .await?,
-        balance_before + 500,
+        balance_before + u128::from(collateral),
         "liquidation should only occur once",
     );
 

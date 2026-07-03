@@ -68,17 +68,28 @@ async fn funds_activate_in_the_next_snapshot(#[future(awt)] harness: SandboxHarn
             "round {round}: deposit should activate one snapshot after supply",
         );
 
-        // Advance until the deposit activates.
-        while !deposit_state(&harness, &market, &supply_user)
-            .await?
-            .incoming
-            .is_empty()
-        {
+        // Advance until the deposit activates, failing fast rather than hanging
+        // CI if a snapshot-index regression prevents it from ever clearing.
+        for _ in 0..20 {
+            if deposit_state(&harness, &market, &supply_user)
+                .await?
+                .incoming
+                .is_empty()
+            {
+                break;
+            }
             harness.fast_forward(500).await?;
             harness
                 .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
                 .await?;
         }
+        anyhow::ensure!(
+            deposit_state(&harness, &market, &supply_user)
+                .await?
+                .incoming
+                .is_empty(),
+            "round {round}: deposit failed to activate within the retry budget",
+        );
 
         assert_eq!(
             u128::from(deposit_state(&harness, &market, &supply_user).await?.active),

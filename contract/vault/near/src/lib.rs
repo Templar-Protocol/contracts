@@ -1,8 +1,12 @@
 #![allow(clippy::needless_pass_by_value)]
 
+// Re-exported so off-chain consumers (and integration tests) can derive a
+// member's kernel address without duplicating the domain-separated hash.
+pub use crate::convert::account_id_to_address;
+
 use crate::{
     aum::AUM,
-    convert::{account_id_to_address, IntoTargetId},
+    convert::IntoTargetId,
     governance::{Abdicator, Gate, TimelockedAction, Timelocks},
     impl_callbacks::unwrap_or_return,
     kernel_effects::{apply_kernel_effects, KernelEffectContext},

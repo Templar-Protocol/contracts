@@ -9,35 +9,13 @@
 #![allow(clippy::too_many_lines)]
 
 use anyhow::Result;
-use near_sdk::env::sha256_array;
 use rstest::rstest;
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy,
-    vault::{AllocationDelta, Delta, Restrictions},
-    Decimal,
-};
+use templar_common::vault::{AllocationDelta, Delta, Restrictions};
 use templar_gateway_testing::{harness, SandboxHarness};
 use templar_primitives::SU128;
-use templar_vault_kernel::Address;
 
-/// Domain-separated sha256 of an account id — the canonical kernel address the
-/// vault derives internally (mirrors the contract's `pub(crate)`
-/// `convert::account_id_to_address`, unreachable from this test crate).
-const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";
-fn account_to_kernel_address(account: &near_api::types::AccountId) -> Address {
-    let account = account.as_str().as_bytes();
-    let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.len());
-    bytes.extend_from_slice(ADDRESS_DOMAIN);
-    bytes.extend_from_slice(account);
-    Address(sha256_array(&bytes))
-}
-
-/// Zero-interest borrow strategy — the market customization the allocation test uses.
-#[allow(clippy::unwrap_used)] // infallible zero/zero strategy, in a non-`#[test]` helper
-fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
-    c.borrow_interest_rate_strategy =
-        InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-}
+mod common;
+use common::{account_to_kernel_address, zero_interest};
 
 /// Sentinel can pause the vault; while paused, deposits are rejected.
 #[rstest]

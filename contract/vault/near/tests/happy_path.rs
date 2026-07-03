@@ -13,38 +13,12 @@ use anyhow::Result;
 use near_sdk::json_types::U128;
 use rstest::rstest;
 use templar_common::vault::prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy,
-    vault::{AllocationDelta, Delta},
-    Decimal,
-};
-use templar_gateway_testing::{harness, DeployedVault, ManagedAccountId, SandboxHarness};
+use templar_common::vault::{AllocationDelta, Delta};
+use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness};
 use templar_primitives::SU128;
 
-/// Zero-interest borrow strategy — the common market customization these tests use.
-#[allow(clippy::unwrap_used)] // infallible zero/zero strategy, in a non-`#[test]` helper
-fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
-    c.borrow_interest_rate_strategy =
-        InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-}
-
-/// Drive market yield harvesting until the vault's supply position is fully
-/// activated (no incoming deposits pending).
-async fn harvest(harness: &SandboxHarness, vault: &DeployedVault) -> Result<()> {
-    let vault_account = ManagedAccountId(vault.vault_id.clone());
-    while let Some(position) = harness
-        .get_supply_position(&vault.market, &vault.vault_id)
-        .await?
-    {
-        if position.get_deposit().incoming.is_empty() {
-            break;
-        }
-        harness
-            .harvest_yield(&vault_account, &vault.market, None)
-            .await?;
-    }
-    Ok(())
-}
+mod common;
+use common::{harvest, zero_interest};
 
 #[rstest]
 #[tokio::test]

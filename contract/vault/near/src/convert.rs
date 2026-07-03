@@ -50,7 +50,7 @@ const ADDRESS_DOMAIN: &[u8] = b"templar:near:account-id";
 /// This keeps NEAR storage/API types unchanged (AccountId/U128/U64) while allowing
 /// kernel logic (`Address`-based) to be applied. The mapping is *not reversible*,
 /// so kernel effects that need `AccountId` must use executor context, not `Address`.
-pub(crate) fn account_id_to_address(account: &AccountId) -> Address {
+pub fn account_id_to_address(account: &AccountId) -> Address {
     let mut bytes = Vec::with_capacity(ADDRESS_DOMAIN.len() + account.as_bytes().len());
     bytes.extend_from_slice(ADDRESS_DOMAIN);
     bytes.extend_from_slice(account.as_bytes());

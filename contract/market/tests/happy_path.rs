@@ -7,8 +7,8 @@
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::{
-    borrow::BorrowStatus, dec, interest_rate_strategy::InterestRateStrategy, market::YieldWeights,
-    Decimal,
+    borrow::BorrowStatus, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
+    market::YieldWeights, Decimal,
 };
 use templar_gateway_testing::{harness, SandboxHarness};
 
@@ -27,6 +27,9 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         .deploy_full_market_with(move |c| {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+            // Pin the 10% origination fee this test's 1000 -> 1100 liability
+            // assumes, rather than depending on the shared helper default.
+            c.borrow_origination_fee = Fee::Proportional(dec!("0.1"));
             c.yield_weights = YieldWeights::new_with_supply_weight(8)
                 .with_static(protocol_id, 1)
                 .with_static(insurance_id, 1);

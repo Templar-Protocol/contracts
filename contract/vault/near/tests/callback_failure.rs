@@ -12,37 +12,11 @@
 use anyhow::Result;
 use near_sdk::json_types::U128;
 use rstest::rstest;
-use templar_common::{
-    interest_rate_strategy::InterestRateStrategy,
-    vault::{AllocationDelta, Delta, MarketId},
-    Decimal,
-};
-use templar_gateway_testing::{harness, DeployedVault, ManagedAccountId, SandboxHarness};
+use templar_common::vault::{AllocationDelta, Delta, MarketId};
+use templar_gateway_testing::{harness, SandboxHarness};
 
-/// Zero-interest borrow strategy — the market customization these tests use.
-#[allow(clippy::unwrap_used)] // infallible zero/zero strategy, in a non-`#[test]` helper
-fn zero_interest(c: &mut templar_common::market::MarketConfiguration) {
-    c.borrow_interest_rate_strategy =
-        InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
-}
-
-/// Drive market yield harvesting until the vault's supply position is fully
-/// activated (no incoming deposits pending).
-async fn harvest(harness: &SandboxHarness, vault: &DeployedVault) -> Result<()> {
-    let vault_account = ManagedAccountId(vault.vault_id.clone());
-    while let Some(position) = harness
-        .get_supply_position(&vault.market, &vault.vault_id)
-        .await?
-    {
-        if position.get_deposit().incoming.is_empty() {
-            break;
-        }
-        harness
-            .harvest_yield(&vault_account, &vault.market, None)
-            .await?;
-    }
-    Ok(())
-}
+mod common;
+use common::{harvest, zero_interest};
 
 /// `unbrick` recovers the vault from a stuck allocation. The allocator-driven
 /// allocation completes synchronously here, so `unbrick` is effectively a no-op

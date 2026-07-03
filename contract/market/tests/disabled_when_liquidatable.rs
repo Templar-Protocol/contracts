@@ -115,8 +115,8 @@ async fn disallow_repayment_while_liquidatable(
             .context("borrow position missing")?
             .get_total_borrow_asset_liability(),
     );
-    assert!(
-        liability_after >= liability_before,
+    assert_eq!(
+        liability_after, liability_before,
         "repayment must be rejected while the position is liquidatable",
     );
 

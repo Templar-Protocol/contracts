@@ -168,6 +168,10 @@ async fn static_yield_withdrawal_blocked_when_unregistered(
         .storage_unregister(&protocol, &market.borrow_ft_id, true)
         .await?;
 
+    // The gateway op reports top-level success even though the yield transfer
+    // fails on the unregistered receiver (the failure surfaces in a callback,
+    // not the outer tx — ENG-407), so we assert the *effect*: the withdrawal
+    // record is restored rather than consumed.
     harness
         .try_withdraw_static_yield(&protocol, &market, None)
         .await?;

@@ -74,27 +74,36 @@ async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<
     let registry = setup_registry(&harness).await?;
     let args = init_args(&registry.configuration)?;
 
-    for name in ["one", "two", "three"] {
-        harness
-            .registry_deploy(
-                &registry.deployer,
-                &registry.id,
-                name,
-                MARKET_VERSION,
-                args.clone(),
-                None,
-                NearToken::from_near(10),
-            )
-            .await?;
+    // Deploy the three markets concurrently — they share nothing but the
+    // registry, and doing them in sequence needlessly serializes the test.
+    let harness = &harness;
+    let registry = &registry;
+    let deploy = |name: &'static str| {
+        let args = args.clone();
+        async move {
+            harness
+                .registry_deploy(
+                    &registry.deployer,
+                    &registry.id,
+                    name,
+                    MARKET_VERSION,
+                    args,
+                    None,
+                    NearToken::from_near(10),
+                )
+                .await?;
 
-        let market_id: AccountId = format!("{name}.{}", registry.id).parse()?;
-        assert_eq!(
-            harness.get_configuration(&market_id).await?,
-            registry.configuration,
-        );
-        // Deploying without keys leaves the market with no full-access keys.
-        assert!(harness.view_access_keys(&market_id).await?.is_empty());
-    }
+            let market_id: AccountId = format!("{name}.{}", registry.id).parse()?;
+            assert_eq!(
+                harness.get_configuration(&market_id).await?,
+                registry.configuration,
+            );
+            // Deploying without keys leaves the market with no full-access keys.
+            assert!(harness.view_access_keys(&market_id).await?.is_empty());
+            Ok::<(), anyhow::Error>(())
+        }
+    };
+    tokio::try_join!(deploy("one"), deploy("two"), deploy("three"))?;
 
     Ok(())
 }
