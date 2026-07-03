@@ -33,8 +33,7 @@ impl FromStr for LazerChannel {
             "fixed_rate@200ms" => Ok(Self::FixedRate200Ms),
             "fixed_rate@1000ms" => Ok(Self::FixedRate1000Ms),
             _ => Err(format!(
-                "invalid channel '{}', must be one of: real_time, fixed_rate@50ms, fixed_rate@200ms, fixed_rate@1000ms",
-                s
+                "invalid channel '{s}', must be one of: real_time, fixed_rate@50ms, fixed_rate@200ms, fixed_rate@1000ms",
             )),
         }
     }

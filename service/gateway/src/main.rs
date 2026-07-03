@@ -29,7 +29,12 @@ async fn main() -> anyhow::Result<()> {
     let store = config.build_store().await?;
     let lazer_config = config.build_lazer_source_config()?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
-        .api_key(config.near_rpc_api_key.as_ref().map(|k| k.as_ref().to_owned()))
+        .api_key(
+            config
+                .near_rpc_api_key
+                .as_ref()
+                .map(|k| k.as_ref().to_owned()),
+        )
         .build();
     let context = GatewayContext::builder(network)
         .with_pyth_source(config.pyth_hermes_url)

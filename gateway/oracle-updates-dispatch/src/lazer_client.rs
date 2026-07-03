@@ -51,7 +51,11 @@ pub struct LazerSubscriptionConfig {
 }
 
 impl LazerSourceConfig {
-    pub fn new(ws_url: Url, api_token: RedactedString, subscription: LazerSubscriptionConfig) -> LazerResult<Self> {
+    pub fn new(
+        ws_url: Url,
+        api_token: RedactedString,
+        subscription: LazerSubscriptionConfig,
+    ) -> LazerResult<Self> {
         if ws_url.scheme() != "wss" {
             return Err(LazerClientError::InsecureWebSocketUrl);
         }
@@ -109,6 +113,8 @@ pub enum LazerClientError {
     EmptyRequest,
     #[error("Pyth Lazer cached payload is stale")]
     StalePayload,
+    #[error("Pyth Lazer cached payload does not cover requested feeds")]
+    FeedNotCovered,
     #[error("Pyth Lazer subscription failed: {0}")]
     SubscriptionFailed(String),
 }
@@ -236,7 +242,7 @@ impl OraclePayloadSource for LazerPayloadSource {
         let subscription = subscriptions
             .active
             .get(&subscription_id)
-            .ok_or_else(|| LazerClientError::CacheMiss)?;
+            .ok_or(LazerClientError::CacheMiss)?;
 
         let cache_rx = subscription.cache.clone();
         drop(subscriptions);
@@ -248,6 +254,10 @@ impl OraclePayloadSource for LazerPayloadSource {
 
         if cached.received_at.elapsed() > self.inner.config.max_payload_age {
             return Err(LazerClientError::StalePayload);
+        }
+
+        if !requested_feeds.is_subset(&cached.feed_ids) {
+            return Err(LazerClientError::FeedNotCovered);
         }
 
         Ok(cached.payload)
@@ -274,9 +284,9 @@ impl LazerPayloadSource {
             .await
             .map_err(|_| LazerClientError::Request("subscription channel closed".to_owned()))?;
 
-        response_rx
-            .await
-            .map_err(|_| LazerClientError::Request("subscription response channel closed".to_owned()))?
+        response_rx.await.map_err(|_| {
+            LazerClientError::Request("subscription response channel closed".to_owned())
+        })?
     }
 }
 
@@ -284,7 +294,10 @@ impl LazerPayloadSourceInner {
     async fn run(self: Arc<Self>, mut subscribe_rx: mpsc::Receiver<SubscribeRequest>) {
         let mut backoff = Duration::from_secs(1);
         loop {
-            if let Err(error) = self.connect_and_stream(&mut subscribe_rx, &mut backoff).await {
+            if let Err(error) = self
+                .connect_and_stream(&mut subscribe_rx, &mut backoff)
+                .await
+            {
                 tracing::warn!(%error, "Pyth Lazer stream disconnected");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
@@ -303,8 +316,9 @@ impl LazerPayloadSourceInner {
             .as_str()
             .into_client_request()
             .map_err(|error| LazerClientError::Request(error.to_string()))?;
-        let authorization = HeaderValue::from_str(&format!("Bearer {}", self.config.api_token.as_ref()))
-            .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        let authorization =
+            HeaderValue::from_str(&format!("Bearer {}", self.config.api_token.as_ref()))
+                .map_err(|error| LazerClientError::Request(error.to_string()))?;
         request.headers_mut().insert(AUTHORIZATION, authorization);
 
         let (mut stream, _) = connect_async_with_config(
@@ -318,6 +332,9 @@ impl LazerPayloadSourceInner {
         )
         .await
         .map_err(|error| LazerClientError::Request(error.to_string()))?;
+
+        // Replay all active subscriptions after reconnect
+        self.replay_active_subscriptions(&mut stream).await?;
 
         loop {
             tokio::select! {
@@ -349,9 +366,30 @@ impl LazerPayloadSourceInner {
         Err(LazerClientError::Request("websocket closed".to_owned()))
     }
 
+    async fn replay_active_subscriptions(
+        &self,
+        stream: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> LazerResult<()> {
+        let subscriptions = self.subscriptions.read().await;
+        for (id, info) in &subscriptions.active {
+            let frame = subscription_frame_for_feeds(&self.config, *id, info.feed_ids.clone())?;
+            stream
+                .send(Message::Text(frame.into()))
+                .await
+                .map_err(|error| LazerClientError::Request(error.to_string()))?;
+            // Clear cache since we need fresh data after reconnect
+            let _ = info.cache_tx.send(None);
+        }
+        Ok(())
+    }
+
     async fn handle_subscribe_request(
         &self,
-        stream: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        stream: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
         req: SubscribeRequest,
     ) -> LazerResult<()> {
         let subscription_id = {
@@ -370,7 +408,8 @@ impl LazerPayloadSourceInner {
             id
         };
 
-        let frame = subscription_frame_for_feeds(&self.config, subscription_id, req.feed_ids.clone())?;
+        let frame =
+            subscription_frame_for_feeds(&self.config, subscription_id, req.feed_ids.clone())?;
         stream
             .send(Message::Text(frame.into()))
             .await

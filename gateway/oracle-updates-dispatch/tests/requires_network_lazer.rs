@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use templar_gateway_core::OraclePayloadSource;
+use templar_gateway_core::{OraclePayloadSource, RedactedString};
 use templar_gateway_oracle_updates_dispatch::{
     LazerPayloadSource, LazerSourceConfig, LazerSubscriptionConfig,
 };
@@ -25,9 +25,8 @@ async fn requires_network_fetches_production_lazer_payload() {
         .expect("valid Pyth Lazer websocket URL");
     let config = LazerSourceConfig::new(
         url,
-        token,
+        RedactedString::from(token),
         LazerSubscriptionConfig {
-            price_feed_ids: feed_ids.clone(),
             channel: None,
             max_payload_age: Duration::from_secs(5),
         },

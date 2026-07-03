@@ -26,12 +26,7 @@ pub(crate) fn subscription_frame_for_feeds(
     price_feed_ids: BTreeSet<u32>,
 ) -> LazerResult<String> {
     let params = SubscriptionParams::new(SubscriptionParamsRepr {
-        price_feed_ids: Some(
-            price_feed_ids
-                .into_iter()
-                .map(PriceFeedId)
-                .collect(),
-        ),
+        price_feed_ids: Some(price_feed_ids.into_iter().map(PriceFeedId).collect()),
         symbols: None,
         properties: vec![
             PriceFeedProperty::Price,
