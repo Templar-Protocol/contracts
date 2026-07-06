@@ -68,8 +68,7 @@ pub enum ArtifactError {
 ///
 /// This matches the format produced by `templar-tools-common::build`.
 pub fn format_version_key(name: &str, version: &str, wasm_bytes: &[u8]) -> String {
-    let hash = sha2::Sha256::digest(wasm_bytes);
-    format!("{name}@{version}#{}", hex::encode(hash))
+    format!("{name}@{version}#{}", sha256_hex(wasm_bytes))
 }
 
 /// Compute the SHA-256 hex digest of a WASM blob.

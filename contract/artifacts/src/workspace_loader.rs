@@ -98,13 +98,11 @@ pub(crate) fn find_package<'a>(
         .find(|p| p.name == package)
 }
 
-/// Build the `target/near/{name}/{name}.wasm` path from target directory and package name.
-fn target_near_wasm_path_from_meta(target_dir: &std::path::Path, package_name: &str) -> PathBuf {
-    let name_in_path = package_name.replace('-', "_");
+fn target_near_wasm_path_from_meta(target_dir: &std::path::Path, target_name: &str) -> PathBuf {
     target_dir
         .join("near")
-        .join(&name_in_path)
-        .join(format!("{name_in_path}.wasm"))
+        .join(target_name)
+        .join(format!("{target_name}.wasm"))
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +117,17 @@ pub fn load_artifact_bytes(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
 ) -> Result<Vec<u8>, LoadError> {
-    let path = artifact.target_near_wasm_path(workspace_dir);
+    let metadata = get_metadata(workspace_dir)?;
+    if find_package(&metadata, artifact.package_name).is_none() {
+        return Err(LoadError::PackageNotFound(
+            artifact.package_name.to_string(),
+        ));
+    }
+
+    let path = target_near_wasm_path_from_meta(
+        metadata.target_directory.as_std_path(),
+        artifact.cargo_target_name,
+    );
     std::fs::read(&path).map_err(|source| LoadError::ReadWasm { path, source })
 }
 
@@ -133,8 +141,12 @@ pub fn load_artifact(
         .cloned()
         .ok_or_else(|| LoadError::PackageNotFound(package_name.to_string()))?;
 
+    let target_name = crate::find_by_package_name(package.name.as_str()).map_or_else(
+        || package.name.replace('-', "_"),
+        |artifact| artifact.cargo_target_name.to_owned(),
+    );
     let path =
-        target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &package.name);
+        target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &target_name);
     let bytes = std::fs::read(&path).map_err(|source| LoadError::ReadWasm { path, source })?;
     Ok((bytes, package))
 }
@@ -166,8 +178,12 @@ pub fn build_artifact_with_mode(
         return Err(BuildContractError::BuildStatus { status });
     }
 
+    let target_name = crate::find_by_package_name(package.name.as_str()).map_or_else(
+        || package.name.replace('-', "_"),
+        |artifact| artifact.cargo_target_name.to_owned(),
+    );
     let path =
-        target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &package.name);
+        target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &target_name);
     let bytes =
         std::fs::read(&path).map_err(|source| BuildContractError::ReadWasm { path, source })?;
     Ok(bytes)
