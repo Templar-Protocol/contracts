@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
+use templar_contract_artifacts::ContractArtifact;
+use templar_tools_common::build::{
+    build_contract, build_contract_artifact, load_contract, load_contract_artifact, LoadedContract,
+};
 
 #[derive(Args)]
 pub struct ContractLoader {
@@ -19,6 +22,17 @@ impl ContractLoader {
             load_contract(&self.workspace_path, package_id)
         } else {
             build_contract(&self.workspace_path, package_id)
+        }
+    }
+
+    pub fn load_artifact<V>(
+        &self,
+        artifact: ContractArtifact,
+    ) -> anyhow::Result<LoadedContract<V>> {
+        if self.no_build {
+            load_contract_artifact(&self.workspace_path, artifact)
+        } else {
+            build_contract_artifact(&self.workspace_path, artifact)
         }
     }
 }
