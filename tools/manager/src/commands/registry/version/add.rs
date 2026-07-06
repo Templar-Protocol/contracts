@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::Context;
-use clap::Args;
+use clap::{ArgGroup, Args};
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
 use templar_contract_artifacts::{artifact_value_parser, find_by_id, ArtifactId};
@@ -17,7 +17,12 @@ const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
-#[group(required = true, multiple = false)]
+#[command(group(
+    ArgGroup::new("artifact_selector")
+        .args(["market", "uac", "proxy_oracle", "redstone_adapter", "package"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct Package {
     /// Market contract
     #[arg(long)]
@@ -56,7 +61,7 @@ impl Package {
     pub fn package_name(&self) -> Cow<'_, str> {
         if let Some(artifact) = self.artifact() {
             find_by_id(artifact).map_or_else(
-                |_| Cow::Borrowed(""),
+                |_| Cow::Owned(format!("<unknown-artifact:{artifact:?}>")),
                 |metadata| Cow::Borrowed(metadata.package_name),
             )
         } else {
@@ -79,6 +84,13 @@ impl Package {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct PackageCommand {
+        #[command(flatten)]
+        package: Package,
+    }
 
     fn empty_package() -> Package {
         Package {
@@ -121,6 +133,14 @@ mod tests {
 
         assert_eq!(package.artifact(), None);
         assert_eq!(package.package_name(), "custom-contract");
+    }
+
+    #[test]
+    fn package_selector_rejects_conflicting_inputs() {
+        let error =
+            PackageCommand::try_parse_from(["tmplrmgr", "--market", "--package", "proxy-oracle"]);
+
+        assert!(error.is_err());
     }
 }
 

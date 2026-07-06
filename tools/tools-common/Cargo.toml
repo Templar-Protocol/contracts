@@ -14,7 +14,6 @@ near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
 near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage"] }
-sha2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts = { workspace = true, features = ["workspace-loader"] }
 templar-gateway-types.workspace = true

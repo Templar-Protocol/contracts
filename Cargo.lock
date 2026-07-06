@@ -14064,7 +14064,6 @@ dependencies = [
  "near-jsonrpc-primitives",
  "near-primitives",
  "near-sdk",
- "sha2 0.10.9",
  "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-types",
