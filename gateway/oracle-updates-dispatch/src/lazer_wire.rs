@@ -10,7 +10,6 @@ use pyth_lazer_protocol::{
     payload::PayloadData,
     PriceFeedId, PriceFeedProperty,
 };
-use serde_json::Value;
 
 use crate::{LazerClientError, LazerResult, LazerSourceConfig};
 
@@ -87,10 +86,7 @@ pub(crate) enum LazerStreamEvent {
 }
 
 pub(crate) fn decode_stream_message(text: &str) -> LazerResult<LazerStreamEvent> {
-    let mut value = serde_json::from_str::<Value>(text)
-        .map_err(|error| LazerClientError::Decode(error.to_string()))?;
-    normalize_solana_encoding(&mut value)?;
-    match serde_json::from_value::<WsResponse>(value)
+    match serde_json::from_str::<WsResponse>(text)
         .map_err(|error| LazerClientError::Decode(error.to_string()))?
     {
         WsResponse::StreamUpdated(message) => {
@@ -98,7 +94,7 @@ pub(crate) fn decode_stream_message(text: &str) -> LazerResult<LazerStreamEvent>
                 .payload
                 .solana
                 .ok_or(LazerClientError::MissingSolanaPayload)?;
-            decode_solana_payload(message.subscription_id, &solana).map(LazerStreamEvent::Payload)
+            decode_solana_payload(message.subscription_id, solana).map(LazerStreamEvent::Payload)
         }
         WsResponse::Error(error) => Ok(LazerStreamEvent::Error { error: error.error }),
         WsResponse::SubscriptionError(error) => Ok(LazerStreamEvent::SubscriptionError {
@@ -124,29 +120,9 @@ pub(crate) fn decode_stream_message(text: &str) -> LazerResult<LazerStreamEvent>
     }
 }
 
-fn normalize_solana_encoding(value: &mut Value) -> LazerResult<()> {
-    let Some(message) = value.as_object_mut() else {
-        return Ok(());
-    };
-    if message.get("type").and_then(Value::as_str) != Some("streamUpdated") {
-        return Ok(());
-    }
-    let Some(solana) = message.get_mut("solana").and_then(Value::as_object_mut) else {
-        return Ok(());
-    };
-    match solana.get("encoding").and_then(Value::as_str) {
-        Some("hex" | "base64") => Ok(()),
-        Some(encoding) => Err(LazerClientError::UnsupportedEncoding(encoding.to_owned())),
-        None => {
-            solana.insert("encoding".to_owned(), Value::String("hex".to_owned()));
-            Ok(())
-        }
-    }
-}
-
 fn decode_solana_payload(
     subscription_id: SubscriptionId,
-    payload: &JsonBinaryData,
+    payload: JsonBinaryData,
 ) -> LazerResult<DecodedLazerPayload> {
     let bytes = decode_solana_payload_bytes(payload)?;
     let feed_ids = parse_solana_feed_ids(&bytes)?;
@@ -157,18 +133,19 @@ fn decode_solana_payload(
     })
 }
 
-fn decode_solana_payload_bytes(payload: &JsonBinaryData) -> LazerResult<Vec<u8>> {
-    let bytes = match payload.encoding {
+fn decode_solana_payload_bytes(payload: JsonBinaryData) -> LazerResult<Vec<u8>> {
+    let JsonBinaryData { encoding, data } = payload;
+    let bytes = match encoding {
         JsonBinaryEncoding::Hex => {
-            reject_oversized_encoded_payload(payload.data.len(), MAX_SOLANA_PAYLOAD_HEX_CHARS)?;
-            hex::decode(&payload.data).map_err(|error| LazerClientError::Decode(error.to_string()))
+            reject_oversized_encoded_payload(data.len(), MAX_SOLANA_PAYLOAD_HEX_CHARS)?;
+            hex::decode(&data).map_err(|error| LazerClientError::Decode(error.to_string()))
         }
         JsonBinaryEncoding::Base64 => {
             use base64::Engine as _;
 
-            reject_oversized_encoded_payload(payload.data.len(), MAX_SOLANA_PAYLOAD_BASE64_CHARS)?;
+            reject_oversized_encoded_payload(data.len(), MAX_SOLANA_PAYLOAD_BASE64_CHARS)?;
             base64::engine::general_purpose::STANDARD
-                .decode(&payload.data)
+                .decode(&data)
                 .map_err(|error| LazerClientError::Decode(error.to_string()))
         }
     }?;

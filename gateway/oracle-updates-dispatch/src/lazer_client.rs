@@ -108,8 +108,6 @@ pub enum LazerClientError {
     Request(String),
     #[error("Pyth Lazer stream message is missing solana payload")]
     MissingSolanaPayload,
-    #[error("unsupported Pyth Lazer solana payload encoding: {0}")]
-    UnsupportedEncoding(String),
     #[error("Pyth Lazer solana payload decode failed: {0}")]
     Decode(String),
     #[error("Pyth Lazer solana payload exceeds size limit")]

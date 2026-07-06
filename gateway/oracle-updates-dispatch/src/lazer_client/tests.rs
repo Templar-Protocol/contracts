@@ -2,7 +2,13 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signature, VerifyingKey};
+use pyth_lazer_protocol::api::{
+    ErrorResponse, InvalidFeedSubscriptionDetails, JsonBinaryData, JsonBinaryEncoding, JsonUpdate,
+    StreamUpdatedResponse, SubscribedResponse, SubscribedWithInvalidFeedIdsIgnoredResponse,
+    SubscriptionErrorResponse, UnsubscribedResponse, WsResponse,
+};
 use pyth_lazer_protocol::message::SolanaMessage;
+use pyth_lazer_protocol::PriceFeedId;
 use templar_gateway_core::OraclePayloadSource;
 use templar_pyth_pro_verifier::{verify_solana_update, Crypto, TrustedSigner, VerifyParams};
 use tokio::time::Instant;
@@ -38,13 +44,21 @@ fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
     .expect("valid config")
 }
 
-fn stream_message(solana: &serde_json::Value) -> String {
-    serde_json::json!({
-        "type": "streamUpdated",
-        "subscriptionId": 1,
-        "solana": solana,
-    })
-    .to_string()
+/// Build a `streamUpdated` frame from the protocol's own response types, serialized by their serde
+/// impls — so the wire tags (`type`/`streamUpdated`/`solana`/`encoding`) come from the protocol
+/// shape rather than hand-written strings, and a protocol change surfaces here at compile time.
+fn stream_message(solana: JsonBinaryData) -> String {
+    let response = WsResponse::StreamUpdated(StreamUpdatedResponse {
+        subscription_id: SubscriptionId(1),
+        payload: JsonUpdate {
+            parsed: None,
+            evm: None,
+            solana: Some(solana),
+            le_ecdsa: None,
+            le_unsigned: None,
+        },
+    });
+    serde_json::to_string(&response).expect("protocol response serializes")
 }
 
 fn decoded_payload(message: &str) -> DecodedLazerPayload {
@@ -76,32 +90,30 @@ fn verifier_params(trusted_signers: &[TrustedSigner]) -> VerifyParams<'_> {
     }
 }
 
+/// The exact `streamUpdated` envelope the production server sends, captured verbatim via
+/// `capture_live_stream_updated_fixture`. The real frame carries `solana.encoding` explicitly, so
+/// `decode_stream_message` parses it directly — proof the wire format needs no normalization.
 #[test]
-fn decodes_hex_when_encoding_is_omitted() {
-    let fixture = fixture_bytes();
-    let message = stream_message(&serde_json::json!({ "data": hex::encode(&fixture) }));
+fn decodes_captured_stream_updated_fixture() {
+    const FIXTURE: &str = include_str!("../../tests/fixtures/lazer_stream_updated.json");
 
-    let payload = decoded_payload(&message);
+    let payload = decoded_payload(FIXTURE);
 
     assert_eq!(payload.subscription_id, SubscriptionId(1));
-    assert_eq!(payload.bytes, fixture);
-    assert_eq!(payload.feed_ids, EXPECTED_FEEDS.into_iter().collect());
+    assert_eq!(payload.feed_ids, [7, 8].into_iter().collect());
 }
 
 #[test]
 fn decodes_explicit_hex_and_base64() {
     let fixture = fixture_bytes();
-    let hex_message = stream_message(&serde_json::json!({
-        "encoding": "hex",
-        "data": hex::encode(&fixture),
+    let hex_payload = decoded_payload(&stream_message(JsonBinaryData {
+        encoding: JsonBinaryEncoding::Hex,
+        data: hex::encode(&fixture),
     }));
-    let base64_message = stream_message(&serde_json::json!({
-        "encoding": "base64",
-        "data": PAYLOAD_001,
+    let base64_payload = decoded_payload(&stream_message(JsonBinaryData {
+        encoding: JsonBinaryEncoding::Base64,
+        data: PAYLOAD_001.to_owned(),
     }));
-
-    let hex_payload = decoded_payload(&hex_message);
-    let base64_payload = decoded_payload(&base64_message);
 
     assert_eq!(hex_payload.bytes, fixture);
     assert_eq!(
@@ -111,25 +123,11 @@ fn decodes_explicit_hex_and_base64() {
 }
 
 #[test]
-fn unsupported_encoding_returns_error() {
-    let message = stream_message(&serde_json::json!({
-        "encoding": "base58",
-        "data": "abc",
-    }));
-
-    let error = decode_stream_message(&message).expect_err("base58 should be rejected");
-
-    assert!(
-        matches!(error, LazerClientError::UnsupportedEncoding(encoding) if encoding == "base58")
-    );
-}
-
-#[test]
 fn oversized_payload_returns_error_before_decode() {
-    let message = stream_message(&serde_json::json!({
-        "encoding": "hex",
-        "data": "00".repeat(1_048_577),
-    }));
+    let message = stream_message(JsonBinaryData {
+        encoding: JsonBinaryEncoding::Hex,
+        data: "00".repeat(1_048_577),
+    });
 
     let error = decode_stream_message(&message).expect_err("oversized payload should fail");
 
@@ -139,10 +137,10 @@ fn oversized_payload_returns_error_before_decode() {
 #[test]
 fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
     let raw = fixture_bytes();
-    let message = stream_message(&serde_json::json!({
-        "encoding": "base64",
-        "data": PAYLOAD_001,
-    }));
+    let message = stream_message(JsonBinaryData {
+        encoding: JsonBinaryEncoding::Base64,
+        data: PAYLOAD_001.to_owned(),
+    });
     let decoded = decoded_payload(&message);
     let trusted_signers = [TrustedSigner {
         public_key: signer_of(&raw),
@@ -170,34 +168,43 @@ fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
 fn decodes_subscription_events_with_ids() {
     let cases = [
         (
-            serde_json::json!({"type": "subscribed", "subscriptionId": 3}).to_string(),
+            WsResponse::Subscribed(SubscribedResponse {
+                subscription_id: SubscriptionId(3),
+            }),
             LazerStreamEvent::Subscribed {
                 subscription_id: SubscriptionId(3),
             },
         ),
         (
-            serde_json::json!({"type": "unsubscribed", "subscriptionId": 4}).to_string(),
+            WsResponse::Unsubscribed(UnsubscribedResponse {
+                subscription_id: SubscriptionId(4),
+            }),
             LazerStreamEvent::Unsubscribed {
                 subscription_id: SubscriptionId(4),
             },
         ),
         (
-            serde_json::json!({"type": "subscriptionError", "subscriptionId": 5, "error": "denied"})
-                .to_string(),
+            WsResponse::SubscriptionError(SubscriptionErrorResponse {
+                subscription_id: SubscriptionId(5),
+                error: "denied".to_owned(),
+            }),
             LazerStreamEvent::SubscriptionError {
                 subscription_id: SubscriptionId(5),
                 error: "denied".to_owned(),
             },
         ),
         (
-            serde_json::json!({"type": "error", "error": "bad request"}).to_string(),
+            WsResponse::Error(ErrorResponse {
+                error: "bad request".to_owned(),
+            }),
             LazerStreamEvent::Error {
                 error: "bad request".to_owned(),
             },
         ),
     ];
 
-    for (message, expected) in cases {
+    for (response, expected) in cases {
+        let message = serde_json::to_string(&response).expect("protocol response serializes");
         let event = decode_stream_message(&message).expect("event should decode");
 
         assert_eq!(event, expected);
@@ -206,19 +213,20 @@ fn decodes_subscription_events_with_ids() {
 
 #[test]
 fn decodes_partial_subscription_acknowledgement() {
-    let message = serde_json::json!({
-        "type": "subscribedWithInvalidFeedIdsIgnored",
-        "subscriptionId": 6,
-        "subscribedFeedIds": [7, 8],
-        "ignoredInvalidFeedIds": {
-            "unknownIds": [9],
-            "unknownSymbols": [],
-            "unsupportedChannels": [],
-            "unstable": [],
-            "notEntitled": []
-        }
-    })
-    .to_string();
+    let response = WsResponse::SubscribedWithInvalidFeedIdsIgnored(
+        SubscribedWithInvalidFeedIdsIgnoredResponse {
+            subscription_id: SubscriptionId(6),
+            subscribed_feed_ids: vec![PriceFeedId(7), PriceFeedId(8)],
+            ignored_invalid_feed_ids: InvalidFeedSubscriptionDetails {
+                unknown_ids: vec![PriceFeedId(9)],
+                unknown_symbols: vec![],
+                unsupported_channels: vec![],
+                unstable: vec![],
+                not_entitled: vec![],
+            },
+        },
+    );
+    let message = serde_json::to_string(&response).expect("protocol response serializes");
 
     let event = decode_stream_message(&message).expect("event should decode");
 
@@ -300,4 +308,126 @@ async fn empty_request_returns_error() {
         .expect_err("empty request should fail");
 
     assert!(matches!(error, LazerClientError::EmptyRequest));
+}
+
+/// Live capture harness: connect to the real Pyth Lazer stream exactly as production does (same
+/// subscribe frame, bearer auth, TLS), save the first raw `streamUpdated` text frame verbatim to a
+/// durable fixture, and assert it decodes through `decode_stream_message`. Ignored by default
+/// (needs credentials + network); run it to (re)capture the fixture the offline tests assert
+/// against and to confirm empirically whether the server includes `solana.encoding`.
+///
+/// ```sh
+/// PYTH_LAZER_API_KEY=… PYTH_LAZER_FEED_IDS=7,8 \
+///   cargo test -p templar-gateway-oracle-updates-dispatch \
+///   -- --ignored --nocapture capture_live_stream_updated_fixture
+/// ```
+#[tokio::test]
+#[ignore = "requires PYTH_LAZER_API_KEY/PYTH_PRO_API_KEY + PYTH_LAZER_FEED_IDS; captures a live fixture"]
+async fn capture_live_stream_updated_fixture() {
+    use std::collections::BTreeSet;
+
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::{
+        connect_async_with_config,
+        tungstenite::{
+            client::IntoClientRequest,
+            http::{header::AUTHORIZATION, HeaderValue},
+            protocol::WebSocketConfig,
+            Message,
+        },
+    };
+
+    use crate::lazer_wire::{subscription_frame_for_feeds, MAX_STREAM_JSON_MESSAGE_BYTES};
+
+    let token = std::env::var("PYTH_LAZER_API_KEY")
+        .or_else(|_| std::env::var("PYTH_PRO_API_KEY"))
+        .expect("set PYTH_LAZER_API_KEY or PYTH_PRO_API_KEY");
+    let feed_ids = std::env::var("PYTH_LAZER_FEED_IDS")
+        .expect("set PYTH_LAZER_FEED_IDS to comma-separated u32 feed ids")
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<u32>)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .expect("feed ids must be u32 values");
+    let ws_url = std::env::var("PYTH_LAZER_WS_URL")
+        .unwrap_or_else(|_| "wss://pyth-lazer-0.dourolabs.app/v1/stream".to_owned());
+
+    let config = LazerSourceConfig::new(
+        ws_url.parse().expect("valid Pyth Lazer websocket URL"),
+        RedactedString::from(token),
+        LazerSubscriptionConfig {
+            channel: None,
+            max_payload_age: Duration::from_secs(5),
+        },
+    )
+    .expect("valid Lazer config");
+
+    let mut request = config
+        .ws_url
+        .as_str()
+        .into_client_request()
+        .expect("valid websocket request");
+    request.headers_mut().insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", config.api_token.as_ref()))
+            .expect("valid bearer header"),
+    );
+    let (mut stream, _) = connect_async_with_config(
+        request,
+        Some(
+            WebSocketConfig::default()
+                .max_message_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES))
+                .max_frame_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES)),
+        ),
+        false,
+    )
+    .await
+    .expect("connect to Pyth Lazer");
+
+    let frame = subscription_frame_for_feeds(&config, SubscriptionId(1), feed_ids)
+        .expect("subscription frame serializes");
+    stream
+        .send(Message::Text(frame.into()))
+        .await
+        .expect("send subscribe frame");
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let raw = loop {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for a streamUpdated frame"
+        );
+        let Some(message) = tokio::time::timeout(Duration::from_secs(20), stream.next())
+            .await
+            .expect("stream did not yield within the timeout")
+        else {
+            panic!("stream closed before any streamUpdated frame");
+        };
+        let Message::Text(text) = message.expect("stream error") else {
+            continue;
+        };
+        // Skip subscription acks (subscribed/…); capture the first data frame.
+        let is_stream_updated = serde_json::from_str::<serde_json::Value>(text.as_str())
+            .ok()
+            .and_then(|value| value.get("type")?.as_str().map(str::to_owned))
+            .as_deref()
+            == Some("streamUpdated");
+        if is_stream_updated {
+            break text.as_str().to_owned();
+        }
+    };
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/lazer_stream_updated.json");
+    std::fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+        .expect("create fixtures directory");
+    std::fs::write(&path, &raw).expect("write captured fixture");
+    println!("captured streamUpdated fixture -> {}", path.display());
+    println!("{raw}");
+
+    // The captured wire frame must decode through our path as-is.
+    match decode_stream_message(&raw).expect("captured frame should decode") {
+        LazerStreamEvent::Payload(payload) => assert!(!payload.bytes.is_empty()),
+        event => panic!("expected a streamUpdated payload event, got {event:?}"),
+    }
 }
