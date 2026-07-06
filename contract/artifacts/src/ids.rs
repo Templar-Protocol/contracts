@@ -72,7 +72,7 @@ impl ArtifactId {
     }
 
     #[cfg(feature = "embedded-wasm")]
-    pub fn embedded_bytes(self) -> Result<&'static [u8], crate::EmbeddedError> {
+    pub fn embedded_bytes(self) -> &'static [u8] {
         crate::embedded::embedded_bytes(self)
     }
 }

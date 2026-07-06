@@ -134,7 +134,7 @@ const EMBEDDED_ARTIFACTS: &[EmbeddedArtifact] = &[
 // Public API
 // ---------------------------------------------------------------------------
 
-pub(crate) fn embedded_bytes(id: ArtifactId) -> Result<&'static [u8], EmbeddedError> {
+pub(crate) fn embedded_bytes(id: ArtifactId) -> &'static [u8] {
     let artifact = match id {
         ArtifactId::Registry => REGISTRY,
         ArtifactId::Market => MARKET,
@@ -151,7 +151,7 @@ pub(crate) fn embedded_bytes(id: ArtifactId) -> Result<&'static [u8], EmbeddedEr
         ArtifactId::MockRefFinance => MOCK_REF_FINANCE,
         ArtifactId::MockReceiver => MOCK_RECEIVER,
     };
-    Ok(artifact.bytes)
+    artifact.bytes
 }
 
 /// Return the size in bytes of the embedded WASM for every catalogued artifact.
@@ -177,10 +177,7 @@ mod tests {
     #[test]
     fn test_read_embedded_all_artifacts() {
         for artifact in crate::artifact_catalog() {
-            let bytes = artifact
-                .id
-                .embedded_bytes()
-                .unwrap_or_else(|e| panic!("{} has no embedded WASM: {e}", artifact.package_name));
+            let bytes = artifact.id.embedded_bytes();
             assert!(
                 !bytes.is_empty(),
                 "{} has empty embedded WASM",
@@ -223,12 +220,7 @@ mod tests {
         let workspace_dir = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
 
         for artifact in crate::artifact_catalog() {
-            let embedded = artifact.id.embedded_bytes().unwrap_or_else(|e| {
-                panic!(
-                    "Embedded WASM missing for {} ({}): {e}.",
-                    artifact.package_name, artifact.package_name,
-                )
-            });
+            let embedded = artifact.id.embedded_bytes();
 
             let disk_path = artifact.target_near_wasm_path(workspace_dir);
             let disk_bytes = std::fs::read(&disk_path).unwrap_or_else(|e| {
