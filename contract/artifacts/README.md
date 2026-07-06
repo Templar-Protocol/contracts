@@ -38,9 +38,14 @@ When the `embedded-wasm` feature is active, every `include_bytes!` call
 reads from **checked-in files** under `contract/artifacts/res/near/`.
 These blobs are pinned in version control and only updated when the
 prebuild script is re-run and the fresh output is copied into `res/near/`.
-The prebuild script uses `cargo near build reproducible-wasm`; tracked
-source changes must be committed before running it so the checked-in blobs
-can be reproduced byte-for-byte by CI.
+The prebuild script uses this crate's artifact catalog to run `cargo near
+build reproducible-wasm` for every catalog entry. Tracked source changes must
+be committed before running it so CI rebuilds from a commit-pinned source
+snapshot.
+
+Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many reproducible builds
+run concurrently. If unset, the prebuild helper uses a bounded default based on
+available CPU parallelism.
 
 All 14 catalogued artifacts (production and mock) have embedded bytes
 available.
@@ -59,6 +64,12 @@ This runs both the **byte drift check** (compares embedded blobs against
 `target/near`) and the **version drift check** (verifies catalog versions
 match `Cargo.toml`), because `drift_check` is a substring filter matching
 `embedded_drift_check` and `embedded_version_drift_check`.
+
+The byte drift check is strict, with one explicit exception: NEP-330 source
+metadata embeds the current commit hash in GitHub source URLs, so the check
+canonicalizes only those self-referential commit hashes before comparing
+bytes. Any other byte difference still fails and means the checked-in blob is
+stale.
 
 If either test fails, the checked-in bytes or catalog versions need updating.
 Fix by:
