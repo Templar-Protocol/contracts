@@ -2,7 +2,7 @@ use near_sdk::{json_types::U128, serde_json::json, AccountId};
 use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ContractArtifact};
 
 use super::{storage_management::StorageManagementController, ContractController};
 
@@ -23,7 +23,7 @@ impl FtController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract("mock_ft", "mock/ft"))
+        WASM.get_or_init(|| get_contract(ContractArtifact::MockFt))
             .await
     }
 

@@ -13,7 +13,7 @@ use templar_common::{
 use templar_primitives::strnum::SU256;
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ContractArtifact};
 
 use super::ContractController;
 
@@ -31,13 +31,8 @@ impl RedStoneAdapterController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| {
-            get_contract(
-                "templar_redstone_adapter_contract",
-                "contract/redstone-adapter",
-            )
-        })
-        .await
+        WASM.get_or_init(|| get_contract(ContractArtifact::RedstoneAdapter))
+            .await
     }
 
     pub async fn deploy(account: Account, config: Config) -> Self {

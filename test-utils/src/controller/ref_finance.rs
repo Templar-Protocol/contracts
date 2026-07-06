@@ -7,7 +7,7 @@ use near_sdk::{
 use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ContractArtifact};
 
 use super::ContractController;
 
@@ -32,7 +32,7 @@ impl RefFinanceController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract("mock_ref", "mock/ref"))
+        WASM.get_or_init(|| get_contract(ContractArtifact::MockRefFinance))
             .await
     }
 

@@ -8,7 +8,7 @@ use templar_proxy_oracle_near_governance_common::{
 };
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ContractArtifact};
 
 use super::ContractController;
 
@@ -26,13 +26,8 @@ impl GovernanceContractController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| {
-            get_contract(
-                "templar_proxy_oracle_near_governance_contract",
-                "contract/proxy-oracle/near/governance-contract",
-            )
-        })
-        .await
+        WASM.get_or_init(|| get_contract(ContractArtifact::ProxyGovernance))
+            .await
     }
 
     pub async fn deploy(

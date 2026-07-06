@@ -8,7 +8,7 @@ use near_workspaces::{result::ExecutionSuccess, Account, Contract};
 use templar_common::registry::{DeployMode, Deployment};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ContractArtifact};
 
 use super::ContractController;
 
@@ -27,7 +27,7 @@ impl RegistryController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract("templar_registry_contract", "contract/registry"))
+        WASM.get_or_init(|| get_contract(ContractArtifact::Registry))
             .await
     }
 
