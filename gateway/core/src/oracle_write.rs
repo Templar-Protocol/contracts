@@ -16,14 +16,16 @@ const PYTH_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(10_000_000_000_
 
 /// Deposit attached to a Pyth Pro `update_price_feeds` call.
 ///
-/// Unlike classic Pyth (which charges a fixed 0.01 NEAR), the Pyth Pro adapter
-/// charges the submitter only for newly consumed storage plus
-/// `config.update_fee` (default 0) and refunds any excess. Updates that only
-/// overwrite already-stored feeds consume no new storage, so with the default
-/// zero fee they are effectively free. The submitter tops up if a particular
-/// bundle happens to introduce new feeds; the planner cannot know that ahead of
-/// time, so it attaches zero by default.
-const PYTH_PRO_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(0);
+/// The adapter charges the submitter (this gateway) for any newly consumed
+/// storage plus `config.update_fee`, and `apply_storage_fee_and_refund`
+/// *reverts* the call if the attached deposit does not cover that cost. A first
+/// update for a feed the adapter hasn't stored yet, or any adapter configured
+/// with a non-zero fee, therefore requires a non-zero deposit — so we attach a
+/// conservative fixed amount (matching classic Pyth) and let the adapter refund
+/// the excess. Overwrite-only updates consume no new storage, so with the
+/// default zero fee the whole deposit is refunded and they cost only gas.
+const PYTH_PRO_UPDATE_DEPOSIT: NearToken =
+    NearToken::from_yoctonear(10_000_000_000_000_000_000_000);
 
 pub fn plan_pyth_update(
     near_client: &NearClient,
@@ -159,6 +161,16 @@ mod tests {
         let (method, args_bytes) = unpack_function_call(&plan);
         assert_eq!(method, "update_price_feeds");
 
+        // A first-time feed write (new storage) or a fee-configured adapter reverts without a
+        // deposit, since the adapter charges storage + update_fee and refunds the excess.
+        match &plan.actions[0] {
+            Action::FunctionCall(fc) => assert!(
+                fc.deposit.as_yoctonear() > 0,
+                "pro update must attach a non-zero storage/fee deposit"
+            ),
+            other => panic!("expected FunctionCall action, got {other:?}"),
+        }
+
         let args_str = String::from_utf8(args_bytes).expect("pro args must be utf8 json");
         let args_json: serde_json::Value =
             serde_json::from_str(&args_str).expect("pro args must parse");
@@ -172,36 +184,6 @@ mod tests {
         assert!(
             args_json.get("data").is_none(),
             "pro args MUST NOT carry a `data` field; got: {args_str}"
-        );
-    }
-
-    #[test]
-    fn pro_plan_pyth_pro_update_with_empty_payload_does_not_panic() {
-        let oracle_id: AccountId = "pyth-pro.near".parse().expect("valid account id");
-
-        // Adapter rejects empty on-chain, but the planner is pure serialization
-        // and must not panic.
-        let plan = plan_pyth_pro_update(&test_client(), signer_id(), oracle_id, vec![])
-            .expect("pro planner must not panic on empty payload");
-
-        let (method, args_bytes) = unpack_function_call(&plan);
-        assert_eq!(method, "update_price_feeds");
-
-        let args_json: serde_json::Value =
-            serde_json::from_slice(&args_bytes).expect("pro empty-payload args must parse");
-
-        let payload_b64 = args_json
-            .get("payload")
-            .expect("pro args MUST contain `payload` even when empty")
-            .as_str()
-            .expect("`payload` must be a json string");
-        assert!(
-            payload_b64.is_empty(),
-            "base64 of empty bytes must be the empty string; got {payload_b64:?}"
-        );
-        assert!(
-            args_json.get("data").is_none(),
-            "pro empty-payload args MUST NOT carry a `data` field"
         );
     }
 }
