@@ -7,12 +7,8 @@ use crate::rpc::attach_gateway;
 use clap::Parser;
 use jsonrpsee::server::ServerBuilder;
 use templar_gateway_client::NetworkConfigBuilder;
-use templar_gateway_core::{GatewayContext, HasNearClient, SharedOperationStore};
-use templar_gateway_oracle_updates_dispatch::{
-    GatewayContextBuilderOracleExt, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource,
-};
-use templar_gateway_runtime::ManagedSigner;
-use templar_gateway_types::ManagedAccountId;
+use templar_gateway_core::GatewayContext;
+use templar_gateway_oracle_updates_dispatch::GatewayContextBuilderOracleExt;
 use tokio::signal;
 
 use crate::config::Config;
@@ -44,28 +40,10 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     tracing::info!("Pyth Lazer payload source enabled");
-    serve(context, signers, store, config.listen_addr).await
-}
 
-async fn serve<ContextType>(
-    context: ContextType,
-    signers: std::collections::HashMap<ManagedAccountId, ManagedSigner>,
-    store: SharedOperationStore,
-    listen_addr: std::net::SocketAddr,
-) -> anyhow::Result<()>
-where
-    ContextType: HasNearClient
-        + ProvidesPythSource
-        + ProvidesRedStoneSource
-        + ProvidesLazerSource
-        + Clone
-        + Send
-        + Unpin
-        + 'static,
-{
     let service = GatewayService::spawn(context, signers, store).await?;
 
-    let server = ServerBuilder::default().build(listen_addr).await?;
+    let server = ServerBuilder::default().build(config.listen_addr).await?;
     let local_addr = server.local_addr()?;
     let module = attach_gateway(service.clone())?;
     let handle = server.start(module);

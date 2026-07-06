@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -14,41 +13,6 @@ use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
 use url::Url;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LazerChannel {
-    RealTime,
-    FixedRate50Ms,
-    FixedRate200Ms,
-    FixedRate1000Ms,
-}
-
-impl FromStr for LazerChannel {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "real_time" => Ok(Self::RealTime),
-            "fixed_rate@50ms" => Ok(Self::FixedRate50Ms),
-            "fixed_rate@200ms" => Ok(Self::FixedRate200Ms),
-            "fixed_rate@1000ms" => Ok(Self::FixedRate1000Ms),
-            _ => Err(format!(
-                "invalid channel '{s}', must be one of: real_time, fixed_rate@50ms, fixed_rate@200ms, fixed_rate@1000ms",
-            )),
-        }
-    }
-}
-
-impl fmt::Display for LazerChannel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RealTime => write!(f, "real_time"),
-            Self::FixedRate50Ms => write!(f, "fixed_rate@50ms"),
-            Self::FixedRate200Ms => write!(f, "fixed_rate@200ms"),
-            Self::FixedRate1000Ms => write!(f, "fixed_rate@1000ms"),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedSignerConfig {
@@ -141,10 +105,10 @@ pub struct Config {
     )]
     pub pyth_lazer_ws_url: Url,
 
-    /// Pyth Pro/Lazer websocket channel.
-    /// Available options: "real_time", "fixed_rate@50ms", "fixed_rate@200ms", "fixed_rate@1000ms"
+    /// Pyth Pro/Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
+    /// "fixed_rate@200ms", "fixed_rate@1000ms". Validated when the Lazer source is built.
     #[arg(long, env = "PYTH_LAZER_CHANNEL", default_value = "fixed_rate@200ms")]
-    pub pyth_lazer_channel: LazerChannel,
+    pub pyth_lazer_channel: String,
 
     /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
     #[arg(long, env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS", default_value = "5000")]
@@ -195,7 +159,7 @@ impl Config {
             self.pyth_lazer_ws_url.clone(),
             self.pyth_lazer_api_key.clone(),
             LazerSubscriptionConfig {
-                channel: Some(self.pyth_lazer_channel.to_string()),
+                channel: Some(self.pyth_lazer_channel.clone()),
                 max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
             },
         )
@@ -290,6 +254,10 @@ mod tests {
     #[case::zero_max_payload_age(
         &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-max-payload-age-ms", "0"],
         Err("max payload age must be greater than zero")
+    )]
+    #[case::invalid_channel(
+        &["--pyth-lazer-api-key", "secret-token", "--pyth-lazer-channel", "hourly"],
+        Err("unsupported Pyth Lazer channel")
     )]
     fn lazer_config_validation(#[case] extra_args: &[&str], #[case] expected: Result<(), &str>) {
         let mut args = vec!["templar-gateway-service"];

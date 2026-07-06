@@ -412,19 +412,27 @@ impl LazerPayloadSourceInner {
     async fn run(self: Arc<Self>, mut subscribe_rx: mpsc::Receiver<SubscribeRequest>) {
         let mut backoff = Duration::from_secs(1);
         loop {
-            if let Err(error) = self
+            match self
                 .connect_and_stream(&mut subscribe_rx, &mut backoff)
                 .await
             {
-                self.fail_pending_subscriptions("websocket disconnected")
-                    .await;
-                tracing::warn!(%error, "Pyth Lazer stream disconnected");
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+                // The subscribe channel closed: the `LazerPayloadSource` was dropped, so shut the
+                // task down cleanly rather than reconnecting.
+                Ok(()) => break,
+                Err(error) => {
+                    self.fail_pending_subscriptions("websocket disconnected")
+                        .await;
+                    tracing::warn!(%error, "Pyth Lazer stream disconnected");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(MAX_RECONNECT_BACKOFF);
+                }
             }
         }
     }
 
+    /// Connect, stream, and dispatch until the connection ends. Returns `Ok(())` only when the
+    /// subscribe channel closes (graceful shutdown); every disconnect/error returns `Err`, which
+    /// the caller treats as a reconnect trigger.
     async fn connect_and_stream(
         &self,
         subscribe_rx: &mut mpsc::Receiver<SubscribeRequest>,
@@ -474,7 +482,8 @@ impl LazerPayloadSourceInner {
                 }
                 req = subscribe_rx.recv() => {
                     let Some(req) = req else {
-                        break;
+                        // All senders dropped: the source is shutting down.
+                        return Ok(());
                     };
                     self.handle_subscribe_request(&mut stream, req).await?;
                 }
