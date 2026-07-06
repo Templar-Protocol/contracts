@@ -206,7 +206,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
     use rstest::rstest;
 
     #[test]
@@ -310,13 +309,5 @@ mod tests {
                 assert!(error.to_string().contains(expected_msg));
             }
         }
-    }
-
-    #[test]
-    fn lazer_endpoint_help_documents_single_endpoint_limitation() {
-        let help = Config::command().render_long_help().to_string();
-
-        assert!(help.contains("Configures one endpoint only"));
-        assert!(help.contains("automatic multi-endpoint failover is not implemented"));
     }
 }

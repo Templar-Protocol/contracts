@@ -307,13 +307,11 @@ mod tests {
     use templar_gateway_types::common::WriteRequest;
     use thiserror::Error;
 
+    // Every source error is mapped identically to `GatewayError::ExternalService(err.to_string())`,
+    // so one variant exercises that path; the tests differ by entry point, not error kind.
     #[derive(Debug, Clone, Error)]
-    enum FakeError {
-        #[error("fake cache miss")]
-        CacheMiss,
-        #[error("fake stale payload")]
-        StalePayload,
-    }
+    #[error("fake lazer source unavailable")]
+    struct FakeError;
 
     #[derive(Clone)]
     struct FakeLazerSource {
@@ -492,7 +490,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_lazer_propagates_cache_miss() {
+    async fn update_lazer_propagates_source_error() {
         let ctx = TestCtx {
             near_client: test_client(),
             pyth_source: FakePythSource {
@@ -502,7 +500,7 @@ mod tests {
                 payload: Vec::new(),
             },
             lazer_source: FakeLazerSource {
-                outcome: Err(FakeError::CacheMiss),
+                outcome: Err(FakeError),
             },
         };
         let request = WriteRequest {
@@ -516,11 +514,11 @@ mod tests {
 
         let error = <Dispatch as PlanWrite<UpdateLazer, TestCtx>>::plan(request, ctx)
             .await
-            .expect_err("a Lazer cache miss must surface as a plan error");
+            .expect_err("a Lazer source error must surface as a plan error");
 
         assert!(
-            matches!(error, GatewayError::ExternalService(ref msg) if msg.contains("cache miss")),
-            "expected ExternalService carrying the cache-miss detail, got {error:?}"
+            matches!(error, GatewayError::ExternalService(ref msg) if msg.contains("unavailable")),
+            "expected ExternalService carrying the source-error detail, got {error:?}"
         );
     }
 
@@ -600,7 +598,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_prices_lazer_stale_is_hard_error() {
+    async fn update_prices_lazer_source_error_is_hard_error() {
         let ctx = TestCtx {
             near_client: test_client(),
             pyth_source: FakePythSource {
@@ -610,7 +608,7 @@ mod tests {
                 payload: Vec::new(),
             },
             lazer_source: FakeLazerSource {
-                outcome: Err(FakeError::StalePayload),
+                outcome: Err(FakeError),
             },
         };
         let lazer_oracle: AccountId = "pyth-pro.near".parse().unwrap();
@@ -618,11 +616,11 @@ mod tests {
 
         let error = plan_grouped_updates(&ctx, signer_id(), requests)
             .await
-            .expect_err("a stale Lazer payload must be a hard plan error");
+            .expect_err("a Lazer source error must be a hard plan error");
 
         assert!(
-            matches!(error, GatewayError::ExternalService(ref msg) if msg.contains("stale")),
-            "expected ExternalService carrying the stale detail, got {error:?}"
+            matches!(error, GatewayError::ExternalService(ref msg) if msg.contains("unavailable")),
+            "expected ExternalService carrying the source-error detail, got {error:?}"
         );
     }
 }

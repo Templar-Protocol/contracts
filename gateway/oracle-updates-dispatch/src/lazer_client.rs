@@ -167,7 +167,8 @@ struct SubscriptionInfo {
 
 #[derive(Debug)]
 struct TaskGuard {
-    task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    /// `None` only for the `#[cfg(test)] from_cached` seam, which runs no background task.
+    task: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -197,16 +198,10 @@ impl LazerPayloadSource {
         let (subscribe_tx, subscribe_rx) = mpsc::channel(32);
         let task_inner = Arc::clone(&inner);
         let handle = tokio::spawn(async move { task_inner.run(subscribe_rx).await });
-        let task = Arc::new(TaskGuard {
-            task: std::sync::Mutex::new(None),
-        });
-        if let Ok(mut slot) = task.task.lock() {
-            *slot = Some(handle);
-        }
         Self {
             inner,
             subscribe_tx,
-            _task: task,
+            _task: Arc::new(TaskGuard { task: Some(handle) }),
         }
     }
 
@@ -232,19 +227,15 @@ impl LazerPayloadSource {
                 subscriptions: RwLock::new(subscriptions),
             }),
             subscribe_tx,
-            _task: Arc::new(TaskGuard {
-                task: std::sync::Mutex::new(None),
-            }),
+            _task: Arc::new(TaskGuard { task: None }),
         }
     }
 }
 
 impl Drop for TaskGuard {
     fn drop(&mut self) {
-        if let Ok(mut task) = self.task.lock() {
-            if let Some(task) = task.take() {
-                task.abort();
-            }
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 }
