@@ -1,0 +1,33 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "templar-contract-artifacts"
+publish = false
+repository.workspace = true
+version = "0.1.0"
+description = "Canonical contract artifact IDs, metadata, and byte-loading helpers for Templar Protocol smart contracts"
+
+[features]
+default = []
+# workspace-loader: read WASM bytes from target/near/{name}/{name}.wasm at runtime.
+workspace-loader = ["dep:cargo_metadata"]
+# embedded-wasm: include_bytes!-based blobs for each contract.
+embedded-wasm = []
+# clap: optional parsing helpers for command-line argument handling.
+clap = ["dep:clap"]
+
+[dependencies]
+cargo_metadata = { version = "0.23", optional = true }
+clap = { workspace = true, optional = true }
+hex.workspace = true
+schemars.workspace = true
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

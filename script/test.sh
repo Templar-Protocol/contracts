@@ -5,6 +5,10 @@ SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/prebuild-test-contracts.sh"
 
+# Run artifact byte and version drift checks after prebuild to catch stale
+# embedded WASM blobs and outdated catalog versions before the main test suite.
+cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --ignored --nocapture
+
 # `#[sqlx::test]` reads DATABASE_URL at runtime to provision per-test databases.
 # Respect a caller-provided value; only when it is unset do we boot the local
 # compose Postgres (waiting until it is healthy) and point at it. This avoids

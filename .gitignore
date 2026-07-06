@@ -29,6 +29,7 @@ _site/
 
 # fuzz artifacts
 **/artifacts
+!contract/artifacts/
 **/corpus
 **/fuzz*.log
 **/coverage
