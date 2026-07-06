@@ -74,6 +74,8 @@ jobs:
               - 'contract/market/tests/**'
               - 'contract/proxy-oracle/near/**/src/**'
               - 'contract/proxy-oracle/near/**/tests/**'
+              - 'contract/pyth-pro/contract/src/**'
+              - 'contract/pyth-pro/contract/tests/**'
               - 'contract/redstone-adapter/src/**'
               - 'contract/redstone-adapter/tests/**'
               - 'contract/registry/src/**'
