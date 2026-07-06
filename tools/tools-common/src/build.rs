@@ -1,8 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use templar_contract_artifacts::{
-    find_by_id, find_by_package_name, format_version_key, load_artifact_bytes, ContractArtifact,
+    find_by_id, find_by_package_name, format_version_key, ContractArtifact,
 };
 use templar_gateway_types::Version;
 
@@ -27,24 +27,23 @@ fn get_package_from_metadata<'a>(
 }
 
 fn get_contract_wasm_bytes(
-    workspace_dir: &Path,
     metadata: &cargo_metadata::Metadata,
     package: &cargo_metadata::Package,
 ) -> anyhow::Result<Vec<u8>> {
-    if let Some(artifact) = find_by_package_name(package.name.as_str()) {
-        return load_artifact_bytes(workspace_dir, artifact)
-            .with_context(|| format!("read contract WASM for {}", package.name));
-    }
+    let target_name = find_by_package_name(package.name.as_str()).map_or_else(
+        || package.name.replace('-', "_"),
+        |artifact| artifact.cargo_target_name.to_owned(),
+    );
+    let path = target_near_wasm_path(metadata.target_directory.as_std_path(), &target_name);
 
-    let name_in_path = package.name.replace('-', "_");
+    std::fs::read(&path).with_context(|| format!("read contract WASM from {}", path.display()))
+}
 
-    let path = metadata
-        .target_directory
+fn target_near_wasm_path(target_dir: &Path, target_name: &str) -> PathBuf {
+    target_dir
         .join("near")
-        .join(name_in_path.as_str())
-        .join(format!("{name_in_path}.wasm"));
-
-    std::fs::read(&path).with_context(|| format!("read contract WASM from {}", path.as_str()))
+        .join(target_name)
+        .join(format!("{target_name}.wasm"))
 }
 
 fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
@@ -82,7 +81,7 @@ pub fn load_contract<T>(
     let metadata = get_metadata(workspace_dir)?;
     let package = get_package_from_metadata(&metadata, cargo_package)?;
 
-    let bytes = get_contract_wasm_bytes(workspace_dir, &metadata, package)?;
+    let bytes = get_contract_wasm_bytes(&metadata, package)?;
     Ok(loaded_contract(package, bytes))
 }
 
@@ -117,7 +116,7 @@ pub fn build_contract<T>(
         workspace_dir.display()
     );
 
-    let bytes = get_contract_wasm_bytes(workspace_dir, &metadata, package)?;
+    let bytes = get_contract_wasm_bytes(&metadata, package)?;
     Ok(loaded_contract(package, bytes))
 }
 
@@ -127,4 +126,19 @@ pub fn build_contract_artifact<T>(
 ) -> anyhow::Result<LoadedContract<T>> {
     let artifact_metadata = find_by_id(artifact)?;
     build_contract(workspace_dir, artifact_metadata.package_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_near_wasm_path_uses_resolved_target_directory() {
+        let path = target_near_wasm_path(Path::new("/custom-target"), "templar_market_contract");
+
+        assert_eq!(
+            path,
+            Path::new("/custom-target/near/templar_market_contract/templar_market_contract.wasm"),
+        );
+    }
 }
