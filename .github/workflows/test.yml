@@ -67,6 +67,9 @@ jobs:
             near_integration:
               - '.config/nextest.toml'
               - 'common/src/**'
+              - 'contract/artifacts/Cargo.toml'
+              - 'contract/artifacts/res/**'
+              - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
               - 'contract/market/tests/**'
               - 'contract/proxy-oracle/near/**/src/**'
@@ -425,7 +428,7 @@ jobs:
           tool: nextest
 
       - name: Install cargo-near
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
       - name: Run full workspace tests
         env:
