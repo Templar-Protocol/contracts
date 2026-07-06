@@ -20,6 +20,7 @@ templar-gateway-runtime.workspace = true
 templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true
+templar-pyth-pro-adapter-contract.workspace = true
 templar-proxy-oracle-near-governance-common.workspace = true
 templar-universal-account.workspace = true
 test-utils.workspace = true

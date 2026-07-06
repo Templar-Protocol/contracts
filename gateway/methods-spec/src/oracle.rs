@@ -5,15 +5,8 @@ use templar_common::oracle::{
     redstone,
 };
 use templar_gateway_macros::MethodSpec;
+pub use templar_gateway_types::OracleContractKind;
 use templar_proxy_oracle_near_common::request::OracleRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OracleContractKind {
-    Direct,
-    Lst { pyth_id: near_account_id::AccountId },
-    Proxy,
-}
 
 /// Get update dependencies for a price.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

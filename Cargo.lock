@@ -13531,6 +13531,7 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+ "templar-pyth-pro-adapter-contract",
  "templar-universal-account",
  "test-utils",
  "tokio",

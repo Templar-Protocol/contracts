@@ -147,7 +147,7 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
                 signer_account_id: stack.harness.gateway_signer_account_id.clone(),
                 idempotency_key: None,
                 body: oracle_updates::UpdatePrices {
-                    oracle_id: proxy_oracle_id,
+                    oracle_id: proxy_oracle_id.clone(),
                     price_ids: vec![price_id],
                 },
             },
@@ -156,15 +156,79 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
         .await
         .expect("UpdatePrices plan for a Lazer-backed proxy must succeed");
 
+    // A proxy `updatePrices` plans the underlying write(s) first, then re-aggregates the
+    // proxy's cached prices: [Lazer adapter write, proxy re-aggregation].
+    assert_eq!(
+        plan.steps.len(),
+        2,
+        "a Lazer-backed proxy feed must plan the underlying Lazer write plus the proxy re-aggregation"
+    );
+    let lazer_step = &plan.steps[0];
+    assert_eq!(
+        lazer_step.receiver_id, lazer_oracle_id,
+        "the underlying write must target the Lazer (Pyth Pro) adapter, not the proxy oracle"
+    );
+    let (method, args_bytes) = unpack_function_call(lazer_step);
+    assert_eq!(method, "update_price_feeds");
+    assert_pyth_pro_adapter_args(&args_bytes, &payload);
+
+    let reaggregation_step = &plan.steps[1];
+    assert_eq!(
+        reaggregation_step.receiver_id, proxy_oracle_id,
+        "the trailing re-aggregation must target the proxy oracle"
+    );
+    let (method, _) = unpack_function_call(reaggregation_step);
+    assert_eq!(method, "update_prices");
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn oracle_update_prices_routes_direct_pyth_pro_adapter_through_lazer_source() -> Result<()> {
+    // A Pyth Pro adapter used *directly* as a market oracle answers the classic Pyth
+    // view ABI, so it must be detected as Pyth Pro (not classic Pyth) and its market
+    // `PriceIdentifier` resolved through the adapter's feed map to a Lazer feed — else the
+    // plan would wrongly emit a classic-Pyth `{data}` write the adapter's ABI rejects.
+    let payload = vec![0x5A_u8; 32];
+    let stack = TestStack::start_with_lazer(
+        "https://hermes-unused.example.test".parse()?,
+        FakeLazerSource::with_payload(payload.clone()),
+    )
+    .await?;
+
+    let adapter_id: near_account_id::AccountId = "pyth-pro-direct.near".parse()?;
+    let price_id = PriceIdentifier([0x44; 32]);
+    let feed_id = 7u32;
+    stack
+        .harness
+        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, feed_id)
+        .await?;
+
+    let plan =
+        <OracleUpdatesDispatch as PlanWrite<oracle_updates::UpdatePrices, TestContext>>::plan(
+            WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                body: oracle_updates::UpdatePrices {
+                    oracle_id: adapter_id.clone(),
+                    price_ids: vec![price_id],
+                },
+            },
+            stack.context.clone(),
+        )
+        .await
+        .expect("UpdatePrices plan for a direct Pyth Pro adapter must succeed");
+
     assert_eq!(
         plan.steps.len(),
         1,
-        "a single Lazer-backed feed must plan exactly one step"
+        "a direct Pyth Pro adapter with one mapped feed must plan exactly one step"
     );
     let step = &plan.steps[0];
     assert_eq!(
-        step.receiver_id, lazer_oracle_id,
-        "the planned write must target the Lazer (Pyth Pro) adapter, not the proxy oracle"
+        step.receiver_id, adapter_id,
+        "the planned write must target the Pyth Pro adapter"
     );
     let (method, args_bytes) = unpack_function_call(step);
     assert_eq!(method, "update_price_feeds");

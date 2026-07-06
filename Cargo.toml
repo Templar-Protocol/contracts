@@ -147,6 +147,7 @@ templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common
 templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
 templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common" }
 templar-proxy-oracle-near-governance-contract = { path = "./contract/proxy-oracle/near/governance-contract" }
+templar-pyth-pro-adapter-contract = { path = "./contract/pyth-pro/contract" }
 templar-pyth-pro-verifier = { path = "./contract/pyth-pro/verifier" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }

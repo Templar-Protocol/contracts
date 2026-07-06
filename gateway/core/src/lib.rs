@@ -8,6 +8,7 @@ mod executor;
 mod near_client_provider;
 mod operation;
 mod operation_driver;
+mod oracle_resolution;
 mod oracle_write;
 mod payload;
 mod planning;
@@ -32,6 +33,7 @@ pub use operation::{
     SubmittedCurrentStep, SucceededStep,
 };
 pub use operation_driver::{request_fingerprint, OperationDriver};
+pub use oracle_resolution::{get_proxy, query_oracle_kind, resolve_price_dependencies};
 pub use oracle_write::{plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices};
 pub use payload::OraclePayloadSource;
 pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};

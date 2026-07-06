@@ -1,11 +1,13 @@
 use near_account_id::AccountId;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::{common::Pagination, contract::ContractKind};
 use templar_universal_account::authentication::ed25519;
 
 use crate::{
     client::{
         cache::load_cached, lst_oracle::ListTransformersArgs, proxy_oracle::ListProxiesArgs,
-        pyth_oracle::ListEmaPricesUnsafeArgs, universal_account::UaGetKeyArgs,
+        pyth_oracle::ListEmaPricesUnsafeArgs, pyth_pro_oracle::GetFeedMappingArgs,
+        universal_account::UaGetKeyArgs,
     },
     GatewayError, GatewayResult, HasNearClient,
 };
@@ -49,6 +51,13 @@ async fn detect_contract_kind<C: HasNearClient>(
     }
     if try_lst_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::LstOracle);
+    }
+    // Before RedStone and Pyth: a Pyth Pro adapter answers RedStone's `get_config`
+    // probe by name (deserialization would then error, not report MethodNotFound) and
+    // the classic Pyth view probe, so it must be distinguished first via its unique
+    // Lazer feed-mapping view.
+    if try_pyth_pro_oracle_kind(ctx, contract_id.clone()).await? {
+        return Ok(ContractKind::PythProOracle);
     }
     if try_redstone_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::RedstoneOracle);
@@ -165,6 +174,23 @@ async fn try_pyth_oracle_kind<C: HasNearClient>(
         ctx.near_client()
             .pyth_oracle(contract_id)
             .list_ema_prices_unsafe(ListEmaPricesUnsafeArgs { price_ids: vec![] })
+            .await,
+    )
+}
+
+async fn try_pyth_pro_oracle_kind<C: HasNearClient>(
+    ctx: &C,
+    contract_id: AccountId,
+) -> GatewayResult<bool> {
+    // `get_feed_mapping` is unique to the Pyth Pro adapter (classic Pyth / other
+    // oracles return MethodNotFound); the probe id is irrelevant, an unmapped feed
+    // still returns `Ok(None)`.
+    probe_kind(
+        ctx.near_client()
+            .pyth_pro_oracle(contract_id)
+            .get_feed_mapping(GetFeedMappingArgs {
+                price_identifier: PriceIdentifier([0u8; 32]),
+            })
             .await,
     )
 }

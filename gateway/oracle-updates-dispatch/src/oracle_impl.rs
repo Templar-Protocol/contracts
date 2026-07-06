@@ -4,21 +4,15 @@ use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::oracle::{pyth::PriceIdentifier, redstone};
 use templar_gateway_core::{
-    client::{
-        lst_oracle::GetTransformerArgs,
-        proxy_oracle::{GetProxyArgs, UpdatePricesArgs},
-        ContractWriteOptions,
-    },
-    plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices, query_contract_kind,
-    GatewayError, GatewayResult, HasNearClient, OperationPlan, OraclePayloadSource, PlanWrite,
+    client::{proxy_oracle::UpdatePricesArgs, ContractWriteOptions},
+    plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices, query_oracle_kind,
+    resolve_price_dependencies, GatewayError, GatewayResult, HasNearClient, OperationPlan,
+    OraclePayloadSource, PlanWrite,
 };
-use templar_gateway_methods_spec::oracle::OracleContractKind;
 use templar_gateway_oracle_updates_spec::oracle::{
     UpdateLazer, UpdatePrices, UpdatePyth, UpdateRedStone,
 };
-use templar_gateway_types::{ContractKind, ManagedAccountId};
-use templar_proxy_oracle_kernel::proxy;
-use templar_proxy_oracle_near_common::input::Source;
+use templar_gateway_types::{ManagedAccountId, OracleContractKind};
 use templar_proxy_oracle_near_common::request::{LazerRequest, OracleRequest};
 
 use crate::{Dispatch, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
@@ -226,6 +220,10 @@ where
     Ok(OperationPlan { steps })
 }
 
+/// Resolve every requested `price_id` on `oracle_id` into the underlying source updates,
+/// returning the oracle's kind alongside so the caller can append the proxy re-aggregation
+/// step. Delegates to the shared `gateway_core` resolution so writes agree with reads and
+/// `oracle.getPriceResolutionDependencies` on how each oracle resolves.
 async fn resolve_update_requests<C: HasNearClient>(
     ctx: &C,
     oracle_id: AccountId,
@@ -235,86 +233,10 @@ async fn resolve_update_requests<C: HasNearClient>(
     let mut requests = BTreeSet::new();
 
     for &price_id in price_ids {
-        requests.extend(resolve_dependencies(ctx, oracle_id.clone(), price_id, &kind).await?);
+        requests.extend(resolve_price_dependencies(ctx, oracle_id.clone(), price_id, &kind).await?);
     }
 
     Ok((kind, requests.into_iter().collect()))
-}
-
-async fn get_proxy<C: HasNearClient>(
-    ctx: &C,
-    oracle_id: AccountId,
-    id: PriceIdentifier,
-) -> GatewayResult<Option<proxy::Proxy<Source>>> {
-    ctx.near_client()
-        .proxy_oracle(oracle_id)
-        .cached_get_proxy(GetProxyArgs { id })
-        .await
-}
-
-async fn query_oracle_kind<C: HasNearClient>(
-    ctx: &C,
-    oracle_id: AccountId,
-) -> GatewayResult<OracleContractKind> {
-    match query_contract_kind(ctx, oracle_id.clone()).await? {
-        ContractKind::PythOracle | ContractKind::RedstoneOracle => Ok(OracleContractKind::Direct),
-        ContractKind::ProxyOracle => Ok(OracleContractKind::Proxy),
-        ContractKind::LstOracle => {
-            let pyth_id = ctx
-                .near_client()
-                .lst_oracle(oracle_id)
-                .cached_oracle_id()
-                .await?;
-            Ok(OracleContractKind::Lst { pyth_id })
-        }
-        other => Err(GatewayError::NearQuery(format!(
-            "contract kind {other:?} is not an oracle contract"
-        ))),
-    }
-}
-
-async fn resolve_dependencies<C: HasNearClient>(
-    ctx: &C,
-    oracle_id: AccountId,
-    price_id: PriceIdentifier,
-    kind: &OracleContractKind,
-) -> GatewayResult<Vec<OracleRequest>> {
-    match kind.clone() {
-        OracleContractKind::Direct => Ok(vec![OracleRequest::pyth(oracle_id, price_id)]),
-        OracleContractKind::Lst { pyth_id } => {
-            let transformer = ctx
-                .near_client()
-                .lst_oracle(oracle_id)
-                .cached_get_transformer(GetTransformerArgs {
-                    price_identifier: price_id,
-                })
-                .await?;
-            Ok(vec![transformer.map_or_else(
-                || OracleRequest::pyth(pyth_id.clone(), price_id),
-                |transformer| OracleRequest::pyth(pyth_id.clone(), transformer.price_id),
-            )])
-        }
-        OracleContractKind::Proxy => {
-            let proxy = get_proxy(ctx, oracle_id, price_id).await?.ok_or_else(|| {
-                GatewayError::NearQuery("price identifier not found on proxy oracle".to_owned())
-            })?;
-            let requests = proxy
-                .sources()
-                .map(|source| match source {
-                    Source::Request(request) => request.clone(),
-                    Source::Transformer(transformer) => transformer.request.clone(),
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            if requests.is_empty() {
-                return Err(GatewayError::NearQuery(
-                    "proxy oracle returned empty proxy definition".to_owned(),
-                ));
-            }
-            Ok(requests)
-        }
-    }
 }
 
 #[cfg(test)]
