@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     env,
     num::NonZeroUsize,
     path::{Path, PathBuf},
@@ -7,7 +7,9 @@ use std::{
 };
 
 use clap::Parser;
-use templar_contract_artifacts::{artifact_catalog, manifest_path, ArtifactMetadata};
+use templar_contract_artifacts::{
+    artifact_catalog, manifest_path, parse_artifact_id, ArtifactMetadata, ContractArtifact,
+};
 
 const JOBS_ENV: &str = "PREBUILD_TEST_CONTRACTS_JOBS";
 const DEFAULT_MAX_JOBS: usize = 4;
@@ -19,11 +21,49 @@ struct Args {
 
     #[arg(long, value_parser = parse_jobs)]
     jobs: Option<NonZeroUsize>,
+
+    #[arg(
+        long,
+        help = "Use non-reproducible debug builds instead of reproducible builds"
+    )]
+    debug: bool,
+
+    #[arg(
+        long = "artifact",
+        value_name = "ARTIFACT",
+        value_parser = parse_artifact_id,
+        value_delimiter = ',',
+        help = "Artifact to build; repeat or separate values with commas"
+    )]
+    artifacts: Vec<ContractArtifact>,
 }
 
 struct RunningBuild {
     artifact: &'static ArtifactMetadata,
     child: std::process::Child,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildMode {
+    Reproducible,
+    Debug,
+}
+
+impl BuildMode {
+    fn from_debug(debug: bool) -> Self {
+        if debug {
+            Self::Debug
+        } else {
+            Self::Reproducible
+        }
+    }
+
+    const fn cargo_near_command(self) -> &'static str {
+        match self {
+            Self::Reproducible => "reproducible-wasm",
+            Self::Debug => "non-reproducible-wasm",
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -32,8 +72,10 @@ fn main() -> ExitCode {
         .jobs
         .or_else(jobs_from_env)
         .unwrap_or_else(default_jobs);
+    let build_mode = BuildMode::from_debug(args.debug);
+    let artifacts = selected_artifacts(&args.artifacts);
 
-    match prebuild_all(&args.workspace_root, jobs) {
+    match prebuild_all(&args.workspace_root, jobs, build_mode, artifacts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
     }
@@ -58,8 +100,25 @@ fn default_jobs() -> NonZeroUsize {
     NonZeroUsize::new(available.clamp(1, DEFAULT_MAX_JOBS)).unwrap_or(NonZeroUsize::MIN)
 }
 
-fn prebuild_all(workspace_root: &Path, jobs: NonZeroUsize) -> Result<(), ()> {
-    let mut pending = artifact_catalog().iter().collect::<VecDeque<_>>();
+fn selected_artifacts(selection: &[ContractArtifact]) -> Vec<&'static ArtifactMetadata> {
+    if selection.is_empty() {
+        return artifact_catalog().iter().collect();
+    }
+
+    let selected = selection.iter().copied().collect::<HashSet<_>>();
+    artifact_catalog()
+        .iter()
+        .filter(|artifact| selected.contains(&artifact.id))
+        .collect()
+}
+
+fn prebuild_all(
+    workspace_root: &Path,
+    jobs: NonZeroUsize,
+    build_mode: BuildMode,
+    artifacts: Vec<&'static ArtifactMetadata>,
+) -> Result<(), ()> {
+    let mut pending = artifacts.into_iter().collect::<VecDeque<_>>();
     let mut running = Vec::<RunningBuild>::new();
     let mut failed = false;
 
@@ -69,7 +128,7 @@ fn prebuild_all(workspace_root: &Path, jobs: NonZeroUsize) -> Result<(), ()> {
                 break;
             };
 
-            match spawn_build(workspace_root, artifact) {
+            match spawn_build(workspace_root, artifact, build_mode) {
                 Ok(child) => running.push(RunningBuild { artifact, child }),
                 Err(error) => {
                     eprintln!("failed to start {}: {error}", artifact.package_name);
@@ -108,19 +167,26 @@ fn prebuild_all(workspace_root: &Path, jobs: NonZeroUsize) -> Result<(), ()> {
 fn spawn_build(
     workspace_root: &Path,
     artifact: &'static ArtifactMetadata,
+    build_mode: BuildMode,
 ) -> std::io::Result<std::process::Child> {
     let manifest = workspace_root
         .join(manifest_path(artifact))
         .join("Cargo.toml");
 
     eprintln!(
-        "building {} from {}",
+        "building {} with {} from {}",
         artifact.package_name,
+        build_mode.cargo_near_command(),
         manifest.display()
     );
 
     Command::new("cargo")
-        .args(["near", "build", "reproducible-wasm", "--manifest-path"])
+        .args([
+            "near",
+            "build",
+            build_mode.cargo_near_command(),
+            "--manifest-path",
+        ])
         .arg(manifest)
         .current_dir(workspace_root)
         .spawn()
@@ -142,79 +208,5 @@ fn status_code(status: ExitStatus) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::ffi::OsString;
-
-    use super::*;
-
-    #[test]
-    fn parse_jobs_rejects_zero() {
-        assert!(parse_jobs("0").is_err());
-    }
-
-    #[test]
-    fn parse_jobs_accepts_positive_integer() {
-        let jobs = match parse_jobs("2") {
-            Ok(jobs) => jobs,
-            Err(error) => panic!("expected valid jobs value: {error}"),
-        };
-
-        assert_eq!(jobs.get(), 2);
-    }
-
-    #[test]
-    fn default_jobs_is_bounded_and_nonzero() {
-        let jobs = default_jobs().get();
-        assert!((1..=DEFAULT_MAX_JOBS).contains(&jobs));
-    }
-
-    #[test]
-    fn catalog_is_prebuild_source_of_truth() {
-        assert_eq!(artifact_catalog().len(), 14);
-    }
-
-    #[test]
-    fn manifest_path_uses_catalog_source_path() {
-        let Some(artifact) = artifact_catalog()
-            .iter()
-            .find(|artifact| artifact.package_name == "mock-ft")
-        else {
-            panic!("mock-ft artifact should be present in catalog");
-        };
-        let path = Path::new("/ws")
-            .join(manifest_path(artifact))
-            .join("Cargo.toml");
-
-        assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
-    }
-
-    #[test]
-    fn status_code_formats_exit_code() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "exit 7"]);
-        let status = match command.status() {
-            Ok(status) => status,
-            Err(error) => panic!("expected shell command to run: {error}"),
-        };
-
-        assert_eq!(status_code(status), "7");
-    }
-
-    #[test]
-    fn args_accepts_jobs_flag() {
-        let args = match Args::try_parse_from([
-            OsString::from("prebuild-test-contracts"),
-            OsString::from("--jobs"),
-            OsString::from("3"),
-        ]) {
-            Ok(args) => args,
-            Err(error) => panic!("expected args to parse: {error}"),
-        };
-
-        let Some(jobs) = args.jobs else {
-            panic!("--jobs should populate jobs");
-        };
-
-        assert_eq!(jobs.get(), 3);
-    }
-}
+#[path = "prebuild_test_contracts/tests.rs"]
+mod tests;

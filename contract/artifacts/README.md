@@ -47,6 +47,19 @@ Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many reproducible builds
 run concurrently. If unset, the prebuild helper uses a bounded default based on
 available CPU parallelism.
 
+By default, the prebuild helper runs reproducible builds for every catalog
+entry. For local iteration, pass `--debug` to use `cargo near build
+non-reproducible-wasm`, and pass `--artifact <name>` to rebuild a subset. The
+artifact option can be repeated or comma-separated:
+
+```bash
+./script/prebuild-test-contracts.sh --artifact market
+./script/prebuild-test-contracts.sh --artifact market,mock-ft
+./script/prebuild-test-contracts.sh --debug --artifact mock-ft --artifact mock-mt
+```
+
+Checked-in embedded blobs should still be refreshed from reproducible builds.
+
 All 14 catalogued artifacts (production and mock) have embedded bytes
 available.
 

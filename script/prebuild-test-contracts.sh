@@ -2,7 +2,12 @@
 set -ex
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && cd .. && pwd)"
+PREBUILD_ARGS=()
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  PREBUILD_ARGS=("$@")
+fi
 
 cd "$ROOT_DIR"
-cargo run -p templar-contract-artifacts --features workspace-loader,clap --bin prebuild-test-contracts -- --workspace-root "$ROOT_DIR" 1>&2
+cargo run -p templar-contract-artifacts --features workspace-loader,clap --bin prebuild-test-contracts -- --workspace-root "$ROOT_DIR" "${PREBUILD_ARGS[@]}" 1>&2
 export TEST_CONTRACTS_PREBUILT=1
