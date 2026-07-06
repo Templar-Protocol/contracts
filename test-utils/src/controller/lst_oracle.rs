@@ -4,7 +4,7 @@ use templar_common::oracle::pyth::{OracleResponse, PriceIdentifier};
 use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract, ContractArtifact};
+use crate::{define, get_contract, ArtifactId};
 
 use super::ContractController;
 
@@ -22,7 +22,7 @@ impl LstOracleController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract(ContractArtifact::LstOracle))
+        WASM.get_or_init(|| get_contract(ArtifactId::LstOracle))
             .await
     }
 

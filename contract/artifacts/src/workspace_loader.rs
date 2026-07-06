@@ -2,7 +2,7 @@
 //!
 //! Enabled via the `workspace-loader` feature.
 
-use crate::{target_near_wasm_path, ArtifactMetadata};
+use crate::ArtifactMetadata;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -56,6 +56,23 @@ pub enum BuildContractError {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildMode {
+    Reproducible,
+    #[cfg(feature = "clap")]
+    Debug,
+}
+
+impl BuildMode {
+    pub const fn cargo_near_command(self) -> &'static str {
+        match self {
+            Self::Reproducible => "reproducible-wasm",
+            #[cfg(feature = "clap")]
+            Self::Debug => "non-reproducible-wasm",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cargo metadata helpers
 // ---------------------------------------------------------------------------
@@ -102,7 +119,7 @@ pub fn load_artifact_bytes(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
 ) -> Result<Vec<u8>, LoadError> {
-    let path = target_near_wasm_path(workspace_dir, artifact);
+    let path = artifact.target_near_wasm_path(workspace_dir);
     std::fs::read(&path).map_err(|source| LoadError::ReadWasm { path, source })
 }
 
@@ -129,14 +146,19 @@ pub fn build_artifact(
     workspace_dir: &Path,
     package_name: &str,
 ) -> Result<Vec<u8>, BuildContractError> {
+    build_artifact_with_mode(workspace_dir, package_name, BuildMode::Reproducible)
+}
+
+pub fn build_artifact_with_mode(
+    workspace_dir: &Path,
+    package_name: &str,
+    build_mode: BuildMode,
+) -> Result<Vec<u8>, BuildContractError> {
     let metadata = get_metadata(workspace_dir)?;
     let package = find_package(&metadata, package_name)
         .ok_or_else(|| BuildContractError::PackageNotFound(package_name.to_string()))?;
 
-    let status = std::process::Command::new("cargo")
-        .args(["near", "build", "reproducible-wasm"])
-        .args(["--manifest-path", package.manifest_path.as_str()])
-        .current_dir(workspace_dir)
+    let status = build_command(workspace_dir, package.manifest_path.as_str(), build_mode)
         .status()
         .map_err(BuildContractError::Io)?;
 
@@ -149,6 +171,36 @@ pub fn build_artifact(
     let bytes =
         std::fs::read(&path).map_err(|source| BuildContractError::ReadWasm { path, source })?;
     Ok(bytes)
+}
+
+#[cfg(feature = "clap")]
+pub fn spawn_artifact_build(
+    workspace_dir: &Path,
+    artifact: &ArtifactMetadata,
+    build_mode: BuildMode,
+) -> std::io::Result<std::process::Child> {
+    let manifest = workspace_dir
+        .join(artifact.manifest_path())
+        .join("Cargo.toml");
+    build_command(workspace_dir, manifest, build_mode).spawn()
+}
+
+fn build_command(
+    workspace_dir: &Path,
+    manifest_path: impl AsRef<std::ffi::OsStr>,
+    build_mode: BuildMode,
+) -> std::process::Command {
+    let mut command = std::process::Command::new("cargo");
+    command
+        .args([
+            "near",
+            "build",
+            build_mode.cargo_near_command(),
+            "--manifest-path",
+        ])
+        .arg(manifest_path)
+        .current_dir(workspace_dir);
+    command
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +222,7 @@ mod tests {
             .iter()
             .find(|a| a.package_name == "mock-ft")
             .unwrap();
-        let path_from_helper = target_near_wasm_path(Path::new("/ws"), artifact);
+        let path_from_helper = artifact.target_near_wasm_path(Path::new("/ws"));
 
         assert_eq!(
             path_from_helper,
@@ -187,9 +239,22 @@ mod tests {
             panic!("mock-ft artifact should be present in catalog");
         };
         let path = Path::new("/ws")
-            .join(crate::manifest_path(artifact))
+            .join(artifact.manifest_path())
             .join("Cargo.toml");
 
         assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
+    }
+
+    #[test]
+    fn test_build_mode_commands() {
+        assert_eq!(
+            BuildMode::Reproducible.cargo_near_command(),
+            "reproducible-wasm"
+        );
+        #[cfg(feature = "clap")]
+        assert_eq!(
+            BuildMode::Debug.cargo_near_command(),
+            "non-reproducible-wasm"
+        );
     }
 }

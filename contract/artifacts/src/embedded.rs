@@ -28,7 +28,7 @@
 //! The CI script `./script/test.sh` runs this automatically after prebuilding
 //! contracts.
 
-use crate::{ArtifactMetadata, ContractArtifact};
+use crate::ArtifactId;
 use thiserror::Error;
 
 /// Errors when reading embedded WASM bytes.
@@ -40,121 +40,118 @@ pub enum EmbeddedError {
 }
 
 struct EmbeddedArtifact {
-    id: ContractArtifact,
     name: &'static str,
     bytes: &'static [u8],
 }
 
+const REGISTRY: EmbeddedArtifact = EmbeddedArtifact {
+    name: "Registry",
+    bytes: include_bytes!("../res/near/templar_registry_contract/templar_registry_contract.wasm"),
+};
+const MARKET: EmbeddedArtifact = EmbeddedArtifact {
+    name: "Market",
+    bytes: include_bytes!("../res/near/templar_market_contract/templar_market_contract.wasm"),
+};
+const VAULT: EmbeddedArtifact = EmbeddedArtifact {
+    name: "Vault",
+    bytes: include_bytes!("../res/near/templar_vault_contract/templar_vault_contract.wasm"),
+};
+const UNIVERSAL_ACCOUNT: EmbeddedArtifact = EmbeddedArtifact {
+    name: "UniversalAccount",
+    bytes: include_bytes!(
+        "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
+    ),
+};
+const PROXY_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
+    name: "ProxyOracle",
+    bytes: include_bytes!(
+        "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
+    ),
+};
+const PROXY_GOVERNANCE: EmbeddedArtifact = EmbeddedArtifact {
+    name: "ProxyGovernance",
+    bytes: include_bytes!(
+        "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
+    ),
+};
+const LST_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
+    name: "LstOracle",
+    bytes: include_bytes!(
+        "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
+    ),
+};
+const REDSTONE_ADAPTER: EmbeddedArtifact = EmbeddedArtifact {
+    name: "RedstoneAdapter",
+    bytes: include_bytes!(
+        "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
+    ),
+};
+const PYTH_PRO_ADAPTER: EmbeddedArtifact = EmbeddedArtifact {
+    name: "PythProAdapter",
+    bytes: include_bytes!(
+        "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
+    ),
+};
+const MOCK_FT: EmbeddedArtifact = EmbeddedArtifact {
+    name: "MockFt",
+    bytes: include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
+};
+const MOCK_MT: EmbeddedArtifact = EmbeddedArtifact {
+    name: "MockMt",
+    bytes: include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
+};
+const MOCK_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
+    name: "MockOracle",
+    bytes: include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
+};
+const MOCK_REF_FINANCE: EmbeddedArtifact = EmbeddedArtifact {
+    name: "MockRefFinance",
+    bytes: include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
+};
+const MOCK_RECEIVER: EmbeddedArtifact = EmbeddedArtifact {
+    name: "MockReceiver",
+    bytes: include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
+};
+
 const EMBEDDED_ARTIFACTS: &[EmbeddedArtifact] = &[
-    EmbeddedArtifact {
-        id: ContractArtifact::Registry,
-        name: "Registry",
-        bytes: include_bytes!("../res/near/templar_registry_contract/templar_registry_contract.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::Market,
-        name: "Market",
-        bytes: include_bytes!("../res/near/templar_market_contract/templar_market_contract.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::Vault,
-        name: "Vault",
-        bytes: include_bytes!("../res/near/templar_vault_contract/templar_vault_contract.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::UniversalAccount,
-        name: "UniversalAccount",
-        bytes: include_bytes!(
-            "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::ProxyOracle,
-        name: "ProxyOracle",
-        bytes: include_bytes!(
-            "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::ProxyGovernance,
-        name: "ProxyGovernance",
-        bytes: include_bytes!(
-            "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::LstOracle,
-        name: "LstOracle",
-        bytes: include_bytes!(
-            "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::RedstoneAdapter,
-        name: "RedstoneAdapter",
-        bytes: include_bytes!(
-            "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::PythProAdapter,
-        name: "PythProAdapter",
-        bytes: include_bytes!(
-            "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
-        ),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::MockFt,
-        name: "MockFt",
-        bytes: include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::MockMt,
-        name: "MockMt",
-        bytes: include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::MockOracle,
-        name: "MockOracle",
-        bytes: include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::MockRefFinance,
-        name: "MockRefFinance",
-        bytes: include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
-    },
-    EmbeddedArtifact {
-        id: ContractArtifact::MockReceiver,
-        name: "MockReceiver",
-        bytes: include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
-    },
+    REGISTRY,
+    MARKET,
+    VAULT,
+    UNIVERSAL_ACCOUNT,
+    PROXY_ORACLE,
+    PROXY_GOVERNANCE,
+    LST_ORACLE,
+    REDSTONE_ADAPTER,
+    PYTH_PRO_ADAPTER,
+    MOCK_FT,
+    MOCK_MT,
+    MOCK_ORACLE,
+    MOCK_REF_FINANCE,
+    MOCK_RECEIVER,
 ];
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Read the compile-time `include_bytes!` blob for `artifact`.
-///
-/// Every catalogued artifact has a checked-in blob in `res/near/`. This
-/// function returns `Ok` for all of them when the `embedded-wasm` feature
-/// is enabled.
-pub fn read_embedded(artifact: &ArtifactMetadata) -> Result<&'static [u8], EmbeddedError> {
-    read_embedded_by_id(artifact.id)
-}
-
-/// Read the compile-time blob for a specific [`ContractArtifact`].
-///
-/// All 14 catalogued artifacts return `Ok(include_bytes!(...))` — there is
-/// no runtime fallback. If the checked-in files are missing the compilation
-/// itself will fail, which is the intended behaviour for the
-/// `embedded-wasm` feature.
-pub fn read_embedded_by_id(id: ContractArtifact) -> Result<&'static [u8], EmbeddedError> {
-    EMBEDDED_ARTIFACTS
-        .iter()
-        .find(|artifact| artifact.id == id)
-        .map(|artifact| artifact.bytes)
-        .ok_or(EmbeddedError::Unknown)
+pub(crate) fn embedded_bytes(id: ArtifactId) -> Result<&'static [u8], EmbeddedError> {
+    let artifact = match id {
+        ArtifactId::Registry => REGISTRY,
+        ArtifactId::Market => MARKET,
+        ArtifactId::Vault => VAULT,
+        ArtifactId::UniversalAccount => UNIVERSAL_ACCOUNT,
+        ArtifactId::ProxyOracle => PROXY_ORACLE,
+        ArtifactId::ProxyGovernance => PROXY_GOVERNANCE,
+        ArtifactId::LstOracle => LST_ORACLE,
+        ArtifactId::RedstoneAdapter => REDSTONE_ADAPTER,
+        ArtifactId::PythProAdapter => PYTH_PRO_ADAPTER,
+        ArtifactId::MockFt => MOCK_FT,
+        ArtifactId::MockMt => MOCK_MT,
+        ArtifactId::MockOracle => MOCK_ORACLE,
+        ArtifactId::MockRefFinance => MOCK_REF_FINANCE,
+        ArtifactId::MockReceiver => MOCK_RECEIVER,
+    };
+    Ok(artifact.bytes)
 }
 
 /// Return the size in bytes of the embedded WASM for every catalogued artifact.
@@ -180,7 +177,9 @@ mod tests {
     #[test]
     fn test_read_embedded_all_artifacts() {
         for artifact in crate::artifact_catalog() {
-            let bytes = read_embedded(artifact)
+            let bytes = artifact
+                .id
+                .embedded_bytes()
                 .unwrap_or_else(|e| panic!("{} has no embedded WASM: {e}", artifact.package_name));
             assert!(
                 !bytes.is_empty(),
@@ -224,14 +223,14 @@ mod tests {
         let workspace_dir = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
 
         for artifact in crate::artifact_catalog() {
-            let embedded = read_embedded(artifact).unwrap_or_else(|e| {
+            let embedded = artifact.id.embedded_bytes().unwrap_or_else(|e| {
                 panic!(
                     "Embedded WASM missing for {} ({}): {e}.",
                     artifact.package_name, artifact.package_name,
                 )
             });
 
-            let disk_path = crate::target_near_wasm_path(workspace_dir, artifact);
+            let disk_path = artifact.target_near_wasm_path(workspace_dir);
             let disk_bytes = std::fs::read(&disk_path).unwrap_or_else(|e| {
                 panic!(
                     "Cannot read {} ({}): {e}.\n\

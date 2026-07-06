@@ -1,7 +1,5 @@
 use async_trait::async_trait;
-use templar_contract_artifacts::{
-    artifact_catalog, find_by_id, format_version_key, read_embedded_by_id, sha256_hex,
-};
+use templar_contract_artifacts::{artifact_catalog, find_by_id, sha256_hex};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
     ListArtifactsResult,
@@ -23,7 +21,9 @@ where
         let metadata = find_by_id(request.artifact)
             .map_err(|e| GatewayError::NearQuery(format!("artifact lookup failed: {e}")))?;
 
-        let code = read_embedded_by_id(request.artifact)
+        let code = request
+            .artifact
+            .embedded_bytes()
             .map(|bytes| bytes.to_vec())
             .map_err(|e| {
                 std::io::Error::new(
@@ -33,7 +33,7 @@ where
             })?;
 
         let sha256 = sha256_hex(&code);
-        let version_key = format_version_key(metadata.package_name, metadata.version, &code);
+        let version_key = metadata.version_key(&code);
 
         Ok(GetArtifactResult {
             artifact: request.artifact,
@@ -74,7 +74,9 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
         let metadata = find_by_id(body.artifact)
             .map_err(|e| GatewayError::NearQuery(format!("artifact lookup failed: {e}")))?;
 
-        let code = read_embedded_by_id(body.artifact)
+        let code = body
+            .artifact
+            .embedded_bytes()
             .map(|bytes| bytes.to_vec())
             .map_err(|e| {
                 std::io::Error::new(
@@ -83,7 +85,7 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
                 )
             })?;
 
-        let version_key = format_version_key(metadata.package_name, metadata.version, &code);
+        let version_key = metadata.version_key(&code);
 
         let registry_version = ctx
             .near_client()

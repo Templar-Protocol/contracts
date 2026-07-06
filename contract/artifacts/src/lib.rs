@@ -18,25 +18,26 @@
 #[cfg(feature = "clap")]
 mod clap_impl;
 #[cfg(feature = "embedded-wasm")]
-mod embedded;
+pub(crate) mod embedded;
 mod ids;
+#[cfg(all(feature = "workspace-loader", feature = "clap"))]
+pub mod prebuild;
 #[cfg(test)]
 mod wasm_drift;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 
 #[cfg(feature = "clap")]
-pub use clap_impl::{friendly_name, friendly_names, metadata_for, parse_artifact_id};
+pub use clap_impl::artifact_value_parser;
 #[cfg(feature = "embedded-wasm")]
-pub use embedded::{embedded_sizes, read_embedded, read_embedded_by_id, EmbeddedError};
-pub use ids::{artifact_catalog, ArtifactMetadata, ArtifactParseError, ContractArtifact};
+pub use embedded::{embedded_sizes, EmbeddedError};
+pub use ids::{artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError};
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
     build_artifact, load_artifact, load_artifact_bytes, BuildContractError, LoadError,
 };
 
 use sha2::Digest;
-use std::path::Path;
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -80,31 +81,6 @@ pub fn sha256_hex(wasm_bytes: &[u8]) -> String {
 // Target-path helpers (always available — no feature gate)
 // ---------------------------------------------------------------------------
 
-/// Return the expected WASM path for an artifact inside `target/near`.
-///
-/// The convention is `{workspace_dir}/target/near/{cargo_target_name}/{cargo_target_name}.wasm`.
-pub fn target_near_wasm_path(
-    workspace_dir: &Path,
-    metadata: &ArtifactMetadata,
-) -> std::path::PathBuf {
-    let name = &metadata.cargo_target_name;
-    workspace_dir
-        .join("target")
-        .join("near")
-        .join(name)
-        .join(format!("{name}.wasm"))
-}
-
-/// Return the Cargo-manifest directory for an artifact, relative to the
-/// workspace root.
-pub fn manifest_path(metadata: &ArtifactMetadata) -> std::path::PathBuf {
-    Path::new(metadata.source_path).to_path_buf()
-}
-
-// ---------------------------------------------------------------------------
-// artifact_catalog helper
-// ---------------------------------------------------------------------------
-
 /// Resolve an artifact by its Cargo package name (e.g. `"templar-market-contract"`).
 pub fn find_by_package_name(package: &str) -> Option<&'static ArtifactMetadata> {
     artifact_catalog()
@@ -112,12 +88,12 @@ pub fn find_by_package_name(package: &str) -> Option<&'static ArtifactMetadata> 
         .find(|a| a.package_name == package)
 }
 
-/// Resolve an artifact by its [`ContractArtifact`] ID.
+/// Resolve an artifact by its [`ArtifactId`] ID.
 ///
 /// Returns `Ok(metadata)` for every variant in the catalog. A missing ID
 /// indicates a program bug (new variant added without a catalog entry), which
 /// this function reports as an [`ArtifactError::UnknownContract`].
-pub fn find_by_id(id: ContractArtifact) -> Result<&'static ArtifactMetadata, ArtifactError> {
+pub fn find_by_id(id: ArtifactId) -> Result<&'static ArtifactMetadata, ArtifactError> {
     id.metadata()
         .ok_or_else(|| ArtifactError::UnknownContract(id.to_string()))
 }
@@ -158,16 +134,18 @@ mod tests {
     #[test]
     fn test_target_near_wasm_path() {
         let meta = ArtifactMetadata {
-            id: ContractArtifact::Market,
+            id: ArtifactId::Market,
             package_name: "templar-market-contract",
             cargo_target_name: "templar_market_contract",
             source_path: "contract/market",
             version: "1.4.0",
         };
-        let path = target_near_wasm_path(Path::new("/ws"), &meta);
+        let path = meta.target_near_wasm_path(std::path::Path::new("/ws"));
         assert_eq!(
             path,
-            Path::new("/ws/target/near/templar_market_contract/templar_market_contract.wasm")
+            std::path::Path::new(
+                "/ws/target/near/templar_market_contract/templar_market_contract.wasm"
+            )
         );
     }
 
@@ -175,13 +153,13 @@ mod tests {
     fn test_find_by_package_name() {
         let meta = find_by_package_name("templar-market-contract");
         assert!(meta.is_some());
-        assert_eq!(meta.unwrap().id, ContractArtifact::Market);
+        assert_eq!(meta.unwrap().id, ArtifactId::Market);
     }
 
     #[test]
     fn test_find_by_id() {
-        let meta = find_by_id(ContractArtifact::Vault).unwrap();
-        assert_eq!(meta.id, ContractArtifact::Vault);
+        let meta = find_by_id(ArtifactId::Vault).unwrap();
+        assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
         assert_eq!(meta.version, "1.2.1");
     }
@@ -230,45 +208,39 @@ mod tests {
 
     #[test]
     fn test_contract_artifact_serde_kebab_case() {
-        let json = serde_json::to_string(&ContractArtifact::Market).unwrap();
+        let json = serde_json::to_string(&ArtifactId::Market).unwrap();
         assert_eq!(json, r#""market""#);
 
-        let json = serde_json::to_string(&ContractArtifact::UniversalAccount).unwrap();
+        let json = serde_json::to_string(&ArtifactId::UniversalAccount).unwrap();
         assert_eq!(json, r#""universal-account""#);
 
-        let json = serde_json::to_string(&ContractArtifact::MockFt).unwrap();
+        let json = serde_json::to_string(&ArtifactId::MockFt).unwrap();
         assert_eq!(json, r#""mock-ft""#);
 
-        let json = serde_json::to_string(&ContractArtifact::MockRefFinance).unwrap();
+        let json = serde_json::to_string(&ArtifactId::MockRefFinance).unwrap();
         assert_eq!(json, r#""mock-ref-finance""#);
 
-        let id: ContractArtifact = serde_json::from_str(r#""proxy-oracle""#).unwrap();
-        assert_eq!(id, ContractArtifact::ProxyOracle);
+        let id: ArtifactId = serde_json::from_str(r#""proxy-oracle""#).unwrap();
+        assert_eq!(id, ArtifactId::ProxyOracle);
 
-        let id: ContractArtifact = serde_json::from_str(r#""redstone-adapter""#).unwrap();
-        assert_eq!(id, ContractArtifact::RedstoneAdapter);
+        let id: ArtifactId = serde_json::from_str(r#""redstone-adapter""#).unwrap();
+        assert_eq!(id, ArtifactId::RedstoneAdapter);
     }
 
     #[test]
     fn test_contract_artifact_display_and_parse_use_kebab_case_names() {
+        assert_eq!(ArtifactId::UniversalAccount.as_str(), "universal-account");
+        assert_eq!(ArtifactId::MockRefFinance.to_string(), "mock-ref-finance");
         assert_eq!(
-            ContractArtifact::UniversalAccount.as_str(),
-            "universal-account"
+            "PYTH-PRO-ADAPTER".parse::<ArtifactId>().unwrap(),
+            ArtifactId::PythProAdapter,
         );
-        assert_eq!(
-            ContractArtifact::MockRefFinance.to_string(),
-            "mock-ref-finance"
-        );
-        assert_eq!(
-            "PYTH-PRO-ADAPTER".parse::<ContractArtifact>().unwrap(),
-            ContractArtifact::PythProAdapter,
-        );
-        assert!("no-such-artifact".parse::<ContractArtifact>().is_err());
+        assert!("no-such-artifact".parse::<ArtifactId>().is_err());
     }
 
     #[test]
-    fn test_contract_artifact_metadata_method() {
-        let metadata = ContractArtifact::Market.metadata().unwrap();
+    fn test_artifact_id_metadata_method() {
+        let metadata = ArtifactId::Market.metadata().unwrap();
         assert_eq!(metadata.package_name, "templar-market-contract");
         assert_eq!(metadata.source_path, "contract/market");
     }

@@ -26,7 +26,7 @@ use tokio::sync::OnceCell;
 
 use crate::{
     controller::storage_management::StorageManagementController, define, get_contract, to_price,
-    ContractArtifact,
+    ArtifactId,
 };
 
 use super::{mock_oracle::MockOracleController, token::TokenController, ContractController};
@@ -48,8 +48,7 @@ impl MarketController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract(ContractArtifact::Market))
-            .await
+        WASM.get_or_init(|| get_contract(ArtifactId::Market)).await
     }
 
     pub fn attach(worker: &Worker<Sandbox>, market_id: AccountId) -> Self {

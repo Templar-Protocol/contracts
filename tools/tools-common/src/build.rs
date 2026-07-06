@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use templar_contract_artifacts::{
-    find_by_id, find_by_package_name, format_version_key, ContractArtifact,
+    find_by_id, find_by_package_name, format_version_key, ArtifactId,
 };
 use templar_gateway_types::Version;
 
@@ -87,7 +87,7 @@ pub fn load_contract<T>(
 
 pub fn load_contract_artifact<T>(
     workspace_dir: &Path,
-    artifact: ContractArtifact,
+    artifact: ArtifactId,
 ) -> anyhow::Result<LoadedContract<T>> {
     let artifact_metadata = find_by_id(artifact)?;
     load_contract(workspace_dir, artifact_metadata.package_name)
@@ -122,7 +122,7 @@ pub fn build_contract<T>(
 
 pub fn build_contract_artifact<T>(
     workspace_dir: &Path,
-    artifact: ContractArtifact,
+    artifact: ArtifactId,
 ) -> anyhow::Result<LoadedContract<T>> {
     let artifact_metadata = find_by_id(artifact)?;
     build_contract(workspace_dir, artifact_metadata.package_name)

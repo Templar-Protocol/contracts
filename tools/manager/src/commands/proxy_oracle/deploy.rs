@@ -1,4 +1,4 @@
-use templar_contract_artifacts::ContractArtifact;
+use templar_contract_artifacts::ArtifactId;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
@@ -17,7 +17,7 @@ impl DeploymentSpec for DeployProxyOracle {
     type ArgsLoader = EmptyArgsLoader;
     type Version = ();
 
-    const ARTIFACT: ContractArtifact = ContractArtifact::ProxyOracle;
+    const ARTIFACT: ArtifactId = ArtifactId::ProxyOracle;
 }
 
 impl DeployProxyOracle {

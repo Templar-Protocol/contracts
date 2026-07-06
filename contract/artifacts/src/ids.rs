@@ -5,7 +5,7 @@
 //! the single source of truth for artifact names, paths, and how they map
 //! to `target/near` directories.
 
-use std::{fmt, str::FromStr};
+use std::{fmt, path::Path, str::FromStr};
 
 use serde::Deserialize as _;
 use thiserror::Error;
@@ -34,7 +34,7 @@ pub enum ArtifactParseError {
 )]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
-pub enum ContractArtifact {
+pub enum ArtifactId {
     // -- Production contracts --
     Registry,
     Market,
@@ -53,45 +53,47 @@ pub enum ContractArtifact {
     MockReceiver,
 }
 
-impl ContractArtifact {
-    /// Return the serde kebab-case artifact name.
+impl ArtifactId {
     pub fn as_str(self) -> &'static str {
         self.into()
     }
 
-    /// Return the CLI-friendly artifact name.
-    pub fn friendly_name(self) -> &'static str {
-        self.as_str()
-    }
-
-    /// Return this artifact's catalog metadata.
     pub fn metadata(self) -> Option<&'static ArtifactMetadata> {
         artifact_catalog()
             .iter()
             .find(|metadata| metadata.id == self)
     }
 
-    /// Return this artifact's embedded WASM bytes.
+    pub fn from_package_name(package_name: &str) -> Option<Self> {
+        artifact_catalog()
+            .iter()
+            .find(|metadata| metadata.package_name == package_name)
+            .map(|metadata| metadata.id)
+    }
+
     #[cfg(feature = "embedded-wasm")]
     pub fn embedded_bytes(self) -> Result<&'static [u8], crate::EmbeddedError> {
-        crate::read_embedded_by_id(self)
+        crate::embedded::embedded_bytes(self)
     }
 }
 
-impl fmt::Display for ContractArtifact {
+impl fmt::Display for ArtifactId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-impl FromStr for ContractArtifact {
+impl FromStr for ArtifactId {
     type Err = ArtifactParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let normalized = s.to_ascii_lowercase();
         let deserializer =
             serde::de::value::StrDeserializer::<serde::de::value::Error>::new(normalized.as_str());
-        Self::deserialize(deserializer).map_err(|_| ArtifactParseError::Unknown(s.to_owned()))
+        if let Ok(id) = Self::deserialize(deserializer) {
+            return Ok(id);
+        }
+        Self::from_package_name(s).ok_or_else(|| ArtifactParseError::Unknown(s.to_owned()))
     }
 }
 
@@ -102,7 +104,7 @@ impl FromStr for ContractArtifact {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactMetadata {
     /// The artifact identifier.
-    pub id: ContractArtifact,
+    pub id: ArtifactId,
     /// Cargo package name as declared in the package's `Cargo.toml`.
     pub package_name: &'static str,
     /// Sanitised name used inside `target/near/` (dashes replaced with underscores).
@@ -114,6 +116,25 @@ pub struct ArtifactMetadata {
     /// Set to the crate/workspace version at the time the embedded WASM blob was
     /// checked in. Updated alongside the blob in `res/near/`.
     pub version: &'static str,
+}
+
+impl ArtifactMetadata {
+    pub fn manifest_path(&self) -> std::path::PathBuf {
+        Path::new(self.source_path).to_path_buf()
+    }
+
+    pub fn target_near_wasm_path(&self, workspace_dir: &Path) -> std::path::PathBuf {
+        let name = self.cargo_target_name;
+        workspace_dir
+            .join("target")
+            .join("near")
+            .join(name)
+            .join(format!("{name}.wasm"))
+    }
+
+    pub fn version_key(&self, wasm_bytes: &[u8]) -> String {
+        crate::format_version_key(self.package_name, self.version, wasm_bytes)
+    }
 }
 
 /// Return the full catalog of every known contract artifact.
@@ -130,7 +151,7 @@ pub const fn artifact_catalog() -> &'static [ArtifactMetadata] {
 macro_rules! entry {
     ($id:ident, $pkg:expr, $target:expr, $src:expr, $ver:expr) => {
         ArtifactMetadata {
-            id: ContractArtifact::$id,
+            id: ArtifactId::$id,
             package_name: $pkg,
             cargo_target_name: $target,
             source_path: $src,

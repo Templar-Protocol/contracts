@@ -4,7 +4,7 @@ mod direct;
 pub use direct::*;
 
 use serde::{de::DeserializeOwned, Serialize};
-use templar_contract_artifacts::ContractArtifact;
+use templar_contract_artifacts::ArtifactId;
 
 use crate::{util::LoadArgs, Runner};
 
@@ -13,7 +13,7 @@ pub trait DeploymentSpec {
     type ArgsLoader: LoadArgs<Self::Args>;
     type Version;
 
-    const ARTIFACT: ContractArtifact;
+    const ARTIFACT: ArtifactId;
 }
 
 #[derive(clap::Subcommand)]
@@ -51,7 +51,7 @@ impl<C: DeploymentSpec> Deploy<C> {
 
 #[cfg(test)]
 mod tests {
-    use templar_contract_artifacts::ContractArtifact;
+    use templar_contract_artifacts::ArtifactId;
 
     use super::DeploymentSpec;
     use crate::commands::{
@@ -61,12 +61,9 @@ mod tests {
 
     #[test]
     fn deployment_specs_use_catalog_artifacts() {
-        assert_eq!(DeployRegistry::ARTIFACT, ContractArtifact::Registry);
-        assert_eq!(DeployMarket::ARTIFACT, ContractArtifact::Market);
-        assert_eq!(DeployProxyOracle::ARTIFACT, ContractArtifact::ProxyOracle);
-        assert_eq!(
-            DeployRedStoneAdapter::ARTIFACT,
-            ContractArtifact::RedstoneAdapter
-        );
+        assert_eq!(DeployRegistry::ARTIFACT, ArtifactId::Registry);
+        assert_eq!(DeployMarket::ARTIFACT, ArtifactId::Market);
+        assert_eq!(DeployProxyOracle::ARTIFACT, ArtifactId::ProxyOracle);
+        assert_eq!(DeployRedStoneAdapter::ARTIFACT, ArtifactId::RedstoneAdapter);
     }
 }

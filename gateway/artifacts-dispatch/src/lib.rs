@@ -5,7 +5,7 @@ pub struct Dispatch;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use templar_contract_artifacts::{artifact_catalog, ContractArtifact};
+    use templar_contract_artifacts::{artifact_catalog, ArtifactId};
     use templar_gateway_artifacts_spec::artifact::{GetArtifact, ListArtifacts};
     use templar_gateway_core::DispatchRead;
 
@@ -13,7 +13,7 @@ mod tests {
     async fn test_dispatch_get_artifact_returns_wasm_bytes() {
         // Given: a GetArtifact request for the registry artifact
         let request = GetArtifact {
-            artifact: ContractArtifact::Market,
+            artifact: ArtifactId::Market,
         };
         // When: dispatched
         let result = Dispatch::dispatch(request, ()).await.unwrap();
@@ -24,7 +24,7 @@ mod tests {
         // Then: metadata matches the catalog
         let meta = artifact_catalog()
             .iter()
-            .find(|m| m.id == ContractArtifact::Market)
+            .find(|m| m.id == ArtifactId::Market)
             .unwrap();
         assert_eq!(result.package_name, meta.package_name);
         assert_eq!(result.version, meta.version);
@@ -38,11 +38,11 @@ mod tests {
         let market = result
             .artifacts
             .iter()
-            .find(|metadata| metadata.artifact == ContractArtifact::Market)
+            .find(|metadata| metadata.artifact == ArtifactId::Market)
             .unwrap();
         let market_catalog = artifact_catalog()
             .iter()
-            .find(|metadata| metadata.id == ContractArtifact::Market)
+            .find(|metadata| metadata.id == ArtifactId::Market)
             .unwrap();
         assert_eq!(market.package_name, "templar-market-contract");
         assert_eq!(market.version, market_catalog.version);
@@ -56,7 +56,7 @@ mod tests {
     async fn test_dispatch_get_artifact_sha_matches() {
         // Given: a GetArtifact request for the vault artifact
         let request = GetArtifact {
-            artifact: ContractArtifact::Vault,
+            artifact: ArtifactId::Vault,
         };
         // When: dispatched
         let result = Dispatch::dispatch(request, ()).await.unwrap();

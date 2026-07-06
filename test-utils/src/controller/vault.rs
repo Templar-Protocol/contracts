@@ -1,7 +1,7 @@
 use super::ContractController;
 use crate::{
     controller::storage_management::StorageManagementController, define, get_contract,
-    print_execution, ContractArtifact, UnifiedMarketController,
+    print_execution, ArtifactId, UnifiedMarketController,
 };
 use near_sdk::{
     json_types::{U128, U64},
@@ -204,8 +204,7 @@ impl VaultController {
 static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
 pub async fn load_wasm() -> &'static [u8] {
-    WASM.get_or_init(|| get_contract(ContractArtifact::Vault))
-        .await
+    WASM.get_or_init(|| get_contract(ArtifactId::Vault)).await
 }
 
 #[derive(Clone)]

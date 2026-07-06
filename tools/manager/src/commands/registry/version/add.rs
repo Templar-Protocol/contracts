@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::Args;
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
-use templar_contract_artifacts::{find_by_id, parse_artifact_id, ContractArtifact};
+use templar_contract_artifacts::{artifact_value_parser, find_by_id, ArtifactId};
 use templar_gateway_types::RegistryVersion;
 use templar_tools_common::near::{self, Function};
 
@@ -37,19 +37,19 @@ pub struct Package {
 }
 
 impl Package {
-    pub fn artifact(&self) -> Option<ContractArtifact> {
+    pub fn artifact(&self) -> Option<ArtifactId> {
         if self.market {
-            Some(ContractArtifact::Market)
+            Some(ArtifactId::Market)
         } else if self.uac {
-            Some(ContractArtifact::UniversalAccount)
+            Some(ArtifactId::UniversalAccount)
         } else if self.proxy_oracle {
-            Some(ContractArtifact::ProxyOracle)
+            Some(ArtifactId::ProxyOracle)
         } else if self.redstone_adapter {
-            Some(ContractArtifact::RedstoneAdapter)
+            Some(ArtifactId::RedstoneAdapter)
         } else {
             self.package
                 .as_deref()
-                .and_then(|package| parse_artifact_id(package).ok())
+                .and_then(|package| artifact_value_parser(package).ok())
         }
     }
 
@@ -97,7 +97,7 @@ mod tests {
             ..empty_package()
         };
 
-        assert_eq!(package.artifact(), Some(ContractArtifact::Market));
+        assert_eq!(package.artifact(), Some(ArtifactId::Market));
         assert_eq!(package.package_name(), "templar-market-contract");
     }
 
@@ -108,7 +108,7 @@ mod tests {
             ..empty_package()
         };
 
-        assert_eq!(package.artifact(), Some(ContractArtifact::Market));
+        assert_eq!(package.artifact(), Some(ArtifactId::Market));
         assert_eq!(package.package_name(), "templar-market-contract");
     }
 

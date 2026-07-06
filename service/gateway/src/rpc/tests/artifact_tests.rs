@@ -17,7 +17,7 @@ async fn artifact_list_endpoint_returns_catalog_metadata_against_sandbox() -> Re
         templar_contract_artifacts::artifact_catalog().len()
     );
     assert!(result.artifacts.iter().any(|metadata| metadata.artifact
-        == templar_contract_artifacts::ContractArtifact::Market
+        == templar_contract_artifacts::ArtifactId::Market
         && metadata.package_name == "templar-market-contract"));
 
     let json = serde_json::to_value(&result)?;
@@ -35,14 +35,14 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
     let result = stack
         .controller
         .request::<artifact::GetArtifact>(&artifact::GetArtifact {
-            artifact: templar_contract_artifacts::ContractArtifact::Market,
+            artifact: templar_contract_artifacts::ArtifactId::Market,
         })
         .await?;
 
     // Check metadata is consistent.
     assert_eq!(
         result.artifact,
-        templar_contract_artifacts::ContractArtifact::Market
+        templar_contract_artifacts::ArtifactId::Market
     );
     assert_eq!(result.package_name, "templar-market-contract");
     assert!(!result.cargo_target_name.is_empty());
@@ -80,7 +80,7 @@ async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
             idempotency_key: None,
             body: artifact::AddArtifactVersion {
                 registry_id: registry_id.clone(),
-                artifact: templar_contract_artifacts::ContractArtifact::MockFt,
+                artifact: templar_contract_artifacts::ArtifactId::MockFt,
                 deploy_mode: templar_common::registry::DeployMode::Normal,
                 deposit: NearToken::from_yoctonear(1),
             },

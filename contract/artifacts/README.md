@@ -21,7 +21,7 @@ Templar Protocol smart contracts.
 | *(default)*          | Artifact IDs and metadata only. No dependencies beyond `sha2`, `hex`, `thiserror`. No WASM bytes. |
 | `workspace-loader`   | Read WASM from `target/near/{name}/{name}.wasm` at runtime. Provides `cargo near build` helper. |
 | `embedded-wasm`      | Compile-time WASM blobs via `include_bytes!`. Blobs are pinned at build time. |
-| `clap`               | CLI-friendly parsing helpers (parse artifacts by friendly name or package name). |
+| `clap`               | CLI-friendly parsing helpers (parse artifacts by artifact ID or package name). |
 
 Default features do **not** embed WASM bytes or depend on heavy build
 tooling. Consumers opt into the byte source they need.
@@ -131,13 +131,13 @@ let key = format_version_key("mock-ft", "0.0.0", &wasm_bytes);
 ```rust
 // Requires: features = ["clap"]
 // In your clap derive struct:
-#[arg(value_parser = templar_contract_artifacts::parse_artifact_id)]
-artifact: templar_contract_artifacts::ContractArtifact,
+#[arg(value_parser = templar_contract_artifacts::artifact_value_parser)]
+artifact: templar_contract_artifacts::ArtifactId,
 ```
 
 ## Artifact list
 
-| Friendly name       | Cargo package                          | `target/near` directory             |
+| Artifact ID         | Cargo package                          | `target/near` directory             |
 |---------------------|----------------------------------------|-------------------------------------|
 | registry            | templar-registry-contract              | templar_registry_contract           |
 | market              | templar-market-contract                | templar_market_contract             |

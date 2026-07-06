@@ -2,7 +2,7 @@ use near_sdk::{json_types::U128, serde_json::json, AccountId};
 use near_workspaces::{Account, Contract};
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract, ContractArtifact};
+use crate::{define, get_contract, ArtifactId};
 
 use super::ContractController;
 
@@ -21,8 +21,7 @@ impl MtController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract(ContractArtifact::MockMt))
-            .await
+        WASM.get_or_init(|| get_contract(ArtifactId::MockMt)).await
     }
 
     pub async fn deploy(account: Account) -> Self {

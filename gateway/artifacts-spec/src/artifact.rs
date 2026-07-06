@@ -2,7 +2,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::registry::DeployMode;
-use templar_contract_artifacts::ContractArtifact;
+use templar_contract_artifacts::ArtifactId;
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::{Base64Bytes, NearToken};
 
@@ -10,12 +10,12 @@ use templar_gateway_types::{Base64Bytes, NearToken};
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "artifact.get", output = GetArtifactResult)]
 pub struct GetArtifact {
-    pub artifact: ContractArtifact,
+    pub artifact: ArtifactId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetArtifactResult {
-    pub artifact: ContractArtifact,
+    pub artifact: ArtifactId,
     pub package_name: String,
     pub cargo_target_name: String,
     pub source_path: String,
@@ -37,7 +37,7 @@ pub struct ListArtifactsResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactMetadata {
-    pub artifact: ContractArtifact,
+    pub artifact: ArtifactId,
     pub package_name: String,
     pub cargo_target_name: String,
     pub source_path: String,
@@ -65,7 +65,7 @@ impl From<&templar_contract_artifacts::ArtifactMetadata> for ArtifactMetadata {
 #[method(write = "registry.addArtifactVersion")]
 pub struct AddArtifactVersion {
     pub registry_id: AccountId,
-    pub artifact: ContractArtifact,
+    pub artifact: ArtifactId,
     pub deploy_mode: DeployMode,
     pub deposit: NearToken,
 }
@@ -81,26 +81,26 @@ mod tests {
         // When: deserialized
         let req: GetArtifact = serde_json::from_str(json).unwrap();
         // Then: artifact is correctly parsed
-        assert_eq!(req.artifact, ContractArtifact::Market);
+        assert_eq!(req.artifact, ArtifactId::Market);
     }
 
     #[test]
     fn test_get_artifact_all_variants_roundtrip() {
         for artifact in &[
-            ContractArtifact::Registry,
-            ContractArtifact::Market,
-            ContractArtifact::Vault,
-            ContractArtifact::UniversalAccount,
-            ContractArtifact::ProxyOracle,
-            ContractArtifact::ProxyGovernance,
-            ContractArtifact::LstOracle,
-            ContractArtifact::RedstoneAdapter,
-            ContractArtifact::PythProAdapter,
-            ContractArtifact::MockFt,
-            ContractArtifact::MockMt,
-            ContractArtifact::MockOracle,
-            ContractArtifact::MockRefFinance,
-            ContractArtifact::MockReceiver,
+            ArtifactId::Registry,
+            ArtifactId::Market,
+            ArtifactId::Vault,
+            ArtifactId::UniversalAccount,
+            ArtifactId::ProxyOracle,
+            ArtifactId::ProxyGovernance,
+            ArtifactId::LstOracle,
+            ArtifactId::RedstoneAdapter,
+            ArtifactId::PythProAdapter,
+            ArtifactId::MockFt,
+            ArtifactId::MockMt,
+            ArtifactId::MockOracle,
+            ArtifactId::MockRefFinance,
+            ArtifactId::MockReceiver,
         ] {
             let req = GetArtifact {
                 artifact: *artifact,
@@ -118,7 +118,7 @@ mod tests {
             artifacts: vec![ArtifactMetadata::from(
                 templar_contract_artifacts::artifact_catalog()
                     .iter()
-                    .find(|metadata| metadata.id == ContractArtifact::Market)
+                    .find(|metadata| metadata.id == ArtifactId::Market)
                     .unwrap(),
             )],
         };
@@ -135,7 +135,7 @@ mod tests {
         // Given: a full AddArtifactVersion spec
         let spec = AddArtifactVersion {
             registry_id: "registry.near".parse().unwrap(),
-            artifact: ContractArtifact::Market,
+            artifact: ArtifactId::Market,
             deploy_mode: DeployMode::Normal,
             deposit: NearToken::from_yoctonear(1),
         };

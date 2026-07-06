@@ -336,7 +336,7 @@ impl Deref for SigningClient {
 #[cfg(test)]
 mod tests {
     use templar_common::registry::DeployMode;
-    use templar_contract_artifacts::ContractArtifact;
+    use templar_contract_artifacts::ArtifactId;
     use templar_gateway_artifacts_spec::artifact::{
         AddArtifactVersion, GetArtifact, ListArtifacts,
     };
@@ -359,7 +359,7 @@ mod tests {
         assert!(result
             .artifacts
             .iter()
-            .any(|metadata| metadata.artifact == ContractArtifact::Market));
+            .any(|metadata| metadata.artifact == ArtifactId::Market));
     }
 
     #[tokio::test]
@@ -369,7 +369,7 @@ mod tests {
 
         let result = client
             .read(GetArtifact {
-                artifact: ContractArtifact::Market,
+                artifact: ArtifactId::Market,
             })
             .await
             .expect("artifact.get dispatch succeeds");
@@ -390,7 +390,7 @@ mod tests {
 
         let _ = AddArtifactVersion {
             registry_id: "registry.near".parse().expect("valid account id"),
-            artifact: ContractArtifact::MockFt,
+            artifact: ArtifactId::MockFt,
             deploy_mode: DeployMode::Normal,
             deposit: NearToken::from_yoctonear(1),
         };
