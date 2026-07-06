@@ -20,7 +20,6 @@ mod clap_impl;
 #[cfg(feature = "embedded-wasm")]
 mod embedded;
 mod ids;
-mod serde_name;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 

@@ -30,8 +30,10 @@ pub enum ArtifactParseError {
     serde::Serialize,
     serde::Deserialize,
     schemars::JsonSchema,
+    strum::IntoStaticStr,
 )]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum ContractArtifact {
     // -- Production contracts --
     Registry,
@@ -54,7 +56,7 @@ pub enum ContractArtifact {
 impl ContractArtifact {
     /// Return the serde kebab-case artifact name.
     pub fn as_str(self) -> &'static str {
-        crate::serde_name::unit_variant_name(&self).unwrap_or("<unknown-artifact>")
+        self.into()
     }
 
     /// Return the CLI-friendly artifact name.
