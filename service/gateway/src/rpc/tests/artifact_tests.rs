@@ -72,6 +72,9 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
 async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
+    let mock_ft =
+        templar_contract_artifacts::find_by_id(templar_contract_artifacts::ArtifactId::MockFt)?;
+    let expected_version_prefix = format!("{}@{}#", mock_ft.package_name, mock_ft.version);
 
     let write_result = stack
         .controller
@@ -100,7 +103,10 @@ async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
             args: templar_gateway_types::common::Pagination::default(),
         })
         .await?;
-    assert!(!versions.values.is_empty());
+    assert!(versions
+        .values
+        .iter()
+        .any(|version_key| version_key.starts_with(&expected_version_prefix)));
 
     stack.shutdown().await;
     Ok(())

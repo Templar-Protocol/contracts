@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use templar_contract_artifacts::{artifact_catalog, find_by_id, sha256_hex};
+use templar_contract_artifacts::{artifact_catalog, find_by_id, sha256_hex, ArtifactId};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
     ListArtifactsResult,
@@ -12,38 +12,45 @@ use templar_gateway_types::common::WriteRequest;
 
 use crate::Dispatch;
 
+struct LoadedArtifact {
+    metadata: &'static templar_contract_artifacts::ArtifactMetadata,
+    code: Vec<u8>,
+    sha256: String,
+    version_key: String,
+}
+
+fn load_artifact(artifact: ArtifactId) -> GatewayResult<LoadedArtifact> {
+    let metadata = find_by_id(artifact)
+        .map_err(|error| GatewayError::NearQuery(format!("artifact lookup failed: {error}")))?;
+    let code = artifact.embedded_bytes().to_vec();
+    let sha256 = sha256_hex(&code);
+    let version_key = metadata.version_key(&code);
+
+    Ok(LoadedArtifact {
+        metadata,
+        code,
+        sha256,
+        version_key,
+    })
+}
+
 #[async_trait]
 impl<C> DispatchRead<GetArtifact, C> for Dispatch
 where
     C: Send + 'static,
 {
     async fn dispatch(request: GetArtifact, _ctx: C) -> GatewayResult<GetArtifactResult> {
-        let metadata = find_by_id(request.artifact)
-            .map_err(|e| GatewayError::NearQuery(format!("artifact lookup failed: {e}")))?;
-
-        let code = request
-            .artifact
-            .embedded_bytes()
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("embedded WASM not found for {:?}: {e}", request.artifact),
-                )
-            })?;
-
-        let sha256 = sha256_hex(&code);
-        let version_key = metadata.version_key(&code);
+        let artifact = load_artifact(request.artifact)?;
 
         Ok(GetArtifactResult {
             artifact: request.artifact,
-            package_name: metadata.package_name.to_string(),
-            cargo_target_name: metadata.cargo_target_name.to_string(),
-            source_path: metadata.source_path.to_string(),
-            version: metadata.version.to_string(),
-            code: templar_gateway_types::Base64Bytes(code),
-            sha256,
-            version_key,
+            package_name: artifact.metadata.package_name.to_string(),
+            cargo_target_name: artifact.metadata.cargo_target_name.to_string(),
+            source_path: artifact.metadata.source_path.to_string(),
+            version: artifact.metadata.version.to_string(),
+            code: templar_gateway_types::Base64Bytes(artifact.code),
+            sha256: artifact.sha256,
+            version_key: artifact.version_key,
         })
     }
 }
@@ -70,22 +77,7 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-
-        let metadata = find_by_id(body.artifact)
-            .map_err(|e| GatewayError::NearQuery(format!("artifact lookup failed: {e}")))?;
-
-        let code = body
-            .artifact
-            .embedded_bytes()
-            .map(|bytes| bytes.to_vec())
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("embedded WASM not found for {:?}: {e}", body.artifact),
-                )
-            })?;
-
-        let version_key = metadata.version_key(&code);
+        let artifact = load_artifact(body.artifact)?;
 
         let registry_version = ctx
             .near_client()
@@ -101,9 +93,9 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
                     .deposit(body.deposit),
                 registry_version,
                 AddVersionArgs {
-                    version_key,
+                    version_key: artifact.version_key,
                     mode: body.deploy_mode,
-                    code,
+                    code: artifact.code,
                 },
             )
             .map(OperationPlan::from)

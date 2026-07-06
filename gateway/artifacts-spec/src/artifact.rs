@@ -86,28 +86,13 @@ mod tests {
 
     #[test]
     fn test_get_artifact_all_variants_roundtrip() {
-        for artifact in &[
-            ArtifactId::Registry,
-            ArtifactId::Market,
-            ArtifactId::Vault,
-            ArtifactId::UniversalAccount,
-            ArtifactId::ProxyOracle,
-            ArtifactId::ProxyGovernance,
-            ArtifactId::LstOracle,
-            ArtifactId::RedstoneAdapter,
-            ArtifactId::PythProAdapter,
-            ArtifactId::MockFt,
-            ArtifactId::MockMt,
-            ArtifactId::MockOracle,
-            ArtifactId::MockRefFinance,
-            ArtifactId::MockReceiver,
-        ] {
+        for metadata in templar_contract_artifacts::artifact_catalog() {
             let req = GetArtifact {
-                artifact: *artifact,
+                artifact: metadata.id,
             };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: GetArtifact = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed.artifact, *artifact);
+            assert_eq!(parsed.artifact, metadata.id);
         }
     }
 
