@@ -55,9 +55,10 @@ impl Package {
 
     pub fn package_name(&self) -> Cow<'_, str> {
         if let Some(artifact) = self.artifact() {
-            find_by_id(artifact)
-                .map(|metadata| Cow::Borrowed(metadata.package_name))
-                .unwrap_or_else(|_| Cow::Borrowed(""))
+            find_by_id(artifact).map_or_else(
+                |_| Cow::Borrowed(""),
+                |metadata| Cow::Borrowed(metadata.package_name),
+            )
         } else {
             Cow::Borrowed(self.package.as_deref().unwrap_or_default())
         }
