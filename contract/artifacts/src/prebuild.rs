@@ -1,5 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
+    io,
     path::{Path, PathBuf},
     process::{ExitCode, ExitStatus},
 };
@@ -39,9 +40,29 @@ struct Args {
     artifacts: Vec<ArtifactId>,
 }
 
-struct RunningBuild {
+trait BuildChild {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> io::Result<ExitStatus>;
+}
+
+impl BuildChild for std::process::Child {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        std::process::Child::try_wait(self)
+    }
+
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        std::process::Child::wait(self)
+    }
+}
+
+struct RunningBuild<C = std::process::Child> {
     artifact: &'static ArtifactMetadata,
-    child: std::process::Child,
+    child: C,
+}
+
+struct FinishedBuild {
+    artifact: &'static ArtifactMetadata,
+    status: io::Result<ExitStatus>,
 }
 
 pub fn main() -> ExitCode {
@@ -125,8 +146,8 @@ fn prebuild_all(
             }
         }
 
-        if let Some(mut build) = running.pop() {
-            match build.child.wait() {
+        if let Some(build) = wait_for_next_finished(&mut running) {
+            match build.status {
                 Ok(status) if status.success() => {
                     eprintln!("finished {}", build.artifact.package_name);
                 }
@@ -150,6 +171,35 @@ fn prebuild_all(
     } else {
         Ok(())
     }
+}
+
+fn wait_for_next_finished<C: BuildChild>(
+    running: &mut Vec<RunningBuild<C>>,
+) -> Option<FinishedBuild> {
+    for index in 0..running.len() {
+        match running[index].child.try_wait() {
+            Ok(Some(status)) => {
+                let build = running.swap_remove(index);
+                return Some(FinishedBuild {
+                    artifact: build.artifact,
+                    status: Ok(status),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let build = running.swap_remove(index);
+                return Some(FinishedBuild {
+                    artifact: build.artifact,
+                    status: Err(error),
+                });
+            }
+        }
+    }
+
+    running.pop().map(|mut build| FinishedBuild {
+        artifact: build.artifact,
+        status: build.child.wait(),
+    })
 }
 
 fn report_failed_status(artifact: &ArtifactMetadata, status: ExitStatus) {
