@@ -1,32 +1,21 @@
-use near_sdk::AccountId;
-
-use crate::util::SignerArgs;
-
-pub mod deployment;
+pub mod account;
+pub mod contract;
+pub mod ft;
 pub mod market;
+pub mod op;
 pub mod proxy_oracle;
-pub mod recover_nep141;
-pub mod redstone_adapter;
+pub mod recover;
+pub mod redstone;
 pub mod registry;
-pub mod storage_deposit;
+pub mod storage;
 
-/// Check if the account exists and, if so, delete it and send remaining funds
-/// to `beneficiary_id`. Returns `Ok(false)` if the account did not exist.
-pub async fn delete_account(
-    ctx: &crate::CliContext,
-    signer: &SignerArgs,
-    beneficiary_id: &AccountId,
-) -> anyhow::Result<bool> {
-    if !crate::near::account_exists(&ctx.near, &signer.account_id).await? {
-        tracing::info!(account_id = %signer.account_id, "Account does not exist, nothing to do");
-        return Ok(false);
-    }
-
-    let s = signer.signer();
-    ctx.batch(&s, &signer.account_id)
-        .delete_account(beneficiary_id)
-        .transact()
-        .await?;
-
-    Ok(true)
-}
+pub use account::AccountNs;
+pub use contract::ContractNs;
+pub use ft::FtNs;
+pub use market::MarketNs;
+pub use op::OpNs;
+pub use proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs, ProxyOracleOwnerNs};
+pub use recover::RecoverNep141;
+pub use redstone::RedstoneNs;
+pub use registry::RegistryNs;
+pub use storage::StorageNs;

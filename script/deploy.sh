@@ -54,62 +54,71 @@ done
 PROXY_ORACLE_NAME="proxy-oracle-$MARKET_NAME"
 PROXY_ORACLE_ID="$PROXY_ORACLE_NAME.$REGISTRY_ID"
 
+TMPLRMGR_GLOBAL_ARGS=(
+    --network "$NETWORK"
+)
+
 # script
 echo "Deploying proxy oracle..."
-tmplrmgr proxy-oracle deploy from-registry \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    registry deploy \
     --registry-id "$REGISTRY_ID" \
-    --version-key "$PROXY_ORACLE_VERSION_KEY" \
     --name "$PROXY_ORACLE_NAME" \
+    --version-key "$PROXY_ORACLE_VERSION_KEY" \
     --deposit "3.5 NEAR"
 
 echo "Proposing proxy oracle owner..."
-near contract call-function as-transaction "$PROXY_ORACLE_ID" own_propose_owner \
-    json-args "{\"account_id\":\"$SIGNER_ID\"}" \
-    prepaid-gas '100.0 Tgas' \
-    attached-deposit '1 yoctoNEAR' \
-    sign-as "$REGISTRY_ID" \
-    network-config "$NETWORK" \
-    sign-with-plaintext-private-key "$SECRET_KEY" \
-    send
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$REGISTRY_ID" \
+    proxy-oracle-owner propose-owner \
+    --oracle-id "$PROXY_ORACLE_ID" \
+    --account-id "$SIGNER_ID"
 
 echo "Accepting proxy oracle owner..."
-near contract call-function as-transaction "$PROXY_ORACLE_ID" own_accept_owner \
-    json-args "{}" \
-    prepaid-gas '100.0 Tgas' \
-    attached-deposit '1 yoctoNEAR' \
-    sign-as "$SIGNER_ID" \
-    network-config "$NETWORK" \
-    sign-with-plaintext-private-key "$SECRET_KEY" \
-    send
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    proxy-oracle-owner accept-owner \
+    --oracle-id "$PROXY_ORACLE_ID"
 
 echo "Creating collateral proxy..."
-tmplrmgr proxy-oracle governance create \
-    --oracle-id "$PROXY_ORACLE_ID" \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    proxy-oracle-governance create-proposal \
+    --governance-id "$PROXY_ORACLE_ID" \
     --id 0 \
-    proxy \
+    --operation set-proxy \
     --price-id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
-    --insert-file "$PROXY_COLLATERAL_ARGS_FILE"
+    --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
 
-tmplrmgr proxy-oracle governance execute \
-    --oracle-id "$PROXY_ORACLE_ID" \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    proxy-oracle-governance execute-proposal \
+    --governance-id "$PROXY_ORACLE_ID" \
     --id 0
 
 echo "Creating borrow proxy..."
-tmplrmgr proxy-oracle governance create \
-    --oracle-id "$PROXY_ORACLE_ID" \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    proxy-oracle-governance create-proposal \
+    --governance-id "$PROXY_ORACLE_ID" \
     --id 1 \
-    proxy \
+    --operation set-proxy \
     --price-id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
-    --insert-file "$PROXY_BORROW_ARGS_FILE"
+    --proxy-file "$PROXY_BORROW_ARGS_FILE"
 
-tmplrmgr proxy-oracle governance execute \
-    --oracle-id "$PROXY_ORACLE_ID" \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    proxy-oracle-governance execute-proposal \
+    --governance-id "$PROXY_ORACLE_ID" \
     --id 1
 
 echo "Deploying market..."
-tmplrmgr market deploy from-registry \
+tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
+    --signer-id "$SIGNER_ID" \
+    market create \
     --registry-id "$REGISTRY_ID" \
-    --version-key "$MARKET_VERSION_KEY" \
     --name "$MARKET_NAME" \
-    --args-file "$MARKET_ARGS_FILE" \
+    --version-key "$MARKET_VERSION_KEY" \
+    --init-args-file "$MARKET_ARGS_FILE" \
     --deposit "5.5 NEAR"

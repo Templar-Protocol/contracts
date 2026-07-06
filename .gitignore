@@ -47,6 +47,7 @@ client/vault/dist/
 
 # local agent scratch space
 .codex/
+.codegraph
 
 .aider*
 .claude/
