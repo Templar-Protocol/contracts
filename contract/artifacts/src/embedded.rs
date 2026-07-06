@@ -39,126 +39,52 @@ pub enum EmbeddedError {
     Unknown,
 }
 
-struct EmbeddedArtifact {
-    name: &'static str,
-    bytes: &'static [u8],
-}
-
-const REGISTRY: EmbeddedArtifact = EmbeddedArtifact {
-    name: "Registry",
-    bytes: include_bytes!("../res/near/templar_registry_contract/templar_registry_contract.wasm"),
-};
-const MARKET: EmbeddedArtifact = EmbeddedArtifact {
-    name: "Market",
-    bytes: include_bytes!("../res/near/templar_market_contract/templar_market_contract.wasm"),
-};
-const VAULT: EmbeddedArtifact = EmbeddedArtifact {
-    name: "Vault",
-    bytes: include_bytes!("../res/near/templar_vault_contract/templar_vault_contract.wasm"),
-};
-const UNIVERSAL_ACCOUNT: EmbeddedArtifact = EmbeddedArtifact {
-    name: "UniversalAccount",
-    bytes: include_bytes!(
-        "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
-    ),
-};
-const PROXY_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
-    name: "ProxyOracle",
-    bytes: include_bytes!(
-        "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
-    ),
-};
-const PROXY_GOVERNANCE: EmbeddedArtifact = EmbeddedArtifact {
-    name: "ProxyGovernance",
-    bytes: include_bytes!(
-        "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
-    ),
-};
-const LST_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
-    name: "LstOracle",
-    bytes: include_bytes!(
-        "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
-    ),
-};
-const REDSTONE_ADAPTER: EmbeddedArtifact = EmbeddedArtifact {
-    name: "RedstoneAdapter",
-    bytes: include_bytes!(
-        "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
-    ),
-};
-const PYTH_PRO_ADAPTER: EmbeddedArtifact = EmbeddedArtifact {
-    name: "PythProAdapter",
-    bytes: include_bytes!(
-        "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
-    ),
-};
-const MOCK_FT: EmbeddedArtifact = EmbeddedArtifact {
-    name: "MockFt",
-    bytes: include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
-};
-const MOCK_MT: EmbeddedArtifact = EmbeddedArtifact {
-    name: "MockMt",
-    bytes: include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
-};
-const MOCK_ORACLE: EmbeddedArtifact = EmbeddedArtifact {
-    name: "MockOracle",
-    bytes: include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
-};
-const MOCK_REF_FINANCE: EmbeddedArtifact = EmbeddedArtifact {
-    name: "MockRefFinance",
-    bytes: include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
-};
-const MOCK_RECEIVER: EmbeddedArtifact = EmbeddedArtifact {
-    name: "MockReceiver",
-    bytes: include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
-};
-
-const EMBEDDED_ARTIFACTS: &[EmbeddedArtifact] = &[
-    REGISTRY,
-    MARKET,
-    VAULT,
-    UNIVERSAL_ACCOUNT,
-    PROXY_ORACLE,
-    PROXY_GOVERNANCE,
-    LST_ORACLE,
-    REDSTONE_ADAPTER,
-    PYTH_PRO_ADAPTER,
-    MOCK_FT,
-    MOCK_MT,
-    MOCK_ORACLE,
-    MOCK_REF_FINANCE,
-    MOCK_RECEIVER,
-];
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 pub(crate) fn embedded_bytes(id: ArtifactId) -> &'static [u8] {
-    let artifact = match id {
-        ArtifactId::Registry => REGISTRY,
-        ArtifactId::Market => MARKET,
-        ArtifactId::Vault => VAULT,
-        ArtifactId::UniversalAccount => UNIVERSAL_ACCOUNT,
-        ArtifactId::ProxyOracle => PROXY_ORACLE,
-        ArtifactId::ProxyGovernance => PROXY_GOVERNANCE,
-        ArtifactId::LstOracle => LST_ORACLE,
-        ArtifactId::RedstoneAdapter => REDSTONE_ADAPTER,
-        ArtifactId::PythProAdapter => PYTH_PRO_ADAPTER,
-        ArtifactId::MockFt => MOCK_FT,
-        ArtifactId::MockMt => MOCK_MT,
-        ArtifactId::MockOracle => MOCK_ORACLE,
-        ArtifactId::MockRefFinance => MOCK_REF_FINANCE,
-        ArtifactId::MockReceiver => MOCK_RECEIVER,
-    };
-    artifact.bytes
+    match id {
+        ArtifactId::Registry => include_bytes!(
+            "../res/near/templar_registry_contract/templar_registry_contract.wasm"
+        ),
+        ArtifactId::Market => include_bytes!(
+            "../res/near/templar_market_contract/templar_market_contract.wasm"
+        ),
+        ArtifactId::Vault => include_bytes!(
+            "../res/near/templar_vault_contract/templar_vault_contract.wasm"
+        ),
+        ArtifactId::UniversalAccount => include_bytes!(
+            "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
+        ),
+        ArtifactId::ProxyOracle => include_bytes!(
+            "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
+        ),
+        ArtifactId::ProxyGovernance => include_bytes!(
+            "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
+        ),
+        ArtifactId::LstOracle => include_bytes!(
+            "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
+        ),
+        ArtifactId::RedstoneAdapter => include_bytes!(
+            "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
+        ),
+        ArtifactId::PythProAdapter => include_bytes!(
+            "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
+        ),
+        ArtifactId::MockFt => include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
+        ArtifactId::MockMt => include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
+        ArtifactId::MockOracle => include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
+        ArtifactId::MockRefFinance => include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
+        ArtifactId::MockReceiver => include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
+    }
 }
 
 /// Return the size in bytes of the embedded WASM for every catalogued artifact.
 pub fn embedded_sizes() -> Vec<(&'static str, usize)> {
-    EMBEDDED_ARTIFACTS
+    crate::artifact_catalog()
         .iter()
-        .map(|artifact| (artifact.name, artifact.bytes.len()))
+        .map(|artifact| (artifact.id.as_str(), artifact.id.embedded_bytes().len()))
         .collect()
 }
 
@@ -195,7 +121,12 @@ mod tests {
     #[test]
     fn test_embedded_sizes_all_artifacts() {
         let sizes = embedded_sizes();
-        assert_eq!(sizes.len(), 14, "should have 14 artifact sizes");
+        let expected = crate::artifact_catalog()
+            .iter()
+            .map(|artifact| (artifact.id.as_str(), artifact.id.embedded_bytes().len()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(sizes, expected);
         for (name, size) in &sizes {
             assert!(*size > 0, "embedded size for {name} is zero");
         }
