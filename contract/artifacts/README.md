@@ -38,6 +38,9 @@ When the `embedded-wasm` feature is active, every `include_bytes!` call
 reads from **checked-in files** under `contract/artifacts/res/near/`.
 These blobs are pinned in version control and only updated when the
 prebuild script is re-run and the fresh output is copied into `res/near/`.
+The prebuild script uses `cargo near build reproducible-wasm`; tracked
+source changes must be committed before running it so the checked-in blobs
+can be reproduced byte-for-byte by CI.
 
 All 14 catalogued artifacts (production and mock) have embedded bytes
 available.
@@ -60,7 +63,7 @@ match `Cargo.toml`), because `drift_check` is a substring filter matching
 If either test fails, the checked-in bytes or catalog versions need updating.
 Fix by:
 
-1. Run `./script/prebuild-test-contracts.sh`
+1. Commit tracked source/build changes, then run `./script/prebuild-test-contracts.sh`
 2. Copy fresh WASM from `target/near/` to `contract/artifacts/res/near/`
 3. Rebuild the crate
 4. Run the drift check again
