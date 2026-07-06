@@ -4,7 +4,11 @@ use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::oracle::{pyth::PriceIdentifier, redstone};
 use templar_gateway_core::{
-    client::{lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs},
+    client::{
+        lst_oracle::GetTransformerArgs,
+        proxy_oracle::{GetProxyArgs, UpdatePricesArgs},
+        ContractWriteOptions,
+    },
     plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices, query_contract_kind,
     GatewayError, GatewayResult, HasNearClient, OperationPlan, OraclePayloadSource, PlanWrite,
 };
@@ -101,10 +105,26 @@ where
         request: templar_gateway_types::common::WriteRequest<UpdatePrices>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
-        let requests =
-            resolve_update_requests(&ctx, request.body.oracle_id, request.body.price_ids).await?;
+        let signer_account_id = request.signer_account_id;
+        let oracle_id = request.body.oracle_id;
+        let price_ids = request.body.price_ids;
 
-        plan_grouped_updates(&ctx, request.signer_account_id, requests).await
+        let (kind, requests) = resolve_update_requests(&ctx, oracle_id.clone(), &price_ids).await?;
+
+        let mut plan = plan_grouped_updates(&ctx, signer_account_id.clone(), requests).await?;
+
+        // When the target is a proxy oracle, re-aggregate its cached prices after the
+        // underlying updates. Steps execute sequentially, so the proxy read sees the fresh
+        // underlying prices this same operation just wrote.
+        if matches!(kind, OracleContractKind::Proxy) {
+            plan.steps
+                .push(ctx.near_client().proxy_oracle(oracle_id).update_prices(
+                    ContractWriteOptions::new(signer_account_id).tgas(100),
+                    UpdatePricesArgs { price_ids },
+                )?);
+        }
+
+        Ok(plan)
     }
 }
 
@@ -209,16 +229,16 @@ where
 async fn resolve_update_requests<C: HasNearClient>(
     ctx: &C,
     oracle_id: AccountId,
-    price_ids: Vec<PriceIdentifier>,
-) -> GatewayResult<Vec<OracleRequest>> {
+    price_ids: &[PriceIdentifier],
+) -> GatewayResult<(OracleContractKind, Vec<OracleRequest>)> {
     let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
     let mut requests = BTreeSet::new();
 
-    for price_id in price_ids {
+    for &price_id in price_ids {
         requests.extend(resolve_dependencies(ctx, oracle_id.clone(), price_id, &kind).await?);
     }
 
-    Ok(requests.into_iter().collect())
+    Ok((kind, requests.into_iter().collect()))
 }
 
 async fn get_proxy<C: HasNearClient>(
@@ -621,6 +641,50 @@ mod tests {
         assert!(
             matches!(error, GatewayError::ExternalService(ref msg) if msg.contains("unavailable")),
             "expected ExternalService carrying the source-error detail, got {error:?}"
+        );
+    }
+
+    // The proxy re-aggregation step `UpdatePrices::plan` appends for a proxy oracle must
+    // call the proxy's own `update_prices` with the requested (proxy-level) price ids. The
+    // kind gating itself needs a live `contract.getKind` query and is covered by the
+    // gateway sandbox test `oracle_update_prices_endpoint_resolves_and_updates_dependencies`.
+    #[test]
+    fn proxy_reaggregation_step_calls_proxy_update_prices() {
+        let ctx = TestCtx {
+            near_client: test_client(),
+            pyth_source: FakePythSource {
+                payload: Vec::new(),
+            },
+            redstone_source: FakeRedStoneSource {
+                payload: Vec::new(),
+            },
+            lazer_source: FakeLazerSource {
+                outcome: Ok(Vec::new()),
+            },
+        };
+        let oracle_id: AccountId = "proxy.near".parse().expect("valid account id");
+        let price_ids = vec![PriceIdentifier([0x11; 32]), PriceIdentifier([0x22; 32])];
+
+        let step = ctx
+            .near_client()
+            .proxy_oracle(oracle_id.clone())
+            .update_prices(
+                ContractWriteOptions::new(signer_id()).tgas(100),
+                UpdatePricesArgs {
+                    price_ids: price_ids.clone(),
+                },
+            )
+            .expect("proxy re-aggregation step must build");
+
+        assert_eq!(step.receiver_id, oracle_id);
+        let (method, args_bytes) = unpack_function_call(&step);
+        assert_eq!(method, "update_prices");
+        let args_json: serde_json::Value =
+            serde_json::from_slice(&args_bytes).expect("args must be valid json");
+        assert_eq!(
+            args_json["price_ids"].as_array().map(Vec::len),
+            Some(price_ids.len()),
+            "proxy step must carry every requested price id; got: {args_json}"
         );
     }
 }

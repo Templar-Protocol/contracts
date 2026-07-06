@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::HashSet, str::FromStr, time::Duration};
+use std::{collections::HashSet, str::FromStr};
 
 use axum::extract::Query;
 use axum::{extract::State, Json};
@@ -35,7 +35,6 @@ use templar_common::{
     },
     registry::DeployMode,
 };
-use templar_gateway_client::SigningClient;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{
     input::{ProxyPriceTransformer, Source},
@@ -43,8 +42,7 @@ use templar_proxy_oracle_near_common::{
     request::OracleRequest,
 };
 use templar_relayer::{
-    app::{args, App, Configuration, SubmitError},
-    client::oracle,
+    app::{App, Configuration, SubmitError},
     route::{
         get_market_prices::GetMarketPricesRequest,
         relay::RelayRequest as SdaRelayRequest,
@@ -1263,55 +1261,6 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
         .await;
 
     eprintln!("Status: {status:?}");
-}
-
-#[rstest]
-#[tokio::test]
-#[ignore = "Puts tx on testnet. Set ACCOUNT_ID and SECRET_KEY before running."]
-pub async fn pyth_updates() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
-
-    let account_id: AccountId = std::env::var("ACCOUNT_ID").unwrap().parse().unwrap();
-    let secret_key: near_crypto::SecretKey = std::env::var("SECRET_KEY").unwrap().parse().unwrap();
-
-    let pyth_args = args::PythConfig {
-        hermes_url: "https://hermes-beta.pyth.network".to_string(),
-        refresh: Duration::from_secs(25),
-        timeout: Duration::from_secs(10),
-    };
-
-    let network = near_api::NetworkConfig::from_rpc_url(
-        "test",
-        "https://test.rpc.fastnear.com".parse().unwrap(),
-    );
-    let gateway = SigningClient::connect(
-        network,
-        account_id.clone(),
-        secret_key.to_string().parse().unwrap(),
-    )
-    .unwrap();
-
-    let kill = watch::Sender::default();
-
-    let pyth = oracle::PythSpec::handle(pyth_args.clone(), gateway, kill.clone());
-
-    let price_id = PriceIdentifier(
-        hex::decode("f9c0172ba10dfa4d19088d94f5bf61d3b54d5bd7483a322a982e1373ee8ea31b")
-            .unwrap()
-            .try_into()
-            .unwrap(),
-    );
-
-    let txid = pyth
-        .update("pyth-oracle.testnet".parse().unwrap(), Box::new([price_id]))
-        .await
-        .unwrap();
-
-    eprintln!("Transaction hash: {txid:?}");
-
-    kill.send(()).unwrap();
 }
 
 #[rstest]

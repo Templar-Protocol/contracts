@@ -1,7 +1,6 @@
 use std::{
     borrow::Borrow,
     collections::{hash_map::Entry, HashMap, HashSet},
-    future::Future,
     sync::Arc,
     time::Duration,
 };
@@ -11,19 +10,19 @@ use near_sdk::{serde_json, AccountId, AccountIdRef, Gas, NearToken};
 use templar_common::{
     asset::{BorrowAsset, CollateralAsset},
     market::DepositMsg,
-    oracle::{pyth, redstone},
+    oracle::pyth,
 };
-use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
+use templar_gateway_client::{
+    collect_paginated, Client as GatewayClient, NetworkConfigBuilder, OracleUpdatesClient,
+};
 use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
-use templar_gateway_methods_spec::{
-    chain, market, oracle as oracle_spec, proxy_oracle, registry, storage,
-};
+use templar_gateway_methods_spec::{chain, contract, market, registry, storage};
 use templar_gateway_types::{
     common::{Pagination, WriteOperationResult, WriteRequest},
-    CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
+    ContractKind, CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
 };
-use templar_proxy_oracle_near_common::{cache::CachedProxyPriceStatus, request::OracleRequest};
+use templar_proxy_oracle_near_common::cache::CachedProxyPriceStatus;
 use tokio::{
     sync::{watch, RwLock},
     task::JoinSet,
@@ -43,18 +42,6 @@ use crate::{
 pub mod args;
 pub use args::Configuration;
 
-type PythUpdatesByOracle = HashMap<AccountId, HashSet<pyth::PriceIdentifier>>;
-type RedstoneUpdatesByOracle = HashMap<AccountId, HashSet<redstone::FeedId>>;
-
-/// The per-oracle price updates a set of markets needs, grouped by oracle kind.
-/// A named struct rather than a 3-tuple, since `pyth` and `proxy` share a type
-/// but mean different things.
-struct GroupedPriceUpdates {
-    pyth: PythUpdatesByOracle,
-    redstone: RedstoneUpdatesByOracle,
-    proxy: PythUpdatesByOracle,
-}
-
 /// Gas attached to a `storage_deposit` call (matches the gateway's
 /// `storage.deposit` plan); used to size the allowance lock estimate.
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(100);
@@ -67,8 +54,11 @@ pub struct App {
     /// (market/oracle/storage/chain) and writes (meta-tx relay, UA execute/
     /// create, storage deposit) all go through its typed specs.
     pub gateway: GatewayClient,
-    pub pyth: oracle::Handle<oracle::PythSpec>,
-    pub redstone: oracle::Handle<oracle::RedStoneSpec>,
+    /// Oracle-updates client sharing the methods `gateway`'s operation driver
+    /// (store, signer pool, idempotency, recovery). Drives `oracle.updatePrices`,
+    /// which resolves each market oracle's dependencies and pulls the underlying
+    /// Pyth/RedStone/Lazer payloads in-process.
+    pub oracle_updates: OracleUpdatesClient,
     pub database: Database,
 }
 
@@ -98,10 +88,11 @@ impl App {
                 .secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())
                 .await?;
         }
-        let gateway = builder.build()?;
-        let relay_gateway = gateway
-            .clone()
-            .into_signing(args.relay.account_id.clone())?;
+        // The methods client and the oracle-updates client share one operation
+        // driver (store, signer pool, executor) and a base context, so idempotency,
+        // replay, the startup-recovery sweep, and the NEAR read cache span both.
+        let (gateway, oracle_updates) =
+            builder.build_with_oracle_updates(args.oracle_sources.build()?)?;
 
         let database = Database::new(&args.database_url, kill.clone())?;
 
@@ -128,11 +119,6 @@ impl App {
             }
         }
 
-        let pyth = oracle::PythSpec::handle(args.pyth.clone(), relay_gateway.clone(), kill.clone());
-
-        let redstone =
-            oracle::RedStoneSpec::handle(args.redstone.clone(), relay_gateway, kill.clone())?;
-
         tokio::spawn(broom::start(
             database.clone(),
             gateway.clone(),
@@ -145,8 +131,7 @@ impl App {
             args,
             accounts: Arc::new(RwLock::new(AccountData::default())),
             gateway,
-            pyth,
-            redstone,
+            oracle_updates,
             database,
         })
     }
@@ -371,231 +356,90 @@ impl App {
         (interacted_contract_ids, market_ids)
     }
 
-    /// Resolve, on demand, the oracle price updates required before touching the
-    /// given markets, grouped by oracle and underlying source.
+    /// Refresh, on demand, every market oracle's prices before touching the given
+    /// markets.
     ///
-    /// For each market the configuration and per-feed resolution dependencies
-    /// are read fresh through the gateway (cached server-side), so this never
-    /// relies on stale local state. Proxy-backed markets additionally enqueue a
-    /// refresh of the proxy's own cached prices.
-    #[allow(clippy::type_complexity)]
-    async fn group_price_updates(
+    /// For each market the configuration is read fresh through the gateway (cached
+    /// server-side), then a single `oracle.updatePrices` resolves the oracle's
+    /// Direct/Proxy/LST dependencies, pulls the underlying Pyth/RedStone/Lazer
+    /// payloads in-process, and — for a proxy oracle — re-aggregates its cached
+    /// prices, all as one store-backed operation. If a proxy price comes back
+    /// non-`Accepted` we log loudly but still relay, so the user's transaction lands
+    /// on-chain with a precise rejection rather than an opaque relayer error.
+    pub async fn update_market_prices(
         &self,
         market_ids: &HashSet<AccountId>,
-    ) -> GatewayResult<GroupedPriceUpdates> {
-        let mut pyth = PythUpdatesByOracle::new();
-        let mut redstone = RedstoneUpdatesByOracle::new();
-        let mut proxy = PythUpdatesByOracle::new();
-
+    ) -> Result<(), PriceUpdateError> {
         for market_id in market_ids {
             let configuration = self
                 .gateway
                 .read(market::GetConfiguration::new(market_id.clone()))
-                .await?;
+                .await
+                .map_err(PriceUpdateError::Resolve)?;
             let oracle_cfg = configuration.price_oracle_configuration;
-            let oracle_id = oracle_cfg.account_id.clone();
-
-            let mut requires_proxy_update = false;
-            for price_id in [
+            let oracle_id = oracle_cfg.account_id;
+            let price_ids = vec![
                 oracle_cfg.collateral_asset_price_id,
                 oracle_cfg.borrow_asset_price_id,
-            ] {
-                let dependencies = self
-                    .gateway
-                    .read(oracle_spec::GetPriceResolutionDependencies {
-                        oracle_id: oracle_id.clone(),
-                        price_id,
-                    })
-                    .await?;
-                accumulate_oracle_requests(&dependencies.requests, &mut pyth, &mut redstone);
-                requires_proxy_update |=
-                    matches!(dependencies.kind, oracle_spec::OracleContractKind::Proxy);
+            ];
+
+            let result = self
+                .oracle_updates
+                .execute_prices(
+                    self.args.relay.account_id.clone(),
+                    oracle_id.clone(),
+                    price_ids.clone(),
+                )
+                .await
+                .map_err(oracle::UpdateError::from)
+                .map_err(Arc::new)
+                .map_err(PriceUpdateError::Oracle)?;
+
+            if result.operation.status != OperationStatus::Succeeded {
+                return Err(PriceUpdateError::Oracle(Arc::new(
+                    oracle::UpdateError::NotSucceeded {
+                        operation_id: result.operation.id.0,
+                        status: result.operation.status,
+                    },
+                )));
             }
 
-            if requires_proxy_update {
-                proxy.entry(oracle_id).or_default().extend([
-                    oracle_cfg.collateral_asset_price_id,
-                    oracle_cfg.borrow_asset_price_id,
-                ]);
-            }
-        }
-
-        Ok(GroupedPriceUpdates {
-            pyth,
-            redstone,
-            proxy,
-        })
-    }
-
-    async fn dispatch_grouped_price_updates<
-        PythUpdate,
-        PythFuture,
-        RedstoneUpdate,
-        RedstoneFuture,
-        ProxyUpdate,
-        ProxyFuture,
-    >(
-        pyth_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
-        redstone_updates: HashMap<AccountId, HashSet<redstone::FeedId>>,
-        proxy_updates: HashMap<AccountId, HashSet<pyth::PriceIdentifier>>,
-        mut pyth_update: PythUpdate,
-        mut redstone_update: RedstoneUpdate,
-        mut proxy_update: ProxyUpdate,
-    ) -> Result<(), PriceUpdateError>
-    where
-        PythUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> PythFuture,
-        PythFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
-        RedstoneUpdate: FnMut(AccountId, Box<[redstone::FeedId]>) -> RedstoneFuture,
-        RedstoneFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
-        ProxyUpdate: FnMut(AccountId, Box<[pyth::PriceIdentifier]>) -> ProxyFuture,
-        ProxyFuture: Future<Output = Result<Option<CryptoHash>, Arc<oracle::UpdateError>>>,
-    {
-        for (oracle_id, feed_ids) in pyth_updates {
-            match pyth_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await {
-                Ok(Some(hash)) => {
-                    tracing::debug!(%hash, "Oracle update transaction succeeded");
-                }
-                Ok(None) => {
-                    tracing::debug!("No price updates needed");
-                }
-                Err(error) => {
-                    tracing::error!(%error, "Oracle update failed");
-                    return Err(PriceUpdateError::Oracle(error));
-                }
-            }
-        }
-
-        for (oracle_id, feed_ids) in redstone_updates {
-            match redstone_update(oracle_id, feed_ids.into_iter().collect::<Vec<_>>().into()).await
-            {
-                Ok(Some(hash)) => {
-                    tracing::debug!(%hash, "Oracle update transaction succeeded");
-                }
-                Ok(None) => {
-                    tracing::debug!("No price updates needed");
-                }
-                Err(error) => {
-                    tracing::error!(%error, "Oracle update failed");
-                    return Err(PriceUpdateError::Oracle(error));
-                }
-            }
-        }
-
-        for (oracle_id, price_ids) in proxy_updates {
-            match proxy_update(oracle_id, price_ids.into_iter().collect::<Vec<_>>().into()).await {
-                Ok(Some(hash)) => {
-                    tracing::debug!(%hash, "Proxy oracle update transaction succeeded");
-                }
-                Ok(None) => {
-                    tracing::debug!("No proxy price updates needed");
-                }
-                Err(error) => {
-                    tracing::error!(%error, "Proxy oracle update failed");
-                    return Err(PriceUpdateError::Oracle(error));
+            // A proxy oracle's re-aggregation (the operation's final step) returns a
+            // per-price status map and succeeds even when a price is
+            // circuit-breaker-blocked or failed to resolve. We do NOT abort the relay
+            // on a non-`Accepted` price: the user has a valid, already-paid-for
+            // request, and blocking it here trades a precise on-chain rejection (with a
+            // tx hash the user can reference) for an opaque transient relayer error.
+            // Instead, log loudly and let the transaction land, where the market
+            // contract surfaces the real reason. Direct/LST oracles have no such step.
+            let kind = self
+                .gateway
+                .read(contract::GetKind {
+                    contract_id: oracle_id.clone(),
+                })
+                .await
+                .map_err(PriceUpdateError::Resolve)?;
+            if matches!(kind.kind, ContractKind::ProxyOracle) {
+                if let Err(error) = proxy_prices_all_accepted(
+                    &price_ids,
+                    result
+                        .operation
+                        .final_outcome()
+                        .and_then(|outcome| outcome.return_value.as_deref()),
+                ) {
+                    tracing::warn!(
+                        %market_id,
+                        %oracle_id,
+                        %error,
+                        "Proxy oracle prices were not all accepted after update; relaying the \
+                         user transaction anyway so it lands on-chain with a precise rejection \
+                         instead of a transient relayer error"
+                    );
                 }
             }
         }
 
         Ok(())
-    }
-
-    async fn update_proxy_prices(
-        &self,
-        oracle_id: AccountId,
-        price_ids: Box<[pyth::PriceIdentifier]>,
-    ) -> Result<Option<CryptoHash>, Arc<oracle::UpdateError>> {
-        if price_ids.is_empty() {
-            return Ok(None);
-        }
-
-        let requested = price_ids.into_vec();
-        let result = self
-            .gateway
-            .execute_as(
-                self.args.relay.account_id.clone(),
-                proxy_oracle::UpdatePrices {
-                    oracle_id,
-                    price_ids: requested.clone(),
-                },
-            )
-            .await
-            .map_err(oracle::UpdateError::from)
-            .map_err(Arc::new)?;
-
-        if result.operation.status != OperationStatus::Succeeded {
-            return Err(Arc::new(oracle::UpdateError::NotSucceeded {
-                operation_id: result.operation.id.0,
-                status: result.operation.status,
-            }));
-        }
-
-        // The proxy's `update_prices` returns a per-price status map and the
-        // transaction succeeds even when a price is circuit-breaker-blocked, so
-        // require EVERY requested price to come back `Accepted` before the caller
-        // relays a user action that would price against stale/unavailable data. A
-        // missing return value, or a missing / non-accepted entry, is unavailable
-        // (only checking the returned entries would let an omitted price slip by).
-        let Some(return_value) = result
-            .operation
-            .final_outcome()
-            .and_then(|outcome| outcome.return_value.as_ref())
-        else {
-            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
-                price_ids: requested,
-            }));
-        };
-        let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
-            serde_json::from_slice(return_value)
-                .map_err(|error| Arc::new(oracle::UpdateError::ProxyResultDecode(error)))?;
-        let unavailable: Vec<pyth::PriceIdentifier> = requested
-            .into_iter()
-            .filter(|id| {
-                !matches!(
-                    statuses.get(id),
-                    Some(CachedProxyPriceStatus::Accepted { .. })
-                )
-            })
-            .collect();
-        if !unavailable.is_empty() {
-            return Err(Arc::new(oracle::UpdateError::ProxyPricesUnavailable {
-                price_ids: unavailable,
-            }));
-        }
-
-        Ok(result.operation.latest_tx_hash())
-    }
-
-    pub async fn update_market_prices(
-        &self,
-        market_ids: &HashSet<AccountId>,
-    ) -> Result<(), PriceUpdateError> {
-        let GroupedPriceUpdates {
-            pyth: pyth_updates,
-            redstone: redstone_updates,
-            proxy: proxy_updates,
-        } = self
-            .group_price_updates(market_ids)
-            .await
-            .map_err(PriceUpdateError::Resolve)?;
-
-        let pyth = self.pyth.clone();
-        let redstone = self.redstone.clone();
-
-        Self::dispatch_grouped_price_updates(
-            pyth_updates,
-            redstone_updates,
-            proxy_updates,
-            move |oracle_id, feed_ids| {
-                let pyth = pyth.clone();
-                async move { pyth.update(oracle_id, feed_ids).await }
-            },
-            move |oracle_id, feed_ids| {
-                let redstone = redstone.clone();
-                async move { redstone.update(oracle_id, feed_ids).await }
-            },
-            |oracle_id, price_ids| async move { self.update_proxy_prices(oracle_id, price_ids).await },
-        )
-        .await
     }
 
     /// Checks that the all of the function call actions are allowed for the specific receiver.
@@ -1075,31 +919,39 @@ pub fn from_gateway_hash(hash: &CryptoHash) -> near_primitives::hash::CryptoHash
 )]
 const REGISTRY_PAGE_SIZE: std::num::NonZeroU32 = std::num::NonZeroU32::new(100).unwrap();
 
-/// Fold a list of resolved oracle requests into the per-oracle pyth/redstone
-/// update sets.
-fn accumulate_oracle_requests(
-    requests: &[OracleRequest],
-    pyth: &mut PythUpdatesByOracle,
-    redstone: &mut RedstoneUpdatesByOracle,
-) {
-    for request in requests {
-        match request {
-            OracleRequest::Pyth(request) => {
-                pyth.entry(request.oracle_id.clone())
-                    .or_default()
-                    .insert(request.price_id);
-            }
-            OracleRequest::RedStone(request) => {
-                redstone
-                    .entry(request.oracle_id.clone())
-                    .or_default()
-                    .insert(request.price_id.clone());
-            }
-            // Lazer writes are owned by the gateway (it holds the Lazer payload
-            // source and writes the pyth-pro adapter); the relayer has no Lazer
-            // source and never pushes these, so they are intentionally skipped.
-            OracleRequest::Lazer(_) => {}
-        }
+/// Check a proxy oracle's re-aggregation result: every requested price should come
+/// back `Accepted`. A missing return value, a missing entry, or any non-`Accepted`
+/// status is unavailable — checking only the returned entries would let an omitted
+/// price slip by. `return_value` is the operation's final-step return value (the
+/// proxy `update_prices` status map). The `Err` describes what was unavailable; the
+/// caller logs it rather than blocking the relay.
+fn proxy_prices_all_accepted(
+    requested: &[pyth::PriceIdentifier],
+    return_value: Option<&[u8]>,
+) -> Result<(), oracle::UpdateError> {
+    let Some(return_value) = return_value else {
+        return Err(oracle::UpdateError::ProxyPricesUnavailable {
+            price_ids: requested.to_vec(),
+        });
+    };
+    let statuses: HashMap<pyth::PriceIdentifier, CachedProxyPriceStatus> =
+        serde_json::from_slice(return_value).map_err(oracle::UpdateError::ProxyResultDecode)?;
+    let unavailable: Vec<pyth::PriceIdentifier> = requested
+        .iter()
+        .copied()
+        .filter(|id| {
+            !matches!(
+                statuses.get(id),
+                Some(CachedProxyPriceStatus::Accepted { .. })
+            )
+        })
+        .collect();
+    if unavailable.is_empty() {
+        Ok(())
+    } else {
+        Err(oracle::UpdateError::ProxyPricesUnavailable {
+            price_ids: unavailable,
+        })
     }
 }
 
@@ -1129,11 +981,9 @@ async fn load_registry_deployments(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use near_sdk::AccountId;
-    use templar_common::oracle::{pyth::PriceIdentifier, redstone::FeedId};
-    use tokio::{sync::Notify, time::timeout};
+    use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+    use templar_proxy_oracle_kernel::Price;
 
     use super::*;
 
@@ -1143,6 +993,23 @@ mod tests {
 
     fn price_id(byte: u8) -> PriceIdentifier {
         PriceIdentifier([byte; 32])
+    }
+
+    fn accepted() -> CachedProxyPriceStatus {
+        CachedProxyPriceStatus::Accepted {
+            price: Price {
+                price: 1,
+                conf: 0,
+                expo: 0,
+                publish_time_ns: Nanoseconds::zero(),
+            },
+        }
+    }
+
+    fn status_map_bytes(entries: &[(PriceIdentifier, CachedProxyPriceStatus)]) -> Vec<u8> {
+        let map: HashMap<PriceIdentifier, CachedProxyPriceStatus> =
+            entries.iter().cloned().collect();
+        serde_json::to_vec(&map).unwrap()
     }
 
     #[test]
@@ -1181,143 +1048,54 @@ mod tests {
     }
 
     #[test]
-    fn accumulate_oracle_requests_groups_by_source_and_oracle() {
-        let pyth_oracle = account_id("pyth.test.near");
-        let redstone_oracle = account_id("redstone.test.near");
+    fn proxy_guard_passes_when_every_requested_price_is_accepted() {
+        let ids = [price_id(1), price_id(2)];
+        let bytes = status_map_bytes(&[(price_id(1), accepted()), (price_id(2), accepted())]);
 
-        let requests = [
-            OracleRequest::pyth(pyth_oracle.clone(), price_id(11)),
-            OracleRequest::pyth(pyth_oracle.clone(), price_id(12)),
-            OracleRequest::redstone(redstone_oracle.clone(), FeedId::from("ETH")),
-            OracleRequest::redstone(redstone_oracle.clone(), FeedId::from("BTC")),
-        ];
-
-        let mut pyth = PythUpdatesByOracle::new();
-        let mut redstone = RedstoneUpdatesByOracle::new();
-        accumulate_oracle_requests(&requests, &mut pyth, &mut redstone);
-
-        assert_eq!(
-            pyth[&pyth_oracle],
-            HashSet::from([price_id(11), price_id(12)])
-        );
-        assert_eq!(
-            redstone[&redstone_oracle],
-            HashSet::from([FeedId::from("ETH"), FeedId::from("BTC")])
-        );
+        proxy_prices_all_accepted(&ids, Some(&bytes)).expect("all-accepted result must pass");
     }
 
-    #[tokio::test]
-    async fn dispatch_grouped_price_updates_waits_for_underlying_before_proxy() {
-        let pyth_updates =
-            HashMap::from([(account_id("pyth.test.near"), HashSet::from([price_id(1)]))]);
-        let redstone_updates = HashMap::from([(
-            account_id("redstone.test.near"),
-            HashSet::from([FeedId::from("BTC")]),
-        )]);
-        let proxy_updates =
-            HashMap::from([(account_id("proxy.test.near"), HashSet::from([price_id(2)]))]);
+    #[test]
+    fn proxy_guard_missing_return_value_marks_all_unavailable() {
+        let ids = [price_id(1), price_id(2)];
 
-        let pyth_started = Arc::new(Notify::new());
-        let pyth_release = Arc::new(Notify::new());
-        let redstone_started = Arc::new(Notify::new());
-        let redstone_release = Arc::new(Notify::new());
-        let proxy_started = Arc::new(Notify::new());
-
-        let task = tokio::spawn({
-            let pyth_started = pyth_started.clone();
-            let pyth_release = pyth_release.clone();
-            let redstone_started = redstone_started.clone();
-            let redstone_release = redstone_release.clone();
-            let proxy_started = proxy_started.clone();
-
-            App::dispatch_grouped_price_updates(
-                pyth_updates,
-                redstone_updates,
-                proxy_updates,
-                move |_, _| {
-                    let pyth_started = pyth_started.clone();
-                    let pyth_release = pyth_release.clone();
-                    async move {
-                        pyth_started.notify_one();
-                        pyth_release.notified().await;
-                        Ok(None)
-                    }
-                },
-                move |_, _| {
-                    let redstone_started = redstone_started.clone();
-                    let redstone_release = redstone_release.clone();
-                    async move {
-                        redstone_started.notify_one();
-                        redstone_release.notified().await;
-                        Ok(None)
-                    }
-                },
-                move |_, _| {
-                    let proxy_started = proxy_started.clone();
-                    async move {
-                        proxy_started.notify_one();
-                        Ok(None)
-                    }
-                },
-            )
-        });
-
-        timeout(Duration::from_secs(1), pyth_started.notified())
-            .await
-            .unwrap();
-        let redstone_started_while_pyth_blocked =
-            timeout(Duration::from_millis(100), redstone_started.notified())
-                .await
-                .is_ok();
-
-        pyth_release.notify_one();
-        timeout(Duration::from_secs(1), redstone_started.notified())
-            .await
-            .unwrap();
-        let proxy_started_while_redstone_blocked =
-            timeout(Duration::from_millis(100), proxy_started.notified())
-                .await
-                .is_ok();
-
-        redstone_release.notify_one();
-
-        task.await.unwrap().unwrap();
-
-        assert!(
-            !redstone_started_while_pyth_blocked,
-            "redstone update started before blocked pyth update completed"
-        );
-        assert!(
-            !proxy_started_while_redstone_blocked,
-            "proxy update started before blocked redstone update completed"
-        );
-    }
-
-    #[tokio::test]
-    async fn dispatch_grouped_price_updates_returns_proxy_update_failures() {
-        let failed_price_id = price_id(2);
-        let result = App::dispatch_grouped_price_updates(
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::from([(
-                account_id("proxy.test.near"),
-                HashSet::from([failed_price_id]),
-            )]),
-            |_, _| async { Ok(None) },
-            |_, _| async { Ok(None) },
-            |_, _| async {
-                Err(Arc::new(oracle::UpdateError::NotSucceeded {
-                    operation_id: "op-1".to_owned(),
-                    status: templar_gateway_types::OperationStatus::Failed,
-                }))
-            },
-        )
-        .await;
+        let error = proxy_prices_all_accepted(&ids, None)
+            .expect_err("a missing return value must be treated as unavailable");
 
         assert!(matches!(
-            result,
-            Err(PriceUpdateError::Oracle(error))
-                if matches!(&*error, oracle::UpdateError::NotSucceeded { .. })
+            error,
+            oracle::UpdateError::ProxyPricesUnavailable { price_ids } if price_ids == ids.to_vec()
         ));
+    }
+
+    #[test]
+    fn proxy_guard_flags_omitted_and_non_accepted_prices() {
+        let ids = [price_id(1), price_id(2)];
+        // `price_id(1)` is omitted entirely; `price_id(2)` is present but not accepted.
+        let bytes = status_map_bytes(&[(
+            price_id(2),
+            CachedProxyPriceStatus::ResolveFailed {
+                message: "boom".to_owned(),
+            },
+        )]);
+
+        let error = proxy_prices_all_accepted(&ids, Some(&bytes))
+            .expect_err("an omitted or non-accepted price must be unavailable");
+
+        assert!(matches!(
+            error,
+            oracle::UpdateError::ProxyPricesUnavailable { price_ids }
+                if price_ids == vec![price_id(1), price_id(2)]
+        ));
+    }
+
+    #[test]
+    fn proxy_guard_malformed_result_is_a_decode_error() {
+        let ids = [price_id(1)];
+
+        let error = proxy_prices_all_accepted(&ids, Some(b"not json"))
+            .expect_err("an undecodable status map must surface as a decode error");
+
+        assert!(matches!(error, oracle::UpdateError::ProxyResultDecode(_)));
     }
 }

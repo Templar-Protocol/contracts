@@ -13281,10 +13281,15 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
+ "near-account-id",
  "near-api",
+ "templar-common",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
+ "templar-gateway-oracle-updates-dispatch",
+ "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
  "templar-gateway-types",
  "tokio",
@@ -13955,7 +13960,6 @@ dependencies = [
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
- "templar-redstone-bridge",
  "templar-universal-account",
  "test-utils",
  "thiserror 2.0.18",
