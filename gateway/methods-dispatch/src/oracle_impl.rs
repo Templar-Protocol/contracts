@@ -153,14 +153,24 @@ async fn resolve_price<C: HasNearClient>(
 ) -> GatewayResult<Option<pyth::Price>> {
     let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
     match kind {
-        // A Pyth Pro adapter serves the classic Pyth view ABI keyed by `PriceIdentifier`,
-        // so reading its current price is identical to a direct Pyth oracle. (Only the
-        // *update* path differs — it needs a Lazer payload, resolved above.)
-        OracleContractKind::Direct | OracleContractKind::PythPro => Ok(fetch_oracle_request(
+        OracleContractKind::Direct => Ok(fetch_oracle_request(
             inputs,
             OracleRequest::pyth(oracle_id, price_id),
             max_age,
         )),
+        // A direct Pyth Pro adapter's dependency is a Lazer feed (see
+        // `resolve_price_dependencies` / `oracle.getPriceResolutionDependencies`), so a
+        // caller supplies the payload in `inputs.lazer` keyed by feed id. Resolve through
+        // the feed map and consume it there — not as a Pyth response.
+        OracleContractKind::PythPro => {
+            let requests =
+                resolve_price_dependencies(ctx, oracle_id, price_id, &OracleContractKind::PythPro)
+                    .await?;
+            Ok(requests
+                .into_iter()
+                .next()
+                .and_then(|request| fetch_oracle_request(inputs, request, max_age)))
+        }
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
                 .near_client()
@@ -218,7 +228,10 @@ async fn get_price_onchain<C: HasNearClient>(
 ) -> GatewayResult<Option<pyth::Price>> {
     let kind = query_oracle_kind(ctx, oracle_id.clone()).await?;
     match kind {
-        // Pyth Pro adapters read like direct Pyth oracles (see `resolve_price`).
+        // On-chain, a Pyth Pro adapter serves the classic Pyth view ABI keyed by
+        // `PriceIdentifier`, so reading its stored price is identical to a direct Pyth
+        // oracle. (Unlike the off-chain `resolve_price`, which must consume a caller's
+        // Lazer input keyed by feed id.)
         OracleContractKind::Direct | OracleContractKind::PythPro => {
             fetch_oracle_request_onchain(ctx, OracleRequest::pyth(oracle_id, price_id), max_age)
                 .await

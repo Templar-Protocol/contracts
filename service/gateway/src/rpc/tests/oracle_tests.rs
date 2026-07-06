@@ -428,3 +428,59 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
     stack.shutdown().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn oracle_resolve_price_for_direct_pyth_pro_adapter_consumes_lazer_input() -> Result<()> {
+    let stack = TestStack::start().await?;
+
+    let adapter_id: near_account_id::AccountId = "resolve-pyth-pro.near".parse()?;
+    let price_id = PriceIdentifier([0x66; 32]);
+    let feed_id = 11u32;
+    stack
+        .harness
+        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, feed_id)
+        .await?;
+
+    // A direct Pyth Pro adapter resolves to a Lazer feed, so a caller following
+    // `getPriceResolutionDependencies` supplies the price under `lazer` keyed by feed id;
+    // `resolvePrice` must consume it there rather than looking for a Pyth-keyed response.
+    let resolved = stack
+        .controller
+        .request::<oracle::ResolvePrice>(&oracle::ResolvePrice {
+            oracle_id: adapter_id.clone(),
+            price_id,
+            age: 60,
+            pyth: vec![],
+            redstone: vec![],
+            lazer: vec![oracle::LazerOraclePrices {
+                oracle_id: adapter_id.clone(),
+                response: [(feed_id, Some(pyth_price(321.0)))].into_iter().collect(),
+            }],
+        })
+        .await?;
+    assert_same_pyth_price_value(resolved.price, &pyth_price(321.0));
+
+    // Regression guard: a Pyth-shaped input (keyed by `PriceIdentifier`) must NOT resolve —
+    // proving the adapter is consumed via its Lazer feed, not the classic Pyth path.
+    let not_resolved = stack
+        .controller
+        .request::<oracle::ResolvePrice>(&oracle::ResolvePrice {
+            oracle_id: adapter_id.clone(),
+            price_id,
+            age: 60,
+            pyth: vec![oracle::PythOraclePrices {
+                oracle_id: adapter_id,
+                response: [(price_id, Some(pyth_price(321.0)))].into_iter().collect(),
+            }],
+            redstone: vec![],
+            lazer: vec![],
+        })
+        .await?;
+    assert!(
+        not_resolved.price.is_none(),
+        "a direct Pyth Pro adapter must not resolve from a Pyth-keyed input"
+    );
+
+    stack.shutdown().await;
+    Ok(())
+}

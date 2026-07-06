@@ -14,6 +14,11 @@ const FEED_MAPPING_CACHE_CAPACITY: u64 = 4_096;
 
 #[derive(Clone)]
 pub(crate) struct PythProOracleClientCaches {
+    /// `PriceIdentifier` → Lazer feed id. Uses the config-cache TTL: an
+    /// `admin_set_feed_mapping` remap can resolve to the old feed id until the entry
+    /// expires. Accepted as consistent with the proxy-definition cache (both hold
+    /// admin-controlled routing config that changes rarely); the window is bounded by
+    /// `CONFIG_CACHE_TTL`.
     pub feed_mapping: Cache<FeedMappingCacheKey, std::sync::Arc<Option<u32>>>,
 }
 

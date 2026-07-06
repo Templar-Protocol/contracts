@@ -1,4 +1,5 @@
 use near_account_id::AccountId;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::ContractKind;
 
 use super::*;
@@ -30,6 +31,14 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
         .harness
         .deploy_redstone_adapter("kind-redstone.near".parse()?)
         .await?;
+    let pyth_pro_oracle_id = stack
+        .harness
+        .deploy_pyth_pro_adapter(
+            "kind-pyth-pro.near".parse()?,
+            PriceIdentifier([0x55; 32]),
+            9,
+        )
+        .await?;
 
     assert_eq!(
         kind_of(&stack, registry_id.clone()).await?,
@@ -58,6 +67,13 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
     assert_eq!(
         kind_of(&stack, redstone_oracle_id).await?,
         ContractKind::RedstoneOracle
+    );
+    // Locks the detection probe ordering: a Pyth Pro adapter answers RedStone's
+    // `get_config` (by name) and the Pyth view ABI, so it would be misdetected as
+    // RedStone or Pyth unless its unique feed-mapping probe runs first.
+    assert_eq!(
+        kind_of(&stack, pyth_pro_oracle_id).await?,
+        ContractKind::PythProOracle
     );
     assert_eq!(
         kind_of(&stack, stack.harness.ft_contract_id.clone()).await?,
