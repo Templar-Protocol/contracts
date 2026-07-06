@@ -13,7 +13,10 @@
 //! # Staleness guarantee
 //!
 //! The [`embedded_drift_check`] test (ignored by default) compares every
-//! checked-in blob against the corresponding `target/near` file. If the
+//! checked-in blob against the corresponding `target/near` file. Because
+//! `cargo near build reproducible-wasm` embeds the source commit in NEP-330
+//! metadata, the comparison canonicalizes only those self-referential commit
+//! hashes before comparing bytes. Any other byte drift still fails. If the
 //! test fails, the checked-in bytes are stale and must be refreshed.
 //!
 //! Run the drift check (both byte and version drift):
@@ -169,7 +172,7 @@ pub fn embedded_sizes() -> Vec<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sha256_hex;
+    use crate::{sha256_hex, wasm_drift::canonicalize_nep330_source_refs};
 
     /// All 14 catalogued artifacts must return non-empty WASM starting with
     /// the magic bytes. This test fails at compile time if a checked-in file
@@ -206,9 +209,10 @@ mod tests {
     /// against the corresponding `target/near` file on disk.
     ///
     /// This test is `#[ignore]` because it requires all contracts to be
-    /// prebuilt in `target/near`. The test fails loudly when the checked-in
-    /// bytes differ from the workspace build output, which means the
-    /// embedded blobs need to be refreshed.
+    /// prebuilt in `target/near`. `cargo near build reproducible-wasm` embeds
+    /// the source commit in NEP-330 metadata, so this check canonicalizes only
+    /// those source-ref commit hashes before comparing bytes. Any other byte
+    /// drift means the embedded blobs need to be refreshed.
     ///
     /// To refresh:
     /// 1. Run `./script/prebuild-test-contracts.sh`
@@ -239,19 +243,27 @@ mod tests {
 
             let embedded_hash = sha256_hex(embedded);
             let disk_hash = sha256_hex(&disk_bytes);
+            let canonical_embedded = canonicalize_nep330_source_refs(embedded);
+            let canonical_disk = canonicalize_nep330_source_refs(&disk_bytes);
+            let canonical_embedded_hash = sha256_hex(&canonical_embedded);
+            let canonical_disk_hash = sha256_hex(&canonical_disk);
 
-            assert_eq!(
-                embedded_hash, disk_hash,
+            assert!(
+                canonical_embedded == canonical_disk,
                 "Drift detected for {} ({}) — checked-in embedded bytes do \
-                 not match current `target/near` output.\n\
+                 not match current `target/near` output after canonicalizing \
+                 NEP-330 source commit refs.\n\
                  Embedded SHA-256: {embedded_hash}\n\
                  Disk     SHA-256: {disk_hash}\n\
+                 Embedded canonical SHA-256: {canonical_embedded_hash}\n\
+                 Disk     canonical SHA-256: {canonical_disk_hash}\n\
                  The checked-in blobs are stale. Re-run:\n\
                    1. ./script/prebuild-test-contracts.sh\n\
                    2. cp target/near/{{contract}}/{{contract}}.wasm \\\n\
                          contract/artifacts/res/near/{{contract}}/{{contract}}.wasm\n\
                  Then rebuild this crate.",
-                artifact.package_name, artifact.package_name,
+                artifact.package_name,
+                artifact.package_name,
             );
         }
     }

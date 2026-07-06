@@ -20,6 +20,8 @@ mod clap_impl;
 #[cfg(feature = "embedded-wasm")]
 mod embedded;
 mod ids;
+#[cfg(test)]
+mod wasm_drift;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 
