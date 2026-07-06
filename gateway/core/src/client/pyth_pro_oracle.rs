@@ -1,4 +1,9 @@
-use crate::client::{macros::contract_writes, NearClient};
+use templar_common::oracle::pyth::FeedIdOracleResponse;
+
+use crate::client::{
+    macros::{contract_views, contract_writes},
+    NearClient,
+};
 
 use super::BoundContractClient;
 
@@ -26,7 +31,20 @@ pub struct UpdatePriceFeedsArgs {
     pub payload: near_sdk::json_types::Base64VecU8,
 }
 
+/// Feed-id-keyed EMA read against the adapter (`list_ema_prices_by_feed_id_no_older_than`). Lazer
+/// feeds are addressed by their native `u32` id, so this takes feed ids rather than
+/// `PriceIdentifier`s.
+#[derive(serde::Serialize)]
+pub struct ListEmaPricesByFeedIdNoOlderThanArgs {
+    pub feed_ids: Vec<u32>,
+    pub age: u64,
+}
+
 impl PythProOracleClient<'_> {
+    contract_views! {
+        pub fn list_ema_prices_by_feed_id_no_older_than(ListEmaPricesByFeedIdNoOlderThanArgs) -> FeedIdOracleResponse;
+    }
+
     contract_writes! {
         pub fn update_price_feeds(UpdatePriceFeedsArgs);
     }

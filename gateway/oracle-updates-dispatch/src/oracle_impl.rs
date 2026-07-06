@@ -119,7 +119,7 @@ where
     let mut steps = Vec::new();
     let mut pyth_updates = BTreeMap::<AccountId, BTreeSet<PriceIdentifier>>::new();
     let mut redstone_updates = BTreeMap::<AccountId, BTreeSet<redstone::FeedId>>::new();
-    let mut lazer_updates = BTreeMap::<AccountId, BTreeSet<(PriceIdentifier, u32)>>::new();
+    let mut lazer_updates = BTreeMap::<AccountId, BTreeSet<u32>>::new();
 
     for request in requests {
         match request {
@@ -135,15 +135,8 @@ where
                     .or_default()
                     .insert(request.price_id);
             }
-            OracleRequest::Lazer(LazerRequest {
-                oracle_id,
-                price_id,
-                feed_id,
-            }) => {
-                lazer_updates
-                    .entry(oracle_id)
-                    .or_default()
-                    .insert((price_id, feed_id));
+            OracleRequest::Lazer(LazerRequest { oracle_id, feed_id }) => {
+                lazer_updates.entry(oracle_id).or_default().insert(feed_id);
             }
         }
     }
@@ -192,13 +185,8 @@ where
         )?);
     }
 
-    for (oracle_id, feed_entries) in lazer_updates {
-        let feed_ids: Vec<u32> = feed_entries
-            .iter()
-            .map(|(_, feed_id)| *feed_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
+    for (oracle_id, feed_ids) in lazer_updates {
+        let feed_ids: Vec<u32> = feed_ids.into_iter().collect();
         tracing::debug!(
             %oracle_id,
             feed_count = feed_ids.len(),
@@ -558,7 +546,7 @@ mod tests {
 
         let requests = vec![
             OracleRequest::pyth(pyth_oracle.clone(), price_id),
-            OracleRequest::lazer(lazer_oracle.clone(), price_id, 42),
+            OracleRequest::lazer(lazer_oracle.clone(), 42),
         ];
 
         let plan = plan_grouped_updates(&ctx, signer_id(), requests)
@@ -626,8 +614,7 @@ mod tests {
             },
         };
         let lazer_oracle: AccountId = "pyth-pro.near".parse().unwrap();
-        let price_id = PriceIdentifier([0xBB; 32]);
-        let requests = vec![OracleRequest::lazer(lazer_oracle, price_id, 7)];
+        let requests = vec![OracleRequest::lazer(lazer_oracle, 7)];
 
         let error = plan_grouped_updates(&ctx, signer_id(), requests)
             .await

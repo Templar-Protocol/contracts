@@ -375,8 +375,9 @@ impl OracleFetcher {
             Source::Request(OracleRequest::RedStone(_)) => {
                 // RedStone prices are pushed by the relayer, not by us
             }
-            // Lazer prices are not pushed by the liquidator; they will be routed
-            // through the gateway by a later worker.
+            // Lazer prices are pushed by the gateway (which holds the Lazer
+            // payload source), not the liquidator — same division of labor as
+            // RedStone above.
             Source::Request(OracleRequest::Lazer(_)) => {}
             Source::Transformer(transformer) => {
                 // Transformer wraps an underlying request — extract its Pyth target

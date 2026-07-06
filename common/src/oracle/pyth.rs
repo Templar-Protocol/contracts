@@ -24,6 +24,10 @@ use near_sdk::{
 
 pub type OracleResponse = HashMap<PriceIdentifier, Option<Price>>;
 
+/// Response shape of the Pyth Pro (Lazer) adapter's feed-id-keyed EMA views. Lazer feeds are
+/// addressed by their native `u32` feed id rather than a mapped [`PriceIdentifier`].
+pub type FeedIdOracleResponse = HashMap<u32, Option<Price>>;
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [borsh, json])]
 pub struct PriceIdentifier(
@@ -144,6 +148,20 @@ pub trait Pyth {
         price_ids: Vec<PriceIdentifier>,
         age: u64,
     ) -> HashMap<PriceIdentifier, Option<Price>>;
+}
+
+/// Feed-id-keyed EMA read ABI of the Pyth Pro (Lazer) adapter (`contract/pyth-pro`). Distinct from
+/// [`Pyth`] because Lazer feeds are addressed by their native `u32` feed id, not a mapped
+/// [`PriceIdentifier`]; the adapter's storage is keyed by feed id, so this bypasses the removable
+/// `PriceIdentifier -> feed_id` mapping seam entirely.
+#[ext_contract(ext_pyth_pro)]
+pub trait PythPro {
+    fn list_ema_prices_by_feed_id_unsafe(&self, feed_ids: Vec<u32>) -> FeedIdOracleResponse;
+    fn list_ema_prices_by_feed_id_no_older_than(
+        &self,
+        feed_ids: Vec<u32>,
+        age: u64,
+    ) -> FeedIdOracleResponse;
 }
 
 #[cfg(test)]

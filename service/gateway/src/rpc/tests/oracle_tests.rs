@@ -331,6 +331,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
                     data: redstone_price(42.0),
                 }],
             }],
+            lazer: vec![],
         })
         .await?;
 
@@ -358,6 +359,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
                     .collect(),
             }],
             redstone: vec![],
+            lazer: vec![],
         })
         .await?;
     assert!(one_price.price.is_some());

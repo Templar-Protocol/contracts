@@ -132,7 +132,7 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
             proxy_oracle_id.clone(),
             price_id,
             Some(Proxy::median_low(
-                [OracleRequest::lazer(lazer_oracle_id.clone(), price_id, feed_id).into()],
+                [OracleRequest::lazer(lazer_oracle_id.clone(), feed_id).into()],
                 FreshnessFilter::empty(),
             )),
         )

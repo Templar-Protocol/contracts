@@ -32,12 +32,8 @@ impl OracleRequest {
         })
     }
 
-    pub fn lazer(oracle_id: AccountId, price_id: PriceIdentifier, feed_id: u32) -> Self {
-        Self::Lazer(LazerRequest {
-            oracle_id,
-            price_id,
-            feed_id,
-        })
+    pub fn lazer(oracle_id: AccountId, feed_id: u32) -> Self {
+        Self::Lazer(LazerRequest { oracle_id, feed_id })
     }
 }
 
@@ -67,11 +63,14 @@ impl From<RedStoneRequest> for OracleRequest {
     }
 }
 
+/// A Lazer-backed source: the Pyth Pro adapter account plus the native Lazer `u32` feed id. Unlike
+/// [`PythRequest`], this carries no `PriceIdentifier` — the adapter is keyed by feed id, so the
+/// feed id is the single source of truth for both the on-chain read and the gateway write routing,
+/// with no `[u8; 32] <-> u32` mapping to drift.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[near(serializers = [json, borsh])]
 pub struct LazerRequest {
     pub oracle_id: near_sdk::AccountId,
-    pub price_id: PriceIdentifier,
     pub feed_id: u32,
 }
 
@@ -162,7 +161,6 @@ mod tests {
     fn lazer_request(feed_id: u32) -> LazerRequest {
         LazerRequest {
             oracle_id: "lazer-pyth-pro.near".parse().unwrap(),
-            price_id: PriceIdentifier([0xbb; 32]),
             feed_id,
         }
     }
@@ -173,11 +171,7 @@ mod tests {
         let json = near_sdk::serde_json::to_string(&req).unwrap();
         assert_eq!(
             json,
-            concat!(
-                r#"{"Lazer":{"oracle_id":"lazer-pyth-pro.near","#,
-                r#""price_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","#,
-                r#""feed_id":7}}"#
-            )
+            r#"{"Lazer":{"oracle_id":"lazer-pyth-pro.near","feed_id":7}}"#
         );
     }
 
@@ -222,12 +216,10 @@ mod tests {
     #[test]
     fn lazer_constructor_builds_lazer_variant() {
         let oracle_id: AccountId = "lazer-pyth-pro.near".parse().unwrap();
-        let price_id = PriceIdentifier([0xcc; 32]);
-        let req = OracleRequest::lazer(oracle_id.clone(), price_id, 5);
+        let req = OracleRequest::lazer(oracle_id.clone(), 5);
         match req {
             OracleRequest::Lazer(inner) => {
                 assert_eq!(inner.oracle_id, oracle_id);
-                assert_eq!(inner.price_id, price_id);
                 assert_eq!(inner.feed_id, 5);
             }
             other => panic!("expected Lazer, got {other:?}"),

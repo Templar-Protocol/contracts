@@ -4,21 +4,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::oracle::{
-    pyth::{self, PriceIdentifier},
+    pyth::{self, FeedIdOracleResponse, PriceIdentifier},
     redstone,
 };
 use templar_common::{Decimal, Nanoseconds};
 use templar_gateway_core::{
     client::{
         lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs,
-        pyth_oracle::ListEmaPricesNoOlderThanArgs, redstone_oracle::ReadPriceDataArgs,
+        pyth_oracle::ListEmaPricesNoOlderThanArgs,
+        pyth_pro_oracle::ListEmaPricesByFeedIdNoOlderThanArgs, redstone_oracle::ReadPriceDataArgs,
     },
     query_contract_kind, DispatchRead, GatewayError, GatewayResult, HasNearClient,
 };
 use templar_gateway_methods_spec::oracle::{
     GetPrice, GetPriceResolutionDependencies, GetPriceResolutionDependenciesResult, GetPriceResult,
-    GetPrices, OracleContractKind, PythOraclePrices, RedStoneOraclePrices, ResolvePrice,
-    ResolvePriceResult, ResolvePrices, ResolvePricesResult, ResolvedPrice,
+    GetPrices, LazerOraclePrices, OracleContractKind, PythOraclePrices, RedStoneOraclePrices,
+    ResolvePrice, ResolvePriceResult, ResolvePrices, ResolvePricesResult, ResolvedPrice,
 };
 use templar_gateway_types::contract::ContractKind;
 use templar_proxy_oracle_kernel::proxy;
@@ -47,7 +48,7 @@ impl<C: HasNearClient> DispatchRead<GetPriceResolutionDependencies, C> for Dispa
 impl<C: HasNearClient> DispatchRead<ResolvePrice, C> for Dispatch {
     async fn dispatch(request: ResolvePrice, ctx: C) -> GatewayResult<ResolvePriceResult> {
         let params = request;
-        let inputs = ResolutionInputs::new(params.pyth, params.redstone);
+        let inputs = ResolutionInputs::new(params.pyth, params.redstone, params.lazer);
         let price = resolve_price(
             &ctx,
             &inputs,
@@ -64,7 +65,7 @@ impl<C: HasNearClient> DispatchRead<ResolvePrice, C> for Dispatch {
 impl<C: HasNearClient> DispatchRead<ResolvePrices, C> for Dispatch {
     async fn dispatch(request: ResolvePrices, ctx: C) -> GatewayResult<ResolvePricesResult> {
         let params = request;
-        let inputs = ResolutionInputs::new(params.pyth, params.redstone);
+        let inputs = ResolutionInputs::new(params.pyth, params.redstone, params.lazer);
         let max_age = Nanoseconds::from_secs(params.age);
         let mut prices = Vec::with_capacity(params.price_ids.len());
         for price_id in params.price_ids {
@@ -109,10 +110,15 @@ impl<C: HasNearClient> DispatchRead<GetPrices, C> for Dispatch {
 struct ResolutionInputs {
     pyth: HashMap<AccountId, pyth::OracleResponse>,
     redstone: HashMap<AccountId, HashMap<redstone::FeedId, redstone::FeedData>>,
+    lazer: HashMap<AccountId, FeedIdOracleResponse>,
 }
 
 impl ResolutionInputs {
-    fn new(pyth_inputs: Vec<PythOraclePrices>, redstone_inputs: Vec<RedStoneOraclePrices>) -> Self {
+    fn new(
+        pyth_inputs: Vec<PythOraclePrices>,
+        redstone_inputs: Vec<RedStoneOraclePrices>,
+        lazer_inputs: Vec<LazerOraclePrices>,
+    ) -> Self {
         Self {
             pyth: pyth_inputs
                 .into_iter()
@@ -130,6 +136,10 @@ impl ResolutionInputs {
                             .collect(),
                     )
                 })
+                .collect(),
+            lazer: lazer_inputs
+                .into_iter()
+                .map(|entry| (entry.oracle_id, entry.response))
                 .collect(),
         }
     }
@@ -408,9 +418,12 @@ fn fetch_oracle_request(
             .and_then(|response| response.get(&request.price_id))
             .cloned()
             .and_then(|feed| feed.to_pyth_price()),
-        // Lazer reads are wired by a later worker; no pre-fetched input is
-        // available in the current ResolutionInputs shape.
-        OracleRequest::Lazer(_) => None,
+        OracleRequest::Lazer(request) => inputs
+            .lazer
+            .get(&request.oracle_id)
+            .and_then(|response| response.get(&request.feed_id))
+            .cloned()
+            .flatten(),
     }?;
     validate_price_age(fetched_price, max_age)
 }
@@ -440,8 +453,16 @@ async fn fetch_oracle_request_onchain<C: HasNearClient>(
             .await?
             .remove(&request.price_id)
             .and_then(|feed| feed.to_pyth_price()),
-        // Lazer onchain reads are wired by a later worker.
-        OracleRequest::Lazer(_) => None,
+        OracleRequest::Lazer(request) => ctx
+            .near_client()
+            .pyth_pro_oracle(request.oracle_id)
+            .list_ema_prices_by_feed_id_no_older_than(ListEmaPricesByFeedIdNoOlderThanArgs {
+                feed_ids: vec![request.feed_id],
+                age: max_age.as_secs(),
+            })
+            .await?
+            .remove(&request.feed_id)
+            .flatten(),
     };
     Ok(fetched_price.and_then(|price| validate_price_age(price, max_age)))
 }

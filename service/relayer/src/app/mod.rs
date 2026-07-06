@@ -1095,8 +1095,9 @@ fn accumulate_oracle_requests(
                     .or_default()
                     .insert(request.price_id.clone());
             }
-            // Lazer routing is added by a later worker; relayer does not yet plan
-            // Lazer writes here.
+            // Lazer writes are owned by the gateway (it holds the Lazer payload
+            // source and writes the pyth-pro adapter); the relayer has no Lazer
+            // source and never pushes these, so they are intentionally skipped.
             OracleRequest::Lazer(_) => {}
         }
     }
