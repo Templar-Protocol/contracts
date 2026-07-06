@@ -332,3 +332,68 @@ impl Deref for SigningClient {
         &self.client
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use templar_common::registry::DeployMode;
+    use templar_contract_artifacts::ContractArtifact;
+    use templar_gateway_artifacts_spec::artifact::{
+        AddArtifactVersion, GetArtifact, ListArtifacts,
+    };
+    use templar_gateway_core::{GatewayContext, PlanWrite};
+    use templar_gateway_methods_dispatch::Dispatch;
+    use templar_gateway_types::NearToken;
+
+    use super::{Client, Network, NetworkConfigBuilder};
+
+    #[tokio::test]
+    async fn client_reads_artifact_list() {
+        let client = Client::read_only(NetworkConfigBuilder::new(Network::Testnet).build())
+            .expect("testnet network config is valid");
+
+        let result = client
+            .read(ListArtifacts {})
+            .await
+            .expect("artifact.list dispatch succeeds");
+
+        assert!(result
+            .artifacts
+            .iter()
+            .any(|metadata| metadata.artifact == ContractArtifact::Market));
+    }
+
+    #[tokio::test]
+    async fn client_reads_artifact_bytes() {
+        let client = Client::read_only(NetworkConfigBuilder::new(Network::Testnet).build())
+            .expect("testnet network config is valid");
+
+        let result = client
+            .read(GetArtifact {
+                artifact: ContractArtifact::Market,
+            })
+            .await
+            .expect("artifact.get dispatch succeeds");
+
+        assert_eq!(&result.code.0[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn client_dispatch_accepts_add_artifact_version() {
+        fn assert_plan_write<Spec>()
+        where
+            Spec: templar_gateway_types::MethodSpec<
+                Output = templar_gateway_types::common::WriteOperationResult,
+            >,
+            Dispatch: PlanWrite<Spec, GatewayContext>,
+        {
+        }
+
+        let _ = AddArtifactVersion {
+            registry_id: "registry.near".parse().expect("valid account id"),
+            artifact: ContractArtifact::MockFt,
+            deploy_mode: DeployMode::Normal,
+            deposit: NearToken::from_yoctonear(1),
+        };
+        assert_plan_write::<AddArtifactVersion>();
+    }
+}

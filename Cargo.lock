@@ -13276,6 +13276,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "near-api",
+ "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-artifacts-spec",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-store",
@@ -13343,6 +13346,8 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-gateway-artifacts-dispatch",
+ "templar-gateway-artifacts-spec",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
  "templar-gateway-types",

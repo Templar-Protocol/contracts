@@ -14,6 +14,8 @@ near-contract-standards.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
+templar-gateway-artifacts-dispatch.workspace = true
+templar-gateway-artifacts-spec.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-types.workspace = true
