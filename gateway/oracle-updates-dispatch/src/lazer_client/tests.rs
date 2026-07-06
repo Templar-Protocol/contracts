@@ -16,6 +16,40 @@ use tokio::time::Instant;
 use super::*;
 use crate::lazer_wire::{decode_stream_message, DecodedLazerPayload, LazerStreamEvent};
 
+/// Read the live-network test environment — `PYTH_LAZER_API_KEY` (or
+/// `PYTH_PRO_API_KEY`), `PYTH_LAZER_FEED_IDS`, and the optional `PYTH_LAZER_WS_URL`
+/// — into a `LazerSourceConfig` and the requested feed ids. Shared by the two
+/// `#[ignore]`d live tests below (`requires_network_fetches_production_lazer_payload`
+/// and `capture_live_stream_updated_fixture`) so they read the same env and build the
+/// same config and can't silently drift. Panics with a clear message on a missing or
+/// malformed variable; only reached once those variables are set.
+fn live_config_from_env() -> (LazerSourceConfig, Vec<u32>) {
+    let token = std::env::var("PYTH_LAZER_API_KEY")
+        .or_else(|_| std::env::var("PYTH_PRO_API_KEY"))
+        .expect("set PYTH_LAZER_API_KEY or PYTH_PRO_API_KEY");
+    let feed_ids = std::env::var("PYTH_LAZER_FEED_IDS")
+        .expect("set PYTH_LAZER_FEED_IDS to comma-separated u32 feed ids")
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("feed ids must be u32 values");
+    let url = std::env::var("PYTH_LAZER_WS_URL")
+        .unwrap_or_else(|_| "wss://pyth-lazer-0.dourolabs.app/v1/stream".to_owned())
+        .parse()
+        .expect("valid Pyth Lazer websocket URL");
+    let config = LazerSourceConfig::new(
+        url,
+        RedactedString::from(token),
+        LazerSubscriptionConfig {
+            channel: None,
+            max_payload_age: Duration::from_secs(5),
+        },
+    )
+    .expect("valid Lazer config");
+    (config, feed_ids)
+}
+
 const PAYLOAD_001: &str = "uQEagohEipEVyTiNYf6VaHJFux40+GmgzXaVUuzszi4nJMWpoMH4WZB0W3SMzUM41gQlkeJYJDydLouwjUDVBbksHwqA78H0gMVhWvP7Zz1CKH6ZPan7w1BrbkHfoylQggwubBwBddPHk0AKB5JsVAYAAwUHAAAABgD4hPUFAAAAAAUwKwAAAAAAAAT4/wqlkfUFAAAAAAsGNgAAAAAAAAwBQAoHkmxUBgAIAAAABgAvcfQFAAAAAAVeLAAAAAAAAAT4/wpWYvQFAAAAAAt1NwAAAAAAAAwBQAoHkmxUBgABAAAABgAqfglX/QUAAAV2rg9cAQAAAAT4/wqgFefA+wUAAAv8FrtEAQAAAAwBQAoHkmxUBgAbAAAABgC9d+INAAAAAAU27QEAAAAAAAT4/wqQi9sNAAAAAAu07wAAAAAAAAwBQAoHkmxUBgAXAAAABgDQwVgBAAAAAAWSGAAAAAAAAAT4/wqs8FYBAAAAAAvgGAAAAAAAAAwBQAoHkmxUBgA=";
 const EXPECTED_FEEDS: [u32; 5] = [7, 8, 1, 27, 23];
 const PAYLOAD_001_TIMESTAMP_US: u64 = 1_781_675_143_400_000;
@@ -339,28 +373,8 @@ async fn capture_live_stream_updated_fixture() {
 
     use crate::lazer_wire::{subscription_frame_for_feeds, MAX_STREAM_JSON_MESSAGE_BYTES};
 
-    let token = std::env::var("PYTH_LAZER_API_KEY")
-        .or_else(|_| std::env::var("PYTH_PRO_API_KEY"))
-        .expect("set PYTH_LAZER_API_KEY or PYTH_PRO_API_KEY");
-    let feed_ids = std::env::var("PYTH_LAZER_FEED_IDS")
-        .expect("set PYTH_LAZER_FEED_IDS to comma-separated u32 feed ids")
-        .split(',')
-        .map(str::trim)
-        .map(str::parse::<u32>)
-        .collect::<Result<BTreeSet<_>, _>>()
-        .expect("feed ids must be u32 values");
-    let ws_url = std::env::var("PYTH_LAZER_WS_URL")
-        .unwrap_or_else(|_| "wss://pyth-lazer-0.dourolabs.app/v1/stream".to_owned());
-
-    let config = LazerSourceConfig::new(
-        ws_url.parse().expect("valid Pyth Lazer websocket URL"),
-        RedactedString::from(token),
-        LazerSubscriptionConfig {
-            channel: None,
-            max_payload_age: Duration::from_secs(5),
-        },
-    )
-    .expect("valid Lazer config");
+    let (config, feed_ids) = live_config_from_env();
+    let feed_ids: BTreeSet<u32> = feed_ids.into_iter().collect();
 
     let mut request = config
         .ws_url
@@ -429,5 +443,28 @@ async fn capture_live_stream_updated_fixture() {
     match decode_stream_message(&raw).expect("captured frame should decode") {
         LazerStreamEvent::Payload(payload) => assert!(!payload.bytes.is_empty()),
         event => panic!("expected a streamUpdated payload event, got {event:?}"),
+    }
+}
+
+/// Live end-to-end smoke test of the production `LazerPayloadSource`: spawn the
+/// actor and confirm it fetches a non-empty payload for the requested feeds against
+/// the real Pyth Lazer stream. Ignored by default (needs credentials + network).
+#[tokio::test]
+#[ignore = "requires PYTH_LAZER_API_KEY/PYTH_PRO_API_KEY and PYTH_LAZER_FEED_IDS"]
+async fn requires_network_fetches_production_lazer_payload() {
+    let (config, feed_ids) = live_config_from_env();
+    let source = LazerPayloadSource::spawn(config);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(payload) = source.fetch_payload(&feed_ids).await {
+            assert!(!payload.is_empty());
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for Pyth Lazer payload"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
