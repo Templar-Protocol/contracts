@@ -3,6 +3,7 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
     RpcModule,
 };
+use templar_gateway_artifacts_dispatch::Dispatch as ArtifactsDispatch;
 use templar_gateway_core::{DispatchRead, GatewayError, HasNearClient, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_methods_spec::op;
@@ -118,9 +119,22 @@ where
         };
     }
 
+    macro_rules! register_artifact_read {
+        ($spec:ty) => {
+            builder.register_read::<$spec, ArtifactsDispatch>()?;
+        };
+    }
+    macro_rules! register_artifact_write {
+        ($spec:ty) => {
+            builder.register_write::<$spec, ArtifactsDispatch>()?;
+        };
+    }
+
     templar_gateway_methods_spec::for_each_read_method!(register_read);
     templar_gateway_methods_spec::for_each_write_method!(register_write);
     templar_gateway_oracle_updates_spec::for_each_oracle_update_method!(register_oracle_write);
+    templar_gateway_artifacts_spec::for_each_artifact_read_method!(register_artifact_read);
+    templar_gateway_artifacts_spec::for_each_artifact_write_method!(register_artifact_write);
 
     // `op.get` reads the operation store rather than the chain, so it is the one
     // method registered outside the shared macros (it has no `DispatchRead`).
