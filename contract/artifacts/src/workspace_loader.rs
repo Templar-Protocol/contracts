@@ -177,4 +177,19 @@ mod tests {
             Path::new("/ws/target/near/mock_ft/mock_ft.wasm")
         );
     }
+
+    #[test]
+    fn test_catalog_manifest_path_points_to_cargo_toml() {
+        let Some(artifact) = artifact_catalog()
+            .iter()
+            .find(|a| a.package_name == "mock-ft")
+        else {
+            panic!("mock-ft artifact should be present in catalog");
+        };
+        let path = Path::new("/ws")
+            .join(crate::manifest_path(artifact))
+            .join("Cargo.toml");
+
+        assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
+    }
 }
