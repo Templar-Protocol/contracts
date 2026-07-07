@@ -431,6 +431,10 @@ impl Contract {
         assert_one_yocto();
         Self::require_owner();
         self.config = Config::try_from(config).unwrap_or_else(|e| env::panic_str(e));
+        PythLazerEvent::ConfigSet {
+            config: self.config.clone(),
+        }
+        .emit();
     }
 
     /// Add/refresh (`expires_at_s = Some`) or remove (`expires_at_s = None`) a trusted signer.
@@ -453,6 +457,20 @@ impl Contract {
             None => self.config.signers.remove(&bytes),
         };
         result.unwrap_or_else(|e| env::panic_str(e));
+
+        // Emit only after the upsert/remove succeeds, so a rejected op (last-signer removal, size
+        // bound) emits nothing. `public_key` is normalized to canonical hex, matching `get_config`.
+        match expires_at_s {
+            Some(expires_at_s) => PythLazerEvent::SignerUpserted {
+                public_key: hex::encode(bytes),
+                expires_at_s,
+            }
+            .emit(),
+            None => PythLazerEvent::SignerRemoved {
+                public_key: hex::encode(bytes),
+            }
+            .emit(),
+        }
     }
 
     /// Withdraw `amount` of accrued fees (or any free balance) to the owner. The NEAR runtime's
@@ -463,7 +481,13 @@ impl Contract {
         assert_one_yocto();
         Self::require_owner();
         // `require_owner` guarantees the predecessor is the owner.
-        Promise::new(env::predecessor_account_id()).transfer(amount)
+        let receiver = env::predecessor_account_id();
+        PythLazerEvent::Withdrawn {
+            amount,
+            receiver: receiver.clone(),
+        }
+        .emit();
+        Promise::new(receiver).transfer(amount)
     }
 
     /// Atomically deploy new contract code and run its `migrate` in a single receipt: a failed
@@ -475,6 +499,14 @@ impl Contract {
     pub fn admin_upgrade(&mut self, code: Base64VecU8, migrate_args: Base64VecU8) -> Promise {
         assert_one_yocto();
         Self::require_owner();
+        // Emit before returning the Promise: deploy+migrate is one atomic receipt, so a failed
+        // `migrate` reverts the whole receipt — including this log. Hash (never log) the full wasm to
+        // stay within NEAR's total-log-length limit.
+        PythLazerEvent::Upgraded {
+            code_hash: near_sdk::bs58::encode(env::sha256(&code.0)).into_string(),
+            migrated: !migrate_args.0.is_empty(),
+        }
+        .emit();
         Promise::new(env::current_account_id())
             .deploy_contract(code.0)
             .function_call(
