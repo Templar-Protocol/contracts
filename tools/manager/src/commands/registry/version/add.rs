@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use anyhow::Context;
-use clap::Args;
+use clap::{ArgGroup, Args};
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
+use templar_contract_artifacts::ArtifactId;
 use templar_gateway_types::RegistryVersion;
 use templar_tools_common::near::{self, Function};
 
@@ -10,16 +13,16 @@ use crate::{
     CliContext,
 };
 
-const MARKET_PACKAGE: &str = "templar-market-contract";
-const UAC_PACKAGE: &str = "templar-universal-account-contract";
-const PROXY_ORACLE_PACKAGE: &str = "templar-proxy-oracle-near-contract";
-const REDSTONE_ADAPTER_PACKAGE: &str = "templar-redstone-adapter-contract";
-
 const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
 
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Args, Debug)]
-#[group(required = true, multiple = false)]
+#[command(group(
+    ArgGroup::new("artifact_selector")
+        .args(["market", "uac", "proxy_oracle", "redstone_adapter", "package"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct Package {
     /// Market contract
     #[arg(long)]
@@ -33,24 +36,108 @@ pub struct Package {
     /// RedStone adapter contract
     #[arg(long)]
     pub redstone_adapter: bool,
-    /// Specify a contract by package name
-    #[arg(long)]
+    /// Specify a contract by package name or artifact ID
+    #[arg(long, visible_alias = "artifact")]
     pub package: Option<String>,
 }
 
 impl Package {
-    pub fn package(&self) -> &str {
+    pub fn artifact(&self) -> Option<ArtifactId> {
         if self.market {
-            MARKET_PACKAGE
+            Some(ArtifactId::Market)
         } else if self.uac {
-            UAC_PACKAGE
+            Some(ArtifactId::UniversalAccount)
         } else if self.proxy_oracle {
-            PROXY_ORACLE_PACKAGE
+            Some(ArtifactId::ProxyOracle)
         } else if self.redstone_adapter {
-            REDSTONE_ADAPTER_PACKAGE
+            Some(ArtifactId::RedstoneAdapter)
         } else {
-            self.package.as_deref().unwrap_or_default()
+            self.package
+                .as_deref()
+                .and_then(|package| package.parse::<ArtifactId>().ok())
         }
+    }
+
+    pub fn package_name(&self) -> Cow<'_, str> {
+        if let Some(artifact) = self.artifact() {
+            Cow::Borrowed(artifact.metadata().package_name)
+        } else {
+            Cow::Borrowed(self.package.as_deref().unwrap_or_default())
+        }
+    }
+
+    pub fn load<V>(
+        &self,
+        loader: &ContractLoader,
+    ) -> anyhow::Result<templar_tools_common::build::LoadedContract<V>> {
+        if let Some(artifact) = self.artifact() {
+            loader.load_artifact(artifact)
+        } else {
+            loader.load(self.package.as_deref().unwrap_or_default())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct PackageCommand {
+        #[command(flatten)]
+        package: Package,
+    }
+
+    fn empty_package() -> Package {
+        Package {
+            market: false,
+            uac: false,
+            proxy_oracle: false,
+            redstone_adapter: false,
+            package: None,
+        }
+    }
+
+    #[test]
+    fn package_selector_resolves_package_name_when_artifact_name_is_provided() {
+        let package = Package {
+            package: Some("market".to_string()),
+            ..empty_package()
+        };
+
+        assert_eq!(package.artifact(), Some(ArtifactId::Market));
+        assert_eq!(package.package_name(), "templar-market-contract");
+    }
+
+    #[test]
+    fn legacy_market_flag_resolves_package_name_when_used() {
+        let package = Package {
+            market: true,
+            ..empty_package()
+        };
+
+        assert_eq!(package.artifact(), Some(ArtifactId::Market));
+        assert_eq!(package.package_name(), "templar-market-contract");
+    }
+
+    #[test]
+    fn package_selector_preserves_custom_package_name_when_used() {
+        let package = Package {
+            package: Some("custom-contract".to_string()),
+            ..empty_package()
+        };
+
+        assert_eq!(package.artifact(), None);
+        assert_eq!(package.package_name(), "custom-contract");
+    }
+
+    #[test]
+    fn package_selector_rejects_conflicting_inputs() {
+        let error =
+            PackageCommand::try_parse_from(["tmplrmgr", "--market", "--package", "proxy-oracle"]);
+
+        assert!(error.is_err());
     }
 }
 
@@ -80,9 +167,9 @@ pub struct AddVersion {
 }
 
 impl AddVersion {
-    #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package(), registry_id = %self.registry_id, deploy_mode = %self.deploy_mode))]
+    #[tracing::instrument(skip_all, name = "add_version", fields(account_id = %self.signer.account_id, package = %self.package.package_name(), registry_id = %self.registry_id, deploy_mode = %self.deploy_mode))]
     pub async fn run(&self, ctx: &CliContext) -> anyhow::Result<()> {
-        let loaded_contract = self.contract_wasm.load::<()>(self.package.package())?;
+        let loaded_contract = self.package.load::<()>(&self.contract_wasm)?;
         tracing::debug!(loaded_contract_version = %loaded_contract.version, "Loaded contract");
         let registry_version: RegistryVersion =
             near::contract_version(&ctx.near, &self.registry_id).await?;

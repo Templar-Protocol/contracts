@@ -7,8 +7,8 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
-use templar_gateway_client::OracleSourceArgs;
 use templar_gateway_core::{RedactedString, SharedOperationStore};
+use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
@@ -80,7 +80,7 @@ pub struct Config {
     #[arg(long, env = "GATEWAY_DATABASE_MIGRATE", default_value_t = false)]
     pub migrate_database: bool,
 
-    /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Pro/Lazer).
+    /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Lazer).
     #[command(flatten)]
     pub oracle_sources: OracleSourceArgs,
 

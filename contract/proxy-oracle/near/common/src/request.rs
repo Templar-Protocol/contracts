@@ -63,7 +63,7 @@ impl From<RedStoneRequest> for OracleRequest {
     }
 }
 
-/// A Lazer-backed source: the Pyth Pro adapter account plus the native Lazer `u32` feed id. Unlike
+/// A Lazer-backed source: the Pyth Lazer adapter account plus the native Lazer `u32` feed id. Unlike
 /// [`PythRequest`], this carries no `PriceIdentifier` — the adapter is keyed by feed id, so the
 /// feed id is the single source of truth for both the on-chain read and the gateway write routing,
 /// with no `[u8; 32] <-> u32` mapping to drift.
@@ -160,7 +160,7 @@ mod tests {
 
     fn lazer_request(feed_id: u32) -> LazerRequest {
         LazerRequest {
-            oracle_id: "lazer-pyth-pro.near".parse().unwrap(),
+            oracle_id: "pyth-lazer.near".parse().unwrap(),
             feed_id,
         }
     }
@@ -171,7 +171,7 @@ mod tests {
         let json = near_sdk::serde_json::to_string(&req).unwrap();
         assert_eq!(
             json,
-            r#"{"Lazer":{"oracle_id":"lazer-pyth-pro.near","feed_id":7}}"#
+            r#"{"Lazer":{"oracle_id":"pyth-lazer.near","feed_id":7}}"#
         );
     }
 
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn lazer_constructor_builds_lazer_variant() {
-        let oracle_id: AccountId = "lazer-pyth-pro.near".parse().unwrap();
+        let oracle_id: AccountId = "pyth-lazer.near".parse().unwrap();
         let req = OracleRequest::lazer(oracle_id.clone(), 5);
         match req {
             OracleRequest::Lazer(inner) => {
@@ -238,7 +238,7 @@ mod tests {
         let req = OracleRequest::Lazer(lazer_request(7));
         assert_eq!(
             req.oracle_id(),
-            &"lazer-pyth-pro.near".parse::<AccountId>().unwrap()
+            &"pyth-lazer.near".parse::<AccountId>().unwrap()
         );
     }
 }

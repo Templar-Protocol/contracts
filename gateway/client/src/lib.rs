@@ -32,33 +32,26 @@ pub use pagination::collect_paginated;
 
 use std::{
     collections::{HashMap, HashSet},
+    marker::PhantomData,
     ops::Deref,
     sync::Arc,
 };
 
-use near_account_id::AccountId;
 use near_api::{NetworkConfig, SecretKey, Signer};
-use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayContextBuilder, GatewayError, GatewayResult,
-    NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite,
-    SharedOperationStore,
+    DispatchRead, GatewayContext, GatewayError, GatewayResult, NearOperationExecutor,
+    NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite, SharedOperationStore,
 };
-use templar_gateway_methods_dispatch::Dispatch;
-use templar_gateway_oracle_updates_dispatch::{
-    Dispatch as OracleUpdatesDispatch, GatewayContextBuilderOracleExt, LazerSourceConfig,
-    WithLazerSource, WithPythSource, WithRedStoneSource,
-};
-use templar_gateway_oracle_updates_spec::oracle::UpdatePrices;
 use templar_gateway_store::MemoryStore;
+
+/// The default dispatcher, covering the full in-process method surface. Rebind
+/// with [`Client::via`] to reach a heavier, opt-in dispatcher (contract
+/// artifacts, oracle updates) whose crate the consumer depends on explicitly.
+pub use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
 };
-
-/// Re-exported so consumers can build an [`OracleSourceConfig`] without a direct
-/// dependency on the oracle-updates dispatch crate.
-pub use templar_gateway_oracle_updates_dispatch::LazerSubscriptionConfig;
 
 /// Builder for [`Client`]. Takes the network once, accumulates signers, and
 /// picks the [`OperationStore`](templar_gateway_core::OperationStore) backing
@@ -124,8 +117,11 @@ impl ClientBuilder {
     }
 
     /// Build the base gateway context, signer set, executor, and store-backed
-    /// operation driver shared by every client flavor.
-    fn build_parts(
+    /// operation driver. Returns the raw parts so a consumer can layer a custom
+    /// context (e.g. adding in-process oracle payload sources) and hand them to
+    /// [`Client::from_parts`] — every client derived from one set of parts shares
+    /// the same driver (store, signer pool, idempotency, replay, recovery).
+    pub fn build_parts(
         self,
     ) -> GatewayResult<(GatewayContext, OperationDriver, HashSet<ManagedAccountId>)> {
         let context = GatewayContext::new(self.network.clone())?;
@@ -140,61 +136,38 @@ impl ClientBuilder {
     /// store-backed operation driver.
     pub fn build(self) -> GatewayResult<Client> {
         let (context, driver, signer_account_ids) = self.build_parts()?;
-        Ok(Client {
-            context,
-            driver,
-            signer_account_ids,
-        })
-    }
-
-    /// Build both a methods [`Client`] and an [`OracleUpdatesClient`] that share one
-    /// [`OperationDriver`] (store, signer pool, executor) and a base
-    /// [`GatewayContext`] — so idempotency, replay, the startup-recovery sweep, and
-    /// the NEAR read cache all span both. The oracle client additionally carries the
-    /// in-process Pyth/RedStone/Lazer payload sources needed to plan `oracle.*`
-    /// updates.
-    pub fn build_with_oracle_updates(
-        self,
-        sources: OracleSourceConfig,
-    ) -> GatewayResult<(Client, OracleUpdatesClient)> {
-        let (base, driver, signer_account_ids) = self.build_parts()?;
-
-        // Layer the sources onto a clone of the base context so both clients share
-        // the same `Arc`-backed NEAR read cache (contract kinds, proxy definitions).
-        let context = GatewayContextBuilder::new(base.clone())
-            .with_pyth_source(sources.pyth_hermes_url)
-            .with_redstone_source(&sources.redstone_node_path)?
-            .with_lazer_source(sources.lazer)
-            .build();
-
-        let methods = Client {
-            context: base,
-            driver: driver.clone(),
-            signer_account_ids: signer_account_ids.clone(),
-        };
-        let oracle_updates = OracleUpdatesClient {
-            context,
-            driver,
-            signer_account_ids,
-        };
-        Ok((methods, oracle_updates))
+        Ok(Client::from_parts(context, driver, signer_account_ids))
     }
 }
 
-/// A direct, in-process gateway client over the concrete [`Dispatch`].
+/// A direct, in-process gateway client, dispatching through `D` (defaults to
+/// [`MethodsDispatch`]). Rebind to an opt-in dispatcher with [`Client::via`].
 ///
 /// Reads need no signer; writes name the signing account explicitly via
 /// [`Client::execute_as`] and run through the store-backed [`OperationDriver`].
 /// For the common single-signer case, bind a default account with
 /// [`Client::into_signing`] (or [`SigningClient::connect`]).
-#[derive(Clone)]
-pub struct Client {
-    context: GatewayContext,
+pub struct Client<D = MethodsDispatch, Ctx = GatewayContext> {
+    context: Ctx,
     driver: OperationDriver,
     signer_account_ids: HashSet<ManagedAccountId>,
+    // `fn() -> D` carries the dispatcher choice without owning it, so `Client`
+    // stays `Send`/`Sync` for any `D` (which is only ever a ZST marker).
+    _dispatch: PhantomData<fn() -> D>,
 }
 
-impl std::fmt::Debug for Client {
+impl<D, Ctx: Clone> Clone for Client<D, Ctx> {
+    fn clone(&self) -> Self {
+        Self {
+            context: self.context.clone(),
+            driver: self.driver.clone(),
+            signer_account_ids: self.signer_account_ids.clone(),
+            _dispatch: PhantomData,
+        }
+    }
+}
+
+impl<D, Ctx> std::fmt::Debug for Client<D, Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
             .field("signer_account_ids", &self.signer_account_ids)
@@ -217,6 +190,25 @@ impl Client {
     pub fn read_only(network: NetworkConfig) -> GatewayResult<Self> {
         Self::builder(network).build()
     }
+}
+
+impl<D, Ctx> Client<D, Ctx> {
+    /// Construct a client from pre-built parts (see [`ClientBuilder::build_parts`]).
+    /// Lets a consumer supply a custom `Ctx` — e.g. one carrying in-process oracle
+    /// payload sources — while sharing the driver with sibling clients.
+    #[must_use]
+    pub fn from_parts(
+        context: Ctx,
+        driver: OperationDriver,
+        signer_account_ids: HashSet<ManagedAccountId>,
+    ) -> Self {
+        Self {
+            context,
+            driver,
+            signer_account_ids,
+            _dispatch: PhantomData,
+        }
+    }
 
     /// Bind a default signing account, yielding a [`SigningClient`] whose
     /// `execute` needs no account argument. Errors if no signer is registered
@@ -224,7 +216,7 @@ impl Client {
     pub fn into_signing(
         self,
         account_id: impl Into<ManagedAccountId>,
-    ) -> GatewayResult<SigningClient> {
+    ) -> GatewayResult<SigningClient<D, Ctx>> {
         let signer_account_id = account_id.into();
         if !self.signer_account_ids.contains(&signer_account_id) {
             return Err(GatewayError::UnsupportedSignerAccount(
@@ -235,49 +227,6 @@ impl Client {
             client: self,
             signer_account_id,
         })
-    }
-
-    /// Dispatch a read operation, inferring the output type from the operation.
-    pub async fn read<Op>(&self, op: Op) -> GatewayResult<Op::Output>
-    where
-        Op: MethodSpec,
-        Dispatch: DispatchRead<Op, GatewayContext>,
-    {
-        <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
-    }
-
-    /// Plan and execute a write operation signed by a specific account, through
-    /// the store-backed driver (idempotency + finalization + replay).
-    pub async fn execute_as<Op>(
-        &self,
-        signer_account_id: impl Into<ManagedAccountId>,
-        op: Op,
-    ) -> GatewayResult<WriteOperationResult>
-    where
-        Op: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<Op, GatewayContext>,
-    {
-        self.execute_request(WriteRequest {
-            signer_account_id: signer_account_id.into(),
-            idempotency_key: None,
-            body: op,
-        })
-        .await
-    }
-
-    /// Plan and execute a fully-specified write request (escape hatch for an
-    /// explicit signer account or idempotency key).
-    pub async fn execute_request<S>(
-        &self,
-        request: WriteRequest<S>,
-    ) -> GatewayResult<WriteOperationResult>
-    where
-        S: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<S, GatewayContext>,
-    {
-        self.driver
-            .plan_and_complete::<S, Dispatch, GatewayContext>(self.context.clone(), request)
-            .await
     }
 
     /// Look up a stored operation by idempotency key.
@@ -314,15 +263,74 @@ impl Client {
     ) -> GatewayResult<Option<OperationRecord>> {
         self.driver.reconcile_operation(idempotency_key).await
     }
+}
+
+impl<D, Ctx: Clone> Client<D, Ctx> {
+    /// Rebind this client to dispatcher `D2`, keeping the same connection,
+    /// context, signer set, and operation store. Cheap: clones the context, two
+    /// `Arc`s, and the signer-id set. Use it to reach an opt-in dispatcher, e.g.
+    /// `client.via::<ArtifactsDispatch>().read(GetArtifact { .. })`.
+    #[must_use]
+    pub fn via<D2>(&self) -> Client<D2, Ctx> {
+        Client {
+            context: self.context.clone(),
+            driver: self.driver.clone(),
+            signer_account_ids: self.signer_account_ids.clone(),
+            _dispatch: PhantomData,
+        }
+    }
+
+    /// Dispatch a read operation, inferring the output type from the operation.
+    pub async fn read<Op>(&self, op: Op) -> GatewayResult<Op::Output>
+    where
+        Op: MethodSpec,
+        D: DispatchRead<Op, Ctx>,
+    {
+        <D as DispatchRead<Op, Ctx>>::dispatch(op, self.context.clone()).await
+    }
+
+    /// Plan and execute a write operation signed by a specific account, through
+    /// the store-backed driver (idempotency + finalization + replay).
+    pub async fn execute_as<Op>(
+        &self,
+        signer_account_id: impl Into<ManagedAccountId>,
+        op: Op,
+    ) -> GatewayResult<WriteOperationResult>
+    where
+        Op: MethodSpec<Output = WriteOperationResult>,
+        D: PlanWrite<Op, Ctx>,
+    {
+        self.execute_request(WriteRequest {
+            signer_account_id: signer_account_id.into(),
+            idempotency_key: None,
+            body: op,
+        })
+        .await
+    }
+
+    /// Plan and execute a fully-specified write request (escape hatch for an
+    /// explicit signer account or idempotency key).
+    pub async fn execute_request<S>(
+        &self,
+        request: WriteRequest<S>,
+    ) -> GatewayResult<WriteOperationResult>
+    where
+        S: MethodSpec<Output = WriteOperationResult>,
+        D: PlanWrite<S, Ctx>,
+    {
+        self.driver
+            .plan_and_complete::<S, D, Ctx>(self.context.clone(), request)
+            .await
+    }
 
     /// Plan a write request into the transactions required to fulfil it, without
     /// executing them.
     pub async fn plan_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<OperationPlan>
     where
         S: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<S, GatewayContext>,
+        D: PlanWrite<S, Ctx>,
     {
-        <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await
+        <D as PlanWrite<S, Ctx>>::plan(request, self.context.clone()).await
     }
 }
 
@@ -332,13 +340,21 @@ impl Client {
 /// [`SigningClient::execute`] needs no account argument and cannot fail for a
 /// missing-signer reason. Derefs to the underlying [`Client`] for reads and
 /// explicit-signer writes.
-#[derive(Clone)]
-pub struct SigningClient {
-    client: Client,
+pub struct SigningClient<D = MethodsDispatch, Ctx = GatewayContext> {
+    client: Client<D, Ctx>,
     signer_account_id: ManagedAccountId,
 }
 
-impl std::fmt::Debug for SigningClient {
+impl<D, Ctx: Clone> Clone for SigningClient<D, Ctx> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            signer_account_id: self.signer_account_id.clone(),
+        }
+    }
+}
+
+impl<D, Ctx> std::fmt::Debug for SigningClient<D, Ctx> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningClient")
             .field("signer_account_id", &self.signer_account_id)
@@ -360,18 +376,31 @@ impl SigningClient {
             .build()?
             .into_signing(account_id)
     }
+}
 
+impl<D, Ctx> SigningClient<D, Ctx> {
     /// The bound signing account.
     #[must_use]
     pub fn account_id(&self) -> &ManagedAccountId {
         &self.signer_account_id
+    }
+}
+
+impl<D, Ctx: Clone> SigningClient<D, Ctx> {
+    /// Rebind the dispatcher, keeping the bound signing account.
+    #[must_use]
+    pub fn via<D2>(&self) -> SigningClient<D2, Ctx> {
+        SigningClient {
+            client: self.client.via::<D2>(),
+            signer_account_id: self.signer_account_id.clone(),
+        }
     }
 
     /// Plan and execute a write operation signed by the bound account.
     pub async fn execute<Op>(&self, op: Op) -> GatewayResult<WriteOperationResult>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<Op, GatewayContext>,
+        D: PlanWrite<Op, Ctx>,
     {
         self.client
             .execute_as(self.signer_account_id.clone(), op)
@@ -379,167 +408,77 @@ impl SigningClient {
     }
 }
 
-impl Deref for SigningClient {
-    type Target = Client;
+impl<D, Ctx> Deref for SigningClient<D, Ctx> {
+    type Target = Client<D, Ctx>;
 
-    fn deref(&self) -> &Client {
+    fn deref(&self) -> &Client<D, Ctx> {
         &self.client
     }
 }
 
-/// The layered gateway context carried by an [`OracleUpdatesClient`]: the base
-/// context plus the in-process Pyth, RedStone, and Lazer payload sources.
-pub type OracleUpdatesContext = WithLazerSource<WithRedStoneSource<WithPythSource<GatewayContext>>>;
+#[cfg(test)]
+mod tests {
+    use templar_common::registry::DeployMode;
+    use templar_contract_artifacts::ArtifactId;
+    use templar_gateway_artifacts_dispatch::Dispatch as ArtifactsDispatch;
+    use templar_gateway_artifacts_spec::artifact::{
+        AddArtifactVersion, GetArtifact, ListArtifacts,
+    };
+    use templar_gateway_core::{GatewayContext, PlanWrite};
+    use templar_gateway_types::NearToken;
 
-/// Configuration for the in-process oracle payload sources an
-/// [`OracleUpdatesClient`] fetches from when planning `oracle.*` updates.
-#[derive(Debug, Clone)]
-pub struct OracleSourceConfig {
-    /// Pyth Hermes API URL.
-    pub pyth_hermes_url: url::Url,
-    /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
-    pub redstone_node_path: std::path::PathBuf,
-    /// Pyth Pro/Lazer websocket source configuration.
-    pub lazer: LazerSourceConfig,
-}
+    use super::{Client, Network, NetworkConfigBuilder};
 
-/// A gateway client for the `oracle_updates` methods (e.g. `oracle.updatePrices`).
-///
-/// It shares its [`OperationDriver`] — and therefore the operation store,
-/// signer pool, idempotency, replay, and startup recovery — with the methods
-/// [`Client`] it was built alongside via
-/// [`ClientBuilder::build_with_oracle_updates`]. Unlike the methods client it
-/// carries the in-process payload sources, so it plans updates by fetching fresh
-/// payloads server-side rather than having the caller supply them.
-#[derive(Clone)]
-pub struct OracleUpdatesClient {
-    context: OracleUpdatesContext,
-    driver: OperationDriver,
-    signer_account_ids: HashSet<ManagedAccountId>,
-}
+    #[tokio::test]
+    async fn client_reads_artifact_list() {
+        let client = Client::read_only(NetworkConfigBuilder::new(Network::Testnet).build())
+            .expect("testnet network config is valid");
 
-impl std::fmt::Debug for OracleUpdatesClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OracleUpdatesClient")
-            .field("signer_account_ids", &self.signer_account_ids)
-            .finish_non_exhaustive()
-    }
-}
-
-impl OracleUpdatesClient {
-    /// Resolve and submit every oracle update `price_ids` require on `oracle_id`,
-    /// signed by `signer_account_id`. The gateway resolves the oracle's
-    /// Direct/Proxy/LST dependencies, fetches the underlying Pyth/RedStone/Lazer
-    /// payloads in-process, and — for a proxy oracle — re-aggregates its cached
-    /// prices, all as one store-backed operation.
-    pub async fn execute_prices(
-        &self,
-        signer_account_id: impl Into<ManagedAccountId>,
-        oracle_id: AccountId,
-        price_ids: Vec<PriceIdentifier>,
-    ) -> GatewayResult<WriteOperationResult> {
-        self.driver
-            .plan_and_complete::<UpdatePrices, OracleUpdatesDispatch, OracleUpdatesContext>(
-                self.context.clone(),
-                WriteRequest {
-                    signer_account_id: signer_account_id.into(),
-                    idempotency_key: None,
-                    body: UpdatePrices {
-                        oracle_id,
-                        price_ids,
-                    },
-                },
-            )
+        let result = client
+            .via::<ArtifactsDispatch>()
+            .read(ListArtifacts {})
             .await
-    }
-}
+            .expect("artifact.list dispatch succeeds");
 
-#[cfg(feature = "clap")]
-pub use source_args::OracleSourceArgs;
-
-#[cfg(feature = "clap")]
-mod source_args {
-    use std::{path::PathBuf, time::Duration};
-
-    use clap::Args;
-    use templar_gateway_core::RedactedString;
-    use url::Url;
-
-    use super::{LazerSourceConfig, LazerSubscriptionConfig, OracleSourceConfig};
-
-    /// Shared CLI surface for the gateway's in-process oracle payload sources (Pyth
-    /// Hermes, RedStone bridge, Pyth Pro/Lazer websocket). Flatten it into a
-    /// consumer's `clap` configuration and call [`OracleSourceArgs::build`].
-    #[derive(Args, Debug, Clone)]
-    pub struct OracleSourceArgs {
-        /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
-        #[arg(
-            long = "pyth-hermes-url",
-            env = "PYTH_HERMES_URL",
-            default_value = "https://hermes-beta.pyth.network"
-        )]
-        pub pyth_hermes_url: Url,
-
-        /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
-        #[arg(
-            long = "redstone-node-path",
-            env = "REDSTONE_NODE_PATH",
-            default_value = "node"
-        )]
-        pub redstone_node_path: PathBuf,
-
-        /// Bearer token for Pyth Pro/Lazer websocket payload updates.
-        #[arg(long = "pyth-lazer-api-key", env = "PYTH_LAZER_API_KEY")]
-        pub pyth_lazer_api_key: RedactedString,
-
-        /// Pyth Pro/Lazer websocket endpoint. Configures one endpoint only; automatic
-        /// multi-endpoint failover is not implemented.
-        #[arg(
-            long = "pyth-lazer-ws-url",
-            env = "PYTH_LAZER_WS_URL",
-            default_value = "wss://pyth-lazer-0.dourolabs.app/v1/stream"
-        )]
-        pub pyth_lazer_ws_url: Url,
-
-        /// Pyth Pro/Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
-        /// "fixed_rate@200ms", "fixed_rate@1000ms". Validated when the source is built.
-        #[arg(
-            long = "pyth-lazer-channel",
-            env = "PYTH_LAZER_CHANNEL",
-            default_value = "fixed_rate@200ms"
-        )]
-        pub pyth_lazer_channel: String,
-
-        /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
-        #[arg(
-            long = "pyth-lazer-max-payload-age-ms",
-            env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS",
-            default_value = "5000"
-        )]
-        pub pyth_lazer_max_payload_age_ms: u64,
+        assert!(result
+            .artifacts
+            .iter()
+            .any(|metadata| metadata.artifact == ArtifactId::Market));
     }
 
-    impl OracleSourceArgs {
-        /// Validate and assemble the runtime [`OracleSourceConfig`].
-        ///
-        /// # Errors
-        /// Returns an error if the Lazer websocket configuration is invalid (empty
-        /// token, non-`wss://` URL, unsupported channel, or zero payload age).
-        pub fn build(&self) -> anyhow::Result<OracleSourceConfig> {
-            let lazer = LazerSourceConfig::new(
-                self.pyth_lazer_ws_url.clone(),
-                self.pyth_lazer_api_key.clone(),
-                LazerSubscriptionConfig {
-                    channel: self.pyth_lazer_channel.clone(),
-                    max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
-                },
-            )
-            .map_err(anyhow::Error::from)?;
-            Ok(OracleSourceConfig {
-                pyth_hermes_url: self.pyth_hermes_url.clone(),
-                redstone_node_path: self.redstone_node_path.clone(),
-                lazer,
+    #[tokio::test]
+    async fn client_reads_artifact_bytes() {
+        let client = Client::read_only(NetworkConfigBuilder::new(Network::Testnet).build())
+            .expect("testnet network config is valid");
+
+        let result = client
+            .via::<ArtifactsDispatch>()
+            .read(GetArtifact {
+                artifact: ArtifactId::Market,
             })
+            .await
+            .expect("artifact.get dispatch succeeds");
+
+        assert_eq!(&result.code.0[0..4], b"\0asm");
+    }
+
+    #[test]
+    fn client_dispatch_accepts_add_artifact_version() {
+        fn assert_plan_write<Spec>()
+        where
+            Spec: templar_gateway_types::MethodSpec<
+                Output = templar_gateway_types::common::WriteOperationResult,
+            >,
+            ArtifactsDispatch: PlanWrite<Spec, GatewayContext>,
+        {
         }
+
+        let _ = AddArtifactVersion {
+            registry_id: "registry.near".parse().expect("valid account id"),
+            artifact: ArtifactId::MockFt,
+            deploy_mode: DeployMode::Normal,
+            deposit: NearToken::from_yoctonear(1),
+        };
+        assert_plan_write::<AddArtifactVersion>();
     }
 }

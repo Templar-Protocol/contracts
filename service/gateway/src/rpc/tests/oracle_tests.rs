@@ -430,17 +430,17 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 }
 
 #[tokio::test]
-async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> Result<()> {
+async fn oracle_resolve_rejects_bare_pyth_lazer_adapter_as_standalone_oracle() -> Result<()> {
     let stack = TestStack::start().await?;
 
-    let adapter_id: near_account_id::AccountId = "resolve-pyth-pro.near".parse()?;
+    let adapter_id: near_account_id::AccountId = "resolve-pyth-lazer.near".parse()?;
     let price_id = PriceIdentifier([0x66; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 11u32)
+        .deploy_pyth_lazer_adapter(adapter_id.clone())
         .await?;
 
-    // A Pyth Pro adapter is not a standalone oracle: it is consumed only as a proxy `Lazer`
+    // A Pyth Lazer adapter is not a standalone oracle: it is consumed only as a proxy `Lazer`
     // source. Both the dependency query and price resolution must reject a bare adapter,
     // pointing the operator at a proxy wrapper.
     let deps_error = stack
@@ -452,7 +452,7 @@ async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> 
             },
         )
         .await
-        .expect_err("getPriceResolutionDependencies must reject a bare Pyth Pro adapter");
+        .expect_err("getPriceResolutionDependencies must reject a bare Pyth Lazer adapter");
     assert!(
         format!("{deps_error}").contains("proxy"),
         "error must direct the operator to wrap the adapter in a proxy; got: {deps_error}"
@@ -468,11 +468,14 @@ async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> 
             redstone: vec![],
             lazer: vec![oracle::LazerOraclePrices {
                 oracle_id: adapter_id.clone(),
-                response: [(11u32, Some(pyth_price(321.0)))].into_iter().collect(),
+                response: vec![oracle::LazerPriceEntry {
+                    feed_id: 11,
+                    data: lazer_feed(321.0),
+                }],
             }],
         })
         .await
-        .expect_err("resolvePrice must reject a bare Pyth Pro adapter");
+        .expect_err("resolvePrice must reject a bare Pyth Lazer adapter");
     assert!(
         format!("{resolve_error}").contains("standalone oracle"),
         "error must explain the adapter is not a standalone oracle; got: {resolve_error}"

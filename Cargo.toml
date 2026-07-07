@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "common",
     "gateway/*",
+    "contract/artifacts",
     "contract/market",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
@@ -17,8 +18,8 @@ members = [
     "contract/proxy-oracle/soroban/common",
     "contract/proxy-oracle/soroban/integration-tests",
     "contract/proxy-oracle/soroban/sep40-adapter-contract",
-    "contract/pyth-pro/verifier",
-    "contract/pyth-pro/contract",
+    "contract/pyth-lazer/verifier",
+    "contract/pyth-lazer/contract",
     "contract/redstone-adapter",
     "contract/registry",
     "contract/vault/macros",
@@ -128,7 +129,11 @@ sqlx = { version = "0.8", features = [
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
+strum = { version = "0.27", features = ["derive"] }
 templar-common = { path = "./common" }
+templar-contract-artifacts = { path = "./contract/artifacts" }
+templar-gateway-artifacts-dispatch = { path = "./gateway/artifacts-dispatch" }
+templar-gateway-artifacts-spec = { path = "./gateway/artifacts-spec" }
 templar-gateway-client = { path = "./gateway/client" }
 templar-gateway-core = { path = "./gateway/core" }
 templar-gateway-macros = { path = "./gateway/macros" }
@@ -147,8 +152,8 @@ templar-proxy-oracle-near-common = { path = "./contract/proxy-oracle/near/common
 templar-proxy-oracle-near-contract = { path = "./contract/proxy-oracle/near/contract" }
 templar-proxy-oracle-near-governance-common = { path = "./contract/proxy-oracle/near/governance-common" }
 templar-proxy-oracle-near-governance-contract = { path = "./contract/proxy-oracle/near/governance-contract" }
-templar-pyth-pro-adapter-contract = { path = "./contract/pyth-pro/contract" }
-templar-pyth-pro-verifier = { path = "./contract/pyth-pro/verifier" }
+templar-pyth-lazer-adapter-contract = { path = "./contract/pyth-lazer/contract" }
+templar-pyth-lazer-verifier = { path = "./contract/pyth-lazer/verifier" }
 templar-redstone-bridge = { path = "./service/redstone-bridge" }
 templar-tools-common = { path = "./tools/tools-common" }
 templar-universal-account = { path = "./universal-account" }

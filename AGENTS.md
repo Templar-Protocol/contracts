@@ -5,7 +5,7 @@ This repository is a Rust workspace for Templar Protocol smart contracts, servic
 ## Repository Layout
 
 - `common`: shared protocol logic used by contracts and tests
-- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `universal-account`, `lst-oracle`, `pyth-pro`)
+- `contract`: deployable smart contracts (`market`, `registry`, `vault`, `universal-account`, `lst-oracle`, `pyth-lazer`)
 - `service`: standalone executables and off-chain services
 - `tools`: operator and developer CLIs
 - `test-utils`: shared test harness utilities
@@ -49,12 +49,12 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Why it matters: this service is an operational security boundary for delegated actions and universal-account flows.
   Watch for: allowed-method changes, nonce handling, gas settings, SQL query changes, storage-deposit behavior, and universal-account deployment/execution integration.
   Minimum verification: run the narrowest relevant `cargo test -p templar-relayer ...`; if SQL changes, update prepared queries as documented in the README.
-- `contract/pyth-pro` (`templar-pyth-pro-verifier` / `templar-pyth-pro-adapter-contract`)
-  Read first: `contract/pyth-pro/README.md`, `contract/pyth-pro/SPEC.md`, `contract/pyth-pro/TRUSTED_SIGNERS.md`.
-  Read/inspect: `contract/pyth-pro/verifier/src/verify.rs`, `contract/pyth-pro/contract/src/lib.rs`, `contract/pyth-pro/contract/src/feed_map.rs`, `contract/pyth-pro/contract/src/views.rs`, `contract/pyth-pro/contract/src/events.rs`.
-  Why it matters: a drop-in `pyth-oracle.near` price oracle — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
+- `contract/pyth-lazer` (`templar-pyth-lazer-verifier` / `templar-pyth-lazer-adapter-contract`)
+  Read first: `contract/pyth-lazer/README.md`, `contract/pyth-lazer/SPEC.md`, `contract/pyth-lazer/TRUSTED_SIGNERS.md`.
+  Read/inspect: `contract/pyth-lazer/verifier/src/verify.rs`, `contract/pyth-lazer/contract/src/lib.rs`, `contract/pyth-lazer/contract/src/events.rs` (`FeedData` + its price projections live in `common/src/oracle/lazer.rs`).
+  Why it matters: a feed-id-native Lazer price oracle read by the proxy-oracle's `Lazer` source — forged, stale, or mis-scaled prices flow straight into borrow accounting. The wire parser is a forked `pyth-lazer-protocol` pinned by exact rev; bumps are security-sensitive.
   Watch for: signer/trust/expiry + ed25519 checks, canonical-encoding (`NonCanonical`) rejection, the freshness window and per-feed monotonic anti-replay, confidence/EMA discipline, `SignerSet` invariants, and storage-fee/refund.
-  Minimum verification: `cargo test -p templar-pyth-pro-verifier -p templar-pyth-pro-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-pro-adapter-contract`.
+  Minimum verification: `cargo test -p templar-pyth-lazer-verifier -p templar-pyth-lazer-adapter-contract`; `cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract`.
 - `gateway/*` (the Templar gateway: `templar-gateway-*`)
   Read first: `gateway/README.md` (RPC naming) and `gateway/METHODS.md` (the generated catalog of every method: kind, input → output, summary).
   Why it matters: the gateway is the single standardized implementation of NEAR reads and writes (planning, signing, multi-step finalization, idempotency/replay). Rust consumers integrate it in-process via `templar-gateway-client`; the JSON-RPC service is for non-Rust clients.
@@ -87,6 +87,8 @@ Notes:
 - For tests that deploy contracts into `near-workspaces`, prefer prebuilt test contracts. Rebuilding WASM inside each test run is much slower.
 - `./script/test.sh` already handles this by running `./script/prebuild-test-contracts.sh` first and setting `TEST_CONTRACTS_PREBUILT=1`.
 - If you run `near-workspaces` tests directly, prefer following the same pattern: prebuild first, then run tests with `TEST_CONTRACTS_PREBUILT=1`.
+- Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
+- Embedded contract blobs under `contract/artifacts/res/near/` are pinned *release* artifacts, NOT a mirror of source. **A contract source change does NOT refresh its blob, and no CI check will flag the blob as stale** (the drift check compares blob-vs-pin and version-vs-`Cargo.toml`, never blob-vs-source). When — and only when — you intend a contract source change to become what the gateway deploys, refresh its blob by following `contract/artifacts/README.md` ("⚠️ Refreshing a checked-in blob"): on a clean committed tree, `cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml`, copy the output into `res/near/`, update that entry's `expected_sha256` (+ `version`) in `contract/artifacts/src/ids.rs`, and commit them together. Unreleased work-in-progress is meant to lag the blob — do not refresh reflexively.
 
 ## Code Search
 

@@ -1,9 +1,11 @@
 //! Generated reference for every gateway method.
 //!
 //! The method lists live in the spec crates ([`for_each_read_method!`],
-//! [`for_each_write_method!`], [`for_each_oracle_update_method!`]) and are shared
-//! with the RPC service's registration, so the registered methods and this
-//! reference cannot drift apart. Regenerate `gateway/METHODS.md` with:
+//! [`for_each_write_method!`], [`for_each_oracle_update_method!`],
+//! [`for_each_artifact_read_method!`], [`for_each_artifact_write_method!`])
+//! and are shared with the RPC service's registration, so the registered
+//! methods and this reference cannot drift apart. Regenerate
+//! `gateway/METHODS.md` with:
 //!
 //! ```text
 //! cargo test -p templar-gateway-catalog regenerate_methods_md -- --ignored
@@ -12,6 +14,8 @@
 //! [`for_each_read_method!`]: templar_gateway_methods_spec::for_each_read_method
 //! [`for_each_write_method!`]: templar_gateway_methods_spec::for_each_write_method
 //! [`for_each_oracle_update_method!`]: templar_gateway_oracle_updates_spec::for_each_oracle_update_method
+//! [`for_each_artifact_read_method!`]: templar_gateway_artifacts_spec::for_each_artifact_read_method
+//! [`for_each_artifact_write_method!`]: templar_gateway_artifacts_spec::for_each_artifact_write_method
 
 use std::fmt::Write as _;
 
@@ -75,6 +79,8 @@ pub fn catalog() -> Vec<CatalogEntry> {
     // complete. It is the one method handled outside the shared macros.
     push!(templar_gateway_methods_spec::op::Get);
     templar_gateway_oracle_updates_spec::for_each_oracle_update_method!(push);
+    templar_gateway_artifacts_spec::for_each_artifact_read_method!(push);
+    templar_gateway_artifacts_spec::for_each_artifact_write_method!(push);
     entries
 }
 

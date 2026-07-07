@@ -13178,6 +13178,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-contract-artifacts"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata 0.23.1",
+ "clap",
+ "hex",
+ "rstest",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "strum 0.27.2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "templar-curator-primitives"
 version = "1.0.0"
 dependencies = [
@@ -13275,9 +13291,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "templar-gateway-artifacts-dispatch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "near-account-id",
+ "near-contract-standards",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-artifacts-spec",
+ "templar-gateway-core",
+ "templar-gateway-types",
+ "tokio",
+]
+
+[[package]]
+name = "templar-gateway-artifacts-spec"
+version = "0.1.0"
+dependencies = [
+ "near-account-id",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-macros",
+ "templar-gateway-types",
+]
+
+[[package]]
 name = "templar-gateway-catalog"
 version = "0.1.0"
 dependencies = [
+ "templar-gateway-artifacts-spec",
  "templar-gateway-methods-spec",
  "templar-gateway-oracle-updates-spec",
  "templar-gateway-types",
@@ -13287,15 +13336,14 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
- "near-account-id",
  "near-api",
  "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-artifacts-dispatch",
+ "templar-gateway-artifacts-spec",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
- "templar-gateway-oracle-updates-dispatch",
- "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
  "templar-gateway-types",
  "tokio",
@@ -13393,9 +13441,11 @@ dependencies = [
 name = "templar-gateway-oracle-updates-dispatch"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "byteorder",
+ "clap",
  "ed25519-dalek",
  "futures",
  "hex",
@@ -13414,7 +13464,7 @@ dependencies = [
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
- "templar-pyth-pro-verifier",
+ "templar-pyth-lazer-verifier",
  "templar-redstone-bridge",
  "templar-universal-account",
  "thiserror 2.0.18",
@@ -13476,6 +13526,9 @@ dependencies = [
  "serde_json",
  "sqlx",
  "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-artifacts-dispatch",
+ "templar-gateway-artifacts-spec",
  "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
@@ -13538,7 +13591,7 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
- "templar-pyth-pro-adapter-contract",
+ "templar-pyth-lazer-adapter-contract",
  "templar-universal-account",
  "test-utils",
  "tokio",
@@ -13635,6 +13688,7 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-contract-artifacts",
  "templar-gateway-types",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
@@ -13865,7 +13919,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-pyth-pro-adapter-contract"
+name = "templar-pyth-lazer-adapter-contract"
 version = "0.1.0"
 dependencies = [
  "byteorder",
@@ -13875,13 +13929,14 @@ dependencies = [
  "near-sdk",
  "near-sdk-contract-tools",
  "pyth-lazer-protocol",
+ "rstest",
  "schemars 0.8.22",
  "templar-common",
- "templar-pyth-pro-verifier",
+ "templar-pyth-lazer-verifier",
 ]
 
 [[package]]
-name = "templar-pyth-pro-verifier"
+name = "templar-pyth-lazer-verifier"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
@@ -13964,6 +14019,8 @@ dependencies = [
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-dispatch",
+ "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
@@ -14079,15 +14136,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cargo_metadata 0.23.1",
- "hex",
  "near-contract-standards",
  "near-crypto",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
  "near-sdk",
- "sha2 0.10.9",
  "templar-common",
+ "templar-contract-artifacts",
  "templar-gateway-types",
  "thiserror 2.0.18",
  "tokio",
@@ -14234,6 +14290,7 @@ dependencies = [
  "rstest",
  "serde",
  "templar-common",
+ "templar-contract-artifacts",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",

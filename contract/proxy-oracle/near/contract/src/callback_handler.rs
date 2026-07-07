@@ -3,7 +3,8 @@ use std::{collections::HashMap, sync::OnceLock};
 use near_sdk::{env, near, serde::de::DeserializeOwned, serde_json, AccountId};
 use templar_common::{
     oracle::{
-        pyth::{self, FeedIdOracleResponse, OracleResponse},
+        lazer::FeedDataResponse,
+        pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
     UnwrapReject,
@@ -26,7 +27,7 @@ pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],
     pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
     redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
-    lazer_results: HashMap<AccountId, OnceLock<Option<FeedIdOracleResponse>>>,
+    lazer_results: HashMap<AccountId, OnceLock<Option<FeedDataResponse>>>,
 }
 
 impl<'a> CallbackHandler<'a> {
@@ -98,8 +99,10 @@ impl<'a> CallbackHandler<'a> {
                 callback_result(i)
             })
             .as_ref()?
-            .get(&request.feed_id)?
-            .clone()
+            .get(&request.feed_id)
+            .cloned()
+            .flatten()
+            .and_then(|feed| feed.to_ema_price())
     }
 
     pub fn get(&self, request: &OracleRequest) -> Option<pyth::Price> {

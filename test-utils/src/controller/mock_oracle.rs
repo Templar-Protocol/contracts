@@ -1,12 +1,13 @@
 use near_sdk::serde_json::json;
 use near_workspaces::{Account, Contract};
 use templar_common::oracle::{
-    pyth::{self, FeedIdOracleResponse, OracleResponse, PriceIdentifier},
+    lazer::{self, FeedDataResponse},
+    pyth::{self, OracleResponse, PriceIdentifier},
     redstone::{FeedData, FeedId},
 };
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ArtifactId};
 
 use super::{redstone_adapter::RedStoneAdapterInterface, ContractController};
 
@@ -27,7 +28,7 @@ impl MockOracleController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| get_contract("mock_oracle", "mock/oracle"))
+        WASM.get_or_init(|| get_contract(ArtifactId::MockOracle))
             .await
     }
 
@@ -54,7 +55,7 @@ impl MockOracleController {
         pub fn list_ema_prices_unsafe(price_ids: Vec<PriceIdentifier>) -> OracleResponse;
 
         #[view]
-        pub fn list_ema_prices_by_feed_id_unsafe(feed_ids: Vec<u32>) -> FeedIdOracleResponse;
+        pub fn get_feeds_data(feed_ids: Vec<u32>) -> FeedDataResponse;
 
         #[view]
         pub fn last_pyth_update_data() -> Option<String>;
@@ -66,7 +67,7 @@ impl MockOracleController {
         pub fn set_pyth_price(price_identifier: PriceIdentifier, price: Option<pyth::Price>);
 
         #[call(exec)]
-        pub fn set_lazer_price(feed_id: u32, price: Option<pyth::Price>);
+        pub fn set_lazer_price(feed_id: u32, data: Option<lazer::FeedData>);
 
         #[call(exec)]
         pub fn update_price_feeds(data: String);

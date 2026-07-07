@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+templar-gateway-artifacts-spec.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-types.workspace = true

@@ -12,12 +12,14 @@ use templar_common::{
     market::DepositMsg,
     oracle::pyth,
 };
-use templar_gateway_client::{
-    collect_paginated, Client as GatewayClient, NetworkConfigBuilder, OracleUpdatesClient,
-};
+use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
 use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{chain, contract, market, registry, storage};
+use templar_gateway_oracle_updates_dispatch::{
+    build_oracle_updates_context, Dispatch as OracleUpdatesDispatch, OracleUpdatesContext,
+};
+use templar_gateway_oracle_updates_spec::oracle::UpdatePrices;
 use templar_gateway_types::{
     common::{Pagination, WriteOperationResult, WriteRequest},
     ContractKind, CryptoHash, IdempotencyKey, MethodSpec, OperationStatus,
@@ -45,6 +47,11 @@ pub use args::Configuration;
 /// Gas attached to a `storage_deposit` call (matches the gateway's
 /// `storage.deposit` plan); used to size the allowance lock estimate.
 const STORAGE_DEPOSIT_GAS: Gas = Gas::from_tgas(100);
+
+/// The oracle-updates flavor of the gateway client: bound to the oracle-updates
+/// dispatcher and the layered payload-source context, sharing the methods
+/// client's operation driver.
+type OracleUpdatesClient = GatewayClient<OracleUpdatesDispatch, OracleUpdatesContext>;
 
 #[derive(Debug, Clone)]
 pub struct App {
@@ -91,8 +98,18 @@ impl App {
         // The methods client and the oracle-updates client share one operation
         // driver (store, signer pool, executor) and a base context, so idempotency,
         // replay, the startup-recovery sweep, and the NEAR read cache span both.
-        let (gateway, oracle_updates) =
-            builder.build_with_oracle_updates(args.oracle_sources.build()?)?;
+        // The oracle client layers the in-process Pyth/RedStone/Lazer payload
+        // sources onto a clone of the base context.
+        let (base_context, driver, signer_account_ids) = builder.build_parts()?;
+        let gateway = GatewayClient::from_parts(
+            base_context.clone(),
+            driver.clone(),
+            signer_account_ids.clone(),
+        );
+        let oracle_context =
+            build_oracle_updates_context(base_context, args.oracle_sources.build()?)?;
+        let oracle_updates =
+            OracleUpdatesClient::from_parts(oracle_context, driver, signer_account_ids);
 
         let database = Database::new(&args.database_url, kill.clone())?;
 
@@ -385,10 +402,12 @@ impl App {
 
             let result = self
                 .oracle_updates
-                .execute_prices(
+                .execute_as(
                     self.args.relay.account_id.clone(),
-                    oracle_id.clone(),
-                    price_ids.clone(),
+                    UpdatePrices {
+                        oracle_id: oracle_id.clone(),
+                        price_ids: price_ids.clone(),
+                    },
                 )
                 .await
                 .map_err(oracle::UpdateError::from)

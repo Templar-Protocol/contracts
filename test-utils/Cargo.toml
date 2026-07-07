@@ -15,6 +15,7 @@ near-workspaces = { workspace = true, features = ["unstable"] }
 p256.workspace = true
 rstest.workspace = true
 serde.workspace = true
+templar-contract-artifacts = { workspace = true, features = ["workspace-loader"] }
 templar-common.workspace = true
 templar-primitives.workspace = true
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }

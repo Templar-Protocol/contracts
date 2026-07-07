@@ -4,6 +4,7 @@
 )]
 
 mod account_tests;
+mod artifact_tests;
 mod contract_tests;
 mod fake_lazer_source;
 mod ft_tests;
@@ -33,6 +34,7 @@ use jsonrpsee::server::{ServerBuilder, ServerHandle};
 use near_sdk::json_types::{I64, U64};
 use templar_common::market::DepositMsg;
 use templar_common::oracle::{
+    lazer,
     pyth::{PriceIdentifier, PythTimestamp},
     redstone::FeedData,
 };
@@ -229,6 +231,29 @@ fn redstone_price(price: f64) -> FeedData {
         price: U256::from(scaled_price).into(),
         package_timestamp: now_ms,
         write_timestamp: now_ms,
+    }
+}
+
+fn lazer_feed(price: f64) -> lazer::FeedData {
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
+    let scaled_price = ((price * 10000.0).round().to_string())
+        .parse::<i64>()
+        .unwrap_or_default();
+    lazer::FeedData {
+        price: I64(scaled_price),
+        conf: U64(0),
+        ema: lazer::EmaData {
+            price: I64(scaled_price),
+            conf: U64(0),
+        },
+        expo: -4,
+        publish_time_ns: Nanoseconds::from_ms(now_ms),
     }
 }
 
