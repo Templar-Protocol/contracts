@@ -56,23 +56,6 @@ pub enum BuildContractError {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildMode {
-    Reproducible,
-    #[cfg(feature = "clap")]
-    Debug,
-}
-
-impl BuildMode {
-    pub const fn cargo_near_command(self) -> &'static str {
-        match self {
-            Self::Reproducible => "reproducible-wasm",
-            #[cfg(feature = "clap")]
-            Self::Debug => "non-reproducible-wasm",
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Cargo metadata helpers
 // ---------------------------------------------------------------------------
@@ -151,26 +134,16 @@ pub fn load_artifact(
     Ok((bytes, package))
 }
 
-/// Run `cargo near build reproducible-wasm` for a package in the workspace.
-///
-/// This mirrors the behaviour of `templar-tools-common::build::build_contract`.
 pub fn build_artifact(
     workspace_dir: &Path,
     package_name: &str,
-) -> Result<Vec<u8>, BuildContractError> {
-    build_artifact_with_mode(workspace_dir, package_name, BuildMode::Reproducible)
-}
-
-pub fn build_artifact_with_mode(
-    workspace_dir: &Path,
-    package_name: &str,
-    build_mode: BuildMode,
+    reproducible: bool,
 ) -> Result<Vec<u8>, BuildContractError> {
     let metadata = get_metadata(workspace_dir)?;
     let package = find_package(&metadata, package_name)
         .ok_or_else(|| BuildContractError::PackageNotFound(package_name.to_string()))?;
 
-    let status = build_command(workspace_dir, package.manifest_path.as_str(), build_mode)
+    let status = build_command(workspace_dir, package.manifest_path.as_str(), reproducible)
         .status()
         .map_err(BuildContractError::Io)?;
 
@@ -193,27 +166,27 @@ pub fn build_artifact_with_mode(
 pub fn spawn_artifact_build(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
-    build_mode: BuildMode,
+    reproducible: bool,
 ) -> std::io::Result<std::process::Child> {
     let manifest = workspace_dir
         .join(artifact.manifest_path())
         .join("Cargo.toml");
-    build_command(workspace_dir, manifest, build_mode).spawn()
+    build_command(workspace_dir, manifest, reproducible).spawn()
 }
 
 fn build_command(
     workspace_dir: &Path,
     manifest_path: impl AsRef<std::ffi::OsStr>,
-    build_mode: BuildMode,
+    reproducible: bool,
 ) -> std::process::Command {
     let mut command = std::process::Command::new("cargo");
+    let build_mode = if reproducible {
+        "reproducible-wasm"
+    } else {
+        "non-reproducible-wasm"
+    };
     command
-        .args([
-            "near",
-            "build",
-            build_mode.cargo_near_command(),
-            "--manifest-path",
-        ])
+        .args(["near", "build", build_mode, "--manifest-path"])
         .arg(manifest_path)
         .current_dir(workspace_dir);
     command
@@ -259,18 +232,5 @@ mod tests {
             .join("Cargo.toml");
 
         assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
-    }
-
-    #[test]
-    fn test_build_mode_commands() {
-        assert_eq!(
-            BuildMode::Reproducible.cargo_near_command(),
-            "reproducible-wasm"
-        );
-        #[cfg(feature = "clap")]
-        assert_eq!(
-            BuildMode::Debug.cargo_near_command(),
-            "non-reproducible-wasm"
-        );
     }
 }

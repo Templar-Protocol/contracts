@@ -8,9 +8,8 @@ use std::{
 use clap::Parser;
 
 use crate::{
-    artifact_catalog, artifact_value_parser,
-    workspace_loader::{spawn_artifact_build, BuildMode},
-    ArtifactId, ArtifactMetadata,
+    artifact_catalog, artifact_value_parser, workspace_loader::spawn_artifact_build, ArtifactId,
+    ArtifactMetadata,
 };
 
 const JOBS_ENV: &str = "PREBUILD_TEST_CONTRACTS_JOBS";
@@ -67,14 +66,11 @@ struct FinishedBuild {
 
 pub fn main() -> ExitCode {
     let args = Args::parse();
+    let jobs = args.jobs.max(1);
+    let reproducible = !args.debug;
     let artifacts = selected_artifacts(&args.artifacts);
 
-    match prebuild_all(
-        &args.workspace_root,
-        normalized_jobs(args.jobs),
-        build_mode(args.debug),
-        artifacts,
-    ) {
+    match prebuild_all(&args.workspace_root, jobs, reproducible, artifacts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
     }
@@ -85,18 +81,6 @@ fn default_jobs() -> usize {
         .map(std::num::NonZeroUsize::get)
         .unwrap_or(1);
     available.clamp(1, DEFAULT_MAX_JOBS)
-}
-
-fn normalized_jobs(jobs: usize) -> usize {
-    jobs.max(1)
-}
-
-fn build_mode(debug: bool) -> BuildMode {
-    if debug {
-        BuildMode::Debug
-    } else {
-        BuildMode::Reproducible
-    }
 }
 
 fn selected_artifacts(selection: &[ArtifactId]) -> Vec<&'static ArtifactMetadata> {
@@ -114,7 +98,7 @@ fn selected_artifacts(selection: &[ArtifactId]) -> Vec<&'static ArtifactMetadata
 fn prebuild_all(
     workspace_root: &Path,
     jobs: usize,
-    build_mode: BuildMode,
+    reproducible: bool,
     artifacts: Vec<&'static ArtifactMetadata>,
 ) -> Result<(), ()> {
     let mut pending = artifacts.into_iter().collect::<VecDeque<_>>();
@@ -128,16 +112,15 @@ fn prebuild_all(
             };
 
             eprintln!(
-                "building {} with {} from {}",
+                "building {} from {}",
                 artifact.package_name,
-                build_mode.cargo_near_command(),
                 workspace_root
                     .join(artifact.manifest_path())
                     .join("Cargo.toml")
                     .display()
             );
 
-            match spawn_artifact_build(workspace_root, artifact, build_mode) {
+            match spawn_artifact_build(workspace_root, artifact, reproducible) {
                 Ok(child) => running.push(RunningBuild { artifact, child }),
                 Err(error) => {
                     eprintln!("failed to start {}: {error}", artifact.package_name);

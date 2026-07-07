@@ -19,16 +19,6 @@ fn catalog_is_prebuild_source_of_truth() {
 }
 
 #[test]
-fn default_build_mode_uses_reproducible_wasm() {
-    assert_eq!(build_mode(false), BuildMode::Reproducible);
-}
-
-#[test]
-fn debug_build_mode_uses_non_reproducible_wasm() {
-    assert_eq!(build_mode(true), BuildMode::Debug);
-}
-
-#[test]
 fn artifact_selection_defaults_to_full_catalog() {
     let selected_ids = selected_artifacts(&[])
         .iter()
