@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::primitive::{PublicKey, Signature};
 
+/// The signature standard of a submitted intent. The gateway currently only
+/// supports NEP-413; add variants here as further standards are supported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum IntentStandard {
+    #[serde(rename = "nep413")]
+    Nep413,
+}
+
 /// A single NEP-413 signed intent payload, as accepted by the `execute_intents`
 /// method of a NEAR Intents contract. The signature is produced off-chain over
 /// the borsh-encoded [`IntentPayload`]; this type only models the JSON wire
@@ -15,7 +23,7 @@ use templar_gateway_types::primitive::{PublicKey, Signature};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIntentPayload {
     pub payload: IntentPayload,
-    pub standard: String,
+    pub standard: IntentStandard,
     pub signature: Signature,
     pub public_key: PublicKey,
 }

@@ -70,6 +70,7 @@ impl TestContext {
             self.treasury_id(),
             test_secret_key().unwrap(),
             self.rpc_url.clone(),
+            Network::Testnet,
             dry_run,
         )
         .unwrap()

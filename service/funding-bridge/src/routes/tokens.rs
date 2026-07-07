@@ -206,6 +206,7 @@ mod tests {
                 args.near_treasury_account.clone().unwrap(),
                 args.near_treasury_key.clone().unwrap(),
                 args.get_near_treasury_rpc_url(),
+                args.network,
                 true,
             )
             .unwrap(),

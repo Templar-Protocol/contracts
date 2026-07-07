@@ -217,7 +217,6 @@ impl JsonSchema for PublicKey {
                 description: Some("NEAR public key.".to_owned()),
                 ..Metadata::default()
             })),
-            format: Some("byte".to_owned()),
             ..SchemaObject::default()
         })
     }
@@ -254,7 +253,6 @@ impl JsonSchema for Signature {
                 description: Some("NEAR signature (`<curve>:<base58>`).".to_owned()),
                 ..Metadata::default()
             })),
-            format: Some("byte".to_owned()),
             ..SchemaObject::default()
         })
     }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-use templar_gateway_methods_spec::intents::{IntentPayload, SignedIntentPayload};
+use templar_gateway_methods_spec::intents::{IntentPayload, IntentStandard, SignedIntentPayload};
 use templar_gateway_types::primitive::{PublicKey, Signature};
 
 /// Verifier contract on NEAR
@@ -343,7 +343,7 @@ impl WithdrawalIntentBuilder {
             hash_hex = %hex::encode(hash_bytes),
             public_key = %public_key,
             signer_id = %self.account_id,
-            message_preview = %&payload.message[..payload.message.len().min(100)],
+            message_preview = %payload.message.chars().take(100).collect::<String>(),
             "Signed NEP-413 payload"
         );
 
@@ -354,7 +354,7 @@ impl WithdrawalIntentBuilder {
                 recipient,
                 callback_url: payload.callback_url,
             },
-            standard: "nep413".to_string(),
+            standard: IntentStandard::Nep413,
             signature: Signature(signature),
             public_key: PublicKey(public_key),
         })
@@ -451,7 +451,7 @@ mod tests {
             .expect("Should build withdrawal intent");
 
         assert_eq!(args.signed.len(), 1);
-        assert_eq!(args.signed[0].standard, "nep413");
+        assert_eq!(args.signed[0].standard, IntentStandard::Nep413);
         assert!(args.signed[0]
             .signature
             .0
@@ -700,7 +700,7 @@ mod tests {
         let signed = &args.signed[0];
 
         // Verify all required fields are present and well-formed.
-        assert_eq!(signed.standard, "nep413");
+        assert_eq!(signed.standard, IntentStandard::Nep413);
         assert!(signed.signature.0.to_string().starts_with("ed25519:"));
         assert!(signed.public_key.0.to_string().starts_with("ed25519:"));
         assert!(!signed.payload.message.is_empty());

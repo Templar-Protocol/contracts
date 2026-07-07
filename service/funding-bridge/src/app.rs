@@ -62,6 +62,7 @@ impl App {
                     account.clone(),
                     key.clone(),
                     args.get_near_treasury_rpc_url(),
+                    args.network,
                     args.dry_run,
                 )
                 .expect("failed to build NEAR treasury handler"),

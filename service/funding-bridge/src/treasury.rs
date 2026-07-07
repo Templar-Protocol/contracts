@@ -9,13 +9,14 @@ use near_api::SecretKey;
 use near_sdk::NearToken;
 
 use templar_common::SU128;
-use templar_gateway_client::{Network, NetworkConfigBuilder, SigningClient};
+use templar_gateway_client::{Network as GatewayNetwork, NetworkConfigBuilder, SigningClient};
 use templar_gateway_methods_spec::{ft, intents::ExecuteIntents, storage};
 use templar_gateway_types::{common::WriteOperationResult, OperationStatus};
 use tracing::{debug, info};
 
 use crate::error::{ChainError, ChainResult};
 use crate::intents::INTENTS_CONTRACT;
+use crate::rpc::Network;
 
 /// NEAR chain handler
 pub struct NearHandler {
@@ -24,9 +25,9 @@ pub struct NearHandler {
     /// [`NearHandler::treasury_key`]). All on-chain calls go through `client`.
     secret_key: SecretKey,
     client: SigningClient,
-    /// Configured RPC URL, kept only to resolve asset symbols against the right
-    /// network in [`NearHandler::get_token_contract`].
-    rpc_url: String,
+    /// Configured network, used to resolve asset symbols to the right contract
+    /// suffix in [`NearHandler::get_token_contract`].
+    network: Network,
     enabled: bool,
     dry_run: bool,
 }
@@ -37,14 +38,14 @@ impl NearHandler {
         treasury_account: AccountId,
         signer_key: SecretKey,
         rpc_url: String,
+        network: Network,
         dry_run: bool,
     ) -> ChainResult<Self> {
-        let network = if rpc_url.contains("testnet") {
-            Network::Testnet
-        } else {
-            Network::Mainnet
+        let gateway_network = match network {
+            Network::Mainnet => GatewayNetwork::Mainnet,
+            Network::Testnet => GatewayNetwork::Testnet,
         };
-        let network_config = NetworkConfigBuilder::new(network)
+        let network_config = NetworkConfigBuilder::new(gateway_network)
             .rpc_url(Some(&rpc_url))
             .map_err(|e| ChainError::ConfigError(format!("invalid RPC URL: {e}")))?
             .build();
@@ -59,7 +60,7 @@ impl NearHandler {
             treasury_account,
             secret_key: signer_key,
             client,
-            rpc_url,
+            network,
             enabled: true,
             dry_run,
         })
@@ -152,10 +153,9 @@ impl NearHandler {
         } else {
             // Asset symbol - convert to contract ID (lowercase required)
             let asset_lower = asset.to_lowercase();
-            if self.rpc_url.contains("testnet") {
-                format!("{}.fakes.testnet", asset_lower)
-            } else {
-                format!("{}.near", asset_lower)
+            match self.network {
+                Network::Testnet => format!("{}.fakes.testnet", asset_lower),
+                Network::Mainnet => format!("{}.near", asset_lower),
             }
         };
 
@@ -325,6 +325,7 @@ mod tests {
             "treasury.near".parse().unwrap(),
             test_key(),
             "https://rpc.testnet.near.org".to_string(),
+            Network::Testnet,
             true, // dry_run = true for tests
         )
         .unwrap()
@@ -371,6 +372,7 @@ mod tests {
             "treasury.near".parse().unwrap(),
             test_key(),
             "https://free.rpc.fastnear.com".to_string(),
+            Network::Mainnet,
             true,
         )
         .unwrap();
