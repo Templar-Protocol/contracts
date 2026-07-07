@@ -131,24 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn test_target_near_wasm_path() {
-        let meta = ArtifactMetadata {
-            id: ArtifactId::Market,
-            package_name: "templar-market-contract",
-            cargo_target_name: "templar_market_contract",
-            source_path: "contract/market",
-            version: "1.4.0",
-        };
-        let path = meta.target_near_wasm_path(std::path::Path::new("/ws"));
-        assert_eq!(
-            path,
-            std::path::Path::new(
-                "/ws/target/near/templar_market_contract/templar_market_contract.wasm"
-            )
-        );
-    }
-
-    #[test]
     fn test_find_by_package_name() {
         let meta = find_by_package_name("templar-market-contract");
         assert!(meta.is_some());

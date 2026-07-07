@@ -25,6 +25,17 @@ fn accepts_zero_jobs_flag() {
 }
 
 #[test]
+fn accepts_timeout_secs_flag() {
+    let args = parse_args([
+        OsString::from("prebuild-test-contracts"),
+        OsString::from("--timeout-secs"),
+        OsString::from("42"),
+    ]);
+
+    assert_eq!(args.timeout_secs, 42);
+}
+
+#[test]
 fn defaults_to_drift_profile() {
     let args = parse_args([OsString::from("prebuild-test-contracts")]);
 

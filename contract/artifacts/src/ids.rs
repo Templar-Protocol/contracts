@@ -120,16 +120,7 @@ pub struct ArtifactMetadata {
 
 impl ArtifactMetadata {
     pub fn manifest_path(&self) -> std::path::PathBuf {
-        Path::new(self.source_path).to_path_buf()
-    }
-
-    pub fn target_near_wasm_path(&self, workspace_dir: &Path) -> std::path::PathBuf {
-        let name = self.cargo_target_name;
-        workspace_dir
-            .join("target")
-            .join("near")
-            .join(name)
-            .join(format!("{name}.wasm"))
+        Path::new(self.source_path).join("Cargo.toml")
     }
 
     pub fn version_key(&self, wasm_bytes: &[u8]) -> String {

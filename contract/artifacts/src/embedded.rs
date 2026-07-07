@@ -8,12 +8,14 @@
 //! `contract/artifacts/res/near/{target_name}/{target_name}.wasm`. These
 //! files are the **single source of truth** for the embedded bytes. They
 //! are updated by running `./script/prebuild-test-contracts.sh --profile drift`
-//! and then copying the fresh output from `target/near/` into `res/near/`.
+//! and then copying the fresh output from Cargo's resolved `target/near/`
+//! directory into `res/near/`.
 //!
 //! # Staleness guarantee
 //!
 //! The [`embedded_drift_check`] test (ignored by default) compares every
-//! checked-in blob against the corresponding `target/near` file. Because
+//! checked-in blob against the corresponding file under Cargo's resolved
+//! `target/near/` directory. Because
 //! `cargo near build reproducible-wasm` embeds the source commit in NEP-330
 //! metadata, the comparison canonicalizes only those self-referential commit
 //! hashes before comparing bytes. Any other byte drift still fails. If the
@@ -92,7 +94,6 @@ pub fn embedded_sizes() -> Vec<(&'static str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{sha256_hex, wasm_drift::canonicalize_nep330_source_refs};
 
     /// All 14 catalogued artifacts must return non-empty WASM starting with
     /// the magic bytes. This test fails at compile time if a checked-in file
@@ -130,10 +131,11 @@ mod tests {
     }
 
     /// **Stale-byte drift check** — compares every checked-in embedded blob
-    /// against the corresponding `target/near` file on disk.
+    /// against the corresponding file under Cargo's resolved `target/near`
+    /// directory on disk.
     ///
     /// This test is `#[ignore]` because it requires all contracts to be
-    /// prebuilt in `target/near`. `cargo near build reproducible-wasm` embeds
+    /// prebuilt in Cargo's resolved `target/near` directory. `cargo near build reproducible-wasm` embeds
     /// the source commit in NEP-330 metadata, so this check canonicalizes only
     /// those source-ref commit hashes before comparing bytes. Any other byte
     /// drift means the embedded blobs need to be refreshed.
@@ -143,14 +145,27 @@ mod tests {
     /// 2. Copy fresh output into `res/near/`
     /// 3. Rebuild and re-run this test
     #[test]
+    #[cfg(feature = "workspace-loader")]
     #[ignore = "requires all prebuilt artifacts in target/near"]
     fn embedded_drift_check() {
+        use crate::{
+            sha256_hex,
+            wasm_drift::canonicalize_nep330_source_refs,
+            workspace_loader::{get_metadata, target_near_wasm_path_from_meta},
+        };
+
         let workspace_dir = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
+        let metadata = get_metadata(workspace_dir).unwrap_or_else(|e| {
+            panic!("Failed to read cargo metadata: {e}");
+        });
 
         for artifact in crate::artifact_catalog() {
             let embedded = artifact.id.embedded_bytes();
 
-            let disk_path = artifact.target_near_wasm_path(workspace_dir);
+            let disk_path = target_near_wasm_path_from_meta(
+                metadata.target_directory.as_std_path(),
+                artifact.cargo_target_name,
+            );
             let disk_bytes = std::fs::read(&disk_path).unwrap_or_else(|e| {
                 panic!(
                     "Cannot read {} ({}): {e}.\n\

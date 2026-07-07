@@ -81,11 +81,21 @@ pub(crate) fn find_package<'a>(
         .find(|p| p.name == package)
 }
 
-fn target_near_wasm_path_from_meta(target_dir: &std::path::Path, target_name: &str) -> PathBuf {
+pub(crate) fn target_near_wasm_path_from_meta(
+    target_dir: &std::path::Path,
+    target_name: &str,
+) -> PathBuf {
     target_dir
         .join("near")
         .join(target_name)
         .join(format!("{target_name}.wasm"))
+}
+
+fn resolve_target_name(package: &cargo_metadata::Package) -> String {
+    crate::find_by_package_name(package.name.as_str()).map_or_else(
+        || package.name.replace('-', "_"),
+        |artifact| artifact.cargo_target_name.to_owned(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -141,10 +151,7 @@ pub fn load_artifact(
         .cloned()
         .ok_or_else(|| LoadError::PackageNotFound(package_name.to_string()))?;
 
-    let target_name = crate::find_by_package_name(package.name.as_str()).map_or_else(
-        || package.name.replace('-', "_"),
-        |artifact| artifact.cargo_target_name.to_owned(),
-    );
+    let target_name = resolve_target_name(&package);
     let path =
         target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &target_name);
     let bytes = std::fs::read(&path).map_err(|source| LoadError::ReadWasm { path, source })?;
@@ -168,10 +175,7 @@ pub fn build_artifact(
         return Err(BuildContractError::BuildStatus { status });
     }
 
-    let target_name = crate::find_by_package_name(package.name.as_str()).map_or_else(
-        || package.name.replace('-', "_"),
-        |artifact| artifact.cargo_target_name.to_owned(),
-    );
+    let target_name = resolve_target_name(package);
     let path =
         target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &target_name);
     let bytes =
@@ -184,11 +188,22 @@ pub fn spawn_artifact_build(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
     reproducible: bool,
-) -> std::thread::JoinHandle<std::io::Result<std::process::Output>> {
-    let manifest_path = artifact.manifest_path().join("Cargo.toml");
+) -> std::io::Result<std::process::Child> {
+    let manifest_path = artifact.manifest_path();
     let mut command = build_command(workspace_dir, manifest_path, reproducible);
-    std::thread::spawn(move || command.output())
+    configure_build_process_group(&mut command);
+    command.spawn()
 }
+
+#[cfg(all(feature = "clap", unix))]
+fn configure_build_process_group(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt as _;
+
+    command.process_group(0);
+}
+
+#[cfg(all(feature = "clap", not(unix)))]
+fn configure_build_process_group(_command: &mut std::process::Command) {}
 
 fn build_command(
     workspace_dir: &Path,
@@ -217,22 +232,11 @@ mod tests {
     use super::*;
     use crate::artifact_catalog;
 
-    /// Verify that the target path convention lines up with what
-    /// `target_near_wasm_path` produces for the same artifact.
     #[test]
     fn test_target_path_matches_metadata_path() {
-        // Test that the path-building helpers produce consistent results
-        // without requiring actual cargo_metadata.
-        let artifact = artifact_catalog()
-            .iter()
-            .find(|a| a.package_name == "mock-ft")
-            .unwrap();
-        let path_from_helper = artifact.target_near_wasm_path(Path::new("/ws"));
+        let path = target_near_wasm_path_from_meta(Path::new("/custom-target"), "mock_ft");
 
-        assert_eq!(
-            path_from_helper,
-            Path::new("/ws/target/near/mock_ft/mock_ft.wasm")
-        );
+        assert_eq!(path, Path::new("/custom-target/near/mock_ft/mock_ft.wasm"));
     }
 
     #[test]
@@ -243,9 +247,7 @@ mod tests {
         else {
             panic!("mock-ft artifact should be present in catalog");
         };
-        let path = Path::new("/ws")
-            .join(artifact.manifest_path())
-            .join("Cargo.toml");
+        let path = Path::new("/ws").join(artifact.manifest_path());
 
         assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
     }
