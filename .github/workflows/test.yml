@@ -93,9 +93,13 @@ jobs:
               - 'service/relayer/migrations/**'
               - 'service/relayer/src/**'
               - 'service/relayer/tests/**'
+              - 'test-utils/Cargo.toml'
               - 'test-utils/src/**'
+              - 'tools/manager/Cargo.toml'
               - 'tools/manager/src/**'
               - 'tools/manager/tests/**'
+              - 'tools/tools-common/Cargo.toml'
+              - 'tools/tools-common/**'
             soroban:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
