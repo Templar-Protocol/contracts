@@ -109,6 +109,12 @@ mod tests {
             panic!("Failed to read cargo metadata: {e}");
         });
 
+        // Collect every drifted artifact rather than panicking on the first, so
+        // one run of this test reports all stale blobs. Otherwise a batch merge
+        // that staled several blobs forces a fix-one, rebuild (~25min), repeat
+        // loop, since each panic hides the artifacts after it.
+        let mut drifted = Vec::new();
+
         for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let embedded = artifact.id.embedded_bytes();
 
@@ -125,31 +131,35 @@ mod tests {
                 )
             });
 
-            let embedded_hash = sha256_hex(embedded);
-            let disk_hash = sha256_hex(&disk_bytes);
             let canonical_embedded = canonicalize_nep330_source_refs(embedded);
             let canonical_disk = canonicalize_nep330_source_refs(&disk_bytes);
-            let canonical_embedded_hash = sha256_hex(&canonical_embedded);
-            let canonical_disk_hash = sha256_hex(&canonical_disk);
+            if canonical_embedded == canonical_disk {
+                continue;
+            }
 
-            assert!(
-                canonical_embedded == canonical_disk,
-                "Drift detected for {} ({}) — checked-in embedded bytes do \
-                 not match current `target/near` output after canonicalizing \
-                 NEP-330 source commit refs.\n\
-                 Embedded SHA-256: {embedded_hash}\n\
-                 Disk     SHA-256: {disk_hash}\n\
-                 Embedded canonical SHA-256: {canonical_embedded_hash}\n\
-                 Disk     canonical SHA-256: {canonical_disk_hash}\n\
-                 The checked-in blobs are stale. Re-run:\n\
-                   1. ./script/prebuild-test-contracts.sh --profile drift\n\
-                   2. cp target/near/{{contract}}/{{contract}}.wasm \\\n\
-                         contract/artifacts/res/near/{{contract}}/{{contract}}.wasm\n\
-                 Then rebuild this crate.",
+            drifted.push(format!(
+                "  {} — embedded SHA {} (canonical {}) vs disk SHA {} (canonical {})",
                 artifact.package_name,
-                artifact.package_name,
-            );
+                sha256_hex(embedded),
+                sha256_hex(&canonical_embedded),
+                sha256_hex(&disk_bytes),
+                sha256_hex(&canonical_disk),
+            ));
         }
+
+        assert!(
+            drifted.is_empty(),
+            "Drift detected for {} artifact(s) — checked-in embedded bytes do not \
+             match current `target/near` output after canonicalizing NEP-330 source \
+             commit refs:\n{}\n\
+             The checked-in blobs are stale. Re-run:\n\
+               1. ./script/prebuild-test-contracts.sh --profile drift\n\
+               2. cp target/near/{{contract}}/{{contract}}.wasm \\\n\
+                     contract/artifacts/res/near/{{contract}}/{{contract}}.wasm\n\
+             for each artifact above, then rebuild this crate.",
+            drifted.len(),
+            drifted.join("\n"),
+        );
     }
 
     /// **Version-key drift check** — verifies that every artifact's
