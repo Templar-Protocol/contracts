@@ -12,9 +12,10 @@ use pyth_lazer_protocol::message::SolanaMessage;
 use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadPropertyValue};
 use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
+use rstest::rstest;
 use templar_common::versioned_state::MigrateExternalInterface;
 
-use templar_pyth_lazer_adapter_contract::{ConfigArgs, Contract, TrustedSigner};
+use templar_pyth_lazer_adapter_contract::{Config, ConfigArgs, Contract, TrustedSigner};
 
 const FEED_ID: u32 = 2;
 const NOW_S: u64 = 1_700_000_000;
@@ -921,4 +922,155 @@ fn verify_update_rejects_untrusted_signer() {
         100,
         1,
     )));
+}
+
+// --- NEP-297 admin events (ENG-438) ---
+//
+// Each owner-gated `admin_*` mutation emits one `pyth-lazer-adapter` event carrying the resulting
+// value. Ownership transfer/renounce is not asserted here — `near_sdk_contract_tools::Owner` already
+// emits its own events under the separate `x-own` standard.
+
+/// The single NEP-297 event emitted since the last `testing_env!` reset, with the standard/version
+/// envelope asserted. Panics unless exactly one `EVENT_JSON:` log is present.
+fn single_event() -> near_sdk::serde_json::Value {
+    let logs = near_sdk::test_utils::get_logs();
+    assert_eq!(logs.len(), 1, "expected exactly one log, got {logs:?}");
+    let json = logs[0]
+        .strip_prefix("EVENT_JSON:")
+        .expect("log must be a NEP-297 EVENT_JSON line");
+    let event: near_sdk::serde_json::Value = near_sdk::serde_json::from_str(json).unwrap();
+    assert_eq!(event["standard"], "pyth-lazer-adapter");
+    assert_eq!(event["version"], "1.0.0");
+    event
+}
+
+/// A config carrying `n` distinct signers (used to size the `ConfigSet` payload).
+fn config_with_signers(n: u8) -> ConfigArgs {
+    ConfigArgs {
+        signers: (0..n)
+            .map(|i| TrustedSigner {
+                public_key: [i; 32],
+                expires_at_s: NOW_S + 1_000_000,
+            })
+            .collect(),
+        ..config()
+    }
+}
+
+#[rstest]
+#[case(1)]
+#[case(16)]
+fn admin_set_config_emits_config_set(#[case] signers: u8) {
+    let mut contract = deploy();
+    set_owner_context();
+    contract.admin_set_config(config_with_signers(signers));
+
+    let event = single_event();
+    assert_eq!(event["event"], "config_set");
+    // The payload is the stored, validated `Config`...
+    let stored = near_sdk::serde_json::to_value(contract.get_config()).unwrap();
+    assert_eq!(event["data"]["config"], stored);
+    // ...and it round-trips back through serde to an equivalent `Config`.
+    let roundtrip: Config =
+        near_sdk::serde_json::from_value(event["data"]["config"].clone()).unwrap();
+    assert_eq!(&roundtrip, contract.get_config());
+    // The emitted log stays well within NEAR's log-length limit even with many signers.
+    assert!(near_sdk::test_utils::get_logs()[0].len() < 16_000);
+}
+
+#[test]
+fn admin_set_signer_upsert_emits_signer_upserted() {
+    let mut contract = deploy();
+    set_owner_context();
+    let key = [0xCD; 32];
+    contract.admin_set_signer(hex::encode(key), Some(NOW_S + 42));
+
+    let event = single_event();
+    assert_eq!(event["event"], "signer_upserted");
+    assert_eq!(
+        event["data"]["public_key"].as_str().unwrap(),
+        hex::encode(key)
+    );
+    assert_eq!(event["data"]["expires_at_s"], NOW_S + 42);
+}
+
+#[test]
+fn admin_set_signer_remove_emits_signer_removed() {
+    let mut contract = deploy();
+    set_owner_context();
+    // Add a second signer so removing the original isn't the (rejected) last-signer removal.
+    contract.admin_set_signer(hex::encode([0xCD; 32]), Some(NOW_S + 1));
+
+    set_owner_context(); // reset logs before the op under test
+    contract.admin_set_signer(hex::encode(signer_public_key()), None);
+
+    let event = single_event();
+    assert_eq!(event["event"], "signer_removed");
+    assert_eq!(
+        event["data"]["public_key"].as_str().unwrap(),
+        hex::encode(signer_public_key())
+    );
+}
+
+#[test]
+fn admin_withdraw_emits_withdrawn() {
+    let mut contract = deploy();
+    set_owner_context();
+    let amount = NearToken::from_yoctonear(7);
+    let _ = contract.admin_withdraw(amount);
+
+    let event = single_event();
+    assert_eq!(event["event"], "withdrawn");
+    assert_eq!(event["data"]["amount"].as_str().unwrap(), "7");
+    assert_eq!(
+        event["data"]["receiver"].as_str().unwrap(),
+        owner().as_str()
+    );
+}
+
+#[rstest]
+#[case(vec![1u8, 2, 3], true)]
+#[case(vec![], false)]
+fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>, #[case] expected_migrated: bool) {
+    let mut contract = deploy();
+    set_owner_context();
+    let code = vec![0u8, 1, 2, 3, 4];
+    let _ = contract.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args));
+
+    let event = single_event();
+    assert_eq!(event["event"], "upgraded");
+    let expected_hash = near_sdk::bs58::encode(near_sdk::env::sha256(&code)).into_string();
+    assert_eq!(event["data"]["code_hash"].as_str().unwrap(), expected_hash);
+    assert_eq!(event["data"]["migrated"], expected_migrated);
+}
+
+#[test]
+fn rejected_last_signer_removal_emits_no_event() {
+    let mut contract = deploy();
+    set_owner_context();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.admin_set_signer(hex::encode(signer_public_key()), None);
+    }));
+    assert!(result.is_err(), "removing the last signer must be rejected");
+    assert!(
+        near_sdk::test_utils::get_logs().is_empty(),
+        "a rejected op must emit no event"
+    );
+}
+
+#[test]
+fn rejected_invalid_config_emits_no_event() {
+    let mut contract = deploy();
+    set_owner_context();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.admin_set_config(ConfigArgs {
+            signers: vec![],
+            ..config()
+        });
+    }));
+    assert!(result.is_err(), "an invalid config must be rejected");
+    assert!(
+        near_sdk::test_utils::get_logs().is_empty(),
+        "a rejected op must emit no event"
+    );
 }

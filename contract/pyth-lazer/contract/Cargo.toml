@@ -26,6 +26,7 @@ byteorder = "1"
 ed25519-dalek.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
 pyth-lazer-protocol.workspace = true
+rstest.workspace = true
 
 # fields to configure build with WASM reproducibility, according to specs
 # in https://github.com/near/NEPs/blob/master/neps/nep-0330.md
