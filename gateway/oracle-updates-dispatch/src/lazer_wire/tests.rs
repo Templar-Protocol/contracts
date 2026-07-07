@@ -25,7 +25,6 @@ fn subscription_frame_uses_protocol_request_types() {
     let frame =
         subscription_frame_for_feeds(&config, SubscriptionId(1), vec![8, 7].into_iter().collect())
             .expect("frame should serialize");
-    println!("subscription_frame={frame}");
     let request = serde_json::from_str::<WsRequest>(&frame).expect("protocol request");
 
     match request {
