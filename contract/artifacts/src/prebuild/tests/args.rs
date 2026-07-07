@@ -21,7 +21,8 @@ fn accepts_zero_jobs_flag() {
         OsString::from("0"),
     ]);
 
-    assert_eq!(args.jobs.max(1), 1);
+    // The parser preserves the raw value; `main` clamps it to at least 1.
+    assert_eq!(args.jobs, 0);
 }
 
 #[test]
