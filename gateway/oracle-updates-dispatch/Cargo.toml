@@ -6,8 +6,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 base64.workspace = true
+clap = { workspace = true, optional = true }
 byteorder.workspace = true
 futures.workspace = true
 hex.workspace = true
@@ -32,6 +34,10 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 url.workspace = true
+
+[features]
+# Expose `OracleSourceArgs` (`clap::Args`) for CLI consumers.
+clap = ["dep:clap"]
 
 [dev-dependencies]
 ed25519-dalek.workspace = true

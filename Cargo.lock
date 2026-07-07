@@ -13330,9 +13330,7 @@ dependencies = [
 name = "templar-gateway-client"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
- "near-account-id",
  "near-api",
  "templar-common",
  "templar-contract-artifacts",
@@ -13340,8 +13338,6 @@ dependencies = [
  "templar-gateway-artifacts-spec",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
- "templar-gateway-oracle-updates-dispatch",
- "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
  "templar-gateway-types",
  "tokio",
@@ -13438,9 +13434,11 @@ dependencies = [
 name = "templar-gateway-oracle-updates-dispatch"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "byteorder",
+ "clap",
  "ed25519-dalek",
  "futures",
  "hex",
@@ -14013,6 +14011,8 @@ dependencies = [
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
+ "templar-gateway-oracle-updates-dispatch",
+ "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",

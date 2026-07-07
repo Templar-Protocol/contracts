@@ -6,23 +6,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-anyhow = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
-near-account-id.workspace = true
 near-api.workspace = true
 url.workspace = true
-templar-common.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
-templar-gateway-oracle-updates-dispatch.workspace = true
-templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
 
 [features]
-# Derive `clap::ValueEnum` on `Network` and expose the shared `OracleSourceArgs`
-# (`clap::Args`) so CLI consumers can wire the oracle payload sources directly.
-clap = ["dep:clap", "dep:anyhow"]
+# Derive `clap::ValueEnum` on `Network` for CLI consumers.
+clap = ["dep:clap"]
 
 [dev-dependencies]
 templar-common.workspace = true

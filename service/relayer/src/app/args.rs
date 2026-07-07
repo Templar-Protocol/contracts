@@ -5,7 +5,7 @@ use clap::{Args, Parser};
 use near_api::SecretKey;
 use near_sdk::{AccountId, NearToken};
 
-use templar_gateway_client::OracleSourceArgs;
+use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use templar_universal_account::NEAR_TESTNET_CHAIN_ID;
 
 #[derive(Parser, Debug, Clone)]
