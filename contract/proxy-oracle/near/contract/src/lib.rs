@@ -10,7 +10,8 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     oracle::{
-        pyth::{ext_pyth, ext_pyth_pro, OracleResponse, PriceIdentifier},
+        lazer::ext_pyth_pro,
+        pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
     },
     self_ext,
@@ -236,7 +237,7 @@ impl Contract {
             oracle_promises.push(
                 ext_pyth_pro::ext(oracle_id)
                     .with_static_gas(Self::GAS_FOR_PYTH_PRO_REQUEST)
-                    .list_ema_prices_by_feed_id_unsafe(Vec::from_iter(feed_ids)),
+                    .get_feeds_data(Vec::from_iter(feed_ids)),
             );
         }
 

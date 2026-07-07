@@ -1,6 +1,5 @@
 use near_sdk::near;
-
-use crate::FeedData;
+use templar_common::oracle::lazer::FeedData;
 
 /// NEP-297 events emitted by the adapter.
 #[near(event_json(standard = "pyth-pro-adapter"))]

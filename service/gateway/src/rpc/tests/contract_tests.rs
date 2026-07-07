@@ -1,5 +1,4 @@
 use near_account_id::AccountId;
-use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::ContractKind;
 
 use super::*;
@@ -33,11 +32,7 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
         .await?;
     let pyth_pro_oracle_id = stack
         .harness
-        .deploy_pyth_pro_adapter(
-            "kind-pyth-pro.near".parse()?,
-            PriceIdentifier([0x55; 32]),
-            9,
-        )
+        .deploy_pyth_pro_adapter("kind-pyth-pro.near".parse()?)
         .await?;
 
     assert_eq!(
