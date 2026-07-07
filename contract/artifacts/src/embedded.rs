@@ -7,8 +7,8 @@
 //! Each catalog artifact has its WASM bytes checked in under
 //! `contract/artifacts/res/near/{target_name}/{target_name}.wasm`. These
 //! files are the **single source of truth** for the embedded bytes. They
-//! are updated by running `./script/prebuild-test-contracts.sh` and then
-//! copying the fresh output from `target/near/` into `res/near/`.
+//! are updated by running `./script/prebuild-test-contracts.sh --profile drift`
+//! and then copying the fresh output from `target/near/` into `res/near/`.
 //!
 //! # Staleness guarantee
 //!
@@ -21,12 +21,9 @@
 //!
 //! Run the drift check (both byte and version drift):
 //! ```bash
-//! cargo test -p templar-contract-artifacts \
-//!   --features embedded-wasm,workspace-loader \
-//!   drift_check -- --ignored --nocapture
+//! ./script/check-artifact-drift.sh
 //! ```
-//! The CI script `./script/test.sh` runs this automatically after prebuilding
-//! contracts.
+//! CI runs this separately from ordinary integration tests.
 
 use crate::ArtifactId;
 use thiserror::Error;
@@ -142,7 +139,7 @@ mod tests {
     /// drift means the embedded blobs need to be refreshed.
     ///
     /// To refresh:
-    /// 1. Run `./script/prebuild-test-contracts.sh`
+    /// 1. Run `./script/prebuild-test-contracts.sh --profile drift`
     /// 2. Copy fresh output into `res/near/`
     /// 3. Rebuild and re-run this test
     #[test]
@@ -157,7 +154,7 @@ mod tests {
             let disk_bytes = std::fs::read(&disk_path).unwrap_or_else(|e| {
                 panic!(
                     "Cannot read {} ({}): {e}.\n\
-                     Run ./script/prebuild-test-contracts.sh to generate artifacts.",
+                     Run ./script/prebuild-test-contracts.sh --profile drift to generate artifacts.",
                     disk_path.display(),
                     artifact.package_name,
                 )
@@ -180,7 +177,7 @@ mod tests {
                  Embedded canonical SHA-256: {canonical_embedded_hash}\n\
                  Disk     canonical SHA-256: {canonical_disk_hash}\n\
                  The checked-in blobs are stale. Re-run:\n\
-                   1. ./script/prebuild-test-contracts.sh\n\
+                   1. ./script/prebuild-test-contracts.sh --profile drift\n\
                    2. cp target/near/{{contract}}/{{contract}}.wasm \\\n\
                          contract/artifacts/res/near/{{contract}}/{{contract}}.wasm\n\
                  Then rebuild this crate.",

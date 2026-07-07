@@ -8,6 +8,16 @@ Invoke the test suite with this script:
 ./script/test.sh
 ```
 
+The script prebuilds NEAR contracts with the fast non-reproducible test profile
+before running the test suite.
+
+Run the reproducible artifact drift check separately when validating checked-in
+WASM blobs:
+
+```bash
+./script/check-artifact-drift.sh
+```
+
 ## Local Testing
 
 ### Running Tests with Coverage
@@ -15,8 +25,8 @@ Invoke the test suite with this script:
 # Install coverage tool
 cargo install cargo-llvm-cov
 
-# Prepare test contracts
-./script/prebuild-test-contracts.sh
+# Prepare test contracts quickly
+./script/prebuild-test-contracts.sh --profile test
 
 # Generate coverage report
 cargo llvm-cov --html --output-dir coverage-report

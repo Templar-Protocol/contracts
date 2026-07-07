@@ -85,6 +85,7 @@ jobs:
               - 'contract/vault/near/src/**'
               - 'contract/vault/near/tests/**'
               - 'mock/**/src/**'
+              - 'script/check-artifact-drift.sh'
               - 'script/prebuild-test-contracts.sh'
               - 'script/test.sh'
               - 'service/funding-bridge/src/**'
@@ -446,6 +447,42 @@ jobs:
           docker compose --file ./service/relayer/compose.dev.yaml down -v || true
           docker system prune -af --volumes || true
 
+  artifact-drift-check:
+    name: Artifact Drift Check
+    timeout-minutes: 40
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
+    steps:
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+
+      - name: Install cargo-near
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
+
+      - name: Check artifact drift
+        env:
+          CARGO_TERM_COLOR: always
+          CARGO_INCREMENTAL: 0
+        run: ./script/check-artifact-drift.sh
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -547,6 +584,7 @@ jobs:
       - feature-matrix
       - fast-tests
       - near-integration-tests
+      - artifact-drift-check
       - coverage
     steps:
       - name: Evaluate required CI surface
@@ -560,6 +598,7 @@ jobs:
           LINTER_RESULT: ${{ needs['code-linter'].result }}
           FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
           NEAR_TEST_RESULT: ${{ needs['near-integration-tests'].result }}
+          ARTIFACT_DRIFT_RESULT: ${{ needs['artifact-drift-check'].result }}
           SOROBAN_RESULT: ${{ needs.soroban.result }}
           FEATURE_MATRIX_RESULT: ${{ needs['feature-matrix'].result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
@@ -591,8 +630,10 @@ jobs:
 
           if [ "$NEAR_REQUIRED" = "true" ]; then
             require_success "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            require_success "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           else
             fail_if_failed "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            fail_if_failed "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           fi
 
           if [ "$SOROBAN_REQUIRED" = "true" ]; then

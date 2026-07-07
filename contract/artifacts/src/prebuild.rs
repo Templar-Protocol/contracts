@@ -6,7 +6,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use crate::{
     artifact_catalog, artifact_value_parser, workspace_loader,
@@ -14,6 +14,21 @@ use crate::{
 };
 
 const DEFAULT_MAX_JOBS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum PrebuildProfile {
+    Test,
+    Drift,
+}
+
+impl PrebuildProfile {
+    const fn reproducible(self) -> bool {
+        match self {
+            Self::Test => false,
+            Self::Drift => true,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -23,9 +38,9 @@ struct Args {
     #[arg(long, env = "PREBUILD_TEST_CONTRACTS_JOBS", default_value_t = default_jobs())]
     jobs: usize,
 
-    /// Use non-reproducible debug builds instead of reproducible builds.
-    #[arg(long)]
-    debug: bool,
+    /// Build profile for contract artifacts.
+    #[arg(long, value_enum, default_value_t = PrebuildProfile::Drift)]
+    profile: PrebuildProfile,
 
     /// Artifact to build; repeat or separate values with commas.
     #[arg(
@@ -102,7 +117,7 @@ struct FinishedBuild {
 pub fn main() -> ExitCode {
     let args = Args::parse();
     let jobs = args.jobs.max(1);
-    let reproducible = !args.debug;
+    let reproducible = args.profile.reproducible();
     let artifacts = selected_artifacts(&args.artifacts);
 
     match prebuild_all(&args.workspace_root, jobs, reproducible, artifacts) {

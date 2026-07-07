@@ -43,19 +43,19 @@ build reproducible-wasm` for every catalog entry. Tracked source changes must
 be committed before running it so CI rebuilds from a commit-pinned source
 snapshot.
 
-Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many reproducible builds
+Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds
 run concurrently. If unset, the prebuild helper uses a bounded default based on
 available CPU parallelism.
 
 By default, the prebuild helper runs reproducible builds for every catalog
-entry. For local iteration, pass `--debug` to use `cargo near build
-non-reproducible-wasm`, and pass `--artifact <name>` to rebuild a subset. The
-artifact option can be repeated or comma-separated:
+entry. For local iteration, pass `--profile test` to use `cargo near build
+non-reproducible-wasm`. Pass `--artifact <name>` to rebuild a subset. The
+artifact option can be repeated or comma-separated.
 
 ```bash
 ./script/prebuild-test-contracts.sh --artifact market
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
-./script/prebuild-test-contracts.sh --debug --artifact mock-ft --artifact mock-mt
+./script/prebuild-test-contracts.sh --profile test --artifact mock-ft --artifact mock-mt
 ```
 
 Checked-in embedded blobs should still be refreshed from reproducible builds.
@@ -65,12 +65,16 @@ available.
 
 ### Checking for stale bytes
 
-Run the drift check (requires prebuilt artifacts in `target/near`):
+Run the reproducible drift check:
 
 ```bash
-cargo test -p templar-contract-artifacts \
-  --features embedded-wasm,workspace-loader \
-  drift_check -- --ignored --nocapture
+./script/check-artifact-drift.sh
+```
+
+The script rebuilds artifacts with `--profile drift` and then runs:
+
+```bash
+cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --ignored --nocapture
 ```
 
 This runs both the **byte drift check** (compares embedded blobs against
@@ -87,13 +91,13 @@ stale.
 If either test fails, the checked-in bytes or catalog versions need updating.
 Fix by:
 
-1. Commit tracked source/build changes, then run `./script/prebuild-test-contracts.sh`
+1. Commit tracked source/build changes, then run `./script/prebuild-test-contracts.sh --profile drift`
 2. Copy fresh WASM from `target/near/` to `contract/artifacts/res/near/`
 3. Rebuild the crate
 4. Run the drift check again
 
-The CI script `./script/test.sh` runs this drift check automatically after
-prebuilding contracts.
+CI runs this separately from ordinary integration tests through
+`./script/check-artifact-drift.sh`.
 
 ## Usage examples
 

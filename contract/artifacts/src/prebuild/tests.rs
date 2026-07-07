@@ -1,11 +1,8 @@
-use std::{
-    ffi::OsString,
-    io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{io, path::Path, process::Command};
 
 use super::*;
+
+mod args;
 
 #[test]
 fn artifact_selection_defaults_to_full_catalog() {
@@ -139,80 +136,6 @@ fn wait_for_next_finished_reports_try_wait_errors() {
 }
 
 #[test]
-fn args_accepts_jobs_flag() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--jobs"),
-        OsString::from("3"),
-    ]);
-
-    assert_eq!(args.jobs, 3);
-}
-
-#[test]
-fn args_accepts_zero_jobs_flag() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--jobs"),
-        OsString::from("0"),
-    ]);
-
-    assert_eq!(args.jobs.max(1), 1);
-}
-
-#[test]
-fn args_accepts_debug_flag() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--debug"),
-    ]);
-
-    assert!(args.debug);
-}
-
-#[test]
-fn args_accepts_repeated_artifact_flags() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--artifact"),
-        OsString::from("market"),
-        OsString::from("--artifact"),
-        OsString::from("mock-ft"),
-    ]);
-
-    assert_eq!(args.artifacts, vec![ArtifactId::Market, ArtifactId::MockFt]);
-}
-
-#[test]
-fn args_accepts_comma_separated_artifact_flags() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--artifact"),
-        OsString::from("market,mock-ft"),
-    ]);
-
-    assert_eq!(args.artifacts, vec![ArtifactId::Market, ArtifactId::MockFt]);
-}
-
-#[test]
-fn args_workspace_root_defaults_to_discovered_workspace() {
-    let args = parse_args([OsString::from("prebuild-test-contracts")]);
-
-    assert_eq!(args.workspace_root, default_workspace_root());
-}
-
-#[test]
-fn args_accepts_workspace_root_flag() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--workspace-root"),
-        OsString::from("/some/path"),
-    ]);
-
-    assert_eq!(args.workspace_root, PathBuf::from("/some/path"));
-}
-
-#[test]
 fn build_handle_captures_output() {
     let handle = std::thread::spawn(|| {
         Command::new("sh")
@@ -233,24 +156,6 @@ fn build_handle_captures_output() {
 
     assert!(stdout.contains("hello-stdout"));
     assert!(stderr.contains("hello-stderr"));
-}
-
-#[test]
-fn args_rejects_unknown_artifact() {
-    let error = Args::try_parse_from([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--artifact"),
-        OsString::from("unknown"),
-    ]);
-
-    assert!(error.is_err());
-}
-
-fn parse_args(args: impl IntoIterator<Item = OsString>) -> Args {
-    match Args::try_parse_from(args) {
-        Ok(args) => args,
-        Err(error) => panic!("expected args to parse: {error}"),
-    }
 }
 
 fn find_test_artifact(id: ArtifactId) -> &'static ArtifactMetadata {
