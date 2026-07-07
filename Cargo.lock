@@ -13368,6 +13368,7 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-universal-account",
+ "tokio",
 ]
 
 [[package]]

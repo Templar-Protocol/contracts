@@ -19,6 +19,11 @@ use templar_gateway_types::primitive::{PublicKey, Signature};
 /// Verifier contract on NEAR
 pub const INTENTS_CONTRACT: &str = "intents.near";
 
+/// NEP-413 off-chain message prefix tag: `(1 << 31) + 413`. Prepended to the
+/// borsh-encoded payload before hashing so an off-chain-signed message can never
+/// collide with an on-chain transaction (which is tagged differently).
+const OFFCHAIN_PREFIX_TAG: u32 = 2_147_484_061;
+
 /// Chain IDs for supported networks
 pub mod chain_ids {
     pub const ETHEREUM: u32 = 1;
@@ -317,9 +322,6 @@ impl WithdrawalIntentBuilder {
     /// 2. SHA-256 hash the serialized bytes
     /// 3. Sign the hash with Ed25519
     fn sign_payload(&self, payload: PayloadWrapper) -> Result<SignedIntentPayload, IntentError> {
-        // NEP-413 OFFCHAIN_PREFIX_TAG = (1 << 31) + 413 = 2147484061
-        const OFFCHAIN_PREFIX_TAG: u32 = 2147484061;
-
         // Borsh serialize (tag, payload) tuple
         let prehash = borsh::to_vec(&(OFFCHAIN_PREFIX_TAG, &payload))
             .map_err(|e| IntentError::Serialization(e.to_string()))?;
@@ -706,6 +708,39 @@ mod tests {
         assert!(!signed.payload.message.is_empty());
         assert!(!signed.payload.nonce.is_empty());
         assert_eq!(signed.payload.recipient.as_str(), "intents.near");
+    }
+
+    /// Cryptographic regression guard for the near_crypto -> near_api signing
+    /// migration: reconstruct the exact NEP-413 preimage the builder signs, then
+    /// verify the emitted signature against the emitted public key. Fails if the
+    /// preimage, hash, key, or signing routine ever drift.
+    #[test]
+    fn test_nep413_signature_verifies() {
+        let builder = test_builder("treasury.near");
+        let args = builder
+            .build_withdrawal("eth.omft.near", 1000, "0x123")
+            .expect("Should build");
+        let signed = &args.signed[0];
+
+        // Rebuild the borsh preimage: (OFFCHAIN_PREFIX_TAG, PayloadWrapper).
+        let wrapper = PayloadWrapper {
+            message: signed.payload.message.clone(),
+            nonce: signed.payload.nonce.clone(),
+            recipient: signed.payload.recipient.to_string(),
+            callback_url: signed.payload.callback_url.clone(),
+        };
+        let prehash = borsh::to_vec(&(OFFCHAIN_PREFIX_TAG, &wrapper)).unwrap();
+        let hash = Sha256::digest(&prehash);
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&hash);
+
+        // The emitted key is the treasury key, and the signature verifies over
+        // the reconstructed hash.
+        assert_eq!(signed.public_key.0, test_key().public_key());
+        assert!(signed
+            .signature
+            .0
+            .verify(CryptoHash(hash_bytes), signed.public_key.0.clone()));
     }
 
     #[test]
