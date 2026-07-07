@@ -234,13 +234,13 @@ fn redstone_price(price: f64) -> FeedData {
 }
 
 fn lazer_feed(price: f64) -> lazer::FeedData {
-    let now_ms = i64::try_from(
+    let now_ms = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis(),
     )
-    .unwrap_or(i64::MAX);
+    .unwrap_or(u64::MAX);
     let scaled_price = ((price * 10000.0).round().to_string())
         .parse::<i64>()
         .unwrap_or_default();
@@ -252,7 +252,7 @@ fn lazer_feed(price: f64) -> lazer::FeedData {
             conf: U64(0),
         },
         expo: -4,
-        publish_time_ns: Nanoseconds::from_ms(u64::try_from(now_ms).unwrap_or_default()),
+        publish_time_ns: Nanoseconds::from_ms(now_ms),
     }
 }
 
