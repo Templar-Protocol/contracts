@@ -275,7 +275,7 @@ impl TryFrom<ConfigArgs> for Config {
 /// it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since consumers
 /// read EMA. This applies only to the stateful storage path; the stateless
 /// [`Contract::verify_update`] view does not call this and stays at parity with the official Pyth
-/// Pro contracts (spot-only payloads allowed).
+/// Lazer contracts (spot-only payloads allowed).
 fn feed_data_from_parsed(
     parsed: &verifier::ParsedFeed,
     package: Nanoseconds,
