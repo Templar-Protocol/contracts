@@ -371,6 +371,9 @@ async fn init_relayer_app(
             &POW_DIFFICULTY.to_string(),
             "--intents-id",
             "intents.near",
+            // The relayer now hosts the gateway's Lazer source, so a Lazer API key is required.
+            "--pyth-lazer-api-key",
+            "test-token",
         ]),
         watch::Sender::default(),
     )
