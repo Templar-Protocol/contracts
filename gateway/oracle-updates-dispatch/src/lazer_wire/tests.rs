@@ -16,7 +16,7 @@ fn subscription_frame_uses_protocol_request_types() {
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )

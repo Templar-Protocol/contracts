@@ -11,8 +11,6 @@
 //! so the test context can satisfy the `ProvidesLazerSource` bound without
 //! spawning a websocket task.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use templar_gateway_core::{HasNearClient, NearClient, OraclePayloadSource};
 use templar_gateway_oracle_updates_dispatch::{
@@ -31,41 +29,27 @@ pub enum FakeLazerError {
     Stale,
 }
 
-/// The canned result the fake source returns for every `fetch_payload` call.
-#[derive(Debug, Clone)]
-pub struct FakeLazerOutcome(pub Result<Arc<[u8]>, FakeLazerError>);
-
-impl FakeLazerOutcome {
-    pub fn ok(bytes: impl Into<Vec<u8>>) -> Self {
-        Self(Ok(bytes.into().into_boxed_slice().into()))
-    }
-
-    pub fn err(error: FakeLazerError) -> Self {
-        Self(Err(error))
-    }
-}
-
 /// Cloneable fake `OraclePayloadSource<PriceId = u32>`. Every call returns the
 /// same canned outcome, so tests are deterministic regardless of feed id or
 /// call order.
 #[derive(Debug, Clone)]
 pub struct FakeLazerSource {
-    outcome: FakeLazerOutcome,
+    outcome: Result<Vec<u8>, FakeLazerError>,
 }
 
 impl FakeLazerSource {
-    pub fn new(outcome: FakeLazerOutcome) -> Self {
-        Self { outcome }
-    }
-
     /// Convenience: a source that always succeeds with the given payload bytes.
     pub fn with_payload(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::new(FakeLazerOutcome::ok(bytes))
+        Self {
+            outcome: Ok(bytes.into()),
+        }
     }
 
     /// Convenience: a source that always fails with the given controlled error.
     pub fn failing(error: FakeLazerError) -> Self {
-        Self::new(FakeLazerOutcome::err(error))
+        Self {
+            outcome: Err(error),
+        }
     }
 }
 
@@ -77,7 +61,7 @@ impl OraclePayloadSource for FakeLazerSource {
     async fn fetch_payload(&self, _price_ids: &[u32]) -> Result<Vec<u8>, FakeLazerError> {
         // Cloning the canned result keeps the source reusable across calls and
         // keeps tests deterministic: no shared mutable state, no call ordering.
-        self.outcome.0.clone().map(|bytes| bytes.to_vec())
+        self.outcome.clone()
     }
 }
 

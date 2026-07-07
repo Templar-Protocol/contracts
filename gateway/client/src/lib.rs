@@ -530,7 +530,7 @@ mod source_args {
                 self.pyth_lazer_ws_url.clone(),
                 self.pyth_lazer_api_key.clone(),
                 LazerSubscriptionConfig {
-                    channel: Some(self.pyth_lazer_channel.clone()),
+                    channel: self.pyth_lazer_channel.clone(),
                     max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
                 },
             )

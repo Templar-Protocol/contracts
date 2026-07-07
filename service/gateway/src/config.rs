@@ -1,14 +1,14 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use near_account_id::AccountId;
 use near_api::types::SecretKey;
+use templar_gateway_client::OracleSourceArgs;
 use templar_gateway_core::{RedactedString, SharedOperationStore};
-use templar_gateway_oracle_updates_dispatch::{LazerSourceConfig, LazerSubscriptionConfig};
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_store::{MemoryStore, PostgresStore};
 use templar_gateway_types::ManagedAccountId;
@@ -80,39 +80,9 @@ pub struct Config {
     #[arg(long, env = "GATEWAY_DATABASE_MIGRATE", default_value_t = false)]
     pub migrate_database: bool,
 
-    /// Pyth Hermes API URL used when the gateway needs to fetch fresh update payloads.
-    #[arg(
-        long,
-        env = "PYTH_HERMES_URL",
-        default_value = "https://hermes-beta.pyth.network"
-    )]
-    pub pyth_hermes_url: Url,
-
-    /// Path to the executable used for RedStone bridge payload generation.
-    #[arg(long, env = "REDSTONE_NODE_PATH", default_value = "node")]
-    pub redstone_node_path: PathBuf,
-
-    /// Bearer token for Pyth Pro/Lazer websocket payload updates.
-    #[arg(long, env = "PYTH_LAZER_API_KEY")]
-    pub pyth_lazer_api_key: RedactedString,
-
-    /// Pyth Pro/Lazer websocket endpoint for payload updates.
-    /// Configures one endpoint only; automatic multi-endpoint failover is not implemented.
-    #[arg(
-        long,
-        env = "PYTH_LAZER_WS_URL",
-        default_value = "wss://pyth-lazer-0.dourolabs.app/v1/stream"
-    )]
-    pub pyth_lazer_ws_url: Url,
-
-    /// Pyth Pro/Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
-    /// "fixed_rate@200ms", "fixed_rate@1000ms". Validated when the Lazer source is built.
-    #[arg(long, env = "PYTH_LAZER_CHANNEL", default_value = "fixed_rate@200ms")]
-    pub pyth_lazer_channel: String,
-
-    /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
-    #[arg(long, env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS", default_value = "5000")]
-    pub pyth_lazer_max_payload_age_ms: u64,
+    /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Pro/Lazer).
+    #[command(flatten)]
+    pub oracle_sources: OracleSourceArgs,
 
     /// Managed signer entries as `<account_id>=<secret_key>[,<secret_key>...]`.
     #[arg(
@@ -153,22 +123,12 @@ impl Config {
 
         Ok(Arc::new(store))
     }
-
-    pub fn build_lazer_source_config(&self) -> Result<LazerSourceConfig> {
-        LazerSourceConfig::new(
-            self.pyth_lazer_ws_url.clone(),
-            self.pyth_lazer_api_key.clone(),
-            LazerSubscriptionConfig {
-                channel: Some(self.pyth_lazer_channel.clone()),
-                max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
-            },
-        )
-        .map_err(anyhow::Error::from)
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use rstest::rstest;
 
@@ -195,10 +155,13 @@ mod tests {
         assert_eq!(config.database_url, None);
         assert!(!config.migrate_database);
         assert_eq!(
-            config.pyth_hermes_url.as_str(),
+            config.oracle_sources.pyth_hermes_url.as_str(),
             "https://hermes-beta.pyth.network/"
         );
-        assert_eq!(config.redstone_node_path, PathBuf::from("node"));
+        assert_eq!(
+            config.oracle_sources.redstone_node_path,
+            PathBuf::from("node")
+        );
         assert_eq!(config.managed_signers.len(), 1);
         assert_eq!(config.managed_signers[0].account_id.as_str(), "test.near");
         assert_eq!(config.managed_signers[0].secret_keys.len(), 2);
@@ -267,12 +230,14 @@ mod tests {
         match expected {
             Ok(()) => {
                 config
-                    .build_lazer_source_config()
+                    .oracle_sources
+                    .build()
                     .expect("valid Lazer config should build");
             }
             Err(expected_msg) => {
                 let error = config
-                    .build_lazer_source_config()
+                    .oracle_sources
+                    .build()
                     .expect_err("invalid Lazer config should fail");
                 assert!(error.to_string().contains(expected_msg));
             }

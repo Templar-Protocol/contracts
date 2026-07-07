@@ -6,10 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
-use pyth_lazer_protocol::{
-    api::{Channel, SubscriptionId},
-    time::FixedRate,
-};
+use pyth_lazer_protocol::api::{Channel, SubscriptionId};
 use templar_gateway_core::{OraclePayloadSource, RedactedString};
 use thiserror::Error;
 use tokio::{
@@ -33,7 +30,6 @@ use crate::lazer_wire::{
     MAX_STREAM_JSON_MESSAGE_BYTES,
 };
 
-const DEFAULT_CHANNEL: Channel = Channel::FixedRate(FixedRate::RATE_200_MS);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -53,7 +49,7 @@ pub struct LazerSourceConfig {
 
 #[derive(Debug, Clone)]
 pub struct LazerSubscriptionConfig {
-    pub channel: Option<String>,
+    pub channel: String,
     pub max_payload_age: Duration,
 }
 
@@ -72,12 +68,13 @@ impl LazerSourceConfig {
         if subscription.max_payload_age.is_zero() {
             return Err(LazerClientError::InvalidMaxPayloadAge);
         }
+        let max_payload_age = subscription.max_payload_age;
         let channel = parse_channel(subscription.channel)?;
         Ok(Self {
             ws_url,
             api_token,
             channel,
-            max_payload_age: subscription.max_payload_age,
+            max_payload_age,
         })
     }
 
@@ -86,10 +83,7 @@ impl LazerSourceConfig {
     }
 }
 
-fn parse_channel(channel: Option<String>) -> LazerResult<Channel> {
-    let Some(channel) = channel else {
-        return Ok(DEFAULT_CHANNEL);
-    };
+fn parse_channel(channel: String) -> LazerResult<Channel> {
     serde_json::from_value(serde_json::Value::String(channel.clone()))
         .map_err(|_| LazerClientError::InvalidChannel(channel))
 }

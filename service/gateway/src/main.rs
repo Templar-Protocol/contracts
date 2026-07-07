@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
 
     let signers = config.build_signers().await?;
     let store = config.build_store().await?;
-    let lazer_config = config.build_lazer_source_config()?;
+    let sources = config.oracle_sources.build()?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
         .api_key(
             config
@@ -33,10 +33,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .build();
     let context = GatewayContext::builder(network)
-        .with_pyth_source(config.pyth_hermes_url)
-        .with_redstone_source(&config.redstone_node_path)
+        .with_pyth_source(sources.pyth_hermes_url)
+        .with_redstone_source(&sources.redstone_node_path)
         .map_err(anyhow::Error::from)?
-        .with_lazer_source(lazer_config)
+        .with_lazer_source(sources.lazer)
         .build();
 
     tracing::info!("Pyth Lazer payload source enabled");

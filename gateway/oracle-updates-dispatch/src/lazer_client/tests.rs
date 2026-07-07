@@ -42,7 +42,7 @@ fn live_config_from_env() -> (LazerSourceConfig, Vec<u32>) {
         url,
         RedactedString::from(token),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )
@@ -71,7 +71,7 @@ fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age,
         },
     )

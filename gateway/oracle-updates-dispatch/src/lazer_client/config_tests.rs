@@ -3,18 +3,21 @@ use std::time::Duration;
 use super::*;
 
 #[test]
-fn defaults_channel_when_unset() {
+fn accepts_a_supported_channel() {
     let config = LazerSourceConfig::new(
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )
-    .expect("valid config should use the default channel");
+    .expect("a supported channel should build");
 
-    assert_eq!(config.channel(), DEFAULT_CHANNEL);
+    assert_eq!(
+        config.channel(),
+        Channel::FixedRate(pyth_lazer_protocol::time::FixedRate::RATE_200_MS)
+    );
 }
 
 #[test]
@@ -23,7 +26,7 @@ fn rejects_insecure_websocket_url() {
         "ws://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )
@@ -38,7 +41,7 @@ fn rejects_empty_api_token() {
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("  "),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )
@@ -53,7 +56,7 @@ fn rejects_invalid_channel() {
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: Some("not-a-channel".to_owned()),
+            channel: "not-a-channel".to_owned(),
             max_payload_age: Duration::from_secs(5),
         },
     )
@@ -70,7 +73,7 @@ fn rejects_zero_max_payload_age() {
         "wss://example.com/v1/stream".parse().expect("valid URL"),
         RedactedString::from("secret-token"),
         LazerSubscriptionConfig {
-            channel: None,
+            channel: "fixed_rate@200ms".to_owned(),
             max_payload_age: Duration::ZERO,
         },
     )
