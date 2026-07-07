@@ -32,6 +32,7 @@ pub use pagination::collect_paginated;
 
 use std::{
     collections::{HashMap, HashSet},
+    marker::PhantomData,
     ops::Deref,
     sync::Arc,
 };
@@ -41,8 +42,12 @@ use templar_gateway_core::{
     DispatchRead, GatewayContext, GatewayError, GatewayResult, NearOperationExecutor,
     NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite, SharedOperationStore,
 };
-use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_store::MemoryStore;
+
+/// The default dispatcher, covering the full in-process method surface. Rebind
+/// with [`Client::via`] to reach a heavier, opt-in dispatcher (contract
+/// artifacts, oracle updates) whose crate the consumer depends on explicitly.
+pub use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
@@ -123,24 +128,39 @@ impl ClientBuilder {
             context,
             driver,
             signer_account_ids,
+            _dispatch: PhantomData,
         })
     }
 }
 
-/// A direct, in-process gateway client over the concrete [`Dispatch`].
+/// A direct, in-process gateway client, dispatching through `D` (defaults to
+/// [`MethodsDispatch`]). Rebind to an opt-in dispatcher with [`Client::via`].
 ///
 /// Reads need no signer; writes name the signing account explicitly via
 /// [`Client::execute_as`] and run through the store-backed [`OperationDriver`].
 /// For the common single-signer case, bind a default account with
 /// [`Client::into_signing`] (or [`SigningClient::connect`]).
-#[derive(Clone)]
-pub struct Client {
+pub struct Client<D = MethodsDispatch> {
     context: GatewayContext,
     driver: OperationDriver,
     signer_account_ids: HashSet<ManagedAccountId>,
+    // `fn() -> D` carries the dispatcher choice without owning it, so `Client<D>`
+    // stays `Send`/`Sync`/`Clone` for any `D` (which is only ever a ZST marker).
+    _dispatch: PhantomData<fn() -> D>,
 }
 
-impl std::fmt::Debug for Client {
+impl<D> Clone for Client<D> {
+    fn clone(&self) -> Self {
+        Self {
+            context: self.context.clone(),
+            driver: self.driver.clone(),
+            signer_account_ids: self.signer_account_ids.clone(),
+            _dispatch: PhantomData,
+        }
+    }
+}
+
+impl<D> std::fmt::Debug for Client<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
             .field("signer_account_ids", &self.signer_account_ids)
@@ -163,6 +183,22 @@ impl Client {
     pub fn read_only(network: NetworkConfig) -> GatewayResult<Self> {
         Self::builder(network).build()
     }
+}
+
+impl<D> Client<D> {
+    /// Rebind this client to dispatcher `D2`, keeping the same connection,
+    /// signer set, and operation store. Cheap: clones two `Arc`s and the
+    /// signer-id set. Use it to reach an opt-in dispatcher, e.g.
+    /// `client.via::<ArtifactsDispatch>().read(GetArtifact { .. })`.
+    #[must_use]
+    pub fn via<D2>(&self) -> Client<D2> {
+        Client {
+            context: self.context.clone(),
+            driver: self.driver.clone(),
+            signer_account_ids: self.signer_account_ids.clone(),
+            _dispatch: PhantomData,
+        }
+    }
 
     /// Bind a default signing account, yielding a [`SigningClient`] whose
     /// `execute` needs no account argument. Errors if no signer is registered
@@ -170,7 +206,7 @@ impl Client {
     pub fn into_signing(
         self,
         account_id: impl Into<ManagedAccountId>,
-    ) -> GatewayResult<SigningClient> {
+    ) -> GatewayResult<SigningClient<D>> {
         let signer_account_id = account_id.into();
         if !self.signer_account_ids.contains(&signer_account_id) {
             return Err(GatewayError::UnsupportedSignerAccount(
@@ -187,9 +223,9 @@ impl Client {
     pub async fn read<Op>(&self, op: Op) -> GatewayResult<Op::Output>
     where
         Op: MethodSpec,
-        Dispatch: DispatchRead<Op, GatewayContext>,
+        D: DispatchRead<Op, GatewayContext>,
     {
-        <Dispatch as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
+        <D as DispatchRead<Op, GatewayContext>>::dispatch(op, self.context.clone()).await
     }
 
     /// Plan and execute a write operation signed by a specific account, through
@@ -201,7 +237,7 @@ impl Client {
     ) -> GatewayResult<WriteOperationResult>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<Op, GatewayContext>,
+        D: PlanWrite<Op, GatewayContext>,
     {
         self.execute_request(WriteRequest {
             signer_account_id: signer_account_id.into(),
@@ -219,10 +255,10 @@ impl Client {
     ) -> GatewayResult<WriteOperationResult>
     where
         S: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<S, GatewayContext>,
+        D: PlanWrite<S, GatewayContext>,
     {
         self.driver
-            .plan_and_complete::<S, Dispatch, GatewayContext>(self.context.clone(), request)
+            .plan_and_complete::<S, D, GatewayContext>(self.context.clone(), request)
             .await
     }
 
@@ -266,9 +302,9 @@ impl Client {
     pub async fn plan_request<S>(&self, request: WriteRequest<S>) -> GatewayResult<OperationPlan>
     where
         S: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<S, GatewayContext>,
+        D: PlanWrite<S, GatewayContext>,
     {
-        <Dispatch as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await
+        <D as PlanWrite<S, GatewayContext>>::plan(request, self.context.clone()).await
     }
 }
 
@@ -278,13 +314,21 @@ impl Client {
 /// [`SigningClient::execute`] needs no account argument and cannot fail for a
 /// missing-signer reason. Derefs to the underlying [`Client`] for reads and
 /// explicit-signer writes.
-#[derive(Clone)]
-pub struct SigningClient {
-    client: Client,
+pub struct SigningClient<D = MethodsDispatch> {
+    client: Client<D>,
     signer_account_id: ManagedAccountId,
 }
 
-impl std::fmt::Debug for SigningClient {
+impl<D> Clone for SigningClient<D> {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            signer_account_id: self.signer_account_id.clone(),
+        }
+    }
+}
+
+impl<D> std::fmt::Debug for SigningClient<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningClient")
             .field("signer_account_id", &self.signer_account_id)
@@ -306,18 +350,29 @@ impl SigningClient {
             .build()?
             .into_signing(account_id)
     }
+}
 
+impl<D> SigningClient<D> {
     /// The bound signing account.
     #[must_use]
     pub fn account_id(&self) -> &ManagedAccountId {
         &self.signer_account_id
     }
 
+    /// Rebind the dispatcher, keeping the bound signing account.
+    #[must_use]
+    pub fn via<D2>(&self) -> SigningClient<D2> {
+        SigningClient {
+            client: self.client.via::<D2>(),
+            signer_account_id: self.signer_account_id.clone(),
+        }
+    }
+
     /// Plan and execute a write operation signed by the bound account.
     pub async fn execute<Op>(&self, op: Op) -> GatewayResult<WriteOperationResult>
     where
         Op: MethodSpec<Output = WriteOperationResult>,
-        Dispatch: PlanWrite<Op, GatewayContext>,
+        D: PlanWrite<Op, GatewayContext>,
     {
         self.client
             .execute_as(self.signer_account_id.clone(), op)
@@ -325,10 +380,10 @@ impl SigningClient {
     }
 }
 
-impl Deref for SigningClient {
-    type Target = Client;
+impl<D> Deref for SigningClient<D> {
+    type Target = Client<D>;
 
-    fn deref(&self) -> &Client {
+    fn deref(&self) -> &Client<D> {
         &self.client
     }
 }
@@ -337,11 +392,11 @@ impl Deref for SigningClient {
 mod tests {
     use templar_common::registry::DeployMode;
     use templar_contract_artifacts::ArtifactId;
+    use templar_gateway_artifacts_dispatch::Dispatch as ArtifactsDispatch;
     use templar_gateway_artifacts_spec::artifact::{
         AddArtifactVersion, GetArtifact, ListArtifacts,
     };
     use templar_gateway_core::{GatewayContext, PlanWrite};
-    use templar_gateway_methods_dispatch::Dispatch;
     use templar_gateway_types::NearToken;
 
     use super::{Client, Network, NetworkConfigBuilder};
@@ -352,6 +407,7 @@ mod tests {
             .expect("testnet network config is valid");
 
         let result = client
+            .via::<ArtifactsDispatch>()
             .read(ListArtifacts {})
             .await
             .expect("artifact.list dispatch succeeds");
@@ -368,6 +424,7 @@ mod tests {
             .expect("testnet network config is valid");
 
         let result = client
+            .via::<ArtifactsDispatch>()
             .read(GetArtifact {
                 artifact: ArtifactId::Market,
             })
@@ -384,7 +441,7 @@ mod tests {
             Spec: templar_gateway_types::MethodSpec<
                 Output = templar_gateway_types::common::WriteOperationResult,
             >,
-            Dispatch: PlanWrite<Spec, GatewayContext>,
+            ArtifactsDispatch: PlanWrite<Spec, GatewayContext>,
         {
         }
 

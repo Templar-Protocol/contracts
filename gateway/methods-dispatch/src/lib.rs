@@ -1,5 +1,4 @@
 mod account_impl;
-mod artifact_impl;
 mod chain_impl;
 mod contract_impl;
 mod ft_impl;

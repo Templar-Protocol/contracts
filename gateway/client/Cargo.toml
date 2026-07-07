@@ -21,6 +21,7 @@ clap = ["dep:clap"]
 [dev-dependencies]
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
+templar-gateway-artifacts-dispatch.workspace = true
 templar-gateway-artifacts-spec.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
