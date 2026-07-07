@@ -23,8 +23,8 @@ mod tests {
         assert_eq!(&result.code.0[0..4], b"\0asm");
         // Then: metadata matches the catalog
         let meta = ArtifactId::Market.metadata();
-        assert_eq!(result.package_name, meta.package_name);
-        assert_eq!(result.version, meta.version);
+        assert_eq!(result.metadata.package_name, meta.package_name);
+        assert_eq!(result.metadata.version, meta.version);
     }
 
     #[tokio::test]
@@ -58,12 +58,18 @@ mod tests {
         let computed = templar_contract_artifacts::sha256_hex(&result.code.0);
         assert_eq!(result.sha256, computed);
         // Then: version key has the canonical format
-        assert!(result
-            .version_key
-            .starts_with(&format!("{}@{}#", result.package_name, result.version)));
+        assert!(result.version_key.starts_with(&format!(
+            "{}@{}#",
+            result.metadata.package_name, result.metadata.version
+        )));
         assert_eq!(
             result.version_key.len(),
-            format!("{}@{}#", result.package_name, result.version).len() + 64
+            format!(
+                "{}@{}#",
+                result.metadata.package_name, result.metadata.version
+            )
+            .len()
+                + 64
         );
     }
 
@@ -98,7 +104,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(result.version, meta.version);
+            assert_eq!(result.metadata.version, meta.version);
             assert!(result
                 .version_key
                 .starts_with(&format!("{}@{}#", meta.package_name, meta.version)));

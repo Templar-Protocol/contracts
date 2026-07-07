@@ -65,5 +65,5 @@ fn status_code_formats_exit_code() {
 }
 
 fn find_test_artifact(id: ArtifactId) -> &'static ArtifactMetadata {
-    crate::find_by_id(id)
+    id.metadata()
 }

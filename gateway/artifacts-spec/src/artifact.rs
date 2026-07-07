@@ -15,11 +15,8 @@ pub struct GetArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetArtifactResult {
-    pub artifact: ArtifactId,
-    pub package_name: String,
-    pub cargo_target_name: String,
-    pub source_path: String,
-    pub version: String,
+    #[serde(flatten)]
+    pub metadata: ArtifactMetadata,
     pub code: Base64Bytes,
     pub sha256: String,
     pub version_key: String,

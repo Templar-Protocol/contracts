@@ -42,11 +42,7 @@ where
         let artifact = load_artifact(request.artifact);
 
         Ok(GetArtifactResult {
-            artifact: request.artifact,
-            package_name: artifact.metadata.package_name.to_string(),
-            cargo_target_name: artifact.metadata.cargo_target_name.to_string(),
-            source_path: artifact.metadata.source_path.to_string(),
-            version: artifact.metadata.version.to_string(),
+            metadata: ArtifactMetadata::from(artifact.metadata),
             code: templar_gateway_types::Base64Bytes(artifact.code),
             sha256: artifact.sha256,
             version_key: artifact.version_key,

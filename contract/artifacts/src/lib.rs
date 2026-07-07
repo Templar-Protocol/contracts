@@ -77,11 +77,6 @@ pub fn find_by_package_name(package: &str) -> Option<&'static ArtifactMetadata> 
     ArtifactId::from_package_name(package).map(ArtifactId::metadata)
 }
 
-/// Resolve an artifact by its [`ArtifactId`] ID.
-pub fn find_by_id(id: ArtifactId) -> &'static ArtifactMetadata {
-    id.metadata()
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -123,17 +118,17 @@ mod tests {
     }
 
     #[test]
-    fn test_find_by_id() {
-        let meta = find_by_id(ArtifactId::Vault);
+    fn test_metadata_by_id() {
+        let meta = ArtifactId::Vault.metadata();
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
         assert_eq!(meta.version, "1.2.1");
     }
 
     #[test]
-    fn test_find_by_id_returns_all_catalog() {
+    fn test_metadata_by_id_returns_all_catalog() {
         for id in ArtifactId::ALL {
-            let found = find_by_id(id);
+            let found = id.metadata();
             assert_eq!(found.id, id);
         }
     }

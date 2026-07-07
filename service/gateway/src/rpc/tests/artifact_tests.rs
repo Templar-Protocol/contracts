@@ -41,13 +41,13 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
 
     // Check metadata is consistent.
     assert_eq!(
-        result.artifact,
+        result.metadata.artifact,
         templar_contract_artifacts::ArtifactId::Market
     );
-    assert_eq!(result.package_name, "templar-market-contract");
-    assert!(!result.cargo_target_name.is_empty());
-    assert!(!result.source_path.is_empty());
-    assert!(!result.version.is_empty());
+    assert_eq!(result.metadata.package_name, "templar-market-contract");
+    assert!(!result.metadata.cargo_target_name.is_empty());
+    assert!(!result.metadata.source_path.is_empty());
+    assert!(!result.metadata.version.is_empty());
 
     // Check WASM bytes are valid.
     assert!(!result.code.0.is_empty());
@@ -56,12 +56,18 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
     // Check SHA-256 and version key are present.
     assert!(!result.sha256.is_empty());
     assert_eq!(result.sha256.len(), 64);
-    assert!(result
-        .version_key
-        .starts_with(&format!("{}@{}#", result.package_name, result.version)));
+    assert!(result.version_key.starts_with(&format!(
+        "{}@{}#",
+        result.metadata.package_name, result.metadata.version
+    )));
     assert_eq!(
         result.version_key.len(),
-        format!("{}@{}#", result.package_name, result.version).len() + 64
+        format!(
+            "{}@{}#",
+            result.metadata.package_name, result.metadata.version
+        )
+        .len()
+            + 64
     );
 
     stack.shutdown().await;

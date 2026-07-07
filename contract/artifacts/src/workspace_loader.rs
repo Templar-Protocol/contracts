@@ -158,13 +158,16 @@ pub fn load_artifact(
     Ok((bytes, package))
 }
 
+/// Build `package_name` with `cargo near build` and return its WASM bytes plus
+/// the resolved Cargo package.
 pub fn build_artifact(
     workspace_dir: &Path,
     package_name: &str,
     reproducible: bool,
-) -> Result<Vec<u8>, BuildContractError> {
+) -> Result<(Vec<u8>, cargo_metadata::Package), BuildContractError> {
     let metadata = get_metadata(workspace_dir)?;
     let package = find_package(&metadata, package_name)
+        .cloned()
         .ok_or_else(|| BuildContractError::PackageNotFound(package_name.to_string()))?;
 
     let status = build_command(workspace_dir, package.manifest_path.as_str(), reproducible)
@@ -175,12 +178,12 @@ pub fn build_artifact(
         return Err(BuildContractError::BuildStatus { status });
     }
 
-    let target_name = resolve_target_name(package);
+    let target_name = resolve_target_name(&package);
     let path =
         target_near_wasm_path_from_meta(metadata.target_directory.as_std_path(), &target_name);
     let bytes =
         std::fs::read(&path).map_err(|source| BuildContractError::ReadWasm { path, source })?;
-    Ok(bytes)
+    Ok((bytes, package))
 }
 
 #[cfg(feature = "clap")]

@@ -1,48 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
-use templar_contract_artifacts::{find_by_package_name, format_version_key, ArtifactId};
+use templar_contract_artifacts::{build_artifact, format_version_key, load_artifact};
 use templar_gateway_types::Version;
-
-fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
-    cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .current_dir(workspace_dir)
-        .exec()
-        .with_context(|| format!("run cargo metadata in {}", workspace_dir.display()))
-}
-
-fn get_package_from_metadata<'a>(
-    metadata: &'a cargo_metadata::Metadata,
-    package: &str,
-) -> anyhow::Result<&'a cargo_metadata::Package> {
-    let package = metadata
-        .workspace_packages()
-        .into_iter()
-        .find(|p| p.name == package)
-        .with_context(|| format!("package not found: {package}"))?;
-    Ok(package)
-}
-
-fn get_contract_wasm_bytes(
-    metadata: &cargo_metadata::Metadata,
-    package: &cargo_metadata::Package,
-) -> anyhow::Result<Vec<u8>> {
-    let target_name = find_by_package_name(package.name.as_str()).map_or_else(
-        || package.name.replace('-', "_"),
-        |artifact| artifact.cargo_target_name.to_owned(),
-    );
-    let path = target_near_wasm_path(metadata.target_directory.as_std_path(), &target_name);
-
-    std::fs::read(&path).with_context(|| format!("read contract WASM from {}", path.display()))
-}
-
-fn target_near_wasm_path(target_dir: &Path, target_name: &str) -> PathBuf {
-    target_dir
-        .join("near")
-        .join(target_name)
-        .join(format!("{target_name}.wasm"))
-}
 
 fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
     Version::from((
@@ -76,19 +36,9 @@ pub fn load_contract<T>(
     workspace_dir: &Path,
     cargo_package: &str,
 ) -> anyhow::Result<LoadedContract<T>> {
-    let metadata = get_metadata(workspace_dir)?;
-    let package = get_package_from_metadata(&metadata, cargo_package)?;
-
-    let bytes = get_contract_wasm_bytes(&metadata, package)?;
-    Ok(loaded_contract(package, bytes))
-}
-
-pub fn load_contract_artifact<T>(
-    workspace_dir: &Path,
-    artifact: ArtifactId,
-) -> anyhow::Result<LoadedContract<T>> {
-    let artifact_metadata = artifact.metadata();
-    load_contract(workspace_dir, artifact_metadata.package_name)
+    let (bytes, package) = load_artifact(workspace_dir, cargo_package)
+        .with_context(|| format!("load contract {cargo_package}"))?;
+    Ok(loaded_contract(&package, bytes))
 }
 
 /// Run `cargo near build reproducible-wasm` in `dir`.
@@ -98,45 +48,7 @@ pub fn build_contract<T>(
     workspace_dir: &Path,
     cargo_package: &str,
 ) -> anyhow::Result<LoadedContract<T>> {
-    let metadata = get_metadata(workspace_dir)?;
-    let package = get_package_from_metadata(&metadata, cargo_package)?;
-
-    let status = std::process::Command::new("cargo")
-        .args(["near", "build", "reproducible-wasm"])
-        .args(["--manifest-path", package.manifest_path.as_str()])
-        .current_dir(workspace_dir)
-        .status()
-        .with_context(|| format!("run cargo near build in {}", workspace_dir.display()))?;
-
-    anyhow::ensure!(
-        status.success(),
-        "cargo near build failed in {}",
-        workspace_dir.display()
-    );
-
-    let bytes = get_contract_wasm_bytes(&metadata, package)?;
-    Ok(loaded_contract(package, bytes))
-}
-
-pub fn build_contract_artifact<T>(
-    workspace_dir: &Path,
-    artifact: ArtifactId,
-) -> anyhow::Result<LoadedContract<T>> {
-    let artifact_metadata = artifact.metadata();
-    build_contract(workspace_dir, artifact_metadata.package_name)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn target_near_wasm_path_uses_resolved_target_directory() {
-        let path = target_near_wasm_path(Path::new("/custom-target"), "templar_market_contract");
-
-        assert_eq!(
-            path,
-            Path::new("/custom-target/near/templar_market_contract/templar_market_contract.wasm"),
-        );
-    }
+    let (bytes, package) = build_artifact(workspace_dir, cargo_package, true)
+        .with_context(|| format!("build contract {cargo_package}"))?;
+    Ok(loaded_contract(&package, bytes))
 }
