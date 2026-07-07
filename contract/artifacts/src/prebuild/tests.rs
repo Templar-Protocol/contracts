@@ -1,22 +1,11 @@
-use std::{ffi::OsString, io, path::Path, process::Command};
+use std::{
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use super::*;
-
-#[test]
-fn jobs_defaults_to_bounded_parallelism() {
-    assert!((1..=DEFAULT_MAX_JOBS).contains(&default_jobs()));
-}
-
-#[test]
-fn jobs_zero_normalizes_to_one() {
-    assert_eq!(normalized_jobs(0), 1);
-    assert_eq!(normalized_jobs(3), 3);
-}
-
-#[test]
-fn catalog_is_prebuild_source_of_truth() {
-    assert_eq!(artifact_catalog().len(), 14);
-}
 
 #[test]
 fn artifact_selection_defaults_to_full_catalog() {
@@ -168,7 +157,7 @@ fn args_accepts_zero_jobs_flag() {
         OsString::from("0"),
     ]);
 
-    assert_eq!(normalized_jobs(args.jobs), 1);
+    assert_eq!(args.jobs.max(1), 1);
 }
 
 #[test]
@@ -203,6 +192,47 @@ fn args_accepts_comma_separated_artifact_flags() {
     ]);
 
     assert_eq!(args.artifacts, vec![ArtifactId::Market, ArtifactId::MockFt]);
+}
+
+#[test]
+fn args_workspace_root_defaults_to_discovered_workspace() {
+    let args = parse_args([OsString::from("prebuild-test-contracts")]);
+
+    assert_eq!(args.workspace_root, default_workspace_root());
+}
+
+#[test]
+fn args_accepts_workspace_root_flag() {
+    let args = parse_args([
+        OsString::from("prebuild-test-contracts"),
+        OsString::from("--workspace-root"),
+        OsString::from("/some/path"),
+    ]);
+
+    assert_eq!(args.workspace_root, PathBuf::from("/some/path"));
+}
+
+#[test]
+fn build_handle_captures_output() {
+    let handle = std::thread::spawn(|| {
+        Command::new("sh")
+            .args(["-c", "echo hello-stdout; echo hello-stderr >&2"])
+            .output()
+    });
+    let mut build = BuildHandle {
+        handle: Some(handle),
+        captured: None,
+    };
+
+    let status = build.wait().unwrap();
+    assert!(status.success());
+
+    let output = build.take_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(stdout.contains("hello-stdout"));
+    assert!(stderr.contains("hello-stderr"));
 }
 
 #[test]

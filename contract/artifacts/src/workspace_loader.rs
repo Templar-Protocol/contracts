@@ -89,6 +89,23 @@ fn target_near_wasm_path_from_meta(target_dir: &std::path::Path, target_name: &s
 }
 
 // ---------------------------------------------------------------------------
+// Workspace root discovery
+// ---------------------------------------------------------------------------
+
+/// Discover the Cargo workspace root from the current directory using
+/// `cargo metadata`.
+///
+/// Returns `None` if `cargo metadata` fails (e.g. not in a Cargo workspace).
+#[cfg(feature = "clap")]
+pub(crate) fn discover_workspace_root() -> Option<PathBuf> {
+    cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .ok()
+        .map(|meta| meta.workspace_root.as_std_path().to_path_buf())
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -167,11 +184,10 @@ pub fn spawn_artifact_build(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
     reproducible: bool,
-) -> std::io::Result<std::process::Child> {
-    let manifest = workspace_dir
-        .join(artifact.manifest_path())
-        .join("Cargo.toml");
-    build_command(workspace_dir, manifest, reproducible).spawn()
+) -> std::thread::JoinHandle<std::io::Result<std::process::Output>> {
+    let manifest_path = artifact.manifest_path().join("Cargo.toml");
+    let mut command = build_command(workspace_dir, manifest_path, reproducible);
+    std::thread::spawn(move || command.output())
 }
 
 fn build_command(
