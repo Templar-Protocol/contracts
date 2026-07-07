@@ -34,15 +34,16 @@ sqlx = { version = "0.8", features = [
     "uuid",
 ] }
 templar-common = { workspace = true, features = ["rpc"] }
-templar-gateway-client.workspace = true
+templar-gateway-client = { workspace = true, features = ["clap"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true
+templar-gateway-oracle-updates-dispatch = { workspace = true, features = ["clap"] }
+templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
 templar-proxy-oracle-near-common = { workspace = true }
-templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -51,11 +52,11 @@ tower-http.workspace = true
 uuid.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
-reqwest = { version = "0.12.24", features = ["json"] }
 
 [dev-dependencies]
 near-workspaces = { workspace = true, features = ["experimental"] }
 p256.workspace = true
+reqwest = { version = "0.12.24", features = ["json"] }
 rstest.workspace = true
 solana-sdk.workspace = true
 test-utils.workspace = true

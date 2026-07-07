@@ -44,6 +44,7 @@ Methods in the same namespace should stay at roughly the same level of abstracti
 - `mt.*`: NEP-245 (multi-token) standard operations
 - `token.*`: standard-agnostic token operations that dispatch NEP-141 vs NEP-245 internally
 - `storage.*`: NEP-145 standard operations
+- `artifact.*`: contract artifact (WASM byte) operations across the artifact catalog and `registry.addArtifactVersion`
 - `registry.*`, `market.*`, `ua.*`: protocol/domain-specific operations
 
 ## Guidance

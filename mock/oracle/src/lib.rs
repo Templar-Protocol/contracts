@@ -8,6 +8,7 @@ use near_sdk::{
     AccountId, PanicOnDefault,
 };
 use templar_common::oracle::{
+    lazer::{self, FeedDataResponse, PythLazer},
     pyth::{Price, PriceIdentifier, Pyth},
     redstone::{config, Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, Role},
 };
@@ -18,6 +19,7 @@ use templar_primitives::{time::Nanoseconds, SU256};
 pub struct Contract {
     redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
+    lazer_prices: LookupMap<u32, lazer::FeedData>,
     modify_roles: Vec<AccountId>,
     trusted_updaters: Vec<AccountId>,
     last_pyth_update_data: Option<String>,
@@ -31,6 +33,7 @@ impl Contract {
         Self {
             redstone_prices: LookupMap::new(b"r"),
             pyth_prices: LookupMap::new(b"p"),
+            lazer_prices: LookupMap::new(b"l"),
             modify_roles: Vec::new(),
             trusted_updaters: Vec::new(),
             last_pyth_update_data: None,
@@ -82,6 +85,14 @@ impl Contract {
         }
     }
 
+    pub fn set_lazer_price(&mut self, feed_id: u32, data: Option<lazer::FeedData>) {
+        if let Some(data) = data {
+            self.lazer_prices.insert(feed_id, data);
+        } else {
+            self.lazer_prices.remove(&feed_id);
+        }
+    }
+
     #[payable]
     pub fn update_price_feeds(&mut self, data: String) {
         self.last_pyth_update_data = Some(data);
@@ -121,6 +132,16 @@ impl Pyth for Contract {
             r.insert(price_id, self.pyth_prices.get(&price_id).cloned());
         }
         r
+    }
+}
+
+#[near]
+impl PythLazer for Contract {
+    fn get_feeds_data(&self, feed_ids: Vec<u32>) -> FeedDataResponse {
+        feed_ids
+            .into_iter()
+            .map(|feed_id| (feed_id, self.lazer_prices.get(&feed_id).cloned()))
+            .collect()
     }
 }
 

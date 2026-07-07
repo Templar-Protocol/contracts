@@ -4,8 +4,11 @@
 )]
 
 mod account_tests;
+mod artifact_tests;
 mod contract_tests;
+mod fake_lazer_source;
 mod ft_tests;
+mod lazer_tests;
 mod lst_oracle_tests;
 mod market_tests;
 mod mt_tests;
@@ -31,6 +34,7 @@ use jsonrpsee::server::{ServerBuilder, ServerHandle};
 use near_sdk::json_types::{I64, U64};
 use templar_common::market::DepositMsg;
 use templar_common::oracle::{
+    lazer,
     pyth::{PriceIdentifier, PythTimestamp},
     redstone::FeedData,
 };
@@ -67,11 +71,14 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-type TestContext = WithRedStoneSource<WithPythSource<GatewayContext>>;
+use fake_lazer_source::{FakeLazerSource, WithFakeLazerSource};
+
+type TestContext = WithFakeLazerSource<WithRedStoneSource<WithPythSource<GatewayContext>>>;
 
 struct TestStack {
     harness: SandboxHarness,
     gateway: GatewayService<TestContext>,
+    context: TestContext,
     handle: ServerHandle,
     controller: TestController,
 }
@@ -83,13 +90,28 @@ impl TestStack {
     }
 
     async fn start_with_oracle_update_config(pyth_hermes_url: Url) -> Result<Self> {
+        // Default Lazer fake succeeds with a small canned payload: the existing
+        // oracle RPC tests do not exercise a Lazer-backed feed, but the gateway
+        // RPC registration now requires the context to provide a Lazer source.
+        Self::start_with_lazer(
+            pyth_hermes_url,
+            FakeLazerSource::with_payload(vec![0xa1; 8]),
+        )
+        .await
+    }
+
+    /// Start the stack with a specific fake Lazer source, so a test can pin a
+    /// controlled payload or a hard error (cache-miss / stale) without touching
+    /// the network.
+    async fn start_with_lazer(pyth_hermes_url: Url, lazer_source: FakeLazerSource) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
         let context = GatewayContext::builder(harness.network.clone())
             .with_pyth_source(pyth_hermes_url)
             .with_redstone_source(std::path::Path::new("node"))?
+            .map(|inner| WithFakeLazerSource::new(inner, lazer_source))
             .build();
         let gateway = GatewayService::spawn(
-            context,
+            context.clone(),
             harness.gateway_signers.clone(),
             Arc::new(MemoryStore::new()),
         )
@@ -104,6 +126,7 @@ impl TestStack {
         Ok(Self {
             harness,
             gateway,
+            context,
             handle,
             controller,
         })
@@ -208,6 +231,29 @@ fn redstone_price(price: f64) -> FeedData {
         price: U256::from(scaled_price).into(),
         package_timestamp: now_ms,
         write_timestamp: now_ms,
+    }
+}
+
+fn lazer_feed(price: f64) -> lazer::FeedData {
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
+    let scaled_price = ((price * 10000.0).round().to_string())
+        .parse::<i64>()
+        .unwrap_or_default();
+    lazer::FeedData {
+        price: I64(scaled_price),
+        conf: U64(0),
+        ema: lazer::EmaData {
+            price: I64(scaled_price),
+            conf: U64(0),
+        },
+        expo: -4,
+        publish_time_ns: Nanoseconds::from_ms(now_ms),
     }
 }
 

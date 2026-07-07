@@ -3,7 +3,10 @@ use std::path::Path;
 use templar_gateway_core::{GatewayContextBuilder, GatewayError, HasNearClient, NearClient};
 use url::Url;
 
-use crate::{ProvidesPythSource, ProvidesRedStoneSource, PythHttpClient, RedStoneBridgeClient};
+use crate::{
+    LazerPayloadSource, LazerSourceConfig, ProvidesLazerSource, ProvidesPythSource,
+    ProvidesRedStoneSource, PythHttpClient, RedStoneBridgeClient,
+};
 
 #[derive(Debug, Clone)]
 pub struct WithPythSource<C> {
@@ -17,6 +20,12 @@ pub struct WithRedStoneSource<C> {
     redstone_source: RedStoneBridgeClient,
 }
 
+#[derive(Debug, Clone)]
+pub struct WithLazerSource<C> {
+    inner: C,
+    lazer_source: LazerPayloadSource,
+}
+
 pub trait GatewayContextBuilderOracleExt<C>: Sized {
     fn with_pyth_source(self, pyth_hermes_url: Url) -> GatewayContextBuilder<WithPythSource<C>>;
 
@@ -24,6 +33,11 @@ pub trait GatewayContextBuilderOracleExt<C>: Sized {
         self,
         redstone_node_path: impl AsRef<Path>,
     ) -> Result<GatewayContextBuilder<WithRedStoneSource<C>>, GatewayError>;
+
+    fn with_lazer_source(
+        self,
+        config: LazerSourceConfig,
+    ) -> GatewayContextBuilder<WithLazerSource<C>>;
 }
 
 impl<C> GatewayContextBuilderOracleExt<C> for GatewayContextBuilder<C> {
@@ -44,6 +58,16 @@ impl<C> GatewayContextBuilderOracleExt<C> for GatewayContextBuilder<C> {
             inner,
             redstone_source,
         }))
+    }
+
+    fn with_lazer_source(
+        self,
+        config: LazerSourceConfig,
+    ) -> GatewayContextBuilder<WithLazerSource<C>> {
+        self.map(|inner| WithLazerSource {
+            inner,
+            lazer_source: LazerPayloadSource::spawn(config),
+        })
     }
 }
 
@@ -80,5 +104,35 @@ impl<C> ProvidesRedStoneSource for WithRedStoneSource<C> {
 
     fn redstone_source(&self) -> &Self::RedStoneSource {
         &self.redstone_source
+    }
+}
+
+impl<C: HasNearClient> HasNearClient for WithLazerSource<C> {
+    fn near_client(&self) -> &NearClient {
+        self.inner.near_client()
+    }
+}
+
+impl<C: ProvidesPythSource> ProvidesPythSource for WithLazerSource<C> {
+    type PythSource = C::PythSource;
+
+    fn pyth_source(&self) -> &Self::PythSource {
+        self.inner.pyth_source()
+    }
+}
+
+impl<C: ProvidesRedStoneSource> ProvidesRedStoneSource for WithLazerSource<C> {
+    type RedStoneSource = C::RedStoneSource;
+
+    fn redstone_source(&self) -> &Self::RedStoneSource {
+        self.inner.redstone_source()
+    }
+}
+
+impl<C> ProvidesLazerSource for WithLazerSource<C> {
+    type LazerSource = LazerPayloadSource;
+
+    fn lazer_source(&self) -> &Self::LazerSource {
+        &self.lazer_source
     }
 }

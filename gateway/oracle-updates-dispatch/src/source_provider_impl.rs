@@ -12,3 +12,9 @@ pub trait ProvidesRedStoneSource {
 
     fn redstone_source(&self) -> &Self::RedStoneSource;
 }
+
+pub trait ProvidesLazerSource {
+    type LazerSource: OraclePayloadSource<PriceId = u32>;
+
+    fn lazer_source(&self) -> &Self::LazerSource;
+}

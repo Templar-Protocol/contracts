@@ -10,6 +10,7 @@ macro_rules! for_each_oracle_update_method {
     ($callback:ident) => {
         $callback!($crate::oracle::UpdatePyth);
         $callback!($crate::oracle::UpdateRedStone);
+        $callback!($crate::oracle::UpdateLazer);
         $callback!($crate::oracle::UpdatePrices);
     };
 }

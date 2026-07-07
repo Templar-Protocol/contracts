@@ -17,6 +17,7 @@ use near_workspaces::{network::Sandbox, Account, Worker};
 
 use templar_common::{
     oracle::{
+        lazer,
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
     },
@@ -617,6 +618,61 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
+    );
+}
+
+/// A Lazer-backed proxy source must resolve on-chain: `update_prices` dispatches the adapter's
+/// feed-id-keyed view, the callback folds the returned price in, and the resolved price is cached.
+/// This is the path the empty `OracleRequest::Lazer` arms silently skipped.
+#[rstest::rstest]
+#[tokio::test]
+pub async fn proxy_oracle_resolves_lazer_backed_feed(#[future(awt)] worker: Worker<Sandbox>) {
+    accounts!(worker, actor, proxy_oracle, lazer_adapter);
+    let lazer_adapter = MockOracleController::deploy(lazer_adapter);
+    let proxy_oracle = ProxyOracleController::deploy(proxy_oracle);
+    let (lazer_adapter, proxy_oracle) = tokio::join!(lazer_adapter, proxy_oracle);
+
+    let feed_id = 42_u32;
+    let proxy_id = PriceIdentifier([0x0b_u8; 32]);
+    let lazer_proxy = Proxy::median_low(
+        [OracleRequest::lazer(lazer_adapter.id().clone(), feed_id).into()],
+        FreshnessFilter::empty(),
+    );
+    proxy_oracle
+        .admin_set_proxy(proxy_oracle.account(), proxy_id, Some(lazer_proxy))
+        .await;
+
+    // No Lazer price yet: the proxy resolves to nothing.
+    let result = update_and_list(&proxy_oracle, &actor, vec![proxy_id], 60_u32).await;
+    assert_eq!(result, HashMap::from_iter([(proxy_id, None)]));
+
+    // Publish a Lazer feed, addressed by its native `u32` feed id (no PriceIdentifier map). The
+    // adapter stores raw `FeedData`; the proxy projects it via `to_ema_price`, so the EMA carries
+    // the resolved price.
+    lazer_adapter
+        .set_lazer_price(
+            &actor,
+            feed_id,
+            Some(lazer::FeedData {
+                price: I64(100_000),
+                conf: U64(0),
+                ema: lazer::EmaData {
+                    price: I64(100_000),
+                    conf: U64(0),
+                },
+                expo: 0,
+                publish_time_ns: Nanoseconds::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
+                ),
+            }),
+        )
+        .await;
+
+    // ...and the proxy's on-chain update reads it back through the feed-id view + callback.
+    let result = update_and_list(&proxy_oracle, &actor, vec![proxy_id], 60_u32).await;
+    assert_eq!(
+        result.get(&proxy_id).unwrap().as_ref().map(norm_price),
+        Some(100_000),
     );
 }
 

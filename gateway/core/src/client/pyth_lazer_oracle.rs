@@ -1,0 +1,50 @@
+use templar_common::oracle::lazer::FeedDataResponse;
+
+use crate::client::{
+    macros::{contract_views, contract_writes},
+    NearClient,
+};
+
+use super::BoundContractClient;
+
+#[derive(Clone)]
+pub struct PythLazerOracleClient<'a> {
+    pub(crate) inner: &'a NearClient,
+    pub(crate) contract_id: near_account_id::AccountId,
+}
+
+impl BoundContractClient for PythLazerOracleClient<'_> {
+    fn client(&self) -> &NearClient {
+        self.inner
+    }
+    fn contract_id(&self) -> &near_account_id::AccountIdRef {
+        &self.contract_id
+    }
+}
+
+/// Arguments for the Pyth Lazer adapter's permissionless `update_price_feeds`
+/// write method. The field name `payload` matches the adapter's parameter name
+/// (`contract/pyth-lazer/contract/src/lib.rs: update_price_feeds(payload:
+/// Base64VecU8)`); renaming it would silently break the on-chain deserializer.
+#[derive(serde::Serialize)]
+pub struct UpdatePriceFeedsArgs {
+    pub payload: near_sdk::json_types::Base64VecU8,
+}
+
+/// Arguments for the adapter's feed-id-keyed read (`get_feeds_data`). Lazer feeds are addressed by
+/// their native `u32` id; the adapter returns the raw stored `FeedData` per feed and the caller
+/// projects it to a price itself (mirroring the RedStone adapter).
+#[derive(serde::Serialize)]
+pub struct GetFeedsDataArgs {
+    pub feed_ids: Vec<u32>,
+}
+
+impl PythLazerOracleClient<'_> {
+    contract_views! {
+        pub fn get_feeds_data(GetFeedsDataArgs) -> FeedDataResponse;
+    }
+
+    contract_writes! {
+        pub fn update_price_feeds(UpdatePriceFeedsArgs);
+    }
+}

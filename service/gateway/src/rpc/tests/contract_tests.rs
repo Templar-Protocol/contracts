@@ -30,6 +30,10 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
         .harness
         .deploy_redstone_adapter("kind-redstone.near".parse()?)
         .await?;
+    let pyth_lazer_oracle_id = stack
+        .harness
+        .deploy_pyth_lazer_adapter("kind-pyth-lazer.near".parse()?)
+        .await?;
 
     assert_eq!(
         kind_of(&stack, registry_id.clone()).await?,
@@ -58,6 +62,13 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
     assert_eq!(
         kind_of(&stack, redstone_oracle_id).await?,
         ContractKind::RedstoneOracle
+    );
+    // Locks the detection probe ordering: a Pyth Lazer adapter answers RedStone's
+    // `get_config` (by name) and the Pyth view ABI, so it would be misdetected as
+    // RedStone or Pyth unless its unique feed-mapping probe runs first.
+    assert_eq!(
+        kind_of(&stack, pyth_lazer_oracle_id).await?,
+        ContractKind::PythLazerOracle
     );
     assert_eq!(
         kind_of(&stack, stack.harness.ft_contract_id.clone()).await?,
