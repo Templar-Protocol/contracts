@@ -740,7 +740,7 @@ mod tests {
         assert!(signed
             .signature
             .0
-            .verify(CryptoHash(hash_bytes), signed.public_key.0.clone()));
+            .verify(CryptoHash(hash_bytes), signed.public_key.0));
     }
 
     #[test]
