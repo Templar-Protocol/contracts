@@ -60,7 +60,10 @@ cryptographic.
 
 ## Integration
 
-No proxy-oracle changes: register the deployed account as `OracleType::Pyth(<account>)`.
+Reference the deployed adapter as a proxy-oracle **`Lazer` source** (`OracleRequest::Lazer`,
+addressed by native `u32` feed id). Do **not** wire it as a classic `Pyth` source
+(`OracleRequest::Pyth`, by `PriceIdentifier`) — the gateway rejects that for a Pyth Pro adapter
+(see the deprecation note above and ENG-434).
 
 ## Build & test
 
