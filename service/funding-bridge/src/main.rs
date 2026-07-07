@@ -43,7 +43,7 @@ async fn main() -> FundingResult<()> {
     info!("Configuration validated successfully");
 
     // Initialize application state
-    let app = templar_funding_bridge::app::App::new(&args);
+    let app = templar_funding_bridge::app::App::new(&args)?;
 
     if !app.is_healthy() {
         error!("No chain handlers available - service cannot start");

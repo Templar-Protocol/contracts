@@ -221,7 +221,7 @@ async fn test_near_handler_check_balance(#[future(awt)] ctx: TestContext) {
 #[ignore = "requires NEAR sandbox"]
 async fn test_app_initialization(#[future(awt)] ctx: TestContext) {
     let args = make_args(&ctx);
-    let app = App::new(&args);
+    let app = App::new(&args).expect("build app");
 
     assert!(app.is_healthy());
     assert_eq!(
