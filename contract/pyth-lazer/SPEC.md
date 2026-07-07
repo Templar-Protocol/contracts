@@ -1,12 +1,12 @@
-# Pyth Pro Adapter Spec
+# Pyth Lazer Adapter Spec
 
-Naming: **Pyth Pro** for everything this repo owns, **Lazer** only for upstream/legacy identifiers
-(see [`README.md`](./README.md)).
+Naming: **Pyth Lazer** / `lazer` for everything this repo owns (see the branding note in
+[`README.md`](./README.md)).
 
 ## Scope
 
-- `templar-pyth-pro-verifier`: chain-agnostic payload verification/parsing.
-- `templar-pyth-pro-adapter-contract`: NEAR storage, governance, fees, events, and feed-id-native views.
+- `templar-pyth-lazer-verifier`: chain-agnostic payload verification/parsing.
+- `templar-pyth-lazer-adapter-contract`: NEAR storage, governance, fees, events, and feed-id-native views.
 
 ## Build Contract
 
@@ -18,7 +18,7 @@ Naming: **Pyth Pro** for everything this repo owns, **Lazer** only for upstream/
 Required checks:
 
 ```bash
-cargo check --target wasm32-unknown-unknown -p templar-pyth-pro-adapter-contract
+cargo check --target wasm32-unknown-unknown -p templar-pyth-lazer-adapter-contract
 ```
 
 ## Type Contract
@@ -44,7 +44,7 @@ An accepted update must satisfy:
 - EMA price and explicit strictly-positive EMA confidence are **required** for storage: a spot-only
   payload is rejected wholesale (the feed is skipped), so it cannot overwrite a stored feed and drop
   its EMA. This applies only to the stateful storage path; the stateless `verify_update` view stays
-  at parity with the official Pyth Pro contracts and does not require EMA;
+  at parity with the official Pyth Lazer contracts and does not require EMA;
 - effective per-feed publish time strictly advances stored data;
 - age-gated reads reject stale and future-dated prices.
 

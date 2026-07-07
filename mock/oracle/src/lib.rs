@@ -8,7 +8,7 @@ use near_sdk::{
     AccountId, PanicOnDefault,
 };
 use templar_common::oracle::{
-    lazer::{self, FeedDataResponse, PythPro},
+    lazer::{self, FeedDataResponse, PythLazer},
     pyth::{Price, PriceIdentifier, Pyth},
     redstone::{config, Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, Role},
 };
@@ -136,7 +136,7 @@ impl Pyth for Contract {
 }
 
 #[near]
-impl PythPro for Contract {
+impl PythLazer for Contract {
     fn get_feeds_data(&self, feed_ids: Vec<u32>) -> FeedDataResponse {
         feed_ids
             .into_iter()

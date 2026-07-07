@@ -5,16 +5,16 @@ use templar_gateway_types::{ManagedAccountId, NearToken};
 
 use crate::{
     client::{
-        pyth_oracle::UpdatePriceFeedsArgs,
-        pyth_pro_oracle::UpdatePriceFeedsArgs as ProUpdatePriceFeedsArgs,
-        redstone_oracle::WritePricesArgs, ContractWriteOptions, NearClient,
+        pyth_lazer_oracle::UpdatePriceFeedsArgs as ProUpdatePriceFeedsArgs,
+        pyth_oracle::UpdatePriceFeedsArgs, redstone_oracle::WritePricesArgs, ContractWriteOptions,
+        NearClient,
     },
     GatewayResult, PlannedTransaction,
 };
 
 const PYTH_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000_000);
 
-/// Deposit attached to a Pyth Pro `update_price_feeds` call.
+/// Deposit attached to a Pyth Lazer `update_price_feeds` call.
 ///
 /// The adapter charges the submitter (this gateway) for any newly consumed
 /// storage plus `config.update_fee`, and `apply_storage_fee_and_refund`
@@ -24,7 +24,7 @@ const PYTH_UPDATE_DEPOSIT: NearToken = NearToken::from_yoctonear(10_000_000_000_
 /// conservative fixed amount (matching classic Pyth) and let the adapter refund
 /// the excess. Overwrite-only updates consume no new storage, so with the
 /// default zero fee the whole deposit is refunded and they cost only gas.
-const PYTH_PRO_UPDATE_DEPOSIT: NearToken =
+const PYTH_LAZER_UPDATE_DEPOSIT: NearToken =
     NearToken::from_yoctonear(10_000_000_000_000_000_000_000);
 
 pub fn plan_pyth_update(
@@ -43,16 +43,16 @@ pub fn plan_pyth_update(
     )
 }
 
-pub fn plan_pyth_pro_update(
+pub fn plan_pyth_lazer_update(
     near_client: &NearClient,
     signer_account_id: ManagedAccountId,
     oracle_id: AccountId,
     payload: Vec<u8>,
 ) -> GatewayResult<PlannedTransaction> {
-    near_client.pyth_pro_oracle(oracle_id).update_price_feeds(
+    near_client.pyth_lazer_oracle(oracle_id).update_price_feeds(
         ContractWriteOptions::new(signer_account_id)
             .tgas(300)
-            .deposit(PYTH_PRO_UPDATE_DEPOSIT),
+            .deposit(PYTH_LAZER_UPDATE_DEPOSIT),
         ProUpdatePriceFeedsArgs {
             payload: Base64VecU8(payload),
         },
@@ -145,11 +145,11 @@ mod tests {
     }
 
     #[test]
-    fn pro_plan_pyth_pro_update_emits_payload_base64_and_no_data_field() {
-        let oracle_id: AccountId = "pyth-pro.near".parse().expect("valid account id");
+    fn pro_plan_pyth_lazer_update_emits_payload_base64_and_no_data_field() {
+        let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
         let payload = vec![0u8, 1, 2, 3, 255, 254, 253];
 
-        let plan = plan_pyth_pro_update(
+        let plan = plan_pyth_lazer_update(
             &test_client(),
             signer_id(),
             oracle_id.clone(),

@@ -399,7 +399,7 @@ pub struct OracleSourceConfig {
     pub pyth_hermes_url: url::Url,
     /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
     pub redstone_node_path: std::path::PathBuf,
-    /// Pyth Pro/Lazer websocket source configuration.
+    /// Pyth Lazer websocket source configuration.
     pub lazer: LazerSourceConfig,
 }
 
@@ -468,7 +468,7 @@ mod source_args {
     use super::{LazerSourceConfig, LazerSubscriptionConfig, OracleSourceConfig};
 
     /// Shared CLI surface for the gateway's in-process oracle payload sources (Pyth
-    /// Hermes, RedStone bridge, Pyth Pro/Lazer websocket). Flatten it into a
+    /// Hermes, RedStone bridge, Pyth Lazer websocket). Flatten it into a
     /// consumer's `clap` configuration and call [`OracleSourceArgs::build`].
     #[derive(Args, Debug, Clone)]
     pub struct OracleSourceArgs {
@@ -488,11 +488,11 @@ mod source_args {
         )]
         pub redstone_node_path: PathBuf,
 
-        /// Bearer token for Pyth Pro/Lazer websocket payload updates.
+        /// Bearer token for Pyth Lazer websocket payload updates.
         #[arg(long = "pyth-lazer-api-key", env = "PYTH_LAZER_API_KEY")]
         pub pyth_lazer_api_key: RedactedString,
 
-        /// Pyth Pro/Lazer websocket endpoint. Configures one endpoint only; automatic
+        /// Pyth Lazer websocket endpoint. Configures one endpoint only; automatic
         /// multi-endpoint failover is not implemented.
         #[arg(
             long = "pyth-lazer-ws-url",
@@ -501,7 +501,7 @@ mod source_args {
         )]
         pub pyth_lazer_ws_url: Url,
 
-        /// Pyth Pro/Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
+        /// Pyth Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
         /// "fixed_rate@200ms", "fixed_rate@1000ms". Validated when the source is built.
         #[arg(
             long = "pyth-lazer-channel",
@@ -510,7 +510,7 @@ mod source_args {
         )]
         pub pyth_lazer_channel: String,
 
-        /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
+        /// Maximum age, in milliseconds, for cached Pyth Lazer payloads.
         #[arg(
             long = "pyth-lazer-max-payload-age-ms",
             env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS",

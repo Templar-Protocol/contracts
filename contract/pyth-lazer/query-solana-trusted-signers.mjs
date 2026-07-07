@@ -1,21 +1,21 @@
 #!/usr/bin/env node
-// Query and decode the Pyth Pro Solana storage account without Anchor.
+// Query and decode the Pyth Lazer Solana storage account without Anchor.
 //
 // Usage:
-//   node contract/pyth-pro/query-solana-trusted-signers.mjs
-//   SOLANA_RPC_URL=https://api.mainnet-beta.solana.com node contract/pyth-pro/query-solana-trusted-signers.mjs
+//   node contract/pyth-lazer/query-solana-trusted-signers.mjs
+//   SOLANA_RPC_URL=https://api.mainnet-beta.solana.com node contract/pyth-lazer/query-solana-trusted-signers.mjs
 
 import process from "node:process";
 
 const RPC_URL =
-  process.env.PYTH_PRO_SOLANA_RPC_URL ??
+  process.env.PYTH_LAZER_SOLANA_RPC_URL ??
   process.env.SOLANA_RPC_URL ??
   "https://api.mainnet-beta.solana.com";
 const PROGRAM_ID =
-  process.env.PYTH_PRO_SOLANA_PROGRAM ??
+  process.env.PYTH_LAZER_SOLANA_PROGRAM ??
   "pytd2yyk641x7ak7mkaasSJVXh6YYZnC7wTmtgAyxPt";
 const STORAGE_ACCOUNT =
-  process.env.PYTH_PRO_SOLANA_STORAGE ??
+  process.env.PYTH_LAZER_SOLANA_STORAGE ??
   "3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL";
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";

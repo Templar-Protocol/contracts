@@ -3,7 +3,7 @@
 //! planning). Keeping it in one place is what guarantees reads, dependency metadata, and
 //! writes agree on how an oracle resolves.
 //!
-//! A Pyth Pro (Lazer) adapter is not a standalone oracle here: it is reachable only as a
+//! A Pyth Lazer adapter is not a standalone oracle here: it is reachable only as a
 //! proxy `Lazer` source (addressed by its native `u32` feed id, carried directly in the
 //! request — no feed-map lookup). Targeting a bare adapter as a top-level oracle is
 //! rejected, and a proxy that references one as a classic `Pyth` source is rejected too.
@@ -28,8 +28,8 @@ pub async fn query_oracle_kind<C: HasNearClient>(
 ) -> GatewayResult<OracleContractKind> {
     match query_contract_kind(ctx, oracle_id.clone()).await? {
         ContractKind::PythOracle | ContractKind::RedstoneOracle => Ok(OracleContractKind::Direct),
-        ContractKind::PythProOracle => Err(GatewayError::NearQuery(format!(
-            "pyth-pro adapter {oracle_id} is not usable as a standalone oracle; wrap it in a \
+        ContractKind::PythLazerOracle => Err(GatewayError::NearQuery(format!(
+            "pyth-lazer adapter {oracle_id} is not usable as a standalone oracle; wrap it in a \
              proxy oracle with a Lazer source"
         ))),
         ContractKind::ProxyOracle => Ok(OracleContractKind::Proxy),
@@ -60,7 +60,7 @@ pub async fn get_proxy<C: HasNearClient>(
 }
 
 /// The underlying source payload(s) a single `price_id` on `oracle_id` resolves to — the
-/// dependencies that must be fetched and submitted to refresh it. A direct Pyth Pro
+/// dependencies that must be fetched and submitted to refresh it. A direct Pyth Lazer
 /// adapter maps its consumer `PriceIdentifier` to a Lazer feed via the adapter's feed map.
 pub async fn resolve_price_dependencies<C: HasNearClient>(
     ctx: &C,
@@ -101,7 +101,7 @@ pub async fn resolve_price_dependencies<C: HasNearClient>(
                     "proxy oracle returned empty proxy definition".to_owned(),
                 ));
             }
-            // A Pyth Pro adapter is Lazer-native and must be referenced by feed id. Reject a
+            // A Pyth Lazer adapter is Lazer-native and must be referenced by feed id. Reject a
             // proxy source that wires one as a classic `Pyth` source (by `PriceIdentifier`):
             // the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
             // Deduplicate the Pyth oracle ids first so a single adapter referenced by several
@@ -114,10 +114,11 @@ pub async fn resolve_price_dependencies<C: HasNearClient>(
                 })
                 .collect::<BTreeSet<_>>();
             for oracle_id in pyth_oracle_ids {
-                if query_contract_kind(ctx, oracle_id.clone()).await? == ContractKind::PythProOracle
+                if query_contract_kind(ctx, oracle_id.clone()).await?
+                    == ContractKind::PythLazerOracle
                 {
                     return Err(GatewayError::NearQuery(format!(
-                        "proxy source references Pyth Pro adapter {oracle_id} as a classic \
+                        "proxy source references Pyth Lazer adapter {oracle_id} as a classic \
                          Pyth source; use OracleRequest::Lazer (by feed id) — the adapter \
                          is Lazer-native"
                     )));

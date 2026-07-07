@@ -9,8 +9,8 @@ pub mod market;
 pub mod mt;
 pub mod proxy_governance;
 pub mod proxy_oracle;
+pub mod pyth_lazer_oracle;
 pub mod pyth_oracle;
-pub mod pyth_pro_oracle;
 pub mod redstone_oracle;
 pub mod ref_finance;
 pub mod registry;
@@ -34,8 +34,8 @@ use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
 use proxy_governance::ProxyGovernanceClient;
 use proxy_oracle::ProxyOracleClient;
+use pyth_lazer_oracle::PythLazerOracleClient;
 use pyth_oracle::PythOracleClient;
-use pyth_pro_oracle::PythProOracleClient;
 use redstone_oracle::RedStoneOracleClient;
 use ref_finance::RefFinanceClient;
 use registry::RegistryClient;
@@ -177,8 +177,8 @@ impl NearClient {
         }
     }
 
-    pub fn pyth_pro_oracle(&self, contract_id: AccountId) -> PythProOracleClient<'_> {
-        PythProOracleClient {
+    pub fn pyth_lazer_oracle(&self, contract_id: AccountId) -> PythLazerOracleClient<'_> {
+        PythLazerOracleClient {
             inner: self,
             contract_id,
         }

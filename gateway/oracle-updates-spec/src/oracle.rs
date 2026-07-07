@@ -20,7 +20,7 @@ pub struct UpdateRedStone {
     pub feed_id: redstone::FeedId,
 }
 
-/// Submit a Pyth Pro/Lazer oracle update for a single feed.
+/// Submit a Pyth Lazer oracle update for a single feed.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "oracle.updateLazer")]
 pub struct UpdateLazer {

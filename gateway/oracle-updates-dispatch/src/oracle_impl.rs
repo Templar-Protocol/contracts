@@ -5,7 +5,7 @@ use near_account_id::AccountId;
 use templar_common::oracle::{pyth::PriceIdentifier, redstone};
 use templar_gateway_core::{
     client::{proxy_oracle::UpdatePricesArgs, ContractWriteOptions},
-    plan_pyth_pro_update, plan_pyth_update, plan_redstone_write_prices, query_oracle_kind,
+    plan_pyth_lazer_update, plan_pyth_update, plan_redstone_write_prices, query_oracle_kind,
     resolve_price_dependencies, GatewayError, GatewayResult, HasNearClient, OperationPlan,
     OraclePayloadSource, PlanWrite,
 };
@@ -80,7 +80,7 @@ where
         let payload = OraclePayloadSource::fetch_payload(ctx.lazer_source(), &[body.feed_id])
             .await
             .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-        plan_pyth_pro_update(
+        plan_pyth_lazer_update(
             ctx.near_client(),
             request.signer_account_id,
             body.oracle_id,
@@ -204,12 +204,12 @@ where
         tracing::debug!(
             %oracle_id,
             feed_count = feed_ids.len(),
-            "fetching Pyth Pro/Lazer payload for gateway oracle update"
+            "fetching Pyth Lazer payload for gateway oracle update"
         );
         let payload = OraclePayloadSource::fetch_payload(ctx.lazer_source(), &feed_ids)
             .await
             .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
-        steps.push(plan_pyth_pro_update(
+        steps.push(plan_pyth_lazer_update(
             ctx.near_client(),
             signer_account_id.clone(),
             oracle_id,
@@ -383,7 +383,7 @@ mod tests {
                 outcome: Ok(payload.clone()),
             },
         };
-        let oracle_id: AccountId = "pyth-pro.near".parse().expect("valid account id");
+        let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
         let request = WriteRequest {
             signer_account_id: signer_id(),
             idempotency_key: None,
@@ -449,7 +449,7 @@ mod tests {
             signer_account_id: signer_id(),
             idempotency_key: None,
             body: UpdateLazer {
-                oracle_id: "pyth-pro.near".parse().unwrap(),
+                oracle_id: "pyth-lazer.near".parse().unwrap(),
                 feed_id: 7,
             },
         };
@@ -481,7 +481,7 @@ mod tests {
             },
         };
         let pyth_oracle: AccountId = "pyth.near".parse().unwrap();
-        let lazer_oracle: AccountId = "pyth-pro.near".parse().unwrap();
+        let lazer_oracle: AccountId = "pyth-lazer.near".parse().unwrap();
         let price_id = PriceIdentifier([0xAA; 32]);
 
         let requests = vec![
@@ -553,7 +553,7 @@ mod tests {
                 outcome: Err(FakeError),
             },
         };
-        let lazer_oracle: AccountId = "pyth-pro.near".parse().unwrap();
+        let lazer_oracle: AccountId = "pyth-lazer.near".parse().unwrap();
         let requests = vec![OracleRequest::lazer(lazer_oracle, 7)];
 
         let error = plan_grouped_updates(&ctx, signer_id(), requests)

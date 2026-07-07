@@ -5,7 +5,7 @@ use templar_universal_account::authentication::ed25519;
 use crate::{
     client::{
         cache::load_cached, lst_oracle::ListTransformersArgs, proxy_oracle::ListProxiesArgs,
-        pyth_oracle::ListEmaPricesUnsafeArgs, pyth_pro_oracle::GetFeedsDataArgs,
+        pyth_lazer_oracle::GetFeedsDataArgs, pyth_oracle::ListEmaPricesUnsafeArgs,
         universal_account::UaGetKeyArgs,
     },
     GatewayError, GatewayResult, HasNearClient,
@@ -51,12 +51,12 @@ async fn detect_contract_kind<C: HasNearClient>(
     if try_lst_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::LstOracle);
     }
-    // Before RedStone and Pyth: a Pyth Pro adapter answers RedStone's `get_config`
+    // Before RedStone and Pyth: a Pyth Lazer adapter answers RedStone's `get_config`
     // probe by name (deserialization would then error, not report MethodNotFound), so
     // it must be distinguished first — via serving the feed-id-native `get_feeds_data`
     // while (unlike a classic Pyth oracle) not serving the `PriceIdentifier` views.
-    if try_pyth_pro_oracle_kind(ctx, contract_id.clone()).await? {
-        return Ok(ContractKind::PythProOracle);
+    if try_pyth_lazer_oracle_kind(ctx, contract_id.clone()).await? {
+        return Ok(ContractKind::PythLazerOracle);
     }
     if try_redstone_oracle_kind(ctx, contract_id.clone()).await? {
         return Ok(ContractKind::RedstoneOracle);
@@ -177,11 +177,11 @@ async fn try_pyth_oracle_kind<C: HasNearClient>(
     )
 }
 
-async fn try_pyth_pro_oracle_kind<C: HasNearClient>(
+async fn try_pyth_lazer_oracle_kind<C: HasNearClient>(
     ctx: &C,
     contract_id: AccountId,
 ) -> GatewayResult<bool> {
-    // The Pyth Pro adapter serves the feed-id-native `get_feeds_data` and, unlike a classic
+    // The Pyth Lazer adapter serves the feed-id-native `get_feeds_data` and, unlike a classic
     // Pyth oracle, does NOT serve the `PriceIdentifier`-keyed `list_ema_prices_unsafe` (dropped
     // in ENG-434). Requiring both — serves `get_feeds_data`, lacks the classic view — pins it to
     // the real adapter and away from a plain Pyth oracle (or a kitchen-sink test mock that
@@ -189,7 +189,7 @@ async fn try_pyth_pro_oracle_kind<C: HasNearClient>(
     // needs to exist to identify the adapter.
     let serves_feeds_data = probe_kind(
         ctx.near_client()
-            .pyth_pro_oracle(contract_id.clone())
+            .pyth_lazer_oracle(contract_id.clone())
             .get_feeds_data(GetFeedsDataArgs { feed_ids: vec![] })
             .await,
     )?;

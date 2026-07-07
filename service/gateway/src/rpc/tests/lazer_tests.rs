@@ -1,4 +1,4 @@
-//! RPC-level coverage for the Lazer (Pyth Pro) oracle update path.
+//! RPC-level coverage for the Pyth Lazer oracle update path.
 //!
 //! These tests exercise the same `OracleUpdatesDispatch` the JSON-RPC layer
 //! registers, against a test context that provides a deterministic
@@ -50,10 +50,10 @@ fn unpack_function_call(plan: &PlannedTransaction) -> (String, Vec<u8>) {
     }
 }
 
-/// Assert the parsed args look like a Pyth Pro adapter write: method
+/// Assert the parsed args look like a Pyth Lazer adapter write: method
 /// `update_price_feeds`, a base64 `payload` field decoding to `expected`, and
 /// no classic-Pyth `data` field.
-fn assert_pyth_pro_adapter_args(args_bytes: &[u8], expected_payload: &[u8]) {
+fn assert_pyth_lazer_adapter_args(args_bytes: &[u8], expected_payload: &[u8]) {
     let args_json: serde_json::Value =
         serde_json::from_slice(args_bytes).expect("Lazer step args must be valid JSON");
     assert!(
@@ -81,7 +81,7 @@ async fn oracle_update_lazer_plan_carries_payload_base64_not_data() -> Result<()
     let payload = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let ctx = lazer_only_context(FakeLazerSource::with_payload(payload.clone()));
 
-    let oracle_id: near_account_id::AccountId = "pyth-pro.near".parse()?;
+    let oracle_id: near_account_id::AccountId = "pyth-lazer.near".parse()?;
     let request = WriteRequest {
         signer_account_id: ManagedAccountId("relayer.near".parse()?),
         idempotency_key: None,
@@ -105,7 +105,7 @@ async fn oracle_update_lazer_plan_carries_payload_base64_not_data() -> Result<()
     assert_eq!(step.receiver_id, oracle_id);
     let (method, args_bytes) = unpack_function_call(step);
     assert_eq!(method, "update_price_feeds");
-    assert_pyth_pro_adapter_args(&args_bytes, &payload);
+    assert_pyth_lazer_adapter_args(&args_bytes, &payload);
 
     Ok(())
 }
@@ -121,7 +121,7 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
     )
     .await?;
 
-    let lazer_oracle_id: near_account_id::AccountId = "pyth-pro.near".parse()?;
+    let lazer_oracle_id: near_account_id::AccountId = "pyth-lazer.near".parse()?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
     let price_id = PriceIdentifier([0x33; 32]);
     let feed_id = 42u32;
@@ -140,7 +140,7 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
 
     // Plan through the registered dispatch (the same code the RPC layer calls)
     // so we can inspect the planned args without submitting on-chain: no
-    // pyth-pro adapter is deployed in the sandbox.
+    // pyth-lazer adapter is deployed in the sandbox.
     let plan =
         <OracleUpdatesDispatch as PlanWrite<oracle_updates::UpdatePrices, TestContext>>::plan(
             WriteRequest {
@@ -166,11 +166,11 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
     let lazer_step = &plan.steps[0];
     assert_eq!(
         lazer_step.receiver_id, lazer_oracle_id,
-        "the underlying write must target the Lazer (Pyth Pro) adapter, not the proxy oracle"
+        "the underlying write must target the Pyth Lazer adapter, not the proxy oracle"
     );
     let (method, args_bytes) = unpack_function_call(lazer_step);
     assert_eq!(method, "update_price_feeds");
-    assert_pyth_pro_adapter_args(&args_bytes, &payload);
+    assert_pyth_lazer_adapter_args(&args_bytes, &payload);
 
     let reaggregation_step = &plan.steps[1];
     assert_eq!(
@@ -185,8 +185,8 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
 }
 
 #[tokio::test]
-async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> Result<()> {
-    // A Pyth Pro adapter is Lazer-native and not a standalone oracle. Targeting one directly
+async fn oracle_update_prices_rejects_bare_pyth_lazer_adapter_as_standalone_oracle() -> Result<()> {
+    // A Pyth Lazer adapter is Lazer-native and not a standalone oracle. Targeting one directly
     // with `oracle.updatePrices` must fail loudly — directing the operator to wrap it in a
     // proxy oracle with a Lazer source — rather than planning a doomed classic-Pyth write.
     let stack = TestStack::start_with_lazer(
@@ -195,11 +195,11 @@ async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle
     )
     .await?;
 
-    let adapter_id: near_account_id::AccountId = "pyth-pro-direct.near".parse()?;
+    let adapter_id: near_account_id::AccountId = "pyth-lazer-direct.near".parse()?;
     let price_id = PriceIdentifier([0x44; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone())
+        .deploy_pyth_lazer_adapter(adapter_id.clone())
         .await?;
 
     let error =
@@ -215,7 +215,7 @@ async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle
             stack.context.clone(),
         )
         .await
-        .expect_err("a bare Pyth Pro adapter must not be usable as a standalone oracle");
+        .expect_err("a bare Pyth Lazer adapter must not be usable as a standalone oracle");
 
     let error_string = format!("{error}");
     assert!(
@@ -228,9 +228,9 @@ async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle
 }
 
 #[tokio::test]
-async fn oracle_update_prices_rejects_pyth_pro_adapter_as_classic_pyth_proxy_source() -> Result<()>
-{
-    // A proxy must reference a Pyth Pro adapter as a `Lazer` source, never a classic `Pyth`
+async fn oracle_update_prices_rejects_pyth_lazer_adapter_as_classic_pyth_lazerxy_source(
+) -> Result<()> {
+    // A proxy must reference a Pyth Lazer adapter as a `Lazer` source, never a classic `Pyth`
     // source: the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
     // Resolution must reject the misconfiguration up front, naming Lazer.
     let stack = TestStack::start_with_lazer(
@@ -239,12 +239,12 @@ async fn oracle_update_prices_rejects_pyth_pro_adapter_as_classic_pyth_proxy_sou
     )
     .await?;
 
-    let adapter_id: near_account_id::AccountId = "pyth-pro-source.near".parse()?;
+    let adapter_id: near_account_id::AccountId = "pyth-lazer-source.near".parse()?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
     let price_id = PriceIdentifier([0x44; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone())
+        .deploy_pyth_lazer_adapter(adapter_id.clone())
         .await?;
     stack
         .harness
@@ -271,7 +271,7 @@ async fn oracle_update_prices_rejects_pyth_pro_adapter_as_classic_pyth_proxy_sou
             stack.context.clone(),
         )
         .await
-        .expect_err("a proxy Pyth source pointing at a Pyth Pro adapter must be rejected");
+        .expect_err("a proxy Pyth source pointing at a Pyth Lazer adapter must be rejected");
 
     let error_string = format!("{error}");
     assert!(
@@ -301,7 +301,7 @@ async fn oracle_update_lazer_cache_miss_returns_structured_gateway_error() -> Re
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
             body: oracle_updates::UpdateLazer {
-                oracle_id: "pyth-pro.near".parse()?,
+                oracle_id: "pyth-lazer.near".parse()?,
                 feed_id: 7,
             },
         })
@@ -341,7 +341,7 @@ async fn oracle_update_lazer_stale_payload_is_a_hard_error() -> Result<()> {
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
             body: oracle_updates::UpdateLazer {
-                oracle_id: "pyth-pro.near".parse()?,
+                oracle_id: "pyth-lazer.near".parse()?,
                 feed_id: 7,
             },
         })
