@@ -6,7 +6,9 @@
 mod account_tests;
 mod artifact_tests;
 mod contract_tests;
+mod fake_lazer_source;
 mod ft_tests;
+mod lazer_tests;
 mod lst_oracle_tests;
 mod market_tests;
 mod mt_tests;
@@ -68,11 +70,14 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
-type TestContext = WithRedStoneSource<WithPythSource<GatewayContext>>;
+use fake_lazer_source::{FakeLazerSource, WithFakeLazerSource};
+
+type TestContext = WithFakeLazerSource<WithRedStoneSource<WithPythSource<GatewayContext>>>;
 
 struct TestStack {
     harness: SandboxHarness,
     gateway: GatewayService<TestContext>,
+    context: TestContext,
     handle: ServerHandle,
     controller: TestController,
 }
@@ -84,13 +89,28 @@ impl TestStack {
     }
 
     async fn start_with_oracle_update_config(pyth_hermes_url: Url) -> Result<Self> {
+        // Default Lazer fake succeeds with a small canned payload: the existing
+        // oracle RPC tests do not exercise a Lazer-backed feed, but the gateway
+        // RPC registration now requires the context to provide a Lazer source.
+        Self::start_with_lazer(
+            pyth_hermes_url,
+            FakeLazerSource::with_payload(vec![0xa1; 8]),
+        )
+        .await
+    }
+
+    /// Start the stack with a specific fake Lazer source, so a test can pin a
+    /// controlled payload or a hard error (cache-miss / stale) without touching
+    /// the network.
+    async fn start_with_lazer(pyth_hermes_url: Url, lazer_source: FakeLazerSource) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
         let context = GatewayContext::builder(harness.network.clone())
             .with_pyth_source(pyth_hermes_url)
             .with_redstone_source(std::path::Path::new("node"))?
+            .map(|inner| WithFakeLazerSource::new(inner, lazer_source))
             .build();
         let gateway = GatewayService::spawn(
-            context,
+            context.clone(),
             harness.gateway_signers.clone(),
             Arc::new(MemoryStore::new()),
         )
@@ -105,6 +125,7 @@ impl TestStack {
         Ok(Self {
             harness,
             gateway,
+            context,
             handle,
             controller,
         })

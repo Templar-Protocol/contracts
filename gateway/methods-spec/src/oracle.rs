@@ -1,19 +1,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::{
-    pyth::{self, OracleResponse, PriceIdentifier},
+    pyth::{self, FeedIdOracleResponse, OracleResponse, PriceIdentifier},
     redstone,
 };
 use templar_gateway_macros::MethodSpec;
+pub use templar_gateway_types::OracleContractKind;
 use templar_proxy_oracle_near_common::request::OracleRequest;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum OracleContractKind {
-    Direct,
-    Lst { pyth_id: near_account_id::AccountId },
-    Proxy,
-}
 
 /// Get update dependencies for a price.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -48,6 +41,12 @@ pub struct RedStoneOraclePrices {
     pub response: Vec<RedStonePriceEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LazerOraclePrices {
+    pub oracle_id: near_account_id::AccountId,
+    pub response: FeedIdOracleResponse,
+}
+
 /// Resolve a single price from supplied inputs.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "oracle.resolvePrice", output = ResolvePriceResult)]
@@ -57,6 +56,8 @@ pub struct ResolvePrice {
     pub age: u64,
     pub pyth: Vec<PythOraclePrices>,
     pub redstone: Vec<RedStoneOraclePrices>,
+    #[serde(default)]
+    pub lazer: Vec<LazerOraclePrices>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -73,6 +74,8 @@ pub struct ResolvePrices {
     pub age: u64,
     pub pyth: Vec<PythOraclePrices>,
     pub redstone: Vec<RedStoneOraclePrices>,
+    #[serde(default)]
+    pub lazer: Vec<LazerOraclePrices>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

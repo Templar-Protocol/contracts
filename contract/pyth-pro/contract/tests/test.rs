@@ -199,6 +199,107 @@ fn ingests_payload_and_serves_pyth_views() {
         .is_none());
 }
 
+fn deploy_without_map() -> Contract {
+    set_owner_context();
+    Contract::new(owner(), config())
+}
+
+#[test]
+fn feed_id_views_serve_by_native_feed_id() {
+    let mut contract = deploy_and_map();
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    let ema = contract.list_ema_prices_by_feed_id_unsafe(vec![FEED_ID]);
+    let price = ema.get(&FEED_ID).unwrap().as_ref().unwrap();
+    assert_eq!(price.price.0, 123_000);
+    assert_eq!(price.conf.0, 50);
+    assert_eq!(price.expo, -8);
+    assert_eq!(price.publish_time.as_secs(), i64::try_from(NOW_S).unwrap());
+
+    // An unknown feed id resolves to nothing.
+    let unknown_feed = FEED_ID + 1;
+    assert!(contract
+        .list_ema_prices_by_feed_id_unsafe(vec![unknown_feed])
+        .get(&unknown_feed)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn feed_id_views_bypass_the_price_identifier_mapping() {
+    // The feed-id views are the Lazer-native read: they serve stored data addressed purely by `u32`
+    // feed id, with no `admin_set_feed_mapping` in place. This is the property the proxy-oracle's
+    // `Lazer` source relies on so the `PriceIdentifier <-> feed_id` mapping is never duplicated.
+    let mut contract = deploy_without_map();
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    // With no mapping, the PriceIdentifier-keyed Pyth views see nothing...
+    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract
+        .list_ema_prices_unsafe(vec![price_id()])
+        .get(&price_id())
+        .unwrap()
+        .is_none());
+
+    // ...but the feed-id view serves the stored feed directly.
+    assert_eq!(
+        contract
+            .list_ema_prices_by_feed_id_unsafe(vec![FEED_ID])
+            .get(&FEED_ID)
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .price
+            .0,
+        123_000
+    );
+}
+
+#[test]
+fn feed_id_views_apply_freshness_bound() {
+    let mut contract = deploy_and_map();
+
+    relayer_context(ample_deposit());
+    // Published 500s ago; stored within the 600s ingestion window.
+    contract.update_price_feeds(Base64VecU8(real_time(
+        (NOW_S - 500) * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    // A 100s bound rejects it; the unsafe + wide-window forms accept it.
+    assert!(contract
+        .list_ema_prices_by_feed_id_no_older_than(vec![FEED_ID], 100)
+        .get(&FEED_ID)
+        .unwrap()
+        .is_none());
+    assert!(contract
+        .list_ema_prices_by_feed_id_no_older_than(vec![FEED_ID], 600)
+        .get(&FEED_ID)
+        .unwrap()
+        .is_some());
+    assert!(contract
+        .list_ema_prices_by_feed_id_unsafe(vec![FEED_ID])
+        .get(&FEED_ID)
+        .unwrap()
+        .is_some());
+}
+
 #[test]
 fn non_suffixed_views_serve_fresh_data() {
     let mut contract = deploy_and_map();

@@ -23,14 +23,24 @@ async fn main() -> anyhow::Result<()> {
 
     let signers = config.build_signers().await?;
     let store = config.build_store().await?;
+    let sources = config.oracle_sources.build()?;
     let network = NetworkConfigBuilder::from_url("gateway", config.near_rpc_url)
-        .api_key(config.near_rpc_api_key)
+        .api_key(
+            config
+                .near_rpc_api_key
+                .as_ref()
+                .map(|k| k.as_ref().to_owned()),
+        )
         .build();
     let context = GatewayContext::builder(network)
-        .with_pyth_source(config.pyth_hermes_url)
-        .with_redstone_source(&config.redstone_node_path)
+        .with_pyth_source(sources.pyth_hermes_url)
+        .with_redstone_source(&sources.redstone_node_path)
         .map_err(anyhow::Error::from)?
+        .with_lazer_source(sources.lazer)
         .build();
+
+    tracing::info!("Pyth Lazer payload source enabled");
+
     let service = GatewayService::spawn(context, signers, store).await?;
 
     let server = ServerBuilder::default().build(config.listen_addr).await?;

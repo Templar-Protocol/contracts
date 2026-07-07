@@ -127,7 +127,7 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
             signer_account_id: stack.harness.gateway_signer_account_id.clone(),
             idempotency_key: None,
             body: oracle_updates::UpdatePrices {
-                oracle_id: proxy_oracle_id,
+                oracle_id: proxy_oracle_id.clone(),
                 price_ids: vec![proxy_direct_id, proxy_redstone_id],
             },
         })
@@ -136,7 +136,9 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         update_result.operation.status,
         templar_gateway_types::OperationStatus::Succeeded
     );
-    assert_eq!(update_result.operation.steps.len(), 2);
+    // Two underlying updates (pyth + redstone) plus the proxy re-aggregation step the
+    // gateway appends for a proxy oracle.
+    assert_eq!(update_result.operation.steps.len(), 3);
 
     let pyth_update_count = view_contract_json(
         &stack,
@@ -170,6 +172,17 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
         redstone_prices["BTC"]["price"],
         serde_json::Value::String("0".to_owned())
     );
+
+    // The appended proxy step re-aggregated the proxy's cache from the fresh underlying
+    // prices, so the proxy now serves a cached price for the requested feed.
+    let cached_proxy_price = view_contract_json(
+        &stack,
+        proxy_oracle_id,
+        "get_cached_proxy_price",
+        serde_json::json!({ "id": proxy_direct_id }),
+    )
+    .await?;
+    assert_ne!(cached_proxy_price, serde_json::Value::Null);
 
     stack.shutdown().await;
     Ok(())
@@ -331,6 +344,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
                     data: redstone_price(42.0),
                 }],
             }],
+            lazer: vec![],
         })
         .await?;
 
@@ -358,6 +372,7 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
                     .collect(),
             }],
             redstone: vec![],
+            lazer: vec![],
         })
         .await?;
     assert!(one_price.price.is_some());
@@ -409,6 +424,59 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
         })
         .await?;
     assert!(one_on_chain.price.is_some());
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> Result<()> {
+    let stack = TestStack::start().await?;
+
+    let adapter_id: near_account_id::AccountId = "resolve-pyth-pro.near".parse()?;
+    let price_id = PriceIdentifier([0x66; 32]);
+    stack
+        .harness
+        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 11u32)
+        .await?;
+
+    // A Pyth Pro adapter is not a standalone oracle: it is consumed only as a proxy `Lazer`
+    // source. Both the dependency query and price resolution must reject a bare adapter,
+    // pointing the operator at a proxy wrapper.
+    let deps_error = stack
+        .controller
+        .request::<oracle::GetPriceResolutionDependencies>(
+            &oracle::GetPriceResolutionDependencies {
+                oracle_id: adapter_id.clone(),
+                price_id,
+            },
+        )
+        .await
+        .expect_err("getPriceResolutionDependencies must reject a bare Pyth Pro adapter");
+    assert!(
+        format!("{deps_error}").contains("proxy"),
+        "error must direct the operator to wrap the adapter in a proxy; got: {deps_error}"
+    );
+
+    let resolve_error = stack
+        .controller
+        .request::<oracle::ResolvePrice>(&oracle::ResolvePrice {
+            oracle_id: adapter_id.clone(),
+            price_id,
+            age: 60,
+            pyth: vec![],
+            redstone: vec![],
+            lazer: vec![oracle::LazerOraclePrices {
+                oracle_id: adapter_id.clone(),
+                response: [(11u32, Some(pyth_price(321.0)))].into_iter().collect(),
+            }],
+        })
+        .await
+        .expect_err("resolvePrice must reject a bare Pyth Pro adapter");
+    assert!(
+        format!("{resolve_error}").contains("standalone oracle"),
+        "error must explain the adapter is not a standalone oracle; got: {resolve_error}"
+    );
 
     stack.shutdown().await;
     Ok(())

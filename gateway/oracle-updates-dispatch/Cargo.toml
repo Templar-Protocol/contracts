@@ -7,6 +7,9 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
+byteorder.workspace = true
+futures.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
 near-sdk = { workspace = true, default-features = false, features = ["non-contract-usage"] }
@@ -14,6 +17,7 @@ reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+pyth-lazer-protocol = { workspace = true, features = ["full"] }
 templar-common = { workspace = true, features = ["non-contract-usage"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-spec.workspace = true
@@ -25,8 +29,14 @@ templar-redstone-bridge.workspace = true
 templar-universal-account.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+near-api.workspace = true
+templar-pyth-pro-verifier.workspace = true
 
 [lints]
 workspace = true

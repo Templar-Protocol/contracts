@@ -8,7 +8,7 @@ use near_sdk::{
     AccountId, PanicOnDefault,
 };
 use templar_common::oracle::{
-    pyth::{Price, PriceIdentifier, Pyth},
+    pyth::{FeedIdOracleResponse, Price, PriceIdentifier, Pyth, PythPro},
     redstone::{config, Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, Role},
 };
 use templar_primitives::{time::Nanoseconds, SU256};
@@ -18,6 +18,7 @@ use templar_primitives::{time::Nanoseconds, SU256};
 pub struct Contract {
     redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
+    lazer_prices: LookupMap<u32, Price>,
     modify_roles: Vec<AccountId>,
     trusted_updaters: Vec<AccountId>,
     last_pyth_update_data: Option<String>,
@@ -31,6 +32,7 @@ impl Contract {
         Self {
             redstone_prices: LookupMap::new(b"r"),
             pyth_prices: LookupMap::new(b"p"),
+            lazer_prices: LookupMap::new(b"l"),
             modify_roles: Vec::new(),
             trusted_updaters: Vec::new(),
             last_pyth_update_data: None,
@@ -82,6 +84,14 @@ impl Contract {
         }
     }
 
+    pub fn set_lazer_price(&mut self, feed_id: u32, price: Option<Price>) {
+        if let Some(price) = price {
+            self.lazer_prices.insert(feed_id, price);
+        } else {
+            self.lazer_prices.remove(&feed_id);
+        }
+    }
+
     #[payable]
     pub fn update_price_feeds(&mut self, data: String) {
         self.last_pyth_update_data = Some(data);
@@ -121,6 +131,25 @@ impl Pyth for Contract {
             r.insert(price_id, self.pyth_prices.get(&price_id).cloned());
         }
         r
+    }
+}
+
+#[near]
+impl PythPro for Contract {
+    fn list_ema_prices_by_feed_id_no_older_than(
+        &self,
+        feed_ids: Vec<u32>,
+        age: u64,
+    ) -> FeedIdOracleResponse {
+        let _ = age;
+        self.list_ema_prices_by_feed_id_unsafe(feed_ids)
+    }
+
+    fn list_ema_prices_by_feed_id_unsafe(&self, feed_ids: Vec<u32>) -> FeedIdOracleResponse {
+        feed_ids
+            .into_iter()
+            .map(|feed_id| (feed_id, self.lazer_prices.get(&feed_id).cloned()))
+            .collect()
     }
 }
 

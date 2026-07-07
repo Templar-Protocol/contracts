@@ -181,6 +181,11 @@ fn write_oracle_request(
             writeln!(out, "{indent}  {}: {}", style("oracle").dim(), p.oracle_id)?;
             writeln!(out, "{indent}  {}: {}", style("feed_id").dim(), p.price_id)?;
         }
+        OracleRequest::Lazer(p) => {
+            writeln!(out, "{indent}{}", style("Lazer").cyan())?;
+            writeln!(out, "{indent}  {}: {}", style("oracle").dim(), p.oracle_id)?;
+            writeln!(out, "{indent}  {}: {}", style("feed_id").dim(), p.feed_id)?;
+        }
     }
 
     Ok(())

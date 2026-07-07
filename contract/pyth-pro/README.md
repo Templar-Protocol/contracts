@@ -4,6 +4,14 @@ A push-style NEAR oracle that ingests [Pyth Pro](https://docs.pyth.network/lazer
 payloads and re-serves them through the **same view ABI as `pyth-oracle.near`** — so it is a
 drop-in Pyth oracle for the market and proxy-oracle.
 
+> **DEPRECATED (ENG-434):** the standalone Pyth drop-in described below is being removed. Going
+> forward this adapter is **Lazer-native** — consume it by wrapping it in a **proxy oracle** as a
+> `Lazer` source (addressed by native feed id), not by pointing a market/proxy `Pyth` source
+> directly at it. The gateway no longer routes a bare adapter as an oracle. The compat read layer
+> and the feed map will be deleted once ENG-434 lands.
+
+---
+
 > **Naming:** this adapter consumes **Pyth Pro** signed updates. Pyth Pro was formerly known as
 > **Pyth Lazer**; some upstream protocol crates and contract paths still use the `lazer` name (e.g.
 > `pyth-lazer-protocol`, the `lazer/contracts` reference paths). We use **Pyth Pro** for everything
@@ -39,6 +47,11 @@ adapter stores by `u32` and translates at read time through one isolated module
 identifier (`admin_set_feed_mapping`) to stay drop-in. That module is the *only* coupling between
 the two spaces, so the mapping can later move to the proxy-oracle by deleting it alone.
 
+Mapping invariant: `OracleRequest::Lazer.feed_id` is authoritative for gateway update fetching.
+The adapter's `admin_set_feed_mapping(price_id, feed_id)` must map that same `price_id` to the same
+`feed_id` for reads to resolve. If they diverge, update writes still store feed data by `u32`, but
+reads by `PriceIdentifier` remain unavailable or stale until the mapping is fixed.
+
 ## Governance
 
 Single owner (`near_sdk_contract_tools::Owner`); all privileged methods are `admin_*`, each
@@ -47,7 +60,10 @@ cryptographic.
 
 ## Integration
 
-No proxy-oracle changes: register the deployed account as `OracleType::Pyth(<account>)`.
+Reference the deployed adapter as a proxy-oracle **`Lazer` source** (`OracleRequest::Lazer`,
+addressed by native `u32` feed id). Do **not** wire it as a classic `Pyth` source
+(`OracleRequest::Pyth`, by `PriceIdentifier`) — the gateway rejects that for a Pyth Pro adapter
+(see the deprecation note above and ENG-434).
 
 ## Build & test
 
