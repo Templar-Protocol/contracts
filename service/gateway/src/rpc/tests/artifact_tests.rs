@@ -14,7 +14,7 @@ async fn artifact_list_endpoint_returns_catalog_metadata_against_sandbox() -> Re
 
     assert_eq!(
         result.artifacts.len(),
-        templar_contract_artifacts::artifact_catalog().len()
+        templar_contract_artifacts::ArtifactId::ALL.len()
     );
     assert!(result.artifacts.iter().any(|metadata| metadata.artifact
         == templar_contract_artifacts::ArtifactId::Market
@@ -72,8 +72,7 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
 async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
-    let mock_ft =
-        templar_contract_artifacts::find_by_id(templar_contract_artifacts::ArtifactId::MockFt)?;
+    let mock_ft = templar_contract_artifacts::ArtifactId::MockFt.metadata();
     let expected_version_prefix = format!("{}@{}#", mock_ft.package_name, mock_ft.version);
 
     let write_result = stack

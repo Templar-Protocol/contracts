@@ -2,9 +2,7 @@ use std::{collections::HashSet, path::PathBuf, process::ExitCode, time::Duration
 
 use clap::{Parser, ValueEnum};
 
-use crate::{
-    artifact_catalog, artifact_value_parser, workspace_loader, ArtifactId, ArtifactMetadata,
-};
+use crate::{workspace_loader, ArtifactId, ArtifactMetadata};
 
 mod scheduler;
 use scheduler::prebuild_all;
@@ -50,7 +48,8 @@ struct Args {
     #[arg(
         long = "artifact",
         value_name = "ARTIFACT",
-        value_parser = artifact_value_parser,
+        value_enum,
+        ignore_case = true,
         value_delimiter = ','
     )]
     artifacts: Vec<ArtifactId>,
@@ -82,13 +81,14 @@ fn default_workspace_root() -> PathBuf {
 
 fn selected_artifacts(selection: &[ArtifactId]) -> Vec<&'static ArtifactMetadata> {
     if selection.is_empty() {
-        return artifact_catalog().iter().collect();
+        return ArtifactId::ALL.iter().map(|id| id.metadata()).collect();
     }
 
     let selected = selection.iter().copied().collect::<HashSet<_>>();
-    artifact_catalog()
+    ArtifactId::ALL
         .iter()
-        .filter(|artifact| selected.contains(&artifact.id))
+        .filter(|id| selected.contains(id))
+        .map(|id| id.metadata())
         .collect()
 }
 

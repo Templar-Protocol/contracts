@@ -86,13 +86,11 @@ mod tests {
 
     #[test]
     fn test_get_artifact_all_variants_roundtrip() {
-        for metadata in templar_contract_artifacts::artifact_catalog() {
-            let req = GetArtifact {
-                artifact: metadata.id,
-            };
+        for artifact in ArtifactId::ALL {
+            let req = GetArtifact { artifact };
             let json = serde_json::to_string(&req).unwrap();
             let parsed: GetArtifact = serde_json::from_str(&json).unwrap();
-            assert_eq!(parsed.artifact, metadata.id);
+            assert_eq!(parsed.artifact, artifact);
         }
     }
 
@@ -100,12 +98,7 @@ mod tests {
     fn test_list_artifacts_result_has_metadata_without_code() {
         // Given: a metadata-only list result
         let result = ListArtifactsResult {
-            artifacts: vec![ArtifactMetadata::from(
-                templar_contract_artifacts::artifact_catalog()
-                    .iter()
-                    .find(|metadata| metadata.id == ArtifactId::Market)
-                    .unwrap(),
-            )],
+            artifacts: vec![ArtifactMetadata::from(ArtifactId::Market.metadata())],
         };
         // When: serialized to JSON
         let json = serde_json::to_value(&result).unwrap();

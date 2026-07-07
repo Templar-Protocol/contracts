@@ -102,6 +102,17 @@ fn accepts_comma_separated_artifact_flags() {
 }
 
 #[test]
+fn accepts_artifact_package_name_alias() {
+    let args = parse_args([
+        OsString::from("prebuild-test-contracts"),
+        OsString::from("--artifact"),
+        OsString::from("templar-market-contract"),
+    ]);
+
+    assert_eq!(args.artifacts, vec![ArtifactId::Market]);
+}
+
+#[test]
 fn workspace_root_defaults_to_discovered_workspace() {
     let args = parse_args([OsString::from("prebuild-test-contracts")]);
 

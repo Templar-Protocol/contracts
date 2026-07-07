@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{ArgGroup, Args};
 use near_sdk::{AccountId, NearToken};
 use templar_common::registry::DeployMode;
-use templar_contract_artifacts::{artifact_value_parser, find_by_id, ArtifactId};
+use templar_contract_artifacts::ArtifactId;
 use templar_gateway_types::RegistryVersion;
 use templar_tools_common::near::{self, Function};
 
@@ -54,16 +54,13 @@ impl Package {
         } else {
             self.package
                 .as_deref()
-                .and_then(|package| artifact_value_parser(package).ok())
+                .and_then(|package| package.parse::<ArtifactId>().ok())
         }
     }
 
     pub fn package_name(&self) -> Cow<'_, str> {
         if let Some(artifact) = self.artifact() {
-            find_by_id(artifact).map_or_else(
-                |_| Cow::Owned(format!("<unknown-artifact:{artifact:?}>")),
-                |metadata| Cow::Borrowed(metadata.package_name),
-            )
+            Cow::Borrowed(artifact.metadata().package_name)
         } else {
             Cow::Borrowed(self.package.as_deref().unwrap_or_default())
         }

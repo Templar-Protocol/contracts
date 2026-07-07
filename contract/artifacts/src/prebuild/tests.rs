@@ -12,10 +12,7 @@ fn artifact_selection_defaults_to_full_catalog() {
         .iter()
         .map(|artifact| artifact.id)
         .collect::<Vec<_>>();
-    let catalog_ids = artifact_catalog()
-        .iter()
-        .map(|artifact| artifact.id)
-        .collect::<Vec<_>>();
+    let catalog_ids = ArtifactId::ALL.to_vec();
 
     assert_eq!(selected_ids, catalog_ids);
 }
@@ -49,12 +46,7 @@ fn artifact_selection_deduplicates_repeated_artifacts() {
 
 #[test]
 fn manifest_path_uses_catalog_source_path() {
-    let Some(artifact) = artifact_catalog()
-        .iter()
-        .find(|artifact| artifact.package_name == "mock-ft")
-    else {
-        panic!("mock-ft artifact should be present in catalog");
-    };
+    let artifact = ArtifactId::MockFt.metadata();
     let path = Path::new("/ws").join(artifact.manifest_path());
 
     assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
@@ -73,5 +65,5 @@ fn status_code_formats_exit_code() {
 }
 
 fn find_test_artifact(id: ArtifactId) -> &'static ArtifactMetadata {
-    crate::find_by_id(id).unwrap()
+    crate::find_by_id(id)
 }

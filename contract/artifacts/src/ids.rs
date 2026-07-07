@@ -32,48 +32,125 @@ pub enum ArtifactParseError {
     schemars::JsonSchema,
     strum::IntoStaticStr,
 )]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[serde(rename_all = "kebab-case")]
 #[strum(serialize_all = "kebab-case")]
 pub enum ArtifactId {
     // -- Production contracts --
+    #[cfg_attr(feature = "clap", value(alias = "templar-registry-contract"))]
     Registry,
+    #[cfg_attr(feature = "clap", value(alias = "templar-market-contract"))]
     Market,
+    #[cfg_attr(feature = "clap", value(alias = "templar-vault-contract"))]
     Vault,
+    #[cfg_attr(feature = "clap", value(alias = "templar-universal-account-contract"))]
     UniversalAccount,
+    #[cfg_attr(feature = "clap", value(alias = "templar-proxy-oracle-near-contract"))]
     ProxyOracle,
+    #[cfg_attr(
+        feature = "clap",
+        value(alias = "templar-proxy-oracle-near-governance-contract")
+    )]
     ProxyGovernance,
+    #[cfg_attr(feature = "clap", value(alias = "templar-lst-oracle-contract"))]
     LstOracle,
+    #[cfg_attr(feature = "clap", value(alias = "templar-redstone-adapter-contract"))]
     RedstoneAdapter,
+    #[cfg_attr(feature = "clap", value(alias = "templar-pyth-pro-adapter-contract"))]
     PythProAdapter,
     // -- Mock / test contracts --
     MockFt,
     MockMt,
     MockOracle,
+    #[cfg_attr(feature = "clap", value(alias = "mock-ref"))]
     MockRefFinance,
     MockReceiver,
 }
 
 impl ArtifactId {
+    pub const ALL: [Self; 14] = [
+        Self::Registry,
+        Self::Market,
+        Self::Vault,
+        Self::UniversalAccount,
+        Self::ProxyOracle,
+        Self::ProxyGovernance,
+        Self::LstOracle,
+        Self::RedstoneAdapter,
+        Self::PythProAdapter,
+        Self::MockFt,
+        Self::MockMt,
+        Self::MockOracle,
+        Self::MockRefFinance,
+        Self::MockReceiver,
+    ];
+
     pub fn as_str(self) -> &'static str {
         self.into()
     }
 
-    pub fn metadata(self) -> Option<&'static ArtifactMetadata> {
-        artifact_catalog()
-            .iter()
-            .find(|metadata| metadata.id == self)
+    pub fn metadata(self) -> &'static ArtifactMetadata {
+        match self {
+            Self::Registry => &REGISTRY_METADATA,
+            Self::Market => &MARKET_METADATA,
+            Self::Vault => &VAULT_METADATA,
+            Self::UniversalAccount => &UNIVERSAL_ACCOUNT_METADATA,
+            Self::ProxyOracle => &PROXY_ORACLE_METADATA,
+            Self::ProxyGovernance => &PROXY_GOVERNANCE_METADATA,
+            Self::LstOracle => &LST_ORACLE_METADATA,
+            Self::RedstoneAdapter => &REDSTONE_ADAPTER_METADATA,
+            Self::PythProAdapter => &PYTH_PRO_ADAPTER_METADATA,
+            Self::MockFt => &MOCK_FT_METADATA,
+            Self::MockMt => &MOCK_MT_METADATA,
+            Self::MockOracle => &MOCK_ORACLE_METADATA,
+            Self::MockRefFinance => &MOCK_REF_FINANCE_METADATA,
+            Self::MockReceiver => &MOCK_RECEIVER_METADATA,
+        }
     }
 
     pub fn from_package_name(package_name: &str) -> Option<Self> {
-        artifact_catalog()
+        Self::ALL
             .iter()
-            .find(|metadata| metadata.package_name == package_name)
-            .map(|metadata| metadata.id)
+            .copied()
+            .find(|id| id.metadata().package_name == package_name)
     }
 
     #[cfg(feature = "embedded-wasm")]
     pub fn embedded_bytes(self) -> &'static [u8] {
-        crate::embedded::embedded_bytes(self)
+        match self {
+            Self::Registry => include_bytes!(
+                "../res/near/templar_registry_contract/templar_registry_contract.wasm"
+            ),
+            Self::Market => include_bytes!(
+                "../res/near/templar_market_contract/templar_market_contract.wasm"
+            ),
+            Self::Vault => include_bytes!(
+                "../res/near/templar_vault_contract/templar_vault_contract.wasm"
+            ),
+            Self::UniversalAccount => include_bytes!(
+                "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
+            ),
+            Self::ProxyOracle => include_bytes!(
+                "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
+            ),
+            Self::ProxyGovernance => include_bytes!(
+                "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
+            ),
+            Self::LstOracle => include_bytes!(
+                "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
+            ),
+            Self::RedstoneAdapter => include_bytes!(
+                "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
+            ),
+            Self::PythProAdapter => include_bytes!(
+                "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
+            ),
+            Self::MockFt => include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
+            Self::MockMt => include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
+            Self::MockOracle => include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
+            Self::MockRefFinance => include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
+            Self::MockReceiver => include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
+        }
     }
 }
 
@@ -131,8 +208,8 @@ impl ArtifactMetadata {
 /// Return the full catalog of every known contract artifact.
 ///
 /// Order is stable but callers should not depend on a particular ordering.
-pub const fn artifact_catalog() -> &'static [ArtifactMetadata] {
-    CATALOG
+pub fn artifact_catalog() -> impl ExactSizeIterator<Item = &'static ArtifactMetadata> {
+    ArtifactId::ALL.iter().map(|id| id.metadata())
 }
 
 // ---------------------------------------------------------------------------
@@ -151,87 +228,86 @@ macro_rules! entry {
     };
 }
 
-const CATALOG: &[ArtifactMetadata] = &[
-    // -- Production contracts --
-    entry!(
-        Registry,
-        "templar-registry-contract",
-        "templar_registry_contract",
-        "contract/registry",
-        "1.2.1"
-    ),
-    entry!(
-        Market,
-        "templar-market-contract",
-        "templar_market_contract",
-        "contract/market",
-        "1.4.0"
-    ),
-    entry!(
-        Vault,
-        "templar-vault-contract",
-        "templar_vault_contract",
-        "contract/vault/near",
-        "1.2.1"
-    ),
-    entry!(
-        UniversalAccount,
-        "templar-universal-account-contract",
-        "templar_universal_account_contract",
-        "contract/universal-account",
-        "0.5.0"
-    ),
-    entry!(
-        ProxyOracle,
-        "templar-proxy-oracle-near-contract",
-        "templar_proxy_oracle_near_contract",
-        "contract/proxy-oracle/near/contract",
-        "0.2.0"
-    ),
-    entry!(
-        ProxyGovernance,
-        "templar-proxy-oracle-near-governance-contract",
-        "templar_proxy_oracle_near_governance_contract",
-        "contract/proxy-oracle/near/governance-contract",
-        "0.1.0"
-    ),
-    entry!(
-        LstOracle,
-        "templar-lst-oracle-contract",
-        "templar_lst_oracle_contract",
-        "contract/proxy-oracle/near/lst-contract",
-        "1.2.1"
-    ),
-    entry!(
-        RedstoneAdapter,
-        "templar-redstone-adapter-contract",
-        "templar_redstone_adapter_contract",
-        "contract/redstone-adapter",
-        "0.1.0"
-    ),
-    entry!(
-        PythProAdapter,
-        "templar-pyth-pro-adapter-contract",
-        "templar_pyth_pro_adapter_contract",
-        "contract/pyth-pro/contract",
-        "0.1.0"
-    ),
-    // -- Mock / test contracts --
-    entry!(MockFt, "mock-ft", "mock_ft", "mock/ft", "0.0.0"),
-    entry!(MockMt, "mock-mt", "mock_mt", "mock/mt", "0.0.0"),
-    entry!(
-        MockOracle,
-        "mock-oracle",
-        "mock_oracle",
-        "mock/oracle",
-        "0.0.0"
-    ),
-    entry!(MockRefFinance, "mock-ref", "mock_ref", "mock/ref", "1.2.1"),
-    entry!(
-        MockReceiver,
-        "mock-receiver",
-        "mock_receiver",
-        "mock/receiver",
-        "1.2.1"
-    ),
-];
+static REGISTRY_METADATA: ArtifactMetadata = entry!(
+    Registry,
+    "templar-registry-contract",
+    "templar_registry_contract",
+    "contract/registry",
+    "1.2.1"
+);
+static MARKET_METADATA: ArtifactMetadata = entry!(
+    Market,
+    "templar-market-contract",
+    "templar_market_contract",
+    "contract/market",
+    "1.4.0"
+);
+static VAULT_METADATA: ArtifactMetadata = entry!(
+    Vault,
+    "templar-vault-contract",
+    "templar_vault_contract",
+    "contract/vault/near",
+    "1.2.1"
+);
+static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
+    UniversalAccount,
+    "templar-universal-account-contract",
+    "templar_universal_account_contract",
+    "contract/universal-account",
+    "0.5.0"
+);
+static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
+    ProxyOracle,
+    "templar-proxy-oracle-near-contract",
+    "templar_proxy_oracle_near_contract",
+    "contract/proxy-oracle/near/contract",
+    "0.2.0"
+);
+static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
+    ProxyGovernance,
+    "templar-proxy-oracle-near-governance-contract",
+    "templar_proxy_oracle_near_governance_contract",
+    "contract/proxy-oracle/near/governance-contract",
+    "0.1.0"
+);
+static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
+    LstOracle,
+    "templar-lst-oracle-contract",
+    "templar_lst_oracle_contract",
+    "contract/proxy-oracle/near/lst-contract",
+    "1.2.1"
+);
+static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
+    RedstoneAdapter,
+    "templar-redstone-adapter-contract",
+    "templar_redstone_adapter_contract",
+    "contract/redstone-adapter",
+    "0.1.0"
+);
+static PYTH_PRO_ADAPTER_METADATA: ArtifactMetadata = entry!(
+    PythProAdapter,
+    "templar-pyth-pro-adapter-contract",
+    "templar_pyth_pro_adapter_contract",
+    "contract/pyth-pro/contract",
+    "0.1.0"
+);
+static MOCK_FT_METADATA: ArtifactMetadata =
+    entry!(MockFt, "mock-ft", "mock_ft", "mock/ft", "0.0.0");
+static MOCK_MT_METADATA: ArtifactMetadata =
+    entry!(MockMt, "mock-mt", "mock_mt", "mock/mt", "0.0.0");
+static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
+    MockOracle,
+    "mock-oracle",
+    "mock_oracle",
+    "mock/oracle",
+    "0.0.0"
+);
+static MOCK_REF_FINANCE_METADATA: ArtifactMetadata =
+    entry!(MockRefFinance, "mock-ref", "mock_ref", "mock/ref", "1.2.1");
+static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
+    MockReceiver,
+    "mock-receiver",
+    "mock_receiver",
+    "mock/receiver",
+    "1.2.1"
+);

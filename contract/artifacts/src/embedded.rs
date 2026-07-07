@@ -28,62 +28,12 @@
 //! CI runs this separately from ordinary integration tests.
 
 use crate::ArtifactId;
-use thiserror::Error;
-
-/// Errors when reading embedded WASM bytes.
-#[derive(Error, Debug)]
-pub enum EmbeddedError {
-    /// The requested artifact is not in the catalog.
-    #[error("Unknown artifact")]
-    Unknown,
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-pub(crate) fn embedded_bytes(id: ArtifactId) -> &'static [u8] {
-    match id {
-        ArtifactId::Registry => include_bytes!(
-            "../res/near/templar_registry_contract/templar_registry_contract.wasm"
-        ),
-        ArtifactId::Market => include_bytes!(
-            "../res/near/templar_market_contract/templar_market_contract.wasm"
-        ),
-        ArtifactId::Vault => include_bytes!(
-            "../res/near/templar_vault_contract/templar_vault_contract.wasm"
-        ),
-        ArtifactId::UniversalAccount => include_bytes!(
-            "../res/near/templar_universal_account_contract/templar_universal_account_contract.wasm"
-        ),
-        ArtifactId::ProxyOracle => include_bytes!(
-            "../res/near/templar_proxy_oracle_near_contract/templar_proxy_oracle_near_contract.wasm"
-        ),
-        ArtifactId::ProxyGovernance => include_bytes!(
-            "../res/near/templar_proxy_oracle_near_governance_contract/templar_proxy_oracle_near_governance_contract.wasm"
-        ),
-        ArtifactId::LstOracle => include_bytes!(
-            "../res/near/templar_lst_oracle_contract/templar_lst_oracle_contract.wasm"
-        ),
-        ArtifactId::RedstoneAdapter => include_bytes!(
-            "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
-        ),
-        ArtifactId::PythProAdapter => include_bytes!(
-            "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
-        ),
-        ArtifactId::MockFt => include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
-        ArtifactId::MockMt => include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
-        ArtifactId::MockOracle => include_bytes!("../res/near/mock_oracle/mock_oracle.wasm"),
-        ArtifactId::MockRefFinance => include_bytes!("../res/near/mock_ref/mock_ref.wasm"),
-        ArtifactId::MockReceiver => include_bytes!("../res/near/mock_receiver/mock_receiver.wasm"),
-    }
-}
 
 /// Return the size in bytes of the embedded WASM for every catalogued artifact.
 pub fn embedded_sizes() -> Vec<(&'static str, usize)> {
-    crate::artifact_catalog()
+    ArtifactId::ALL
         .iter()
-        .map(|artifact| (artifact.id.as_str(), artifact.id.embedded_bytes().len()))
+        .map(|id| (id.as_str(), id.embedded_bytes().len()))
         .collect()
 }
 
@@ -100,7 +50,7 @@ mod tests {
     /// is missing, and at runtime if a blob is corrupt or empty.
     #[test]
     fn test_read_embedded_all_artifacts() {
-        for artifact in crate::artifact_catalog() {
+        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let bytes = artifact.id.embedded_bytes();
             assert!(
                 !bytes.is_empty(),
@@ -119,9 +69,9 @@ mod tests {
     #[test]
     fn test_embedded_sizes_all_artifacts() {
         let sizes = embedded_sizes();
-        let expected = crate::artifact_catalog()
+        let expected = ArtifactId::ALL
             .iter()
-            .map(|artifact| (artifact.id.as_str(), artifact.id.embedded_bytes().len()))
+            .map(|id| (id.as_str(), id.embedded_bytes().len()))
             .collect::<Vec<_>>();
 
         assert_eq!(sizes, expected);
@@ -159,7 +109,7 @@ mod tests {
             panic!("Failed to read cargo metadata: {e}");
         });
 
-        for artifact in crate::artifact_catalog() {
+        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let embedded = artifact.id.embedded_bytes();
 
             let disk_path = target_near_wasm_path_from_meta(
@@ -221,7 +171,7 @@ mod tests {
             panic!("Failed to read cargo metadata: {e}");
         });
 
-        for artifact in crate::artifact_catalog() {
+        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let package = find_package(&metadata, artifact.package_name).unwrap_or_else(|| {
                 panic!(
                     "Package '{}' not found in workspace metadata — \

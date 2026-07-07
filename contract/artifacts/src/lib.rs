@@ -15,8 +15,6 @@
 //! defined by `templar-tools-common`. This crate provides formatting and
 //! hashing helpers that produce the same output.
 
-#[cfg(feature = "clap")]
-mod clap_impl;
 #[cfg(feature = "embedded-wasm")]
 pub(crate) mod embedded;
 mod ids;
@@ -27,10 +25,8 @@ mod wasm_drift;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 
-#[cfg(feature = "clap")]
-pub use clap_impl::artifact_value_parser;
 #[cfg(feature = "embedded-wasm")]
-pub use embedded::{embedded_sizes, EmbeddedError};
+pub use embedded::embedded_sizes;
 pub use ids::{artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError};
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
@@ -47,10 +43,6 @@ use thiserror::Error;
 /// Errors returned by artifact operations in the default configuration.
 #[derive(Error, Debug)]
 pub enum ArtifactError {
-    /// No artifact with the given package name exists in the catalog.
-    #[error("Unknown contract artifact: {0}")]
-    UnknownContract(String),
-
     /// There is no WASM bytes source available — neither `embedded-wasm` nor
     /// `workspace-loader` is enabled.
     #[error(
@@ -82,19 +74,12 @@ pub fn sha256_hex(wasm_bytes: &[u8]) -> String {
 
 /// Resolve an artifact by its Cargo package name (e.g. `"templar-market-contract"`).
 pub fn find_by_package_name(package: &str) -> Option<&'static ArtifactMetadata> {
-    artifact_catalog()
-        .iter()
-        .find(|a| a.package_name == package)
+    ArtifactId::from_package_name(package).map(ArtifactId::metadata)
 }
 
 /// Resolve an artifact by its [`ArtifactId`] ID.
-///
-/// Returns `Ok(metadata)` for every variant in the catalog. A missing ID
-/// indicates a program bug (new variant added without a catalog entry), which
-/// this function reports as an [`ArtifactError::UnknownContract`].
-pub fn find_by_id(id: ArtifactId) -> Result<&'static ArtifactMetadata, ArtifactError> {
+pub fn find_by_id(id: ArtifactId) -> &'static ArtifactMetadata {
     id.metadata()
-        .ok_or_else(|| ArtifactError::UnknownContract(id.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_find_by_id() {
-        let meta = find_by_id(ArtifactId::Vault).unwrap();
+        let meta = find_by_id(ArtifactId::Vault);
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
         assert_eq!(meta.version, "1.2.1");
@@ -147,9 +132,9 @@ mod tests {
 
     #[test]
     fn test_find_by_id_returns_all_catalog() {
-        for meta in artifact_catalog() {
-            let found = find_by_id(meta.id).unwrap();
-            assert_eq!(found, meta);
+        for id in ArtifactId::ALL {
+            let found = find_by_id(id);
+            assert_eq!(found.id, id);
         }
     }
 
@@ -160,7 +145,10 @@ mod tests {
 
     #[test]
     fn test_catalog_has_all_entries() {
-        let catalog = artifact_catalog();
+        let catalog = ArtifactId::ALL
+            .iter()
+            .map(|id| id.metadata())
+            .collect::<Vec<_>>();
         assert!(!catalog.is_empty());
         // All IDs must be unique
         let mut ids: Vec<_> = catalog.iter().map(|a| &a.id).collect();
@@ -176,8 +164,47 @@ mod tests {
     }
 
     #[test]
+    fn test_artifact_id_all_preserves_public_order() {
+        assert_eq!(
+            ArtifactId::ALL,
+            [
+                ArtifactId::Registry,
+                ArtifactId::Market,
+                ArtifactId::Vault,
+                ArtifactId::UniversalAccount,
+                ArtifactId::ProxyOracle,
+                ArtifactId::ProxyGovernance,
+                ArtifactId::LstOracle,
+                ArtifactId::RedstoneAdapter,
+                ArtifactId::PythProAdapter,
+                ArtifactId::MockFt,
+                ArtifactId::MockMt,
+                ArtifactId::MockOracle,
+                ArtifactId::MockRefFinance,
+                ArtifactId::MockReceiver,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_artifact_catalog_follows_artifact_id_all_order() {
+        let catalog_ids = artifact_catalog()
+            .map(|metadata| metadata.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(catalog_ids, ArtifactId::ALL);
+    }
+
+    #[test]
+    fn test_artifact_id_metadata_is_complete() {
+        for id in ArtifactId::ALL {
+            assert_eq!(id.metadata().id, id);
+        }
+    }
+
+    #[test]
     fn test_catalog_target_names_match_convention() {
-        for artifact in artifact_catalog() {
+        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let target_name = artifact.cargo_target_name;
             assert!(
                 !target_name.contains('-'),
@@ -221,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_artifact_id_metadata_method() {
-        let metadata = ArtifactId::Market.metadata().unwrap();
+        let metadata = ArtifactId::Market.metadata();
         assert_eq!(metadata.package_name, "templar-market-contract");
         assert_eq!(metadata.source_path, "contract/market");
     }

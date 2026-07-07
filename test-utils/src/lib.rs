@@ -45,7 +45,7 @@ use templar_common::{
     Decimal,
 };
 pub(crate) use templar_contract_artifacts::ArtifactId;
-use templar_contract_artifacts::{find_by_id, load_artifact_bytes, ArtifactMetadata};
+use templar_contract_artifacts::{load_artifact_bytes, ArtifactMetadata};
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
@@ -209,7 +209,7 @@ async fn read_contract(metadata: &ArtifactMetadata) -> Vec<u8> {
 }
 
 async fn get_contract(artifact: ArtifactId) -> Vec<u8> {
-    let metadata = find_by_id(artifact).unwrap();
+    let metadata = artifact.metadata();
     if std::env::var("TEST_CONTRACTS_PREBUILT").is_ok() {
         read_contract(metadata).await
     } else {

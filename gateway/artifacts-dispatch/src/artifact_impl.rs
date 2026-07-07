@@ -1,12 +1,12 @@
 use async_trait::async_trait;
-use templar_contract_artifacts::{artifact_catalog, find_by_id, sha256_hex, ArtifactId};
+use templar_contract_artifacts::{sha256_hex, ArtifactId};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
     ListArtifactsResult,
 };
 use templar_gateway_core::{
-    client::registry::AddVersionArgs, ContractWriteOptions, DispatchRead, GatewayError,
-    GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    client::registry::AddVersionArgs, ContractWriteOptions, DispatchRead, GatewayResult,
+    HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_types::common::WriteRequest;
 
@@ -20,8 +20,7 @@ struct LoadedArtifact {
 }
 
 fn load_artifact(artifact: ArtifactId) -> GatewayResult<LoadedArtifact> {
-    let metadata = find_by_id(artifact)
-        .map_err(|error| GatewayError::NearQuery(format!("artifact lookup failed: {error}")))?;
+    let metadata = artifact.metadata();
     let code = artifact.embedded_bytes().to_vec();
     let sha256 = sha256_hex(&code);
     let version_key = metadata.version_key(&code);
@@ -62,9 +61,9 @@ where
 {
     async fn dispatch(_request: ListArtifacts, _ctx: C) -> GatewayResult<ListArtifactsResult> {
         Ok(ListArtifactsResult {
-            artifacts: artifact_catalog()
+            artifacts: ArtifactId::ALL
                 .iter()
-                .map(ArtifactMetadata::from)
+                .map(|id| ArtifactMetadata::from(id.metadata()))
                 .collect(),
         })
     }

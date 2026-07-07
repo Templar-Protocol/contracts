@@ -5,10 +5,12 @@ Templar Protocol smart contracts.
 
 ## What this crate provides
 
-- **Artifact catalog** — a single source of truth for every deployable
-  contract in the workspace (production contracts and mock/test contracts).
+- **Artifact IDs** — a single source of truth for every deployable contract in
+  the workspace (production contracts and mock/test contracts) via
+  `ArtifactId::ALL`.
 - **Metadata** — Cargo package name, `target/near` directory name, and
-  workspace-relative source path for each artifact.
+  workspace-relative source path for each artifact through infallible
+  `ArtifactId::metadata()` lookup.
 - **Version-key helpers** — format and hash helpers matching the
   `{package}@{version}#{sha256_hex}` convention from `templar-tools-common`.
 - **Byte-loading** — two mutually independent features for obtaining
@@ -21,7 +23,7 @@ Templar Protocol smart contracts.
 | *(default)*          | Artifact IDs and metadata only. No dependencies beyond `sha2`, `hex`, `thiserror`. No WASM bytes. |
 | `workspace-loader`   | Read WASM from `target/near/{name}/{name}.wasm` at runtime. Provides `cargo near build` helper. |
 | `embedded-wasm`      | Compile-time WASM blobs via `include_bytes!`. Blobs are pinned at build time. |
-| `clap`               | CLI-friendly parsing helpers (parse artifacts by artifact ID or package name). |
+| `clap`               | CLI-friendly `ValueEnum` parsing for artifact IDs and package-name aliases. |
 
 Default features do **not** embed WASM bytes or depend on heavy build
 tooling. Consumers opt into the byte source they need.
@@ -62,8 +64,7 @@ artifact option can be repeated or comma-separated.
 
 Checked-in embedded blobs should still be refreshed from reproducible builds.
 
-All 14 catalogued artifacts (production and mock) have embedded bytes
-available.
+All catalogued artifacts (production and mock) have embedded bytes available.
 
 ### Checking for stale bytes
 
@@ -108,9 +109,20 @@ CI runs this separately from ordinary integration tests through
 ```rust
 use templar_contract_artifacts::{artifact_catalog, find_by_package_name};
 
-let catalog = artifact_catalog();
+let catalog = artifact_catalog().collect::<Vec<_>>();
 let market = find_by_package_name("templar-market-contract").unwrap();
 assert_eq!(market.source_path, "contract/market");
+```
+
+For ID-driven code, use the canonical ID list and infallible metadata mapping:
+
+```rust
+use templar_contract_artifacts::ArtifactId;
+
+for id in ArtifactId::ALL {
+    let metadata = id.metadata();
+    assert_eq!(metadata.id, id);
+}
 ```
 
 ### Load WASM from workspace build directory
@@ -137,7 +149,7 @@ let key = format_version_key("mock-ft", "0.0.0", &wasm_bytes);
 ```rust
 // Requires: features = ["clap"]
 // In your clap derive struct:
-#[arg(value_parser = templar_contract_artifacts::artifact_value_parser)]
+#[arg(value_enum, ignore_case = true)]
 artifact: templar_contract_artifacts::ArtifactId,
 ```
 

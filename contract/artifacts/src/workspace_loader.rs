@@ -230,7 +230,6 @@ fn build_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::artifact_catalog;
 
     #[test]
     fn test_target_path_matches_metadata_path() {
@@ -241,12 +240,9 @@ mod tests {
 
     #[test]
     fn test_catalog_manifest_path_points_to_cargo_toml() {
-        let Some(artifact) = artifact_catalog()
-            .iter()
-            .find(|a| a.package_name == "mock-ft")
-        else {
-            panic!("mock-ft artifact should be present in catalog");
-        };
+        let artifact = crate::ArtifactId::MockFt.metadata();
+
+        assert_eq!(artifact.package_name, "mock-ft");
         let path = Path::new("/ws").join(artifact.manifest_path());
 
         assert_eq!(path, Path::new("/ws/mock/ft/Cargo.toml"));
