@@ -172,7 +172,7 @@ async fn governance_cancel_proposal_plans_cancel_action() {
     let body = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::CancelProposal(a),
-        } => a.parse(),
+        } => a.cancel(),
         _ => panic!("expected cancel-proposal"),
     };
 

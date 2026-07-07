@@ -115,7 +115,7 @@ fn proxy_oracle_owner_typed_commands_parse() {
     let params = match cli.command {
         Command::ProxyOracleOwner {
             command: ProxyOracleOwnerNs::AcceptOwner(cmd),
-        } => cmd.parse(),
+        } => cmd.accept_owner(),
         _ => panic!("expected ProxyOracleOwner::AcceptOwner"),
     };
 
@@ -144,7 +144,6 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
         "proxy.registry.testnet",
         "--id",
         "0",
-        "--operation",
         "set-proxy",
         "--price-id",
         COLLATERAL_PRICE_ID,
@@ -189,7 +188,7 @@ fn governance_execute_proposal_typed_args_parse() {
     let params = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::ExecuteProposal(cmd),
-        } => cmd.parse(),
+        } => cmd.execute(),
         _ => panic!("expected ProxyOracleGovernance::ExecuteProposal"),
     };
 
@@ -200,8 +199,8 @@ fn governance_execute_proposal_typed_args_parse() {
 }
 
 #[test]
-fn create_proposal_set_proxy_requires_price_id_and_proxy_file() {
-    let cli = Cli::try_parse_from([
+fn create_proposal_set_proxy_requires_price_id() {
+    let error = Cli::try_parse_from([
         "tmplrmgr",
         "proxy-oracle-governance",
         "create-proposal",
@@ -209,21 +208,14 @@ fn create_proposal_set_proxy_requires_price_id_and_proxy_file() {
         "proxy.registry.testnet",
         "--id",
         "0",
-        "--operation",
         "set-proxy",
     ])
-    .expect("set-proxy operation should parse before parse validation");
+    .expect_err("set-proxy should require --price-id");
 
-    let error = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => cmd
-            .parse()
-            .expect_err("set-proxy operation should require price-id and proxy-file"),
-        _ => panic!("expected ProxyOracleGovernance::CreateProposal"),
-    };
-
-    assert!(error.to_string().contains("--price-id") || error.to_string().contains("--proxy-file"));
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]

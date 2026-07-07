@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Deploy a market with its own proxy oracle and a separate governance contract.
+#
+# Architecture: the proxy oracle holds owner-gated `admin_*` mutators; the
+# governance contract is a distinct account that administers the oracle by
+# executing proposals that call into those mutators. So governance must become
+# the oracle's owner before it can configure any price feeds.
+#
 # Usage: SECRET_KEY=... ./deploy.sh ./<market>/env.sh
 
 set -Eeuo pipefail
@@ -22,12 +29,15 @@ required_vars=(
     MARKET_ARGS_FILE
     PROXY_COLLATERAL_ARGS_FILE
     PROXY_BORROW_ARGS_FILE
+    COLLATERAL_PRICE_ID
+    BORROW_PRICE_ID
     NETWORK
     SIGNER_ID
     REGISTRY_ID
     MARKET_NAME
     MARKET_VERSION_KEY
     PROXY_ORACLE_VERSION_KEY
+    PROXY_GOVERNANCE_VERSION_KEY
 )
 
 for required_var in "${required_vars[@]}"; do
@@ -50,75 +60,93 @@ for required_file in "${required_files[@]}"; do
     fi
 done
 
+# The registry account owns the oracle immediately after `registry deploy` (it
+# is the predecessor of the contract's `new()`), so it signs the owner handoff.
+# Every other step is signed by the operator, who is the governance admin. When
+# these are different accounts, set REGISTRY_SECRET_KEY; it defaults to SECRET_KEY.
+REGISTRY_SECRET_KEY=${REGISTRY_SECRET_KEY:-$SECRET_KEY}
+
 # derived values
 PROXY_ORACLE_NAME="proxy-oracle-$MARKET_NAME"
 PROXY_ORACLE_ID="$PROXY_ORACLE_NAME.$REGISTRY_ID"
+GOVERNANCE_NAME="proxy-governance-$MARKET_NAME"
+GOVERNANCE_ID="$GOVERNANCE_NAME.$REGISTRY_ID"
 
 TMPLRMGR_GLOBAL_ARGS=(
     --network "$NETWORK"
 )
 
-# script
-echo "Deploying proxy oracle..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    registry deploy \
+# operator-signed call (governance admin / deployer)
+operator() {
+    tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" --signer-id "$SIGNER_ID" --secret-key "$SECRET_KEY" "$@"
+}
+
+# registry-signed call (initial oracle owner)
+registry() {
+    tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" --signer-id "$REGISTRY_ID" --secret-key "$REGISTRY_SECRET_KEY" "$@"
+}
+
+echo "Deploying proxy oracle ($PROXY_ORACLE_ID)..."
+operator registry deploy \
     --registry-id "$REGISTRY_ID" \
     --name "$PROXY_ORACLE_NAME" \
     --version-key "$PROXY_ORACLE_VERSION_KEY" \
     --deposit "3.5 NEAR"
 
-echo "Proposing proxy oracle owner..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$REGISTRY_ID" \
-    proxy-oracle-owner propose-owner \
+echo "Deploying governance ($GOVERNANCE_ID)..."
+operator proxy-oracle-governance deploy \
+    --registry-id "$REGISTRY_ID" \
+    --name "$GOVERNANCE_NAME" \
+    --version-key "$PROXY_GOVERNANCE_VERSION_KEY" \
+    --proxy-oracle-id "$PROXY_ORACLE_ID" \
+    --admin-id "$SIGNER_ID" \
+    --ttl-default 0 \
+    --deposit "3.5 NEAR"
+
+echo "Proposing governance as the oracle owner..."
+registry proxy-oracle-owner propose-owner \
     --oracle-id "$PROXY_ORACLE_ID" \
-    --account-id "$SIGNER_ID"
+    --account-id "$GOVERNANCE_ID"
 
-echo "Accepting proxy oracle owner..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    proxy-oracle-owner accept-owner \
-    --oracle-id "$PROXY_ORACLE_ID"
-
-echo "Creating collateral proxy..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    proxy-oracle-governance create-proposal \
-    --governance-id "$PROXY_ORACLE_ID" \
+echo "Accepting oracle ownership through governance..."
+operator proxy-oracle-governance create-proposal \
+    --governance-id "$GOVERNANCE_ID" \
     --id 0 \
-    --operation set-proxy \
-    --price-id "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" \
-    --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
-
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    proxy-oracle-governance execute-proposal \
-    --governance-id "$PROXY_ORACLE_ID" \
+    admin-function-call \
+    --method own_accept_owner \
+    --deposit "1 yoctoNEAR"
+operator proxy-oracle-governance execute-proposal \
+    --governance-id "$GOVERNANCE_ID" \
     --id 0
 
-echo "Creating borrow proxy..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    proxy-oracle-governance create-proposal \
-    --governance-id "$PROXY_ORACLE_ID" \
+echo "Configuring collateral proxy..."
+operator proxy-oracle-governance create-proposal \
+    --governance-id "$GOVERNANCE_ID" \
     --id 1 \
-    --operation set-proxy \
-    --price-id "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
-    --proxy-file "$PROXY_BORROW_ARGS_FILE"
-
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    proxy-oracle-governance execute-proposal \
-    --governance-id "$PROXY_ORACLE_ID" \
+    set-proxy \
+    --price-id "$COLLATERAL_PRICE_ID" \
+    --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
+operator proxy-oracle-governance execute-proposal \
+    --governance-id "$GOVERNANCE_ID" \
     --id 1
 
+echo "Configuring borrow proxy..."
+operator proxy-oracle-governance create-proposal \
+    --governance-id "$GOVERNANCE_ID" \
+    --id 2 \
+    set-proxy \
+    --price-id "$BORROW_PRICE_ID" \
+    --proxy-file "$PROXY_BORROW_ARGS_FILE"
+operator proxy-oracle-governance execute-proposal \
+    --governance-id "$GOVERNANCE_ID" \
+    --id 2
+
 echo "Deploying market..."
-tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" \
-    --signer-id "$SIGNER_ID" \
-    market create \
+operator market create \
     --registry-id "$REGISTRY_ID" \
     --name "$MARKET_NAME" \
     --version-key "$MARKET_VERSION_KEY" \
     --init-args-file "$MARKET_ARGS_FILE" \
     --deposit "5.5 NEAR"
+
+echo "Done. proxy-oracle=$PROXY_ORACLE_ID governance=$GOVERNANCE_ID market=$MARKET_NAME.$REGISTRY_ID"

@@ -87,18 +87,29 @@ async fn dispatch_market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
 
 async fn dispatch_owner(ctx: CliContext, ns: ProxyOracleOwnerNs) -> anyhow::Result<()> {
     match ns {
+        ProxyOracleOwnerNs::GetOwner(a) => ctx.read(a.get_owner()).await,
+        ProxyOracleOwnerNs::GetProposedOwner(a) => ctx.read(a.get_proposed_owner()).await,
         ProxyOracleOwnerNs::ProposeOwner(a) => ctx.write(a.parse()).await,
-        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.parse()).await,
+        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.accept_owner()).await,
+        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.renounce_owner()).await,
     }
 }
 
 async fn dispatch_governance(ctx: CliContext, ns: ProxyOracleGovernanceNs) -> anyhow::Result<()> {
     match ns {
+        ProxyOracleGovernanceNs::Deploy(a) => ctx.write(a.parse()?).await,
         ProxyOracleGovernanceNs::CreateProposal(a) => ctx.write(a.parse()?).await,
-        ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.parse()).await,
-        ProxyOracleGovernanceNs::ExecuteProposal(a) => ctx.write(a.parse()).await,
-        ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.parse()).await,
+        ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.cancel()).await,
+        ProxyOracleGovernanceNs::ExecuteProposal(a) => ctx.write(a.execute()).await,
+        ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.get()).await,
         ProxyOracleGovernanceNs::ListProposals(a) => ctx.read(a.parse()).await,
+        ProxyOracleGovernanceNs::NextProposalId(a) => ctx.read(a.next_proposal_id()).await,
+        ProxyOracleGovernanceNs::ProposalCount(a) => ctx.read(a.proposal_count()).await,
+        ProxyOracleGovernanceNs::GetOperationTtl(a) => ctx.read(a.parse()).await,
+        ProxyOracleGovernanceNs::GetProxyOracleId(a) => ctx.read(a.get_proxy_oracle_id()).await,
+        ProxyOracleGovernanceNs::HasRole(a) => ctx.read(a.parse()).await,
+        ProxyOracleGovernanceNs::ListRole(a) => ctx.read(a.parse()).await,
+        ProxyOracleGovernanceNs::GetRoles(a) => ctx.read(a.parse()).await,
     }
 }
 
@@ -106,6 +117,8 @@ async fn dispatch_proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Re
     match ns {
         ProxyOracleNs::GetProxy(a) => ctx.read(a.parse()?).await,
         ProxyOracleNs::ListProxies(a) => ctx.read(a.parse()).await,
+        ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.parse()?).await,
+        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.parse()?).await,
     }
 }
 

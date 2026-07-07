@@ -10,6 +10,7 @@ mod deploy_script;
 mod ft;
 mod market;
 mod plan;
+mod proxy_oracle;
 mod redstone;
 mod registry;
 mod storage;
