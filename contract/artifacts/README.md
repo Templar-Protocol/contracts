@@ -45,7 +45,9 @@ snapshot.
 
 Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds
 run concurrently. If unset, the prebuild helper uses a bounded default based on
-available CPU parallelism.
+available CPU parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or
+pass `--timeout-secs <n>` to override the per-contract build timeout; the
+default is 30 minutes.
 
 By default, the prebuild helper runs reproducible builds for every catalog
 entry. For local iteration, pass `--profile test` to use `cargo near build
@@ -77,9 +79,9 @@ The script rebuilds artifacts with `--profile drift` and then runs:
 cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --ignored --nocapture
 ```
 
-This runs both the **byte drift check** (compares embedded blobs against
-`target/near`) and the **version drift check** (verifies catalog versions
-match `Cargo.toml`), because `drift_check` is a substring filter matching
+This runs both the **byte drift check** (compares embedded blobs against the
+Cargo-resolved `target/near` output) and the **version drift check** (verifies
+catalog versions match `Cargo.toml`), because `drift_check` is a substring filter matching
 `embedded_drift_check` and `embedded_version_drift_check`.
 
 The byte drift check is strict, with one explicit exception: NEP-330 source
