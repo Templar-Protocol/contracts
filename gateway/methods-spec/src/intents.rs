@@ -4,26 +4,24 @@ use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 use templar_gateway_types::primitive::{PublicKey, Signature};
 
-/// The signature standard of a submitted intent. The gateway currently only
-/// supports NEP-413; add variants here as further standards are supported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub enum IntentStandard {
-    #[serde(rename = "nep413")]
-    Nep413,
-}
-
-/// A single NEP-413 signed intent payload, as accepted by the `execute_intents`
-/// method of a NEAR Intents contract. The signature is produced off-chain over
-/// the borsh-encoded [`IntentPayload`]; this type only models the JSON wire
-/// shape the contract expects.
+/// A single signed intent payload, as accepted by the `execute_intents` method
+/// of a NEAR Intents contract. The signature is produced off-chain over the
+/// borsh-encoded [`IntentPayload`]; this type only models the JSON wire shape
+/// the contract expects.
 ///
 /// The envelope fields (`signature`, `public_key`) are strongly typed and
 /// validated at this boundary; they serialize to the exact `<curve>:<base58>`
 /// strings the contract reads, so the pre-signed blob is forwarded unchanged.
+///
+/// `standard` names the off-chain signing standard used to produce `signature`
+/// — e.g. `nep413` (the ecosystem-wide NEAR wallet message-signing standard),
+/// `erc191` for EVM wallets, `raw_ed25519`, etc. It stays an open `String`
+/// because the set the contract accepts is broader than any single value and is
+/// validated on-chain; the gateway only forwards it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIntentPayload {
     pub payload: IntentPayload,
-    pub standard: IntentStandard,
+    pub standard: String,
     pub signature: Signature,
     pub public_key: PublicKey,
 }
