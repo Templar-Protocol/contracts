@@ -13672,6 +13672,7 @@ dependencies = [
  "serde",
  "serde_json",
  "templar-common",
+ "templar-contract-artifacts",
  "templar-gateway-client",
  "templar-gateway-core",
  "templar-gateway-methods-dispatch",
@@ -13682,6 +13683,7 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+ "templar-tools-common",
  "tokio",
 ]
 

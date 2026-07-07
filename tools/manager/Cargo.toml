@@ -25,12 +25,14 @@ near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"]
 serde.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
+templar-contract-artifacts.workspace = true
 templar-gateway-client = { workspace = true, features = ["clap"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types = { workspace = true, features = ["clap"] }
+templar-tools-common.workspace = true
 templar-primitives.workspace = true
 templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true

@@ -1,8 +1,34 @@
+use std::io::Write as _;
+
 use clap::Parser;
 use serde_json::json;
+use templar_common::registry::DeployMode;
 
 use crate::cli::{Cli, Command};
 use crate::commands::registry::RegistryNs;
+
+/// Write `bytes` to a uniquely-named temp file so `--wasm` tests exercise the
+/// real file read without invoking a contract build.
+fn temp_wasm(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!("tmplrmgr-add-version-{tag}.wasm"));
+    let mut file = std::fs::File::create(&path).expect("create temp wasm");
+    file.write_all(bytes).expect("write temp wasm");
+    path
+}
+
+fn add_version_spec(
+    args: &[&str],
+) -> anyhow::Result<templar_gateway_methods_spec::registry::AddVersion> {
+    match Cli::try_parse_from(args)
+        .expect("add-version should parse")
+        .command
+    {
+        Command::Registry {
+            command: RegistryNs::AddVersion(cmd),
+        } => cmd.into_spec(),
+        _ => panic!("expected Registry::AddVersion"),
+    }
+}
 
 #[test]
 fn parses_registry_list_versions_typed_args() {
@@ -153,6 +179,138 @@ fn parses_registry_kebab_case_aliases() {
 fn typed_registry_method_rejects_missing_required_field() {
     let error = Cli::try_parse_from(["tmplrmgr", "registry", "list-versions"])
         .expect_err("list-versions should require registry-id");
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn add_version_wasm_path_builds_global_hash_spec() {
+    let wasm = b"\0asm\x01\0\0\0global";
+    let path = temp_wasm("global", wasm);
+    let spec = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--wasm",
+        path.to_str().unwrap(),
+        "--version-key",
+        "templar-market-contract@1.4.0#deadbeef",
+        "--deploy-mode",
+        "global-hash",
+    ])
+    .expect("into_spec should succeed");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(spec.registry_id.as_str(), "registry.testnet");
+    assert_eq!(spec.version_key, "templar-market-contract@1.4.0#deadbeef");
+    assert_eq!(spec.deploy_mode, DeployMode::GlobalHash);
+    assert_eq!(spec.code.0, wasm);
+    // GlobalHash stakes storage for the code: 1e19 yocto/byte * len * 10.
+    let expected = 10_000_000_000_000_000_000u128 * (wasm.len() as u128 * 10);
+    assert_eq!(spec.deposit.as_yoctonear(), expected);
+}
+
+#[test]
+fn add_version_defaults_to_normal_mode_and_minimal_deposit() {
+    let path = temp_wasm("normal", b"\0asm-normal");
+    let spec = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--wasm",
+        path.to_str().unwrap(),
+        "--version-key",
+        "custom@1.0.0#abc",
+    ])
+    .expect("into_spec should succeed");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(spec.deploy_mode, DeployMode::Normal);
+    assert_eq!(spec.deposit.as_yoctonear(), 1);
+}
+
+#[test]
+fn add_version_deposit_override_wins_over_estimate() {
+    let path = temp_wasm("override", b"\0asm-override");
+    let spec = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--wasm",
+        path.to_str().unwrap(),
+        "--version-key",
+        "custom@1.0.0#abc",
+        "--deploy-mode",
+        "global-hash",
+        "--deposit",
+        "3 NEAR",
+    ])
+    .expect("into_spec should succeed");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(
+        spec.deposit.as_yoctonear(),
+        3_000_000_000_000_000_000_000_000
+    );
+}
+
+#[test]
+fn add_version_wasm_requires_explicit_version_key() {
+    let path = temp_wasm("no-key", b"\0asm");
+    let result = add_version_spec(&[
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--wasm",
+        path.to_str().unwrap(),
+    ]);
+    std::fs::remove_file(&path).ok();
+
+    let error = result.expect_err("--wasm without --version-key must fail");
+    assert!(
+        error.to_string().contains("--version-key"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn add_version_rejects_conflicting_contract_sources() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+        "--market",
+        "--package",
+        "proxy-oracle",
+    ])
+    .expect_err("conflicting contract selectors must be rejected");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn add_version_requires_a_contract_source() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "add-version",
+        "--registry-id",
+        "registry.testnet",
+    ])
+    .expect_err("a contract source is required");
 
     assert_eq!(
         error.kind(),

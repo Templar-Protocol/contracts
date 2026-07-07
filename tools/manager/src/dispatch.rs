@@ -56,6 +56,7 @@ async fn dispatch_registry(ctx: CliContext, ns: RegistryNs) -> anyhow::Result<()
         RegistryNs::ListDeployments(a) => ctx.read(a.parse()).await,
         RegistryNs::ListDeploymentsByKind(a) => ctx.read(a.parse()).await,
         RegistryNs::GetDeployment(a) => ctx.read(a.parse()).await,
+        RegistryNs::AddVersion(a) => ctx.write(a.into_spec()?).await,
         RegistryNs::Deploy(a) => ctx.write(a.parse()?).await,
     }
 }
