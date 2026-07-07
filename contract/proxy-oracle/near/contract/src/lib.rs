@@ -10,7 +10,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     oracle::{
-        pyth::{ext_pyth, OracleResponse, PriceIdentifier},
+        pyth::{ext_pyth, ext_pyth_pro, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
     },
     self_ext,
@@ -70,6 +70,7 @@ impl DerefMut for Contract {
 #[near]
 impl Contract {
     pub const GAS_FOR_PYTH_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
+    pub const GAS_FOR_PYTH_PRO_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
     pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(17).saturating_div(10);
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
@@ -164,6 +165,7 @@ impl Contract {
             HashMap::<AccountId, HashSet<PriceIdentifier>>::with_capacity(price_ids.len());
         let mut redstone_requests =
             HashMap::<AccountId, HashSet<redstone::FeedId>>::with_capacity(price_ids.len());
+        let mut lazer_requests = HashMap::<AccountId, HashSet<u32>>::with_capacity(price_ids.len());
         let mut transformer_promises = Vec::with_capacity(price_ids.len());
 
         for price_id in &price_ids {
@@ -197,12 +199,19 @@ impl Contract {
                             .or_default()
                             .insert(p.price_id.clone());
                     }
+                    OracleRequest::Lazer(p) => {
+                        lazer_requests
+                            .entry(p.oracle_id.clone())
+                            .or_default()
+                            .insert(p.feed_id);
+                    }
                 }
             }
         }
 
-        let mut oracle_order = Vec::with_capacity(pyth_requests.len() + redstone_requests.len());
-        let mut oracle_promises = Vec::with_capacity(pyth_requests.len() + redstone_requests.len());
+        let capacity = pyth_requests.len() + redstone_requests.len() + lazer_requests.len();
+        let mut oracle_order = Vec::with_capacity(capacity);
+        let mut oracle_promises = Vec::with_capacity(capacity);
 
         for (oracle_id, price_ids) in pyth_requests {
             oracle_order.push(OracleType::Pyth(oracle_id.clone()));
@@ -219,6 +228,15 @@ impl Contract {
                 ext_redstone::ext(oracle_id)
                     .with_static_gas(Self::GAS_FOR_REDSONE_REQUEST)
                     .read_price_data(Vec::from_iter(price_ids)),
+            );
+        }
+
+        for (oracle_id, feed_ids) in lazer_requests {
+            oracle_order.push(OracleType::Lazer(oracle_id.clone()));
+            oracle_promises.push(
+                ext_pyth_pro::ext(oracle_id)
+                    .with_static_gas(Self::GAS_FOR_PYTH_PRO_REQUEST)
+                    .list_ema_prices_by_feed_id_unsafe(Vec::from_iter(feed_ids)),
             );
         }
 

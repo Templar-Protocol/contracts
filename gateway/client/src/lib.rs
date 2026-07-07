@@ -36,17 +36,29 @@ use std::{
     sync::Arc,
 };
 
+use near_account_id::AccountId;
 use near_api::{NetworkConfig, SecretKey, Signer};
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayError, GatewayResult, NearOperationExecutor,
-    NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite, SharedOperationStore,
+    DispatchRead, GatewayContext, GatewayContextBuilder, GatewayError, GatewayResult,
+    NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite,
+    SharedOperationStore,
 };
 use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_oracle_updates_dispatch::{
+    Dispatch as OracleUpdatesDispatch, GatewayContextBuilderOracleExt, LazerSourceConfig,
+    WithLazerSource, WithPythSource, WithRedStoneSource,
+};
+use templar_gateway_oracle_updates_spec::oracle::UpdatePrices;
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
 };
+
+/// Re-exported so consumers can build an [`OracleSourceConfig`] without a direct
+/// dependency on the oracle-updates dispatch crate.
+pub use templar_gateway_oracle_updates_dispatch::LazerSubscriptionConfig;
 
 /// Builder for [`Client`]. Takes the network once, accumulates signers, and
 /// picks the [`OperationStore`](templar_gateway_core::OperationStore) backing
@@ -111,19 +123,61 @@ impl ClientBuilder {
         self
     }
 
-    /// Build the client, constructing the gateway context, signer, executor, and
-    /// store-backed operation driver.
-    pub fn build(self) -> GatewayResult<Client> {
+    /// Build the base gateway context, signer set, executor, and store-backed
+    /// operation driver shared by every client flavor.
+    fn build_parts(
+        self,
+    ) -> GatewayResult<(GatewayContext, OperationDriver, HashSet<ManagedAccountId>)> {
         let context = GatewayContext::new(self.network.clone())?;
         let signer_account_ids = self.signers.keys().cloned().collect();
         let signer = NearTransactionSigner::new(self.network.clone(), self.signers);
         let executor = NearOperationExecutor::new(self.network);
         let driver = OperationDriver::new(self.store, Arc::new(signer), Arc::new(executor));
+        Ok((context, driver, signer_account_ids))
+    }
+
+    /// Build the client, constructing the gateway context, signer, executor, and
+    /// store-backed operation driver.
+    pub fn build(self) -> GatewayResult<Client> {
+        let (context, driver, signer_account_ids) = self.build_parts()?;
         Ok(Client {
             context,
             driver,
             signer_account_ids,
         })
+    }
+
+    /// Build both a methods [`Client`] and an [`OracleUpdatesClient`] that share one
+    /// [`OperationDriver`] (store, signer pool, executor) and a base
+    /// [`GatewayContext`] — so idempotency, replay, the startup-recovery sweep, and
+    /// the NEAR read cache all span both. The oracle client additionally carries the
+    /// in-process Pyth/RedStone/Lazer payload sources needed to plan `oracle.*`
+    /// updates.
+    pub fn build_with_oracle_updates(
+        self,
+        sources: OracleSourceConfig,
+    ) -> GatewayResult<(Client, OracleUpdatesClient)> {
+        let (base, driver, signer_account_ids) = self.build_parts()?;
+
+        // Layer the sources onto a clone of the base context so both clients share
+        // the same `Arc`-backed NEAR read cache (contract kinds, proxy definitions).
+        let context = GatewayContextBuilder::new(base.clone())
+            .with_pyth_source(sources.pyth_hermes_url)
+            .with_redstone_source(&sources.redstone_node_path)?
+            .with_lazer_source(sources.lazer)
+            .build();
+
+        let methods = Client {
+            context: base,
+            driver: driver.clone(),
+            signer_account_ids: signer_account_ids.clone(),
+        };
+        let oracle_updates = OracleUpdatesClient {
+            context,
+            driver,
+            signer_account_ids,
+        };
+        Ok((methods, oracle_updates))
     }
 }
 
@@ -330,5 +384,162 @@ impl Deref for SigningClient {
 
     fn deref(&self) -> &Client {
         &self.client
+    }
+}
+
+/// The layered gateway context carried by an [`OracleUpdatesClient`]: the base
+/// context plus the in-process Pyth, RedStone, and Lazer payload sources.
+pub type OracleUpdatesContext = WithLazerSource<WithRedStoneSource<WithPythSource<GatewayContext>>>;
+
+/// Configuration for the in-process oracle payload sources an
+/// [`OracleUpdatesClient`] fetches from when planning `oracle.*` updates.
+#[derive(Debug, Clone)]
+pub struct OracleSourceConfig {
+    /// Pyth Hermes API URL.
+    pub pyth_hermes_url: url::Url,
+    /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
+    pub redstone_node_path: std::path::PathBuf,
+    /// Pyth Pro/Lazer websocket source configuration.
+    pub lazer: LazerSourceConfig,
+}
+
+/// A gateway client for the `oracle_updates` methods (e.g. `oracle.updatePrices`).
+///
+/// It shares its [`OperationDriver`] — and therefore the operation store,
+/// signer pool, idempotency, replay, and startup recovery — with the methods
+/// [`Client`] it was built alongside via
+/// [`ClientBuilder::build_with_oracle_updates`]. Unlike the methods client it
+/// carries the in-process payload sources, so it plans updates by fetching fresh
+/// payloads server-side rather than having the caller supply them.
+#[derive(Clone)]
+pub struct OracleUpdatesClient {
+    context: OracleUpdatesContext,
+    driver: OperationDriver,
+    signer_account_ids: HashSet<ManagedAccountId>,
+}
+
+impl std::fmt::Debug for OracleUpdatesClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OracleUpdatesClient")
+            .field("signer_account_ids", &self.signer_account_ids)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OracleUpdatesClient {
+    /// Resolve and submit every oracle update `price_ids` require on `oracle_id`,
+    /// signed by `signer_account_id`. The gateway resolves the oracle's
+    /// Direct/Proxy/LST dependencies, fetches the underlying Pyth/RedStone/Lazer
+    /// payloads in-process, and — for a proxy oracle — re-aggregates its cached
+    /// prices, all as one store-backed operation.
+    pub async fn execute_prices(
+        &self,
+        signer_account_id: impl Into<ManagedAccountId>,
+        oracle_id: AccountId,
+        price_ids: Vec<PriceIdentifier>,
+    ) -> GatewayResult<WriteOperationResult> {
+        self.driver
+            .plan_and_complete::<UpdatePrices, OracleUpdatesDispatch, OracleUpdatesContext>(
+                self.context.clone(),
+                WriteRequest {
+                    signer_account_id: signer_account_id.into(),
+                    idempotency_key: None,
+                    body: UpdatePrices {
+                        oracle_id,
+                        price_ids,
+                    },
+                },
+            )
+            .await
+    }
+}
+
+#[cfg(feature = "clap")]
+pub use source_args::OracleSourceArgs;
+
+#[cfg(feature = "clap")]
+mod source_args {
+    use std::{path::PathBuf, time::Duration};
+
+    use clap::Args;
+    use templar_gateway_core::RedactedString;
+    use url::Url;
+
+    use super::{LazerSourceConfig, LazerSubscriptionConfig, OracleSourceConfig};
+
+    /// Shared CLI surface for the gateway's in-process oracle payload sources (Pyth
+    /// Hermes, RedStone bridge, Pyth Pro/Lazer websocket). Flatten it into a
+    /// consumer's `clap` configuration and call [`OracleSourceArgs::build`].
+    #[derive(Args, Debug, Clone)]
+    pub struct OracleSourceArgs {
+        /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
+        #[arg(
+            long = "pyth-hermes-url",
+            env = "PYTH_HERMES_URL",
+            default_value = "https://hermes-beta.pyth.network"
+        )]
+        pub pyth_hermes_url: Url,
+
+        /// Path to the Node.js interpreter (or equivalent) that runs the RedStone bridge.
+        #[arg(
+            long = "redstone-node-path",
+            env = "REDSTONE_NODE_PATH",
+            default_value = "node"
+        )]
+        pub redstone_node_path: PathBuf,
+
+        /// Bearer token for Pyth Pro/Lazer websocket payload updates.
+        #[arg(long = "pyth-lazer-api-key", env = "PYTH_LAZER_API_KEY")]
+        pub pyth_lazer_api_key: RedactedString,
+
+        /// Pyth Pro/Lazer websocket endpoint. Configures one endpoint only; automatic
+        /// multi-endpoint failover is not implemented.
+        #[arg(
+            long = "pyth-lazer-ws-url",
+            env = "PYTH_LAZER_WS_URL",
+            default_value = "wss://pyth-lazer-0.dourolabs.app/v1/stream"
+        )]
+        pub pyth_lazer_ws_url: Url,
+
+        /// Pyth Pro/Lazer websocket channel. One of: "real_time", "fixed_rate@50ms",
+        /// "fixed_rate@200ms", "fixed_rate@1000ms". Validated when the source is built.
+        #[arg(
+            long = "pyth-lazer-channel",
+            env = "PYTH_LAZER_CHANNEL",
+            default_value = "fixed_rate@200ms"
+        )]
+        pub pyth_lazer_channel: String,
+
+        /// Maximum age, in milliseconds, for cached Pyth Pro/Lazer payloads.
+        #[arg(
+            long = "pyth-lazer-max-payload-age-ms",
+            env = "PYTH_LAZER_MAX_PAYLOAD_AGE_MS",
+            default_value = "5000"
+        )]
+        pub pyth_lazer_max_payload_age_ms: u64,
+    }
+
+    impl OracleSourceArgs {
+        /// Validate and assemble the runtime [`OracleSourceConfig`].
+        ///
+        /// # Errors
+        /// Returns an error if the Lazer websocket configuration is invalid (empty
+        /// token, non-`wss://` URL, unsupported channel, or zero payload age).
+        pub fn build(&self) -> anyhow::Result<OracleSourceConfig> {
+            let lazer = LazerSourceConfig::new(
+                self.pyth_lazer_ws_url.clone(),
+                self.pyth_lazer_api_key.clone(),
+                LazerSubscriptionConfig {
+                    channel: self.pyth_lazer_channel.clone(),
+                    max_payload_age: Duration::from_millis(self.pyth_lazer_max_payload_age_ms),
+                },
+            )
+            .map_err(anyhow::Error::from)?;
+            Ok(OracleSourceConfig {
+                pyth_hermes_url: self.pyth_hermes_url.clone(),
+                redstone_node_path: self.redstone_node_path.clone(),
+                lazer,
+            })
+        }
     }
 }

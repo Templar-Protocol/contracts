@@ -18,14 +18,16 @@ use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
 };
 use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
+use templar_pyth_pro_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
     market_configuration,
     test_signer::TestSigner,
     vault_configuration, FtController, GovernanceContractController, MarketController,
-    MockOracleController, ProxyOracleController, ReceiverController, RedStoneAdapterController,
-    RefFinanceController, RegistryController, UniversalAccountController,
+    MockOracleController, ProxyOracleController, PythProAdapterController, ReceiverController,
+    RedStoneAdapterController, RefFinanceController, RegistryController,
+    UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -379,6 +381,63 @@ impl SandboxHarness {
             }),
         )
         .await?;
+        Ok(account_id)
+    }
+
+    /// Deploy a Pyth Pro (Lazer) adapter and map `price_identifier` to `feed_id`. The adapter
+    /// is Lazer-native and is consumed by wrapping it in a proxy oracle as a `Lazer` source
+    /// (by feed id), not by targeting it directly — tests use this to stand one up behind a
+    /// proxy or to assert a bare adapter is rejected as a standalone oracle. The adapter owns
+    /// itself (so the harness signer drives `admin_*`); the trusted signer is a throwaway
+    /// key — gateway plans against it are inspected, not submitted, so no payload is verified.
+    pub async fn deploy_pyth_pro_adapter(
+        &self,
+        account_id: AccountId,
+        price_identifier: PriceIdentifier,
+        feed_id: u32,
+    ) -> Result<AccountId> {
+        let signer =
+            create_account_signer(&self.sandbox, &account_id, NearToken::from_near(100)).await?;
+        let config = ConfigArgs {
+            // The adapter never verifies a payload in these plan-only tests (plans are
+            // inspected, not submitted), so any well-formed 32-byte key works.
+            signers: vec![TrustedSigner {
+                public_key: [7u8; 32],
+                expires_at_s: u64::MAX,
+            }],
+            max_timestamp_delay_s: 600,
+            max_timestamp_ahead_s: 600,
+            allowed_channel_id: Some(1),
+            update_fee: NearToken::from_yoctonear(0),
+            default_valid_time_period_s: 600,
+            max_feeds_per_update: 64,
+        };
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer.clone(),
+            PythProAdapterController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "owner": account_id, "config": config }),
+        )
+        .await?;
+
+        Contract(account_id.clone())
+            .call_function(
+                "admin_set_feed_mapping",
+                serde_json::json!({
+                    "price_identifier": price_identifier,
+                    "feed_id": feed_id,
+                }),
+            )
+            .transaction()
+            .deposit(NearToken::from_yoctonear(1))
+            .gas(near_sdk::Gas::from_tgas(50))
+            .with_signer(account_id.clone(), signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+
         Ok(account_id)
     }
 

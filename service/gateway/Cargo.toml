@@ -17,7 +17,7 @@ near-api.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
-templar-gateway-client.workspace = true
+templar-gateway-client = { workspace = true, features = ["clap"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-oracle-updates-spec.workspace = true
@@ -34,11 +34,15 @@ url.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 jsonrpsee = { workspace = true, features = ["server"] }
 near-sandbox.workspace = true
+thiserror.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 near-token.workspace = true
 reqwest.workspace = true
+rstest.workspace = true
 templar-common.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true

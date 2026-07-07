@@ -27,6 +27,9 @@ cargo near build non-reproducible-wasm 1>&2
 cd "$ROOT_DIR/contract/redstone-adapter"
 cargo near build non-reproducible-wasm 1>&2
 
+cd "$ROOT_DIR/contract/pyth-pro/contract"
+cargo near build non-reproducible-wasm 1>&2
+
 cd "$ROOT_DIR/contract/proxy-oracle/near/lst-contract"
 cargo near build non-reproducible-wasm 1>&2
 

@@ -1,11 +1,15 @@
-//! Pyth-compatible read ABI. Method names and signatures mirror `pyth-oracle.near` so this
-//! adapter is a drop-in for existing consumers (the market and the proxy-oracle's `Pyth` source).
+//! Pyth-compatible read ABI. Method names and signatures mirror `pyth-oracle.near`.
+//!
+//! DEPRECATED (ENG-434): the standalone Pyth drop-in is being removed. This adapter is
+//! Lazer-native; consume it by wrapping it in a proxy oracle as a `Lazer` source (addressed
+//! by native feed id), not by pointing a market/proxy `Pyth` source directly at it. This
+//! compat read layer and the feed map will be deleted once ENG-434 lands.
 
 use std::collections::HashMap;
 
 use near_sdk::near;
 use templar_common::{
-    oracle::pyth::{Price, PriceIdentifier},
+    oracle::pyth::{FeedIdOracleResponse, Price, PriceIdentifier},
     Nanoseconds,
 };
 
@@ -68,6 +72,30 @@ impl Contract {
             })
             .collect()
     }
+
+    /// `read_many`, but keyed by the native Lazer `u32` feed id — bypasses the `PriceIdentifier`
+    /// mapping seam so a consumer that already knows the feed id (the proxy-oracle's `Lazer`
+    /// source) reads storage directly. Freshness handling matches `read_many`.
+    fn read_many_by_feed_id(
+        &self,
+        feed_ids: Vec<u32>,
+        age: Option<u64>,
+        project: impl Fn(&FeedData) -> Option<Price>,
+    ) -> FeedIdOracleResponse {
+        let now = Nanoseconds::near_timestamp();
+        feed_ids
+            .into_iter()
+            .map(|feed_id| {
+                let price = self.feeds.get(&feed_id).and_then(|feed| {
+                    if age.is_some_and(|age| !Self::is_fresh(feed, now, age)) {
+                        return None;
+                    }
+                    project(feed)
+                });
+                (feed_id, price)
+            })
+            .collect()
+    }
 }
 
 #[near]
@@ -104,6 +132,21 @@ impl Contract {
         age: u64,
     ) -> Option<Price> {
         self.read_one(&price_id, Some(age), FeedData::to_ema_price)
+    }
+
+    // --- Feed-id-keyed EMA prices (the Lazer-native form the proxy-oracle's `Lazer` source calls,
+    //     addressing feeds by their `u32` id instead of a mapped `PriceIdentifier`) ---
+
+    pub fn list_ema_prices_by_feed_id_unsafe(&self, feed_ids: Vec<u32>) -> FeedIdOracleResponse {
+        self.read_many_by_feed_id(feed_ids, None, FeedData::to_ema_price)
+    }
+
+    pub fn list_ema_prices_by_feed_id_no_older_than(
+        &self,
+        feed_ids: Vec<u32>,
+        age: u64,
+    ) -> FeedIdOracleResponse {
+        self.read_many_by_feed_id(feed_ids, Some(age), FeedData::to_ema_price)
     }
 
     // --- Spot prices (fuller Pyth parity) ---

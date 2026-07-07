@@ -10,6 +10,7 @@ pub mod mt;
 pub mod proxy_governance;
 pub mod proxy_oracle;
 pub mod pyth_oracle;
+pub mod pyth_pro_oracle;
 pub mod redstone_oracle;
 pub mod ref_finance;
 pub mod registry;
@@ -34,6 +35,7 @@ use near_api::NetworkConfig;
 use proxy_governance::ProxyGovernanceClient;
 use proxy_oracle::ProxyOracleClient;
 use pyth_oracle::PythOracleClient;
+use pyth_pro_oracle::PythProOracleClient;
 use redstone_oracle::RedStoneOracleClient;
 use ref_finance::RefFinanceClient;
 use registry::RegistryClient;
@@ -170,6 +172,13 @@ impl NearClient {
 
     pub fn pyth_oracle(&self, contract_id: AccountId) -> PythOracleClient<'_> {
         PythOracleClient {
+            inner: self,
+            contract_id,
+        }
+    }
+
+    pub fn pyth_pro_oracle(&self, contract_id: AccountId) -> PythProOracleClient<'_> {
+        PythProOracleClient {
             inner: self,
             contract_id,
         }

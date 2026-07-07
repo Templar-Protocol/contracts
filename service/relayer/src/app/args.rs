@@ -1,10 +1,11 @@
+use std::str::FromStr;
 use std::time::Duration;
-use std::{path::PathBuf, str::FromStr};
 
 use clap::{Args, Parser};
 use near_api::SecretKey;
 use near_sdk::{AccountId, NearToken};
 
+use templar_gateway_client::OracleSourceArgs;
 use templar_universal_account::NEAR_TESTNET_CHAIN_ID;
 
 #[derive(Parser, Debug, Clone)]
@@ -25,9 +26,7 @@ pub struct Configuration {
     #[clap(flatten)]
     pub ua: UniversalAccount,
     #[clap(flatten)]
-    pub redstone: RedStoneConfig,
-    #[clap(flatten)]
-    pub pyth: PythConfig,
+    pub oracle_sources: OracleSourceArgs,
     /// Broom batch size.
     #[arg(long, env = "BROOM_BATCH_SIZE", default_value_t = 16)]
     pub broom_batch_size: u32,
@@ -47,58 +46,6 @@ pub struct Configuration {
 
 fn duration_from_secs(s: &str) -> Result<Duration, std::num::ParseIntError> {
     Ok(Duration::from_secs(u64::from_str(s)?))
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct RedStoneConfig {
-    /// Path to Node.js interpreter (or equivalent).
-    #[arg(
-        id = "redstone-node-path",
-        long = "redstone-node-path",
-        env = "REDSTONE_NODE_PATH",
-        default_value = "node"
-    )]
-    pub node_path: PathBuf,
-    /// Do not push price updates to Redstone oracle if the last push was less
-    /// than this long ago, even if requested.
-    #[arg(
-        id = "redstone-refresh-secs",
-        long = "redstone-refresh-secs",
-        env = "REDSTONE_REFRESH_SECS",
-        value_parser = duration_from_secs,
-        default_value = "3"
-    )]
-    pub refresh: Duration,
-}
-
-#[derive(Args, Debug, Clone)]
-pub struct PythConfig {
-    /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
-    #[arg(
-        long = "pyth-hermes-url",
-        env = "PYTH_HERMES_URL",
-        default_value_t = String::from("https://hermes-beta.pyth.network")
-    )]
-    pub hermes_url: String,
-    /// Do not push price updates to Pyth oracle if the last push was less
-    /// than this long ago, even if requested.
-    #[arg(
-        id = "pyth-refresh-secs",
-        long = "pyth-refresh-secs",
-        env = "PYTH_REFRESH_SECS",
-        value_parser = duration_from_secs,
-        default_value = "3"
-    )]
-    pub refresh: Duration,
-    /// HTTP timeout for Hermes requests (in seconds).
-    #[arg(
-        id = "pyth-timeout-secs",
-        long = "pyth-timeout-secs",
-        env = "PYTH_TIMEOUT_SECS",
-        value_parser = duration_from_secs,
-        default_value = "10"
-    )]
-    pub timeout: Duration,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -273,7 +220,15 @@ mod tests {
             "ua-registry.test.near",
             "--ua-version-key",
             "latest",
+            // The relayer now hosts the gateway's Lazer source, so a Lazer API key is required.
+            "--pyth-lazer-api-key",
+            "test-token",
         ]
+    }
+
+    #[test]
+    fn minimal_args_parse() {
+        Configuration::try_parse_from(minimal_args()).expect("minimal args should parse");
     }
 
     #[test]
@@ -283,6 +238,21 @@ mod tests {
 
         let error = Configuration::try_parse_from(args)
             .expect_err("rpc timeout flag should not be accepted");
+
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+    }
+
+    #[rstest::rstest]
+    #[case("--pyth-refresh-secs")]
+    #[case("--redstone-refresh-secs")]
+    #[case("--lazer-refresh-secs")]
+    #[case("--pyth-timeout-secs")]
+    fn per_source_refresh_throttle_flags_are_gone(#[case] flag: &str) {
+        let mut args = minimal_args();
+        args.extend([flag, "3"]);
+
+        let error = Configuration::try_parse_from(args)
+            .expect_err("per-source refresh/throttle flags were removed with the pipeline");
 
         assert_eq!(error.kind(), ErrorKind::UnknownArgument);
     }
