@@ -57,12 +57,15 @@ impl App {
                 "Initializing NEAR treasury handler"
             );
 
-            Arc::new(NearHandler::new(
-                account.clone(),
-                key.clone(),
-                args.get_near_treasury_rpc_url(),
-                args.dry_run,
-            ))
+            Arc::new(
+                NearHandler::new(
+                    account.clone(),
+                    key.clone(),
+                    args.get_near_treasury_rpc_url(),
+                    args.dry_run,
+                )
+                .expect("failed to build NEAR treasury handler"),
+            )
         };
 
         let token_registry = TokenRegistry::new(Arc::clone(&bridge_client));

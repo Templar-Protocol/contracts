@@ -3,8 +3,7 @@
 #[cfg(test)]
 use {
     crate::{app::App, bridge::BridgeClient, config::Args, rpc::Network, treasury::NearHandler},
-    near_crypto::{KeyType, SecretKey},
-    near_primitives::types::AccountId,
+    near_account_id::AccountId,
     std::{str::FromStr, sync::Arc},
 };
 
@@ -16,7 +15,7 @@ pub fn create_test_app() -> App {
         bridge_api_url: "https://test.api".to_string(),
         dry_run: false,
         near_treasury_account: Some(AccountId::from_str("test.near").unwrap()),
-        near_treasury_key: Some(SecretKey::from_random(KeyType::ED25519)),
+        near_treasury_key: Some("ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q".parse().unwrap()),
         near_rpc_url: None,
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
@@ -36,12 +35,15 @@ pub fn create_test_app() -> App {
     let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));
     let token_registry = crate::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
 
-    let near_handler = Arc::new(NearHandler::new(
-        args.near_treasury_account.clone().unwrap(),
-        args.near_treasury_key.clone().unwrap(),
-        args.get_near_treasury_rpc_url(),
-        true,
-    ));
+    let near_handler = Arc::new(
+        NearHandler::new(
+            args.near_treasury_account.clone().unwrap(),
+            args.near_treasury_key.clone().unwrap(),
+            args.get_near_treasury_rpc_url(),
+            true,
+        )
+        .unwrap(),
+    );
 
     App {
         near_handler,

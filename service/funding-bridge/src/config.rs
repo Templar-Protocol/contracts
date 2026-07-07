@@ -3,8 +3,8 @@
 //! Supports CLI arguments and environment variables via clap.
 
 use clap::Parser;
-use near_crypto::SecretKey;
-use near_primitives::types::AccountId;
+use near_account_id::AccountId;
+use near_api::SecretKey;
 
 use crate::error::{FundingError, FundingResult};
 use crate::rpc::Network;
@@ -173,7 +173,11 @@ mod tests {
             bridge_api_url: "https://bridge.chaindefuser.com/rpc".to_string(),
             dry_run: false,
             near_treasury_account: Some(AccountId::from_str("treasury.near").unwrap()),
-            near_treasury_key: Some(SecretKey::from_random(near_crypto::KeyType::ED25519)),
+            near_treasury_key: Some(
+                "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
+                    .parse()
+                    .unwrap(),
+            ),
             near_rpc_url: None,
             eth_private_key: None,
             eth_rpc_url: "https://eth.llamarpc.com".to_string(),

@@ -2,6 +2,7 @@ pub mod account;
 pub mod chain;
 pub mod contract;
 pub mod ft;
+pub mod intents;
 pub mod lst_oracle;
 pub mod market;
 pub mod mt;
@@ -135,6 +136,7 @@ macro_rules! for_each_write_method {
         $callback!($crate::account::Delete);
         $callback!($crate::ft::Transfer);
         $callback!($crate::ft::TransferCall);
+        $callback!($crate::intents::ExecuteIntents);
         $callback!($crate::market::Create);
         $callback!($crate::market::Borrow);
         $callback!($crate::market::Supply);

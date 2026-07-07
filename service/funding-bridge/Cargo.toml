@@ -17,6 +17,11 @@ path = "src/lib.rs"
 # Workspace dependencies
 templar-common.workspace = true
 
+# Gateway (in-process client + typed operations)
+templar-gateway-client = { workspace = true }
+templar-gateway-methods-spec = { workspace = true }
+templar-gateway-types = { workspace = true }
+
 # HTTP server
 axum.workspace = true
 tower = { workspace = true, features = ["util"] }
@@ -50,11 +55,14 @@ lazy_static = "1.4"
 
 # NEAR (non-contract usage)
 near-sdk = { workspace = true, features = ["unstable", "non-contract-usage"] }
+near-api = { workspace = true }
+near-account-id = { workspace = true }
+borsh.workspace = true
+# Still used by the out-of-scope external NEAR deposit handler (src/external/near.rs)
 near-crypto.workspace = true
 near-primitives.workspace = true
 near-jsonrpc-client.workspace = true
 near-jsonrpc-primitives.workspace = true
-borsh.workspace = true
 
 # Cryptography and encoding (for NEAR Intents integration)
 base64.workspace = true
@@ -87,6 +95,7 @@ hex.workspace = true
 [dev-dependencies]
 axum-test = "20.0"
 # Testing
-near-workspaces.workspace = true
+templar-gateway-testing = { workspace = true }
+rstest.workspace = true
 wiremock.workspace = true
 tokio-test = "0.4"
