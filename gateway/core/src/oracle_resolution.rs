@@ -104,17 +104,23 @@ pub async fn resolve_price_dependencies<C: HasNearClient>(
             // A Pyth Pro adapter is Lazer-native and must be referenced by feed id. Reject a
             // proxy source that wires one as a classic `Pyth` source (by `PriceIdentifier`):
             // the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
-            for request in &requests {
-                if let OracleRequest::Pyth(PythRequest { oracle_id, .. }) = request {
-                    if query_contract_kind(ctx, oracle_id.clone()).await?
-                        == ContractKind::PythProOracle
-                    {
-                        return Err(GatewayError::NearQuery(format!(
-                            "proxy source references Pyth Pro adapter {oracle_id} as a classic \
-                             Pyth source; use OracleRequest::Lazer (by feed id) — the adapter \
-                             is Lazer-native"
-                        )));
-                    }
+            // Deduplicate the Pyth oracle ids first so a single adapter referenced by several
+            // sources/price ids is only probed once.
+            let pyth_oracle_ids = requests
+                .iter()
+                .filter_map(|request| match request {
+                    OracleRequest::Pyth(PythRequest { oracle_id, .. }) => Some(oracle_id.clone()),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            for oracle_id in pyth_oracle_ids {
+                if query_contract_kind(ctx, oracle_id.clone()).await? == ContractKind::PythProOracle
+                {
+                    return Err(GatewayError::NearQuery(format!(
+                        "proxy source references Pyth Pro adapter {oracle_id} as a classic \
+                         Pyth source; use OracleRequest::Lazer (by feed id) — the adapter \
+                         is Lazer-native"
+                    )));
                 }
             }
             Ok(requests)

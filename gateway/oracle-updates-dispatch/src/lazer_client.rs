@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -455,8 +455,11 @@ impl LazerPayloadSourceInner {
         .await
         .map_err(|error| LazerClientError::Request(error.to_string()))?;
 
-        // Replay all active subscriptions after reconnect
-        self.replay_active_subscriptions(&mut stream).await?;
+        // Replay all active subscriptions after reconnect. Any `SubscribeRequest` still
+        // queued for one of these ids (registered while the task was reconnecting) is now
+        // redundant — the replay already (re)sent its frame — so those queued requests must
+        // be skipped below to avoid subscribing the same id twice.
+        let replayed = self.replay_active_subscriptions(&mut stream).await?;
 
         loop {
             tokio::select! {
@@ -479,19 +482,23 @@ impl LazerPayloadSourceInner {
                         // All senders dropped: the source is shutting down.
                         return Ok(());
                     };
-                    self.handle_subscribe_request(&mut stream, req).await?;
+                    self.handle_subscribe_request(&mut stream, req, &replayed).await?;
                 }
             }
         }
         Err(LazerClientError::Request("websocket closed".to_owned()))
     }
 
+    /// Resubscribe every active subscription after a reconnect. Returns the ids that were
+    /// replayed so [`Self::handle_subscribe_request`] can drop any queued request for the
+    /// same id (a subscription registered during the reconnect is both `active` and still
+    /// has its `SubscribeRequest` queued, and must not be subscribed twice).
     async fn replay_active_subscriptions(
         &self,
         stream: &mut tokio_tungstenite::WebSocketStream<
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
-    ) -> LazerResult<()> {
+    ) -> LazerResult<HashSet<SubscriptionId>> {
         let active = {
             let subscriptions = self.subscriptions.read().await;
             subscriptions
@@ -501,6 +508,7 @@ impl LazerPayloadSourceInner {
                 .collect::<Vec<_>>()
         };
 
+        let mut replayed = HashSet::with_capacity(active.len());
         for (id, feed_ids, cache_tx) in active {
             let frame = subscription_frame_for_feeds(&self.config, id, feed_ids)?;
             stream
@@ -508,8 +516,9 @@ impl LazerPayloadSourceInner {
                 .await
                 .map_err(|error| LazerClientError::Request(error.to_string()))?;
             let _ = cache_tx.send(None);
+            replayed.insert(id);
         }
-        Ok(())
+        Ok(replayed)
     }
 
     async fn handle_subscribe_request(
@@ -518,8 +527,15 @@ impl LazerPayloadSourceInner {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
         req: SubscribeRequest,
+        replayed: &HashSet<SubscriptionId>,
     ) -> LazerResult<()> {
-        if !self.subscription_is_pending(req.subscription_id).await {
+        // Skip a request whose subscription was just resubscribed by the reconnect replay:
+        // sending it again would subscribe the same id twice and a duplicate-subscription
+        // error could tear down the live subscription. Ids are never reused, so a replayed
+        // subscription never legitimately needs a second subscribe frame.
+        if replayed.contains(&req.subscription_id)
+            || !self.subscription_is_pending(req.subscription_id).await
+        {
             return Ok(());
         }
 
