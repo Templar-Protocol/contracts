@@ -19,18 +19,18 @@ struct LoadedArtifact {
     version_key: String,
 }
 
-fn load_artifact(artifact: ArtifactId) -> GatewayResult<LoadedArtifact> {
+fn load_artifact(artifact: ArtifactId) -> LoadedArtifact {
     let metadata = artifact.metadata();
     let code = artifact.embedded_bytes().to_vec();
     let sha256 = sha256_hex(&code);
     let version_key = metadata.version_key(&code);
 
-    Ok(LoadedArtifact {
+    LoadedArtifact {
         metadata,
         code,
         sha256,
         version_key,
-    })
+    }
 }
 
 #[async_trait]
@@ -39,7 +39,7 @@ where
     C: Send + 'static,
 {
     async fn dispatch(request: GetArtifact, _ctx: C) -> GatewayResult<GetArtifactResult> {
-        let artifact = load_artifact(request.artifact)?;
+        let artifact = load_artifact(request.artifact);
 
         Ok(GetArtifactResult {
             artifact: request.artifact,
@@ -76,7 +76,7 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        let artifact = load_artifact(body.artifact)?;
+        let artifact = load_artifact(body.artifact);
 
         let registry_version = ctx
             .near_client()
