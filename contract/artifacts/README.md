@@ -63,18 +63,58 @@ comma-separated).
 
 All catalogued artifacts (production and mock) have embedded bytes available.
 
-### Refreshing a checked-in blob (release artifacts)
+### ⚠️ Refreshing a checked-in blob — READ THIS
 
-To deliberately ship new bytes for an artifact — a reviewable, intentional act:
+**The embedded blobs do NOT track your source automatically.** They are pinned,
+versioned *release* artifacts: the bytes the gateway will deploy on-chain. The
+contract source is free to move ahead of them, and **CI will not tell you a blob
+is stale**:
 
-```bash
-cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
-cp target/near/<contract>/<contract>.wasm \
-   contract/artifacts/res/near/<contract>/<contract>.wasm
-```
+- The **hash-pin check** only verifies `sha256(blob) == expected_sha256`. It
+  never looks at source.
+- The **version-drift check** only verifies the catalog `version` matches the
+  contract's `Cargo.toml` version. It never looks at the blob's bytes.
 
-Then update that entry's `expected_sha256` (and `version`) in `ids.rs` so the
-new bytes and their pinned hash land in the same diff.
+So a contract source change at the **same version** passes CI with a stale blob.
+Keeping blobs fresh is a **deliberate, manual step** — this section is the only
+thing standing between you and shipping outdated contract bytes.
+
+#### WHEN to refresh
+
+Refresh an artifact's blob **whenever you want that contract's current source to
+become what the gateway deploys** — i.e. you are promoting a source change to a
+shipped/deployed release. Do **not** refresh for every source edit; unreleased
+work-in-progress is *meant* to lag the blob.
+
+Enforced tripwire: **bump the contract's `Cargo.toml` `version` whenever you make
+a change you intend to ship.** That bump fails the version-drift check (catalog
+`version` ≠ `Cargo.toml` version) and forces you back to this catalog — which is
+exactly when you should do the full refresh below. Note the check only forces the
+`version` *string* to line up; it does not verify you rebuilt the blob, so when
+it fires, do the **whole** procedure, not just the version edit.
+
+#### HOW to refresh (exact steps, per affected artifact)
+
+1. **Commit your source change first — the git tree must be clean.**
+   `cargo near build reproducible-wasm` builds from the committed git state; on a
+   dirty tree it either hard-errors or embeds the wrong state and produces
+   non-reproducible bytes. (For a merge: commit the merge, *then* refresh.)
+2. Build reproducibly (`<source_path>` and `<target>` are the entry's
+   `source_path` and `cargo_target_name` in `ids.rs`):
+   ```bash
+   cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
+   ```
+3. Copy the output into `res/near/`:
+   ```bash
+   cp target/near/<target>/<target>.wasm \
+      contract/artifacts/res/near/<target>/<target>.wasm
+   ```
+4. In `contract/artifacts/src/ids.rs`, set that entry's `expected_sha256` to the
+   new hash (printed by the build, or `sha256sum` the copied file) — and its
+   `version` if the crate version changed.
+5. Verify: `./script/check-artifact-drift.sh` (must be green).
+6. Commit the blob **and** the `ids.rs` change together, so the bytes and their
+   pinned hash always land in one reviewable diff.
 
 ### Checking for stale bytes
 

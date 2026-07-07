@@ -4,6 +4,16 @@
 //! gateway / manager / test-utils toolchain is listed here. The catalog is
 //! the single source of truth for artifact names, paths, and how they map
 //! to `target/near` directories.
+//!
+//! ⚠️ The `expected_sha256` / `version` in each entry pin a *release* blob under
+//! `res/near/`, NOT a mirror of current source. Changing a contract's source
+//! does NOT refresh its blob, and CI will NOT catch a stale blob (the hash-pin
+//! check compares blob vs pin, never blob vs source). When you want a source
+//! change to become what the gateway deploys, follow the refresh procedure in
+//! `contract/artifacts/README.md` ("Refreshing a checked-in blob") and update
+//! the blob + `expected_sha256` (+ `version`) together. Bumping a contract's
+//! `Cargo.toml` version fails the version-drift check until this catalog's
+//! `version` is updated — treat that as your cue to do the full refresh.
 
 use std::{fmt, path::Path, str::FromStr};
 
@@ -305,7 +315,7 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "templar_pyth_lazer_adapter_contract",
     "contract/pyth-lazer/contract",
     "0.1.0",
-    "53bf762b70a0ffcf7a5ab916bf9113a6fcb250bb54af9ce7a1e4235a082f3fe1"
+    "c993256a8b42313b2b0b024c783b4eb5a7be1c8b9f792789cb4f207f7007060b"
 );
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(
     MockFt,
