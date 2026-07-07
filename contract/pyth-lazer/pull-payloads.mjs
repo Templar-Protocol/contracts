@@ -1,20 +1,20 @@
 #!/usr/bin/env node
-// Throwaway helper for capturing Pyth Pro / Lazer payload fixtures over the WS stream.
+// Throwaway helper for capturing Pyth Lazer payload fixtures over the WS stream.
 //
 // Usage:
 //   npm install --no-save ws
-//   PYTH_PRO_API_KEY=... FEED_IDS=7,8,1,27,23 node contract/pyth-pro/pull-payloads.mjs
+//   PYTH_LAZER_API_KEY=... FEED_IDS=7,8,1,27,23 node contract/pyth-lazer/pull-payloads.mjs
 //
-// Optional: PYTH_PRO_CHANNEL=fixed_rate@200ms  PYTH_PRO_OUT=payloads  MAX_MESSAGES=5
+// Optional: PYTH_LAZER_CHANNEL=fixed_rate@200ms  PYTH_LAZER_OUT=payloads  MAX_MESSAGES=5
 
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import WebSocket from "ws";
 
-const TOKEN = process.env.PYTH_PRO_API_KEY ?? process.env.ACCESS_TOKEN;
+const TOKEN = process.env.PYTH_LAZER_API_KEY ?? process.env.ACCESS_TOKEN;
 if (!TOKEN) {
-  console.error("Set PYTH_PRO_API_KEY or ACCESS_TOKEN.");
+  console.error("Set PYTH_LAZER_API_KEY or ACCESS_TOKEN.");
   process.exit(1);
 }
 
@@ -30,9 +30,9 @@ if (FEED_IDS.length === 0) {
 }
 
 const WS_URL =
-  process.env.PYTH_PRO_WS_URL ?? "wss://pyth-lazer-0.dourolabs.app/v1/stream";
-const CHANNEL = process.env.PYTH_PRO_CHANNEL ?? "fixed_rate@200ms";
-const OUT_DIR = process.env.PYTH_PRO_OUT ?? "payloads";
+  process.env.PYTH_LAZER_WS_URL ?? "wss://pyth-lazer-0.dourolabs.app/v1/stream";
+const CHANNEL = process.env.PYTH_LAZER_CHANNEL ?? "fixed_rate@200ms";
+const OUT_DIR = process.env.PYTH_LAZER_OUT ?? "payloads";
 const MAX_MESSAGES = Number.parseInt(process.env.MAX_MESSAGES ?? "5", 10);
 if (!Number.isInteger(MAX_MESSAGES) || MAX_MESSAGES <= 0) {
   console.error("MAX_MESSAGES must be a positive integer.");

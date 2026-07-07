@@ -13407,7 +13407,7 @@ dependencies = [
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
- "templar-pyth-pro-verifier",
+ "templar-pyth-lazer-verifier",
  "templar-redstone-bridge",
  "templar-universal-account",
  "thiserror 2.0.18",
@@ -13531,7 +13531,7 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
- "templar-pyth-pro-adapter-contract",
+ "templar-pyth-lazer-adapter-contract",
  "templar-universal-account",
  "test-utils",
  "tokio",
@@ -13858,7 +13858,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "templar-pyth-pro-adapter-contract"
+name = "templar-pyth-lazer-adapter-contract"
 version = "0.1.0"
 dependencies = [
  "byteorder",
@@ -13870,11 +13870,11 @@ dependencies = [
  "pyth-lazer-protocol",
  "schemars 0.8.22",
  "templar-common",
- "templar-pyth-pro-verifier",
+ "templar-pyth-lazer-verifier",
 ]
 
 [[package]]
-name = "templar-pyth-pro-verifier"
+name = "templar-pyth-lazer-verifier"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",

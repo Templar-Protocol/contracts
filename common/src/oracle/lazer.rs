@@ -1,4 +1,4 @@
-//! Pyth Pro (Lazer) adapter feed data — the native, feed-id-keyed shape the `contract/pyth-pro`
+//! Pyth Lazer adapter feed data — the native, feed-id-keyed shape the `contract/pyth-lazer`
 //! adapter stores and serves. The adapter is a pure store-and-serve oracle: it hands back the raw
 //! [`FeedData`], and each consumer (the proxy-oracle's `Lazer` source, the gateway) projects it to
 //! a [`pyth::Price`] itself, mirroring [`redstone::FeedData::to_pyth_price`](super::redstone::FeedData).
@@ -66,11 +66,11 @@ impl FeedData {
     }
 }
 
-/// Feed-id-keyed read ABI of the Pyth Pro (Lazer) adapter (`contract/pyth-pro`). Feeds are addressed
+/// Feed-id-keyed read ABI of the Pyth Lazer adapter (`contract/pyth-lazer`). Feeds are addressed
 /// by their native `u32` id; the adapter serves the raw stored [`FeedData`] and the consumer
 /// projects it (mirroring the RedStone adapter, which serves [`redstone::FeedData`](super::redstone::FeedData)).
-#[ext_contract(ext_pyth_pro)]
-pub trait PythPro {
+#[ext_contract(ext_pyth_lazer)]
+pub trait PythLazer {
     fn get_feeds_data(&self, feed_ids: Vec<u32>) -> FeedDataResponse;
 }
 

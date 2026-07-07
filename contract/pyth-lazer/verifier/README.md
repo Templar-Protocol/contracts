@@ -1,6 +1,6 @@
-# templar-pyth-pro-verifier
+# templar-pyth-lazer-verifier
 
-Chain-agnostic verification and parsing for Pyth Pro (formerly Pyth Lazer) price updates. No `near-sdk`;
+Chain-agnostic verification and parsing for Pyth Lazer price updates. No `near-sdk`;
 the host supplies a [`Crypto`] impl and converts the neutral result into its own ABI types. See
 the [adapter overview](../README.md).
 
@@ -19,10 +19,10 @@ the [adapter overview](../README.md).
 
 ## Notes
 
-- Targets Pyth Pro's **solana** format (ed25519 — NEAR's native scheme), little-endian payload.
+- Targets Pyth Lazer's **solana** format (ed25519 — NEAR's native scheme), little-endian payload.
   The signer is identified by the 32-byte ed25519 public key carried in the envelope, so there is
   no hashing, recovery, or address derivation — just a membership check plus a signature verify.
 - The verifier may use `std`; the upstream parser it wraps uses `std::io`, and the NEAR contract
   target provides `std`. It must not depend on `near-sdk`.
 - Tests sign payloads with `ed25519-dalek` and round-trip through `verify_solana_update`; the
-  `tests/real_pyth_pro_payloads.rs` regression test runs over real captured solana payloads.
+  `tests/real_pyth_lazer_payloads.rs` regression test runs over real captured solana payloads.

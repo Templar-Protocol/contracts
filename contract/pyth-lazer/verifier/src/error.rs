@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Reasons a Pyth Pro update may be rejected during verification.
+/// Reasons a Pyth Lazer update may be rejected during verification.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum VerifyError {
     /// The outer signed-message envelope could not be decoded.

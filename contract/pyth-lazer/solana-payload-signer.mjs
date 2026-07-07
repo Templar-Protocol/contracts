@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Inspect a base64 or hex Pyth Pro Solana-format payload and verify its Ed25519 signature.
+// Inspect a base64 or hex Pyth Lazer Solana-format payload and verify its Ed25519 signature.
 //
 // Usage:
-//   node contract/pyth-pro/solana-payload-signer.mjs <BASE64_OR_HEX_PAYLOAD>
-//   cat <captured.solana.base64> | node contract/pyth-pro/solana-payload-signer.mjs
+//   node contract/pyth-lazer/solana-payload-signer.mjs <BASE64_OR_HEX_PAYLOAD>
+//   cat <captured.solana.base64> | node contract/pyth-lazer/solana-payload-signer.mjs
 
 import crypto from "node:crypto";
 import fs from "node:fs";

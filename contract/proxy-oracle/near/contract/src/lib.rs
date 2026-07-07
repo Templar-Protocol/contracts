@@ -10,7 +10,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
     oracle::{
-        lazer::ext_pyth_pro,
+        lazer::ext_pyth_lazer,
         pyth::{ext_pyth, OracleResponse, PriceIdentifier},
         redstone::{self, ext_redstone},
     },
@@ -71,7 +71,7 @@ impl DerefMut for Contract {
 #[near]
 impl Contract {
     pub const GAS_FOR_PYTH_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
-    pub const GAS_FOR_PYTH_PRO_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
+    pub const GAS_FOR_PYTH_LAZER_REQUEST: Gas = Gas::from_tgas(16).saturating_div(10);
     pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(17).saturating_div(10);
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
@@ -235,8 +235,8 @@ impl Contract {
         for (oracle_id, feed_ids) in lazer_requests {
             oracle_order.push(OracleType::Lazer(oracle_id.clone()));
             oracle_promises.push(
-                ext_pyth_pro::ext(oracle_id)
-                    .with_static_gas(Self::GAS_FOR_PYTH_PRO_REQUEST)
+                ext_pyth_lazer::ext(oracle_id)
+                    .with_static_gas(Self::GAS_FOR_PYTH_LAZER_REQUEST)
                     .get_feeds_data(Vec::from_iter(feed_ids)),
             );
         }
