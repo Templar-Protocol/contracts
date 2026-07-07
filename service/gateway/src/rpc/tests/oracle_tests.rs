@@ -437,7 +437,7 @@ async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> 
     let price_id = PriceIdentifier([0x66; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 11u32)
+        .deploy_pyth_pro_adapter(adapter_id.clone())
         .await?;
 
     // A Pyth Pro adapter is not a standalone oracle: it is consumed only as a proxy `Lazer`
@@ -468,7 +468,10 @@ async fn oracle_resolve_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> 
             redstone: vec![],
             lazer: vec![oracle::LazerOraclePrices {
                 oracle_id: adapter_id.clone(),
-                response: [(11u32, Some(pyth_price(321.0)))].into_iter().collect(),
+                response: vec![oracle::LazerPriceEntry {
+                    feed_id: 11,
+                    data: lazer_feed(321.0),
+                }],
             }],
         })
         .await

@@ -4,14 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use near_account_id::AccountId;
 use templar_common::oracle::{
-    pyth::{self, FeedIdOracleResponse, PriceIdentifier},
+    lazer,
+    pyth::{self, PriceIdentifier},
     redstone,
 };
 use templar_common::{Decimal, Nanoseconds};
 use templar_gateway_core::{
     client::{
         lst_oracle::GetTransformerArgs, pyth_oracle::ListEmaPricesNoOlderThanArgs,
-        pyth_pro_oracle::ListEmaPricesByFeedIdNoOlderThanArgs, redstone_oracle::ReadPriceDataArgs,
+        pyth_pro_oracle::GetFeedsDataArgs, redstone_oracle::ReadPriceDataArgs,
     },
     get_proxy, query_oracle_kind, resolve_price_dependencies, DispatchRead, GatewayError,
     GatewayResult, HasNearClient,
@@ -109,7 +110,7 @@ impl<C: HasNearClient> DispatchRead<GetPrices, C> for Dispatch {
 struct ResolutionInputs {
     pyth: HashMap<AccountId, pyth::OracleResponse>,
     redstone: HashMap<AccountId, HashMap<redstone::FeedId, redstone::FeedData>>,
-    lazer: HashMap<AccountId, FeedIdOracleResponse>,
+    lazer: HashMap<AccountId, HashMap<u32, lazer::FeedData>>,
 }
 
 impl ResolutionInputs {
@@ -138,7 +139,16 @@ impl ResolutionInputs {
                 .collect(),
             lazer: lazer_inputs
                 .into_iter()
-                .map(|entry| (entry.oracle_id, entry.response))
+                .map(|entry| {
+                    (
+                        entry.oracle_id,
+                        entry
+                            .response
+                            .into_iter()
+                            .map(|item| (item.feed_id, item.data))
+                            .collect(),
+                    )
+                })
                 .collect(),
         }
     }
@@ -346,7 +356,7 @@ fn fetch_oracle_request(
             .get(&request.oracle_id)
             .and_then(|response| response.get(&request.feed_id))
             .cloned()
-            .flatten(),
+            .and_then(|feed| feed.to_ema_price()),
     }?;
     validate_price_age(fetched_price, max_age)
 }
@@ -379,13 +389,13 @@ async fn fetch_oracle_request_onchain<C: HasNearClient>(
         OracleRequest::Lazer(request) => ctx
             .near_client()
             .pyth_pro_oracle(request.oracle_id)
-            .list_ema_prices_by_feed_id_no_older_than(ListEmaPricesByFeedIdNoOlderThanArgs {
+            .get_feeds_data(GetFeedsDataArgs {
                 feed_ids: vec![request.feed_id],
-                age: max_age.as_secs(),
             })
             .await?
             .remove(&request.feed_id)
-            .flatten(),
+            .flatten()
+            .and_then(|feed| feed.to_ema_price()),
     };
     Ok(fetched_price.and_then(|price| validate_price_age(price, max_age)))
 }

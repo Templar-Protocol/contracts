@@ -199,7 +199,7 @@ async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle
     let price_id = PriceIdentifier([0x44; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 7u32)
+        .deploy_pyth_pro_adapter(adapter_id.clone())
         .await?;
 
     let error =
@@ -244,7 +244,7 @@ async fn oracle_update_prices_rejects_pyth_pro_adapter_as_classic_pyth_proxy_sou
     let price_id = PriceIdentifier([0x44; 32]);
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 7u32)
+        .deploy_pyth_pro_adapter(adapter_id.clone())
         .await?;
     stack
         .harness

@@ -4,19 +4,16 @@
 //! A push-style adapter: anyone may relay a Pyth Pro signed price payload via
 //! [`Contract::update_price_feeds`]; the adapter verifies it (ed25519 signature against a
 //! trusted, non-expired signer set, channel filter, freshness window, and a monotonic-per-feed
-//! timestamp that blocks replays) and stores the prices. Consumers read those prices through the
-//! same view ABI as `pyth-oracle.near`, so the adapter is a drop-in Pyth oracle.
+//! timestamp that blocks replays) and stores the prices. Consumers read those prices by the
+//! native Lazer `u32` feed id — the adapter is consumed by wrapping it in a proxy-oracle as a
+//! `Lazer` source, not as a direct `pyth-oracle.near` drop-in.
 //!
 //! Governance is intentionally minimal: a single owner (via [`near_sdk_contract_tools::Owner`])
-//! gates the `admin_*` methods. The `feed_map` module is the sole place that couples Pyth's
-//! 32-byte `PriceIdentifier` to Lazer's `u32` feed id, kept isolated so it can later move to the
-//! proxy-oracle without disturbing the rest of the contract.
+//! gates the `admin_*` methods.
 
 mod crypto;
 mod events;
-mod feed_map;
 mod state;
-mod views;
 
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -28,7 +25,7 @@ use near_sdk::{
 };
 use near_sdk_contract_tools::{owner::Owner, utils::apply_storage_fee_and_refund, Owner};
 use templar_common::{
-    oracle::pyth::{Price, PythTimestamp},
+    oracle::lazer::{EmaData, FeedData, FeedDataResponse},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
@@ -218,7 +215,6 @@ pub struct ConfigArgs {
     pub max_timestamp_ahead_s: u64,
     pub allowed_channel_id: Option<u8>,
     pub update_fee: NearToken,
-    pub default_valid_time_period_s: u64,
     pub max_feeds_per_update: u32,
 }
 
@@ -238,11 +234,6 @@ pub struct Config {
     /// Fee charged per `update_price_feeds` call, on top of the storage cost, and retained by the
     /// contract. Defaults to zero (no fee).
     pub update_fee: NearToken,
-    /// Default staleness window (seconds, non-zero) applied by the non-suffixed Pyth views
-    /// (`get_price`, `get_ema_price`, `list_prices`, `list_ema_prices`), mirroring
-    /// `pyth-oracle.near`'s `valid_time_period`. The `*_no_older_than` / `*_unsafe` variants are
-    /// unaffected.
-    pub default_valid_time_period_s: u64,
     /// Upper bound (must be non-zero) on how many feeds a single `update_price_feeds` call may
     /// store. The emitted NEP-297 `UpdatePrices` event carries the full `FeedData` for every
     /// updated feed, so an oversized signed bundle could otherwise push the receipt's total log
@@ -260,9 +251,6 @@ impl TryFrom<ConfigArgs> for Config {
         if args.max_timestamp_delay_s == 0 {
             return Err("config: max_timestamp_delay_s must be non-zero");
         }
-        if args.default_valid_time_period_s == 0 {
-            return Err("config: default_valid_time_period_s must be non-zero");
-        }
         if args.max_feeds_per_update == 0 {
             return Err("config: max_feeds_per_update must be non-zero");
         }
@@ -272,107 +260,55 @@ impl TryFrom<ConfigArgs> for Config {
             max_timestamp_ahead_s: args.max_timestamp_ahead_s,
             allowed_channel_id: args.allowed_channel_id,
             update_fee: args.update_fee,
-            default_valid_time_period_s: args.default_valid_time_period_s,
             max_feeds_per_update: args.max_feeds_per_update,
         })
     }
 }
 
-/// EMA price/confidence for a feed, following the same fixed-point `expo` as the spot price.
-/// Required by the stateful storage path (a payload without a valid EMA is rejected); never
-/// synthesized from spot data.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [borsh, json])]
-pub struct EmaData {
-    pub price: I64,
-    pub conf: U64,
-}
+/// Fallibly build a storable [`FeedData`] from a parsed (wire) feed, owning every intrinsic
+/// validity rule. Returns `None` when the feed must be skipped: missing price or exponent, missing
+/// or invalid spot confidence, a missing or invalid EMA price/confidence, or an effective publish
+/// timestamp more than `max_ahead_s` seconds beyond `now`. (Anti-replay is relational and handled
+/// by the caller.)
+///
+/// EMA is **required** here: a spot-only signed payload is rejected (the whole feed is skipped) so
+/// it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since consumers
+/// read EMA. This applies only to the stateful storage path; the stateless
+/// [`Contract::verify_update`] view does not call this and stays at parity with the official Pyth
+/// Pro contracts (spot-only payloads allowed).
+fn feed_data_from_parsed(
+    parsed: &verifier::ParsedFeed,
+    package: Nanoseconds,
+    now: Nanoseconds,
+    max_ahead_s: u64,
+) -> Option<FeedData> {
+    let price = parsed.price?;
+    let exponent = parsed.exponent?;
+    let conf = require_confidence(parsed.confidence)?;
 
-/// The latest stored data for one Lazer feed. Prices/exponent follow the Pyth fixed-point
-/// convention (`value * 10^expo`); timestamps are stored as [`Nanoseconds`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[near(serializers = [borsh, json])]
-pub struct FeedData {
-    pub price: I64,
-    pub conf: U64,
-    /// EMA data. The stateful storage path requires it (see [`FeedData::from_parsed`]), so a stored
-    /// feed always carries EMA; it is never synthesized from spot.
-    pub ema: EmaData,
-    pub expo: i32,
-    /// Per-feed publish time (Lazer `FeedUpdateTimestamp`, else the payload timestamp), in
-    /// nanoseconds. Drives both the served freshness and the monotonic anti-replay gate. The `_ns`
-    /// suffix marks the unit for JSON consumers (the `Nanoseconds` type is erased in JSON).
-    pub publish_time_ns: Nanoseconds,
-}
+    // Effective per-feed publish time: `FeedUpdateTimestamp` when present, else the payload's.
+    let publish_time_ns = parsed.feed_update_timestamp.unwrap_or(package);
 
-impl FeedData {
-    /// Build a Pyth [`Price`] from a `(price, conf)` pair using this feed's exponent and publish
-    /// time. `None` if the publish time cannot be represented as a [`PythTimestamp`].
-    fn to_price(&self, price: I64, conf: U64) -> Option<Price> {
-        Some(Price {
-            price,
-            conf,
-            expo: self.expo,
-            publish_time: PythTimestamp::try_from_time(self.publish_time_ns)?,
-        })
+    // The verifier only bounds the package timestamp; reject a per-feed time too far ahead.
+    if publish_time_ns.as_secs() > now.as_secs().saturating_add(max_ahead_s) {
+        return None;
     }
 
-    /// EMA [`Price`] view (`list_ema_prices_*` / `get_ema_price_*`). A stored feed always carries
-    /// EMA, so this is `None` only when the publish time can't be represented (see [`Self::to_price`]).
-    fn to_ema_price(&self) -> Option<Price> {
-        self.to_price(self.ema.price, self.ema.conf)
-    }
+    // EMA is mandatory on the stateful path: require both an EMA price and a valid EMA confidence,
+    // never falling back to spot. A missing or half-specified EMA skips the whole feed, so a
+    // spot-only update can't overwrite a stored feed and wipe its EMA.
+    let ema = EmaData {
+        price: I64(parsed.ema_price?),
+        conf: U64(require_confidence(parsed.ema_confidence)?),
+    };
 
-    /// Spot [`Price`] view (`list_prices_*` / `get_price_*`).
-    fn to_spot_price(&self) -> Option<Price> {
-        self.to_price(self.price, self.conf)
-    }
-
-    /// Fallibly build a storable feed from a parsed (wire) feed, owning every intrinsic validity
-    /// rule. Returns `None` when the feed must be skipped: missing price or exponent, missing or
-    /// invalid spot confidence, a missing or invalid EMA price/confidence, or an effective publish
-    /// timestamp more than `max_ahead_s` seconds beyond `now`. (Anti-replay is relational and
-    /// handled by the caller.)
-    ///
-    /// EMA is **required** here: a spot-only signed payload is rejected (the whole feed is skipped)
-    /// so it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since the
-    /// market reads EMA via `list_ema_prices_no_older_than`. This applies only to the stateful
-    /// storage path; the stateless [`Contract::verify_update`] view does not call this and stays at
-    /// parity with the official Pyth Pro contracts (spot-only payloads allowed).
-    fn from_parsed(
-        parsed: &verifier::ParsedFeed,
-        package: Nanoseconds,
-        now: Nanoseconds,
-        max_ahead_s: u64,
-    ) -> Option<Self> {
-        let price = parsed.price?;
-        let exponent = parsed.exponent?;
-        let conf = require_confidence(parsed.confidence)?;
-
-        // Effective per-feed publish time: `FeedUpdateTimestamp` when present, else the payload's.
-        let publish_time_ns = parsed.feed_update_timestamp.unwrap_or(package);
-
-        // The verifier only bounds the package timestamp; reject a per-feed time too far ahead.
-        if publish_time_ns.as_secs() > now.as_secs().saturating_add(max_ahead_s) {
-            return None;
-        }
-
-        // EMA is mandatory on the stateful path: require both an EMA price and a valid EMA
-        // confidence, never falling back to spot. A missing or half-specified EMA skips the whole
-        // feed, so a spot-only update can't overwrite a stored feed and wipe its EMA.
-        let ema = EmaData {
-            price: I64(parsed.ema_price?),
-            conf: U64(require_confidence(parsed.ema_confidence)?),
-        };
-
-        Some(Self {
-            price: I64(price),
-            conf: U64(conf),
-            ema,
-            expo: i32::from(exponent),
-            publish_time_ns,
-        })
-    }
+    Some(FeedData {
+        price: I64(price),
+        conf: U64(conf),
+        ema,
+        expo: i32::from(exponent),
+        publish_time_ns,
+    })
 }
 
 /// JSON view of one verified feed returned by [`Contract::verify_update`] — the full Lazer property
@@ -454,8 +390,8 @@ pub struct Contract {
 // `get_stored_state_version` / `get_target_state_version` / `needs_migration` views.
 impl_versioned_state!(Contract, State, crate::state::migration::Migration);
 
-// The live fields (`config`, `feeds`, `ids`) live on `State`; deref so the rest of the contract can
-// keep reaching them as `self.config` / `self.feeds` / `self.ids`.
+// The live fields (`config`, `feeds`) live on `State`; deref so the rest of the contract can keep
+// reaching them as `self.config` / `self.feeds`.
 impl Deref for Contract {
     type Target = State;
 
@@ -574,9 +510,9 @@ impl Contract {
 
         let mut updated_feeds = Vec::new();
         for feed in &update.feeds {
-            // Intrinsic validity lives in `from_parsed`; `None` skips. Timestamps are already
-            // `Nanoseconds` (converted once in the verifier).
-            let Some(feed_data) = FeedData::from_parsed(
+            // Intrinsic validity lives in `feed_data_from_parsed`; `None` skips. Timestamps are
+            // already `Nanoseconds` (converted once in the verifier).
+            let Some(feed_data) = feed_data_from_parsed(
                 feed,
                 update.timestamp,
                 now,
@@ -593,10 +529,8 @@ impl Contract {
                 }
             }
 
-            // Storage policy: every verified feed is stored regardless of whether a consumer
-            // `PriceIdentifier` currently maps to it. This keeps update correctness independent of
-            // the removable `feed_map` seam; the caller funds the storage (below), and unmapped
-            // feeds are simply not queryable until an `admin_set_feed_mapping` exists.
+            // Every verified feed is stored by its native Lazer `u32` id; the caller funds the
+            // storage (below).
             self.feeds.insert(feed.feed_id, feed_data.clone());
             updated_feeds.push((feed.feed_id, feed_data));
         }
@@ -617,10 +551,21 @@ impl Contract {
         self.feeds.get(&feed_id).cloned()
     }
 
+    /// Raw stored data for each requested Lazer feed id (`None` for feeds with no stored data). This
+    /// is the adapter's read ABI: consumers (the proxy-oracle's `Lazer` source, the gateway) receive
+    /// the raw [`FeedData`] and project it to a Pyth price themselves, applying their own freshness
+    /// policy — the adapter stores and serves, it does not transform.
+    pub fn get_feeds_data(&self, feed_ids: Vec<u32>) -> FeedDataResponse {
+        feed_ids
+            .into_iter()
+            .map(|feed_id| (feed_id, self.feeds.get(&feed_id).cloned()))
+            .collect()
+    }
+
     /// Stateless verify-and-return (read-only): verify a Pyth Pro solana-format payload against
     /// the configured signer set + freshness/channel policy and return the **full** verified update
-    /// (all Lazer properties), **without** writing storage, charging a fee, or touching feed
-    /// mappings. Panics if verification fails. This is the official-Lazer-style parity surface; on
+    /// (all Lazer properties), **without** writing storage or charging a fee. Panics if
+    /// verification fails. This is the official-Lazer-style parity surface; on
     /// NEAR it is most useful called directly via RPC (`near view`) by off-chain clients, or by
     /// on-chain callers through a cross-contract call + callback (NEAR has no sync read calls).
     pub fn verify_update(&self, payload: Base64VecU8) -> VerifiedUpdateView {
