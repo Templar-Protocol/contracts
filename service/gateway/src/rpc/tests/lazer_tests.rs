@@ -228,8 +228,8 @@ async fn oracle_update_prices_rejects_bare_pyth_lazer_adapter_as_standalone_orac
 }
 
 #[tokio::test]
-async fn oracle_update_prices_rejects_pyth_lazer_adapter_as_classic_pyth_lazerxy_source(
-) -> Result<()> {
+async fn oracle_update_prices_rejects_pyth_lazer_adapter_as_classic_pyth_proxy_source() -> Result<()>
+{
     // A proxy must reference a Pyth Lazer adapter as a `Lazer` source, never a classic `Pyth`
     // source: the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
     // Resolution must reject the misconfiguration up front, naming Lazer.

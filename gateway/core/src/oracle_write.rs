@@ -5,7 +5,7 @@ use templar_gateway_types::{ManagedAccountId, NearToken};
 
 use crate::{
     client::{
-        pyth_lazer_oracle::UpdatePriceFeedsArgs as ProUpdatePriceFeedsArgs,
+        pyth_lazer_oracle::UpdatePriceFeedsArgs as LazerUpdatePriceFeedsArgs,
         pyth_oracle::UpdatePriceFeedsArgs, redstone_oracle::WritePricesArgs, ContractWriteOptions,
         NearClient,
     },
@@ -53,7 +53,7 @@ pub fn plan_pyth_lazer_update(
         ContractWriteOptions::new(signer_account_id)
             .tgas(300)
             .deposit(PYTH_LAZER_UPDATE_DEPOSIT),
-        ProUpdatePriceFeedsArgs {
+        LazerUpdatePriceFeedsArgs {
             payload: Base64VecU8(payload),
         },
     )
@@ -114,7 +114,7 @@ mod tests {
     }
 
     #[derive(serde::Deserialize)]
-    struct ProArgs {
+    struct LazerArgs {
         payload: Base64VecU8,
     }
 
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn pro_plan_pyth_lazer_update_emits_payload_base64_and_no_data_field() {
+    fn lazer_plan_pyth_lazer_update_emits_payload_base64_and_no_data_field() {
         let oracle_id: AccountId = "pyth-lazer.near".parse().expect("valid account id");
         let payload = vec![0u8, 1, 2, 3, 255, 254, 253];
 
@@ -155,7 +155,7 @@ mod tests {
             oracle_id.clone(),
             payload.clone(),
         )
-        .expect("pro planner must succeed");
+        .expect("lazer planner must succeed");
 
         assert_eq!(plan.receiver_id, oracle_id);
         let (method, args_bytes) = unpack_function_call(&plan);
@@ -166,24 +166,24 @@ mod tests {
         match &plan.actions[0] {
             Action::FunctionCall(fc) => assert!(
                 fc.deposit.as_yoctonear() > 0,
-                "pro update must attach a non-zero storage/fee deposit"
+                "lazer update must attach a non-zero storage/fee deposit"
             ),
             other => panic!("expected FunctionCall action, got {other:?}"),
         }
 
-        let args_str = String::from_utf8(args_bytes).expect("pro args must be utf8 json");
+        let args_str = String::from_utf8(args_bytes).expect("lazer args must be utf8 json");
         let args_json: serde_json::Value =
-            serde_json::from_str(&args_str).expect("pro args must parse");
+            serde_json::from_str(&args_str).expect("lazer args must parse");
 
         // Deserialize via `Base64VecU8` — the same type the adapter uses — so
         // the round-trip is the actual on-chain wire shape, not a re-derivation.
-        let pro: ProArgs = serde_json::from_str(&args_str)
-            .expect("pro args must deserialize into {payload: Base64VecU8}");
-        assert_eq!(pro.payload.0, payload);
+        let lazer: LazerArgs = serde_json::from_str(&args_str)
+            .expect("lazer args must deserialize into {payload: Base64VecU8}");
+        assert_eq!(lazer.payload.0, payload);
 
         assert!(
             args_json.get("data").is_none(),
-            "pro args MUST NOT carry a `data` field; got: {args_str}"
+            "lazer args MUST NOT carry a `data` field; got: {args_str}"
         );
     }
 }
