@@ -305,7 +305,7 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "templar_pyth_lazer_adapter_contract",
     "contract/pyth-lazer/contract",
     "0.1.0",
-    "dbda89dfc19a37e56ecb983074128573f04ed06c7265b6c6e6bd403e42220220"
+    "53bf762b70a0ffcf7a5ab916bf9113a6fcb250bb54af9ce7a1e4235a082f3fe1"
 );
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(
     MockFt,
