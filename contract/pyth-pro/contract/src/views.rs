@@ -1,5 +1,9 @@
-//! Pyth-compatible read ABI. Method names and signatures mirror `pyth-oracle.near` so this
-//! adapter is a drop-in for existing consumers (the market and the proxy-oracle's `Pyth` source).
+//! Pyth-compatible read ABI. Method names and signatures mirror `pyth-oracle.near`.
+//!
+//! DEPRECATED (ENG-434): the standalone Pyth drop-in is being removed. This adapter is
+//! Lazer-native; consume it by wrapping it in a proxy oracle as a `Lazer` source (addressed
+//! by native feed id), not by pointing a market/proxy `Pyth` source directly at it. This
+//! compat read layer and the feed map will be deleted once ENG-434 lands.
 
 use std::collections::HashMap;
 

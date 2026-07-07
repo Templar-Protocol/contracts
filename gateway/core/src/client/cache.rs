@@ -6,8 +6,7 @@ use crate::GatewayResult;
 
 use super::{
     contract::ContractClientCaches, lst_oracle::LstOracleClientCaches, market::MarketClientCaches,
-    proxy_oracle::ProxyOracleClientCaches, pyth_pro_oracle::PythProOracleClientCaches,
-    storage::StorageClientCaches, vault::VaultClientCaches,
+    proxy_oracle::ProxyOracleClientCaches, storage::StorageClientCaches, vault::VaultClientCaches,
 };
 
 #[derive(Clone)]
@@ -18,7 +17,6 @@ pub(crate) struct NearClientCache {
     pub(crate) vault: VaultClientCaches,
     pub(crate) lst_oracle: LstOracleClientCaches,
     pub(crate) proxy_oracle: ProxyOracleClientCaches,
-    pub(crate) pyth_pro_oracle: PythProOracleClientCaches,
 }
 
 impl NearClientCache {
@@ -30,7 +28,6 @@ impl NearClientCache {
             vault: VaultClientCaches::new(),
             lst_oracle: LstOracleClientCaches::new(),
             proxy_oracle: ProxyOracleClientCaches::new(),
-            pyth_pro_oracle: PythProOracleClientCaches::new(),
         }
     }
 }

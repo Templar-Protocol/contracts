@@ -185,27 +185,24 @@ async fn oracle_update_prices_routes_lazer_backed_proxy_through_lazer_source() -
 }
 
 #[tokio::test]
-async fn oracle_update_prices_routes_direct_pyth_pro_adapter_through_lazer_source() -> Result<()> {
-    // A Pyth Pro adapter used *directly* as a market oracle answers the classic Pyth
-    // view ABI, so it must be detected as Pyth Pro (not classic Pyth) and its market
-    // `PriceIdentifier` resolved through the adapter's feed map to a Lazer feed — else the
-    // plan would wrongly emit a classic-Pyth `{data}` write the adapter's ABI rejects.
-    let payload = vec![0x5A_u8; 32];
+async fn oracle_update_prices_rejects_bare_pyth_pro_adapter_as_standalone_oracle() -> Result<()> {
+    // A Pyth Pro adapter is Lazer-native and not a standalone oracle. Targeting one directly
+    // with `oracle.updatePrices` must fail loudly — directing the operator to wrap it in a
+    // proxy oracle with a Lazer source — rather than planning a doomed classic-Pyth write.
     let stack = TestStack::start_with_lazer(
         "https://hermes-unused.example.test".parse()?,
-        FakeLazerSource::with_payload(payload.clone()),
+        FakeLazerSource::with_payload(vec![0x5A_u8; 32]),
     )
     .await?;
 
     let adapter_id: near_account_id::AccountId = "pyth-pro-direct.near".parse()?;
     let price_id = PriceIdentifier([0x44; 32]);
-    let feed_id = 7u32;
     stack
         .harness
-        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, feed_id)
+        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 7u32)
         .await?;
 
-    let plan =
+    let error =
         <OracleUpdatesDispatch as PlanWrite<oracle_updates::UpdatePrices, TestContext>>::plan(
             WriteRequest {
                 signer_account_id: stack.harness.gateway_signer_account_id.clone(),
@@ -218,21 +215,69 @@ async fn oracle_update_prices_routes_direct_pyth_pro_adapter_through_lazer_sourc
             stack.context.clone(),
         )
         .await
-        .expect("UpdatePrices plan for a direct Pyth Pro adapter must succeed");
+        .expect_err("a bare Pyth Pro adapter must not be usable as a standalone oracle");
 
-    assert_eq!(
-        plan.steps.len(),
-        1,
-        "a direct Pyth Pro adapter with one mapped feed must plan exactly one step"
+    let error_string = format!("{error}");
+    assert!(
+        error_string.contains("standalone oracle") && error_string.contains("proxy"),
+        "error must direct the operator to wrap the adapter in a proxy; got: {error_string}"
     );
-    let step = &plan.steps[0];
-    assert_eq!(
-        step.receiver_id, adapter_id,
-        "the planned write must target the Pyth Pro adapter"
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn oracle_update_prices_rejects_pyth_pro_adapter_as_classic_pyth_proxy_source() -> Result<()>
+{
+    // A proxy must reference a Pyth Pro adapter as a `Lazer` source, never a classic `Pyth`
+    // source: the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
+    // Resolution must reject the misconfiguration up front, naming Lazer.
+    let stack = TestStack::start_with_lazer(
+        "https://hermes-unused.example.test".parse()?,
+        FakeLazerSource::with_payload(vec![0x5A_u8; 32]),
+    )
+    .await?;
+
+    let adapter_id: near_account_id::AccountId = "pyth-pro-source.near".parse()?;
+    let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    let price_id = PriceIdentifier([0x44; 32]);
+    stack
+        .harness
+        .deploy_pyth_pro_adapter(adapter_id.clone(), price_id, 7u32)
+        .await?;
+    stack
+        .harness
+        .admin_set_proxy(
+            proxy_oracle_id.clone(),
+            price_id,
+            Some(Proxy::median_low(
+                [OracleRequest::pyth(adapter_id.clone(), price_id).into()],
+                FreshnessFilter::empty(),
+            )),
+        )
+        .await?;
+
+    let error =
+        <OracleUpdatesDispatch as PlanWrite<oracle_updates::UpdatePrices, TestContext>>::plan(
+            WriteRequest {
+                signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+                idempotency_key: None,
+                body: oracle_updates::UpdatePrices {
+                    oracle_id: proxy_oracle_id.clone(),
+                    price_ids: vec![price_id],
+                },
+            },
+            stack.context.clone(),
+        )
+        .await
+        .expect_err("a proxy Pyth source pointing at a Pyth Pro adapter must be rejected");
+
+    let error_string = format!("{error}");
+    assert!(
+        error_string.contains("Lazer"),
+        "error must direct the operator to use a Lazer source; got: {error_string}"
     );
-    let (method, args_bytes) = unpack_function_call(step);
-    assert_eq!(method, "update_price_feeds");
-    assert_pyth_pro_adapter_args(&args_bytes, &payload);
 
     stack.shutdown().await;
     Ok(())

@@ -4,6 +4,12 @@ A push-style NEAR oracle that ingests [Pyth Pro](https://docs.pyth.network/lazer
 payloads and re-serves them through the **same view ABI as `pyth-oracle.near`** — so it is a
 drop-in Pyth oracle for the market and proxy-oracle.
 
+> **DEPRECATED (ENG-434):** the standalone Pyth drop-in described below is being removed. Going
+> forward this adapter is **Lazer-native** — consume it by wrapping it in a **proxy oracle** as a
+> `Lazer` source (addressed by native feed id), not by pointing a market/proxy `Pyth` source
+> directly at it. The gateway no longer routes a bare adapter as an oracle. The compat read layer
+> and the feed map will be deleted once ENG-434 lands.
+
 > **Naming:** this adapter consumes **Pyth Pro** signed updates. Pyth Pro was formerly known as
 > **Pyth Lazer**; some upstream protocol crates and contract paths still use the `lazer` name (e.g.
 > `pyth-lazer-protocol`, the `lazer/contracts` reference paths). We use **Pyth Pro** for everything

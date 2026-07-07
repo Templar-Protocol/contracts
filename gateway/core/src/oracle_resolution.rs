@@ -1,9 +1,12 @@
 //! Shared oracle-kind resolution used by both the methods dispatch (price reads and
 //! `oracle.getPriceResolutionDependencies`) and the oracle-updates dispatch (write
 //! planning). Keeping it in one place is what guarantees reads, dependency metadata, and
-//! writes agree on how an oracle resolves — in particular that a direct Pyth Pro adapter
-//! resolves to a Lazer feed everywhere, not a Pyth VAA in one path and a Lazer payload in
-//! another.
+//! writes agree on how an oracle resolves.
+//!
+//! A Pyth Pro (Lazer) adapter is not a standalone oracle here: it is reachable only as a
+//! proxy `Lazer` source (addressed by its native `u32` feed id, carried directly in the
+//! request — no feed-map lookup). Targeting a bare adapter as a top-level oracle is
+//! rejected, and a proxy that references one as a classic `Pyth` source is rejected too.
 
 use std::collections::BTreeSet;
 
@@ -12,11 +15,9 @@ use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::{ContractKind, OracleContractKind};
 use templar_proxy_oracle_kernel::proxy;
 use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_common::request::OracleRequest;
+use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest};
 
-use crate::client::{
-    lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs, pyth_pro_oracle::GetFeedMappingArgs,
-};
+use crate::client::{lst_oracle::GetTransformerArgs, proxy_oracle::GetProxyArgs};
 use crate::{query_contract_kind, GatewayError, GatewayResult, HasNearClient};
 
 /// Resolve an oracle contract's [`ContractKind`] into the refined, resolution-facing
@@ -27,7 +28,10 @@ pub async fn query_oracle_kind<C: HasNearClient>(
 ) -> GatewayResult<OracleContractKind> {
     match query_contract_kind(ctx, oracle_id.clone()).await? {
         ContractKind::PythOracle | ContractKind::RedstoneOracle => Ok(OracleContractKind::Direct),
-        ContractKind::PythProOracle => Ok(OracleContractKind::PythPro),
+        ContractKind::PythProOracle => Err(GatewayError::NearQuery(format!(
+            "pyth-pro adapter {oracle_id} is not usable as a standalone oracle; wrap it in a \
+             proxy oracle with a Lazer source"
+        ))),
         ContractKind::ProxyOracle => Ok(OracleContractKind::Proxy),
         ContractKind::LstOracle => {
             let pyth_id = ctx
@@ -66,21 +70,6 @@ pub async fn resolve_price_dependencies<C: HasNearClient>(
 ) -> GatewayResult<Vec<OracleRequest>> {
     match kind.clone() {
         OracleContractKind::Direct => Ok(vec![OracleRequest::pyth(oracle_id, price_id)]),
-        OracleContractKind::PythPro => {
-            let feed_id = ctx
-                .near_client()
-                .pyth_pro_oracle(oracle_id.clone())
-                .cached_get_feed_mapping(GetFeedMappingArgs {
-                    price_identifier: price_id,
-                })
-                .await?
-                .ok_or_else(|| {
-                    GatewayError::NearQuery(format!(
-                        "Pyth Pro adapter {oracle_id} has no feed mapping for price identifier {price_id:?}"
-                    ))
-                })?;
-            Ok(vec![OracleRequest::lazer(oracle_id, feed_id)])
-        }
         OracleContractKind::Lst { pyth_id } => {
             let transformer = ctx
                 .near_client()
@@ -111,6 +100,22 @@ pub async fn resolve_price_dependencies<C: HasNearClient>(
                 return Err(GatewayError::NearQuery(
                     "proxy oracle returned empty proxy definition".to_owned(),
                 ));
+            }
+            // A Pyth Pro adapter is Lazer-native and must be referenced by feed id. Reject a
+            // proxy source that wires one as a classic `Pyth` source (by `PriceIdentifier`):
+            // the gateway would otherwise plan a Pyth VAA write the adapter's ABI rejects.
+            for request in &requests {
+                if let OracleRequest::Pyth(PythRequest { oracle_id, .. }) = request {
+                    if query_contract_kind(ctx, oracle_id.clone()).await?
+                        == ContractKind::PythProOracle
+                    {
+                        return Err(GatewayError::NearQuery(format!(
+                            "proxy source references Pyth Pro adapter {oracle_id} as a classic \
+                             Pyth source; use OracleRequest::Lazer (by feed id) — the adapter \
+                             is Lazer-native"
+                        )));
+                    }
+                }
             }
             Ok(requests)
         }

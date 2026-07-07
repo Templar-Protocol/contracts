@@ -384,8 +384,10 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
-    /// Deploy a Pyth Pro (Lazer) adapter and map `price_identifier` to `feed_id`, so a
-    /// market/proxy can target it directly as a Pyth-compatible oracle. The adapter owns
+    /// Deploy a Pyth Pro (Lazer) adapter and map `price_identifier` to `feed_id`. The adapter
+    /// is Lazer-native and is consumed by wrapping it in a proxy oracle as a `Lazer` source
+    /// (by feed id), not by targeting it directly — tests use this to stand one up behind a
+    /// proxy or to assert a bare adapter is rejected as a standalone oracle. The adapter owns
     /// itself (so the harness signer drives `admin_*`); the trusted signer is a throwaway
     /// key — gateway plans against it are inspected, not submitted, so no payload is verified.
     pub async fn deploy_pyth_pro_adapter(
