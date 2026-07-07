@@ -5,6 +5,7 @@ mod oracle_impl;
 mod pyth_client;
 mod redstone_client;
 mod source_provider_impl;
+mod sources;
 
 pub struct Dispatch;
 
@@ -17,3 +18,6 @@ pub use lazer_client::{
 pub use pyth_client::{PythClientError, PythHttpClient, PythResult};
 pub use redstone_client::{RedStoneBridgeClient, RedStoneBridgeError, RedStoneResult};
 pub use source_provider_impl::{ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
+#[cfg(feature = "clap")]
+pub use sources::OracleSourceArgs;
+pub use sources::{build_oracle_updates_context, OracleSourceConfig, OracleUpdatesContext};

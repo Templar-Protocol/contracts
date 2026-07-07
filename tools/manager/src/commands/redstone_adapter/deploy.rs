@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use templar_common::oracle::redstone::Config;
+use templar_contract_artifacts::ArtifactId;
 
 use crate::{
     commands::deployment::{Deploy, DeploymentSpec},
@@ -102,7 +103,7 @@ impl DeploymentSpec for DeployRedStoneAdapter {
     type ArgsLoader = RedStoneArgsLoader;
     type Version = ();
 
-    const PACKAGE_ID: &'static str = "templar-redstone-adapter-contract";
+    const ARTIFACT: ArtifactId = ArtifactId::RedstoneAdapter;
 }
 
 impl DeployRedStoneAdapter {

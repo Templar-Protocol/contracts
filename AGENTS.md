@@ -87,6 +87,8 @@ Notes:
 - For tests that deploy contracts into `near-workspaces`, prefer prebuilt test contracts. Rebuilding WASM inside each test run is much slower.
 - `./script/test.sh` already handles this by running `./script/prebuild-test-contracts.sh` first and setting `TEST_CONTRACTS_PREBUILT=1`.
 - If you run `near-workspaces` tests directly, prefer following the same pattern: prebuild first, then run tests with `TEST_CONTRACTS_PREBUILT=1`.
+- Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
+- Embedded contract blobs under `contract/artifacts/res/near/` are pinned *release* artifacts, NOT a mirror of source. **A contract source change does NOT refresh its blob, and no CI check will flag the blob as stale** (the drift check compares blob-vs-pin and version-vs-`Cargo.toml`, never blob-vs-source). When — and only when — you intend a contract source change to become what the gateway deploys, refresh its blob by following `contract/artifacts/README.md` ("⚠️ Refreshing a checked-in blob"): on a clean committed tree, `cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml`, copy the output into `res/near/`, update that entry's `expected_sha256` (+ `version`) in `contract/artifacts/src/ids.rs`, and commit them together. Unreleased work-in-progress is meant to lag the blob — do not refresh reflexively.
 
 ## Code Search
 

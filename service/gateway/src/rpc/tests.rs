@@ -4,6 +4,7 @@
 )]
 
 mod account_tests;
+mod artifact_tests;
 mod contract_tests;
 mod fake_lazer_source;
 mod ft_tests;

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "common",
     "gateway/*",
+    "contract/artifacts",
     "contract/market",
     "contract/proxy-oracle/governance-kernel",
     "contract/proxy-oracle/kernel",
@@ -128,7 +129,11 @@ sqlx = { version = "0.8", features = [
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
 stellar-strkey = { version = "0.0.16", default-features = false }
+strum = { version = "0.27", features = ["derive"] }
 templar-common = { path = "./common" }
+templar-contract-artifacts = { path = "./contract/artifacts" }
+templar-gateway-artifacts-dispatch = { path = "./gateway/artifacts-dispatch" }
+templar-gateway-artifacts-spec = { path = "./gateway/artifacts-spec" }
 templar-gateway-client = { path = "./gateway/client" }
 templar-gateway-core = { path = "./gateway/core" }
 templar-gateway-macros = { path = "./gateway/macros" }

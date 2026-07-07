@@ -1,43 +1,8 @@
 use std::path::Path;
 
 use anyhow::Context;
-use sha2::Digest;
+use templar_contract_artifacts::{build_artifact, format_version_key, load_artifact};
 use templar_gateway_types::Version;
-
-fn get_metadata(workspace_dir: &Path) -> anyhow::Result<cargo_metadata::Metadata> {
-    cargo_metadata::MetadataCommand::new()
-        .no_deps()
-        .current_dir(workspace_dir)
-        .exec()
-        .with_context(|| format!("run cargo metadata in {}", workspace_dir.display()))
-}
-
-fn get_package_from_metadata<'a>(
-    metadata: &'a cargo_metadata::Metadata,
-    package: &str,
-) -> anyhow::Result<&'a cargo_metadata::Package> {
-    let package = metadata
-        .workspace_packages()
-        .into_iter()
-        .find(|p| p.name == package)
-        .with_context(|| format!("package not found: {package}"))?;
-    Ok(package)
-}
-
-fn get_contract_wasm_bytes(
-    metadata: &cargo_metadata::Metadata,
-    package: &cargo_metadata::Package,
-) -> anyhow::Result<Vec<u8>> {
-    let name_in_path = package.name.replace('-', "_");
-
-    let path = metadata
-        .target_directory
-        .join("near")
-        .join(name_in_path.as_str())
-        .join(format!("{name_in_path}.wasm"));
-
-    std::fs::read(&path).with_context(|| format!("read contract WASM from {}", path.as_str()))
-}
 
 fn version<T>(package: &cargo_metadata::Package) -> Version<T> {
     Version::from((
@@ -55,8 +20,15 @@ pub struct LoadedContract<T> {
 
 impl<T> LoadedContract<T> {
     pub fn version_key(&self) -> String {
-        let hash = sha2::Sha256::digest(&self.wasm_bytes);
-        format!("{}@{}#{}", self.name, self.version, hex::encode(hash))
+        format_version_key(&self.name, &self.version.to_string(), &self.wasm_bytes)
+    }
+}
+
+fn loaded_contract<T>(package: &cargo_metadata::Package, wasm_bytes: Vec<u8>) -> LoadedContract<T> {
+    LoadedContract {
+        name: package.name.to_string(),
+        wasm_bytes,
+        version: version(package),
     }
 }
 
@@ -64,15 +36,9 @@ pub fn load_contract<T>(
     workspace_dir: &Path,
     cargo_package: &str,
 ) -> anyhow::Result<LoadedContract<T>> {
-    let metadata = get_metadata(workspace_dir)?;
-    let package = get_package_from_metadata(&metadata, cargo_package)?;
-
-    let bytes = get_contract_wasm_bytes(&metadata, package)?;
-    Ok(LoadedContract {
-        name: package.name.to_string(),
-        wasm_bytes: bytes,
-        version: version(package),
-    })
+    let (bytes, package) = load_artifact(workspace_dir, cargo_package)
+        .with_context(|| format!("load contract {cargo_package}"))?;
+    Ok(loaded_contract(&package, bytes))
 }
 
 /// Run `cargo near build reproducible-wasm` in `dir`.
@@ -82,26 +48,7 @@ pub fn build_contract<T>(
     workspace_dir: &Path,
     cargo_package: &str,
 ) -> anyhow::Result<LoadedContract<T>> {
-    let metadata = get_metadata(workspace_dir)?;
-    let package = get_package_from_metadata(&metadata, cargo_package)?;
-
-    let status = std::process::Command::new("cargo")
-        .args(["near", "build", "reproducible-wasm"])
-        .args(["--manifest-path", package.manifest_path.as_str()])
-        .current_dir(workspace_dir)
-        .status()
-        .with_context(|| format!("run cargo near build in {}", workspace_dir.display()))?;
-
-    anyhow::ensure!(
-        status.success(),
-        "cargo near build failed in {}",
-        workspace_dir.display()
-    );
-
-    let bytes = get_contract_wasm_bytes(&metadata, package)?;
-    Ok(LoadedContract {
-        name: package.name.to_string(),
-        wasm_bytes: bytes,
-        version: version(package),
-    })
+    let (bytes, package) = build_artifact(workspace_dir, cargo_package, true)
+        .with_context(|| format!("build contract {cargo_package}"))?;
+    Ok(loaded_contract(&package, bytes))
 }

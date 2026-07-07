@@ -1,3 +1,4 @@
+use templar_contract_artifacts::ArtifactId;
 use templar_gateway_types::RegistryVersion;
 
 use crate::{
@@ -17,7 +18,7 @@ impl DeploymentSpec for DeployRegistry {
     type ArgsLoader = EmptyArgsLoader;
     type Version = RegistryVersion;
 
-    const PACKAGE_ID: &'static str = "templar-registry-contract";
+    const ARTIFACT: ArtifactId = ArtifactId::Registry;
 }
 
 impl DeployRegistry {

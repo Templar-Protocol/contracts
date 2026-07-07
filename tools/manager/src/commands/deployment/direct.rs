@@ -1,6 +1,4 @@
-use std::fmt::Debug;
-
-use clap::{Args, ValueEnum};
+use clap::Args;
 use templar_tools_common::near::Function;
 
 use crate::{
@@ -9,25 +7,6 @@ use crate::{
 };
 
 use super::DeploymentSpec;
-
-#[derive(ValueEnum, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Package {
-    Registry,
-    Market,
-    ProxyOracle,
-    RedStoneAdapter,
-}
-
-impl Package {
-    pub fn package_id(self) -> &'static str {
-        match self {
-            Self::Registry => "templar-registry-contract",
-            Self::Market => "templar-market-contract",
-            Self::ProxyOracle => "templar-proxy-oracle-near-contract",
-            Self::RedStoneAdapter => "templar-redstone-adapter-contract",
-        }
-    }
-}
 
 #[derive(Args)]
 pub struct Direct<C: DeploymentSpec> {
@@ -60,7 +39,12 @@ impl<C: DeploymentSpec> Runner<()> for Direct<C> {
         let args = self.args.load_vec()?;
 
         ctx.batch(&self.signer.signer(), &self.signer.account_id)
-            .deploy(&self.loader.load::<C::Version>(C::PACKAGE_ID)?.wasm_bytes)
+            .deploy(
+                &self
+                    .loader
+                    .load_artifact::<C::Version>(C::ARTIFACT)?
+                    .wasm_bytes,
+            )
             .call(Function::new("new").args(args).max_gas())
             .transact()
             .await

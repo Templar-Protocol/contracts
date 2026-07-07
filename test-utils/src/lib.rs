@@ -45,6 +45,8 @@ use templar_common::{
     },
     Decimal,
 };
+pub(crate) use templar_contract_artifacts::ArtifactId;
+use templar_contract_artifacts::{load_artifact_bytes, ArtifactMetadata};
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
@@ -196,27 +198,23 @@ pub fn vault_configuration(
     }
 }
 
-async fn compile_contract(p: &str) -> Vec<u8> {
-    let path = workspace_root().join(p);
+async fn compile_contract(metadata: &ArtifactMetadata) -> Vec<u8> {
+    let path = workspace_root().join(metadata.source_path);
     near_workspaces::compile_project(path.to_str().unwrap())
         .await
         .unwrap()
 }
 
-async fn read_contract(name: &str) -> Vec<u8> {
-    let path = workspace_root()
-        .join("target/near/")
-        .join(name)
-        .join(name.to_owned() + ".wasm");
-
-    std::fs::read(path).unwrap()
+async fn read_contract(metadata: &ArtifactMetadata) -> Vec<u8> {
+    load_artifact_bytes(workspace_root(), metadata).unwrap()
 }
 
-async fn get_contract(name: &str, path: &str) -> Vec<u8> {
+async fn get_contract(artifact: ArtifactId) -> Vec<u8> {
+    let metadata = artifact.metadata();
     if std::env::var("TEST_CONTRACTS_PREBUILT").is_ok() {
-        read_contract(name).await
+        read_contract(metadata).await
     } else {
-        compile_contract(path).await
+        compile_contract(metadata).await
     }
 }
 

@@ -1,6 +1,6 @@
 use tokio::sync::OnceCell;
 
-use crate::get_contract;
+use crate::{get_contract, ArtifactId};
 
 /// Test controller for the Pyth Lazer adapter contract
 /// (`contract/pyth-lazer/contract`). The gateway sandbox harness deploys it via its own
@@ -11,12 +11,7 @@ impl PythLazerAdapterController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| {
-            get_contract(
-                "templar_pyth_lazer_adapter_contract",
-                "contract/pyth-lazer/contract",
-            )
-        })
-        .await
+        WASM.get_or_init(|| get_contract(ArtifactId::PythLazerAdapter))
+            .await
     }
 }

@@ -1,4 +1,5 @@
 use templar_common::market::MarketConfiguration;
+use templar_contract_artifacts::ArtifactId;
 use templar_gateway_types::MarketVersion;
 
 use crate::{
@@ -23,7 +24,7 @@ impl DeploymentSpec for DeployMarket {
     type ArgsLoader = GeneralArgsLoader;
     type Version = MarketVersion;
 
-    const PACKAGE_ID: &'static str = "templar-market-contract";
+    const ARTIFACT: ArtifactId = ArtifactId::Market;
 }
 
 impl DeployMarket {
