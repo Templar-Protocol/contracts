@@ -935,9 +935,7 @@ fn verify_update_rejects_untrusted_signer() {
 fn single_event() -> near_sdk::serde_json::Value {
     let logs = near_sdk::test_utils::get_logs();
     assert_eq!(logs.len(), 1, "expected exactly one log, got {logs:?}");
-    let json = logs[0]
-        .strip_prefix("EVENT_JSON:")
-        .expect("log must be a NEP-297 EVENT_JSON line");
+    let json = logs[0].strip_prefix("EVENT_JSON:").unwrap();
     let event: near_sdk::serde_json::Value = near_sdk::serde_json::from_str(json).unwrap();
     assert_eq!(event["standard"], "pyth-lazer-adapter");
     assert_eq!(event["version"], "1.0.0");
