@@ -6,7 +6,7 @@ Naming: **Pyth Pro** for everything this repo owns, **Lazer** only for upstream/
 ## Scope
 
 - `templar-pyth-pro-verifier`: chain-agnostic payload verification/parsing.
-- `templar-pyth-pro-adapter-contract`: NEAR storage, governance, fees, feed mapping, events, and Pyth-compatible views.
+- `templar-pyth-pro-adapter-contract`: NEAR storage, governance, fees, events, and feed-id-native views.
 
 ## Build Contract
 
@@ -51,13 +51,12 @@ An accepted update must satisfy:
 ## Storage Contract
 
 - Callers must pay newly consumed storage plus configured update fee.
-- Feed mapping is `PriceIdentifier -> Lazer feed id`.
-- Unmapping a price id does not delete retained feed data.
-- Policy for storing signed but unmapped feeds must be explicit.
+- Feeds are stored and served by their native Lazer `u32` feed id. The `PriceIdentifier ↔ feed_id`
+  mapping is owned by the proxy-oracle, not this adapter.
 
 ## Governance Contract
 
-- Owner controls config, signer set, feed mappings, and withdrawals.
+- Owner controls config, signer set, and withdrawals.
 - Config updates must preserve signer-set and freshness-window invariants.
 - Signer updates must preserve signer uniqueness. This invariant is structural: `SignerSet` is
   backed by a `BTreeMap<[u8; 32], u64>` (public key → `expires_at_s`), so duplicate keys cannot
@@ -71,21 +70,22 @@ An accepted update must satisfy:
 
 ## View Contract
 
-- Pyth-compatible spot and EMA view names must remain stable.
-- Unsafe views may return latest stored data without age filtering.
-- Age-gated and default-window views must apply freshness checks.
-- EMA views must not fall back to spot prices.
+- Feeds are read by native `u32` feed id (`get_feeds_data` bulk, `get_feed_data` single); there is
+  no `PriceIdentifier`-keyed read surface.
+- Reads return the raw stored `FeedData` (spot + EMA + exponent + publish time); the adapter does
+  not project to a price or apply any freshness filter. Projection (`FeedData::to_ema_price` /
+  `to_pyth_price` in `templar-common`) and freshness policy are the consumer's responsibility,
+  mirroring the RedStone adapter.
 - `verify_update(payload)` is a read-only, stateless verify-and-return: it runs the full
   verification (signer / ed25519 signature / channel / freshness) and returns the **complete** Lazer
-  data (all properties) without writing storage, charging a fee, or touching feed mappings. It is
-  the official-Lazer-contract-style parity surface, intended for off-chain RPC callers (and on-chain
+  data (all properties) without writing storage or charging a fee. It is the
+  official-Lazer-contract-style parity surface, intended for off-chain RPC callers (and on-chain
   async callers via cross-contract call + callback — NEAR has no synchronous read calls).
 
 ## Model & parity (intentional scope)
 
-This adapter is a **`pyth-oracle.near`-compatible storage oracle** (push → persist → serve), not a
-stateless verifier like the official Lazer contracts — the firm drop-in requirement (rationale in
-[`README.md`](./README.md)). `verify_update` adds the stateless surface alongside it. Known
-narrowing: the verifier preserves every property as `Option` but does not distinguish "not
-requested" from "requested-but-missing" (the official EVM `triStateMap` does) — a possible future
-enrichment.
+This adapter is a **feed-id-native storage oracle** (push → persist → serve), not a stateless
+verifier like the official Lazer contracts — stored, view-served prices are what the proxy-oracle's
+`Lazer` source reads. `verify_update` adds the stateless surface alongside it. Known narrowing: the
+verifier preserves every property as `Option` but does not distinguish "not requested" from
+"requested-but-missing" (the official EVM `triStateMap` does) — a possible future enrichment.

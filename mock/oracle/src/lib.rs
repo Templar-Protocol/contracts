@@ -8,7 +8,8 @@ use near_sdk::{
     AccountId, PanicOnDefault,
 };
 use templar_common::oracle::{
-    pyth::{FeedIdOracleResponse, Price, PriceIdentifier, Pyth, PythPro},
+    lazer::{self, FeedDataResponse, PythPro},
+    pyth::{Price, PriceIdentifier, Pyth},
     redstone::{config, Config, FeedData, FeedId, GetPrices, RedStoneContractInterface, Role},
 };
 use templar_primitives::{time::Nanoseconds, SU256};
@@ -18,7 +19,7 @@ use templar_primitives::{time::Nanoseconds, SU256};
 pub struct Contract {
     redstone_prices: LookupMap<FeedId, FeedData>,
     pyth_prices: LookupMap<PriceIdentifier, Price>,
-    lazer_prices: LookupMap<u32, Price>,
+    lazer_prices: LookupMap<u32, lazer::FeedData>,
     modify_roles: Vec<AccountId>,
     trusted_updaters: Vec<AccountId>,
     last_pyth_update_data: Option<String>,
@@ -84,9 +85,9 @@ impl Contract {
         }
     }
 
-    pub fn set_lazer_price(&mut self, feed_id: u32, price: Option<Price>) {
-        if let Some(price) = price {
-            self.lazer_prices.insert(feed_id, price);
+    pub fn set_lazer_price(&mut self, feed_id: u32, data: Option<lazer::FeedData>) {
+        if let Some(data) = data {
+            self.lazer_prices.insert(feed_id, data);
         } else {
             self.lazer_prices.remove(&feed_id);
         }
@@ -136,16 +137,7 @@ impl Pyth for Contract {
 
 #[near]
 impl PythPro for Contract {
-    fn list_ema_prices_by_feed_id_no_older_than(
-        &self,
-        feed_ids: Vec<u32>,
-        age: u64,
-    ) -> FeedIdOracleResponse {
-        let _ = age;
-        self.list_ema_prices_by_feed_id_unsafe(feed_ids)
-    }
-
-    fn list_ema_prices_by_feed_id_unsafe(&self, feed_ids: Vec<u32>) -> FeedIdOracleResponse {
+    fn get_feeds_data(&self, feed_ids: Vec<u32>) -> FeedDataResponse {
         feed_ids
             .into_iter()
             .map(|feed_id| (feed_id, self.lazer_prices.get(&feed_id).cloned()))

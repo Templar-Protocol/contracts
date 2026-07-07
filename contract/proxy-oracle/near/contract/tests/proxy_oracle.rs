@@ -17,6 +17,7 @@ use near_workspaces::{network::Sandbox, Account, Worker};
 
 use templar_common::{
     oracle::{
+        lazer,
         pyth::{self, PriceIdentifier, PythTimestamp},
         redstone::FeedData,
     },
@@ -645,17 +646,23 @@ pub async fn proxy_oracle_resolves_lazer_backed_feed(#[future(awt)] worker: Work
     let result = update_and_list(&proxy_oracle, &actor, vec![proxy_id], 60_u32).await;
     assert_eq!(result, HashMap::from_iter([(proxy_id, None)]));
 
-    // Publish a Lazer feed price, addressed by its native `u32` feed id (no PriceIdentifier map)...
+    // Publish a Lazer feed, addressed by its native `u32` feed id (no PriceIdentifier map). The
+    // adapter stores raw `FeedData`; the proxy projects it via `to_ema_price`, so the EMA carries
+    // the resolved price.
     lazer_adapter
         .set_lazer_price(
             &actor,
             feed_id,
-            Some(pyth::Price {
+            Some(lazer::FeedData {
                 price: I64(100_000),
                 conf: U64(0),
+                ema: lazer::EmaData {
+                    price: I64(100_000),
+                    conf: U64(0),
+                },
                 expo: 0,
-                publish_time: PythTimestamp::from_secs(
-                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs() as i64,
+                publish_time_ns: Nanoseconds::from_secs(
+                    std::time::UNIX_EPOCH.elapsed().unwrap().as_secs(),
                 ),
             }),
         )

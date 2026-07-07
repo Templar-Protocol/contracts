@@ -12,7 +12,6 @@ use pyth_lazer_protocol::message::SolanaMessage;
 use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadPropertyValue};
 use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
-use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::versioned_state::MigrateExternalInterface;
 
 use templar_pyth_pro_adapter_contract::{ConfigArgs, Contract, TrustedSigner};
@@ -122,13 +121,8 @@ fn config() -> ConfigArgs {
         max_timestamp_ahead_s: 600,
         allowed_channel_id: Some(ChannelId::REAL_TIME.0),
         update_fee: NearToken::from_yoctonear(0),
-        default_valid_time_period_s: 600,
         max_feeds_per_update: 64,
     }
-}
-
-fn price_id() -> PriceIdentifier {
-    PriceIdentifier([0x11; 32])
 }
 
 /// Context as the owner, with 1 yocto attached (for `#[payable]` admin methods).
@@ -154,20 +148,27 @@ fn ample_deposit() -> NearToken {
     NearToken::from_near(1)
 }
 
-fn deploy_and_map() -> Contract {
-    deploy_and_map_with(config())
+fn deploy() -> Contract {
+    deploy_with(config())
 }
 
-fn deploy_and_map_with(config: ConfigArgs) -> Contract {
+fn deploy_with(config: ConfigArgs) -> Contract {
     set_owner_context();
-    let mut contract = Contract::new(owner(), config);
-    contract.admin_set_feed_mapping(price_id(), Some(FEED_ID));
+    Contract::new(owner(), config)
+}
+
+/// EMA projection of a single stored feed. The adapter serves raw [`FeedData`]; consumers project
+/// it (here via `to_ema_price`) and apply their own freshness policy — the adapter age-gates
+/// nothing on reads.
+fn ema(contract: &Contract, feed_id: u32) -> Option<templar_common::oracle::pyth::Price> {
     contract
+        .get_feed_data(feed_id)
+        .and_then(|feed| feed.to_ema_price())
 }
 
 #[test]
-fn ingests_payload_and_serves_pyth_views() {
-    let mut contract = deploy_and_map();
+fn serves_stored_feeds_by_feed_id() {
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     contract.update_price_feeds(Base64VecU8(real_time(
@@ -177,268 +178,39 @@ fn ingests_payload_and_serves_pyth_views() {
         50,
     )));
 
-    assert!(contract.price_feed_exists(price_id()));
+    // The bulk read serves the raw stored feed by native `u32` id...
+    let feeds = contract.get_feeds_data(vec![FEED_ID]);
+    let feed = feeds.get(&FEED_ID).unwrap().as_ref().unwrap();
+    assert_eq!(feed.price.0, 123_456);
+    assert_eq!(feed.ema.price.0, 123_000);
+    assert_eq!(feed.conf.0, 50);
+    assert_eq!(feed.expo, -8);
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S);
 
-    let ema = contract.list_ema_prices_no_older_than(vec![price_id()], 600);
-    let price = ema.get(&price_id()).unwrap().as_ref().unwrap();
-    assert_eq!(price.price.0, 123_000);
-    assert_eq!(price.conf.0, 50);
-    assert_eq!(price.expo, -8);
-    assert_eq!(price.publish_time.as_secs(), i64::try_from(NOW_S).unwrap());
+    // ...the single-feed getter agrees...
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap(), *feed);
 
-    let spot = contract.get_price_unsafe(price_id()).unwrap();
-    assert_eq!(spot.price.0, 123_456);
+    // ...and the consumer-side EMA projection reads the EMA mantissa.
+    let ema_price = ema(&contract, FEED_ID).unwrap();
+    assert_eq!(ema_price.price.0, 123_000);
+    assert_eq!(
+        ema_price.publish_time.as_secs(),
+        i64::try_from(NOW_S).unwrap()
+    );
 
-    // Unmapped identifier resolves to nothing.
-    let unknown = PriceIdentifier([0x22; 32]);
-    assert!(!contract.price_feed_exists(unknown));
-    assert!(contract
-        .list_ema_prices_no_older_than(vec![unknown], 600)
-        .get(&unknown)
-        .unwrap()
-        .is_none());
-}
-
-fn deploy_without_map() -> Contract {
-    set_owner_context();
-    Contract::new(owner(), config())
-}
-
-#[test]
-fn feed_id_views_serve_by_native_feed_id() {
-    let mut contract = deploy_and_map();
-
-    relayer_context(ample_deposit());
-    contract.update_price_feeds(Base64VecU8(real_time(
-        NOW_S * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    let ema = contract.list_ema_prices_by_feed_id_unsafe(vec![FEED_ID]);
-    let price = ema.get(&FEED_ID).unwrap().as_ref().unwrap();
-    assert_eq!(price.price.0, 123_000);
-    assert_eq!(price.conf.0, 50);
-    assert_eq!(price.expo, -8);
-    assert_eq!(price.publish_time.as_secs(), i64::try_from(NOW_S).unwrap());
-
-    // An unknown feed id resolves to nothing.
+    // An unknown feed id resolves to nothing (an explicit `None` in the bulk response).
     let unknown_feed = FEED_ID + 1;
     assert!(contract
-        .list_ema_prices_by_feed_id_unsafe(vec![unknown_feed])
+        .get_feeds_data(vec![unknown_feed])
         .get(&unknown_feed)
         .unwrap()
         .is_none());
-}
-
-#[test]
-fn feed_id_views_bypass_the_price_identifier_mapping() {
-    // The feed-id views are the Lazer-native read: they serve stored data addressed purely by `u32`
-    // feed id, with no `admin_set_feed_mapping` in place. This is the property the proxy-oracle's
-    // `Lazer` source relies on so the `PriceIdentifier <-> feed_id` mapping is never duplicated.
-    let mut contract = deploy_without_map();
-
-    relayer_context(ample_deposit());
-    contract.update_price_feeds(Base64VecU8(real_time(
-        NOW_S * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // With no mapping, the PriceIdentifier-keyed Pyth views see nothing...
-    assert!(!contract.price_feed_exists(price_id()));
-    assert!(contract
-        .list_ema_prices_unsafe(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_none());
-
-    // ...but the feed-id view serves the stored feed directly.
-    assert_eq!(
-        contract
-            .list_ema_prices_by_feed_id_unsafe(vec![FEED_ID])
-            .get(&FEED_ID)
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .price
-            .0,
-        123_000
-    );
-}
-
-#[test]
-fn feed_id_views_apply_freshness_bound() {
-    let mut contract = deploy_and_map();
-
-    relayer_context(ample_deposit());
-    // Published 500s ago; stored within the 600s ingestion window.
-    contract.update_price_feeds(Base64VecU8(real_time(
-        (NOW_S - 500) * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // A 100s bound rejects it; the unsafe + wide-window forms accept it.
-    assert!(contract
-        .list_ema_prices_by_feed_id_no_older_than(vec![FEED_ID], 100)
-        .get(&FEED_ID)
-        .unwrap()
-        .is_none());
-    assert!(contract
-        .list_ema_prices_by_feed_id_no_older_than(vec![FEED_ID], 600)
-        .get(&FEED_ID)
-        .unwrap()
-        .is_some());
-    assert!(contract
-        .list_ema_prices_by_feed_id_unsafe(vec![FEED_ID])
-        .get(&FEED_ID)
-        .unwrap()
-        .is_some());
-}
-
-#[test]
-fn non_suffixed_views_serve_fresh_data() {
-    let mut contract = deploy_and_map();
-
-    relayer_context(ample_deposit());
-    contract.update_price_feeds(Base64VecU8(real_time(
-        NOW_S * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // The non-suffixed Pyth methods serve data within the default validity window.
-    assert_eq!(contract.get_price(price_id()).unwrap().price.0, 123_456);
-    assert_eq!(contract.get_ema_price(price_id()).unwrap().price.0, 123_000);
-    assert!(contract
-        .list_prices(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_some());
-    assert!(contract
-        .list_ema_prices(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_some());
-}
-
-#[test]
-fn non_suffixed_views_apply_default_validity() {
-    // Default validity 100s, but the ingestion window stays at 600s.
-    let mut contract = deploy_and_map_with(ConfigArgs {
-        default_valid_time_period_s: 100,
-        ..config()
-    });
-
-    relayer_context(ample_deposit());
-    // Published 500s ago: stored (within the 600s ingestion window)...
-    contract.update_price_feeds(Base64VecU8(real_time(
-        (NOW_S - 500) * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // ...but older than the 100s default window, so the non-suffixed views report nothing.
-    assert!(contract.get_price(price_id()).is_none());
-    assert!(contract.get_ema_price(price_id()).is_none());
-    assert!(contract
-        .list_prices(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_none());
-    assert!(contract
-        .list_ema_prices(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_none());
-
-    // The unsafe + explicit-window variants still serve it.
-    assert!(contract.get_price_unsafe(price_id()).is_some());
-    assert_eq!(
-        contract
-            .get_price_no_older_than(price_id(), 600)
-            .unwrap()
-            .price
-            .0,
-        123_456
-    );
-}
-
-#[test]
-fn no_older_than_does_not_truncate_subsecond_age() {
-    // A feed 1.9s old must fail a 1s freshness bound. Truncating the ns delta to whole seconds
-    // (1.9s -> 1s) would leak ~1s of staleness past `age_s` — and the market/proxy flows rely on
-    // these views to enforce `price_maximum_age_s`.
-    let mut contract = deploy_and_map();
-
-    relayer_context(ample_deposit());
-    // `now` is NOW_S * 1e9 (set by relayer_context); publish 1.9s earlier.
-    contract.update_price_feeds(Base64VecU8(real_time(
-        NOW_S * 1_000_000 - 1_900_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // 1s bound: a 1.9s-old feed is stale (no sub-second truncation).
-    assert!(contract.get_price_no_older_than(price_id(), 1).is_none());
-    assert!(contract
-        .list_ema_prices_no_older_than(vec![price_id()], 1)
-        .get(&price_id())
-        .unwrap()
-        .is_none());
-
-    // 2s bound: the same 1.9s-old feed is still fresh.
-    assert_eq!(
-        contract
-            .get_price_no_older_than(price_id(), 2)
-            .unwrap()
-            .price
-            .0,
-        123_456
-    );
-}
-
-#[test]
-fn stale_prices_are_filtered_by_age() {
-    let mut contract = deploy_and_map();
-
-    relayer_context(ample_deposit());
-    // Published 500s ago; within the 600s verification window so it stores...
-    contract.update_price_feeds(Base64VecU8(real_time(
-        (NOW_S - 500) * 1_000_000,
-        123_456,
-        123_000,
-        50,
-    )));
-
-    // ...but a 100s freshness query rejects it, while unsafe + a wide window accept it.
-    assert!(contract
-        .list_ema_prices_no_older_than(vec![price_id()], 100)
-        .get(&price_id())
-        .unwrap()
-        .is_none());
-    assert!(contract
-        .list_ema_prices_no_older_than(vec![price_id()], 600)
-        .get(&price_id())
-        .unwrap()
-        .is_some());
-    assert!(contract
-        .list_ema_prices_unsafe(vec![price_id()])
-        .get(&price_id())
-        .unwrap()
-        .is_some());
+    assert!(contract.get_feed_data(unknown_feed).is_none());
 }
 
 #[test]
 fn replays_are_ignored_and_newer_updates_apply() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     let first = real_time(NOW_S * 1_000_000, 100, 100, 1);
@@ -448,16 +220,16 @@ fn replays_are_ignored_and_newer_updates_apply() {
     // no storage, so a zero deposit is accepted.
     relayer_context(NearToken::from_yoctonear(0));
     contract.update_price_feeds(Base64VecU8(first));
-    assert_eq!(contract.get_price_unsafe(price_id()).unwrap().price.0, 100);
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 100);
 
     // A strictly newer payload applies (same footprint => still free).
     contract.update_price_feeds(Base64VecU8(real_time((NOW_S + 1) * 1_000_000, 200, 200, 1)));
-    assert_eq!(contract.get_price_unsafe(price_id()).unwrap().price.0, 200);
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 200);
 }
 
 #[test]
 fn full_deposit_refunded_when_no_new_storage() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // First update creates the feed (consumes storage).
     relayer_context(ample_deposit());
@@ -482,7 +254,7 @@ fn full_deposit_refunded_when_no_new_storage() {
 
 #[test]
 fn newer_package_with_older_feed_timestamp_does_not_regress() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     // First: package + per-feed timestamp at NOW.
@@ -501,14 +273,14 @@ fn newer_package_with_older_feed_timestamp_does_not_regress() {
         full_props(999, 999, 1, (NOW_S - 10) * 1_000_000),
     )));
 
-    let feed = contract.get_price_unsafe(price_id()).unwrap();
+    let feed = contract.get_feed_data(FEED_ID).unwrap();
     assert_eq!(feed.price.0, 100);
-    assert_eq!(feed.publish_time.as_secs(), i64::try_from(NOW_S).unwrap());
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S);
 }
 
 #[test]
 fn future_feed_timestamp_is_rejected() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     // Package timestamp is current (passes the verifier window), but the per-feed FeedUpdateTimestamp
@@ -519,41 +291,32 @@ fn future_feed_timestamp_is_rejected() {
         full_props(123_456, 123_000, 50, (NOW_S + 10_000) * 1_000_000),
     )));
 
-    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
 }
 
 #[test]
-fn future_feed_within_tolerance_is_stored_but_not_fresh() {
-    let mut contract = deploy_and_map();
+fn future_feed_within_tolerance_is_stored() {
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
-    // Per-feed timestamp 5s ahead of block time: within max_timestamp_ahead_s, so it is stored...
+    // Per-feed timestamp 5s ahead of block time: within max_timestamp_ahead_s, so it is stored.
+    // (The adapter stores and serves raw; freshness — including any fail-closed treatment of a
+    // future publish time — is the consumer's concern, not the adapter's.)
     contract.update_price_feeds(Base64VecU8(build_payload(
         NOW_S * 1_000_000,
         ChannelId::REAL_TIME.0,
         full_props(123_456, 123_000, 50, (NOW_S + 5) * 1_000_000),
     )));
-    assert!(contract.price_feed_exists(price_id()));
 
-    // ...but a future publish time is never "fresh": the age-gated and non-suffixed views fail
-    // closed (matching the proxy-oracle cache).
-    assert!(contract.get_price_no_older_than(price_id(), 600).is_none());
-    assert!(contract
-        .get_ema_price_no_older_than(price_id(), 600)
-        .is_none());
-    assert!(contract.get_price(price_id()).is_none());
-    assert!(contract.get_ema_price(price_id()).is_none());
-
-    // The unsafe variants make no freshness promise, so they still expose it.
-    assert_eq!(
-        contract.get_price_unsafe(price_id()).unwrap().price.0,
-        123_456
-    );
+    let feed = contract.get_feed_data(FEED_ID).unwrap();
+    assert_eq!(feed.price.0, 123_456);
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S + 5);
+    assert_eq!(ema(&contract, FEED_ID).unwrap().price.0, 123_000);
 }
 
 #[test]
 fn missing_spot_confidence_skips_feed() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(NearToken::from_yoctonear(0));
     // Price present but no Confidence property: not definitely-correct, so the feed is not stored.
@@ -570,12 +333,12 @@ fn missing_spot_confidence_skips_feed() {
             ))),
         ],
     )));
-    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
 }
 
 #[test]
 fn ema_price_without_ema_confidence_skips_feed() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(NearToken::from_yoctonear(0));
     // EmaPrice present but no EmaConfidence: a half-specified EMA is malformed, so the whole feed
@@ -593,12 +356,12 @@ fn ema_price_without_ema_confidence_skips_feed() {
             ))),
         ],
     )));
-    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
 }
 
 #[test]
 fn duplicate_feed_id_in_payload_is_first_wins() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     let feed = |price: i64| PayloadFeedData {
         feed_id: PriceFeedId(FEED_ID),
@@ -623,7 +386,7 @@ fn duplicate_feed_id_in_payload_is_first_wins() {
     contract.update_price_feeds(Base64VecU8(payload));
 
     // Both entries carry the same publish timestamp, so the monotonic gate keeps the first.
-    assert_eq!(contract.get_price_unsafe(price_id()).unwrap().price.0, 111);
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 111);
 }
 
 #[test]
@@ -631,7 +394,7 @@ fn duplicate_feed_id_in_payload_is_first_wins() {
 fn update_exceeding_max_feeds_rejected() {
     // A signed bundle carrying more feeds than `max_feeds_per_update` is rejected up front, before
     // any storage write or event emission, so the NEP-297 `UpdatePrices` log stays bounded.
-    let mut contract = deploy_and_map_with(ConfigArgs {
+    let mut contract = deploy_with(ConfigArgs {
         max_feeds_per_update: 1,
         ..config()
     });
@@ -659,7 +422,7 @@ fn update_exceeding_max_feeds_rejected() {
 
 #[test]
 fn negative_confidence_skips_feed() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Negative spot confidence is malformed -> the feed is skipped entirely (no storage consumed).
     relayer_context(NearToken::from_yoctonear(0));
@@ -669,7 +432,7 @@ fn negative_confidence_skips_feed() {
         123_000,
         -1,
     )));
-    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
 
     // Negative EMA confidence likewise skips the feed.
     contract.update_price_feeds(Base64VecU8(build_payload(
@@ -686,7 +449,7 @@ fn negative_confidence_skips_feed() {
             ))),
         ],
     )));
-    assert!(!contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
 }
 
 fn spot_only_props(price: i64, conf: i64, timestamp_us: u64) -> Vec<PayloadPropertyValue> {
@@ -700,7 +463,7 @@ fn spot_only_props(price: i64, conf: i64, timestamp_us: u64) -> Vec<PayloadPrope
 
 #[test]
 fn payload_without_ema_is_skipped() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     // The stateful path requires EMA: a spot-only payload stores nothing at all (no spot-only
@@ -711,17 +474,16 @@ fn payload_without_ema_is_skipped() {
         spot_only_props(123_456, 50, NOW_S * 1_000_000),
     )));
 
-    assert!(!contract.price_feed_exists(price_id()));
-    assert!(contract.get_price_unsafe(price_id()).is_none());
-    assert!(contract.get_ema_price_unsafe(price_id()).is_none());
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+    assert!(ema(&contract, FEED_ID).is_none());
 }
 
 #[test]
 fn spot_only_update_cannot_wipe_stored_ema() {
     // Regression for the market-DoS vector (ENG-385): a relayer submits a valid signed spot-only
-    // update with a strictly-newer timestamp for an already-mapped feed. It must NOT overwrite the
+    // update with a strictly-newer timestamp for an already-stored feed. It must NOT overwrite the
     // stored full feed and drop its EMA.
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     relayer_context(ample_deposit());
     // Honest full update at NOW: spot + EMA both stored.
@@ -731,10 +493,7 @@ fn spot_only_update_cannot_wipe_stored_ema() {
         123_000,
         50,
     )));
-    assert_eq!(
-        contract.get_ema_price_unsafe(price_id()).unwrap().price.0,
-        123_000
-    );
+    assert_eq!(ema(&contract, FEED_ID).unwrap().price.0, 123_000);
 
     // Attacker's spot-only update at NOW+5s (strictly newer): rejected wholesale, so nothing
     // changes — the EMA survives, and even the (authentic) newer spot is not applied.
@@ -745,12 +504,12 @@ fn spot_only_update_cannot_wipe_stored_ema() {
     )));
 
     assert_eq!(
-        contract.get_ema_price_unsafe(price_id()).unwrap().price.0,
+        ema(&contract, FEED_ID).unwrap().price.0,
         123_000,
         "spot-only update must not wipe the stored EMA"
     );
     assert_eq!(
-        contract.get_price_unsafe(price_id()).unwrap().price.0,
+        contract.get_feed_data(FEED_ID).unwrap().price.0,
         123_456,
         "the rejected spot-only update must not advance spot either"
     );
@@ -760,7 +519,7 @@ fn spot_only_update_cannot_wipe_stored_ema() {
 fn verify_update_stays_at_parity_for_spot_only_payloads() {
     // The stateless verify-and-return surface must match the official Pyth Pro contracts: it does
     // NOT require EMA. A spot-only payload still verifies and returns its parsed properties.
-    let contract = deploy_and_map();
+    let contract = deploy();
 
     let view = contract.verify_update(Base64VecU8(build_payload(
         NOW_S * 1_000_000,
@@ -779,7 +538,7 @@ fn verify_update_stays_at_parity_for_spot_only_payloads() {
 #[test]
 #[should_panic(expected = "Insufficient deposit")]
 fn insufficient_storage_deposit_for_new_feed_panics() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // A brand-new feed consumes storage; a zero deposit cannot cover it.
     relayer_context(NearToken::from_yoctonear(0));
@@ -794,7 +553,7 @@ fn insufficient_storage_deposit_for_new_feed_panics() {
 #[test]
 #[should_panic(expected = "Insufficient deposit")]
 fn update_fee_must_be_covered() {
-    let mut contract = deploy_and_map_with(ConfigArgs {
+    let mut contract = deploy_with(ConfigArgs {
         update_fee: NearToken::from_near(5),
         ..config()
     });
@@ -812,7 +571,7 @@ fn update_fee_must_be_covered() {
 #[test]
 fn update_fee_is_retained_and_excess_refunded() {
     let update_fee = NearToken::from_millinear(10);
-    let mut contract = deploy_and_map_with(ConfigArgs {
+    let mut contract = deploy_with(ConfigArgs {
         update_fee,
         ..config()
     });
@@ -820,7 +579,7 @@ fn update_fee_is_retained_and_excess_refunded() {
     // First update creates the feed (consumes storage); fund it amply.
     relayer_context(ample_deposit());
     contract.update_price_feeds(Base64VecU8(real_time(NOW_S * 1_000_000, 100, 100, 1)));
-    assert!(contract.price_feed_exists(price_id()));
+    assert!(contract.get_feed_data(FEED_ID).is_some());
 
     // A strictly-newer overwrite consumes no new storage, so the only charge is `update_fee`: the
     // refund must be exactly deposit - update_fee. (relayer_context resets the VM, so only this
@@ -843,7 +602,7 @@ fn update_fee_is_retained_and_excess_refunded() {
 #[test]
 #[should_panic(expected = "signer is not trusted")]
 fn rejects_untrusted_signer_payload() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Reconfigure to trust a different signer, then submit a payload from the original key.
     set_owner_context();
@@ -858,7 +617,7 @@ fn rejects_untrusted_signer_payload() {
 #[test]
 #[should_panic(expected = "Owner only")]
 fn admin_methods_reject_non_owner() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Non-owner attempting an admin mutation must panic (1 yocto attached to pass the payable gate).
     testing_env!(VMContextBuilder::new()
@@ -866,13 +625,13 @@ fn admin_methods_reject_non_owner() {
         .attached_deposit(NearToken::from_yoctonear(1))
         .block_timestamp(NOW_S * 1_000_000_000)
         .build());
-    contract.admin_set_feed_mapping(PriceIdentifier([0x33; 32]), Some(99));
+    contract.admin_set_config(config());
 }
 
 #[test]
 #[should_panic(expected = "Owner only")]
 fn admin_withdraw_rejects_non_owner() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     testing_env!(VMContextBuilder::new()
         .predecessor_account_id("attacker.near".parse().unwrap())
@@ -884,7 +643,7 @@ fn admin_withdraw_rejects_non_owner() {
 
 #[test]
 fn owner_can_withdraw() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
     set_owner_context();
     // Owner withdrawal schedules a transfer without panicking.
     let _ = contract.admin_withdraw(NearToken::from_yoctonear(1));
@@ -893,7 +652,7 @@ fn owner_can_withdraw() {
 #[test]
 #[should_panic(expected = "Owner only")]
 fn admin_upgrade_rejects_non_owner() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // 1 yocto attached so the failure is the owner gate, not the payable gate.
     testing_env!(VMContextBuilder::new()
@@ -907,7 +666,7 @@ fn admin_upgrade_rejects_non_owner() {
 #[test]
 #[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
 fn admin_upgrade_requires_one_yocto() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Owner, but no deposit: the payable gate must reject before any deploy is scheduled.
     testing_env!(VMContextBuilder::new()
@@ -920,7 +679,7 @@ fn admin_upgrade_requires_one_yocto() {
 
 #[test]
 fn fresh_deploy_is_at_state_version_one() {
-    let _contract = deploy_and_map();
+    let _contract = deploy();
 
     // A fresh deploy stamps the on-chain state version, and target == stored, so no migration is
     // pending. (`admin_upgrade`'s batched `migrate` is the seam for future version bumps.)
@@ -965,7 +724,7 @@ fn duplicate_signers_rejected() {
 fn signer_set_serializes_in_public_key_order() {
     // The `BTreeMap`-backed `SignerSet` yields a deterministic, public-key-sorted array regardless
     // of insertion order — locking the structural-uniqueness representation's wire behavior.
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
     set_owner_context();
     // Insert two signers that bracket the default key, in non-sorted order.
     contract.admin_set_signer(hex::encode([0xFF; 32]), Some(NOW_S + 1));
@@ -998,19 +757,6 @@ fn zero_delay_window_rejected() {
 }
 
 #[test]
-#[should_panic(expected = "default_valid_time_period_s must be non-zero")]
-fn zero_default_validity_rejected() {
-    set_owner_context();
-    let _ = Contract::new(
-        owner(),
-        ConfigArgs {
-            default_valid_time_period_s: 0,
-            ..config()
-        },
-    );
-}
-
-#[test]
 #[should_panic(expected = "max_feeds_per_update must be non-zero")]
 fn zero_max_feeds_per_update_rejected() {
     set_owner_context();
@@ -1026,7 +772,7 @@ fn zero_max_feeds_per_update_rejected() {
 #[test]
 #[should_panic(expected = "signer set must not be empty")]
 fn admin_set_config_validates() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
     set_owner_context();
     contract.admin_set_config(ConfigArgs {
         signers: vec![],
@@ -1037,7 +783,7 @@ fn admin_set_config_validates() {
 #[test]
 #[should_panic(expected = "cannot remove the last signer")]
 fn admin_set_signer_cannot_remove_last() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
     set_owner_context();
     // config() has exactly one signer; removing it (`None`) must be rejected.
     contract.admin_set_signer(hex::encode(signer_public_key()), None);
@@ -1045,7 +791,7 @@ fn admin_set_signer_cannot_remove_last() {
 
 #[test]
 fn admin_set_signer_removes_non_last_signer() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
     set_owner_context();
 
     // Add a second signer, then remove the original — leaving exactly the new one.
@@ -1071,7 +817,7 @@ fn rotating_in_a_new_signer_accepts_its_updates() {
     // program; the owner mirrors that here via `admin_set_signer`.)
     let new_key = SigningKey::from_bytes(&[9u8; 32]);
 
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Owner rotates the new key in (keeping the existing one during the overlap window).
     set_owner_context();
@@ -1089,16 +835,13 @@ fn rotating_in_a_new_signer_accepts_its_updates() {
         123_000,
         50,
     )));
-    assert_eq!(
-        contract.get_price_unsafe(price_id()).unwrap().price.0,
-        123_456
-    );
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 123_456);
 }
 
 #[test]
 #[should_panic(expected = "signer is not trusted")]
 fn refreshing_signer_expiry_into_the_past_rejects_updates() {
-    let mut contract = deploy_and_map();
+    let mut contract = deploy();
 
     // Refresh the (only) signer's expiry to `now` — i.e. lapse it (`expires_at_s > now` is false).
     // This exercises both upsert-refresh and the expiry gate in verification.
@@ -1118,7 +861,7 @@ fn refreshing_signer_expiry_into_the_past_rejects_updates() {
 
 #[test]
 fn verify_update_returns_data_without_writing_storage() {
-    let contract = deploy_and_map();
+    let contract = deploy();
 
     relayer_context(NearToken::from_yoctonear(0)); // a view: no deposit needed
     let view = contract.verify_update(Base64VecU8(real_time(
@@ -1140,13 +883,12 @@ fn verify_update_returns_data_without_writing_storage() {
     assert_eq!(feed.exponent, Some(EXPO));
 
     // ...and nothing was persisted.
-    assert!(!contract.price_feed_exists(price_id()));
     assert!(contract.get_feed_data(FEED_ID).is_none());
 }
 
 #[test]
 fn verify_update_surfaces_non_pyth_properties() {
-    let contract = deploy_and_map();
+    let contract = deploy();
     relayer_context(NearToken::from_yoctonear(0));
 
     // A payload carrying properties outside the Pyth subset.
@@ -1169,7 +911,7 @@ fn verify_update_surfaces_non_pyth_properties() {
 #[should_panic(expected = "signer is not trusted")]
 fn verify_update_rejects_untrusted_signer() {
     let key_b = SigningKey::from_bytes(&[9u8; 32]);
-    let contract = deploy_and_map(); // trusts the default key, not key_b
+    let contract = deploy(); // trusts the default key, not key_b
 
     relayer_context(NearToken::from_yoctonear(0));
     let _ = contract.verify_update(Base64VecU8(real_time_signed_by(
