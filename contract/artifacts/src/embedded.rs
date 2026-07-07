@@ -5,27 +5,28 @@
 //! # Where the bytes live
 //!
 //! Each catalog artifact has its WASM bytes checked in under
-//! `contract/artifacts/res/near/{target_name}/{target_name}.wasm`. These
-//! files are the **single source of truth** for the embedded bytes. They
-//! are updated by running `./script/prebuild-test-contracts.sh --profile drift`
-//! and then copying the fresh output from Cargo's resolved `target/near/`
-//! directory into `res/near/`.
+//! `contract/artifacts/res/near/{target_name}/{target_name}.wasm`. These files
+//! are the **single source of truth** for the embedded bytes and are treated as
+//! versioned, pinned release artifacts — source is free to move ahead of a
+//! shipped blob. To deliberately ship new bytes for an artifact:
+//! ```bash
+//! cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
+//! cp target/near/<contract>/<contract>.wasm \
+//!    contract/artifacts/res/near/<contract>/<contract>.wasm
+//! ```
+//! then update that entry's `expected_sha256` (and `version`) in `ids.rs`.
 //!
-//! # Staleness guarantee
+//! # Consistency guarantee
 //!
-//! The [`embedded_drift_check`] test (ignored by default) compares every
-//! checked-in blob against the corresponding file under Cargo's resolved
-//! `target/near/` directory. Because
-//! `cargo near build reproducible-wasm` embeds the source commit in NEP-330
-//! metadata, the comparison canonicalizes only those self-referential commit
-//! hashes before comparing bytes. Any other byte drift still fails. If the
-//! test fails, the checked-in bytes are stale and must be refreshed.
+//! The [`embedded_drift_check`] test verifies every checked-in blob hashes to
+//! the `expected_sha256` pinned in its catalog entry — a pure, in-memory check
+//! with no rebuild. A blob change is therefore a reviewable edit: the binary and
+//! its pinned hash must change together, or the check fails.
 //!
-//! Run the drift check (both byte and version drift):
+//! Run the drift check (blob hash and catalog version):
 //! ```bash
 //! ./script/check-artifact-drift.sh
 //! ```
-//! CI runs this separately from ordinary integration tests.
 
 use crate::ArtifactId;
 
@@ -80,83 +81,46 @@ mod tests {
         }
     }
 
-    /// **Stale-byte drift check** — compares every checked-in embedded blob
-    /// against the corresponding file under Cargo's resolved `target/near`
-    /// directory on disk.
+    /// **Blob hash-pin check** — verifies every checked-in embedded blob hashes
+    /// to the `expected_sha256` pinned in its catalog entry.
     ///
-    /// This test is `#[ignore]` because it requires all contracts to be
-    /// prebuilt in Cargo's resolved `target/near` directory. `cargo near build reproducible-wasm` embeds
-    /// the source commit in NEP-330 metadata, so this check canonicalizes only
-    /// those source-ref commit hashes before comparing bytes. Any other byte
-    /// drift means the embedded blobs need to be refreshed.
+    /// This makes a blob change a reviewable edit: the binary and its pinned
+    /// hash must change together in the same diff, or this fails. It is a pure,
+    /// in-memory comparison — no rebuild, no `target/near`, no reproducible
+    /// toolchain — so it runs in the normal test suite.
     ///
-    /// To refresh:
-    /// 1. Run `./script/prebuild-test-contracts.sh --profile drift`
-    /// 2. Copy fresh output into `res/near/`
-    /// 3. Rebuild and re-run this test
+    /// The embedded blobs are treated as versioned, pinned release artifacts,
+    /// not a mirror of `HEAD`: source is free to move ahead of a shipped blob.
+    /// To deliberately ship new bytes for an artifact:
+    /// 1. `cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml`
+    /// 2. `cp target/near/<contract>/<contract>.wasm contract/artifacts/res/near/<contract>/<contract>.wasm`
+    /// 3. Update that entry's `expected_sha256` (and `version`) in `ids.rs`.
     #[test]
-    #[cfg(feature = "workspace-loader")]
-    #[ignore = "requires all prebuilt artifacts in target/near"]
     fn embedded_drift_check() {
-        use crate::{
-            sha256_hex,
-            wasm_drift::canonicalize_nep330_source_refs,
-            workspace_loader::{get_metadata, target_near_wasm_path_from_meta},
-        };
+        use crate::sha256_hex;
 
-        let workspace_dir = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
-        let metadata = get_metadata(workspace_dir).unwrap_or_else(|e| {
-            panic!("Failed to read cargo metadata: {e}");
-        });
-
-        // Collect every drifted artifact rather than panicking on the first, so
-        // one run of this test reports all stale blobs. Otherwise a batch merge
-        // that staled several blobs forces a fix-one, rebuild (~25min), repeat
-        // loop, since each panic hides the artifacts after it.
-        let mut drifted = Vec::new();
-
-        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
-            let embedded = artifact.id.embedded_bytes();
-
-            let disk_path = target_near_wasm_path_from_meta(
-                metadata.target_directory.as_std_path(),
-                artifact.cargo_target_name,
-            );
-            let disk_bytes = std::fs::read(&disk_path).unwrap_or_else(|e| {
-                panic!(
-                    "Cannot read {} ({}): {e}.\n\
-                     Run ./script/prebuild-test-contracts.sh --profile drift to generate artifacts.",
-                    disk_path.display(),
-                    artifact.package_name,
-                )
-            });
-
-            let canonical_embedded = canonicalize_nep330_source_refs(embedded);
-            let canonical_disk = canonicalize_nep330_source_refs(&disk_bytes);
-            if canonical_embedded == canonical_disk {
-                continue;
-            }
-
-            drifted.push(format!(
-                "  {} — embedded SHA {} (canonical {}) vs disk SHA {} (canonical {})",
-                artifact.package_name,
-                sha256_hex(embedded),
-                sha256_hex(&canonical_embedded),
-                sha256_hex(&disk_bytes),
-                sha256_hex(&canonical_disk),
-            ));
-        }
+        // Report every mismatch at once rather than panicking on the first, so a
+        // batch refresh is a single edit pass instead of fix-one-then-rerun.
+        let drifted = ArtifactId::ALL
+            .iter()
+            .map(|id| id.metadata())
+            .filter_map(|artifact| {
+                let actual = sha256_hex(artifact.id.embedded_bytes());
+                (actual != artifact.expected_sha256).then(|| {
+                    format!(
+                        "  {} — embedded blob is {actual}, catalog pins {}",
+                        artifact.package_name, artifact.expected_sha256,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
 
         assert!(
             drifted.is_empty(),
-            "Drift detected for {} artifact(s) — checked-in embedded bytes do not \
-             match current `target/near` output after canonicalizing NEP-330 source \
-             commit refs:\n{}\n\
-             The checked-in blobs are stale. Re-run:\n\
-               1. ./script/prebuild-test-contracts.sh --profile drift\n\
-               2. cp target/near/{{contract}}/{{contract}}.wasm \\\n\
-                     contract/artifacts/res/near/{{contract}}/{{contract}}.wasm\n\
-             for each artifact above, then rebuild this crate.",
+            "Blob hash drift for {} artifact(s) — embedded bytes do not match the \
+             `expected_sha256` pinned in ids.rs:\n{}\n\
+             If this is an intended blob change, update each entry's \
+             `expected_sha256` (and `version`) to match the new bytes.",
             drifted.len(),
             drifted.join("\n"),
         );

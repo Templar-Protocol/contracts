@@ -20,8 +20,6 @@ pub(crate) mod embedded;
 mod ids;
 #[cfg(all(feature = "workspace-loader", feature = "clap"))]
 pub mod prebuild;
-#[cfg(test)]
-mod wasm_drift;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 

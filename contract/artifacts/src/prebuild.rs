@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf, process::ExitCode, time::Duration};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 
 use crate::{workspace_loader, ArtifactId, ArtifactMetadata};
 
@@ -9,21 +9,6 @@ use scheduler::prebuild_all;
 
 const DEFAULT_MAX_JOBS: usize = 4;
 const DEFAULT_BUILD_TIMEOUT_SECS: u64 = 30 * 60;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum PrebuildProfile {
-    Test,
-    Drift,
-}
-
-impl PrebuildProfile {
-    const fn reproducible(self) -> bool {
-        match self {
-            Self::Test => false,
-            Self::Drift => true,
-        }
-    }
-}
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -40,10 +25,6 @@ struct Args {
     )]
     timeout_secs: u64,
 
-    /// Build profile for contract artifacts.
-    #[arg(long, value_enum, default_value_t = PrebuildProfile::Drift)]
-    profile: PrebuildProfile,
-
     /// Artifact to build; repeat or separate values with commas.
     #[arg(
         long = "artifact",
@@ -59,10 +40,9 @@ pub fn main() -> ExitCode {
     let args = Args::parse();
     let jobs = args.jobs.max(1);
     let timeout = Duration::from_secs(args.timeout_secs);
-    let reproducible = args.profile.reproducible();
     let artifacts = selected_artifacts(&args.artifacts);
 
-    match prebuild_all(&args.workspace_root, jobs, timeout, reproducible, artifacts) {
+    match prebuild_all(&args.workspace_root, jobs, timeout, artifacts) {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
     }

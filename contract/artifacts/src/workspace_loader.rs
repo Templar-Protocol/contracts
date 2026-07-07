@@ -190,10 +190,12 @@ pub fn build_artifact(
 pub fn spawn_artifact_build(
     workspace_dir: &Path,
     artifact: &ArtifactMetadata,
-    reproducible: bool,
 ) -> std::io::Result<std::process::Child> {
     let manifest_path = artifact.manifest_path();
-    let mut command = build_command(workspace_dir, manifest_path, reproducible);
+    // Prebuilt test artifacts land in `target/near` for the test suite, not the
+    // checked-in `res/near` release blobs, so a fast non-reproducible build is
+    // sufficient here.
+    let mut command = build_command(workspace_dir, manifest_path, false);
     configure_build_process_group(&mut command);
     command.spawn()
 }

@@ -2,7 +2,7 @@
 set -e
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
-"$SCRIPT_DIR/prebuild-test-contracts.sh" --profile drift
+"$SCRIPT_DIR/prebuild-test-contracts.sh"
 export TEST_CONTRACTS_PREBUILT=1
 
 cargo run --package templar-market-contract --example gas_report

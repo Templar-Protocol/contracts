@@ -10,7 +10,7 @@
 //! needs the test wasms prebuilt. Run with:
 //!
 //! ```bash
-//! ./script/prebuild-test-contracts.sh --profile test
+//! ./script/prebuild-test-contracts.sh
 //! TEST_CONTRACTS_PREBUILT=1 cargo test -p templar-liquidator --test liquidation_sandbox -- --ignored
 //! ```
 

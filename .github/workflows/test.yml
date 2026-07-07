@@ -114,11 +114,10 @@ jobs:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
-            # A dependency or version bump can change reproducible WASM or catalog
-            # version keys without touching contract `src/**`. The drift check must
-            # run on these too, or stale embedded blobs / version keys could merge.
+            # A version bump can change catalog version keys without touching
+            # contract `src/**`. The drift check's version guard must run on these
+            # too, or a stale catalog `version` could merge.
             artifact_manifests:
-              - 'Cargo.lock'
               - 'Cargo.toml'
               - 'contract/**/Cargo.toml'
               - 'mock/**/Cargo.toml'
@@ -462,24 +461,11 @@ jobs:
 
   artifact-drift-check:
     name: Artifact Drift Check
-    timeout-minutes: 40
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' || needs.changes.outputs.artifact_manifests == 'true' }}
     steps:
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          sudo apt-get clean
-          echo "Disk space after cleanup:"
-          df -h
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -487,13 +473,9 @@ jobs:
 
       - uses: ./.github/actions/rust
 
-      - name: Install cargo-near
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
-
       - name: Check artifact drift
         env:
           CARGO_TERM_COLOR: always
-          CARGO_INCREMENTAL: 0
         run: ./script/check-artifact-drift.sh
 
   coverage:

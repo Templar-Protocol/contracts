@@ -37,38 +37,6 @@ fn accepts_timeout_secs_flag() {
 }
 
 #[test]
-fn defaults_to_drift_profile() {
-    let args = parse_args([OsString::from("prebuild-test-contracts")]);
-
-    assert_eq!(args.profile, PrebuildProfile::Drift);
-    assert!(args.profile.reproducible());
-}
-
-#[test]
-fn accepts_test_profile() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--profile"),
-        OsString::from("test"),
-    ]);
-
-    assert_eq!(args.profile, PrebuildProfile::Test);
-    assert!(!args.profile.reproducible());
-}
-
-#[test]
-fn accepts_drift_profile() {
-    let args = parse_args([
-        OsString::from("prebuild-test-contracts"),
-        OsString::from("--profile"),
-        OsString::from("drift"),
-    ]);
-
-    assert_eq!(args.profile, PrebuildProfile::Drift);
-    assert!(args.profile.reproducible());
-}
-
-#[test]
 fn rejects_debug_flag() {
     let error = Args::try_parse_from([
         OsString::from("prebuild-test-contracts"),

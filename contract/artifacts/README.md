@@ -38,69 +38,66 @@ or by `cargo near build`. The crate only *reads* the resulting artifacts.
 
 When the `embedded-wasm` feature is active, every `include_bytes!` call
 reads from **checked-in files** under `contract/artifacts/res/near/`.
-These blobs are pinned in version control and only updated when the
-prebuild script is re-run and the fresh output is copied into `res/near/`.
-The prebuild script uses this crate's artifact catalog to run `cargo near
-build reproducible-wasm` for every catalog entry. Tracked source changes must
-be committed before running it so CI rebuilds from a commit-pinned source
-snapshot.
+These blobs are pinned in version control and treated as versioned, immutable
+release artifacts: source is free to move ahead of a shipped blob, and a blob is
+only replaced when you deliberately cut new bytes (see below).
 
-Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds
-run concurrently. If unset, the prebuild helper uses a bounded default based on
-available CPU parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or
-pass `--timeout-secs <n>` to override the per-contract build timeout; the
-default is 30 minutes.
+### The prebuild helper (test artifacts)
 
-By default, the prebuild helper runs reproducible builds for every catalog
-entry. For local iteration, pass `--profile test` to use `cargo near build
-non-reproducible-wasm`. Pass `--artifact <name>` to rebuild a subset. The
-artifact option can be repeated or comma-separated.
+`./script/prebuild-test-contracts.sh` builds contracts into Cargo's
+`target/near/` for the **test suite** (via `TEST_CONTRACTS_PREBUILT=1`). It uses
+fast, non-reproducible `cargo near build` and never touches the checked-in
+`res/near/` blobs.
+
+Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds run
+concurrently. If unset, it uses a bounded default based on available CPU
+parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass
+`--timeout-secs <n>` to override the per-contract build timeout; the default is
+30 minutes. Pass `--artifact <name>` to build a subset (repeatable or
+comma-separated).
 
 ```bash
 ./script/prebuild-test-contracts.sh --artifact market
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
-./script/prebuild-test-contracts.sh --profile test --artifact mock-ft --artifact mock-mt
 ```
-
-Checked-in embedded blobs should still be refreshed from reproducible builds.
 
 All catalogued artifacts (production and mock) have embedded bytes available.
 
+### Refreshing a checked-in blob (release artifacts)
+
+To deliberately ship new bytes for an artifact — a reviewable, intentional act:
+
+```bash
+cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
+cp target/near/<contract>/<contract>.wasm \
+   contract/artifacts/res/near/<contract>/<contract>.wasm
+```
+
+Then update that entry's `expected_sha256` (and `version`) in `ids.rs` so the
+new bytes and their pinned hash land in the same diff.
+
 ### Checking for stale bytes
 
-Run the reproducible drift check:
+Run the drift check — pure, in-memory, no builds:
 
 ```bash
 ./script/check-artifact-drift.sh
 ```
 
-The script rebuilds artifacts with `--profile drift` and then runs:
+It runs:
 
 ```bash
-cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --ignored --nocapture
+cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --include-ignored --nocapture
 ```
 
-This runs both the **byte drift check** (compares embedded blobs against the
-Cargo-resolved `target/near` output) and the **version drift check** (verifies
-catalog versions match `Cargo.toml`), because `drift_check` is a substring filter matching
+which covers both the **blob hash-pin check** (every embedded blob hashes to its
+catalog `expected_sha256`) and the **version drift check** (catalog versions
+match `Cargo.toml`), since `drift_check` is a substring filter matching
 `embedded_drift_check` and `embedded_version_drift_check`.
 
-The byte drift check is strict, with one explicit exception: NEP-330 source
-metadata embeds the current commit hash in GitHub source URLs, so the check
-canonicalizes only those self-referential commit hashes before comparing
-bytes. Any other byte difference still fails and means the checked-in blob is
-stale.
-
-If either test fails, the checked-in bytes or catalog versions need updating.
-Fix by:
-
-1. Commit tracked source/build changes, then run `./script/prebuild-test-contracts.sh --profile drift`
-2. Copy fresh WASM from `target/near/` to `contract/artifacts/res/near/`
-3. Rebuild the crate
-4. Run the drift check again
-
-CI runs this separately from ordinary integration tests through
-`./script/check-artifact-drift.sh`.
+If either fails, update the offending catalog entry: for a blob change, refresh
+the bytes and `expected_sha256` as above; for a version mismatch, update the
+`version` field.
 
 ## Usage examples
 

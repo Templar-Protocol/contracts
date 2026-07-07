@@ -67,7 +67,6 @@ pub(super) fn prebuild_all(
     workspace_root: &Path,
     jobs: usize,
     timeout: Duration,
-    reproducible: bool,
     artifacts: Vec<&'static ArtifactMetadata>,
 ) -> Result<(), ()> {
     let mut pending = artifacts.into_iter().collect::<VecDeque<_>>();
@@ -86,7 +85,7 @@ pub(super) fn prebuild_all(
                 workspace_root.join(artifact.manifest_path()).display()
             );
 
-            match spawn_artifact_build(workspace_root, artifact, reproducible) {
+            match spawn_artifact_build(workspace_root, artifact) {
                 Ok(child) => running.push(RunningBuild {
                     artifact,
                     child: BuildProcess { child },

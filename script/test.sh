@@ -3,7 +3,7 @@ set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-"$SCRIPT_DIR/prebuild-test-contracts.sh" --profile test
+"$SCRIPT_DIR/prebuild-test-contracts.sh"
 export TEST_CONTRACTS_PREBUILT=1
 
 # `#[sqlx::test]` reads DATABASE_URL at runtime to provision per-test databases.

@@ -85,9 +85,9 @@ Notes:
 - `cargo test -p templar-common --lib` is a good fast regression check for logic changes in `common`.
 - `contract/vault`, `contract/registry`, and `contract/universal-account` all have `near-workspaces`-backed tests. If they fail in a restricted environment, say that clearly instead of silently skipping them.
 - For tests that deploy contracts into `near-workspaces`, prefer prebuilt test contracts. Rebuilding WASM inside each test run is much slower.
-- `./script/test.sh` already handles this by running `./script/prebuild-test-contracts.sh --profile test` first and setting `TEST_CONTRACTS_PREBUILT=1`.
+- `./script/test.sh` already handles this by running `./script/prebuild-test-contracts.sh` first and setting `TEST_CONTRACTS_PREBUILT=1`.
 - If you run `near-workspaces` tests directly, prefer following the same pattern: prebuild first, then run tests with `TEST_CONTRACTS_PREBUILT=1`.
-- Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it uses reproducible builds and is intentionally separate from ordinary test runs.
+- Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
 
 ## Code Search
 
