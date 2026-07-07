@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(ArtifactId::UniversalAccount.as_str(), "universal-account");
         assert_eq!(ArtifactId::MockRefFinance.to_string(), "mock-ref-finance");
         assert_eq!(
-            "PYTH-PRO-ADAPTER".parse::<ArtifactId>().unwrap(),
+            "PYTH-LAZER-ADAPTER".parse::<ArtifactId>().unwrap(),
             ArtifactId::PythLazerAdapter,
         );
         assert!("no-such-artifact".parse::<ArtifactId>().is_err());

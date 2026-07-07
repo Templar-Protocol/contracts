@@ -202,7 +202,7 @@ artifact: templar_contract_artifacts::ArtifactId,
 | proxy-governance    | templar-proxy-oracle-near-governance-contract | templar_proxy_oracle_near_governance_contract |
 | lst-oracle          | templar-lst-oracle-contract            | templar_lst_oracle_contract         |
 | redstone-adapter    | templar-redstone-adapter-contract      | templar_redstone_adapter_contract   |
-| pyth-pro-adapter    | templar-pyth-pro-adapter-contract       | templar_pyth_pro_adapter_contract   |
+| pyth-lazer-adapter  | templar-pyth-lazer-adapter-contract     | templar_pyth_lazer_adapter_contract |
 | mock-ft             | mock-ft                                | mock_ft                             |
 | mock-mt             | mock-mt                                | mock_mt                             |
 | mock-oracle         | mock-oracle                            | mock_oracle                         |
