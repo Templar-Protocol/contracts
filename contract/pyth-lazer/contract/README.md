@@ -1,7 +1,7 @@
-# templar-pyth-pro-adapter-contract
+# templar-pyth-lazer-adapter-contract
 
-NEAR cdylib for the Pyth Pro adapter: stores verified prices and serves them by native Lazer
-`u32` feed id. Verification lives in `templar-pyth-pro-verifier`; see the
+NEAR cdylib for the Pyth Lazer adapter: stores verified prices and serves them by native Lazer
+`u32` feed id. Verification lives in `templar-pyth-lazer-verifier`; see the
 [adapter overview](../README.md).
 
 ## Methods

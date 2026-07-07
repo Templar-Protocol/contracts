@@ -1,9 +1,9 @@
-//! Chain-agnostic verification and parsing for Pyth Pro (formerly Pyth Lazer) price updates.
+//! Chain-agnostic verification and parsing for Pyth Lazer price updates.
 //!
 //! This crate wraps the upstream [`pyth_lazer_protocol`] wire-format parser (built with its
 //! minimal, `default-features = false` feature set) and adds the trust checks an on-chain
 //! adapter needs: an ed25519 signature check against a trusted, non-expired signer set, channel
-//! filtering, and a timestamp freshness window. It targets Pyth Pro's **solana** delivery format
+//! filtering, and a timestamp freshness window. It targets Pyth Lazer's **solana** delivery format
 //! (ed25519 — NEAR's native scheme). It deliberately contains no chain-specific types — the host
 //! (e.g. a NEAR contract) supplies a [`Crypto`] implementation and converts the neutral
 //! [`VerifiedUpdate`] into its own storage/ABI types.

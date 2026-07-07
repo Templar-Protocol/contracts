@@ -11,8 +11,8 @@ use templar_common::oracle::{
 use templar_common::{Decimal, Nanoseconds};
 use templar_gateway_core::{
     client::{
-        lst_oracle::GetTransformerArgs, pyth_oracle::ListEmaPricesNoOlderThanArgs,
-        pyth_pro_oracle::GetFeedsDataArgs, redstone_oracle::ReadPriceDataArgs,
+        lst_oracle::GetTransformerArgs, pyth_lazer_oracle::GetFeedsDataArgs,
+        pyth_oracle::ListEmaPricesNoOlderThanArgs, redstone_oracle::ReadPriceDataArgs,
     },
     get_proxy, query_oracle_kind, resolve_price_dependencies, DispatchRead, GatewayError,
     GatewayResult, HasNearClient,
@@ -388,7 +388,7 @@ async fn fetch_oracle_request_onchain<C: HasNearClient>(
             .and_then(|feed| feed.to_pyth_price()),
         OracleRequest::Lazer(request) => ctx
             .near_client()
-            .pyth_pro_oracle(request.oracle_id)
+            .pyth_lazer_oracle(request.oracle_id)
             .get_feeds_data(GetFeedsDataArgs {
                 feed_ids: vec![request.feed_id],
             })

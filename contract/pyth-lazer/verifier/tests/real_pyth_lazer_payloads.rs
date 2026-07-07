@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-//! Regression tests over real Pyth Pro **solana**-format (ed25519) payloads captured offline from
+//! Regression tests over real Pyth Lazer **solana**-format (ed25519) payloads captured offline from
 //! the Lazer endpoint. The signer pubkey is carried in each envelope, so trust is established by
 //! reading it out (no recovery).
 
@@ -9,7 +9,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use pyth_lazer_protocol::message::SolanaMessage;
 use rstest::rstest;
 use templar_primitives::Nanoseconds;
-use templar_pyth_pro_verifier::{
+use templar_pyth_lazer_verifier::{
     verify_solana_update, Crypto, TrustedSigner, VerifyError, VerifyParams,
 };
 
@@ -60,7 +60,7 @@ fn params_for(trusted_signers: &[TrustedSigner], now_s: u64) -> VerifyParams<'_>
 #[case::payload_003(PAYLOAD_003, 1_781_675_143_800_000)]
 #[case::payload_004(PAYLOAD_004, 1_781_675_144_000_000)]
 #[case::payload_005(PAYLOAD_005, 1_781_675_144_200_000)]
-fn verifies_real_pyth_pro_solana_payloads(
+fn verifies_real_pyth_lazer_solana_payloads(
     #[case] payload_base64: &str,
     #[case] expected_timestamp_us: u64,
 ) {

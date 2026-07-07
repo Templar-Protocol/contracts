@@ -10,23 +10,21 @@ use pyth_lazer_protocol::api::{
 use pyth_lazer_protocol::message::SolanaMessage;
 use pyth_lazer_protocol::PriceFeedId;
 use templar_gateway_core::OraclePayloadSource;
-use templar_pyth_pro_verifier::{verify_solana_update, Crypto, TrustedSigner, VerifyParams};
+use templar_pyth_lazer_verifier::{verify_solana_update, Crypto, TrustedSigner, VerifyParams};
 use tokio::time::Instant;
 
 use super::*;
 use crate::lazer_wire::{decode_stream_message, DecodedLazerPayload, LazerStreamEvent};
 
-/// Read the live-network test environment — `PYTH_LAZER_API_KEY` (or
-/// `PYTH_PRO_API_KEY`), `PYTH_LAZER_FEED_IDS`, and the optional `PYTH_LAZER_WS_URL`
+/// Read the live-network test environment — `PYTH_LAZER_API_KEY`,
+/// `PYTH_LAZER_FEED_IDS`, and the optional `PYTH_LAZER_WS_URL`
 /// — into a `LazerSourceConfig` and the requested feed ids. Shared by the two
 /// `#[ignore]`d live tests below (`requires_network_fetches_production_lazer_payload`
 /// and `capture_live_stream_updated_fixture`) so they read the same env and build the
 /// same config and can't silently drift. Panics with a clear message on a missing or
 /// malformed variable; only reached once those variables are set.
 fn live_config_from_env() -> (LazerSourceConfig, Vec<u32>) {
-    let token = std::env::var("PYTH_LAZER_API_KEY")
-        .or_else(|_| std::env::var("PYTH_PRO_API_KEY"))
-        .expect("set PYTH_LAZER_API_KEY or PYTH_PRO_API_KEY");
+    let token = std::env::var("PYTH_LAZER_API_KEY").expect("set PYTH_LAZER_API_KEY");
     let feed_ids = std::env::var("PYTH_LAZER_FEED_IDS")
         .expect("set PYTH_LAZER_FEED_IDS to comma-separated u32 feed ids")
         .split(',')
@@ -169,7 +167,7 @@ fn oversized_payload_returns_error_before_decode() {
 }
 
 #[test]
-fn decoded_fixture_is_accepted_by_pyth_pro_verifier() {
+fn decoded_fixture_is_accepted_by_pyth_lazer_verifier() {
     let raw = fixture_bytes();
     let message = stream_message(JsonBinaryData {
         encoding: JsonBinaryEncoding::Base64,
@@ -356,7 +354,7 @@ async fn empty_request_returns_error() {
 ///   -- --ignored --nocapture capture_live_stream_updated_fixture
 /// ```
 #[tokio::test]
-#[ignore = "requires PYTH_LAZER_API_KEY/PYTH_PRO_API_KEY + PYTH_LAZER_FEED_IDS; captures a live fixture"]
+#[ignore = "requires PYTH_LAZER_API_KEY + PYTH_LAZER_FEED_IDS; captures a live fixture"]
 async fn capture_live_stream_updated_fixture() {
     use std::collections::BTreeSet;
 
@@ -450,7 +448,7 @@ async fn capture_live_stream_updated_fixture() {
 /// actor and confirm it fetches a non-empty payload for the requested feeds against
 /// the real Pyth Lazer stream. Ignored by default (needs credentials + network).
 #[tokio::test]
-#[ignore = "requires PYTH_LAZER_API_KEY/PYTH_PRO_API_KEY and PYTH_LAZER_FEED_IDS"]
+#[ignore = "requires PYTH_LAZER_API_KEY and PYTH_LAZER_FEED_IDS"]
 async fn requires_network_fetches_production_lazer_payload() {
     let (config, feed_ids) = live_config_from_env();
     let source = LazerPayloadSource::spawn(config);

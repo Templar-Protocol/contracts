@@ -169,7 +169,7 @@ mod tests {
                 ArtifactId::ProxyGovernance,
                 ArtifactId::LstOracle,
                 ArtifactId::RedstoneAdapter,
-                ArtifactId::PythProAdapter,
+                ArtifactId::PythLazerAdapter,
                 ArtifactId::MockFt,
                 ArtifactId::MockMt,
                 ArtifactId::MockOracle,
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(ArtifactId::MockRefFinance.to_string(), "mock-ref-finance");
         assert_eq!(
             "PYTH-PRO-ADAPTER".parse::<ArtifactId>().unwrap(),
-            ArtifactId::PythProAdapter,
+            ArtifactId::PythLazerAdapter,
         );
         assert!("no-such-artifact".parse::<ArtifactId>().is_err());
     }

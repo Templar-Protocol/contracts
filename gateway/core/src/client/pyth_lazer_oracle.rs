@@ -8,12 +8,12 @@ use crate::client::{
 use super::BoundContractClient;
 
 #[derive(Clone)]
-pub struct PythProOracleClient<'a> {
+pub struct PythLazerOracleClient<'a> {
     pub(crate) inner: &'a NearClient,
     pub(crate) contract_id: near_account_id::AccountId,
 }
 
-impl BoundContractClient for PythProOracleClient<'_> {
+impl BoundContractClient for PythLazerOracleClient<'_> {
     fn client(&self) -> &NearClient {
         self.inner
     }
@@ -22,9 +22,9 @@ impl BoundContractClient for PythProOracleClient<'_> {
     }
 }
 
-/// Arguments for the Pyth Pro adapter's permissionless `update_price_feeds`
+/// Arguments for the Pyth Lazer adapter's permissionless `update_price_feeds`
 /// write method. The field name `payload` matches the adapter's parameter name
-/// (`contract/pyth-pro/contract/src/lib.rs: update_price_feeds(payload:
+/// (`contract/pyth-lazer/contract/src/lib.rs: update_price_feeds(payload:
 /// Base64VecU8)`); renaming it would silently break the on-chain deserializer.
 #[derive(serde::Serialize)]
 pub struct UpdatePriceFeedsArgs {
@@ -39,7 +39,7 @@ pub struct GetFeedsDataArgs {
     pub feed_ids: Vec<u32>,
 }
 
-impl PythProOracleClient<'_> {
+impl PythLazerOracleClient<'_> {
     contract_views! {
         pub fn get_feeds_data(GetFeedsDataArgs) -> FeedDataResponse;
     }

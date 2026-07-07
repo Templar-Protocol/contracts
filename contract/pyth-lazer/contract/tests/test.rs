@@ -14,7 +14,7 @@ use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
 use templar_common::versioned_state::MigrateExternalInterface;
 
-use templar_pyth_pro_adapter_contract::{ConfigArgs, Contract, TrustedSigner};
+use templar_pyth_lazer_adapter_contract::{ConfigArgs, Contract, TrustedSigner};
 
 const FEED_ID: u32 = 2;
 const NOW_S: u64 = 1_700_000_000;
@@ -517,7 +517,7 @@ fn spot_only_update_cannot_wipe_stored_ema() {
 
 #[test]
 fn verify_update_stays_at_parity_for_spot_only_payloads() {
-    // The stateless verify-and-return surface must match the official Pyth Pro contracts: it does
+    // The stateless verify-and-return surface must match the official Pyth Lazer contracts: it does
     // NOT require EMA. A spot-only payload still verifies and returns its parsed properties.
     let contract = deploy();
 

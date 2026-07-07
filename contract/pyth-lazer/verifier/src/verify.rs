@@ -64,7 +64,7 @@ pub struct VerifyParams<'a> {
     pub allowed_channel_id: Option<u8>,
 }
 
-/// Verify and parse a Pyth Pro **solana**-format (ed25519) signed message. ("solana" is Pyth's
+/// Verify and parse a Pyth Lazer **solana**-format (ed25519) signed message. ("solana" is Pyth's
 /// name for the format; the verification runs on NEAR, whose native scheme is ed25519.)
 ///
 /// Checks, in order: envelope decode, trusted-and-unexpired signer (the pubkey is carried in the

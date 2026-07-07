@@ -12,7 +12,7 @@ pub use controller::{
     market::{MarketController, UnifiedMarketController},
     mock_oracle::MockOracleController,
     proxy_oracle::{GovernanceController, ProxyOracleController},
-    pyth_pro_adapter::PythProAdapterController,
+    pyth_lazer_adapter::PythLazerAdapterController,
     receiver::ReceiverController,
     redstone_adapter::{RedStoneAdapterController, RedStoneAdapterInterface},
     ref_finance::RefFinanceController,

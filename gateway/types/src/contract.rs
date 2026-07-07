@@ -14,14 +14,14 @@ pub enum ContractKind {
     UniversalAccount,
     RedstoneOracle,
     PythOracle,
-    /// Pyth Pro (Pyth Lazer) adapter. Answers the classic Pyth *view* ABI, so it is
+    /// Pyth Lazer adapter. Answers the classic Pyth *view* ABI, so it is
     /// detected separately (and before `PythOracle`) via its Lazer feed-mapping views;
     /// its *write* ABI takes a base64 Lazer `payload` rather than a hex Pyth `data`.
-    PythProOracle,
+    PythLazerOracle,
 }
 
 /// How the gateway resolves a price update/read for an oracle contract — the refined,
-/// resolution-facing view of an oracle's [`ContractKind`]. A Pyth Pro (Lazer) adapter is
+/// resolution-facing view of an oracle's [`ContractKind`]. A Pyth Lazer adapter is
 /// deliberately absent: it is not a standalone oracle. It is used only as a proxy `Lazer`
 /// source, so it never surfaces here as a resolvable top-level oracle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

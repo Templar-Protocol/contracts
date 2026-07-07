@@ -1,7 +1,7 @@
 #![allow(clippy::needless_pass_by_value)]
-//! Pyth Pro (formerly Pyth Lazer) oracle adapter for NEAR.
+//! Pyth Lazer oracle adapter for NEAR.
 //!
-//! A push-style adapter: anyone may relay a Pyth Pro signed price payload via
+//! A push-style adapter: anyone may relay a Pyth Lazer signed price payload via
 //! [`Contract::update_price_feeds`]; the adapter verifies it (ed25519 signature against a
 //! trusted, non-expired signer set, channel filter, freshness window, and a monotonic-per-feed
 //! timestamp that blocks replays) and stores the prices. Consumers read those prices by the
@@ -29,13 +29,13 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
-use templar_pyth_pro_verifier as verifier;
+use templar_pyth_lazer_verifier as verifier;
 
 use crate::crypto::EnvCrypto;
-use crate::events::PythProEvent;
+use crate::events::PythLazerEvent;
 use crate::state::State;
 
-/// A trusted Pyth Pro publisher: its 32-byte ed25519 public key (hex-encoded in JSON) and the
+/// A trusted Pyth Lazer publisher: its 32-byte ed25519 public key (hex-encoded in JSON) and the
 /// unix-seconds instant after which its signatures are no longer accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[near(serializers = [borsh, json])]
@@ -58,7 +58,7 @@ pub struct TrustedSigner {
 pub struct SignerSet(BTreeMap<[u8; 32], u64>);
 
 impl SignerSet {
-    /// Maximum number of trusted signers (Pyth Pro uses a small publisher set).
+    /// Maximum number of trusted signers (Pyth Lazer uses a small publisher set).
     pub const MAX: usize = 32;
 
     /// Validate a list of signers into the set.
@@ -275,7 +275,7 @@ impl TryFrom<ConfigArgs> for Config {
 /// it can never overwrite a stored feed and drop its EMA — a market-DoS vector, since consumers
 /// read EMA. This applies only to the stateful storage path; the stateless
 /// [`Contract::verify_update`] view does not call this and stays at parity with the official Pyth
-/// Pro contracts (spot-only payloads allowed).
+/// Lazer contracts (spot-only payloads allowed).
 fn feed_data_from_parsed(
     parsed: &verifier::ParsedFeed,
     package: Nanoseconds,
@@ -485,7 +485,7 @@ impl Contract {
             )
     }
 
-    /// Verify a Pyth Pro solana-format (ed25519) signed payload and store its feeds. Permissionless:
+    /// Verify a Pyth Lazer solana-format (ed25519) signed payload and store its feeds. Permissionless:
     /// authenticity is enforced cryptographically, and the per-feed monotonic timestamp check
     /// prevents replays and out-of-order writes.
     ///
@@ -543,7 +543,7 @@ impl Contract {
         let _refund =
             apply_storage_fee_and_refund(storage_before, self.config.update_fee.as_yoctonear());
 
-        PythProEvent::UpdatePrices { updated_feeds }.emit();
+        PythLazerEvent::UpdatePrices { updated_feeds }.emit();
     }
 
     /// Raw stored data for a Lazer feed id.
@@ -562,7 +562,7 @@ impl Contract {
             .collect()
     }
 
-    /// Stateless verify-and-return (read-only): verify a Pyth Pro solana-format payload against
+    /// Stateless verify-and-return (read-only): verify a Pyth Lazer solana-format payload against
     /// the configured signer set + freshness/channel policy and return the **full** verified update
     /// (all Lazer properties), **without** writing storage or charging a fee. Panics if
     /// verification fails. This is the official-Lazer-style parity surface; on

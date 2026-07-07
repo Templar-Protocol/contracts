@@ -80,7 +80,7 @@ pub struct Config {
     #[arg(long, env = "GATEWAY_DATABASE_MIGRATE", default_value_t = false)]
     pub migrate_database: bool,
 
-    /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Pro/Lazer).
+    /// In-process oracle payload sources (Pyth Hermes, RedStone bridge, Pyth Lazer).
     #[command(flatten)]
     pub oracle_sources: OracleSourceArgs,
 

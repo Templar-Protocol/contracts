@@ -1,15 +1,15 @@
-# Pyth Pro Trusted Signers
+# Pyth Lazer Trusted Signers
 
 How to obtain and verify the Ed25519/Solana signer public key(s) the adapter must trust
 (`Config.signers`). See [`SPEC.md`](./SPEC.md) for the verification contract.
 
 ## Finding
 
-There is **no static list** of Pyth Pro signer keys in Pyth's docs. The canonical Solana signer set
-is on-chain state in the deployed Pyth Pro Solana program storage account. Signers **rotate and
+There is **no static list** of Pyth Lazer signer keys in Pyth's docs. The canonical Solana signer set
+is on-chain state in the deployed Pyth Lazer Solana program storage account. Signers **rotate and
 expire** — never treat a recovered/hardcoded value as permanent.
 
-- Solana program, from Pyth Pro contract-address docs:
+- Solana program, from Pyth Lazer contract-address docs:
   `pytd2yyk641x7ak7mkaasSJVXh6YYZnC7wTmtgAyxPt`
 - Storage PDA, derived from seed `storage` under that program:
   `3rdJbqfnagQ4yx9HXJViD4zc4xpiSqmFsKpPuSCQVyQL`
@@ -20,7 +20,7 @@ expire** — never treat a recovered/hardcoded value as permanent.
 
 ## Current Value
 
-Read from real Pyth Pro Solana payloads:
+Read from real Pyth Lazer Solana payloads:
 
 ```text
 publicKey:    9gKEEcFzSd1PDYBKWAKZi4Sq4ZCUaVX5oTr8kEjdwsfR
@@ -54,8 +54,8 @@ The public key is carried in the envelope (no recovery); inspect a captured payl
 signature:
 
 ```sh
-node contract/pyth-pro/solana-payload-signer.mjs <BASE64_OR_HEX_PAYLOAD>
-printf '%s\n' '<BASE64_PAYLOAD>' | node contract/pyth-pro/solana-payload-signer.mjs
+node contract/pyth-lazer/solana-payload-signer.mjs <BASE64_OR_HEX_PAYLOAD>
+printf '%s\n' '<BASE64_PAYLOAD>' | node contract/pyth-lazer/solana-payload-signer.mjs
 ```
 
 Expected shape:
@@ -75,14 +75,14 @@ Expected shape:
 Use the dependency-free storage decoder:
 
 ```sh
-node contract/pyth-pro/query-solana-trusted-signers.mjs
+node contract/pyth-lazer/query-solana-trusted-signers.mjs
 ```
 
 Optional environment:
 
 ```sh
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com \
-node contract/pyth-pro/query-solana-trusted-signers.mjs
+node contract/pyth-lazer/query-solana-trusted-signers.mjs
 ```
 
 Expected shape:
@@ -131,7 +131,7 @@ signer.
 
 1. **Read the live Solana set** (source of truth):
    ```sh
-   node contract/pyth-pro/query-solana-trusted-signers.mjs   # pubkeys + expiries
+   node contract/pyth-lazer/query-solana-trusted-signers.mjs   # pubkeys + expiries
    ```
 2. **Add / refresh** a signer on the adapter (pass `expires_at_s` = unix seconds, ideally matching
    Solana's `expiresAt`):
@@ -167,5 +167,5 @@ Behavior is covered by `contract/.../tests/test.rs`
 Read the public key from a fresh Solana-format payload (A), enumerate live signers from Solana
 state (B), and set `Config.signers` to the current public key(s) with matching `expires_at_s`.
 
-A dedicated CLI / `service/pyth-pro-bridge` step (planned) should reconcile our signer set against the
+A dedicated CLI / `service/pyth-lazer-bridge` step (planned) should reconcile our signer set against the
 Solana storage account automatically so we track Pyth's rotations rather than updating by hand.

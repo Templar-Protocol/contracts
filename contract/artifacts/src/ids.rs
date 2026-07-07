@@ -56,8 +56,8 @@ pub enum ArtifactId {
     LstOracle,
     #[cfg_attr(feature = "clap", value(alias = "templar-redstone-adapter-contract"))]
     RedstoneAdapter,
-    #[cfg_attr(feature = "clap", value(alias = "templar-pyth-pro-adapter-contract"))]
-    PythProAdapter,
+    #[cfg_attr(feature = "clap", value(alias = "templar-pyth-lazer-adapter-contract"))]
+    PythLazerAdapter,
     // -- Mock / test contracts --
     MockFt,
     MockMt,
@@ -77,7 +77,7 @@ impl ArtifactId {
         Self::ProxyGovernance,
         Self::LstOracle,
         Self::RedstoneAdapter,
-        Self::PythProAdapter,
+        Self::PythLazerAdapter,
         Self::MockFt,
         Self::MockMt,
         Self::MockOracle,
@@ -99,7 +99,7 @@ impl ArtifactId {
             Self::ProxyGovernance => &PROXY_GOVERNANCE_METADATA,
             Self::LstOracle => &LST_ORACLE_METADATA,
             Self::RedstoneAdapter => &REDSTONE_ADAPTER_METADATA,
-            Self::PythProAdapter => &PYTH_PRO_ADAPTER_METADATA,
+            Self::PythLazerAdapter => &PYTH_LAZER_ADAPTER_METADATA,
             Self::MockFt => &MOCK_FT_METADATA,
             Self::MockMt => &MOCK_MT_METADATA,
             Self::MockOracle => &MOCK_ORACLE_METADATA,
@@ -142,8 +142,8 @@ impl ArtifactId {
             Self::RedstoneAdapter => include_bytes!(
                 "../res/near/templar_redstone_adapter_contract/templar_redstone_adapter_contract.wasm"
             ),
-            Self::PythProAdapter => include_bytes!(
-                "../res/near/templar_pyth_pro_adapter_contract/templar_pyth_pro_adapter_contract.wasm"
+            Self::PythLazerAdapter => include_bytes!(
+                "../res/near/templar_pyth_lazer_adapter_contract/templar_pyth_lazer_adapter_contract.wasm"
             ),
             Self::MockFt => include_bytes!("../res/near/mock_ft/mock_ft.wasm"),
             Self::MockMt => include_bytes!("../res/near/mock_mt/mock_mt.wasm"),
@@ -273,7 +273,7 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
     "templar_proxy_oracle_near_contract",
     "contract/proxy-oracle/near/contract",
     "0.2.0",
-    "579e3bba60aa09a4f5f5fbe5d92a6436e7fac45e8c6a9aebdf90c22d8d9d220a"
+    "d2943deefdb0fe6b25f2e182974250e94c040d24afa227c269f7b85ff7cd4cf0"
 );
 static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     ProxyGovernance,
@@ -299,13 +299,13 @@ static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "0.1.0",
     "c31323328f575cef844fe6c1aaa549a4b164b17147d58e30ee0435f799b36658"
 );
-static PYTH_PRO_ADAPTER_METADATA: ArtifactMetadata = entry!(
-    PythProAdapter,
-    "templar-pyth-pro-adapter-contract",
-    "templar_pyth_pro_adapter_contract",
-    "contract/pyth-pro/contract",
+static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
+    PythLazerAdapter,
+    "templar-pyth-lazer-adapter-contract",
+    "templar_pyth_lazer_adapter_contract",
+    "contract/pyth-lazer/contract",
     "0.1.0",
-    "3b12f98982406ef9333370104dd496b695783d4fed07cdf387f3100e4102f703"
+    "dbda89dfc19a37e56ecb983074128573f04ed06c7265b6c6e6bd403e42220220"
 );
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(
     MockFt,
@@ -329,7 +329,7 @@ static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
     "mock_oracle",
     "mock/oracle",
     "0.0.0",
-    "e03c7a051fbdab9eb0fc0e7d4426ebfe4cc9732e500ca575ccf0c860938dfbb9"
+    "76f76816cf4d0ccaf4b4e181ee1104ec8e6cbd13084f311b87a86087099a749c"
 );
 static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
     MockRefFinance,

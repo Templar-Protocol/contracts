@@ -42,7 +42,7 @@ clap = ["dep:clap"]
 [dev-dependencies]
 ed25519-dalek.workspace = true
 near-api.workspace = true
-templar-pyth-pro-verifier.workspace = true
+templar-pyth-lazer-verifier.workspace = true
 
 [lints]
 workspace = true
