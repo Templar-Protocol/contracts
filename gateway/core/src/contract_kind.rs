@@ -4,8 +4,11 @@ use templar_universal_account::authentication::ed25519;
 
 use crate::{
     client::{
-        cache::load_cached, lst_oracle::ListTransformersArgs, proxy_oracle::ListProxiesArgs,
-        pyth_lazer_oracle::GetFeedsDataArgs, pyth_oracle::ListEmaPricesUnsafeArgs,
+        cache::{is_method_not_found, load_cached},
+        lst_oracle::ListTransformersArgs,
+        proxy_oracle::ListProxiesArgs,
+        pyth_lazer_oracle::GetFeedsDataArgs,
+        pyth_oracle::ListEmaPricesUnsafeArgs,
         universal_account::UaGetKeyArgs,
     },
     GatewayError, GatewayResult, HasNearClient,
@@ -27,6 +30,21 @@ pub async fn query_contract_kind<C: HasNearClient>(
 }
 
 async fn detect_contract_kind<C: HasNearClient>(
+    ctx: &C,
+    contract_id: AccountId,
+) -> GatewayResult<ContractKind> {
+    match classify_contract_kind(ctx, contract_id).await {
+        Ok(kind) => Ok(kind),
+        // A deleted account can't be classified — the first probe short-circuits
+        // here with `AccountNotFound` (rather than walking every probe). Report
+        // `Unknown` so a registry-wide scan skips the stale record instead of
+        // aborting on it.
+        Err(GatewayError::AccountNotFound(_)) => Ok(ContractKind::Unknown),
+        Err(error) => Err(error),
+    }
+}
+
+async fn classify_contract_kind<C: HasNearClient>(
     ctx: &C,
     contract_id: AccountId,
 ) -> GatewayResult<ContractKind> {
@@ -208,29 +226,11 @@ async fn try_pyth_lazer_oracle_kind<C: HasNearClient>(
 fn probe_kind<T>(result: GatewayResult<T>) -> GatewayResult<bool> {
     match result {
         Ok(_) => Ok(true),
-        // A missing method means "not this kind". A missing account means the
-        // deployment record is stale — its account was already deleted (e.g. a
-        // partial `clear-deployments` teardown) — which is also "not this kind":
-        // detection falls through to `Unknown` instead of aborting a
-        // registry-wide `list-deployments-by-kind` scan on the first stale entry.
-        Err(error) if is_method_not_found(&error) || is_unknown_account(&error) => Ok(false),
+        // A missing method means "not this kind". Everything else — including a
+        // missing account (a stale deployment record) — propagates; the caller
+        // maps `AccountNotFound` to `Unknown`.
+        Err(error) if is_method_not_found(&error) => Ok(false),
         Err(error) => Err(error),
-    }
-}
-
-fn is_method_not_found(error: &GatewayError) -> bool {
-    matches!(error, GatewayError::NearQuery(message) if message.contains("MethodNotFound"))
-}
-
-fn is_unknown_account(error: &GatewayError) -> bool {
-    match error {
-        GatewayError::AccountNotFound(_) => true,
-        // View calls flatten the node's account-not-found error (typed or
-        // message form) into `NearQuery`, so match the stable RPC error name.
-        GatewayError::NearQuery(message) => {
-            message.contains("UnknownAccount") || message.contains("UNKNOWN_ACCOUNT")
-        }
-        _ => false,
     }
 }
 
@@ -251,20 +251,16 @@ mod tests {
             "ServerError(MethodNotFound { method_name: foo })"
         )))
         .unwrap());
-        // Stale record: the deployment's account was deleted — treated as "not
-        // this kind" so a registry-wide scan can continue past it. Both the typed
-        // and message forms, plus the typed `AccountNotFound`, must qualify.
-        assert!(!probe_kind::<()>(Err(near_query(
-            "ServerError(UnknownAccount { requested_account_id: gone.near })"
-        )))
-        .unwrap());
-        assert!(!probe_kind::<()>(Err(near_query("handler error: UNKNOWN_ACCOUNT"))).unwrap());
-        assert!(!probe_kind::<()>(Err(GatewayError::AccountNotFound(
-            "gone.near".parse().unwrap()
-        )))
-        .unwrap());
-        // A transient failure must still propagate, not be mistaken for a stale
-        // or wrong-kind account.
+        // A stale record (deleted account) propagates as `AccountNotFound` —
+        // `detect_contract_kind` maps that to `Unknown` and short-circuits, rather
+        // than probe_kind swallowing it as "not this kind".
+        assert!(matches!(
+            probe_kind::<()>(Err(GatewayError::AccountNotFound(
+                "gone.near".parse().unwrap()
+            ))),
+            Err(GatewayError::AccountNotFound(_))
+        ));
+        // A transient failure must still propagate.
         assert!(probe_kind::<()>(Err(near_query("TransportError(connection timed out)"))).is_err());
     }
 }
