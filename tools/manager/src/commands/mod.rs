@@ -2,6 +2,7 @@ pub mod account;
 pub mod contract;
 pub mod ft;
 pub mod market;
+pub mod pagination;
 pub mod proxy_oracle;
 pub mod proxy_oracle_governance;
 pub mod proxy_oracle_owner;

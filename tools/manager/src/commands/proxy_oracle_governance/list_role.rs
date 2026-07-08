@@ -3,17 +3,18 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 use super::RoleArg;
+use crate::commands::pagination::PaginationArgs;
 
 #[derive(Args, Debug)]
 pub struct ListRole {
+    /// Governance contract to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Role whose members to list.
     #[arg(long, value_enum)]
     role: RoleArg,
-    #[arg(long)]
-    offset: Option<u32>,
-    #[arg(long)]
-    count: Option<u32>,
+    #[command(flatten)]
+    pagination: PaginationArgs,
 }
 
 impl ListRole {
@@ -21,8 +22,8 @@ impl ListRole {
         spec::ListRole {
             governance_id: self.governance_id,
             role: self.role.into(),
-            offset: self.offset,
-            count: self.count,
+            offset: self.pagination.offset,
+            count: self.pagination.count,
         }
     }
 }

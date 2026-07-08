@@ -40,7 +40,7 @@ fn parses_registry_list_versions_typed_args() {
         "registry.testnet",
         "--offset",
         "3",
-        "--limit",
+        "--count",
         "9",
     ])
     .expect("list-versions should parse");
@@ -68,7 +68,7 @@ fn parses_registry_list_deployments_typed_args() {
         "registry.testnet",
         "--offset",
         "10",
-        "--limit",
+        "--count",
         "25",
     ])
     .expect("list-deployments should parse");
@@ -124,7 +124,7 @@ fn parses_registry_list_deployments_by_kind_typed_args() {
         "market",
         "--offset",
         "2",
-        "--limit",
+        "--count",
         "4",
     ])
     .expect("list-deployments-by-kind should parse");
