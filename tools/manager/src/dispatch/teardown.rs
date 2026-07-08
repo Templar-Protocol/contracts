@@ -235,7 +235,7 @@ pub(super) async fn remove_market(
 
             let mut reclaimed = std::collections::HashSet::new();
             for asset in &assets {
-                let contract_id = token_contract_id(asset);
+                let contract_id = asset.contract_id();
                 if !reclaimed.insert(contract_id.clone()) {
                     continue;
                 }
@@ -266,15 +266,6 @@ pub(super) async fn remove_market(
         .await?;
     ctx.report_tx(&result);
     Ok(())
-}
-
-/// The token contract account backing a reference — shared across NEP-245 token
-/// ids deployed on the same contract.
-fn token_contract_id(token: &templar_gateway_methods_spec::token::TokenReference) -> &AccountId {
-    use templar_gateway_methods_spec::token::TokenReference;
-    match token {
-        TokenReference::Ft { contract_id } | TokenReference::Mt { contract_id, .. } => contract_id,
-    }
 }
 
 /// Transfer a token's full balance from `from` to `beneficiary` if non-zero,
