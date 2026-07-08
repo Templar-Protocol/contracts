@@ -177,7 +177,7 @@ impl ProposalOperation {
                 method_name: a.method,
                 args: Base64VecU8(a.args.into_bytes()),
                 attached_deposit: U128(a.deposit.as_yoctonear()),
-                gas: Gas::from_tgas(a.gas_tgas),
+                gas: a.gas,
             },
         })
     }
@@ -304,8 +304,10 @@ pub struct AdminFunctionCallArgs {
     /// JSON argument string (raw bytes are what the oracle receives)
     #[arg(long, value_name = "JSON", default_value = "{}")]
     args: String,
+    /// Deposit to attach to the call.
     #[arg(long, value_name = "AMOUNT", default_value = "0 NEAR")]
     deposit: NearToken,
-    #[arg(long = "gas", value_name = "TGAS", default_value_t = 30)]
-    gas_tgas: u64,
+    /// Gas to attach to the call (e.g. `30 Tgas`).
+    #[arg(long, value_name = "GAS", default_value = "30 Tgas")]
+    gas: Gas,
 }
