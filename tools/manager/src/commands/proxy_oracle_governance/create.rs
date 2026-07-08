@@ -10,7 +10,7 @@ use templar_proxy_oracle_near_governance_common::TtlConfig;
 use super::{load_json_file, uniform_ttls};
 use crate::commands::deploy_common::DeployCommonArgs;
 use crate::commands::duration::parse_duration;
-use crate::context::CliContext;
+use crate::commands::signer::SignerArgs;
 
 /// Create (deploy-from-registry) a governance contract, building its
 /// `new(proxy_oracle_id, admin_id, ttls)` init args from typed flags.
@@ -34,6 +34,8 @@ pub struct GovernanceCreate {
     /// Full TtlConfig JSON, overriding --ttl-default with per-operation TTLs
     #[arg(long, value_name = "PATH")]
     ttls_file: Option<PathBuf>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 /// Init args for the governance contract's `new(proxy_oracle_id, admin_id, ttls)`.
@@ -45,7 +47,8 @@ struct GovernanceInit {
 }
 
 impl GovernanceCreate {
-    pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
+    pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
+        let signer_public_key = self.signer.public_key()?;
         let ttls = match self.ttls_file {
             Some(path) => load_json_file(&path).context("parse TtlConfig")?,
             None => uniform_ttls(self.ttl_default),
@@ -58,6 +61,6 @@ impl GovernanceCreate {
         };
         let init_args = serde_json::to_vec(&init).context("encode governance init args")?;
 
-        self.common.into_deploy(ctx, init_args)
+        Ok(self.common.into_deploy(signer_public_key, init_args))
     }
 }

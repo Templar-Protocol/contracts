@@ -1,10 +1,10 @@
 use clap::Parser;
 use serde_json::{json, Value};
 
+use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle::ProxyOracleNs;
 use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
-use crate::context::CliContext;
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
@@ -13,6 +13,9 @@ fn create_proposal(
     args: &[&str],
 ) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle_governance::CreateProposal> {
     let mut full = vec!["tmplrmgr", "proxy-oracle-governance", "create-proposal"];
+    // Credentials are create-proposal-level, so they precede the operation
+    // subcommand carried in `args`.
+    full.extend_from_slice(&CREDS);
     full.extend_from_slice(args);
     match Cli::try_parse_from(full)
         .expect("create-proposal should parse")
@@ -221,6 +224,10 @@ fn create_proposal_id_is_optional_for_auto_fetch() {
         "create-proposal",
         "--governance-id",
         "gov.testnet",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "set-proxy",
         "--price-id",
         PRICE_ID,
@@ -252,6 +259,10 @@ fn create_proposal_execute_when_ready_flag() {
         "--id",
         "0",
         "--execute-when-ready",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "admin-function-call",
         "--method",
         "own_accept_owner",
@@ -284,6 +295,7 @@ fn execute_proposal_when_ready_flag() {
     ] {
         let mut full = vec!["tmplrmgr", "proxy-oracle-governance", "execute-proposal"];
         full.extend_from_slice(&args);
+        full.extend_from_slice(&CREDS);
         let cli = Cli::try_parse_from(full).expect("execute-proposal should parse");
         match cli.command {
             Command::ProxyOracleGovernance {
@@ -299,33 +311,35 @@ fn execute_proposal_when_ready_flag() {
 
 #[test]
 fn governance_create_builds_init_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create",
-        "--registry-id",
-        "registry.testnet",
-        "--name",
-        "proxy-governance-market",
-        "--version-key",
-        "gov@1",
-        "--proxy-oracle-id",
-        "proxy-oracle-market.registry.testnet",
-        "--admin-id",
-        "operator.testnet",
-        "--ttl-default",
-        "0ns",
-        "--deposit",
-        "3.5 NEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle-governance",
+            "create",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-governance-market",
+            "--version-key",
+            "gov@1",
+            "--proxy-oracle-id",
+            "proxy-oracle-market.registry.testnet",
+            "--admin-id",
+            "operator.testnet",
+            "--ttl-default",
+            "0ns",
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("governance create should parse");
 
     let deploy = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::Create(cmd),
-        } => cmd
-            .try_into_spec(&CliContext::for_test())
-            .expect("into deploy spec"),
+        } => cmd.try_into_spec().expect("into deploy spec"),
         _ => panic!("expected governance create"),
     };
 
@@ -382,17 +396,21 @@ fn governance_role_reads_parse() {
 #[test]
 fn oracle_update_prices_collects_repeated_ids() {
     let borrow = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle",
-        "update-prices",
-        "--oracle-id",
-        "proxy.testnet",
-        "--price-id",
-        PRICE_ID,
-        "--price-id",
-        borrow,
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle",
+            "update-prices",
+            "--oracle-id",
+            "proxy.testnet",
+            "--price-id",
+            PRICE_ID,
+            "--price-id",
+            borrow,
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("update-prices should parse");
     let spec = match cli.command {
         Command::ProxyOracle {
@@ -416,6 +434,10 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         "gov.testnet",
         "--id",
         "0",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "add-circuit-breaker",
         "--price-id",
         PRICE_ID,
@@ -444,6 +466,10 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         "gov.testnet",
         "--id",
         "0",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "add-circuit-breaker",
         "--price-id",
         PRICE_ID,

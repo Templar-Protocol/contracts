@@ -1,6 +1,8 @@
 use clap::Args;
 use near_account_id::AccountId;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct Remove {
     /// Recovered assets and the remaining balance are sent here.
@@ -10,6 +12,8 @@ pub struct Remove {
     /// asset fails.
     #[arg(long)]
     force: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl Remove {

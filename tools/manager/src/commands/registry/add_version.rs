@@ -9,6 +9,8 @@ use templar_gateway_methods_spec::registry as spec;
 use templar_gateway_types::{Base64Bytes, NearToken};
 use templar_tools_common::build::{build_contract, load_contract, LoadedContract};
 
+use crate::commands::signer::SignerArgs;
+
 /// Rough NEAR-per-byte storage staking rate used to size a global-hash upload
 /// (matches the registry contract's own accounting).
 const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
@@ -154,6 +156,8 @@ pub struct AddVersion {
     /// Deposit in NEAR. Estimated from the WASM size and deploy mode when omitted.
     #[arg(long, value_name = "AMOUNT")]
     deposit: Option<NearToken>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl AddVersion {

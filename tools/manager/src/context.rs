@@ -11,59 +11,31 @@ use templar_gateway_client::{Client, NetworkConfigBuilder};
 use templar_gateway_core::{DispatchRead, GatewayContext, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_types::{
-    common::WriteOperationResult, primitive::PublicKey, ManagedAccountId, MethodSpec,
+    common::WriteOperationResult, operation::ReceiptStatus, ManagedAccountId, MethodSpec,
+    OperationStatus,
 };
 
 use crate::cli::Cli;
+use crate::commands::signer::SignerArgs;
 
 pub(crate) struct CliContext {
+    /// An unsigned client for reads. Writes build a per-operation signing client
+    /// from the command's own credentials (see [`CliContext::signing_client`]).
     pub(crate) client: Client,
     network: NetworkConfig,
-    signer_account_id: Option<ManagedAccountId>,
-    signer_secret_key: Option<SecretKey>,
     transaction_url_prefix: String,
 }
 
 impl CliContext {
-    /// The fully-configured signer (account id + its public key, derived from the
-    /// secret), or a precise error naming the missing half. A partial signer
-    /// config builds a valid (read-only) context, so the paired requirement is
-    /// enforced here — lazily, at the point a signer is actually needed — rather
-    /// than up front.
-    fn paired_signer(&self) -> anyhow::Result<(ManagedAccountId, PublicKey)> {
-        match (&self.signer_account_id, &self.signer_secret_key) {
-            (Some(account_id), Some(secret)) => {
-                Ok((account_id.clone(), PublicKey::from(secret.public_key())))
-            }
-            (None, None) => anyhow::bail!("this operation requires --signer-id and --secret-key"),
-            (Some(_), None) => anyhow::bail!("--secret-key is required with --signer-id"),
-            (None, Some(_)) => anyhow::bail!("--signer-id is required with --secret-key"),
-        }
-    }
-
-    /// The signing account, or an error if a complete `--signer-id`/`--secret-key`
-    /// pair was not given.
-    pub(crate) fn signer_account(&self) -> anyhow::Result<ManagedAccountId> {
-        Ok(self.paired_signer()?.0)
-    }
-
-    /// The signer's public key, used by commands that grant it a full access key
-    /// on a newly created account.
-    pub(crate) fn signer_public_key(&self) -> anyhow::Result<PublicKey> {
-        Ok(self.paired_signer()?.1)
-    }
-
-    /// Build a single-signer client for an arbitrary account using the shared
-    /// `--secret-key`. Used by teardown flows (e.g. `registry clear-deployments`)
-    /// that must sign as many discovered accounts with one authorized key.
-    pub(crate) fn signing_client_for(
+    /// Build a single-signer client for `account_id` from `secret_key`. Each
+    /// write signs with credentials carried by its own command, and teardown
+    /// flows (e.g. `registry clear-deployments`) sign many discovered accounts
+    /// with one authorized key.
+    pub(crate) fn signing_client(
         &self,
         account_id: impl Into<ManagedAccountId>,
+        secret_key: SecretKey,
     ) -> anyhow::Result<Client> {
-        let secret_key = self
-            .signer_secret_key
-            .clone()
-            .context("this operation requires --secret-key")?;
         Client::builder(self.network.clone())
             .secret_key(account_id, secret_key)?
             .build()
@@ -80,16 +52,21 @@ impl CliContext {
         print_json(&output)
     }
 
-    /// Execute a write signed by the default signer, report the tx link, and
-    /// print the JSON result.
-    pub(crate) async fn write<S>(&self, body: S) -> anyhow::Result<()>
+    /// Execute a write signed by `signer`, report the tx link, print the JSON
+    /// result, then fail if the operation reverted on chain.
+    pub(crate) async fn write<S>(&self, signer: SignerArgs, body: S) -> anyhow::Result<()>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
-        let output = self.client.execute_as(self.signer_account()?, body).await?;
+        let (account_id, secret_key) = signer.resolve()?;
+        let client = self.signing_client(account_id.clone(), secret_key)?;
+        let output = client.execute_as(account_id, body).await?;
         self.report_tx(&output);
-        print_json(&output)
+        // Print the machine-readable result before checking status, so a reverted
+        // operation still emits its JSON on stdout.
+        print_json(&output)?;
+        check_operation_status(&output)
     }
 
     /// Log the explorer link for a completed write to stderr (the JSON result,
@@ -99,6 +76,48 @@ impl CliContext {
             tracing::info!("tx: {}{}", self.transaction_url_prefix, tx_hash);
         }
     }
+
+    /// Report an intermediate write's tx link, then fail if it reverted — the
+    /// multi-step counterpart to [`write`](CliContext::write) (which also prints
+    /// the JSON), so a reverted step in a teardown/proposal flow aborts instead of
+    /// being treated as success.
+    pub(crate) fn report_checked(&self, result: &WriteOperationResult) -> anyhow::Result<()> {
+        self.report_tx(result);
+        check_operation_status(result)
+    }
+}
+
+/// Fail when a submitted write's terminal status is `Failed`: the RPC round-trip
+/// succeeded but the operation reverted on chain. Emits a concise stderr
+/// diagnostic naming the failed receipt(s), then returns an error so the process
+/// exits non-zero — letting driver scripts stop instead of continuing past a
+/// failed step. Callers print the machine-readable JSON first.
+pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::Result<()> {
+    let operation = &result.operation;
+    if operation.status != OperationStatus::Failed {
+        return Ok(());
+    }
+
+    let failed_contracts: Vec<&str> = operation
+        .final_outcome()
+        .map(|outcome| {
+            outcome
+                .receipts
+                .iter()
+                .filter(|receipt| receipt.status == ReceiptStatus::Failed)
+                .map(|receipt| receipt.contract_id.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if failed_contracts.is_empty() {
+        anyhow::bail!("operation {} failed on chain", operation.id.0);
+    }
+    anyhow::bail!(
+        "operation {} failed on chain; reverted receipt(s) on: {}",
+        operation.id.0,
+        failed_contracts.join(", ")
+    )
 }
 
 /// Serialize `output` as a single line of JSON to stdout — the machine-readable
@@ -111,9 +130,9 @@ pub(crate) fn print_json(output: &impl Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the execution context from parsed CLI args: the network, the gateway
-/// client (backed by a transient in-memory operation store), and the resolved
-/// signer.
+/// Build the execution context from parsed CLI args: the network and an unsigned
+/// gateway client (backed by a transient in-memory operation store) for reads.
+/// Writes sign per-operation with credentials carried by their own command.
 pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
     let network = NetworkConfigBuilder::new(cli.network)
         .rpc_url(cli.rpc_url.as_deref())
@@ -121,65 +140,62 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
         .api_key(cli.rpc_api_key.clone())
         .build();
 
-    let signer_account_id = cli.signer_id.clone().map(ManagedAccountId::from);
-    let signer_secret_key = cli
-        .secret_key
-        .as_deref()
-        .map(|secret_key| {
-            secret_key
-                .parse::<SecretKey>()
-                .map_err(|_| anyhow::anyhow!("invalid --secret-key"))
-        })
-        .transpose()?;
-
-    // Configure the client's default signer only when both halves are present.
-    // A partial or absent pair yields an unsigned (read-only) client — the
-    // signer/write paths report the missing half when a signer is required. Note
-    // teardown flows sign per-account via `signing_client_for`, which needs only
-    // the secret key, so `--secret-key` alone is still useful without `--signer-id`.
-    let mut builder = Client::builder(network.clone());
-    if let (Some(account_id), Some(secret)) = (&signer_account_id, &signer_secret_key) {
-        builder = builder.secret_key(account_id.clone(), secret.clone())?;
-    }
-
     Ok(CliContext {
-        client: builder.build()?,
+        client: Client::read_only(network.clone())?,
         network,
-        signer_account_id,
-        signer_secret_key,
         transaction_url_prefix: cli.transaction_url_prefix(),
     })
 }
 
 #[cfg(test)]
-impl CliContext {
-    /// A signer-configured context for tests: an offline client plus a fixed
-    /// signer key, so FAK-resolving conversions can read [`signer_public_key`].
-    ///
-    /// [`signer_public_key`]: CliContext::signer_public_key
-    pub(crate) fn for_test() -> Self {
-        use templar_gateway_client::Network;
+mod tests {
+    use super::check_operation_status;
+    use serde_json::json;
+    use templar_gateway_types::common::WriteOperationResult;
 
-        // A throwaway ed25519 key; tests never submit, only read its public half.
-        const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-        let secret: SecretKey = TEST_SECRET_KEY.parse().expect("valid test secret key");
-        let network = NetworkConfigBuilder::new(Network::Testnet).build();
-        let account = ManagedAccountId::from(
-            "signer.testnet"
-                .parse::<near_account_id::AccountId>()
-                .expect("valid account id"),
+    /// A single-step write result with the given operation status and a reverted
+    /// step whose first receipt has `receipt_status`.
+    fn result(status: &str, receipt_status: &str) -> WriteOperationResult {
+        serde_json::from_value(json!({
+            "operation": {
+                "id": "op-1",
+                "signer_account_id": "signer.testnet",
+                "status": status,
+                "steps": [{
+                    "index": 0,
+                    "status": { "Reverted": {
+                        "tx_hash": "3DeTHGEZzdG5Vpj5b972u45DSRKTBsV87a1eGLCcFQY2",
+                        "outcome": {
+                            "tokens_burnt": "120081144700600000000",
+                            "total_gas_burnt": "1647176572006",
+                            "receipts": [
+                                {"contract_id": "po-market.signer.testnet", "status": receipt_status, "logs": []},
+                                {"contract_id": "signer.testnet", "status": "Succeeded", "logs": []}
+                            ],
+                            "return_value": null
+                        }
+                    }}
+                }]
+            }
+        }))
+        .expect("valid WriteOperationResult json")
+    }
+
+    #[test]
+    fn failed_operation_errors_and_names_reverted_receipt() {
+        let error = check_operation_status(&result("Failed", "Failed"))
+            .expect_err("a failed operation must map to an error (non-zero exit)");
+        let message = error.to_string();
+        assert!(message.contains("op-1"), "message: {message}");
+        assert!(
+            message.contains("po-market.signer.testnet"),
+            "message should name the reverted receipt: {message}"
         );
-        let client = Client::builder(network.clone())
-            .secret_key(account.clone(), secret.clone())
-            .expect("configure test signer")
-            .build()
-            .expect("build test client");
-        Self {
-            client,
-            network,
-            signer_account_id: Some(account),
-            signer_secret_key: Some(secret),
-            transaction_url_prefix: String::new(),
-        }
+    }
+
+    #[test]
+    fn succeeded_operation_is_ok() {
+        check_operation_status(&result("Succeeded", "Succeeded"))
+            .expect("a succeeded operation must not error");
     }
 }

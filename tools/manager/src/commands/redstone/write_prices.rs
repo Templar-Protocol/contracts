@@ -8,6 +8,8 @@ use templar_common::oracle::redstone::FeedId;
 use templar_gateway_methods_spec::redstone as spec;
 use templar_gateway_types::Base64Bytes;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("payload").args(["payload_base64", "payload_base64_file"]).required(true)
@@ -25,6 +27,8 @@ pub struct WritePrices {
     /// Path to a file containing a base64-encoded RedStone payload.
     #[arg(long, value_name = "PATH")]
     payload_base64_file: Option<PathBuf>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl WritePrices {

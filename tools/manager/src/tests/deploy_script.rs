@@ -5,34 +5,127 @@ use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
 use crate::commands::proxy_oracle_owner::ProxyOracleOwnerNs;
 use crate::commands::registry::RegistryNs;
-use crate::context::CliContext;
+
+use super::CREDS;
 
 const COLLATERAL_PRICE_ID: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 #[test]
-fn registry_deploy_defaults_init_args_to_null() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "deploy",
-        "--registry-id",
-        "registry.testnet",
-        "--name",
-        "proxy-oracle-market",
-        "--version-key",
-        "proxy@1",
-        "--deposit",
-        "3.5 NEAR",
-    ])
+fn registry_deploy_requires_init_args() {
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-oracle-market",
+            "--version-key",
+            "proxy@1",
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect_err("deploy with no init args should fail to parse");
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn registry_deploy_rejects_both_init_args_sources() {
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-oracle-market",
+            "--version-key",
+            "proxy@1",
+            "--deposit",
+            "3.5 NEAR",
+            "--init-args",
+            "null",
+            "--init-args-file",
+            "/dev/null",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect_err("deploy with both init-args sources should fail to parse");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn registry_deploy_rejects_invalid_inline_init_args() {
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-oracle-market",
+            "--version-key",
+            "proxy@1",
+            "--deposit",
+            "3.5 NEAR",
+            "--init-args",
+            "{not json",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("registry deploy should parse");
+
+    match cli.command {
+        Command::Registry {
+            command: RegistryNs::Deploy(cmd),
+        } => cmd
+            .try_into_spec()
+            .expect_err("invalid inline JSON should be rejected"),
+        _ => panic!("expected Registry::Deploy"),
+    };
+}
+
+#[test]
+fn registry_deploy_accepts_explicit_inline_null_init_args() {
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-oracle-market",
+            "--version-key",
+            "proxy@1",
+            "--deposit",
+            "3.5 NEAR",
+            "--init-args",
+            "null",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("registry deploy should parse");
 
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd
-            .try_into_spec(&CliContext::for_test())
-            .expect("deploy should parse"),
+        } => cmd.try_into_spec().expect("deploy should build"),
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -52,29 +145,31 @@ fn registry_deploy_reads_init_args_file() {
     ));
     std::fs::write(&path, init_args).expect("write init args fixture");
 
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "deploy",
-        "--registry-id",
-        "registry.testnet",
-        "--name",
-        "proxy-oracle",
-        "--version-key",
-        "proxy-oracle@1",
-        "--init-args-file",
-        path.to_str().expect("fixture path is unicode"),
-        "--deposit",
-        "1 yoctoNEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "proxy-oracle",
+            "--version-key",
+            "proxy-oracle@1",
+            "--init-args-file",
+            path.to_str().expect("fixture path is unicode"),
+            "--deposit",
+            "1 yoctoNEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("registry deploy with init-args-file should parse");
 
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd
-            .try_into_spec(&CliContext::for_test())
-            .expect("deploy should parse"),
+        } => cmd.try_into_spec().expect("deploy should build"),
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -86,15 +181,19 @@ fn registry_deploy_reads_init_args_file() {
 
 #[test]
 fn proxy_oracle_owner_typed_commands_parse() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-owner",
-        "propose-owner",
-        "--oracle-id",
-        "proxy.registry.testnet",
-        "--account-id",
-        "operator.testnet",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle-owner",
+            "propose-owner",
+            "--oracle-id",
+            "proxy.registry.testnet",
+            "--account-id",
+            "operator.testnet",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("propose-owner should parse");
 
     let params = match cli.command {
@@ -109,13 +208,17 @@ fn proxy_oracle_owner_typed_commands_parse() {
     )
     .expect("typed proposeOwner params should match the gateway spec");
 
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-owner",
-        "accept-owner",
-        "--oracle-id",
-        "proxy.registry.testnet",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle-owner",
+            "accept-owner",
+            "--oracle-id",
+            "proxy.registry.testnet",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("accept-owner should parse");
 
     let params = match cli.command {
@@ -142,6 +245,8 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
     }]);
     let proxy_file = write_legacy_proxy_fixture(&legacy_entries);
 
+    // Credentials flatten at the `create-proposal` level, so they must precede
+    // the `set-proxy` operation subcommand.
     let cli = Cli::try_parse_from([
         "tmplrmgr",
         "proxy-oracle-governance",
@@ -150,6 +255,10 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
         "proxy.registry.testnet",
         "--id",
         "0",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "set-proxy",
         "--price-id",
         COLLATERAL_PRICE_ID,
@@ -180,15 +289,19 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
 
 #[test]
 fn governance_execute_proposal_typed_args_parse() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "execute-proposal",
-        "--governance-id",
-        "proxy.registry.testnet",
-        "--id",
-        "0",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle-governance",
+            "execute-proposal",
+            "--governance-id",
+            "proxy.registry.testnet",
+            "--id",
+            "0",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("execute-proposal should parse");
 
     let params = match cli.command {
@@ -214,6 +327,10 @@ fn create_proposal_set_proxy_requires_price_id() {
         "proxy.registry.testnet",
         "--id",
         "0",
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        super::TEST_SECRET_KEY,
         "set-proxy",
     ])
     .expect_err("set-proxy should require --price-id");
@@ -226,18 +343,22 @@ fn create_proposal_set_proxy_requires_price_id() {
 
 #[test]
 fn json_fallback_still_works_for_create_proposal() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "proxyOracleGovernance.createProposal",
-        "--json",
-        r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"SetProxy":{"id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","proxy":{"aggregator":{"MedianLow":{"sources":[],"min_sources":1}},"freshness_filter":{"max_age_ns":"1","max_clock_drift_ns":"1"}}}},"requested_ttl":"0"}"#,
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "write",
+            "proxyOracleGovernance.createProposal",
+            "--json",
+            r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"SetProxy":{"id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","proxy":{"aggregator":{"MedianLow":{"sources":[],"min_sources":1}},"freshness_filter":{"max_age_ns":"1","max_clock_drift_ns":"1"}}}},"requested_ttl":"0"}"#,
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("write fallback should parse");
 
     let params = match cli.command {
         Command::Write(call) => {
-            let json_str = call.json.expect("json should be present");
+            let json_str = call.call.json.expect("json should be present");
             serde_json::from_str(&json_str).expect("json should parse")
         }
         _ => panic!("expected Write variant"),

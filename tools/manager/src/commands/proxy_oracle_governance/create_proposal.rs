@@ -19,6 +19,7 @@ use templar_proxy_oracle_near_governance_common::Operation;
 use super::{decode_base64, load_json_file, OperationKind, Role};
 use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
+use crate::commands::signer::SignerArgs;
 use crate::proxy::load_proxy_file;
 
 #[derive(Args, Debug)]
@@ -36,6 +37,8 @@ pub struct CreateProposal {
     /// Blocks for the full (effective) TTL, so it is only practical for short ones.
     #[arg(long)]
     execute_when_ready: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
     #[command(subcommand)]
     operation: ProposalOperation,
 }

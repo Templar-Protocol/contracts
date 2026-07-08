@@ -4,6 +4,7 @@ use clap::Parser;
 use serde_json::json;
 use templar_common::registry::DeployMode;
 
+use super::{CREDS, TEST_SECRET_KEY};
 use crate::cli::{Cli, Command};
 use crate::commands::registry::RegistryNs;
 
@@ -19,7 +20,7 @@ fn temp_wasm(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
 fn add_version_spec(
     args: &[&str],
 ) -> anyhow::Result<templar_gateway_methods_spec::registry::AddVersion> {
-    match Cli::try_parse_from(args)
+    match Cli::try_parse_from(args.iter().copied().chain(CREDS))
         .expect("add-version should parse")
         .command
     {
@@ -286,16 +287,20 @@ fn add_version_wasm_requires_explicit_version_key() {
 
 #[test]
 fn add_version_rejects_conflicting_contract_sources() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "add-version",
-        "--registry-id",
-        "registry.testnet",
-        "--market",
-        "--package",
-        "proxy-oracle",
-    ])
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+            "--market",
+            "--package",
+            "proxy-oracle",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect_err("conflicting contract selectors must be rejected");
 
     assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
@@ -303,13 +308,17 @@ fn add_version_rejects_conflicting_contract_sources() {
 
 #[test]
 fn add_version_requires_a_contract_source() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "add-version",
-        "--registry-id",
-        "registry.testnet",
-    ])
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect_err("a contract source is required");
 
     assert_eq!(
@@ -320,15 +329,19 @@ fn add_version_requires_a_contract_source() {
 
 #[test]
 fn remove_version_single_builds_spec() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "remove-version",
-        "--registry-id",
-        "registry.testnet",
-        "--version-key",
-        "market@1",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "remove-version",
+            "--registry-id",
+            "registry.testnet",
+            "--version-key",
+            "market@1",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("remove-version should parse");
     let Command::Registry {
         command: RegistryNs::RemoveVersion(cmd),
@@ -345,14 +358,18 @@ fn remove_version_single_builds_spec() {
 
 #[test]
 fn remove_version_all_has_no_single_spec() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "remove-version",
-        "--registry-id",
-        "registry.testnet",
-        "--all",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "remove-version",
+            "--registry-id",
+            "registry.testnet",
+            "--all",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("remove-version --all should parse");
     let Command::Registry {
         command: RegistryNs::RemoveVersion(cmd),
@@ -365,13 +382,17 @@ fn remove_version_all_has_no_single_spec() {
 
 #[test]
 fn remove_version_requires_version_key_or_all() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "remove-version",
-        "--registry-id",
-        "registry.testnet",
-    ])
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "remove-version",
+            "--registry-id",
+            "registry.testnet",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect_err("remove-version needs --version-key or --all");
     assert_eq!(
         error.kind(),
@@ -381,13 +402,17 @@ fn remove_version_requires_version_key_or_all() {
 
 #[test]
 fn clear_deployments_defaults_beneficiary_to_registry() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "clear-deployments",
-        "--registry-id",
-        "registry.testnet",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "clear-deployments",
+            "--registry-id",
+            "registry.testnet",
+        ]
+        .into_iter()
+        .chain(["--secret-key", TEST_SECRET_KEY]),
+    )
     .expect("clear-deployments should parse");
     let Command::Registry {
         command: RegistryNs::ClearDeployments(cmd),

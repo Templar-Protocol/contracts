@@ -28,6 +28,8 @@ use templar_proxy_oracle_near_governance_common::TtlConfig;
 // (derived upstream behind the crate's `clap` feature), avoiding a local mirror.
 pub use templar_proxy_oracle_near_governance_common::{OperationKind, Role};
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleGovernanceNs {
@@ -36,7 +38,7 @@ pub enum ProxyOracleGovernanceNs {
     /// Create a governance proposal.
     CreateProposal(CreateProposal),
     /// Cancel a pending proposal.
-    CancelProposal(ProposalRef),
+    CancelProposal(CancelProposal),
     /// Execute a matured proposal.
     ExecuteProposal(ExecuteProposalArgs),
     /// Read a single proposal.
@@ -72,16 +74,30 @@ pub struct ProposalRef {
 }
 
 impl ProposalRef {
-    pub fn cancel(self) -> spec::CancelProposal {
-        spec::CancelProposal {
-            governance_id: self.governance_id,
-            id: self.id,
-        }
-    }
     pub fn get(self) -> spec::GetProposal {
         spec::GetProposal {
             governance_id: self.governance_id,
             id: self.id,
+        }
+    }
+}
+
+/// `cancel-proposal`: a proposal reference plus the signer credentials the write
+/// requires. Distinct from the read-only `get-proposal`, which reuses the bare
+/// [`ProposalRef`] and so carries no credentials.
+#[derive(Args, Debug)]
+pub struct CancelProposal {
+    #[command(flatten)]
+    proposal: ProposalRef,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
+}
+
+impl CancelProposal {
+    pub fn cancel(self) -> spec::CancelProposal {
+        spec::CancelProposal {
+            governance_id: self.proposal.governance_id,
+            id: self.proposal.id,
         }
     }
 }

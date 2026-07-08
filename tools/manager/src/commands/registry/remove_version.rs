@@ -2,6 +2,8 @@ use clap::{ArgGroup, Args};
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::registry as spec;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 #[command(group(
     ArgGroup::new("which_version").args(["version_key", "all"]).required(true)
@@ -16,6 +18,8 @@ pub struct RemoveVersion {
     /// Remove every version currently in the registry.
     #[arg(long)]
     all: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl RemoveVersion {
