@@ -45,6 +45,8 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         .execute_as(ctx.signer_account()?, args.try_into_spec(id)?)
         .await?;
     ctx.report_tx(&create);
+    // Emit the id now so it survives a later wait/execute failure below.
+    tracing::info!(proposal_id = id, "created proposal");
 
     let execute = if execute_when_ready {
         wait_for_maturity(&ctx, &governance_id, id).await?;

@@ -163,14 +163,18 @@ pub(super) async fn clear_deployments(
     args: registry::ClearDeployments,
 ) -> anyhow::Result<()> {
     use templar_gateway_methods_spec::registry as spec;
+    use templar_gateway_types::ContractKind;
 
     let beneficiary = args.beneficiary_id();
     let force = args.force();
+    // Only markets are torn down here (removal reads a market configuration), so
+    // filter by kind rather than trying `remove_market` on every deployment.
     let accounts = ctx
         .client
-        .read(spec::ListDeployments {
+        .read(spec::ListDeploymentsByKind {
             registry_id: args.registry_id().clone(),
             args: all_pages(),
+            kind: ContractKind::Market,
         })
         .await?
         .account_ids;

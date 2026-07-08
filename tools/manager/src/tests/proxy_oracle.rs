@@ -170,6 +170,7 @@ fn admin_upgrade_operation_reads_code_file() {
 
 #[test]
 fn requested_ttl_defaults_to_zero_and_is_carried() {
+    // Explicit --requested-ttl is carried through (in nanoseconds).
     let spec = create_proposal(&[
         "--governance-id",
         "gov.testnet",
@@ -189,6 +190,24 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
     assert_eq!(
         json["operation"]["RemoveCircuitBreaker"]["breaker_id"],
         json!(0)
+    );
+
+    // Omitting --requested-ttl defaults it to zero.
+    let defaulted = create_proposal(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "3",
+        "remove-circuit-breaker",
+        "--price-id",
+        PRICE_ID,
+        "--breaker-id",
+        "0",
+    ])
+    .expect("into spec");
+    assert_eq!(
+        serde_json::to_value(&defaulted).unwrap()["requested_ttl"],
+        json!("0")
     );
 }
 

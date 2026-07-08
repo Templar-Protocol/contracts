@@ -185,12 +185,17 @@ impl ProposalOperation {
                     None => Vec::new(),
                 }),
             },
-            Self::AdminFunctionCall(a) => Operation::AdminFunctionCall {
-                method_name: a.method,
-                args: Base64VecU8(a.args.into_bytes()),
-                attached_deposit: U128(a.deposit.as_yoctonear()),
-                gas: a.gas,
-            },
+            Self::AdminFunctionCall(a) => {
+                // Fail early on malformed args rather than sending garbage bytes.
+                serde_json::from_str::<serde_json::Value>(&a.args)
+                    .context("admin-function-call --args must be valid JSON")?;
+                Operation::AdminFunctionCall {
+                    method_name: a.method,
+                    args: Base64VecU8(a.args.into_bytes()),
+                    attached_deposit: U128(a.deposit.as_yoctonear()),
+                    gas: a.gas,
+                }
+            }
         })
     }
 }

@@ -100,7 +100,7 @@ operator proxy-oracle-governance create \
     --version-key "$PROXY_GOVERNANCE_VERSION_KEY" \
     --proxy-oracle-id "$PROXY_ORACLE_ID" \
     --admin-id "$SIGNER_ID" \
-    --ttl-default 0 \
+    --ttl-default 0s \
     --deposit "3.5 NEAR"
 
 echo "Proposing governance as the oracle owner..."
@@ -108,7 +108,7 @@ registry proxy-oracle-owner propose-owner \
     --oracle-id "$PROXY_ORACLE_ID" \
     --account-id "$GOVERNANCE_ID"
 
-# --ttl-default 0 (above) makes every proposal executable immediately, so
+# --ttl-default 0s (above) makes every proposal executable immediately, so
 # --execute-when-ready creates and executes each in a single call.
 echo "Accepting oracle ownership through governance..."
 operator proxy-oracle-governance create-proposal \

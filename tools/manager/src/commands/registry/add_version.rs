@@ -246,4 +246,22 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn estimate_deposit_matches_storage_staking_math() {
+        // Normal deploys pay a nominal 1 yocto; GlobalHash stakes storage for the
+        // code at 1e19 yocto/byte times the 10x global-contract multiplier.
+        assert_eq!(
+            estimate_deposit(DeployMode::Normal, 100_000),
+            NearToken::from_yoctonear(1)
+        );
+        assert_eq!(
+            estimate_deposit(DeployMode::GlobalHash, 0),
+            NearToken::from_yoctonear(0)
+        );
+        assert_eq!(
+            estimate_deposit(DeployMode::GlobalHash, 100_000),
+            NearToken::from_near(10)
+        );
+    }
 }
