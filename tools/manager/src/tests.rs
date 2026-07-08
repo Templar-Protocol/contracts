@@ -157,6 +157,55 @@ fn secret_key_env_satisfies_signer_configuration() {
     result.expect("env-provided SECRET_KEY should configure a signed client");
 }
 
+/// A `Cli` with the given signer halves and a trivial read command, built
+/// directly so clap never reads `SIGNER_ID`/`SECRET_KEY` from the environment.
+fn cli_with_signer(signer_id: Option<&str>, secret_key: Option<&str>) -> Cli {
+    use super::cli::{Command, GenericMethodCall};
+    Cli {
+        network: templar_gateway_client::Network::Testnet,
+        rpc_url: None,
+        rpc_api_key: None,
+        signer_id: signer_id.map(|id| id.parse().expect("valid account id")),
+        secret_key: secret_key.map(str::to_owned),
+        transaction_url_prefix: None,
+        quiet: 0,
+        verbose: 0,
+        command: Command::Read(GenericMethodCall {
+            method: "contract.getVersion".to_owned(),
+            json: Some("{}".to_owned()),
+            json_file: None,
+        }),
+    }
+}
+
+#[test]
+fn partial_signer_config_builds_read_only_context() {
+    const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
+
+    // Only --signer-id: builds a (read-only) context rather than failing up
+    // front, so read commands still work; the signer path reports the missing
+    // secret only when a signer is actually needed.
+    let ctx = super::context::build_context(&cli_with_signer(Some("signer.testnet"), None))
+        .expect("signer-id-only config should still build a read-only context");
+    assert_eq!(
+        ctx.signer_account()
+            .expect_err("a write signer requires both halves")
+            .to_string(),
+        "--secret-key is required with --signer-id"
+    );
+
+    // Only --secret-key: also builds (teardown flows sign per-account with just
+    // the key); the default-signer path reports the missing id.
+    let ctx = super::context::build_context(&cli_with_signer(None, Some(TEST_SECRET_KEY)))
+        .expect("secret-key-only config should still build a context");
+    assert_eq!(
+        ctx.signer_account()
+            .expect_err("a default write signer requires both halves")
+            .to_string(),
+        "--signer-id is required with --secret-key"
+    );
+}
+
 #[test]
 fn read_fallback_rejects_missing_json() {
     let error = Cli::try_parse_from(["tmplrmgr", "read", "account.get"])

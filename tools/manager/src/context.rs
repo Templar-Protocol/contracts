@@ -26,19 +26,31 @@ pub(crate) struct CliContext {
 }
 
 impl CliContext {
-    /// The signing account, or an error if no `--signer-id`/`--secret-key` was given.
+    /// The fully-configured signer (account id + derived public key), or a
+    /// precise error naming the missing half. A partial signer config builds a
+    /// valid (read-only) context, so the paired requirement is enforced here —
+    /// lazily, at the point a signer is actually needed — rather than up front.
+    fn paired_signer(&self) -> anyhow::Result<(ManagedAccountId, PublicKey)> {
+        // `signer_public_key` is derived from the secret key, so it is present
+        // exactly when `--secret-key` was given.
+        match (&self.signer_account_id, &self.signer_public_key) {
+            (Some(account_id), Some(public_key)) => Ok((account_id.clone(), public_key.clone())),
+            (None, None) => anyhow::bail!("this operation requires --signer-id and --secret-key"),
+            (Some(_), None) => anyhow::bail!("--secret-key is required with --signer-id"),
+            (None, Some(_)) => anyhow::bail!("--signer-id is required with --secret-key"),
+        }
+    }
+
+    /// The signing account, or an error if a complete `--signer-id`/`--secret-key`
+    /// pair was not given.
     pub(crate) fn signer_account(&self) -> anyhow::Result<ManagedAccountId> {
-        self.signer_account_id
-            .clone()
-            .context("write methods require --signer-id and --secret-key")
+        Ok(self.paired_signer()?.0)
     }
 
     /// The signer's public key, used by commands that grant it a full access key
     /// on a newly created account.
     pub(crate) fn signer_public_key(&self) -> anyhow::Result<PublicKey> {
-        self.signer_public_key
-            .clone()
-            .context("this operation requires --signer-id and --secret-key")
+        Ok(self.paired_signer()?.1)
     }
 
     /// Build a single-signer client for an arbitrary account using the shared
@@ -109,27 +121,34 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
         .api_key(cli.rpc_api_key.clone())
         .build();
 
-    let builder = Client::builder(network.clone());
-    let signer_account_id = cli.signer_id.clone();
-    let (builder, signer_secret_key, signer_public_key) =
-        match (&signer_account_id, &cli.secret_key) {
-            (Some(account_id), Some(secret_key)) => {
-                let secret = secret_key
-                    .parse::<SecretKey>()
-                    .map_err(|_| anyhow::anyhow!("invalid --secret-key"))?;
-                let public_key = PublicKey::from(secret.public_key());
-                let builder = builder.secret_key(account_id.clone(), secret.clone())?;
-                (builder, Some(secret), Some(public_key))
-            }
-            (None, None) => (builder, None, None),
-            (Some(_), None) => anyhow::bail!("--secret-key is required with --signer-id"),
-            (None, Some(_)) => anyhow::bail!("--signer-id is required with --secret-key"),
-        };
+    let signer_account_id = cli.signer_id.clone().map(ManagedAccountId::from);
+    let signer_secret_key = cli
+        .secret_key
+        .as_deref()
+        .map(|secret_key| {
+            secret_key
+                .parse::<SecretKey>()
+                .map_err(|_| anyhow::anyhow!("invalid --secret-key"))
+        })
+        .transpose()?;
+    let signer_public_key = signer_secret_key
+        .as_ref()
+        .map(|secret| PublicKey::from(secret.public_key()));
+
+    // Configure the client's default signer only when both halves are present.
+    // A partial or absent pair yields an unsigned (read-only) client — the
+    // signer/write paths report the missing half when a signer is required. Note
+    // teardown flows sign per-account via `signing_client_for`, which needs only
+    // the secret key, so `--secret-key` alone is still useful without `--signer-id`.
+    let mut builder = Client::builder(network.clone());
+    if let (Some(account_id), Some(secret)) = (&signer_account_id, &signer_secret_key) {
+        builder = builder.secret_key(account_id.clone(), secret.clone())?;
+    }
 
     Ok(CliContext {
         client: builder.build()?,
         network,
-        signer_account_id: signer_account_id.map(ManagedAccountId::from),
+        signer_account_id,
         signer_secret_key,
         signer_public_key,
         transaction_url_prefix: cli.transaction_url_prefix(),

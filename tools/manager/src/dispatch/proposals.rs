@@ -22,7 +22,10 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     let execute_when_ready = args.execute_when_ready();
 
     // Auto-fill the next breaker id for add-circuit-breaker, resolving the proxy
-    // oracle (whose set holds the breakers) through the governance contract.
+    // oracle (whose set holds the breakers) through the governance contract. This
+    // reads the committed set's next id; if a concurrent proposal advances it
+    // before this one executes, the contract rejects the stale id (no corruption)
+    // and the proposal can simply be retried.
     if let Some(price_id) = args.unresolved_breaker_price_id() {
         let next_id = next_breaker_id(&ctx, &governance_id, price_id).await?;
         tracing::info!(breaker_id = next_id, "auto-fetched next breaker id");
