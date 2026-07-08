@@ -109,7 +109,7 @@ fn set_action_ttl_operation_builds_kind_and_ttl() {
         "--kind",
         "admin-upgrade",
         "--new-ttl",
-        "86400000000000",
+        "1d",
     ]);
     assert_eq!(
         op,
@@ -127,8 +127,8 @@ fn configure_circuit_breakers_operation_builds_config() {
         "configure-circuit-breakers",
         "--price-id",
         PRICE_ID,
-        "--sample-interval-ns",
-        "1000",
+        "--sample-interval",
+        "1000ns",
         "--history-len",
         "8",
     ]);
@@ -176,7 +176,7 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
         "--id",
         "3",
         "--requested-ttl",
-        "42",
+        "42ns",
         "remove-circuit-breaker",
         "--price-id",
         PRICE_ID,
@@ -295,7 +295,7 @@ fn governance_create_builds_init_args() {
         "--admin-id",
         "operator.testnet",
         "--ttl-default",
-        "0",
+        "0ns",
         "--deposit",
         "3.5 NEAR",
     ])

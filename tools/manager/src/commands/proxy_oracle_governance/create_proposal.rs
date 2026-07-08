@@ -17,6 +17,7 @@ use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::Operation;
 
 use super::{decode_base64, load_json_file, OperationKindArg, RoleArg};
+use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::proxy::load_proxy_file;
 
@@ -27,9 +28,9 @@ pub struct CreateProposal {
     /// Proposal id; fetched from the governance contract's next id when omitted
     #[arg(long, value_name = "ID")]
     id: Option<u32>,
-    /// Requested TTL in nanoseconds (clamped up to the operation's minimum)
-    #[arg(long, value_name = "NANOSECONDS", default_value = "0")]
-    requested_ttl: u64,
+    /// Requested TTL, clamped up to the operation's minimum (e.g. `10s`, `100ns`).
+    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration)]
+    requested_ttl: Nanoseconds,
     /// After creating, wait for the proposal's TTL to elapse, then execute it.
     /// Blocks for the full (effective) TTL, so it is only practical for short ones.
     #[arg(long)]
@@ -75,7 +76,7 @@ impl CreateProposal {
             governance_id: self.governance_id,
             id,
             operation: self.operation.into_operation()?,
-            requested_ttl: Nanoseconds::from_ns(self.requested_ttl),
+            requested_ttl: self.requested_ttl,
         })
     }
 }
@@ -118,7 +119,7 @@ impl ProposalOperation {
             Self::ConfigureCircuitBreakers(a) => Operation::ConfigureCircuitBreakers {
                 id: a.price_id,
                 config: CircuitBreakerSetConfig {
-                    sample_interval_ns: Nanoseconds::from_ns(a.sample_interval_ns),
+                    sample_interval_ns: a.sample_interval,
                     history_len: a.history_len,
                 },
             },
@@ -141,7 +142,7 @@ impl ProposalOperation {
             Self::Rearm(a) => Operation::Rearm {
                 id: a.price_id,
                 breaker_id: a.breaker_id,
-                armed_after_ns: Nanoseconds::from_ns(a.armed_after_ns),
+                armed_after_ns: a.armed_after,
                 accepted_history_source: load_json_file::<AcceptedHistorySource>(
                     &a.history_source_file,
                 )
@@ -154,7 +155,7 @@ impl ProposalOperation {
             },
             Self::SetActionTtl(a) => Operation::SetActionTtl {
                 kind: a.kind.into(),
-                new_ttl: Nanoseconds::from_ns(a.new_ttl),
+                new_ttl: a.new_ttl,
             },
             Self::SetRole(a) => Operation::SetRole {
                 account_id: a.account_id,
@@ -197,8 +198,9 @@ pub struct ConfigureCircuitBreakersArgs {
     /// Price identifier (32-byte hex, optional `0x` prefix).
     #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
     price_id: PriceIdentifier,
-    #[arg(long, value_name = "NANOSECONDS")]
-    sample_interval_ns: u64,
+    /// Sampling interval between circuit-breaker observations (e.g. `1s`, `1000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    sample_interval: Nanoseconds,
     #[arg(long, value_name = "N")]
     history_len: u32,
 }
@@ -245,8 +247,9 @@ pub struct RearmArgs {
     price_id: PriceIdentifier,
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
-    #[arg(long, value_name = "NANOSECONDS")]
-    armed_after_ns: u64,
+    /// Delay before the breaker re-arms (e.g. `30s`, `1000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    armed_after: Nanoseconds,
     /// AcceptedHistorySource definition JSON
     #[arg(long, value_name = "PATH")]
     history_source_file: PathBuf,
@@ -267,8 +270,9 @@ pub struct SetEnforcedArgs {
 pub struct SetActionTtlArgs {
     #[arg(long, value_enum)]
     kind: OperationKindArg,
-    #[arg(long, value_name = "NANOSECONDS")]
-    new_ttl: u64,
+    /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    new_ttl: Nanoseconds,
 }
 
 #[derive(Args, Debug)]

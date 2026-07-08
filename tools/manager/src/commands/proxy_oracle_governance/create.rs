@@ -9,6 +9,7 @@ use templar_gateway_types::{Base64Bytes, NearToken};
 use templar_proxy_oracle_near_governance_common::TtlConfig;
 
 use super::{load_json_file, uniform_ttls};
+use crate::commands::duration::parse_duration;
 use crate::commands::full_access_key::FullAccessKeyArgs;
 use crate::context::CliContext;
 
@@ -32,9 +33,9 @@ pub struct GovernanceCreate {
     /// The account granted the Admin role
     #[arg(long, value_name = "ACCOUNT_ID")]
     admin_id: AccountId,
-    /// Default proposal TTL (nanoseconds) applied to every operation kind
-    #[arg(long, value_name = "NANOSECONDS", default_value = "0")]
-    ttl_default: u64,
+    /// Default proposal TTL applied to every operation kind (e.g. `10s`, `100ns`).
+    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration)]
+    ttl_default: Nanoseconds,
     /// Full TtlConfig JSON, overriding --ttl-default with per-operation TTLs
     #[arg(long, value_name = "PATH")]
     ttls_file: Option<PathBuf>,
@@ -58,7 +59,7 @@ impl GovernanceCreate {
         let full_access_keys = self.full_access_keys.resolve(ctx)?;
         let ttls = match self.ttls_file {
             Some(path) => load_json_file(&path).context("parse TtlConfig")?,
-            None => uniform_ttls(Nanoseconds::from_ns(self.ttl_default)),
+            None => uniform_ttls(self.ttl_default),
         };
 
         let init = GovernanceInit {

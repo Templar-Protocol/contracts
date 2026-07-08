@@ -1,5 +1,6 @@
 pub mod account;
 pub mod contract;
+pub mod duration;
 pub mod ft;
 pub mod full_access_key;
 pub mod market;
