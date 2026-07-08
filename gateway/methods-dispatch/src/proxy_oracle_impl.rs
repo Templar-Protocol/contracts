@@ -72,9 +72,11 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxyCircuitBreakerSet, C> 
             .proxy_oracle(request.oracle_id)
             .get_proxy_circuit_breaker_set(GetProxyCircuitBreakerSetArgs { id: request.id })
             .await
-            .map(|circuit_breaker_set| proxy_oracle::GetProxyCircuitBreakerSetResult {
-                circuit_breaker_set,
-            })
+            .map(
+                |circuit_breaker_set| proxy_oracle::GetProxyCircuitBreakerSetResult {
+                    circuit_breaker_set,
+                },
+            )
     }
 }
 
