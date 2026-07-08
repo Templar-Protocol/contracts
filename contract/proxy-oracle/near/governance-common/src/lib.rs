@@ -27,6 +27,7 @@ macro_rules! governance_operations {
         ),+ $(,)?
     ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
         #[near(serializers = [json, borsh])]
         pub enum OperationKind {
             $($variant),+
@@ -198,6 +199,7 @@ pub enum ValidationError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, BorshStorageKey)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[near(serializers = [json, borsh])]
 pub enum Role {
     ManualTripper,

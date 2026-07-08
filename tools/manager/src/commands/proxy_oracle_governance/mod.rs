@@ -17,13 +17,16 @@ pub use list_proposals::ListProposals;
 pub use list_role::ListRole;
 
 use anyhow::Context as _;
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use near_account_id::AccountId;
 use serde::de::DeserializeOwned;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::Base64Bytes;
-use templar_proxy_oracle_near_governance_common::{OperationKind, Role, TtlConfig};
+use templar_proxy_oracle_near_governance_common::TtlConfig;
+// Re-exported so the leaf command modules parse them directly as `clap::ValueEnum`
+// (derived upstream behind the crate's `clap` feature), avoiding a local mirror.
+pub use templar_proxy_oracle_near_governance_common::{OperationKind, Role};
 
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
@@ -106,60 +109,6 @@ impl GovernanceIdArgs {
     pub fn get_proxy_oracle_id(self) -> spec::GetProxyOracleId {
         spec::GetProxyOracleId {
             governance_id: self.governance_id,
-        }
-    }
-}
-
-/// Local clap mirror of `Role` (keeps governance-common clap-free).
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum RoleArg {
-    ManualTripper,
-    CircuitBreakerOperator,
-    ProxyConfigurationManager,
-    Admin,
-}
-
-impl From<RoleArg> for Role {
-    fn from(role: RoleArg) -> Self {
-        match role {
-            RoleArg::ManualTripper => Self::ManualTripper,
-            RoleArg::CircuitBreakerOperator => Self::CircuitBreakerOperator,
-            RoleArg::ProxyConfigurationManager => Self::ProxyConfigurationManager,
-            RoleArg::Admin => Self::Admin,
-        }
-    }
-}
-
-/// Local clap mirror of `OperationKind`.
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum OperationKindArg {
-    SetProxy,
-    ConfigureCircuitBreakers,
-    AddCircuitBreaker,
-    RemoveCircuitBreaker,
-    SetManualTrip,
-    Rearm,
-    SetEnforced,
-    SetActionTtl,
-    SetRole,
-    AdminUpgrade,
-    AdminFunctionCall,
-}
-
-impl From<OperationKindArg> for OperationKind {
-    fn from(kind: OperationKindArg) -> Self {
-        match kind {
-            OperationKindArg::SetProxy => Self::SetProxy,
-            OperationKindArg::ConfigureCircuitBreakers => Self::ConfigureCircuitBreakers,
-            OperationKindArg::AddCircuitBreaker => Self::AddCircuitBreaker,
-            OperationKindArg::RemoveCircuitBreaker => Self::RemoveCircuitBreaker,
-            OperationKindArg::SetManualTrip => Self::SetManualTrip,
-            OperationKindArg::Rearm => Self::Rearm,
-            OperationKindArg::SetEnforced => Self::SetEnforced,
-            OperationKindArg::SetActionTtl => Self::SetActionTtl,
-            OperationKindArg::SetRole => Self::SetRole,
-            OperationKindArg::AdminUpgrade => Self::AdminUpgrade,
-            OperationKindArg::AdminFunctionCall => Self::AdminFunctionCall,
         }
     }
 }

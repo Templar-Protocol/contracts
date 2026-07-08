@@ -2,7 +2,7 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
-use super::OperationKindArg;
+use super::OperationKind;
 
 #[derive(Args, Debug)]
 pub struct GetOperationTtl {
@@ -11,14 +11,14 @@ pub struct GetOperationTtl {
     governance_id: AccountId,
     /// Operation kind to read the TTL for.
     #[arg(long, value_enum)]
-    kind: OperationKindArg,
+    kind: OperationKind,
 }
 
 impl GetOperationTtl {
     pub fn into_spec(self) -> spec::GetOperationTtl {
         spec::GetOperationTtl {
             governance_id: self.governance_id,
-            kind: self.kind.into(),
+            kind: self.kind,
         }
     }
 }

@@ -13813,6 +13813,7 @@ dependencies = [
 name = "templar-proxy-oracle-near-governance-common"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "near-sdk",
  "rstest",
  "templar-common",

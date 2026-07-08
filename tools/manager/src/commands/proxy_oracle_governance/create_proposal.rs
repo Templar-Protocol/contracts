@@ -16,7 +16,7 @@ use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::Operation;
 
-use super::{decode_base64, load_json_file, OperationKindArg, RoleArg};
+use super::{decode_base64, load_json_file, OperationKind, Role};
 use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::proxy::load_proxy_file;
@@ -166,12 +166,12 @@ impl ProposalOperation {
                 is_enforced: a.enforced,
             },
             Self::SetActionTtl(a) => Operation::SetActionTtl {
-                kind: a.kind.into(),
+                kind: a.kind,
                 new_ttl: a.new_ttl,
             },
             Self::SetRole(a) => Operation::SetRole {
                 account_id: a.account_id,
-                role: a.role.into(),
+                role: a.role,
                 set: !a.revoke,
             },
             Self::AdminUpgrade(a) => Operation::AdminUpgrade {
@@ -293,7 +293,7 @@ pub struct SetEnforcedArgs {
 pub struct SetActionTtlArgs {
     /// Operation kind to set the TTL for.
     #[arg(long, value_enum)]
-    kind: OperationKindArg,
+    kind: OperationKind,
     /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     new_ttl: Nanoseconds,
@@ -306,7 +306,7 @@ pub struct SetRoleArgs {
     account_id: AccountId,
     /// Role to set.
     #[arg(long, value_enum)]
-    role: RoleArg,
+    role: Role,
     /// Revoke the role instead of granting it
     #[arg(long)]
     revoke: bool,
