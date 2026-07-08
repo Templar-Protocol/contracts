@@ -11,39 +11,38 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-base64.workspace = true
-borsh.workspace = true
-chrono.workspace = true
 clap.workspace = true
-console.workspace = true
 dirs.workspace = true
 hex.workspace = true
-near-contract-standards.workspace = true
-near-crypto.workspace = true
-near-jsonrpc-client.workspace = true
-near-primitives.workspace = true
-near-sdk = { workspace = true, features = ["non-contract-usage"] }
+near-account-id.workspace = true
+near-api.workspace = true
+# Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
+# `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
+# import, which only near-sdk's `unit-testing` mock defines. `unit-testing` is
+# also what the workspace unifies onto near-sdk (via service/gateway et al.), so
+# matching it here keeps standalone (`-p templar-manager`) and workspace builds
+# collision-free. Mirrors service/gateway, the other native bin over these crates.
+near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 serde.workspace = true
 serde_json.workspace = true
-templar-common = { workspace = true, features = ["non-contract-usage", "rpc"] }
-templar-contract-artifacts = { workspace = true, features = ["clap"] }
-templar-gateway-types.workspace = true
-templar-primitives.workspace = true
-templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
-templar-proxy-oracle-near-common.workspace = true
-templar-proxy-oracle-near-governance-common.workspace = true
+templar-common.workspace = true
+templar-contract-artifacts.workspace = true
 templar-redstone-bridge.workspace = true
+templar-gateway-client = { workspace = true, features = ["clap"] }
+templar-gateway-core.workspace = true
+templar-gateway-methods-dispatch.workspace = true
+templar-gateway-methods-spec.workspace = true
+templar-gateway-store.workspace = true
+templar-gateway-types = { workspace = true, features = ["clap"] }
 templar-tools-common.workspace = true
+templar-primitives.workspace = true
+templar-proxy-oracle-kernel.workspace = true
+templar-proxy-oracle-near-common.workspace = true
+templar-proxy-oracle-near-governance-common = { workspace = true, features = ["clap"] }
 tokio.workspace = true
-tracing-appender.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing.workspace = true
-
-[dev-dependencies]
-hex-literal.workspace = true
-near-workspaces.workspace = true
-rstest.workspace = true
-test-utils.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

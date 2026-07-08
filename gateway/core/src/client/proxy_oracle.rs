@@ -2,7 +2,7 @@ use moka::sync::Cache;
 use near_account_id::AccountId;
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_types::ProxyOracle;
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::{input::Source, state::legacy::v0};
 
 use crate::client::{
@@ -61,6 +61,10 @@ pub struct GetProxyArgs {
 #[derive(serde::Serialize)]
 pub struct PriceFeedExistsArgs {
     pub price_identifier: PriceIdentifier,
+}
+#[derive(serde::Serialize)]
+pub struct GetProxyCircuitBreakerSetArgs {
+    pub id: PriceIdentifier,
 }
 #[derive(serde::Serialize)]
 pub struct OwnerProposeArgs {
@@ -129,6 +133,7 @@ impl ProxyOracleClient<'_> {
     contract_views! {
         pub fn list_proxies(ListProxiesArgs) -> Vec<PriceIdentifier>;
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
+        pub fn get_proxy_circuit_breaker_set(GetProxyCircuitBreakerSetArgs) -> Option<CircuitBreakerSet>;
         pub fn own_get_owner(()) -> Option<near_account_id::AccountId>;
         pub fn own_get_proposed_owner(()) -> Option<near_account_id::AccountId>;
     }

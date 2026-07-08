@@ -97,11 +97,16 @@ macro_rules! for_each_read_method {
         $callback!($crate::proxy_oracle::ListProxies);
         $callback!($crate::proxy_oracle::GetProxy);
         $callback!($crate::proxy_oracle::PriceFeedExists);
+        $callback!($crate::proxy_oracle::GetProxyCircuitBreakerSet);
         $callback!($crate::proxy_oracle_governance::NextProposalId);
         $callback!($crate::proxy_oracle_governance::ProposalCount);
         $callback!($crate::proxy_oracle_governance::GetOperationTtl);
         $callback!($crate::proxy_oracle_governance::ListProposals);
         $callback!($crate::proxy_oracle_governance::GetProposal);
+        $callback!($crate::proxy_oracle_governance::GetProxyOracleId);
+        $callback!($crate::proxy_oracle_governance::HasRole);
+        $callback!($crate::proxy_oracle_governance::ListRole);
+        $callback!($crate::proxy_oracle_governance::GetRoles);
         $callback!($crate::proxy_oracle_owner::GetOwner);
         $callback!($crate::proxy_oracle_owner::GetProposedOwner);
         $callback!($crate::ref_finance::GetPools);

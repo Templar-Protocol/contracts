@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::MethodSpec;
-use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 
 /// List proxy price feeds.
@@ -43,6 +43,19 @@ pub struct PriceFeedExists {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PriceFeedExistsResult {
     pub exists: bool,
+}
+
+/// Get the circuit breaker set configured for a proxy price feed.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracle.getProxyCircuitBreakerSet", output = GetProxyCircuitBreakerSetResult)]
+pub struct GetProxyCircuitBreakerSet {
+    pub oracle_id: near_account_id::AccountId,
+    pub id: PriceIdentifier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetProxyCircuitBreakerSetResult {
+    pub circuit_breaker_set: Option<CircuitBreakerSet>,
 }
 
 /// Refresh the proxy oracle's cached prices for the given feeds.

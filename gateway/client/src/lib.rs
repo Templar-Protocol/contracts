@@ -50,7 +50,7 @@ use templar_gateway_store::MemoryStore;
 pub use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
-    IdempotencyKey, ManagedAccountId, MethodSpec, OperationRecord,
+    IdempotencyKey, ManagedAccountId, MethodSpec, OperationId, OperationRecord,
 };
 
 /// Builder for [`Client`]. Takes the network once, accumulates signers, and
@@ -242,6 +242,14 @@ impl<D, Ctx> Client<D, Ctx> {
             .get_by_idempotency_key(idempotency_key)
             .await?
             .map(|operation| operation.record()))
+    }
+
+    /// Look up a stored gateway operation by operation ID.
+    pub async fn operation(
+        &self,
+        operation_id: &OperationId,
+    ) -> GatewayResult<Option<OperationRecord>> {
+        self.driver.get_operation(operation_id).await
     }
 
     /// Drive every operation left mid-flight (e.g. by a crash) to a terminal

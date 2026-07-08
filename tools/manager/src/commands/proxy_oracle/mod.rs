@@ -1,38 +1,39 @@
-pub mod deploy;
-pub mod governance;
-pub mod proxy;
-pub mod remove;
+mod get_proxy;
+mod list_proxies;
+mod price_feed_exists;
+mod update_prices;
 
-use crate::CliContext;
+pub use get_proxy::GetProxy;
+pub use list_proxies::ListProxies;
+pub use price_feed_exists::PriceFeedExists;
+pub use update_prices::UpdatePrices;
 
-#[derive(clap::Args)]
-pub struct ProxyOracleArgs {
-    #[command(subcommand)]
-    command: ProxyOracleCommand,
+use anyhow::Context as _;
+use clap::Subcommand;
+use templar_common::oracle::pyth::PriceIdentifier;
+
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+pub enum ProxyOracleNs {
+    /// Read a single price feed's proxy configuration.
+    GetProxy(GetProxy),
+    /// List the oracle's configured price feeds.
+    ListProxies(ListProxies),
+    /// Check whether a price feed exists.
+    PriceFeedExists(PriceFeedExists),
+    /// Refresh on-chain prices for one or more feeds.
+    UpdatePrices(UpdatePrices),
 }
 
-#[derive(clap::Subcommand)]
-enum ProxyOracleCommand {
-    /// Deploy a proxy oracle contract
-    Deploy(deploy::DeployProxyOracle),
-
-    /// Delete a proxy oracle account
-    Remove(remove::ProxyOracleRemove),
-
-    /// Query proxies configured on a proxy oracle
-    Proxy(proxy::ProxyArgs),
-
-    /// Manage governance proposals on a proxy oracle
-    Governance(governance::GovernanceArgs),
-}
-
-impl ProxyOracleArgs {
-    pub async fn run(self, ctx: &CliContext) -> anyhow::Result<()> {
-        match self.command {
-            ProxyOracleCommand::Deploy(a) => a.run(ctx).await,
-            ProxyOracleCommand::Remove(a) => a.run(ctx).await,
-            ProxyOracleCommand::Proxy(a) => a.run(ctx).await,
-            ProxyOracleCommand::Governance(a) => a.run(ctx).await,
-        }
+/// Parse a 32-byte hex price identifier (accepting an optional `0x` prefix).
+/// Shared across the oracle and governance commands.
+pub(crate) fn parse_price_identifier(hex: &str) -> anyhow::Result<PriceIdentifier> {
+    let hex = hex.strip_prefix("0x").unwrap_or(hex);
+    let bytes = hex::decode(hex).context("decode hex price identifier")?;
+    if bytes.len() != 32 {
+        anyhow::bail!("price identifier must be 32 bytes, got {}", bytes.len());
     }
+    let mut id = [0u8; 32];
+    id.copy_from_slice(&bytes);
+    Ok(PriceIdentifier(id))
 }

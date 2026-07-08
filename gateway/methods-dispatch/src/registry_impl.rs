@@ -64,22 +64,21 @@ where
         request: registry::ListDeploymentsByKind,
         ctx: C,
     ) -> GatewayResult<registry::ListDeploymentsResult> {
-        let params = request;
         let account_ids = ctx
             .near_client()
-            .registry(params.registry_id)
+            .registry(request.registry_id)
             .list_deployments(templar_gateway_types::common::Pagination::default())
             .await?;
 
         let mut filtered = Vec::new();
         for account_id in account_ids {
-            if query_contract_kind(&ctx, account_id.clone()).await? == params.kind {
+            if query_contract_kind(&ctx, account_id.clone()).await? == request.kind {
                 filtered.push(account_id);
             }
         }
 
-        let offset = params.args.offset.unwrap_or_default() as usize;
-        let limit = params.args.limit.map(|value| value as usize);
+        let offset = request.args.offset.unwrap_or_default() as usize;
+        let limit = request.args.limit.map(|value| value as usize);
         let account_ids = if let Some(limit) = limit {
             filtered.into_iter().skip(offset).take(limit).collect()
         } else {
