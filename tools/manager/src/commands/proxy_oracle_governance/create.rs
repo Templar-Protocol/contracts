@@ -37,7 +37,7 @@ pub struct GovernanceCreate {
     #[arg(long, value_name = "ACCOUNT_ID")]
     admin_id: AccountId,
     /// Default proposal TTL applied to every operation kind (e.g. `10s`, `100ns`).
-    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration)]
+    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration, conflicts_with = "ttls_file")]
     ttl_default: Nanoseconds,
     /// Full TtlConfig JSON, overriding --ttl-default with per-operation TTLs
     #[arg(long, value_name = "PATH")]
