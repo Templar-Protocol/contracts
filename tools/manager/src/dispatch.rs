@@ -113,22 +113,114 @@ async fn dispatch_governance(ctx: CliContext, ns: ProxyOracleGovernanceNs) -> an
     }
 }
 
-/// Create a governance proposal, fetching the governance contract's next
-/// proposal id first when `--id` was omitted.
+/// Create a governance proposal. Resolves the proposal id (fetching the
+/// governance contract's next id when `--id` was omitted) and always emits it,
+/// so callers — including scripts — can learn the id that was used. With
+/// `--execute-when-ready`, waits for the proposal's TTL to elapse and executes.
 async fn create_proposal(ctx: CliContext, args: CreateProposal) -> anyhow::Result<()> {
+    use templar_gateway_methods_spec::proxy_oracle_governance as gov;
+
+    let governance_id = args.governance_id().clone();
+    let execute_when_ready = args.execute_when_ready();
+
     let id = match args.id() {
         Some(id) => id,
         None => {
             ctx.client
-                .read(
-                    templar_gateway_methods_spec::proxy_oracle_governance::NextProposalId {
-                        governance_id: args.governance_id().clone(),
-                    },
-                )
+                .read(gov::NextProposalId {
+                    governance_id: governance_id.clone(),
+                })
                 .await?
         }
     };
-    ctx.write(args.into_spec(id)?).await
+
+    // Keep the operator's idempotency key on the create write only.
+    let create = ctx
+        .client
+        .execute_request(WriteRequest {
+            signer_account_id: ctx.signer_account()?,
+            idempotency_key: ctx.idempotency_key.clone(),
+            body: args.into_spec(id)?,
+        })
+        .await?;
+
+    let execute = if execute_when_ready {
+        wait_for_maturity(&ctx, &governance_id, id).await?;
+        let signer = ctx.signer_account()?;
+        Some(
+            ctx.client
+                .execute_as(
+                    signer,
+                    gov::ExecuteProposal {
+                        governance_id: governance_id.clone(),
+                        id,
+                    },
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
+
+    print_json(&CreateProposalOutput {
+        id,
+        create,
+        execute,
+    })
+}
+
+/// Machine-readable result of a `create-proposal` run. `id` is always present
+/// (resolved even when auto-fetched); `execute` is present only when the
+/// proposal was executed via `--execute-when-ready`.
+#[derive(Serialize)]
+struct CreateProposalOutput {
+    id: u32,
+    create: WriteOperationResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execute: Option<WriteOperationResult>,
+}
+
+/// Block until proposal `id` is executable (`now - created_at >= ttl`), reading
+/// its effective TTL back from the governance contract.
+async fn wait_for_maturity(
+    ctx: &CliContext,
+    governance_id: &near_account_id::AccountId,
+    id: u32,
+) -> anyhow::Result<()> {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use templar_gateway_methods_spec::proxy_oracle_governance as gov;
+
+    let proposal = ctx
+        .client
+        .read(gov::GetProposal {
+            governance_id: governance_id.clone(),
+            id,
+        })
+        .await?
+        .proposal
+        .context("created proposal not found when waiting for maturity")?;
+
+    let maturity_ns = proposal
+        .created_at
+        .as_ns()
+        .saturating_add(proposal.ttl.as_ns());
+    let now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+
+    if maturity_ns > now_ns {
+        // Small buffer so block time (the chain's authoritative clock) has caught
+        // up to the local wall clock before we submit the execute.
+        let wait = Duration::from_nanos(maturity_ns - now_ns) + Duration::from_secs(2);
+        eprintln!(
+            "Waiting {}s for proposal {id} to mature before executing...",
+            wait.as_secs()
+        );
+        tokio::time::sleep(wait).await;
+    }
+
+    Ok(())
 }
 
 async fn dispatch_proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {

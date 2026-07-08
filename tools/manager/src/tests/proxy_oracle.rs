@@ -210,11 +210,38 @@ fn create_proposal_id_is_optional_for_auto_fetch() {
             command: ProxyOracleGovernanceNs::CreateProposal(cmd),
         } => {
             assert_eq!(cmd.id(), None);
+            assert!(!cmd.execute_when_ready());
             assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
             // A resolved id flows through to the spec.
             let spec = cmd.into_spec(7).expect("into spec");
             assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
         }
+        _ => panic!("expected create-proposal"),
+    }
+}
+
+#[test]
+fn create_proposal_execute_when_ready_flag() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "proxy-oracle-governance",
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--execute-when-ready",
+        "admin-function-call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ])
+    .expect("create-proposal --execute-when-ready should parse");
+    match cli.command {
+        Command::ProxyOracleGovernance {
+            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
+        } => assert!(cmd.execute_when_ready()),
         _ => panic!("expected create-proposal"),
     }
 }

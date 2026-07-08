@@ -334,6 +334,10 @@ pub struct CreateProposal {
     /// Requested TTL in nanoseconds (clamped up to the operation's minimum)
     #[arg(long, value_name = "NANOSECONDS", default_value = "0")]
     requested_ttl: u64,
+    /// After creating, wait for the proposal's TTL to elapse, then execute it.
+    /// Blocks for the full (effective) TTL, so it is only practical for short ones.
+    #[arg(long)]
+    execute_when_ready: bool,
     #[command(subcommand)]
     operation: ProposalOperation,
 }
@@ -346,6 +350,11 @@ impl CreateProposal {
     /// The explicit `--id`, or `None` when it should be auto-fetched.
     pub fn id(&self) -> Option<u32> {
         self.id
+    }
+
+    /// Whether to wait for maturity and execute after creating.
+    pub fn execute_when_ready(&self) -> bool {
+        self.execute_when_ready
     }
 
     /// Build the gateway spec with the resolved proposal id.
