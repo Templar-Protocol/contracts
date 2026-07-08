@@ -24,7 +24,7 @@ pub struct Cli {
         long,
         global = true,
         env = "NETWORK",
-        default_value = "testnet",
+        default_value_t = Network::Testnet,
         value_name = "NETWORK"
     )]
     pub network: Network,

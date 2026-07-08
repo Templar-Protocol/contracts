@@ -305,9 +305,9 @@ pub struct AdminFunctionCallArgs {
     #[arg(long, value_name = "JSON", default_value = "{}")]
     args: String,
     /// Deposit to attach to the call.
-    #[arg(long, value_name = "AMOUNT", default_value = "0 NEAR")]
+    #[arg(long, value_name = "AMOUNT", default_value_t = NearToken::from_yoctonear(0))]
     deposit: NearToken,
     /// Gas to attach to the call (e.g. `30 Tgas`).
-    #[arg(long, value_name = "GAS", default_value = "30 Tgas")]
+    #[arg(long, value_name = "GAS", default_value_t = Gas::from_tgas(30))]
     gas: Gas,
 }

@@ -11,7 +11,7 @@ use crate::context::CliContext;
 #[derive(Args, Debug)]
 pub struct FullAccessKeyArgs {
     /// Additional full access key for the new account (repeatable).
-    #[arg(long = "with-full-access-key", value_name = "PUBLIC_KEY")]
+    #[arg(long, value_name = "PUBLIC_KEY")]
     with_full_access_key: Vec<CliPublicKey>,
     /// Do not grant the signer's public key a full access key on the new account.
     #[arg(long)]
