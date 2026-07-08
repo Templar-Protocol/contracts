@@ -100,11 +100,11 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
 
 async fn proxy_oracle_owner(ctx: CliContext, ns: ProxyOracleOwnerNs) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleOwnerNs::GetOwner(a) => ctx.read(a.get_owner()).await,
-        ProxyOracleOwnerNs::GetProposedOwner(a) => ctx.read(a.get_proposed_owner()).await,
+        ProxyOracleOwnerNs::GetOwner(a) => ctx.read(a.into_spec()).await,
+        ProxyOracleOwnerNs::GetProposedOwner(a) => ctx.read(a.into_spec()).await,
         ProxyOracleOwnerNs::ProposeOwner(a) => ctx.write(a.into_spec()).await,
-        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.accept_owner()).await,
-        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.renounce_owner()).await,
+        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.into_spec()).await,
+        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.into_spec()).await,
     }
 }
 

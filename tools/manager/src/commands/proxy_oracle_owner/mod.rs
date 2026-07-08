@@ -1,48 +1,24 @@
+mod accept_owner;
+mod get_owner;
+mod get_proposed_owner;
 mod propose_owner;
+mod renounce_owner;
 
+pub use accept_owner::AcceptOwner;
+pub use get_owner::GetOwner;
+pub use get_proposed_owner::GetProposedOwner;
 pub use propose_owner::ProposeOwner;
+pub use renounce_owner::RenounceOwner;
 
-use clap::{Args, Subcommand};
-use near_account_id::AccountId;
-use templar_gateway_methods_spec::proxy_oracle_owner as spec;
+use clap::Subcommand;
 
 #[allow(clippy::enum_variant_names)] // these are the contract's own owner ops
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleOwnerNs {
-    GetOwner(OracleIdArgs),
-    GetProposedOwner(OracleIdArgs),
+    GetOwner(GetOwner),
+    GetProposedOwner(GetProposedOwner),
     ProposeOwner(ProposeOwner),
-    AcceptOwner(OracleIdArgs),
-    RenounceOwner(OracleIdArgs),
-}
-
-/// Shared argument for the owner reads/writes keyed only by the oracle account.
-#[derive(Args, Debug)]
-pub struct OracleIdArgs {
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    oracle_id: AccountId,
-}
-
-impl OracleIdArgs {
-    pub fn get_owner(self) -> spec::GetOwner {
-        spec::GetOwner {
-            oracle_id: self.oracle_id,
-        }
-    }
-    pub fn get_proposed_owner(self) -> spec::GetProposedOwner {
-        spec::GetProposedOwner {
-            oracle_id: self.oracle_id,
-        }
-    }
-    pub fn accept_owner(self) -> spec::AcceptOwner {
-        spec::AcceptOwner {
-            oracle_id: self.oracle_id,
-        }
-    }
-    pub fn renounce_owner(self) -> spec::RenounceOwner {
-        spec::RenounceOwner {
-            oracle_id: self.oracle_id,
-        }
-    }
+    AcceptOwner(AcceptOwner),
+    RenounceOwner(RenounceOwner),
 }

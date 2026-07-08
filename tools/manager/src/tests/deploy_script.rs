@@ -121,7 +121,7 @@ fn proxy_oracle_owner_typed_commands_parse() {
     let params = match cli.command {
         Command::ProxyOracleOwner {
             command: ProxyOracleOwnerNs::AcceptOwner(cmd),
-        } => cmd.accept_owner(),
+        } => cmd.into_spec(),
         _ => panic!("expected ProxyOracleOwner::AcceptOwner"),
     };
 
