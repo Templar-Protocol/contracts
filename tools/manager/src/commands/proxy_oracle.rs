@@ -381,6 +381,24 @@ impl CreateProposal {
         self.execute_when_ready
     }
 
+    /// When this is an `add-circuit-breaker` proposal with no explicit
+    /// `--breaker-id`, the price id whose next breaker id must be fetched.
+    pub fn unresolved_breaker_price_id(&self) -> Option<&str> {
+        match &self.operation {
+            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => {
+                Some(a.price_id.as_str())
+            }
+            _ => None,
+        }
+    }
+
+    /// Fill in an auto-fetched breaker id for an `add-circuit-breaker` proposal.
+    pub fn set_breaker_id(&mut self, id: u32) {
+        if let ProposalOperation::AddCircuitBreaker(a) = &mut self.operation {
+            a.breaker_id.get_or_insert(id);
+        }
+    }
+
     /// Build the gateway spec with the resolved proposal id.
     pub fn into_spec(self, id: u32) -> anyhow::Result<governance_spec::CreateProposal> {
         Ok(governance_spec::CreateProposal {
@@ -436,7 +454,8 @@ impl ProposalOperation {
             },
             Self::AddCircuitBreaker(a) => Operation::AddCircuitBreaker {
                 id: parse_price_identifier(&a.price_id)?,
-                breaker_id: a.breaker_id,
+                // Resolved to the set's next id by the dispatcher when omitted.
+                breaker_id: a.breaker_id.unwrap_or(0),
                 breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
                     .context("parse circuit breaker")?,
             },
@@ -516,8 +535,10 @@ pub struct ConfigureCircuitBreakersArgs {
 pub struct AddCircuitBreakerArgs {
     #[arg(long, value_name = "HEX")]
     price_id: String,
+    /// Stable breaker id within the set. Auto-fetched (the set's next id) when
+    /// omitted.
     #[arg(long, value_name = "ID")]
-    breaker_id: u32,
+    breaker_id: Option<u32>,
     /// CircuitBreaker definition JSON
     #[arg(long, value_name = "PATH")]
     breaker_file: PathBuf,
@@ -787,7 +808,7 @@ fn decode_base64(value: String) -> anyhow::Result<Vec<u8>> {
     Ok(bytes.0)
 }
 
-fn parse_price_identifier(hex: &str) -> anyhow::Result<PriceIdentifier> {
+pub(crate) fn parse_price_identifier(hex: &str) -> anyhow::Result<PriceIdentifier> {
     let hex = hex.strip_prefix("0x").unwrap_or(hex);
     let bytes = hex::decode(hex).context("decode hex price identifier")?;
     if bytes.len() != 32 {

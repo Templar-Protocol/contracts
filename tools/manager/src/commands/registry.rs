@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use near_account_id::AccountId;
+use near_api::PublicKey as CliPublicKey;
 use templar_common::registry::DeployMode;
 use templar_contract_artifacts::ArtifactId;
 use templar_gateway_methods_spec::registry as spec;
@@ -18,6 +19,13 @@ pub enum RegistryNs {
     GetDeployment(GetDeployment),
     AddVersion(AddVersion),
     Deploy(Deploy),
+    /// Remove a single version, or every version with `--all`.
+    RemoveVersion(RemoveVersion),
+    /// Remove every version from the registry, then delete the (signer) account.
+    Remove(Remove),
+    /// Remove every market deployed from the registry (signing as each with the
+    /// shared `--secret-key`).
+    ClearDeployments(ClearDeployments),
 }
 
 #[derive(Args, Debug)]
@@ -116,12 +124,31 @@ pub struct Deploy {
     version_key: String,
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<std::path::PathBuf>,
+    /// Additional full access keys for the new account. The signer's key is
+    /// added by default (unless `--no-signer-full-access-key`).
+    #[arg(long = "with-full-access-key", value_name = "PUBLIC_KEY")]
+    with_full_access_key: Vec<CliPublicKey>,
+    /// Do not grant the signer's public key a full access key on the new account.
+    #[arg(long)]
+    no_signer_full_access_key: bool,
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
 }
 
 impl Deploy {
-    pub fn parse(self) -> anyhow::Result<spec::Deploy> {
+    /// The full-access-key flags: whether to omit the signer's key, and any
+    /// extra keys to add. Resolved against the signer's public key at dispatch.
+    pub fn full_access_key_flags(&self) -> (bool, Vec<CliPublicKey>) {
+        (
+            self.no_signer_full_access_key,
+            self.with_full_access_key.clone(),
+        )
+    }
+
+    pub fn into_spec(
+        self,
+        full_access_keys: Vec<templar_gateway_types::primitive::PublicKey>,
+    ) -> anyhow::Result<spec::Deploy> {
         let init_bytes = match self.init_args_file {
             Some(path) => std::fs::read(&path)
                 .map_err(anyhow::Error::from)
@@ -134,10 +161,112 @@ impl Deploy {
             name: self.name,
             version_key: self.version_key,
             init_args: Base64Bytes(init_bytes),
-            full_access_keys: None,
+            full_access_keys: Some(full_access_keys),
             deposit: self.deposit,
         })
     }
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("which_version").args(["version_key", "all"]).required(true)
+))]
+pub struct RemoveVersion {
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    registry_id: AccountId,
+    /// Version key to remove. Omit and pass `--all` to remove every version.
+    #[arg(long, value_name = "KEY")]
+    version_key: Option<String>,
+    /// Remove every version currently in the registry.
+    #[arg(long)]
+    all: bool,
+}
+
+impl RemoveVersion {
+    pub fn registry_id(&self) -> &AccountId {
+        &self.registry_id
+    }
+
+    /// The single-version spec, or `None` when `--all` was requested (the
+    /// dispatcher then lists and removes each version).
+    pub fn single(&self) -> Option<spec::RemoveVersion> {
+        self.version_key
+            .clone()
+            .map(|version_key| spec::RemoveVersion {
+                registry_id: self.registry_id.clone(),
+                version_key,
+            })
+    }
+
+    pub fn spec_for(&self, version_key: String) -> spec::RemoveVersion {
+        spec::RemoveVersion {
+            registry_id: self.registry_id.clone(),
+            version_key,
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct Remove {
+    /// Account to receive the registry account's remaining balance.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    beneficiary_id: AccountId,
+}
+
+impl Remove {
+    pub fn beneficiary_id(&self) -> &AccountId {
+        &self.beneficiary_id
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct ClearDeployments {
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    registry_id: AccountId,
+    /// Recovered assets and balances are sent here (defaults to the registry).
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    beneficiary_id: Option<AccountId>,
+    /// Continue past a market that fails to remove instead of stopping.
+    #[arg(long)]
+    force: bool,
+}
+
+impl ClearDeployments {
+    pub fn registry_id(&self) -> &AccountId {
+        &self.registry_id
+    }
+
+    /// Beneficiary for recovered funds, defaulting to the registry account.
+    pub fn beneficiary_id(&self) -> AccountId {
+        self.beneficiary_id
+            .clone()
+            .unwrap_or_else(|| self.registry_id.clone())
+    }
+
+    pub fn force(&self) -> bool {
+        self.force
+    }
+}
+
+/// Resolve the full access keys granted to an account deployed from a registry:
+/// the signer's key by default (so the operator retains control), unless
+/// suppressed, plus any explicitly-provided keys, de-duplicated.
+pub fn resolve_full_access_keys(
+    signer_public_key: templar_gateway_types::primitive::PublicKey,
+    no_signer: bool,
+    extra: &[CliPublicKey],
+) -> Vec<templar_gateway_types::primitive::PublicKey> {
+    let mut keys = Vec::with_capacity(extra.len() + 1);
+    if !no_signer {
+        keys.push(signer_public_key);
+    }
+    for key in extra {
+        let key = templar_gateway_types::primitive::PublicKey::from(*key);
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys
 }
 
 /// Rough NEAR-per-byte storage staking rate used to size a global-hash upload
@@ -321,6 +450,73 @@ fn estimate_deposit(mode: DeployMode, wasm_len: usize) -> NearToken {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    const KEY_A: &str = "ed25519:5ZyGnGUdSp1pj7BbjTyWBvUyC2nh4RdkZyTphUYG4c4v";
+    const KEY_B: &str = "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w";
+
+    fn pubkey(s: &str) -> CliPublicKey {
+        s.parse().expect("valid ed25519 public key")
+    }
+
+    fn primitive(s: &str) -> templar_gateway_types::primitive::PublicKey {
+        templar_gateway_types::primitive::PublicKey::from(pubkey(s))
+    }
+
+    #[test]
+    fn fak_includes_signer_key_by_default() {
+        // The signer's key is granted a full access key on every from-registry
+        // deploy — the operator must retain control of the new account.
+        let keys = resolve_full_access_keys(primitive(KEY_A), false, &[]);
+        assert_eq!(keys, vec![primitive(KEY_A)]);
+    }
+
+    #[test]
+    fn fak_no_signer_flag_drops_signer_key() {
+        assert!(resolve_full_access_keys(primitive(KEY_A), true, &[]).is_empty());
+        // With extra keys and --no-signer, only the extras are granted.
+        let keys = resolve_full_access_keys(primitive(KEY_A), true, &[pubkey(KEY_B)]);
+        assert_eq!(keys, vec![primitive(KEY_B)]);
+    }
+
+    #[test]
+    fn fak_appends_and_dedups_extra_keys() {
+        let keys =
+            resolve_full_access_keys(primitive(KEY_A), false, &[pubkey(KEY_B), pubkey(KEY_A)]);
+        // Signer key first, then the distinct extra; the duplicate is dropped.
+        assert_eq!(keys, vec![primitive(KEY_A), primitive(KEY_B)]);
+    }
+
+    #[test]
+    fn registry_deploy_grants_signer_and_extra_faks() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "market",
+            "--version-key",
+            "market@1",
+            "--with-full-access-key",
+            KEY_B,
+            "--deposit",
+            "6 NEAR",
+        ])
+        .expect("registry deploy should parse");
+        let RegistryNs::Deploy(cmd) = (match cli.command {
+            crate::cli::Command::Registry { command } => command,
+            _ => panic!("expected registry"),
+        }) else {
+            panic!("expected deploy");
+        };
+        let (no_signer, extra) = cmd.full_access_key_flags();
+        assert!(!no_signer);
+        let keys = resolve_full_access_keys(primitive(KEY_A), no_signer, &extra);
+        assert_eq!(keys, vec![primitive(KEY_A), primitive(KEY_B)]);
+        let spec = cmd.into_spec(keys).expect("into spec");
+        assert_eq!(spec.full_access_keys.expect("some").len(), 2);
+    }
 
     #[derive(Parser)]
     struct Harness {

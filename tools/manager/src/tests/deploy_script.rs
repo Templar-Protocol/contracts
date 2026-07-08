@@ -28,7 +28,7 @@ fn registry_deploy_defaults_init_args_to_null() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.parse().expect("deploy should parse"),
+        } => cmd.into_spec(Vec::new()).expect("deploy should parse"),
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -68,7 +68,7 @@ fn registry_deploy_reads_init_args_file() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.parse().expect("deploy should parse"),
+        } => cmd.into_spec(Vec::new()).expect("deploy should parse"),
         _ => panic!("expected Registry::Deploy"),
     };
 

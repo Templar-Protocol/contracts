@@ -1,6 +1,9 @@
 use async_trait::async_trait;
 use templar_gateway_core::{
-    client::proxy_oracle::{GetProxyArgs, ListProxiesArgs, PriceFeedExistsArgs, UpdatePricesArgs},
+    client::proxy_oracle::{
+        GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs, PriceFeedExistsArgs,
+        UpdatePricesArgs,
+    },
     client::ContractWriteOptions,
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
@@ -56,6 +59,22 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
             .cached_get_proxy(GetProxyArgs { id: params.id })
             .await
             .map(|proxy| proxy_oracle::GetProxyResult { proxy })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxyCircuitBreakerSet, C> for Dispatch {
+    async fn dispatch(
+        request: proxy_oracle::GetProxyCircuitBreakerSet,
+        ctx: C,
+    ) -> GatewayResult<proxy_oracle::GetProxyCircuitBreakerSetResult> {
+        ctx.near_client()
+            .proxy_oracle(request.oracle_id)
+            .get_proxy_circuit_breaker_set(GetProxyCircuitBreakerSetArgs { id: request.id })
+            .await
+            .map(|circuit_breaker_set| proxy_oracle::GetProxyCircuitBreakerSetResult {
+                circuit_breaker_set,
+            })
     }
 }
 

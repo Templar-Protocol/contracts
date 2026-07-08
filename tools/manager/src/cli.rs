@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use near_account_id::AccountId;
 use templar_gateway_client::Network;
+use tracing::level_filters::LevelFilter;
 
 use super::commands::{
     AccountNs, ContractNs, FtNs, MarketNs, OpNs, ProxyOracleGovernanceNs, ProxyOracleNs,
@@ -70,9 +71,48 @@ pub struct Cli {
         requires = "gateway_store_url"
     )]
     pub idempotency_key: Option<String>,
+    /// Base URL for transaction explorer links (the tx hash is appended).
+    /// Defaults to the Nearblocks explorer for the selected network.
+    #[arg(long, global = true, value_name = "URL")]
+    pub transaction_url_prefix: Option<String>,
+    /// Reduce console log verbosity (-q = warn, -qq = error, -qqq = off).
+    #[arg(short, long, global = true, action = ArgAction::Count)]
+    pub quiet: u8,
+    /// Increase console log verbosity (-v = debug, -vv = trace).
+    #[arg(short, long, global = true, action = ArgAction::Count)]
+    pub verbose: u8,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+impl Cli {
+    /// Console log level derived from the `-q`/`-v` counts (default INFO).
+    pub fn console_level(&self) -> LevelFilter {
+        const DEFAULT_LEVEL: u8 = 3;
+        match DEFAULT_LEVEL
+            .saturating_sub(self.quiet)
+            .saturating_add(self.verbose)
+        {
+            0 => LevelFilter::OFF,
+            1 => LevelFilter::ERROR,
+            2 => LevelFilter::WARN,
+            3 => LevelFilter::INFO,
+            4 => LevelFilter::DEBUG,
+            5.. => LevelFilter::TRACE,
+        }
+    }
+
+    /// Explorer base URL for tx links, defaulting per network when unset.
+    pub fn transaction_url_prefix(&self) -> String {
+        self.transaction_url_prefix.clone().unwrap_or_else(|| {
+            match self.network {
+                Network::Mainnet => "https://nearblocks.io/txns/",
+                Network::Testnet => "https://testnet.nearblocks.io/txns/",
+            }
+            .to_owned()
+        })
+    }
 }
 
 #[derive(Subcommand, Debug)]

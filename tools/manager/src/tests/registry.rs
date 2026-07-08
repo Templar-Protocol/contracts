@@ -317,3 +317,84 @@ fn add_version_requires_a_contract_source() {
         clap::error::ErrorKind::MissingRequiredArgument
     );
 }
+
+#[test]
+fn remove_version_single_builds_spec() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "remove-version",
+        "--registry-id",
+        "registry.testnet",
+        "--version-key",
+        "market@1",
+    ])
+    .expect("remove-version should parse");
+    let Command::Registry {
+        command: RegistryNs::RemoveVersion(cmd),
+    } = cli.command
+    else {
+        panic!("expected remove-version");
+    };
+    let spec = cmd.single().expect("single version spec");
+    assert_eq!(
+        serde_json::to_value(&spec).unwrap()["version_key"],
+        "market@1"
+    );
+}
+
+#[test]
+fn remove_version_all_has_no_single_spec() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "remove-version",
+        "--registry-id",
+        "registry.testnet",
+        "--all",
+    ])
+    .expect("remove-version --all should parse");
+    let Command::Registry {
+        command: RegistryNs::RemoveVersion(cmd),
+    } = cli.command
+    else {
+        panic!("expected remove-version");
+    };
+    assert!(cmd.single().is_none());
+}
+
+#[test]
+fn remove_version_requires_version_key_or_all() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "remove-version",
+        "--registry-id",
+        "registry.testnet",
+    ])
+    .expect_err("remove-version needs --version-key or --all");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn clear_deployments_defaults_beneficiary_to_registry() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "clear-deployments",
+        "--registry-id",
+        "registry.testnet",
+    ])
+    .expect("clear-deployments should parse");
+    let Command::Registry {
+        command: RegistryNs::ClearDeployments(cmd),
+    } = cli.command
+    else {
+        panic!("expected clear-deployments");
+    };
+    assert_eq!(cmd.beneficiary_id().as_str(), "registry.testnet");
+    assert!(!cmd.force());
+}

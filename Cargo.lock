@@ -13665,6 +13665,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "dirs 6.0.0",
  "hex",
  "near-account-id",
  "near-api",
@@ -13683,8 +13684,12 @@ dependencies = [
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+ "templar-redstone-bridge",
  "templar-tools-common",
  "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]

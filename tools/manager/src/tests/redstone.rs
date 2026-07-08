@@ -83,3 +83,88 @@ fn list_role_maps_role_arg_to_snake_case() {
     serde_json::from_value::<templar_gateway_methods_spec::redstone::ListRole>(json)
         .expect("list-role params should match the gateway spec");
 }
+
+#[test]
+fn create_prod_preset_builds_config_init_args() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "redstone",
+        "create",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "redstone",
+        "--version-key",
+        "redstone@1",
+        "--prod",
+        "--deposit",
+        "3.5 NEAR",
+    ])
+    .expect("redstone create --prod should parse");
+    let deploy = match cli.command {
+        Command::Redstone {
+            command: RedstoneNs::Create(a),
+        } => a.parse().expect("into deploy spec"),
+        _ => panic!("expected redstone create"),
+    };
+
+    // Wraps registry.deploy; init args carry the built-in prod config.
+    assert_eq!(deploy.name, "redstone");
+    let init: serde_json::Value =
+        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
+    assert_eq!(
+        init["config"],
+        serde_json::to_value(templar_common::oracle::redstone::config::prod()).unwrap()
+    );
+}
+
+#[test]
+fn create_requires_exactly_one_config_source() {
+    // --prod and --test are mutually exclusive.
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "redstone",
+        "create",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "redstone",
+        "--version-key",
+        "redstone@1",
+        "--prod",
+        "--test",
+        "--deposit",
+        "3.5 NEAR",
+    ])
+    .expect_err("--prod with --test should be rejected");
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn update_prices_defaults_node_path_and_builds_write_spec() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "redstone",
+        "update-prices",
+        "--oracle-id",
+        "redstone.testnet",
+        "--feed-id",
+        "BTC",
+        "--feed-id",
+        "ETH",
+    ])
+    .expect("update-prices should parse");
+    let Command::Redstone {
+        command: RedstoneNs::UpdatePrices(cmd),
+    } = cli.command
+    else {
+        panic!("expected redstone update-prices");
+    };
+    assert_eq!(cmd.node_path(), std::path::Path::new("node"));
+    assert_eq!(cmd.feed_ids().len(), 2);
+
+    // A bridge-fetched payload flows into the gateway write spec unchanged.
+    let spec = cmd.write_spec(b"payload".to_vec());
+    assert_eq!(spec.payload.0, b"payload");
+    assert_eq!(spec.feed_ids.len(), 2);
+}

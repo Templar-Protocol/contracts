@@ -379,3 +379,59 @@ fn oracle_update_prices_collects_repeated_ids() {
     };
     assert_eq!(spec.price_ids.len(), 2);
 }
+
+#[test]
+fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
+    // Omitting --breaker-id marks the proposal for auto-resolution.
+    let Command::ProxyOracleGovernance {
+        command: ProxyOracleGovernanceNs::CreateProposal(mut cmd),
+    } = Cli::try_parse_from([
+        "tmplrmgr",
+        "proxy-oracle-governance",
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "add-circuit-breaker",
+        "--price-id",
+        PRICE_ID,
+        "--breaker-file",
+        "/does/not/need/to/exist.json",
+    ])
+    .expect("add-circuit-breaker should parse")
+    .command
+    else {
+        panic!("expected create-proposal");
+    };
+    assert_eq!(cmd.unresolved_breaker_price_id(), Some(PRICE_ID));
+    cmd.set_breaker_id(4);
+    // Once resolved, it is no longer flagged for auto-fetch.
+    assert_eq!(cmd.unresolved_breaker_price_id(), None);
+
+    // An explicit --breaker-id needs no resolution.
+    let Command::ProxyOracleGovernance {
+        command: ProxyOracleGovernanceNs::CreateProposal(explicit),
+    } = Cli::try_parse_from([
+        "tmplrmgr",
+        "proxy-oracle-governance",
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "add-circuit-breaker",
+        "--price-id",
+        PRICE_ID,
+        "--breaker-id",
+        "7",
+        "--breaker-file",
+        "/does/not/need/to/exist.json",
+    ])
+    .expect("add-circuit-breaker with --breaker-id should parse")
+    .command
+    else {
+        panic!("expected create-proposal");
+    };
+    assert_eq!(explicit.unresolved_breaker_price_id(), None);
+}

@@ -129,3 +129,24 @@ fn write_init_args_fixture(label: &str, bytes: &[u8]) -> std::path::PathBuf {
     std::fs::write(&path, bytes).expect("write market init args fixture");
     path
 }
+
+#[test]
+fn market_remove_parses_beneficiary_and_force() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "market",
+        "remove",
+        "--beneficiary-id",
+        "treasury.testnet",
+        "--force",
+    ])
+    .expect("market remove should parse");
+    let Command::Market {
+        command: MarketNs::Remove(cmd),
+    } = cli.command
+    else {
+        panic!("expected Market::Remove");
+    };
+    assert_eq!(cmd.beneficiary_id().as_str(), "treasury.testnet");
+    assert!(cmd.force());
+}
