@@ -108,38 +108,34 @@ registry proxy-oracle-owner propose-owner \
     --oracle-id "$PROXY_ORACLE_ID" \
     --account-id "$GOVERNANCE_ID"
 
+# --ttl-default 0 (above) makes every proposal executable immediately, so
+# --execute-when-ready creates and executes each in a single call.
 echo "Accepting oracle ownership through governance..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --id 0 \
+    --execute-when-ready \
     admin-function-call \
     --method own_accept_owner \
     --deposit "1 yoctoNEAR"
-operator proxy-oracle-governance execute-proposal \
-    --governance-id "$GOVERNANCE_ID" \
-    --id 0
 
 echo "Configuring collateral proxy..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --id 1 \
+    --execute-when-ready \
     set-proxy \
     --price-id "$COLLATERAL_PRICE_ID" \
     --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
-operator proxy-oracle-governance execute-proposal \
-    --governance-id "$GOVERNANCE_ID" \
-    --id 1
 
 echo "Configuring borrow proxy..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --id 2 \
+    --execute-when-ready \
     set-proxy \
     --price-id "$BORROW_PRICE_ID" \
     --proxy-file "$PROXY_BORROW_ARGS_FILE"
-operator proxy-oracle-governance execute-proposal \
-    --governance-id "$GOVERNANCE_ID" \
-    --id 2
 
 echo "Deploying market..."
 operator market create \
