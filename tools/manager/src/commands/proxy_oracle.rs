@@ -94,7 +94,7 @@ pub enum ProxyOracleGovernanceNs {
     Create(GovernanceCreate),
     CreateProposal(CreateProposal),
     CancelProposal(ProposalRef),
-    ExecuteProposal(ProposalRef),
+    ExecuteProposal(ExecuteProposalArgs),
     GetProposal(ProposalRef),
     ListProposals(ListProposals),
     NextProposalId(GovernanceIdArgs),
@@ -169,7 +169,7 @@ impl GovernanceCreate {
     }
 }
 
-/// A governance proposal keyed by id (cancel / execute / get).
+/// A governance proposal keyed by id (cancel / get).
 #[derive(Args, Debug)]
 pub struct ProposalRef {
     #[arg(long, value_name = "ACCOUNT_ID")]
@@ -185,14 +185,38 @@ impl ProposalRef {
             id: self.id,
         }
     }
-    pub fn execute(self) -> governance_spec::ExecuteProposal {
-        governance_spec::ExecuteProposal {
+    pub fn get(self) -> governance_spec::GetProposal {
+        governance_spec::GetProposal {
             governance_id: self.governance_id,
             id: self.id,
         }
     }
-    pub fn get(self) -> governance_spec::GetProposal {
-        governance_spec::GetProposal {
+}
+
+#[derive(Args, Debug)]
+pub struct ExecuteProposalArgs {
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    governance_id: AccountId,
+    #[arg(long, value_name = "ID")]
+    id: u32,
+    /// Wait for the proposal's TTL to elapse before executing, instead of
+    /// failing if it has not yet matured.
+    #[arg(long)]
+    when_ready: bool,
+}
+
+impl ExecuteProposalArgs {
+    pub fn governance_id(&self) -> &AccountId {
+        &self.governance_id
+    }
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+    pub fn when_ready(&self) -> bool {
+        self.when_ready
+    }
+    pub fn into_spec(self) -> governance_spec::ExecuteProposal {
+        governance_spec::ExecuteProposal {
             governance_id: self.governance_id,
             id: self.id,
         }

@@ -247,6 +247,36 @@ fn create_proposal_execute_when_ready_flag() {
 }
 
 #[test]
+fn execute_proposal_when_ready_flag() {
+    for (args, expected) in [
+        (vec!["--governance-id", "gov.testnet", "--id", "2"], false),
+        (
+            vec![
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "2",
+                "--when-ready",
+            ],
+            true,
+        ),
+    ] {
+        let mut full = vec!["tmplrmgr", "proxy-oracle-governance", "execute-proposal"];
+        full.extend_from_slice(&args);
+        let cli = Cli::try_parse_from(full).expect("execute-proposal should parse");
+        match cli.command {
+            Command::ProxyOracleGovernance {
+                command: ProxyOracleGovernanceNs::ExecuteProposal(cmd),
+            } => {
+                assert_eq!(cmd.when_ready(), expected);
+                assert_eq!(cmd.id(), 2);
+            }
+            _ => panic!("expected execute-proposal"),
+        }
+    }
+}
+
+#[test]
 fn governance_create_builds_init_args() {
     let cli = Cli::try_parse_from([
         "tmplrmgr",

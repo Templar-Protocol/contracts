@@ -188,7 +188,7 @@ fn governance_execute_proposal_typed_args_parse() {
     let params = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::ExecuteProposal(cmd),
-        } => cmd.execute(),
+        } => cmd.into_spec(),
         _ => panic!("expected ProxyOracleGovernance::ExecuteProposal"),
     };
 

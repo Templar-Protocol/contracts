@@ -12,9 +12,10 @@ use templar_gateway_types::{
 use super::cli::{Command, GenericMethodCall};
 use super::commands::{
     account::AccountNs, contract::ContractNs, ft::FtNs, market::MarketNs, op::OpNs,
-    proxy_oracle::CreateProposal, proxy_oracle::ProxyOracleGovernanceNs,
-    proxy_oracle::ProxyOracleNs, proxy_oracle::ProxyOracleOwnerNs, recover::RecoverNep141,
-    redstone::RedstoneNs, registry::RegistryNs, storage::StorageNs,
+    proxy_oracle::CreateProposal, proxy_oracle::ExecuteProposalArgs,
+    proxy_oracle::ProxyOracleGovernanceNs, proxy_oracle::ProxyOracleNs,
+    proxy_oracle::ProxyOracleOwnerNs, recover::RecoverNep141, redstone::RedstoneNs,
+    registry::RegistryNs, storage::StorageNs,
 };
 use super::CliContext;
 
@@ -100,7 +101,7 @@ async fn dispatch_governance(ctx: CliContext, ns: ProxyOracleGovernanceNs) -> an
         ProxyOracleGovernanceNs::Create(a) => ctx.write(a.parse()?).await,
         ProxyOracleGovernanceNs::CreateProposal(a) => create_proposal(ctx, a).await,
         ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.cancel()).await,
-        ProxyOracleGovernanceNs::ExecuteProposal(a) => ctx.write(a.execute()).await,
+        ProxyOracleGovernanceNs::ExecuteProposal(a) => execute_proposal(ctx, a).await,
         ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.get()).await,
         ProxyOracleGovernanceNs::ListProposals(a) => ctx.read(a.parse()).await,
         ProxyOracleGovernanceNs::NextProposalId(a) => ctx.read(a.next_proposal_id()).await,
@@ -167,6 +168,16 @@ async fn create_proposal(ctx: CliContext, args: CreateProposal) -> anyhow::Resul
         create,
         execute,
     })
+}
+
+/// Execute a governance proposal. With `--when-ready`, wait for its TTL to
+/// elapse first, so an early call blocks instead of failing on an immature
+/// proposal.
+async fn execute_proposal(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
+    if args.when_ready() {
+        wait_for_maturity(&ctx, args.governance_id(), args.id()).await?;
+    }
+    ctx.write(args.into_spec()).await
 }
 
 /// Machine-readable result of a `create-proposal` run. `id` is always present
