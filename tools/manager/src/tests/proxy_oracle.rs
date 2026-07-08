@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle::ProxyOracleNs;
 use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
+use crate::context::CliContext;
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
@@ -21,7 +22,7 @@ fn create_proposal(
             command: ProxyOracleGovernanceNs::CreateProposal(cmd),
         } => {
             let id = cmd.id().expect("these tests pass --id explicitly");
-            cmd.into_spec(id)
+            cmd.try_into_spec(id)
         }
         _ => panic!("expected create-proposal"),
     }
@@ -214,7 +215,7 @@ fn create_proposal_id_is_optional_for_auto_fetch() {
             assert!(!cmd.execute_when_ready());
             assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
             // A resolved id flows through to the spec.
-            let spec = cmd.into_spec(7).expect("into spec");
+            let spec = cmd.try_into_spec(7).expect("into spec");
             assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
         }
         _ => panic!("expected create-proposal"),
@@ -303,7 +304,9 @@ fn governance_create_builds_init_args() {
     let deploy = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::Create(cmd),
-        } => cmd.parse().expect("into deploy spec"),
+        } => cmd
+            .try_into_spec(&CliContext::for_test())
+            .expect("into deploy spec"),
         _ => panic!("expected governance create"),
     };
 
@@ -343,7 +346,7 @@ fn governance_role_reads_parse() {
     let spec = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::ListRole(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected list-role"),
     };
     assert_eq!(
@@ -375,7 +378,7 @@ fn oracle_update_prices_collects_repeated_ids() {
     let spec = match cli.command {
         Command::ProxyOracle {
             command: ProxyOracleNs::UpdatePrices(cmd),
-        } => cmd.parse().expect("into spec"),
+        } => cmd.try_into_spec().expect("into spec"),
         _ => panic!("expected update-prices"),
     };
     assert_eq!(spec.price_ids.len(), 2);

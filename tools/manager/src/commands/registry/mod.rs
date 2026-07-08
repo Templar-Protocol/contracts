@@ -10,7 +10,7 @@ mod remove_version;
 
 pub use add_version::AddVersion;
 pub use clear_deployments::ClearDeployments;
-pub use deploy::{resolve_full_access_keys, Deploy};
+pub use deploy::Deploy;
 pub use get_deployment::GetDeployment;
 pub use list_deployments::ListDeployments;
 pub use list_deployments_by_kind::ListDeploymentsByKind;

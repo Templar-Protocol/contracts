@@ -18,7 +18,7 @@ pub struct SetRole {
 }
 
 impl SetRole {
-    pub fn parse(self) -> spec::SetRole {
+    pub fn into_spec(self) -> spec::SetRole {
         spec::SetRole {
             oracle_id: self.oracle_id,
             account_id: self.account_id,

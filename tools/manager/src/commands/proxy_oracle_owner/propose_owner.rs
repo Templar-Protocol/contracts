@@ -11,7 +11,7 @@ pub struct ProposeOwner {
 }
 
 impl ProposeOwner {
-    pub fn parse(self) -> spec::ProposeOwner {
+    pub fn into_spec(self) -> spec::ProposeOwner {
         spec::ProposeOwner {
             oracle_id: self.oracle_id,
             account_id: self.account_id,

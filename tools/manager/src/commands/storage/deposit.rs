@@ -16,7 +16,7 @@ pub struct StorageDeposit {
 }
 
 impl StorageDeposit {
-    pub fn parse(self) -> spec::Deposit {
+    pub fn into_spec(self) -> spec::Deposit {
         spec::Deposit {
             contract_id: self.contract_id,
             beneficiary_id: self.beneficiary_id,

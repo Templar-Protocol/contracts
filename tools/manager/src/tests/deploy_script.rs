@@ -5,6 +5,7 @@ use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
 use crate::commands::proxy_oracle_owner::ProxyOracleOwnerNs;
 use crate::commands::registry::RegistryNs;
+use crate::context::CliContext;
 
 const COLLATERAL_PRICE_ID: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -29,7 +30,9 @@ fn registry_deploy_defaults_init_args_to_null() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.into_spec(Vec::new()).expect("deploy should parse"),
+        } => cmd
+            .try_into_spec(&CliContext::for_test())
+            .expect("deploy should parse"),
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -69,7 +72,9 @@ fn registry_deploy_reads_init_args_file() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::Deploy(cmd),
-        } => cmd.into_spec(Vec::new()).expect("deploy should parse"),
+        } => cmd
+            .try_into_spec(&CliContext::for_test())
+            .expect("deploy should parse"),
         _ => panic!("expected Registry::Deploy"),
     };
 
@@ -95,7 +100,7 @@ fn proxy_oracle_owner_typed_commands_parse() {
     let params = match cli.command {
         Command::ProxyOracleOwner {
             command: ProxyOracleOwnerNs::ProposeOwner(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected ProxyOracleOwner::ProposeOwner"),
     };
 
@@ -156,7 +161,7 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
     let params = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => cmd.into_spec(0).expect("create-proposal should build"),
+        } => cmd.try_into_spec(0).expect("create-proposal should build"),
         _ => panic!("expected ProxyOracleGovernance::CreateProposal"),
     };
 

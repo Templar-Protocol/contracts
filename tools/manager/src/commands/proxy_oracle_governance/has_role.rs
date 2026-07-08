@@ -15,7 +15,7 @@ pub struct HasRole {
 }
 
 impl HasRole {
-    pub fn parse(self) -> spec::HasRole {
+    pub fn into_spec(self) -> spec::HasRole {
         spec::HasRole {
             governance_id: self.governance_id,
             account_id: self.account_id,

@@ -11,7 +11,7 @@ pub struct GetBalanceOf {
 }
 
 impl GetBalanceOf {
-    pub fn parse(self) -> spec::GetBalanceOf {
+    pub fn into_spec(self) -> spec::GetBalanceOf {
         spec::GetBalanceOf {
             contract_id: self.contract_id,
             account_id: self.account_id,

@@ -3,8 +3,6 @@
 //! to read, write, report, and print. Keeping this in one place means the
 //! context's whole surface lives together rather than scattered across dispatch.
 
-use std::sync::Arc;
-
 use anyhow::Context as _;
 use near_api::{NetworkConfig, SecretKey};
 use serde::Serialize;
@@ -13,18 +11,13 @@ use templar_gateway_client::{Client, NetworkConfigBuilder};
 use templar_gateway_core::{DispatchRead, GatewayContext, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_types::{
-    common::{WriteOperationResult, WriteRequest},
-    primitive::PublicKey,
-    IdempotencyKey, ManagedAccountId, MethodSpec,
+    common::WriteOperationResult, primitive::PublicKey, ManagedAccountId, MethodSpec,
 };
 
 use crate::cli::Cli;
-use crate::commands::registry;
 
 pub(crate) struct CliContext {
     pub(crate) client: Client,
-    pub(crate) idempotency_key: Option<IdempotencyKey>,
-    pub(crate) has_operation_store: bool,
     network: NetworkConfig,
     signer_account_id: Option<ManagedAccountId>,
     signer_secret_key: Option<SecretKey>,
@@ -40,9 +33,9 @@ impl CliContext {
             .context("write methods require --signer-id and --secret-key")
     }
 
-    /// The signer's public key, used to grant it a full access key on accounts
-    /// deployed from a registry.
-    fn signer_public_key(&self) -> anyhow::Result<PublicKey> {
+    /// The signer's public key, used by commands that grant it a full access key
+    /// on a newly created account.
+    pub(crate) fn signer_public_key(&self) -> anyhow::Result<PublicKey> {
         self.signer_public_key
             .clone()
             .context("this operation requires --signer-id and --secret-key")
@@ -65,25 +58,6 @@ impl CliContext {
             .context("build signing client")
     }
 
-    /// Resolve the full access keys for a from-registry deploy from the CLI
-    /// flags and the signer's public key.
-    pub(crate) fn resolve_full_access_keys(
-        &self,
-        no_signer: bool,
-        extra: &[near_api::PublicKey],
-    ) -> anyhow::Result<Vec<PublicKey>> {
-        Ok(registry::resolve_full_access_keys(
-            self.signer_public_key()?,
-            no_signer,
-            extra,
-        ))
-    }
-
-    /// The default full access keys for a deploy: just the signer's key.
-    pub(crate) fn default_full_access_keys(&self) -> anyhow::Result<Vec<PublicKey>> {
-        self.resolve_full_access_keys(false, &[])
-    }
-
     /// Dispatch a read and print its JSON result.
     pub(crate) async fn read<S>(&self, request: S) -> anyhow::Result<()>
     where
@@ -94,21 +68,14 @@ impl CliContext {
         print_json(&output)
     }
 
-    /// Execute a write signed by the default signer (carrying its idempotency
-    /// key), report the tx link, and print the JSON result.
+    /// Execute a write signed by the default signer, report the tx link, and
+    /// print the JSON result.
     pub(crate) async fn write<S>(&self, body: S) -> anyhow::Result<()>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
-        let output = self
-            .client
-            .execute_request(WriteRequest {
-                signer_account_id: self.signer_account()?,
-                idempotency_key: self.idempotency_key.clone(),
-                body,
-            })
-            .await?;
+        let output = self.client.execute_as(self.signer_account()?, body).await?;
         self.report_tx(&output);
         print_json(&output)
     }
@@ -133,33 +100,16 @@ pub(crate) fn print_json(output: &impl Serialize) -> anyhow::Result<()> {
 }
 
 /// Build the execution context from parsed CLI args: the network, the gateway
-/// client (optionally backed by a durable operation store), and the resolved
+/// client (backed by a transient in-memory operation store), and the resolved
 /// signer.
-pub(crate) async fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
+pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
     let network = NetworkConfigBuilder::new(cli.network)
         .rpc_url(cli.rpc_url.as_deref())
         .context("invalid RPC URL")?
         .api_key(cli.rpc_api_key.clone())
         .build();
 
-    let has_operation_store = cli.gateway_store_url.is_some();
     let builder = Client::builder(network.clone());
-    let builder = if let Some(database_url) = cli.gateway_store_url.as_deref() {
-        let store = templar_gateway_store::PostgresStore::new(database_url)
-            .context("connect gateway operation store")?;
-        if cli.migrate_gateway_store {
-            store
-                .migrate()
-                .await
-                .context("migrate gateway operation store")?;
-        }
-        builder.store(Arc::new(store))
-    } else if cli.migrate_gateway_store {
-        anyhow::bail!("--migrate-gateway-store requires --gateway-store-url");
-    } else {
-        builder
-    };
-
     let signer_account_id = cli.signer_id.clone();
     let (builder, signer_secret_key, signer_public_key) =
         match (&signer_account_id, &cli.secret_key) {
@@ -178,12 +128,45 @@ pub(crate) async fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
 
     Ok(CliContext {
         client: builder.build()?,
-        idempotency_key: cli.idempotency_key.clone().map(IdempotencyKey),
-        has_operation_store,
         network,
         signer_account_id: signer_account_id.map(ManagedAccountId::from),
         signer_secret_key,
         signer_public_key,
         transaction_url_prefix: cli.transaction_url_prefix(),
     })
+}
+
+#[cfg(test)]
+impl CliContext {
+    /// A signer-configured context for tests: an offline client plus a fixed
+    /// signer key, so FAK-resolving conversions can read [`signer_public_key`].
+    ///
+    /// [`signer_public_key`]: CliContext::signer_public_key
+    pub(crate) fn for_test() -> Self {
+        use templar_gateway_client::Network;
+
+        // A throwaway ed25519 key; tests never submit, only read its public half.
+        const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
+        let secret: SecretKey = TEST_SECRET_KEY.parse().expect("valid test secret key");
+        let public_key = PublicKey::from(secret.public_key());
+        let network = NetworkConfigBuilder::new(Network::Testnet).build();
+        let account = ManagedAccountId::from(
+            "signer.testnet"
+                .parse::<near_account_id::AccountId>()
+                .expect("valid account id"),
+        );
+        let client = Client::builder(network.clone())
+            .secret_key(account.clone(), secret.clone())
+            .expect("configure test signer")
+            .build()
+            .expect("build test client");
+        Self {
+            client,
+            network,
+            signer_account_id: Some(account),
+            signer_secret_key: Some(secret),
+            signer_public_key: Some(public_key),
+            transaction_url_prefix: String::new(),
+        }
+    }
 }

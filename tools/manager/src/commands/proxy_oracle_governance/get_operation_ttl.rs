@@ -13,7 +13,7 @@ pub struct GetOperationTtl {
 }
 
 impl GetOperationTtl {
-    pub fn parse(self) -> spec::GetOperationTtl {
+    pub fn into_spec(self) -> spec::GetOperationTtl {
         spec::GetOperationTtl {
             governance_id: self.governance_id,
             kind: self.kind.into(),

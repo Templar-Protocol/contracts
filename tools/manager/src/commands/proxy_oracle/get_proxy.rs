@@ -13,7 +13,7 @@ pub struct GetProxy {
 }
 
 impl GetProxy {
-    pub fn parse(self) -> anyhow::Result<spec::GetProxy> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::GetProxy> {
         Ok(spec::GetProxy {
             oracle_id: self.oracle_id,
             id: parse_price_identifier(&self.price_id)?,

@@ -13,7 +13,7 @@ pub struct ListProposals {
 }
 
 impl ListProposals {
-    pub fn parse(self) -> spec::ListProposals {
+    pub fn into_spec(self) -> spec::ListProposals {
         spec::ListProposals {
             governance_id: self.governance_id,
             offset: self.offset,

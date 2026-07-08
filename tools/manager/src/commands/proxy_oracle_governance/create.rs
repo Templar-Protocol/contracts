@@ -9,6 +9,7 @@ use templar_gateway_types::{Base64Bytes, NearToken};
 use templar_proxy_oracle_near_governance_common::TtlConfig;
 
 use super::{load_json_file, uniform_ttls};
+use crate::context::CliContext;
 
 /// Create (deploy-from-registry) a governance contract, building its
 /// `new(proxy_oracle_id, admin_id, ttls)` init args from typed flags.
@@ -36,6 +37,7 @@ pub struct GovernanceCreate {
     /// Full TtlConfig JSON, overriding --ttl-default with per-operation TTLs
     #[arg(long, value_name = "PATH")]
     ttls_file: Option<PathBuf>,
+    /// Deposit funding the new account's storage and balance.
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
 }
@@ -49,7 +51,7 @@ struct GovernanceInit {
 }
 
 impl GovernanceCreate {
-    pub fn parse(self) -> anyhow::Result<registry_spec::Deploy> {
+    pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
         let ttls = match self.ttls_file {
             Some(path) => load_json_file(&path).context("parse TtlConfig")?,
             None => uniform_ttls(Nanoseconds::from_ns(self.ttl_default)),
@@ -67,7 +69,8 @@ impl GovernanceCreate {
             name: self.name,
             version_key: self.version_key,
             init_args: Base64Bytes(init_args),
-            full_access_keys: None,
+            // The operator's signer key retains control of the new account.
+            full_access_keys: Some(vec![ctx.signer_public_key()?]),
             deposit: self.deposit,
         })
     }

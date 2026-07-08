@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use serde::Serialize;
 use templar_gateway_methods_spec::proxy_oracle_governance as gov;
-use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
+use templar_gateway_types::common::WriteOperationResult;
 
 use crate::commands::proxy_oracle_governance::{CreateProposal, ExecuteProposalArgs};
 use crate::context::{print_json, CliContext};
@@ -39,14 +39,9 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         }
     };
 
-    // Keep the operator's idempotency key on the create write only.
     let create = ctx
         .client
-        .execute_request(WriteRequest {
-            signer_account_id: ctx.signer_account()?,
-            idempotency_key: ctx.idempotency_key.clone(),
-            body: args.into_spec(id)?,
-        })
+        .execute_as(ctx.signer_account()?, args.try_into_spec(id)?)
         .await?;
     ctx.report_tx(&create);
 

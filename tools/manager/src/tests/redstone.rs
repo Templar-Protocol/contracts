@@ -2,6 +2,7 @@ use clap::Parser;
 
 use crate::cli::{Cli, Command};
 use crate::commands::RedstoneNs;
+use crate::context::CliContext;
 
 #[test]
 fn write_prices_decodes_base64_payload() {
@@ -23,7 +24,7 @@ fn write_prices_decodes_base64_payload() {
     let params = match cli.command {
         Command::Redstone {
             command: RedstoneNs::WritePrices(a),
-        } => a.parse().expect("write-prices should decode"),
+        } => a.try_into_spec().expect("write-prices should decode"),
         _ => panic!("expected redstone write-prices"),
     };
 
@@ -53,7 +54,9 @@ fn write_prices_rejects_invalid_base64() {
     let error = match cli.command {
         Command::Redstone {
             command: RedstoneNs::WritePrices(a),
-        } => a.parse().expect_err("invalid base64 should be rejected"),
+        } => a
+            .try_into_spec()
+            .expect_err("invalid base64 should be rejected"),
         _ => panic!("expected redstone write-prices"),
     };
     assert!(error.to_string().contains("base64"));
@@ -74,7 +77,7 @@ fn list_role_maps_role_arg_to_snake_case() {
     let params = match cli.command {
         Command::Redstone {
             command: RedstoneNs::ListRole(a),
-        } => a.parse(),
+        } => a.into_spec(),
         _ => panic!("expected redstone list-role"),
     };
 
@@ -104,7 +107,9 @@ fn create_prod_preset_builds_config_init_args() {
     let deploy = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
-        } => a.parse().expect("into deploy spec"),
+        } => a
+            .try_into_spec(&CliContext::for_test())
+            .expect("into deploy spec"),
         _ => panic!("expected redstone create"),
     };
 
@@ -164,7 +169,7 @@ fn update_prices_defaults_node_path_and_builds_write_spec() {
     assert_eq!(cmd.feed_ids().len(), 2);
 
     // A bridge-fetched payload flows into the gateway write spec unchanged.
-    let spec = cmd.write_spec(b"payload".to_vec());
+    let spec = cmd.into_spec(b"payload".to_vec());
     assert_eq!(spec.payload.0, b"payload");
     assert_eq!(spec.feed_ids.len(), 2);
 }

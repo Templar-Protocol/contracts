@@ -9,7 +9,7 @@ pub struct Get {
 }
 
 impl Get {
-    pub fn parse(self) -> spec::Get {
+    pub fn into_spec(self) -> spec::Get {
         spec::Get {
             account_id: self.account_id,
         }

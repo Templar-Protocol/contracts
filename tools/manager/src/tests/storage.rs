@@ -18,7 +18,7 @@ fn parses_storage_get_balance_bounds_typed_args() {
     let params = match cli.command {
         Command::Storage {
             command: StorageNs::GetBalanceBounds(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Storage::GetBalanceBounds"),
     };
     assert_eq!(
@@ -43,7 +43,7 @@ fn parses_storage_get_balance_of_typed_args() {
     let params = match cli.command {
         Command::Storage {
             command: StorageNs::GetBalanceOf(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Storage::GetBalanceOf"),
     };
     assert_eq!(
@@ -71,7 +71,7 @@ fn parses_storage_deposit_typed_args() {
     let params = match cli.command {
         Command::Storage {
             command: StorageNs::Deposit(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Storage::Deposit"),
     };
     assert_eq!(
@@ -95,7 +95,7 @@ fn parses_storage_unregister_typed_args() {
     let params = match cli.command {
         Command::Storage {
             command: StorageNs::Unregister(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Storage::Unregister"),
     };
     assert_eq!(
@@ -124,7 +124,7 @@ fn parses_storage_ensure_deposit_typed_args() {
     let params = match cli.command {
         Command::Storage {
             command: StorageNs::EnsureDeposit(cmd),
-        } => cmd.parse().expect("ensure-deposit should parse"),
+        } => cmd.try_into_spec().expect("ensure-deposit should parse"),
         _ => panic!("expected Storage::EnsureDeposit"),
     };
     assert_eq!(
@@ -202,7 +202,7 @@ fn registered_ensure_deposit_rejects_amount() {
         Command::Storage {
             command: StorageNs::EnsureDeposit(cmd),
         } => cmd
-            .parse()
+            .try_into_spec()
             .expect_err("registered mode should reject --amount"),
         _ => panic!("expected Storage::EnsureDeposit"),
     };

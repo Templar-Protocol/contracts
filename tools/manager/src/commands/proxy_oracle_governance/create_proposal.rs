@@ -71,7 +71,7 @@ impl CreateProposal {
     }
 
     /// Build the gateway spec with the resolved proposal id.
-    pub fn into_spec(self, id: u32) -> anyhow::Result<spec::CreateProposal> {
+    pub fn try_into_spec(self, id: u32) -> anyhow::Result<spec::CreateProposal> {
         Ok(spec::CreateProposal {
             governance_id: self.governance_id,
             id,

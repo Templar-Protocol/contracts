@@ -24,5 +24,5 @@ pub(super) async fn update_redstone(
         .context("fetch RedStone payload")?;
     drop(kill_tx);
 
-    ctx.write(args.write_spec(payload)).await
+    ctx.write(args.into_spec(payload)).await
 }

@@ -25,7 +25,7 @@ fn add_version_spec(
     {
         Command::Registry {
             command: RegistryNs::AddVersion(cmd),
-        } => cmd.into_spec(),
+        } => cmd.try_into_spec(),
         _ => panic!("expected Registry::AddVersion"),
     }
 }
@@ -48,7 +48,7 @@ fn parses_registry_list_versions_typed_args() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::ListVersions(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Registry::ListVersions"),
     };
 
@@ -76,7 +76,7 @@ fn parses_registry_list_deployments_typed_args() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::ListDeployments(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Registry::ListDeployments"),
     };
 
@@ -102,7 +102,7 @@ fn parses_registry_get_deployment_typed_args() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::GetDeployment(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Registry::GetDeployment"),
     };
 
@@ -132,7 +132,7 @@ fn parses_registry_list_deployments_by_kind_typed_args() {
     let params = match cli.command {
         Command::Registry {
             command: RegistryNs::ListDeploymentsByKind(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Registry::ListDeploymentsByKind"),
     };
 

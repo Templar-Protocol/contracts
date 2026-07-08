@@ -11,7 +11,7 @@ pub struct Unregister {
 }
 
 impl Unregister {
-    pub fn parse(self) -> spec::Unregister {
+    pub fn into_spec(self) -> spec::Unregister {
         spec::Unregister {
             contract_id: self.contract_id,
             force: self.force,

@@ -9,7 +9,7 @@ pub struct GetVersion {
 }
 
 impl GetVersion {
-    pub fn parse(self) -> spec::GetVersion {
+    pub fn into_spec(self) -> spec::GetVersion {
         spec::GetVersion {
             contract_id: self.contract_id,
         }

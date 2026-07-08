@@ -14,7 +14,7 @@ pub struct UpdatePrices {
 }
 
 impl UpdatePrices {
-    pub fn parse(self) -> anyhow::Result<spec::UpdatePrices> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::UpdatePrices> {
         let price_ids = self
             .price_ids
             .iter()

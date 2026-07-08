@@ -17,7 +17,7 @@ pub struct ListRole {
 }
 
 impl ListRole {
-    pub fn parse(self) -> spec::ListRole {
+    pub fn into_spec(self) -> spec::ListRole {
         spec::ListRole {
             governance_id: self.governance_id,
             role: self.role.into(),

@@ -156,7 +156,7 @@ pub struct AddVersion {
 }
 
 impl AddVersion {
-    pub fn into_spec(self) -> anyhow::Result<spec::AddVersion> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::AddVersion> {
         let deploy_mode = DeployMode::from(self.deploy_mode);
         let (wasm_bytes, derived_key) = self.source.load()?;
         let version_key = self

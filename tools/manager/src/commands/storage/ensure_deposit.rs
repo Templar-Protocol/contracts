@@ -24,7 +24,7 @@ pub struct EnsureDeposit {
 }
 
 impl EnsureDeposit {
-    pub fn parse(self) -> anyhow::Result<spec::EnsureDeposit> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::EnsureDeposit> {
         let mode = match self.mode {
             EnsureModeArg::Registered => {
                 if self.amount.is_some() {

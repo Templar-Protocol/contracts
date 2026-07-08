@@ -26,7 +26,7 @@ pub struct WritePrices {
 }
 
 impl WritePrices {
-    pub fn parse(self) -> anyhow::Result<spec::WritePrices> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::WritePrices> {
         let payload_base64 = match (self.payload_base64, self.payload_base64_file) {
             (Some(inline), _) => inline,
             (None, Some(path)) => std::fs::read_to_string(&path)

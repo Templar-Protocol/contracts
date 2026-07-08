@@ -10,7 +10,7 @@ pub struct Delete {
 }
 
 impl Delete {
-    pub fn parse(self) -> spec::Delete {
+    pub fn into_spec(self) -> spec::Delete {
         spec::Delete {
             beneficiary_id: self.beneficiary_id,
         }

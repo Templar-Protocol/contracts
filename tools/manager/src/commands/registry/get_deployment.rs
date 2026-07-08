@@ -11,7 +11,7 @@ pub struct GetDeployment {
 }
 
 impl GetDeployment {
-    pub fn parse(self) -> spec::GetDeployment {
+    pub fn into_spec(self) -> spec::GetDeployment {
         spec::GetDeployment {
             registry_id: self.registry_id,
             account_id: self.account_id,

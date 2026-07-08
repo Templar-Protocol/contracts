@@ -11,7 +11,7 @@ pub struct GetRoles {
 }
 
 impl GetRoles {
-    pub fn parse(self) -> spec::GetRoles {
+    pub fn into_spec(self) -> spec::GetRoles {
         spec::GetRoles {
             governance_id: self.governance_id,
             account_id: self.account_id,

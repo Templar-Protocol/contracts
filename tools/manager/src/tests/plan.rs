@@ -89,7 +89,7 @@ async fn ft_transfer_plans_ft_transfer_action() {
     let body = match cli.command {
         Command::Ft {
             command: FtNs::Transfer(a),
-        } => a.parse(),
+        } => a.into_spec(),
         _ => panic!("expected ft transfer"),
     };
 
@@ -120,7 +120,7 @@ async fn storage_deposit_plans_storage_deposit_action() {
     let body = match cli.command {
         Command::Storage {
             command: StorageNs::Deposit(a),
-        } => a.parse(),
+        } => a.into_spec(),
         _ => panic!("expected storage deposit"),
     };
 
@@ -146,7 +146,7 @@ async fn storage_unregister_plans_storage_unregister_action() {
     let body = match cli.command {
         Command::Storage {
             command: StorageNs::Unregister(a),
-        } => a.parse(),
+        } => a.into_spec(),
         _ => panic!("expected storage unregister"),
     };
 
@@ -201,7 +201,7 @@ async fn redstone_set_role_plans_set_role_action() {
     let body = match cli.command {
         Command::Redstone {
             command: RedstoneNs::SetRole(a),
-        } => a.parse(),
+        } => a.into_spec(),
         _ => panic!("expected redstone set-role"),
     };
 

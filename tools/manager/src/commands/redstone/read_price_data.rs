@@ -12,7 +12,7 @@ pub struct ReadPriceData {
 }
 
 impl ReadPriceData {
-    pub fn parse(self) -> spec::ReadPriceData {
+    pub fn into_spec(self) -> spec::ReadPriceData {
         spec::ReadPriceData {
             oracle_id: self.oracle_id,
             feed_ids: self.feed_ids,

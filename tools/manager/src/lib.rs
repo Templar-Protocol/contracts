@@ -15,7 +15,7 @@ pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.console_level());
     tracing::info!(network = %cli.network, "Connecting");
-    let ctx = context::build_context(&cli).await?;
+    let ctx = context::build_context(&cli)?;
     dispatch::dispatch(ctx, cli.command).await
 }
 

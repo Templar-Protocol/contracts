@@ -16,7 +16,7 @@ pub struct Transfer {
 }
 
 impl Transfer {
-    pub fn parse(self) -> spec::Transfer {
+    pub fn into_spec(self) -> spec::Transfer {
         spec::Transfer {
             contract_id: self.contract_id,
             receiver_id: self.receiver_id,

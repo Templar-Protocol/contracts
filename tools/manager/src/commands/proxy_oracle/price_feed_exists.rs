@@ -13,7 +13,7 @@ pub struct PriceFeedExists {
 }
 
 impl PriceFeedExists {
-    pub fn parse(self) -> anyhow::Result<spec::PriceFeedExists> {
+    pub fn try_into_spec(self) -> anyhow::Result<spec::PriceFeedExists> {
         Ok(spec::PriceFeedExists {
             oracle_id: self.oracle_id,
             price_identifier: parse_price_identifier(&self.price_id)?,

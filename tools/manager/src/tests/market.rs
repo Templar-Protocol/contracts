@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::cli::{Cli, Command};
 use crate::commands::market::MarketNs;
+use crate::context::CliContext;
 
 #[test]
 fn parses_market_create_typed_args() {
@@ -29,7 +30,9 @@ fn parses_market_create_typed_args() {
     let params = match cli.command {
         Command::Market {
             command: MarketNs::Create(cmd),
-        } => cmd.parse().expect("market create should parse init args"),
+        } => cmd
+            .try_into_spec(&CliContext::for_test())
+            .expect("market create should parse init args"),
         _ => panic!("expected Market::Create"),
     };
 
@@ -77,7 +80,7 @@ fn market_create_rejects_missing_init_args_file() {
         Command::Market {
             command: MarketNs::Create(cmd),
         } => cmd
-            .parse()
+            .try_into_spec(&CliContext::for_test())
             .expect_err("missing init args file should be rejected"),
         _ => panic!("expected Market::Create"),
     };
@@ -110,7 +113,7 @@ fn market_create_rejects_invalid_init_args() {
         Command::Market {
             command: MarketNs::Create(cmd),
         } => cmd
-            .parse()
+            .try_into_spec(&CliContext::for_test())
             .expect_err("invalid init args should be rejected"),
         _ => panic!("expected Market::Create"),
     };

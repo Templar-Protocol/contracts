@@ -30,24 +30,11 @@ fn help_lists_all_top_level_commands() {
         "proxy-oracle-governance",
         "redstone",
         "recover-nep141",
-        "op",
         "read",
         "write",
     ] {
         assert!(rendered.contains(command), "help is missing `{command}`");
     }
-}
-
-#[test]
-fn parses_op_get() {
-    let cli = Cli::try_parse_from(["tmplrmgr", "op", "get", "--operation-id", "op-123"])
-        .expect("op get should parse");
-    assert!(matches!(
-        cli.command,
-        super::cli::Command::Op {
-            command: super::commands::OpNs::Get(_)
-        }
-    ));
 }
 
 #[test]
@@ -113,26 +100,7 @@ fn parses_write_fallback_with_json() {
 }
 
 #[test]
-fn idempotency_key_requires_gateway_store_url() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "--idempotency-key",
-        "retry-key",
-        "write",
-        "tx.transfer",
-        "--json",
-        r#"{"receiver_id":"receiver.testnet","amount":"1"}"#,
-    ])
-    .expect_err("idempotency key should require durable operation store configuration");
-
-    assert_eq!(
-        error.kind(),
-        clap::error::ErrorKind::MissingRequiredArgument
-    );
-}
-
-#[tokio::test]
-async fn invalid_secret_key_error_does_not_echo_input() {
+fn invalid_secret_key_error_does_not_echo_input() {
     let secret = "not-a-real-secret-key";
     let cli = Cli::try_parse_from([
         "tmplrmgr",
@@ -147,7 +115,7 @@ async fn invalid_secret_key_error_does_not_echo_input() {
     ])
     .expect("secret key should parse as an opaque string at the clap boundary");
 
-    let error = match super::context::build_context(&cli).await {
+    let error = match super::context::build_context(&cli) {
         Ok(_) => panic!("invalid secret key should be rejected after clap parsing"),
         Err(error) => error,
     };
@@ -157,10 +125,8 @@ async fn invalid_secret_key_error_does_not_echo_input() {
     assert!(!message.contains(secret));
 }
 
-#[tokio::test]
-#[allow(clippy::await_holding_lock)]
-// env mutex must span the await to keep SECRET_KEY set and serialize env across tests
-async fn secret_key_env_satisfies_signer_configuration() {
+#[test]
+fn secret_key_env_satisfies_signer_configuration() {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original = std::env::var_os("SECRET_KEY");
     std::env::set_var(
@@ -168,7 +134,7 @@ async fn secret_key_env_satisfies_signer_configuration() {
         "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q",
     );
 
-    let result = async {
+    let result = (|| {
         let cli = Cli::try_parse_from([
             "tmplrmgr",
             "--signer-id",
@@ -180,9 +146,8 @@ async fn secret_key_env_satisfies_signer_configuration() {
         ])
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        super::context::build_context(&cli).await
-    }
-    .await;
+        super::context::build_context(&cli)
+    })();
 
     match original {
         Some(value) => std::env::set_var("SECRET_KEY", value),

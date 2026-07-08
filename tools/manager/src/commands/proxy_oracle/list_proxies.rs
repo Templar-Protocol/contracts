@@ -13,7 +13,7 @@ pub struct ListProxies {
 }
 
 impl ListProxies {
-    pub fn parse(self) -> spec::ListProxies {
+    pub fn into_spec(self) -> spec::ListProxies {
         spec::ListProxies {
             oracle_id: self.oracle_id,
             offset: self.offset,

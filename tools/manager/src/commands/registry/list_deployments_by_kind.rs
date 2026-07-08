@@ -16,7 +16,7 @@ pub struct ListDeploymentsByKind {
 }
 
 impl ListDeploymentsByKind {
-    pub fn parse(self) -> spec::ListDeploymentsByKind {
+    pub fn into_spec(self) -> spec::ListDeploymentsByKind {
         spec::ListDeploymentsByKind {
             registry_id: self.registry_id,
             args: Pagination {

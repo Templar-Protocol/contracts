@@ -14,7 +14,7 @@ pub struct ListVersions {
 }
 
 impl ListVersions {
-    pub fn parse(self) -> spec::ListVersions {
+    pub fn into_spec(self) -> spec::ListVersions {
         spec::ListVersions {
             registry_id: self.registry_id,
             args: Pagination {

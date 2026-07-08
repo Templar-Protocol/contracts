@@ -8,6 +8,10 @@ use templar_common::oracle::redstone::config;
 use templar_gateway_methods_spec::registry as registry_spec;
 use templar_gateway_types::{Base64Bytes, NearToken};
 
+use crate::context::CliContext;
+
+/// Deploy a RedStone price adapter from a registered version, granting the
+/// signer a full access key so the operator retains control of the new account.
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("redstone_config")
@@ -16,10 +20,13 @@ use templar_gateway_types::{Base64Bytes, NearToken};
         .multiple(false)
 ))]
 pub struct Create {
+    /// Registry that holds the adapter version to deploy.
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
+    /// Sub-account name to create under the registry.
     #[arg(long, value_name = "NAME")]
     name: String,
+    /// Version key of the adapter contract in the registry.
     #[arg(long, value_name = "KEY")]
     version_key: String,
     /// Use the built-in production RedStone configuration.
@@ -34,12 +41,13 @@ pub struct Create {
     /// Path to a full init args JSON file.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
+    /// Deposit funding the new account's storage and balance.
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
 }
 
 impl Create {
-    pub fn parse(self) -> anyhow::Result<registry_spec::Deploy> {
+    pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
         let init_bytes = if self.prod {
             serde_json::to_vec(&json!({ "config": config::prod() }))
                 .context("serialize prod config")?
@@ -60,7 +68,8 @@ impl Create {
             name: self.name,
             version_key: self.version_key,
             init_args: Base64Bytes(init_bytes),
-            full_access_keys: None,
+            // The operator's signer key retains control of the new account.
+            full_access_keys: Some(vec![ctx.signer_public_key()?]),
             deposit: self.deposit,
         })
     }

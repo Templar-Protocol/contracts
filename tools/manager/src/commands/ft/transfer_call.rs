@@ -18,7 +18,7 @@ pub struct TransferCall {
 }
 
 impl TransferCall {
-    pub fn parse(self) -> spec::TransferCall {
+    pub fn into_spec(self) -> spec::TransferCall {
         spec::TransferCall {
             contract_id: self.contract_id,
             receiver_id: self.receiver_id,

@@ -9,7 +9,7 @@ pub struct GetBalanceBounds {
 }
 
 impl GetBalanceBounds {
-    pub fn parse(self) -> spec::GetBalanceBounds {
+    pub fn into_spec(self) -> spec::GetBalanceBounds {
         spec::GetBalanceBounds {
             contract_id: self.contract_id,
         }

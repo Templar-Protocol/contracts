@@ -20,7 +20,7 @@ fn parses_ft_get_balance_of_typed_args() {
     let params = match cli.command {
         Command::Ft {
             command: FtNs::GetBalanceOf(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Ft::GetBalanceOf"),
     };
 
@@ -50,7 +50,7 @@ fn parses_ft_transfer_typed_args() {
     let params = match cli.command {
         Command::Ft {
             command: FtNs::Transfer(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Ft::Transfer"),
     };
 
@@ -78,7 +78,7 @@ fn omits_ft_transfer_memo_when_absent() {
     let params = match cli.command {
         Command::Ft {
             command: FtNs::Transfer(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Ft::Transfer"),
     };
 
@@ -110,7 +110,7 @@ fn parses_ft_transfer_call_typed_args() {
     let params = match cli.command {
         Command::Ft {
             command: FtNs::TransferCall(cmd),
-        } => cmd.parse(),
+        } => cmd.into_spec(),
         _ => panic!("expected Ft::TransferCall"),
     };
 

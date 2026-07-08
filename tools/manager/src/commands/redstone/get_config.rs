@@ -9,7 +9,7 @@ pub struct GetConfig {
 }
 
 impl GetConfig {
-    pub fn parse(self) -> spec::GetConfig {
+    pub fn into_spec(self) -> spec::GetConfig {
         spec::GetConfig {
             oracle_id: self.oracle_id,
         }

@@ -33,10 +33,10 @@ impl UpdatePrices {
     }
 
     /// Build the on-chain write spec from a bridge-fetched payload.
-    pub fn write_spec(&self, payload: Vec<u8>) -> spec::WritePrices {
+    pub fn into_spec(self, payload: Vec<u8>) -> spec::WritePrices {
         spec::WritePrices {
-            oracle_id: self.oracle_id.clone(),
-            feed_ids: self.feed_ids.clone(),
+            oracle_id: self.oracle_id,
+            feed_ids: self.feed_ids,
             payload: Base64Bytes(payload),
         }
     }
