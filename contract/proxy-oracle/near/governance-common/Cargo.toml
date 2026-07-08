@@ -12,6 +12,12 @@ templar-proxy-oracle-kernel = { workspace = true, features = ["borsh", "serde", 
 templar-proxy-oracle-near-common.workspace = true
 thiserror.workspace = true
 near-sdk.workspace = true
+clap = { workspace = true, optional = true }
+
+[features]
+# Derive `clap::ValueEnum` on CLI-facing enums (`Role`, `OperationKind`) so host
+# binaries (e.g. `tmplrmgr`) can parse them without re-declaring a local mirror.
+clap = ["dep:clap"]
 
 [dev-dependencies]
 near-sdk = { workspace = true, features = ["unit-testing"] }

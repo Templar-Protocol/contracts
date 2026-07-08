@@ -1,5 +1,6 @@
+use near_account_id::AccountId;
 use templar_common::Nanoseconds;
-use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal};
+use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal, Role};
 
 use crate::client::{
     macros::{contract_views, contract_writes},
@@ -48,6 +49,21 @@ pub struct GovListArgs {
     pub offset: Option<u32>,
     pub count: Option<u32>,
 }
+#[derive(serde::Serialize)]
+pub struct GovHasRoleArgs {
+    pub account_id: AccountId,
+    pub role: Role,
+}
+#[derive(serde::Serialize)]
+pub struct GovListRoleArgs {
+    pub role: Role,
+    pub offset: Option<u32>,
+    pub count: Option<u32>,
+}
+#[derive(serde::Serialize)]
+pub struct GovGetRolesArgs {
+    pub account_id: AccountId,
+}
 
 impl ProxyGovernanceClient<'_> {
     contract_views! {
@@ -56,6 +72,10 @@ impl ProxyGovernanceClient<'_> {
         pub fn get_operation_ttl(GovTtlArgs) -> Nanoseconds;
         pub fn list_proposals(GovListArgs) -> Vec<u32>;
         pub fn get_proposal(GovGetArgs) -> Option<Proposal<Operation>>;
+        pub fn has_role(GovHasRoleArgs) -> bool;
+        pub fn list_role(GovListRoleArgs) -> Vec<AccountId>;
+        pub fn get_roles(GovGetRolesArgs) -> Vec<Role>;
+        pub fn get_proxy_oracle_id(()) -> AccountId;
     }
 
     contract_writes! {

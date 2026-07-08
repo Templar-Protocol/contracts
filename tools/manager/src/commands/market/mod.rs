@@ -1,28 +1,17 @@
-pub mod deploy;
-pub mod remove;
+mod create;
+mod remove;
 
-use crate::CliContext;
+pub use create::Create;
+pub use remove::Remove;
 
-#[derive(clap::Args)]
-pub struct MarketArgs {
-    #[command(subcommand)]
-    command: MarketCommand,
-}
+use clap::Subcommand;
 
-#[derive(clap::Subcommand)]
-enum MarketCommand {
-    /// Deploy a market contract
-    Deploy(deploy::DeployMarket),
-
-    /// Remove a market: recover NEP-141 tokens then delete the account
-    Remove(remove::MarketRemove),
-}
-
-impl MarketArgs {
-    pub async fn run(self, ctx: &CliContext) -> anyhow::Result<()> {
-        match self.command {
-            MarketCommand::Deploy(a) => a.run(ctx).await,
-            MarketCommand::Remove(a) => a.run(ctx).await,
-        }
-    }
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+pub enum MarketNs {
+    /// Deploy a market from a registered version.
+    Create(Create),
+    /// Remove a market: recover its assets to a beneficiary, then delete the
+    /// (signer) account.
+    Remove(Remove),
 }

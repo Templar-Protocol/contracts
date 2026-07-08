@@ -1,0 +1,339 @@
+use std::path::PathBuf;
+
+use anyhow::Context as _;
+use clap::{Args, Subcommand};
+use near_account_id::AccountId;
+use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::Gas;
+use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::Nanoseconds;
+use templar_gateway_methods_spec::proxy_oracle_governance as spec;
+use templar_gateway_types::NearToken;
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig,
+};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_governance_common::Operation;
+
+use super::{decode_base64, load_json_file, OperationKind, Role};
+use crate::commands::duration::parse_duration;
+use crate::commands::proxy_oracle::parse_price_identifier;
+use crate::proxy::load_proxy_file;
+
+#[derive(Args, Debug)]
+pub struct CreateProposal {
+    /// Governance contract account.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    governance_id: AccountId,
+    /// Proposal id; fetched from the governance contract's next id when omitted
+    #[arg(long, value_name = "ID")]
+    id: Option<u32>,
+    /// Requested TTL, clamped up to the operation's minimum (e.g. `10s`, `100ns`).
+    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration)]
+    requested_ttl: Nanoseconds,
+    /// After creating, wait for the proposal's TTL to elapse, then execute it.
+    /// Blocks for the full (effective) TTL, so it is only practical for short ones.
+    #[arg(long)]
+    execute_when_ready: bool,
+    #[command(subcommand)]
+    operation: ProposalOperation,
+}
+
+impl CreateProposal {
+    pub fn governance_id(&self) -> &AccountId {
+        &self.governance_id
+    }
+
+    /// The explicit `--id`, or `None` when it should be auto-fetched.
+    pub fn id(&self) -> Option<u32> {
+        self.id
+    }
+
+    /// Whether to wait for maturity and execute after creating.
+    pub fn execute_when_ready(&self) -> bool {
+        self.execute_when_ready
+    }
+
+    /// When this is an `add-circuit-breaker` proposal with no explicit
+    /// `--breaker-id`, the price id whose next breaker id must be fetched.
+    pub fn unresolved_breaker_price_id(&self) -> Option<PriceIdentifier> {
+        match &self.operation {
+            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => Some(a.price_id),
+            _ => None,
+        }
+    }
+
+    /// Fill in an auto-fetched breaker id for an `add-circuit-breaker` proposal.
+    pub fn set_breaker_id(&mut self, id: u32) {
+        if let ProposalOperation::AddCircuitBreaker(a) = &mut self.operation {
+            a.breaker_id.get_or_insert(id);
+        }
+    }
+
+    /// Build the gateway spec with the resolved proposal id.
+    pub fn try_into_spec(self, id: u32) -> anyhow::Result<spec::CreateProposal> {
+        Ok(spec::CreateProposal {
+            governance_id: self.governance_id,
+            id,
+            operation: self.operation.into_operation()?,
+            requested_ttl: self.requested_ttl,
+        })
+    }
+}
+
+/// One variant per `templar_proxy_oracle_near_governance_common::Operation`.
+/// Complex nested payloads (circuit breakers, history sources) are supplied as
+/// JSON files that deserialize into the real kernel types.
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+pub enum ProposalOperation {
+    /// Set or clear a feed's proxy configuration.
+    SetProxy(SetProxyArgs),
+    /// Configure a feed's circuit-breaker sampling.
+    ConfigureCircuitBreakers(ConfigureCircuitBreakersArgs),
+    /// Add a circuit breaker to a feed.
+    AddCircuitBreaker(AddCircuitBreakerArgs),
+    /// Remove a circuit breaker from a feed.
+    RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
+    /// Manually trip or reset a feed.
+    SetManualTrip(SetManualTripArgs),
+    /// Re-arm a tripped circuit breaker.
+    Rearm(RearmArgs),
+    /// Enable or disable enforcement of a circuit breaker.
+    SetEnforced(SetEnforcedArgs),
+    /// Set the TTL for an operation kind.
+    SetActionTtl(SetActionTtlArgs),
+    /// Grant or revoke a governance role.
+    SetRole(SetRoleArgs),
+    /// Upgrade the proxy oracle's contract code.
+    AdminUpgrade(AdminUpgradeArgs),
+    /// Call an arbitrary method on the proxy oracle.
+    AdminFunctionCall(AdminFunctionCallArgs),
+}
+
+impl ProposalOperation {
+    fn into_operation(self) -> anyhow::Result<Operation> {
+        Ok(match self {
+            Self::SetProxy(a) => {
+                let proxy: Option<Proxy<Source>> = match a.proxy_file {
+                    Some(path) => Some(
+                        serde_json::from_value(load_proxy_file(&path)?)
+                            .context("parse proxy configuration")?,
+                    ),
+                    None => None,
+                };
+                Operation::SetProxy {
+                    id: a.price_id,
+                    proxy,
+                }
+            }
+            Self::ConfigureCircuitBreakers(a) => Operation::ConfigureCircuitBreakers {
+                id: a.price_id,
+                config: CircuitBreakerSetConfig {
+                    sample_interval_ns: a.sample_interval,
+                    history_len: a.history_len,
+                },
+            },
+            Self::AddCircuitBreaker(a) => Operation::AddCircuitBreaker {
+                id: a.price_id,
+                // Resolved to the set's next id by the dispatcher when omitted.
+                breaker_id: a.breaker_id.unwrap_or(0),
+                breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
+                    .context("parse circuit breaker")?,
+            },
+            Self::RemoveCircuitBreaker(a) => Operation::RemoveCircuitBreaker {
+                id: a.price_id,
+                breaker_id: a.breaker_id,
+            },
+            Self::SetManualTrip(a) => Operation::SetManualTrip {
+                id: a.price_id,
+                is_manually_tripped: a.tripped,
+                metadata: a.metadata_base64.map(decode_base64).transpose()?,
+            },
+            Self::Rearm(a) => Operation::Rearm {
+                id: a.price_id,
+                breaker_id: a.breaker_id,
+                armed_after_ns: a.armed_after,
+                accepted_history_source: load_json_file::<AcceptedHistorySource>(
+                    &a.history_source_file,
+                )
+                .context("parse accepted history source")?,
+            },
+            Self::SetEnforced(a) => Operation::SetEnforced {
+                id: a.price_id,
+                breaker_id: a.breaker_id,
+                is_enforced: a.enforced,
+            },
+            Self::SetActionTtl(a) => Operation::SetActionTtl {
+                kind: a.kind,
+                new_ttl: a.new_ttl,
+            },
+            Self::SetRole(a) => Operation::SetRole {
+                account_id: a.account_id,
+                role: a.role,
+                set: !a.revoke,
+            },
+            Self::AdminUpgrade(a) => Operation::AdminUpgrade {
+                code: Base64VecU8(
+                    std::fs::read(&a.code_file)
+                        .with_context(|| format!("read WASM from {}", a.code_file.display()))?,
+                ),
+                migrate_args: Base64VecU8(match a.migrate_args_file {
+                    Some(path) => std::fs::read(&path)
+                        .with_context(|| format!("read migrate args from {}", path.display()))?,
+                    None => Vec::new(),
+                }),
+            },
+            Self::AdminFunctionCall(a) => {
+                // Fail early on malformed args rather than sending garbage bytes.
+                serde_json::from_str::<serde_json::Value>(&a.args)
+                    .context("admin-function-call --args must be valid JSON")?;
+                Operation::AdminFunctionCall {
+                    method_name: a.method,
+                    args: Base64VecU8(a.args.into_bytes()),
+                    attached_deposit: U128(a.deposit.as_yoctonear()),
+                    gas: a.gas,
+                }
+            }
+        })
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct SetProxyArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Proxy definition JSON; omit to clear the feed
+    #[arg(long, value_name = "PATH")]
+    proxy_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct ConfigureCircuitBreakersArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Sampling interval between circuit-breaker observations (e.g. `1s`, `1000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    sample_interval: Nanoseconds,
+    /// Number of samples to retain in the breaker's history.
+    #[arg(long, value_name = "N")]
+    history_len: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct AddCircuitBreakerArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Stable breaker id within the set. Auto-fetched (the set's next id) when
+    /// omitted.
+    #[arg(long, value_name = "ID")]
+    breaker_id: Option<u32>,
+    /// CircuitBreaker definition JSON
+    #[arg(long, value_name = "PATH")]
+    breaker_file: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RemoveCircuitBreakerArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Breaker id to remove.
+    #[arg(long, value_name = "ID")]
+    breaker_id: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct SetManualTripArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Whether the feed is manually tripped
+    #[arg(long)]
+    tripped: bool,
+    /// Optional base64 metadata recorded with the trip.
+    #[arg(long, value_name = "BASE64")]
+    metadata_base64: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct RearmArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Breaker id to re-arm.
+    #[arg(long, value_name = "ID")]
+    breaker_id: u32,
+    /// Delay before the breaker re-arms (e.g. `30s`, `1000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    armed_after: Nanoseconds,
+    /// AcceptedHistorySource definition JSON
+    #[arg(long, value_name = "PATH")]
+    history_source_file: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct SetEnforcedArgs {
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
+    /// Breaker id to update.
+    #[arg(long, value_name = "ID")]
+    breaker_id: u32,
+    /// Whether the breaker is enforced.
+    #[arg(long)]
+    enforced: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SetActionTtlArgs {
+    /// Operation kind to set the TTL for.
+    #[arg(long, value_enum)]
+    kind: OperationKind,
+    /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    new_ttl: Nanoseconds,
+}
+
+#[derive(Args, Debug)]
+pub struct SetRoleArgs {
+    /// Account to grant or revoke the role on.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    account_id: AccountId,
+    /// Role to set.
+    #[arg(long, value_enum)]
+    role: Role,
+    /// Revoke the role instead of granting it
+    #[arg(long)]
+    revoke: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct AdminUpgradeArgs {
+    /// WASM file to deploy to the proxy oracle
+    #[arg(long, value_name = "PATH")]
+    code_file: PathBuf,
+    /// Migrate args passed to the oracle's `migrate` (raw bytes); empty if omitted
+    #[arg(long, value_name = "PATH")]
+    migrate_args_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct AdminFunctionCallArgs {
+    /// Method to call on the proxy oracle (e.g. `own_accept_owner`)
+    #[arg(long, value_name = "NAME")]
+    method: String,
+    /// JSON argument string (raw bytes are what the oracle receives)
+    #[arg(long, value_name = "JSON", default_value = "{}")]
+    args: String,
+    /// Deposit to attach to the call.
+    #[arg(long, value_name = "AMOUNT", default_value_t = NearToken::from_yoctonear(0))]
+    deposit: NearToken,
+    /// Gas to attach to the call (e.g. `30 Tgas`).
+    #[arg(long, value_name = "GAS", default_value_t = Gas::from_tgas(30))]
+    gas: Gas,
+}

@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 base64.workspace = true
 borsh.workspace = true
+clap = { workspace = true, optional = true }
 near-api-types = "0.8.5"
 near-openapi-types.workspace = true
 near-account-id = { workspace = true, features = ["serde", "schemars"] }
@@ -21,6 +22,11 @@ templar-common = { workspace = true, features = ["abi", "non-contract-usage"] }
 templar-universal-account.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+
+[features]
+# Derive `clap::ValueEnum` on CLI-facing enums (e.g. `ContractKind`) so binaries
+# can accept them directly as arguments.
+clap = ["dep:clap"]
 
 [lints]
 workspace = true
