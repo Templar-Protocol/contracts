@@ -217,12 +217,34 @@ pub(super) async fn remove_market(
                 token::TokenReference::from(&configuration.borrow_asset),
                 token::TokenReference::from(&configuration.collateral_asset),
             ];
-            for asset in assets {
-                if let Err(error) = recover_token(ctx, client, &market, asset, beneficiary).await {
+            // Sweep every asset's balance first, then reclaim storage once per
+            // distinct token contract. Two NEP-245 token ids can share a single
+            // contract (several Intents market configs do), and a compliant
+            // `storage_unregister(force=false)` rejects while any balance remains
+            // — so unregistering per-asset would strand the second asset.
+            for asset in &assets {
+                if let Err(error) =
+                    sweep_token(ctx, client, &market, asset.clone(), beneficiary).await
+                {
                     if !force {
                         return Err(error);
                     }
                     tracing::warn!(%error, "failed to recover asset; continuing (--force)");
+                }
+            }
+
+            let mut reclaimed = std::collections::HashSet::new();
+            for asset in &assets {
+                let contract_id = token_contract_id(asset);
+                if !reclaimed.insert(contract_id.clone()) {
+                    continue;
+                }
+                if let Err(error) = reclaim_storage(ctx, client, &market, contract_id.clone()).await
+                {
+                    if !force {
+                        return Err(error);
+                    }
+                    tracing::warn!(%error, "failed to reclaim storage; continuing (--force)");
                 }
             }
         }
@@ -246,22 +268,25 @@ pub(super) async fn remove_market(
     Ok(())
 }
 
+/// The token contract account backing a reference — shared across NEP-245 token
+/// ids deployed on the same contract.
+fn token_contract_id(token: &templar_gateway_methods_spec::token::TokenReference) -> &AccountId {
+    use templar_gateway_methods_spec::token::TokenReference;
+    match token {
+        TokenReference::Ft { contract_id } | TokenReference::Mt { contract_id, .. } => contract_id,
+    }
+}
+
 /// Transfer a token's full balance from `from` to `beneficiary` if non-zero,
-/// using the standard-agnostic `token.transfer` so NEP-245 assets work too, then
-/// reclaim `from`'s storage slot when it's actually reclaimable.
-async fn recover_token(
+/// using the standard-agnostic `token.transfer` so NEP-245 assets work too.
+async fn sweep_token(
     ctx: &CliContext,
     client: &Client,
     from: &ManagedAccountId,
     token: templar_gateway_methods_spec::token::TokenReference,
     beneficiary: &AccountId,
 ) -> anyhow::Result<()> {
-    use templar_gateway_methods_spec::{storage, token};
-
-    let contract_id = match &token {
-        token::TokenReference::Ft { contract_id }
-        | token::TokenReference::Mt { contract_id, .. } => contract_id.clone(),
-    };
+    use templar_gateway_methods_spec::token;
 
     let balance = client
         .read(token::GetBalanceOf {
@@ -285,12 +310,23 @@ async fn recover_token(
             .await?;
         ctx.report_tx(&result);
     }
+    Ok(())
+}
 
-    // Reclaim the storage deposit, but only when it's actually reclaimable:
-    // probe the registered slot first. A failed read means the contract has no
-    // NEP-145 storage management (e.g. some NEP-245 multi-tokens) — skip it. A
-    // present, non-zero slot means unregister should work, so a failure there is
-    // a real error and propagates.
+/// Reclaim `from`'s NEP-145 storage slot on `contract_id`, but only when it's
+/// actually reclaimable: probe the registered slot first. A failed read means
+/// the contract has no storage management (e.g. some NEP-245 multi-tokens) —
+/// skip it. A present, non-zero slot means unregister should work once every
+/// balance on the contract has been swept, so a failure there is a real error
+/// and propagates. Call after all of the contract's assets have been swept.
+async fn reclaim_storage(
+    ctx: &CliContext,
+    client: &Client,
+    from: &ManagedAccountId,
+    contract_id: AccountId,
+) -> anyhow::Result<()> {
+    use templar_gateway_methods_spec::storage;
+
     let registered = match client
         .read(storage::GetBalanceOf {
             contract_id: contract_id.clone(),
