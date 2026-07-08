@@ -12,9 +12,9 @@ use templar_gateway_types::{
 use super::cli::{Command, GenericMethodCall};
 use super::commands::{
     account::AccountNs, contract::ContractNs, ft::FtNs, market::MarketNs, op::OpNs,
-    proxy_oracle::ProxyOracleGovernanceNs, proxy_oracle::ProxyOracleNs,
-    proxy_oracle::ProxyOracleOwnerNs, recover::RecoverNep141, redstone::RedstoneNs,
-    registry::RegistryNs, storage::StorageNs,
+    proxy_oracle::CreateProposal, proxy_oracle::ProxyOracleGovernanceNs,
+    proxy_oracle::ProxyOracleNs, proxy_oracle::ProxyOracleOwnerNs, recover::RecoverNep141,
+    redstone::RedstoneNs, registry::RegistryNs, storage::StorageNs,
 };
 use super::CliContext;
 
@@ -97,8 +97,8 @@ async fn dispatch_owner(ctx: CliContext, ns: ProxyOracleOwnerNs) -> anyhow::Resu
 
 async fn dispatch_governance(ctx: CliContext, ns: ProxyOracleGovernanceNs) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleGovernanceNs::Deploy(a) => ctx.write(a.parse()?).await,
-        ProxyOracleGovernanceNs::CreateProposal(a) => ctx.write(a.parse()?).await,
+        ProxyOracleGovernanceNs::Create(a) => ctx.write(a.parse()?).await,
+        ProxyOracleGovernanceNs::CreateProposal(a) => create_proposal(ctx, a).await,
         ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.cancel()).await,
         ProxyOracleGovernanceNs::ExecuteProposal(a) => ctx.write(a.execute()).await,
         ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.get()).await,
@@ -111,6 +111,24 @@ async fn dispatch_governance(ctx: CliContext, ns: ProxyOracleGovernanceNs) -> an
         ProxyOracleGovernanceNs::ListRole(a) => ctx.read(a.parse()).await,
         ProxyOracleGovernanceNs::GetRoles(a) => ctx.read(a.parse()).await,
     }
+}
+
+/// Create a governance proposal, fetching the governance contract's next
+/// proposal id first when `--id` was omitted.
+async fn create_proposal(ctx: CliContext, args: CreateProposal) -> anyhow::Result<()> {
+    let id = match args.id() {
+        Some(id) => id,
+        None => {
+            ctx.client
+                .read(
+                    templar_gateway_methods_spec::proxy_oracle_governance::NextProposalId {
+                        governance_id: args.governance_id().clone(),
+                    },
+                )
+                .await?
+        }
+    };
+    ctx.write(args.into_spec(id)?).await
 }
 
 async fn dispatch_proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {

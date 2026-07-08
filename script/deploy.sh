@@ -94,7 +94,7 @@ operator registry deploy \
     --deposit "3.5 NEAR"
 
 echo "Deploying governance ($GOVERNANCE_ID)..."
-operator proxy-oracle-governance deploy \
+operator proxy-oracle-governance create \
     --registry-id "$REGISTRY_ID" \
     --name "$GOVERNANCE_NAME" \
     --version-key "$PROXY_GOVERNANCE_VERSION_KEY" \

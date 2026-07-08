@@ -18,7 +18,10 @@ fn create_proposal(
     {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => cmd.parse(),
+        } => {
+            let id = cmd.id().expect("these tests pass --id explicitly");
+            cmd.into_spec(id)
+        }
         _ => panic!("expected create-proposal"),
     }
 }
@@ -188,11 +191,40 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
 }
 
 #[test]
-fn governance_deploy_builds_init_args() {
+fn create_proposal_id_is_optional_for_auto_fetch() {
+    // With --id omitted, the id is left unresolved (the dispatcher fetches the
+    // governance contract's next proposal id before writing).
     let cli = Cli::try_parse_from([
         "tmplrmgr",
         "proxy-oracle-governance",
-        "deploy",
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "set-proxy",
+        "--price-id",
+        PRICE_ID,
+    ])
+    .expect("create-proposal without --id should parse");
+    match cli.command {
+        Command::ProxyOracleGovernance {
+            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
+        } => {
+            assert_eq!(cmd.id(), None);
+            assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
+            // A resolved id flows through to the spec.
+            let spec = cmd.into_spec(7).expect("into spec");
+            assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
+        }
+        _ => panic!("expected create-proposal"),
+    }
+}
+
+#[test]
+fn governance_create_builds_init_args() {
+    let cli = Cli::try_parse_from([
+        "tmplrmgr",
+        "proxy-oracle-governance",
+        "create",
         "--registry-id",
         "registry.testnet",
         "--name",
@@ -208,13 +240,13 @@ fn governance_deploy_builds_init_args() {
         "--deposit",
         "3.5 NEAR",
     ])
-    .expect("governance deploy should parse");
+    .expect("governance create should parse");
 
     let deploy = match cli.command {
         Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::Deploy(cmd),
+            command: ProxyOracleGovernanceNs::Create(cmd),
         } => cmd.parse().expect("into deploy spec"),
-        _ => panic!("expected governance deploy"),
+        _ => panic!("expected governance create"),
     };
 
     // Wraps registry.deploy with typed init args.

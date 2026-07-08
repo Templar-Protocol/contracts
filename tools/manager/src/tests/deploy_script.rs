@@ -155,7 +155,7 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
     let params = match cli.command {
         Command::ProxyOracleGovernance {
             command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => cmd.parse().expect("create-proposal should parse"),
+        } => cmd.into_spec(0).expect("create-proposal should build"),
         _ => panic!("expected ProxyOracleGovernance::CreateProposal"),
     };
 

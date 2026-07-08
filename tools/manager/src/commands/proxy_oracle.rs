@@ -91,7 +91,7 @@ impl ProposeOwner {
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleGovernanceNs {
-    Deploy(GovernanceDeploy),
+    Create(GovernanceCreate),
     CreateProposal(CreateProposal),
     CancelProposal(ProposalRef),
     ExecuteProposal(ProposalRef),
@@ -106,14 +106,14 @@ pub enum ProxyOracleGovernanceNs {
     GetRoles(GetRoles),
 }
 
-/// Deploy a governance contract from a registry version, building its
+/// Create (deploy-from-registry) a governance contract, building its
 /// `new(proxy_oracle_id, admin_id, ttls)` init args from typed flags.
 ///
 /// A governance contract administers exactly one proxy oracle and must be made
-/// that oracle's owner after deployment (propose-owner to it, then have it
+/// that oracle's owner after creation (propose-owner to it, then have it
 /// execute an `admin-function-call own_accept_owner` proposal).
 #[derive(Args, Debug)]
-pub struct GovernanceDeploy {
+pub struct GovernanceCreate {
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
     #[arg(long, value_name = "NAME")]
@@ -144,7 +144,7 @@ struct GovernanceInit {
     ttls: TtlConfig,
 }
 
-impl GovernanceDeploy {
+impl GovernanceCreate {
     pub fn parse(self) -> anyhow::Result<registry_spec::Deploy> {
         let ttls = match self.ttls_file {
             Some(path) => load_json_file(&path).context("parse TtlConfig")?,
@@ -328,8 +328,9 @@ impl GetRoles {
 pub struct CreateProposal {
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Proposal id; fetched from the governance contract's next id when omitted
     #[arg(long, value_name = "ID")]
-    id: u32,
+    id: Option<u32>,
     /// Requested TTL in nanoseconds (clamped up to the operation's minimum)
     #[arg(long, value_name = "NANOSECONDS", default_value = "0")]
     requested_ttl: u64,
@@ -338,10 +339,20 @@ pub struct CreateProposal {
 }
 
 impl CreateProposal {
-    pub fn parse(self) -> anyhow::Result<governance_spec::CreateProposal> {
+    pub fn governance_id(&self) -> &AccountId {
+        &self.governance_id
+    }
+
+    /// The explicit `--id`, or `None` when it should be auto-fetched.
+    pub fn id(&self) -> Option<u32> {
+        self.id
+    }
+
+    /// Build the gateway spec with the resolved proposal id.
+    pub fn into_spec(self, id: u32) -> anyhow::Result<governance_spec::CreateProposal> {
         Ok(governance_spec::CreateProposal {
             governance_id: self.governance_id,
-            id: self.id,
+            id,
             operation: self.operation.into_operation()?,
             requested_ttl: Nanoseconds::from_ns(self.requested_ttl),
         })
