@@ -2,13 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::Context as _;
 use clap::Args;
-use near_account_id::AccountId;
 use serde_json::json;
 use templar_common::oracle::redstone::config;
 use templar_gateway_methods_spec::registry as registry_spec;
-use templar_gateway_types::{Base64Bytes, NearToken};
 
-use crate::commands::full_access_key::FullAccessKeyArgs;
+use crate::commands::deploy_common::DeployCommonArgs;
 use crate::context::CliContext;
 
 /// Deploy a RedStone price adapter from a registered version, granting the
@@ -21,15 +19,8 @@ use crate::context::CliContext;
         .multiple(false)
 ))]
 pub struct Create {
-    /// Registry that holds the adapter version to deploy.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    registry_id: AccountId,
-    /// Sub-account name to create under the registry.
-    #[arg(long, value_name = "NAME")]
-    name: String,
-    /// Version key of the adapter contract in the registry.
-    #[arg(long, value_name = "KEY")]
-    version_key: String,
+    #[command(flatten)]
+    common: DeployCommonArgs,
     /// Use the built-in production RedStone configuration.
     #[arg(long)]
     prod: bool,
@@ -42,16 +33,10 @@ pub struct Create {
     /// Path to a full init args JSON file.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
-    #[command(flatten)]
-    full_access_keys: FullAccessKeyArgs,
-    /// Deposit funding the new account's storage and balance.
-    #[arg(long, value_name = "AMOUNT")]
-    deposit: NearToken,
 }
 
 impl Create {
     pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
-        let full_access_keys = self.full_access_keys.resolve(ctx)?;
         let init_bytes = if self.prod {
             serde_json::to_vec(&json!({ "config": config::prod() }))
                 .context("serialize prod config")?
@@ -67,13 +52,6 @@ impl Create {
             anyhow::bail!("provide --prod, --test, --init-args, or --init-args-file");
         };
 
-        Ok(registry_spec::Deploy {
-            registry_id: self.registry_id,
-            name: self.name,
-            version_key: self.version_key,
-            init_args: Base64Bytes(init_bytes),
-            full_access_keys: Some(full_access_keys),
-            deposit: self.deposit,
-        })
+        self.common.into_deploy(ctx, init_bytes)
     }
 }

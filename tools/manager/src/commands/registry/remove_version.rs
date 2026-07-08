@@ -33,11 +33,4 @@ impl RemoveVersion {
                 version_key,
             })
     }
-
-    pub fn spec_for(&self, version_key: String) -> spec::RemoveVersion {
-        spec::RemoveVersion {
-            registry_id: self.registry_id.clone(),
-            version_key,
-        }
-    }
 }

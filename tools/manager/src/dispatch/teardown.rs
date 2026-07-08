@@ -22,31 +22,14 @@ pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyh
         contract_id: args.token_id.clone(),
     };
 
-    let balance = ctx
-        .client
-        .read(token::GetBalanceOf {
-            token: token.clone(),
-            account_id: account_id.clone(),
-        })
-        .await?
-        .balance
-        .0;
-
-    if balance > 0 {
-        let result = ctx
-            .client
-            .execute_as(
-                signer.clone(),
-                token::Transfer {
-                    token: token.clone(),
-                    receiver_id: args.beneficiary_id.clone(),
-                    amount: balance.into(),
-                    memo: None,
-                },
-            )
-            .await?;
-        ctx.report_tx(&result);
-    }
+    sweep_token(
+        &ctx,
+        &ctx.client,
+        &signer,
+        token.clone(),
+        &args.beneficiary_id,
+    )
+    .await?;
 
     // Re-read before unregistering: a failed/partial transfer must not lead to
     // unregistering storage while tokens remain (which would strand them).
@@ -83,8 +66,6 @@ pub(super) async fn remove_version(
     ctx: CliContext,
     args: registry::RemoveVersion,
 ) -> anyhow::Result<()> {
-    use templar_gateway_methods_spec::registry as spec;
-
     // clap's arg group guarantees exactly one of --version-key / --all, so a
     // present single spec is the single-version case; its absence means --all.
     if let Some(spec) = args.single() {
@@ -92,34 +73,18 @@ pub(super) async fn remove_version(
     }
 
     let signer = ctx.signer_account()?;
-    let versions = ctx
-        .client
-        .read(spec::ListVersions {
-            registry_id: args.registry_id().clone(),
-            args: all_pages(),
-        })
-        .await?
-        .values;
-
-    let mut removed = Vec::new();
-    for version_key in versions {
-        let result = ctx
-            .client
-            .execute_as(signer.clone(), args.spec_for(version_key.clone()))
-            .await?;
-        ctx.report_tx(&result);
-        removed.push(version_key);
-    }
+    let removed = remove_all_versions(&ctx, &signer, args.registry_id()).await?;
     print_json(&json!({ "removed": removed }))
 }
 
-/// Remove every version from the registry, then delete the (signer) registry
-/// account, sweeping its balance to the beneficiary.
-pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> anyhow::Result<()> {
-    use templar_gateway_methods_spec::{account, registry as spec};
-
-    let signer = ctx.signer_account()?;
-    let registry_id = signer.0.clone();
+/// Remove every version registered under `registry_id`, signed by `signer`,
+/// reporting each tx and returning the removed version keys.
+async fn remove_all_versions(
+    ctx: &CliContext,
+    signer: &ManagedAccountId,
+    registry_id: &AccountId,
+) -> anyhow::Result<Vec<String>> {
+    use templar_gateway_methods_spec::registry as spec;
 
     let versions = ctx
         .client
@@ -129,19 +94,31 @@ pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> 
         })
         .await?
         .values;
-    for version_key in versions {
+
+    for version_key in &versions {
         let result = ctx
             .client
             .execute_as(
                 signer.clone(),
                 spec::RemoveVersion {
                     registry_id: registry_id.clone(),
-                    version_key,
+                    version_key: version_key.clone(),
                 },
             )
             .await?;
         ctx.report_tx(&result);
     }
+    Ok(versions)
+}
+
+/// Remove every version from the registry, then delete the (signer) registry
+/// account, sweeping its balance to the beneficiary.
+pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> anyhow::Result<()> {
+    use templar_gateway_methods_spec::account;
+
+    let signer = ctx.signer_account()?;
+    let registry_id = signer.0.clone();
+    remove_all_versions(&ctx, &signer, &registry_id).await?;
 
     let result = ctx
         .client

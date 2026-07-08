@@ -21,20 +21,20 @@ pub(crate) struct CliContext {
     network: NetworkConfig,
     signer_account_id: Option<ManagedAccountId>,
     signer_secret_key: Option<SecretKey>,
-    signer_public_key: Option<PublicKey>,
     transaction_url_prefix: String,
 }
 
 impl CliContext {
-    /// The fully-configured signer (account id + derived public key), or a
-    /// precise error naming the missing half. A partial signer config builds a
-    /// valid (read-only) context, so the paired requirement is enforced here —
-    /// lazily, at the point a signer is actually needed — rather than up front.
+    /// The fully-configured signer (account id + its public key, derived from the
+    /// secret), or a precise error naming the missing half. A partial signer
+    /// config builds a valid (read-only) context, so the paired requirement is
+    /// enforced here — lazily, at the point a signer is actually needed — rather
+    /// than up front.
     fn paired_signer(&self) -> anyhow::Result<(ManagedAccountId, PublicKey)> {
-        // `signer_public_key` is derived from the secret key, so it is present
-        // exactly when `--secret-key` was given.
-        match (&self.signer_account_id, &self.signer_public_key) {
-            (Some(account_id), Some(public_key)) => Ok((account_id.clone(), public_key.clone())),
+        match (&self.signer_account_id, &self.signer_secret_key) {
+            (Some(account_id), Some(secret)) => {
+                Ok((account_id.clone(), PublicKey::from(secret.public_key())))
+            }
             (None, None) => anyhow::bail!("this operation requires --signer-id and --secret-key"),
             (Some(_), None) => anyhow::bail!("--secret-key is required with --signer-id"),
             (None, Some(_)) => anyhow::bail!("--signer-id is required with --secret-key"),
@@ -131,9 +131,6 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
                 .map_err(|_| anyhow::anyhow!("invalid --secret-key"))
         })
         .transpose()?;
-    let signer_public_key = signer_secret_key
-        .as_ref()
-        .map(|secret| PublicKey::from(secret.public_key()));
 
     // Configure the client's default signer only when both halves are present.
     // A partial or absent pair yields an unsigned (read-only) client — the
@@ -150,7 +147,6 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
         network,
         signer_account_id,
         signer_secret_key,
-        signer_public_key,
         transaction_url_prefix: cli.transaction_url_prefix(),
     })
 }
@@ -167,7 +163,6 @@ impl CliContext {
         // A throwaway ed25519 key; tests never submit, only read its public half.
         const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
         let secret: SecretKey = TEST_SECRET_KEY.parse().expect("valid test secret key");
-        let public_key = PublicKey::from(secret.public_key());
         let network = NetworkConfigBuilder::new(Network::Testnet).build();
         let account = ManagedAccountId::from(
             "signer.testnet"
@@ -184,7 +179,6 @@ impl CliContext {
             network,
             signer_account_id: Some(account),
             signer_secret_key: Some(secret),
-            signer_public_key: Some(public_key),
             transaction_url_prefix: String::new(),
         }
     }
