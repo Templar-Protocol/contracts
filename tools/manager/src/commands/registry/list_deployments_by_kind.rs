@@ -21,7 +21,7 @@ impl ListDeploymentsByKind {
     pub fn into_spec(self) -> spec::ListDeploymentsByKind {
         spec::ListDeploymentsByKind {
             registry_id: self.registry_id,
-            args: self.pagination.into_pagination(),
+            args: self.pagination.into(),
             kind: self.kind,
         }
     }

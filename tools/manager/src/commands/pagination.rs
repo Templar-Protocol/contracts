@@ -13,12 +13,12 @@ pub struct PaginationArgs {
     pub count: Option<u32>,
 }
 
-impl PaginationArgs {
-    /// The gateway `Pagination` window (whose `limit` is this `count`).
-    pub fn into_pagination(self) -> Pagination {
-        Pagination {
-            offset: self.offset,
-            limit: self.count,
+impl From<PaginationArgs> for Pagination {
+    /// The gateway `Pagination` window (whose `limit` is the args' `count`).
+    fn from(args: PaginationArgs) -> Self {
+        Self {
+            offset: args.offset,
+            limit: args.count,
         }
     }
 }

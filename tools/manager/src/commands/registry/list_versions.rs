@@ -17,7 +17,7 @@ impl ListVersions {
     pub fn into_spec(self) -> spec::ListVersions {
         spec::ListVersions {
             registry_id: self.registry_id,
-            args: self.pagination.into_pagination(),
+            args: self.pagination.into(),
         }
     }
 }

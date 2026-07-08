@@ -17,7 +17,7 @@ impl ListDeployments {
     pub fn into_spec(self) -> spec::ListDeployments {
         spec::ListDeployments {
             registry_id: self.registry_id,
-            args: self.pagination.into_pagination(),
+            args: self.pagination.into(),
         }
     }
 }
