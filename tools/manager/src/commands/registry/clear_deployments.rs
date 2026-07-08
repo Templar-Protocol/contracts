@@ -3,6 +3,7 @@ use near_account_id::AccountId;
 
 #[derive(Args, Debug)]
 pub struct ClearDeployments {
+    /// Registry whose deployments to clear.
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
     /// Recovered assets and balances are sent here (defaults to the registry).

@@ -15,9 +15,13 @@ use templar_common::oracle::pyth::PriceIdentifier;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleNs {
+    /// Read a single price feed's proxy configuration.
     GetProxy(GetProxy),
+    /// List the oracle's configured price feeds.
     ListProxies(ListProxies),
+    /// Check whether a price feed exists.
     PriceFeedExists(PriceFeedExists),
+    /// Refresh on-chain prices for one or more feeds.
     UpdatePrices(UpdatePrices),
 }
 

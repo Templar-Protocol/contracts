@@ -4,6 +4,7 @@ use templar_gateway_methods_spec::account as spec;
 
 #[derive(Args, Debug)]
 pub struct Get {
+    /// Account to read.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
 }

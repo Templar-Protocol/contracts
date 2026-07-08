@@ -23,11 +23,17 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum RegistryNs {
+    /// List the registry's contract versions.
     ListVersions(ListVersions),
+    /// List the registry's deployments.
     ListDeployments(ListDeployments),
+    /// List the registry's deployments of a given contract kind.
     ListDeploymentsByKind(ListDeploymentsByKind),
+    /// Read a single deployment record.
     GetDeployment(GetDeployment),
+    /// Build (or load) a contract and register it as a deployable version.
     AddVersion(AddVersion),
+    /// Deploy a registered version to a new account.
     Deploy(Deploy),
     /// Remove a single version, or every version with `--all`.
     RemoveVersion(RemoveVersion),

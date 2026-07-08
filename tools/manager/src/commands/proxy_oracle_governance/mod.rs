@@ -28,18 +28,31 @@ use templar_proxy_oracle_near_governance_common::{OperationKind, Role, TtlConfig
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleGovernanceNs {
+    /// Deploy a governance contract from a registered version.
     Create(GovernanceCreate),
+    /// Create a governance proposal.
     CreateProposal(CreateProposal),
+    /// Cancel a pending proposal.
     CancelProposal(ProposalRef),
+    /// Execute a matured proposal.
     ExecuteProposal(ExecuteProposalArgs),
+    /// Read a single proposal.
     GetProposal(ProposalRef),
+    /// List the governance contract's proposals.
     ListProposals(ListProposals),
+    /// Read the id the next proposal will use.
     NextProposalId(GovernanceIdArgs),
+    /// Read the total number of proposals.
     ProposalCount(GovernanceIdArgs),
+    /// Read the configured TTL for an operation kind.
     GetOperationTtl(GetOperationTtl),
+    /// Read the proxy-oracle account this contract governs.
     GetProxyOracleId(GovernanceIdArgs),
+    /// Check whether an account holds a role.
     HasRole(HasRole),
+    /// List the accounts holding a role.
     ListRole(ListRole),
+    /// List the roles held by an account.
     GetRoles(GetRoles),
 }
 
@@ -47,8 +60,10 @@ pub enum ProxyOracleGovernanceNs {
 /// `get-proposal`.
 #[derive(Args, Debug)]
 pub struct ProposalRef {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Proposal id.
     #[arg(long, value_name = "ID")]
     id: u32,
 }
@@ -72,6 +87,7 @@ impl ProposalRef {
 /// no other input (`next-proposal-id`, `proposal-count`, `get-proxy-oracle-id`).
 #[derive(Args, Debug)]
 pub struct GovernanceIdArgs {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
 }

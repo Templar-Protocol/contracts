@@ -6,8 +6,10 @@ use super::RoleArg;
 
 #[derive(Args, Debug)]
 pub struct ListRole {
+    /// RedStone adapter account to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
+    /// Role whose members to list.
     #[arg(long, value_enum)]
     role: RoleArg,
 }

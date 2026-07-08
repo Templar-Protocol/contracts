@@ -6,8 +6,10 @@ use super::OperationKindArg;
 
 #[derive(Args, Debug)]
 pub struct GetOperationTtl {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Operation kind to read the TTL for.
     #[arg(long, value_enum)]
     kind: OperationKindArg,
 }

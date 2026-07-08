@@ -139,6 +139,7 @@ impl ContractSource {
 /// Build (or load) a contract and register it as a deployable version.
 #[derive(Args, Debug)]
 pub struct AddVersion {
+    /// Registry to add the version to.
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
     #[command(flatten)]

@@ -4,6 +4,7 @@ use templar_gateway_methods_spec::storage as spec;
 
 #[derive(Args, Debug)]
 pub struct GetBalanceBounds {
+    /// Contract to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
 }

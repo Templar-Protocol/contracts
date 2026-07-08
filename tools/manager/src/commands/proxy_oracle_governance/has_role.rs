@@ -6,10 +6,13 @@ use super::RoleArg;
 
 #[derive(Args, Debug)]
 pub struct HasRole {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Account to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
+    /// Role to check for.
     #[arg(long, value_enum)]
     role: RoleArg,
 }

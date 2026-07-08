@@ -6,10 +6,13 @@ use super::RoleArg;
 
 #[derive(Args, Debug)]
 pub struct SetRole {
+    /// RedStone adapter account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
+    /// Account to grant or revoke the role on.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
+    /// Role to set.
     #[arg(long, value_enum)]
     role: RoleArg,
     /// Revoke the role instead of granting it.

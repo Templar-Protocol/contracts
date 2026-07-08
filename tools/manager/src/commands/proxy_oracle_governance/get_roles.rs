@@ -4,8 +4,10 @@ use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 #[derive(Args, Debug)]
 pub struct GetRoles {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Account to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
 }

@@ -21,10 +21,13 @@ use crate::context::CliContext;
 /// execute an `admin-function-call own_accept_owner` proposal).
 #[derive(Args, Debug)]
 pub struct GovernanceCreate {
+    /// Registry that holds the governance version to deploy.
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
+    /// Sub-account name to create under the registry.
     #[arg(long, value_name = "NAME")]
     name: String,
+    /// Version key of the governance contract in the registry.
     #[arg(long, value_name = "KEY")]
     version_key: String,
     /// The proxy oracle account this governance contract will administer

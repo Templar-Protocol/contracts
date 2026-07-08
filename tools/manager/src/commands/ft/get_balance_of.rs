@@ -4,8 +4,10 @@ use templar_gateway_methods_spec::ft as spec;
 
 #[derive(Args, Debug)]
 pub struct GetBalanceOf {
+    /// Token contract to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
+    /// Account whose balance to read.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
 }

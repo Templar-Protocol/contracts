@@ -23,10 +23,15 @@ pub enum RedstoneNs {
     /// Deploy a RedStone adapter from a registry (with `--prod`/`--test` config
     /// presets).
     Create(Create),
+    /// Read the RedStone adapter's configuration.
     GetConfig(GetConfig),
+    /// Read stored price data for one or more feeds.
     ReadPriceData(ReadPriceData),
+    /// List the accounts holding a role.
     ListRole(ListRole),
+    /// Grant or revoke a role on an account.
     SetRole(SetRole),
+    /// Write a signed RedStone payload on-chain.
     WritePrices(WritePrices),
     /// Fetch signed prices from the RedStone bridge and write them on-chain.
     UpdatePrices(UpdatePrices),

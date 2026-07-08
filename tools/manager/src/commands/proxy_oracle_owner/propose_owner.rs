@@ -4,8 +4,10 @@ use templar_gateway_methods_spec::proxy_oracle_owner as spec;
 
 #[derive(Args, Debug)]
 pub struct ProposeOwner {
+    /// Proxy-oracle account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
+    /// Account to propose as the new owner (omit to clear any pending proposal).
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: Option<AccountId>,
 }

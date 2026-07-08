@@ -5,14 +5,19 @@ use templar_primitives::SU128;
 
 #[derive(Args, Debug)]
 pub struct TransferCall {
+    /// Token contract to transfer from.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
+    /// Contract receiving the tokens.
     #[arg(long, value_name = "ACCOUNT_ID")]
     receiver_id: AccountId,
+    /// Amount to transfer (in the token's smallest unit).
     #[arg(long, value_name = "AMOUNT")]
     amount: u128,
+    /// Message forwarded to the receiver's `ft_on_transfer`.
     #[arg(long, value_name = "TEXT")]
     msg: String,
+    /// Optional memo attached to the transfer.
     #[arg(long, value_name = "TEXT")]
     memo: Option<String>,
 }

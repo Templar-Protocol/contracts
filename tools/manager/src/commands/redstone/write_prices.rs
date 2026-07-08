@@ -13,8 +13,10 @@ use templar_gateway_types::Base64Bytes;
     clap::ArgGroup::new("payload").args(["payload_base64", "payload_base64_file"]).required(true)
 ))]
 pub struct WritePrices {
+    /// RedStone adapter account to write to.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
+    /// Feed IDs the payload carries; repeat the flag per feed.
     #[arg(long = "feed-id", value_name = "FEED_ID", required = true)]
     feed_ids: Vec<FeedId>,
     /// Base64-encoded RedStone payload.

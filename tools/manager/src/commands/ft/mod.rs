@@ -11,7 +11,10 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum FtNs {
+    /// Read an account's token balance.
     GetBalanceOf(GetBalanceOf),
+    /// Transfer tokens to another account.
     Transfer(Transfer),
+    /// Transfer tokens to a contract and invoke its `ft_on_transfer`.
     TransferCall(TransferCall),
 }

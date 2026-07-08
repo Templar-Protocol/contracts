@@ -4,8 +4,10 @@ use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 #[derive(Args, Debug)]
 pub struct ExecuteProposalArgs {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
+    /// Proposal id to execute.
     #[arg(long, value_name = "ID")]
     id: u32,
     /// Wait for the proposal's TTL to elapse before executing, instead of

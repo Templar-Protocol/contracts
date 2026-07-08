@@ -4,6 +4,7 @@ use templar_gateway_methods_spec::redstone as spec;
 
 #[derive(Args, Debug)]
 pub struct GetConfig {
+    /// RedStone adapter account to query.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
 }

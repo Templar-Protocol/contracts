@@ -23,6 +23,7 @@ use crate::proxy::load_proxy_file;
 
 #[derive(Args, Debug)]
 pub struct CreateProposal {
+    /// Governance contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
     governance_id: AccountId,
     /// Proposal id; fetched from the governance contract's next id when omitted
@@ -87,16 +88,27 @@ impl CreateProposal {
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProposalOperation {
+    /// Set or clear a feed's proxy configuration.
     SetProxy(SetProxyArgs),
+    /// Configure a feed's circuit-breaker sampling.
     ConfigureCircuitBreakers(ConfigureCircuitBreakersArgs),
+    /// Add a circuit breaker to a feed.
     AddCircuitBreaker(AddCircuitBreakerArgs),
+    /// Remove a circuit breaker from a feed.
     RemoveCircuitBreaker(RemoveCircuitBreakerArgs),
+    /// Manually trip or reset a feed.
     SetManualTrip(SetManualTripArgs),
+    /// Re-arm a tripped circuit breaker.
     Rearm(RearmArgs),
+    /// Enable or disable enforcement of a circuit breaker.
     SetEnforced(SetEnforcedArgs),
+    /// Set the TTL for an operation kind.
     SetActionTtl(SetActionTtlArgs),
+    /// Grant or revoke a governance role.
     SetRole(SetRoleArgs),
+    /// Upgrade the proxy oracle's contract code.
     AdminUpgrade(AdminUpgradeArgs),
+    /// Call an arbitrary method on the proxy oracle.
     AdminFunctionCall(AdminFunctionCallArgs),
 }
 
@@ -201,6 +213,7 @@ pub struct ConfigureCircuitBreakersArgs {
     /// Sampling interval between circuit-breaker observations (e.g. `1s`, `1000ns`).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     sample_interval: Nanoseconds,
+    /// Number of samples to retain in the breaker's history.
     #[arg(long, value_name = "N")]
     history_len: u32,
 }
@@ -224,6 +237,7 @@ pub struct RemoveCircuitBreakerArgs {
     /// Price identifier (32-byte hex, optional `0x` prefix).
     #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
     price_id: PriceIdentifier,
+    /// Breaker id to remove.
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
 }
@@ -236,6 +250,7 @@ pub struct SetManualTripArgs {
     /// Whether the feed is manually tripped
     #[arg(long)]
     tripped: bool,
+    /// Optional base64 metadata recorded with the trip.
     #[arg(long, value_name = "BASE64")]
     metadata_base64: Option<String>,
 }
@@ -245,6 +260,7 @@ pub struct RearmArgs {
     /// Price identifier (32-byte hex, optional `0x` prefix).
     #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
     price_id: PriceIdentifier,
+    /// Breaker id to re-arm.
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
     /// Delay before the breaker re-arms (e.g. `30s`, `1000ns`).
@@ -260,14 +276,17 @@ pub struct SetEnforcedArgs {
     /// Price identifier (32-byte hex, optional `0x` prefix).
     #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
     price_id: PriceIdentifier,
+    /// Breaker id to update.
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
+    /// Whether the breaker is enforced.
     #[arg(long)]
     enforced: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct SetActionTtlArgs {
+    /// Operation kind to set the TTL for.
     #[arg(long, value_enum)]
     kind: OperationKindArg,
     /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
@@ -277,8 +296,10 @@ pub struct SetActionTtlArgs {
 
 #[derive(Args, Debug)]
 pub struct SetRoleArgs {
+    /// Account to grant or revoke the role on.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
+    /// Role to set.
     #[arg(long, value_enum)]
     role: RoleArg,
     /// Revoke the role instead of granting it

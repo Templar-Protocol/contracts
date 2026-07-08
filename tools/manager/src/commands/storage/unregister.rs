@@ -4,8 +4,10 @@ use templar_gateway_methods_spec::storage as spec;
 
 #[derive(Args, Debug)]
 pub struct Unregister {
+    /// Contract to unregister storage on.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
+    /// Force unregistration even with a non-zero balance.
     #[arg(long)]
     force: bool,
 }

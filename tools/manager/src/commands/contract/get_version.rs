@@ -4,6 +4,7 @@ use templar_gateway_methods_spec::contract as spec;
 
 #[derive(Args, Debug)]
 pub struct GetVersion {
+    /// Contract account to inspect.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
 }

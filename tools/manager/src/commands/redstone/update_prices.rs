@@ -8,6 +8,7 @@ use templar_gateway_types::Base64Bytes;
 
 #[derive(Args, Debug)]
 pub struct UpdatePrices {
+    /// RedStone adapter account to update.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
     /// Feed IDs to fetch and update (e.g. BTC, ETH, NEAR).

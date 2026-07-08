@@ -7,6 +7,7 @@ use templar_gateway_methods_spec::registry as spec;
     ArgGroup::new("which_version").args(["version_key", "all"]).required(true)
 ))]
 pub struct RemoveVersion {
+    /// Registry to remove the version from.
     #[arg(long, value_name = "ACCOUNT_ID")]
     registry_id: AccountId,
     /// Version key to remove. Omit and pass `--all` to remove every version.

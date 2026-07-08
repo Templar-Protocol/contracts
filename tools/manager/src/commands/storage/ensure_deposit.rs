@@ -13,12 +13,16 @@ pub enum EnsureModeArg {
 
 #[derive(Args, Debug)]
 pub struct EnsureDeposit {
+    /// Contract to ensure storage on.
     #[arg(long, value_name = "ACCOUNT_ID")]
     contract_id: AccountId,
+    /// Account whose storage balance to ensure.
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: AccountId,
+    /// Target to ensure: registered, minimum-total, or minimum-available.
     #[arg(long, value_enum)]
     mode: EnsureModeArg,
+    /// Target amount (required for minimum-total and minimum-available modes).
     #[arg(long, value_name = "AMOUNT")]
     amount: Option<NearToken>,
 }

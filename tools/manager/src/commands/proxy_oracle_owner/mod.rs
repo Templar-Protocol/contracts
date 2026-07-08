@@ -16,9 +16,14 @@ use clap::Subcommand;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleOwnerNs {
+    /// Read the current owner of a proxy-oracle account.
     GetOwner(GetOwner),
+    /// Read the pending proposed owner of a proxy-oracle account.
     GetProposedOwner(GetProposedOwner),
+    /// Propose a new owner, starting a two-step ownership transfer.
     ProposeOwner(ProposeOwner),
+    /// Accept a pending ownership transfer.
     AcceptOwner(AcceptOwner),
+    /// Renounce ownership of a proxy-oracle account.
     RenounceOwner(RenounceOwner),
 }
