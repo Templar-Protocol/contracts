@@ -1,0 +1,22 @@
+use clap::Args;
+use near_account_id::AccountId;
+use templar_gateway_methods_spec::proxy_oracle_governance as spec;
+
+use super::OperationKindArg;
+
+#[derive(Args, Debug)]
+pub struct GetOperationTtl {
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    governance_id: AccountId,
+    #[arg(long, value_enum)]
+    kind: OperationKindArg,
+}
+
+impl GetOperationTtl {
+    pub fn parse(self) -> spec::GetOperationTtl {
+        spec::GetOperationTtl {
+            governance_id: self.governance_id,
+            kind: self.kind.into(),
+        }
+    }
+}

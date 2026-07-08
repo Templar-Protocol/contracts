@@ -2,7 +2,8 @@ use clap::Parser;
 use serde_json::{json, Value};
 
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleOwnerNs};
+use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
+use crate::commands::proxy_oracle_owner::ProxyOracleOwnerNs;
 use crate::commands::registry::RegistryNs;
 
 const COLLATERAL_PRICE_ID: &str =

@@ -147,7 +147,7 @@ async fn invalid_secret_key_error_does_not_echo_input() {
     ])
     .expect("secret key should parse as an opaque string at the clap boundary");
 
-    let error = match super::build_context(&cli).await {
+    let error = match super::context::build_context(&cli).await {
         Ok(_) => panic!("invalid secret key should be rejected after clap parsing"),
         Err(error) => error,
     };
@@ -180,7 +180,7 @@ async fn secret_key_env_satisfies_signer_configuration() {
         ])
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        super::build_context(&cli).await
+        super::context::build_context(&cli).await
     }
     .await;
 

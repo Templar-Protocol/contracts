@@ -1,12 +1,6 @@
-use clap::{Args, Subcommand};
+use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::contract as spec;
-
-#[derive(Subcommand, Debug)]
-#[command(rename_all = "kebab-case")]
-pub enum ContractNs {
-    GetVersion(GetVersion),
-}
 
 #[derive(Args, Debug)]
 pub struct GetVersion {

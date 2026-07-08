@@ -2,7 +2,8 @@ use clap::Parser;
 use serde_json::{json, Value};
 
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
+use crate::commands::proxy_oracle::ProxyOracleNs;
+use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
