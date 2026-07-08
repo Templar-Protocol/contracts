@@ -6,6 +6,7 @@ use templar_common::market::MarketConfiguration;
 use templar_gateway_methods_spec::market as spec;
 use templar_gateway_types::NearToken;
 
+use crate::commands::full_access_key::FullAccessKeyArgs;
 use crate::context::CliContext;
 
 /// Deploy a market from a registered version, granting the signer a full access
@@ -24,6 +25,8 @@ pub struct Create {
     /// JSON file with the market init args (`{"configuration": ...}`).
     #[arg(long, value_name = "PATH")]
     init_args_file: std::path::PathBuf,
+    #[command(flatten)]
+    full_access_keys: FullAccessKeyArgs,
     /// Deposit funding the new account's storage and balance.
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
@@ -37,6 +40,7 @@ struct MarketInitArgs {
 
 impl Create {
     pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<spec::Create> {
+        let full_access_keys = self.full_access_keys.resolve(ctx)?;
         let file = std::fs::File::open(&self.init_args_file).with_context(|| {
             format!(
                 "open market init args from {}",
@@ -51,8 +55,7 @@ impl Create {
             name: self.name,
             version_key: self.version_key,
             configuration: init_args.configuration,
-            // The operator's signer key retains control of the new account.
-            full_access_keys: Some(vec![ctx.signer_public_key()?]),
+            full_access_keys: Some(full_access_keys),
             deposit: self.deposit,
         })
     }

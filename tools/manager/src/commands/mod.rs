@@ -1,6 +1,7 @@
 pub mod account;
 pub mod contract;
 pub mod ft;
+pub mod full_access_key;
 pub mod market;
 pub mod pagination;
 pub mod proxy_oracle;

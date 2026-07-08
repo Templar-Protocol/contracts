@@ -8,6 +8,7 @@ use templar_common::oracle::redstone::config;
 use templar_gateway_methods_spec::registry as registry_spec;
 use templar_gateway_types::{Base64Bytes, NearToken};
 
+use crate::commands::full_access_key::FullAccessKeyArgs;
 use crate::context::CliContext;
 
 /// Deploy a RedStone price adapter from a registered version, granting the
@@ -41,6 +42,8 @@ pub struct Create {
     /// Path to a full init args JSON file.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
+    #[command(flatten)]
+    full_access_keys: FullAccessKeyArgs,
     /// Deposit funding the new account's storage and balance.
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
@@ -48,6 +51,7 @@ pub struct Create {
 
 impl Create {
     pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
+        let full_access_keys = self.full_access_keys.resolve(ctx)?;
         let init_bytes = if self.prod {
             serde_json::to_vec(&json!({ "config": config::prod() }))
                 .context("serialize prod config")?
@@ -68,8 +72,7 @@ impl Create {
             name: self.name,
             version_key: self.version_key,
             init_args: Base64Bytes(init_bytes),
-            // The operator's signer key retains control of the new account.
-            full_access_keys: Some(vec![ctx.signer_public_key()?]),
+            full_access_keys: Some(full_access_keys),
             deposit: self.deposit,
         })
     }
