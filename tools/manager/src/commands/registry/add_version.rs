@@ -33,53 +33,59 @@ impl From<DeployModeArg> for DeployMode {
     }
 }
 
+/// The known NEAR contracts, as shorthand values for `--contract`. Each maps to
+/// an `ArtifactId` under `contract/*`, collapsing what used to be one boolean
+/// flag per contract into a single validated value.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ContractArg {
+    Registry,
+    Market,
+    Vault,
+    /// `uac` is kept as a legacy alias for the old shorthand flag.
+    #[value(alias = "uac")]
+    UniversalAccount,
+    ProxyOracle,
+    ProxyOracleGovernance,
+    LstOracle,
+    RedstoneAdapter,
+    PythLazerAdapter,
+}
+
+impl From<ContractArg> for ArtifactId {
+    fn from(contract: ContractArg) -> Self {
+        match contract {
+            ContractArg::Registry => Self::Registry,
+            ContractArg::Market => Self::Market,
+            ContractArg::Vault => Self::Vault,
+            ContractArg::UniversalAccount => Self::UniversalAccount,
+            ContractArg::ProxyOracle => Self::ProxyOracle,
+            ContractArg::ProxyOracleGovernance => Self::ProxyGovernance,
+            ContractArg::LstOracle => Self::LstOracle,
+            ContractArg::RedstoneAdapter => Self::RedstoneAdapter,
+            ContractArg::PythLazerAdapter => Self::PythLazerAdapter,
+        }
+    }
+}
+
 /// Where the WASM to register comes from, and how to identify it.
 ///
-/// Exactly one contract selector is required: a shortcut flag (one per NEAR
-/// contract under `contract/*`), `--package` (a Cargo package name or artifact
-/// ID), or `--wasm` (an explicit file). The shortcut/`--package` modes resolve
-/// a workspace package and, by default, build it reproducibly (`--no-build`
+/// Exactly one contract selector is required: `--contract <CONTRACT>` (a known
+/// NEAR contract), `--package` (a Cargo package name or artifact ID), or
+/// `--wasm` (an explicit file). The `--contract`/`--package` modes resolve a
+/// workspace package and, by default, build it reproducibly (`--no-build`
 /// uploads the last `target/near` build instead); `--wasm` uploads arbitrary
 /// bytes and so requires `--version-key`.
-#[allow(clippy::struct_excessive_bools)] // one bool per contract shortcut flag
 #[derive(Args, Debug)]
 #[command(group(
     ArgGroup::new("contract_source")
-        .args([
-            "registry", "market", "vault", "uac", "proxy_oracle", "proxy_governance",
-            "lst_oracle", "redstone_adapter", "pyth_lazer_adapter", "package", "wasm",
-        ])
+        .args(["contract", "package", "wasm"])
         .required(true)
         .multiple(false)
 ))]
 pub struct ContractSource {
-    /// Registry contract
-    #[arg(long)]
-    registry: bool,
-    /// Market contract
-    #[arg(long)]
-    market: bool,
-    /// Vault contract
-    #[arg(long)]
-    vault: bool,
-    /// Universal account contract
-    #[arg(long)]
-    uac: bool,
-    /// Proxy oracle contract
-    #[arg(long)]
-    proxy_oracle: bool,
-    /// Proxy oracle governance contract
-    #[arg(long)]
-    proxy_governance: bool,
-    /// LST oracle contract
-    #[arg(long)]
-    lst_oracle: bool,
-    /// RedStone adapter contract
-    #[arg(long)]
-    redstone_adapter: bool,
-    /// Pyth Lazer adapter contract
-    #[arg(long)]
-    pyth_lazer_adapter: bool,
+    /// Known NEAR contract to build and register.
+    #[arg(long, value_enum, value_name = "CONTRACT")]
+    contract: Option<ContractArg>,
     /// Contract by Cargo package name or artifact ID (e.g. `market`)
     #[arg(long, visible_alias = "artifact", value_name = "NAME")]
     package: Option<String>,
@@ -96,20 +102,9 @@ pub struct ContractSource {
 
 impl ContractSource {
     fn artifact(&self) -> Option<ArtifactId> {
-        [
-            (self.registry, ArtifactId::Registry),
-            (self.market, ArtifactId::Market),
-            (self.vault, ArtifactId::Vault),
-            (self.uac, ArtifactId::UniversalAccount),
-            (self.proxy_oracle, ArtifactId::ProxyOracle),
-            (self.proxy_governance, ArtifactId::ProxyGovernance),
-            (self.lst_oracle, ArtifactId::LstOracle),
-            (self.redstone_adapter, ArtifactId::RedstoneAdapter),
-            (self.pyth_lazer_adapter, ArtifactId::PythLazerAdapter),
-        ]
-        .into_iter()
-        .find_map(|(selected, id)| selected.then_some(id))
-        .or_else(|| self.package.as_deref().and_then(|p| p.parse().ok()))
+        self.contract
+            .map(ArtifactId::from)
+            .or_else(|| self.package.as_deref().and_then(|p| p.parse().ok()))
     }
 
     /// Resolve the bytes to upload and, when derivable, the canonical version
@@ -150,8 +145,8 @@ pub struct AddVersion {
     /// when omitted; required with --wasm.
     #[arg(long, value_name = "KEY")]
     version_key: Option<String>,
-    /// Deployment mode
-    #[arg(long, value_enum, default_value = "normal")]
+    /// Deployment mode (choose explicitly).
+    #[arg(long, value_enum)]
     deploy_mode: DeployModeArg,
     /// Deposit in NEAR. Estimated from the WASM size and deploy mode when omitted.
     #[arg(long, value_name = "AMOUNT")]
@@ -202,51 +197,63 @@ mod tests {
         source: ContractSource,
     }
 
-    fn source_for(flag: &str) -> ContractSource {
-        Harness::try_parse_from(["tmplrmgr", flag])
-            .expect("shortcut flag should parse")
+    fn source_for(value: &str) -> ContractSource {
+        Harness::try_parse_from(["tmplrmgr", "--contract", value])
+            .expect("--contract value should parse")
             .source
     }
 
     #[test]
-    fn each_contract_shortcut_maps_to_its_artifact() {
+    fn each_contract_value_maps_to_its_artifact() {
         let cases = [
-            ("--registry", ArtifactId::Registry),
-            ("--market", ArtifactId::Market),
-            ("--vault", ArtifactId::Vault),
-            ("--uac", ArtifactId::UniversalAccount),
-            ("--proxy-oracle", ArtifactId::ProxyOracle),
-            ("--proxy-governance", ArtifactId::ProxyGovernance),
-            ("--lst-oracle", ArtifactId::LstOracle),
-            ("--redstone-adapter", ArtifactId::RedstoneAdapter),
-            ("--pyth-lazer-adapter", ArtifactId::PythLazerAdapter),
+            ("registry", ArtifactId::Registry),
+            ("market", ArtifactId::Market),
+            ("vault", ArtifactId::Vault),
+            ("universal-account", ArtifactId::UniversalAccount),
+            ("proxy-oracle", ArtifactId::ProxyOracle),
+            ("proxy-oracle-governance", ArtifactId::ProxyGovernance),
+            ("lst-oracle", ArtifactId::LstOracle),
+            ("redstone-adapter", ArtifactId::RedstoneAdapter),
+            ("pyth-lazer-adapter", ArtifactId::PythLazerAdapter),
         ];
-        for (flag, expected) in cases {
-            assert_eq!(source_for(flag).artifact(), Some(expected), "flag {flag}");
+        for (value, expected) in cases {
+            assert_eq!(
+                source_for(value).artifact(),
+                Some(expected),
+                "value {value}"
+            );
         }
     }
 
-    /// Guard: every NEAR contract under `contract/*` must have a shortcut, so a
-    /// newly-added contract can't silently ship without one.
     #[test]
-    fn every_contract_artifact_has_a_shortcut() {
+    fn uac_is_a_legacy_alias_for_universal_account() {
+        assert_eq!(
+            source_for("uac").artifact(),
+            Some(ArtifactId::UniversalAccount)
+        );
+    }
+
+    /// Guard: every NEAR contract under `contract/*` must have a `--contract`
+    /// value, so a newly-added contract can't silently ship without one.
+    #[test]
+    fn every_contract_artifact_has_a_value() {
         for id in ArtifactId::ALL {
             if id.metadata().source_path.starts_with("contract/") {
-                let flag = match id {
-                    ArtifactId::Registry => "--registry",
-                    ArtifactId::Market => "--market",
-                    ArtifactId::Vault => "--vault",
-                    ArtifactId::UniversalAccount => "--uac",
-                    ArtifactId::ProxyOracle => "--proxy-oracle",
-                    ArtifactId::ProxyGovernance => "--proxy-governance",
-                    ArtifactId::LstOracle => "--lst-oracle",
-                    ArtifactId::RedstoneAdapter => "--redstone-adapter",
-                    ArtifactId::PythLazerAdapter => "--pyth-lazer-adapter",
+                let value = match id {
+                    ArtifactId::Registry => "registry",
+                    ArtifactId::Market => "market",
+                    ArtifactId::Vault => "vault",
+                    ArtifactId::UniversalAccount => "universal-account",
+                    ArtifactId::ProxyOracle => "proxy-oracle",
+                    ArtifactId::ProxyGovernance => "proxy-oracle-governance",
+                    ArtifactId::LstOracle => "lst-oracle",
+                    ArtifactId::RedstoneAdapter => "redstone-adapter",
+                    ArtifactId::PythLazerAdapter => "pyth-lazer-adapter",
                     other => {
-                        panic!("{other:?} lives under contract/* but has no add-version shortcut")
+                        panic!("{other:?} lives under contract/* but has no --contract value")
                     }
                 };
-                assert_eq!(source_for(flag).artifact(), Some(id));
+                assert_eq!(source_for(value).artifact(), Some(id));
             }
         }
     }

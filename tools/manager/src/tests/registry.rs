@@ -217,7 +217,7 @@ fn add_version_wasm_path_builds_global_hash_spec() {
 }
 
 #[test]
-fn add_version_defaults_to_normal_mode_and_minimal_deposit() {
+fn add_version_normal_mode_uses_minimal_deposit() {
     let path = temp_wasm("normal", b"\0asm-normal");
     let spec = add_version_spec(&[
         "tmplrmgr",
@@ -229,12 +229,41 @@ fn add_version_defaults_to_normal_mode_and_minimal_deposit() {
         path.to_str().unwrap(),
         "--version-key",
         "custom@1.0.0#abc",
+        "--deploy-mode",
+        "normal",
     ])
     .expect("into_spec should succeed");
     std::fs::remove_file(&path).ok();
 
     assert_eq!(spec.deploy_mode, DeployMode::Normal);
     assert_eq!(spec.deposit.as_yoctonear(), 1);
+}
+
+#[test]
+fn add_version_requires_explicit_deploy_mode() {
+    let path = temp_wasm("no-mode", b"\0asm");
+    let error = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "registry",
+            "add-version",
+            "--registry-id",
+            "registry.testnet",
+            "--wasm",
+            path.to_str().unwrap(),
+            "--version-key",
+            "custom@1.0.0#abc",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect_err("--deploy-mode must be chosen explicitly");
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
 }
 
 #[test]
@@ -275,6 +304,8 @@ fn add_version_wasm_requires_explicit_version_key() {
         "registry.testnet",
         "--wasm",
         path.to_str().unwrap(),
+        "--deploy-mode",
+        "normal",
     ]);
     std::fs::remove_file(&path).ok();
 
@@ -294,9 +325,12 @@ fn add_version_rejects_conflicting_contract_sources() {
             "add-version",
             "--registry-id",
             "registry.testnet",
-            "--market",
+            "--contract",
+            "market",
             "--package",
             "proxy-oracle",
+            "--deploy-mode",
+            "normal",
         ]
         .into_iter()
         .chain(CREDS),
@@ -315,6 +349,8 @@ fn add_version_requires_a_contract_source() {
             "add-version",
             "--registry-id",
             "registry.testnet",
+            "--deploy-mode",
+            "normal",
         ]
         .into_iter()
         .chain(CREDS),
