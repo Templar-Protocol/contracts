@@ -378,7 +378,7 @@ fn oracle_update_prices_collects_repeated_ids() {
     let spec = match cli.command {
         Command::ProxyOracle {
             command: ProxyOracleNs::UpdatePrices(cmd),
-        } => cmd.try_into_spec().expect("into spec"),
+        } => cmd.into_spec(),
         _ => panic!("expected update-prices"),
     };
     assert_eq!(spec.price_ids.len(), 2);
@@ -408,7 +408,8 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     else {
         panic!("expected create-proposal");
     };
-    assert_eq!(cmd.unresolved_breaker_price_id(), Some(PRICE_ID));
+    let expected = crate::commands::proxy_oracle::parse_price_identifier(PRICE_ID).unwrap();
+    assert_eq!(cmd.unresolved_breaker_price_id(), Some(expected));
     cmd.set_breaker_id(4);
     // Once resolved, it is no longer flagged for auto-fetch.
     assert_eq!(cmd.unresolved_breaker_price_id(), None);

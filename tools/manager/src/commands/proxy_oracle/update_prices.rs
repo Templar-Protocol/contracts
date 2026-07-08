@@ -1,28 +1,25 @@
 use clap::Args;
 use near_account_id::AccountId;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_methods_spec::proxy_oracle as spec;
 
 use super::parse_price_identifier;
 
 #[derive(Args, Debug)]
 pub struct UpdatePrices {
+    /// Proxy-oracle account to refresh.
     #[arg(long, value_name = "ACCOUNT_ID")]
     oracle_id: AccountId,
-    /// Price identifiers (hex) to refresh; repeat the flag per feed
-    #[arg(long = "price-id", value_name = "HEX", required = true)]
-    price_ids: Vec<String>,
+    /// Price identifier (32-byte hex) to refresh; repeat the flag per feed.
+    #[arg(long = "price-id", value_name = "HEX", value_parser = parse_price_identifier, required = true)]
+    price_ids: Vec<PriceIdentifier>,
 }
 
 impl UpdatePrices {
-    pub fn try_into_spec(self) -> anyhow::Result<spec::UpdatePrices> {
-        let price_ids = self
-            .price_ids
-            .iter()
-            .map(|hex| parse_price_identifier(hex))
-            .collect::<anyhow::Result<_>>()?;
-        Ok(spec::UpdatePrices {
+    pub fn into_spec(self) -> spec::UpdatePrices {
+        spec::UpdatePrices {
             oracle_id: self.oracle_id,
-            price_ids,
-        })
+            price_ids: self.price_ids,
+        }
     }
 }

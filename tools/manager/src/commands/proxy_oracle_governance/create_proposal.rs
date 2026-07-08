@@ -5,6 +5,7 @@ use clap::{Args, Subcommand};
 use near_account_id::AccountId;
 use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::Gas;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::NearToken;
@@ -54,11 +55,9 @@ impl CreateProposal {
 
     /// When this is an `add-circuit-breaker` proposal with no explicit
     /// `--breaker-id`, the price id whose next breaker id must be fetched.
-    pub fn unresolved_breaker_price_id(&self) -> Option<&str> {
+    pub fn unresolved_breaker_price_id(&self) -> Option<PriceIdentifier> {
         match &self.operation {
-            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => {
-                Some(a.price_id.as_str())
-            }
+            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => Some(a.price_id),
             _ => None,
         }
     }
@@ -112,35 +111,35 @@ impl ProposalOperation {
                     None => None,
                 };
                 Operation::SetProxy {
-                    id: parse_price_identifier(&a.price_id)?,
+                    id: a.price_id,
                     proxy,
                 }
             }
             Self::ConfigureCircuitBreakers(a) => Operation::ConfigureCircuitBreakers {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 config: CircuitBreakerSetConfig {
                     sample_interval_ns: Nanoseconds::from_ns(a.sample_interval_ns),
                     history_len: a.history_len,
                 },
             },
             Self::AddCircuitBreaker(a) => Operation::AddCircuitBreaker {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 // Resolved to the set's next id by the dispatcher when omitted.
                 breaker_id: a.breaker_id.unwrap_or(0),
                 breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
                     .context("parse circuit breaker")?,
             },
             Self::RemoveCircuitBreaker(a) => Operation::RemoveCircuitBreaker {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 breaker_id: a.breaker_id,
             },
             Self::SetManualTrip(a) => Operation::SetManualTrip {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 is_manually_tripped: a.tripped,
                 metadata: a.metadata_base64.map(decode_base64).transpose()?,
             },
             Self::Rearm(a) => Operation::Rearm {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 breaker_id: a.breaker_id,
                 armed_after_ns: Nanoseconds::from_ns(a.armed_after_ns),
                 accepted_history_source: load_json_file::<AcceptedHistorySource>(
@@ -149,7 +148,7 @@ impl ProposalOperation {
                 .context("parse accepted history source")?,
             },
             Self::SetEnforced(a) => Operation::SetEnforced {
-                id: parse_price_identifier(&a.price_id)?,
+                id: a.price_id,
                 breaker_id: a.breaker_id,
                 is_enforced: a.enforced,
             },
@@ -185,8 +184,9 @@ impl ProposalOperation {
 
 #[derive(Args, Debug)]
 pub struct SetProxyArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     /// Proxy definition JSON; omit to clear the feed
     #[arg(long, value_name = "PATH")]
     proxy_file: Option<PathBuf>,
@@ -194,8 +194,9 @@ pub struct SetProxyArgs {
 
 #[derive(Args, Debug)]
 pub struct ConfigureCircuitBreakersArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     #[arg(long, value_name = "NANOSECONDS")]
     sample_interval_ns: u64,
     #[arg(long, value_name = "N")]
@@ -204,8 +205,9 @@ pub struct ConfigureCircuitBreakersArgs {
 
 #[derive(Args, Debug)]
 pub struct AddCircuitBreakerArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     /// Stable breaker id within the set. Auto-fetched (the set's next id) when
     /// omitted.
     #[arg(long, value_name = "ID")]
@@ -217,16 +219,18 @@ pub struct AddCircuitBreakerArgs {
 
 #[derive(Args, Debug)]
 pub struct RemoveCircuitBreakerArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
 }
 
 #[derive(Args, Debug)]
 pub struct SetManualTripArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     /// Whether the feed is manually tripped
     #[arg(long)]
     tripped: bool,
@@ -236,8 +240,9 @@ pub struct SetManualTripArgs {
 
 #[derive(Args, Debug)]
 pub struct RearmArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
     #[arg(long, value_name = "NANOSECONDS")]
@@ -249,8 +254,9 @@ pub struct RearmArgs {
 
 #[derive(Args, Debug)]
 pub struct SetEnforcedArgs {
-    #[arg(long, value_name = "HEX")]
-    price_id: String,
+    /// Price identifier (32-byte hex, optional `0x` prefix).
+    #[arg(long, value_name = "HEX", value_parser = parse_price_identifier)]
+    price_id: PriceIdentifier,
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
     #[arg(long)]

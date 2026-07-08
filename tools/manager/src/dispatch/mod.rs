@@ -91,10 +91,10 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
 
 async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleNs::GetProxy(a) => ctx.read(a.try_into_spec()?).await,
+        ProxyOracleNs::GetProxy(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::ListProxies(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.try_into_spec()?).await,
-        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.try_into_spec()?).await,
+        ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.into_spec()).await,
+        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.into_spec()).await,
     }
 }
 

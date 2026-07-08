@@ -5,6 +5,7 @@
 use anyhow::Context as _;
 use near_account_id::AccountId;
 use serde::Serialize;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_methods_spec::proxy_oracle_governance as gov;
 use templar_gateway_types::common::WriteOperationResult;
 
@@ -22,8 +23,8 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 
     // Auto-fill the next breaker id for add-circuit-breaker, resolving the proxy
     // oracle (whose set holds the breakers) through the governance contract.
-    if let Some(price_id) = args.unresolved_breaker_price_id().map(str::to_owned) {
-        let next_id = next_breaker_id(&ctx, &governance_id, &price_id).await?;
+    if let Some(price_id) = args.unresolved_breaker_price_id() {
+        let next_id = next_breaker_id(&ctx, &governance_id, price_id).await?;
         tracing::info!(breaker_id = next_id, "auto-fetched next breaker id");
         args.set_breaker_id(next_id);
     }
@@ -96,9 +97,8 @@ async fn execute_now(
 async fn next_breaker_id(
     ctx: &CliContext,
     governance_id: &AccountId,
-    price_id: &str,
+    price_id: PriceIdentifier,
 ) -> anyhow::Result<u32> {
-    use crate::commands::proxy_oracle::parse_price_identifier;
     use templar_gateway_methods_spec::proxy_oracle;
 
     let oracle_id = ctx
@@ -112,7 +112,7 @@ async fn next_breaker_id(
         .client
         .read(proxy_oracle::GetProxyCircuitBreakerSet {
             oracle_id,
-            id: parse_price_identifier(price_id)?,
+            id: price_id,
         })
         .await?
         .circuit_breaker_set;
