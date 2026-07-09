@@ -2,6 +2,8 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::storage as spec;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct Unregister {
     /// Contract to unregister storage on.
@@ -10,6 +12,8 @@ pub struct Unregister {
     /// Force unregistration even with a non-zero balance.
     #[arg(long)]
     force: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl Unregister {

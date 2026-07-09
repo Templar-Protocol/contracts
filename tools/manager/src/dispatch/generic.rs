@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::io::Read as _;
 use templar_gateway_types::MethodSpec;
 
-use crate::cli::GenericMethodCall;
+use crate::cli::{GenericMethodCall, WriteMethodCall};
 use crate::context::CliContext;
 
 pub(super) async fn read(ctx: CliContext, call: GenericMethodCall) -> anyhow::Result<()> {
@@ -26,7 +26,8 @@ pub(super) async fn read(ctx: CliContext, call: GenericMethodCall) -> anyhow::Re
     anyhow::bail!("unsupported read method {method}");
 }
 
-pub(super) async fn write(ctx: CliContext, call: GenericMethodCall) -> anyhow::Result<()> {
+pub(super) async fn write(ctx: CliContext, call: WriteMethodCall) -> anyhow::Result<()> {
+    let WriteMethodCall { call, signer } = call;
     let method = call.method.clone();
     let params = load_params(call)?;
 
@@ -35,7 +36,7 @@ pub(super) async fn write(ctx: CliContext, call: GenericMethodCall) -> anyhow::R
             if method == <$spec as MethodSpec>::RPC_METHOD {
                 let body: $spec = serde_json::from_value(params)
                     .with_context(|| format!("parse parameters for {method}"))?;
-                return ctx.write(body).await;
+                return ctx.write(signer.clone(), body).await;
             }
         };
     }

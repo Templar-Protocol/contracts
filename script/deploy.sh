@@ -76,14 +76,18 @@ TMPLRMGR_GLOBAL_ARGS=(
     --network "$NETWORK"
 )
 
-# operator-signed call (governance admin / deployer)
+# operator-signed call (governance admin / deployer). Credentials are per-write
+# args sourced from SIGNER_ID/SECRET_KEY in the environment, so they no longer
+# precede the subcommand (they're structural on each write command now).
 operator() {
-    tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" --signer-id "$SIGNER_ID" --secret-key "$SECRET_KEY" "$@"
+    SIGNER_ID="$SIGNER_ID" SECRET_KEY="$SECRET_KEY" \
+        tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
 }
 
 # registry-signed call (initial oracle owner)
 registry() {
-    tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" --signer-id "$REGISTRY_ID" --secret-key "$REGISTRY_SECRET_KEY" "$@"
+    SIGNER_ID="$REGISTRY_ID" SECRET_KEY="$REGISTRY_SECRET_KEY" \
+        tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
 }
 
 echo "Deploying proxy oracle ($PROXY_ORACLE_ID)..."
@@ -91,6 +95,7 @@ operator registry deploy \
     --registry-id "$REGISTRY_ID" \
     --name "$PROXY_ORACLE_NAME" \
     --version-key "$PROXY_ORACLE_VERSION_KEY" \
+    --init-args null \
     --deposit "3.5 NEAR"
 
 echo "Deploying governance ($GOVERNANCE_ID)..."

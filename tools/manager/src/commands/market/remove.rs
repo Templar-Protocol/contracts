@@ -1,6 +1,8 @@
 use clap::Args;
 use near_account_id::AccountId;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct Remove {
     /// Recovered assets and the remaining balance are sent here.
@@ -10,6 +12,11 @@ pub struct Remove {
     /// asset fails.
     #[arg(long)]
     force: bool,
+    /// Credentials for the market account being removed — `market remove` is
+    /// self-signed, so the signer both authorizes the teardown and identifies the
+    /// target account (there is no separate market-id flag).
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl Remove {

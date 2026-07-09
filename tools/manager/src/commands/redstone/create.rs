@@ -7,7 +7,7 @@ use templar_common::oracle::redstone::config;
 use templar_gateway_methods_spec::registry as registry_spec;
 
 use crate::commands::deploy_common::DeployCommonArgs;
-use crate::context::CliContext;
+use crate::commands::signer::SignerArgs;
 
 /// Deploy a RedStone price adapter from a registered version, granting the
 /// signer a full access key so the operator retains control of the new account.
@@ -33,10 +33,13 @@ pub struct Create {
     /// Path to a full init args JSON file.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl Create {
-    pub fn try_into_spec(self, ctx: &CliContext) -> anyhow::Result<registry_spec::Deploy> {
+    pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
+        let signer_public_key = self.signer.public_key()?;
         let init_bytes = if self.prod {
             serde_json::to_vec(&json!({ "config": config::prod() }))
                 .context("serialize prod config")?
@@ -52,6 +55,6 @@ impl Create {
             anyhow::bail!("provide --prod, --test, --init-args, or --init-args-file");
         };
 
-        self.common.into_deploy(ctx, init_bytes)
+        Ok(self.common.into_deploy(signer_public_key, init_bytes))
     }
 }

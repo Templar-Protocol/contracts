@@ -16,6 +16,7 @@ use templar_gateway_types::{
     ManagedAccountId, MethodSpec,
 };
 
+use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::{FtNs, ProxyOracleGovernanceNs, RedstoneNs, StorageNs};
 
@@ -72,19 +73,23 @@ fn single_call(plan: &OperationPlan) -> Call {
 
 #[tokio::test]
 async fn ft_transfer_plans_ft_transfer_action() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "ft",
-        "transfer",
-        "--contract-id",
-        "usdt.testnet",
-        "--receiver-id",
-        "beneficiary.testnet",
-        "--amount",
-        "1000",
-        "--memo",
-        "recovered",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "ft",
+            "transfer",
+            "--contract-id",
+            "usdt.testnet",
+            "--receiver-id",
+            "beneficiary.testnet",
+            "--amount",
+            "1000",
+            "--memo",
+            "recovered",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("ft transfer should parse");
     let body = match cli.command {
         Command::Ft {
@@ -105,17 +110,21 @@ async fn ft_transfer_plans_ft_transfer_action() {
 
 #[tokio::test]
 async fn storage_deposit_plans_storage_deposit_action() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "deposit",
-        "--contract-id",
-        "usdt.testnet",
-        "--beneficiary-id",
-        "alice.testnet",
-        "--deposit",
-        "0.00125 NEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "deposit",
+            "--contract-id",
+            "usdt.testnet",
+            "--beneficiary-id",
+            "alice.testnet",
+            "--deposit",
+            "0.00125 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("storage deposit should parse");
     let body = match cli.command {
         Command::Storage {
@@ -134,14 +143,18 @@ async fn storage_deposit_plans_storage_deposit_action() {
 
 #[tokio::test]
 async fn storage_unregister_plans_storage_unregister_action() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "unregister",
-        "--contract-id",
-        "usdt.testnet",
-        "--force",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "unregister",
+            "--contract-id",
+            "usdt.testnet",
+            "--force",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("storage unregister should parse");
     let body = match cli.command {
         Command::Storage {
@@ -159,15 +172,19 @@ async fn storage_unregister_plans_storage_unregister_action() {
 
 #[tokio::test]
 async fn governance_cancel_proposal_plans_cancel_action() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "cancel-proposal",
-        "--governance-id",
-        "proxy.registry.testnet",
-        "--id",
-        "3",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle-governance",
+            "cancel-proposal",
+            "--governance-id",
+            "proxy.registry.testnet",
+            "--id",
+            "3",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("cancel-proposal should parse");
     let body = match cli.command {
         Command::ProxyOracleGovernance {
@@ -186,17 +203,21 @@ async fn governance_cancel_proposal_plans_cancel_action() {
 
 #[tokio::test]
 async fn redstone_set_role_plans_set_role_action() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "redstone",
-        "set-role",
-        "--oracle-id",
-        "redstone.testnet",
-        "--account-id",
-        "updater.testnet",
-        "--role",
-        "trusted-updater",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "redstone",
+            "set-role",
+            "--oracle-id",
+            "redstone.testnet",
+            "--account-id",
+            "updater.testnet",
+            "--role",
+            "trusted-updater",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("redstone set-role should parse");
     let body = match cli.command {
         Command::Redstone {

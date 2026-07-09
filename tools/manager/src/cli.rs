@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
-use near_account_id::AccountId;
 use templar_gateway_client::Network;
 use tracing::level_filters::LevelFilter;
 
+use super::commands::signer::SignerArgs;
 use super::commands::{
     AccountNs, ContractNs, FtNs, MarketNs, ProxyOracleGovernanceNs, ProxyOracleNs,
     ProxyOracleOwnerNs, RecoverNep141, RedstoneNs, RegistryNs, StorageNs,
@@ -46,18 +46,6 @@ pub struct Cli {
         value_name = "KEY"
     )]
     pub rpc_api_key: Option<String>,
-    /// Account that signs write transactions (required by every write command).
-    #[arg(long, global = true, env = "SIGNER_ID", value_name = "ACCOUNT_ID")]
-    pub signer_id: Option<AccountId>,
-    /// Private key for `--signer-id`, in `ed25519:…` form.
-    #[arg(
-        long,
-        global = true,
-        env = "SECRET_KEY",
-        hide_env_values = true,
-        value_name = "SECRET_KEY"
-    )]
-    pub secret_key: Option<String>,
     /// Base URL for transaction explorer links (the tx hash is appended).
     /// Defaults to the Nearblocks explorer for the selected network.
     #[arg(long, global = true, value_name = "URL")]
@@ -160,7 +148,7 @@ pub enum Command {
     /// Invoke a gateway read method by its full RPC name with raw JSON params.
     Read(GenericMethodCall),
     /// Invoke a gateway write method by its full RPC name with raw JSON params.
-    Write(GenericMethodCall),
+    Write(WriteMethodCall),
 }
 
 #[derive(clap::Args, Debug)]
@@ -174,4 +162,15 @@ pub struct GenericMethodCall {
     /// Method params read from a JSON file.
     #[arg(long, value_name = "PATH")]
     pub json_file: Option<PathBuf>,
+}
+
+/// A generic write invocation: the method call plus the signer credentials it
+/// requires. Reads flatten only [`GenericMethodCall`], so credentials are an
+/// unexpected argument there.
+#[derive(clap::Args, Debug)]
+pub struct WriteMethodCall {
+    #[command(flatten)]
+    pub call: GenericMethodCall,
+    #[command(flatten)]
+    pub signer: SignerArgs,
 }

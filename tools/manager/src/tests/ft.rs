@@ -1,6 +1,7 @@
 use clap::Parser;
 use serde_json::json;
 
+use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::ft::FtNs;
 
@@ -32,19 +33,23 @@ fn parses_ft_get_balance_of_typed_args() {
 
 #[test]
 fn parses_ft_transfer_typed_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "ft",
-        "transfer",
-        "--contract-id",
-        "token.testnet",
-        "--receiver-id",
-        "bob.testnet",
-        "--amount",
-        "1234567890000000000000000",
-        "--memo",
-        "refund",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "ft",
+            "transfer",
+            "--contract-id",
+            "token.testnet",
+            "--receiver-id",
+            "bob.testnet",
+            "--amount",
+            "1234567890000000000000000",
+            "--memo",
+            "refund",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("transfer should parse");
 
     let params = match cli.command {
@@ -62,17 +67,21 @@ fn parses_ft_transfer_typed_args() {
 
 #[test]
 fn omits_ft_transfer_memo_when_absent() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "ft",
-        "transfer",
-        "--contract-id",
-        "token.testnet",
-        "--receiver-id",
-        "bob.testnet",
-        "--amount",
-        "1",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "ft",
+            "transfer",
+            "--contract-id",
+            "token.testnet",
+            "--receiver-id",
+            "bob.testnet",
+            "--amount",
+            "1",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("transfer without memo should parse");
 
     let params = match cli.command {
@@ -90,21 +99,25 @@ fn omits_ft_transfer_memo_when_absent() {
 
 #[test]
 fn parses_ft_transfer_call_typed_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "ft",
-        "transfer-call",
-        "--contract-id",
-        "token.testnet",
-        "--receiver-id",
-        "app.testnet",
-        "--amount",
-        "42",
-        "--msg",
-        r#"{"action":"stake"}"#,
-        "--memo",
-        "stake",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "ft",
+            "transfer-call",
+            "--contract-id",
+            "token.testnet",
+            "--receiver-id",
+            "app.testnet",
+            "--amount",
+            "42",
+            "--msg",
+            r#"{"action":"stake"}"#,
+            "--memo",
+            "stake",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("transfer-call should parse");
 
     let params = match cli.command {
@@ -137,19 +150,23 @@ fn parses_ft_kebab_case_aliases() {
         _ => panic!("expected Ft variant"),
     }
 
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "ft",
-        "transfer-call",
-        "--contract-id",
-        "token.testnet",
-        "--receiver-id",
-        "app.testnet",
-        "--amount",
-        "42",
-        "--msg",
-        "stake",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "ft",
+            "transfer-call",
+            "--contract-id",
+            "token.testnet",
+            "--receiver-id",
+            "app.testnet",
+            "--amount",
+            "42",
+            "--msg",
+            "stake",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("transfer-call should parse");
     match cli.command {
         Command::Ft { .. } => {}
