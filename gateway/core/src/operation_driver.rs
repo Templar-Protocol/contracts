@@ -14,7 +14,7 @@ use templar_gateway_types::{
 use crate::{
     CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
     HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
-    SharedOperationStore, SharedSignTransaction, StoredOperation, SucceededStep,
+    SharedOperationStore, SharedSignTransaction, StoredOperation,
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
@@ -528,23 +528,17 @@ impl OperationDriver {
             {
                 Ok(step) => {
                     if step.is_success {
-                        operation.succeeded_steps.push(SucceededStep {
-                            transaction,
-                            tx_hash,
-                            outcome: step.outcome,
-                        });
-                        operation.current_step = None;
+                        operation.record_success(transaction, tx_hash, step.outcome);
                     } else {
                         tracing::warn!(
                             operation_id = %operation.id.0,
                             %tx_hash,
                             "current step transaction reverted"
                         );
-                        operation.current_step = Some(CurrentStep::Reverted {
-                            transaction,
-                            tx_hash,
-                            outcome: step.outcome,
-                        });
+                        // Tolerance is decided by the step's own flag, so a
+                        // continue_on_failure step reverting mid-reconcile advances
+                        // rather than blocking — same rule as live execution.
+                        operation.record_revert(transaction, tx_hash, step.outcome);
                     }
                 }
                 Err(error) => {
