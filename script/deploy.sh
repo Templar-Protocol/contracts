@@ -69,7 +69,7 @@ REGISTRY_SECRET_KEY=${REGISTRY_SECRET_KEY:-$SECRET_KEY}
 # derived values
 PROXY_ORACLE_NAME="proxy-oracle-$MARKET_NAME"
 PROXY_ORACLE_ID="$PROXY_ORACLE_NAME.$REGISTRY_ID"
-GOVERNANCE_NAME="proxy-governance-$MARKET_NAME"
+GOVERNANCE_NAME="proxy-gov-$MARKET_NAME"
 GOVERNANCE_ID="$GOVERNANCE_NAME.$REGISTRY_ID"
 
 TMPLRMGR_GLOBAL_ARGS=(
@@ -96,7 +96,7 @@ operator registry deploy \
     --name "$PROXY_ORACLE_NAME" \
     --version-key "$PROXY_ORACLE_VERSION_KEY" \
     --init-args null \
-    --deposit "3.5 NEAR"
+    --deposit "5 NEAR"
 
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle-governance create \
@@ -118,7 +118,6 @@ registry proxy-oracle-owner propose-owner \
 echo "Accepting oracle ownership through governance..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
-    --id 0 \
     --execute-when-ready \
     admin-function-call \
     --method own_accept_owner \
@@ -127,7 +126,6 @@ operator proxy-oracle-governance create-proposal \
 echo "Configuring collateral proxy..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
-    --id 1 \
     --execute-when-ready \
     set-proxy \
     --price-id "$COLLATERAL_PRICE_ID" \
@@ -136,7 +134,6 @@ operator proxy-oracle-governance create-proposal \
 echo "Configuring borrow proxy..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
-    --id 2 \
     --execute-when-ready \
     set-proxy \
     --price-id "$BORROW_PRICE_ID" \
