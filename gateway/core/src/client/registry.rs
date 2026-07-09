@@ -92,6 +92,7 @@ impl RegistryClient<'_> {
                 gas: options.gas,
                 deposit: options.deposit,
             }))],
+            continue_on_failure: false,
         })
     }
 
@@ -105,6 +106,7 @@ impl RegistryClient<'_> {
         Ok(PlannedTransaction {
             signer_account_id: options.signer_account_id,
             receiver_id: self.contract_id().to_owned(),
+            continue_on_failure: false,
             actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: ContractMethodName(method_name.to_string()).0,
                 args: ContractArgs::Json(serde_json::to_value(args.borrow())?).try_into_bytes()?,

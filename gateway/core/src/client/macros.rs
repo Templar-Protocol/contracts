@@ -43,6 +43,7 @@ macro_rules! contract_writes {
                             deposit: options.deposit,
                         },
                     ))],
+                    continue_on_failure: false,
                 })
             }
         )+

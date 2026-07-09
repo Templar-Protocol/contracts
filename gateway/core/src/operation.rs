@@ -18,6 +18,11 @@ pub struct PlannedTransaction {
     pub signer_account_id: ManagedAccountId,
     pub receiver_id: AccountId,
     pub actions: Vec<Action>,
+    /// When `true`, an on-chain revert of this step is *recorded and tolerated*:
+    /// the operation advances to the next step instead of aborting. Used for
+    /// independent steps whose failure must not cancel the rest (e.g. one oracle
+    /// update among several). Defaults to `false` — steps are all-or-nothing.
+    pub continue_on_failure: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +43,7 @@ impl PlannedTransaction {
             signer_account_id,
             receiver_id,
             actions,
+            continue_on_failure: false,
         }
     }
 
@@ -48,6 +54,14 @@ impl PlannedTransaction {
         action: Action,
     ) -> Self {
         Self::new(signer_account_id, receiver_id, vec![action])
+    }
+
+    /// Mark this step as tolerant of an on-chain revert: on failure the operation
+    /// records the revert and advances to the next step rather than aborting.
+    #[must_use]
+    pub fn continue_on_failure(mut self, continue_on_failure: bool) -> Self {
+        self.continue_on_failure = continue_on_failure;
+        self
     }
 }
 
@@ -71,11 +85,11 @@ impl OperationPlan {
         receiver_id: AccountId,
         actions: Vec<Action>,
     ) -> Self {
-        Self::single(PlannedTransaction {
+        Self::single(PlannedTransaction::new(
             signer_account_id,
             receiver_id,
             actions,
-        })
+        ))
     }
 
     pub fn push(&mut self, step: PlannedTransaction) {
@@ -94,6 +108,28 @@ pub struct SucceededStep {
     pub transaction: PlannedTransaction,
     pub tx_hash: CryptoHash,
     pub outcome: ExecutionOutcome,
+}
+
+/// A step that executed on chain and reverted, but was *tolerated* because it was
+/// [`PlannedTransaction::continue_on_failure`]. Unlike a
+/// [`CurrentStep::Reverted`] — which is terminal — a tolerated revert advances
+/// the operation, so it lives among the completed steps rather than blocking.
+#[derive(Debug, Clone)]
+pub struct RevertedStep {
+    pub transaction: PlannedTransaction,
+    pub tx_hash: CryptoHash,
+    pub outcome: ExecutionOutcome,
+}
+
+/// A step the operation has advanced past: either it succeeded, or it reverted
+/// and was tolerated. Modelling this as an enum (rather than a `reverted: bool`)
+/// makes a "reverted success" unrepresentable, and keeps the invariant that a
+/// [`CurrentStep::Reverted`]/[`CurrentStep::Rejected`] means *exclusively* a
+/// terminal, non-tolerated failure.
+#[derive(Debug, Clone)]
+pub enum CompletedStep {
+    Succeeded(SucceededStep),
+    Reverted(RevertedStep),
 }
 
 #[derive(Debug, Clone)]
@@ -137,7 +173,10 @@ pub struct StoredOperation {
     /// plan is attached — including an empty (no-op) plan, so a no-op is a real
     /// terminal operation rather than being indistinguishable from a reservation.
     pub planned: bool,
-    pub succeeded_steps: Vec<SucceededStep>,
+    /// Steps the operation has advanced past, in execution order — successes and
+    /// tolerated reverts (see [`CompletedStep`]). Everything here is behind the
+    /// cursor; `current_step` is at it; `remaining_steps` are ahead.
+    pub completed_steps: Vec<CompletedStep>,
     pub current_step: Option<CurrentStep>,
     pub remaining_steps: VecDeque<PlannedTransaction>,
 }
@@ -203,7 +242,7 @@ impl StoredOperation {
                 OperationStatus::InProgress
             }
             None if self.remaining_steps.is_empty() => OperationStatus::Succeeded,
-            None if self.succeeded_steps.is_empty() => OperationStatus::Pending,
+            None if self.completed_steps.is_empty() => OperationStatus::Pending,
             None => OperationStatus::InProgress,
         }
     }
@@ -221,6 +260,55 @@ impl StoredOperation {
     /// these. A planned no-op (`planned`, no steps) is *not* a reservation.
     pub fn is_reservation(&self) -> bool {
         !self.planned
+    }
+
+    /// Record `transaction` as a completed success and advance the cursor
+    /// (clear `current_step`). Shared by live execution and reconciliation.
+    pub fn record_success(
+        &mut self,
+        transaction: PlannedTransaction,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    ) {
+        self.completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome,
+            }));
+        self.current_step = None;
+    }
+
+    /// Record an on-chain revert of `transaction`. The transaction's own
+    /// [`PlannedTransaction::continue_on_failure`] flag is the *sole* authority on
+    /// whether the revert is tolerated — advancing the cursor as a completed
+    /// [`CompletedStep::Reverted`] — or terminal — parking it as the failed
+    /// `current_step`. Centralising the decision here is what upholds the
+    /// invariant that a `CurrentStep::Reverted`/`Rejected` means exclusively a
+    /// non-tolerated failure: no caller can put a tolerated revert there, and none
+    /// can drop a non-tolerated one. Shared by live execution, reconciliation, and
+    /// (via the persisted flag) reload.
+    pub fn record_revert(
+        &mut self,
+        transaction: PlannedTransaction,
+        tx_hash: CryptoHash,
+        outcome: ExecutionOutcome,
+    ) {
+        if transaction.continue_on_failure {
+            self.completed_steps
+                .push(CompletedStep::Reverted(RevertedStep {
+                    transaction,
+                    tx_hash,
+                    outcome,
+                }));
+            self.current_step = None;
+        } else {
+            self.current_step = Some(CurrentStep::Reverted {
+                transaction,
+                tx_hash,
+                outcome,
+            });
+        }
     }
 
     #[must_use]
@@ -274,19 +362,26 @@ impl StoredOperation {
 
     fn transaction_step_records(&self) -> Vec<templar_gateway_types::TransactionStepRecord> {
         let mut steps = Vec::with_capacity(
-            self.succeeded_steps.len()
+            self.completed_steps.len()
                 + self.remaining_steps.len()
                 + usize::from(self.current_step.is_some()),
         );
 
         let mut next_index = 0_u32;
-        for step in &self.succeeded_steps {
-            steps.push(templar_gateway_types::TransactionStepRecord {
-                index: next_index,
-                status: StepStatus::Succeeded {
+        for step in &self.completed_steps {
+            let status = match step {
+                CompletedStep::Succeeded(step) => StepStatus::Succeeded {
                     tx_hash: step.tx_hash,
                     outcome: step.outcome.clone(),
                 },
+                CompletedStep::Reverted(step) => StepStatus::Reverted {
+                    tx_hash: step.tx_hash,
+                    outcome: step.outcome.clone(),
+                },
+            };
+            steps.push(templar_gateway_types::TransactionStepRecord {
+                index: next_index,
+                status,
             });
             next_index = next_index.saturating_add(1);
         }
@@ -371,27 +466,21 @@ impl SubmittedCurrentStep<'_> {
         tx_hash: CryptoHash,
         outcome: ExecutionOutcome,
     ) -> GatewayResult<()> {
-        self.operation.succeeded_steps.push(SucceededStep {
-            transaction: self.transaction,
-            tx_hash,
-            outcome,
-        });
-        self.operation.current_step = None;
+        self.operation
+            .record_success(self.transaction, tx_hash, outcome);
         self.store.save_operation(self.operation.clone()).await
     }
 
     /// Record the step as having executed on chain but reverted (final outcome
-    /// was a failure).
+    /// was a failure). Whether that reverts the operation or is tolerated is
+    /// decided by [`StoredOperation::record_revert`] from the step's own flag.
     pub async fn mark_reverted(
         self,
         tx_hash: CryptoHash,
         outcome: ExecutionOutcome,
     ) -> GatewayResult<()> {
-        self.operation.current_step = Some(CurrentStep::Reverted {
-            transaction: self.transaction,
-            tx_hash,
-            outcome,
-        });
+        self.operation
+            .record_revert(self.transaction, tx_hash, outcome);
         self.store.save_operation(self.operation.clone()).await
     }
 
