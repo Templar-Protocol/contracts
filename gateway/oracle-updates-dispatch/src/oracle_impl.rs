@@ -111,6 +111,16 @@ where
         // underlying updates. Steps execute sequentially, so the proxy read sees the fresh
         // underlying prices this same operation just wrote.
         if matches!(kind, OracleContractKind::Proxy) {
+            // The underlying oracle updates are mutually independent: one reverting must
+            // not cancel the others, nor the re-aggregation. Mark them continue_on_failure
+            // so a revert is recorded and tolerated while the operation advances. The
+            // re-aggregation step appended below stays non-fallible — it always runs (after
+            // whatever underlying prices did land) and its outcome is the operation's verdict.
+            // A direct/LST oracle takes neither branch, so its single underlying update stays
+            // all-or-nothing.
+            for step in &mut plan.steps {
+                step.continue_on_failure = true;
+            }
             plan.steps
                 .push(ctx.near_client().proxy_oracle(oracle_id).update_prices(
                     ContractWriteOptions::new(signer_account_id).tgas(100),
@@ -497,6 +507,11 @@ mod tests {
             plan.steps.len(),
             2,
             "mixed grouping must produce one step per oracle"
+        );
+        assert!(
+            plan.steps.iter().all(|step| !step.continue_on_failure),
+            "plan_grouped_updates must leave steps all-or-nothing; marking underlying \
+             updates continue_on_failure is the proxy branch's job in UpdatePrices::plan"
         );
 
         let mut found_pyth_data_step = false;

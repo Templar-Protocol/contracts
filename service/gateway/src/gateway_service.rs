@@ -287,7 +287,7 @@ mod tests {
             .expect("stored operation should exist");
         assert_eq!(stored.status(), OperationStatus::Succeeded);
         assert!(stored.current_step.is_none());
-        assert_eq!(stored.succeeded_steps.len(), 1);
+        assert_eq!(stored.completed_steps.len(), 1);
 
         service.shutdown().await;
         Ok(())
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(stored.status(), OperationStatus::Succeeded);
         assert!(stored.current_step.is_none());
         assert!(stored.remaining_steps.is_empty());
-        assert_eq!(stored.succeeded_steps.len(), 2);
+        assert_eq!(stored.completed_steps.len(), 2);
 
         let rate: near_api::Data<String> = Contract(harness.ft_contract_id.clone())
             .call_function("redemption_rate", ())

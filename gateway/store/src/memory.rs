@@ -155,7 +155,7 @@ impl OperationStore for MemoryStore {
             // An empty plan here is a reservation; a step-bearing plan is already
             // planned. (A no-op is promoted from a reservation, not created here.)
             planned: !plan.steps.is_empty(),
-            succeeded_steps: vec![],
+            completed_steps: vec![],
             current_step: None,
             remaining_steps: VecDeque::from(plan.steps),
         };
@@ -226,7 +226,7 @@ mod tests {
     use super::*;
     use near_account_id::AccountId;
     use near_api::types::CryptoHash as NearCryptoHash;
-    use templar_gateway_core::{PlannedTransaction, SucceededStep};
+    use templar_gateway_core::{CompletedStep, PlannedTransaction, SucceededStep};
     use templar_gateway_types::operation::ExecutionOutcome;
     use templar_gateway_types::{CryptoHash, NearGas, NearToken};
 
@@ -239,6 +239,7 @@ mod tests {
             signer_account_id: signer(),
             receiver_id: "market.near".parse().unwrap(),
             actions: Vec::new(),
+            continue_on_failure: false,
         }
     }
 
@@ -252,7 +253,7 @@ mod tests {
             id: OperationId(id.to_owned()),
             signer_account_id: signer(),
             planned: true,
-            succeeded_steps: Vec::new(),
+            completed_steps: Vec::new(),
             current_step: None,
             remaining_steps: VecDeque::new(),
         }
@@ -262,16 +263,18 @@ mod tests {
     fn mark_succeeded(operation: &mut StoredOperation) {
         // A succeeded step implies planning completed.
         operation.planned = true;
-        operation.succeeded_steps.push(SucceededStep {
-            transaction: planned_tx(),
-            tx_hash: CryptoHash(NearCryptoHash::default()),
-            outcome: ExecutionOutcome {
-                tokens_burnt: NearToken::from_yoctonear(0),
-                total_gas_burnt: NearGas::from_gas(0),
-                receipts: Vec::new(),
-                return_value: None,
-            },
-        });
+        operation
+            .completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction: planned_tx(),
+                tx_hash: CryptoHash(NearCryptoHash::default()),
+                outcome: ExecutionOutcome {
+                    tokens_burnt: NearToken::from_yoctonear(0),
+                    total_gas_burnt: NearGas::from_gas(0),
+                    receipts: Vec::new(),
+                    return_value: None,
+                },
+            }));
     }
 
     /// A finished (terminal `Succeeded`) operation: one succeeded step, nothing

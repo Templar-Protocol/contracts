@@ -22,9 +22,9 @@ use near_api::types::transaction::{
 use near_api::types::CryptoHash as NearCryptoHash;
 use rstest::rstest;
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, ExecuteOperation, GatewayError, GatewayResult,
-    OperationDriver, OperationPlan, OperationStore, PlannedTransaction, PreparedTransactionResult,
-    SignTransaction, StepOutcome, StoredOperation, SucceededStep,
+    CompletedStep, CreateOperationResult, CurrentStep, ExecuteOperation, GatewayError,
+    GatewayResult, OperationDriver, OperationPlan, OperationStore, PlannedTransaction,
+    PreparedTransactionResult, SignTransaction, StepOutcome, StoredOperation, SucceededStep,
 };
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
@@ -267,7 +267,10 @@ fn stored(
         id: OperationId("op-under-test".to_owned()),
         signer_account_id: signer_id(),
         planned,
-        succeeded_steps: succeeded,
+        completed_steps: succeeded
+            .into_iter()
+            .map(CompletedStep::Succeeded)
+            .collect(),
         current_step,
         remaining_steps: remaining.into(),
     }
@@ -576,7 +579,7 @@ async fn recovery_drives_a_multi_step_plan_to_completion() {
 
     let op = store.get_by_id(&op.id).await.unwrap().unwrap();
     assert_eq!(op.status(), OperationStatus::Succeeded);
-    assert_eq!(op.succeeded_steps.len(), 2);
+    assert_eq!(op.completed_steps.len(), 2);
 }
 
 #[tokio::test]
@@ -608,5 +611,81 @@ async fn reconcile_continues_remaining_steps_after_a_submitted_step_lands() {
         .unwrap();
     assert_eq!(record.status, OperationStatus::Succeeded);
     let op = store.get_by_idempotency_key(&key).await.unwrap().unwrap();
-    assert_eq!(op.succeeded_steps.len(), 2);
+    assert_eq!(op.completed_steps.len(), 2);
+}
+
+// ---- continue_on_failure step tolerance ----
+
+/// A `continue_on_failure` step that reverts on chain must be recorded and
+/// tolerated: the operation advances to the next step and can still succeed.
+#[tokio::test]
+async fn continue_on_failure_step_reverts_but_operation_advances_and_succeeds() {
+    let store = Arc::new(MemoryStore::new());
+    let op = stored(
+        true,
+        None,
+        vec![
+            sample_transaction().continue_on_failure(true),
+            sample_transaction(),
+        ],
+        vec![],
+    );
+    store.save_operation(op.clone()).await.unwrap();
+
+    // Step 0 reverts on chain; step 1 succeeds. Both are submitted (the revert of a
+    // tolerated step does not stop the operation), so both submits are consumed.
+    let executor = FakeExecutor::new(
+        vec![Ok(Some(step_outcome(false))), Ok(Some(step_outcome(true)))],
+        vec![],
+    );
+
+    let result = driver(store.clone(), executor)
+        .execute_remaining_steps(op)
+        .await
+        .unwrap();
+
+    assert_eq!(result.status(), OperationStatus::Succeeded);
+    assert!(result.current_step.is_none());
+    assert!(result.remaining_steps.is_empty());
+    assert_eq!(result.completed_steps.len(), 2);
+    assert!(
+        matches!(result.completed_steps[0], CompletedStep::Reverted(_)),
+        "the tolerated revert must be recorded as a completed reverted step"
+    );
+    assert!(matches!(
+        result.completed_steps[1],
+        CompletedStep::Succeeded(_)
+    ));
+}
+
+/// A non-`continue_on_failure` step that reverts is terminal: it fails the
+/// operation and no later step runs. This is the invariant the tolerant path must
+/// not weaken — proven by the executor panicking on a second, unexpected submit.
+#[tokio::test]
+async fn non_fallible_revert_fails_operation_and_stops() {
+    let store = Arc::new(MemoryStore::new());
+    let op = stored(
+        true,
+        None,
+        vec![sample_transaction(), sample_transaction()],
+        vec![],
+    );
+    store.save_operation(op.clone()).await.unwrap();
+
+    // Only one submit is canned: if the driver tried to run step 1 after step 0
+    // reverted, `FakeExecutor` would panic on the unexpected submit.
+    let executor = FakeExecutor::new(vec![Ok(Some(step_outcome(false)))], vec![]);
+
+    let result = driver(store.clone(), executor)
+        .execute_remaining_steps(op)
+        .await
+        .unwrap();
+
+    assert_eq!(result.status(), OperationStatus::Failed);
+    assert!(matches!(
+        result.current_step,
+        Some(CurrentStep::Reverted { .. })
+    ));
+    assert_eq!(result.remaining_steps.len(), 1, "step 1 must not have run");
+    assert!(result.completed_steps.is_empty());
 }

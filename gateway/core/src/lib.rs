@@ -28,9 +28,9 @@ pub use executor::{
 };
 pub use near_client_provider::HasNearClient;
 pub use operation::{
-    CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation, PlannedTransaction,
-    PreparedCurrentStep, PreparedTransactionResult, SharedOperationStore, StoredOperation,
-    SubmittedCurrentStep, SucceededStep,
+    CompletedStep, CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation,
+    PlannedTransaction, PreparedCurrentStep, PreparedTransactionResult, RevertedStep,
+    SharedOperationStore, StoredOperation, SubmittedCurrentStep, SucceededStep,
 };
 pub use operation_driver::{request_fingerprint, OperationDriver};
 pub use oracle_resolution::{get_proxy, query_oracle_kind, resolve_price_dependencies};
