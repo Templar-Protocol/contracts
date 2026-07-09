@@ -8,7 +8,7 @@ use templar_gateway_types::{common::Pagination, ManagedAccountId};
 
 use crate::commands::recover::RecoverNep141;
 use crate::commands::registry;
-use crate::context::{print_json, CliContext};
+use crate::context::{check_operation_status, print_json, CliContext};
 
 /// Recover a NEP-141 balance from the signer to a beneficiary, then unregister
 /// the signer's storage — the standalone `recover-nep141` command. Re-reads the
@@ -16,20 +16,14 @@ use crate::context::{print_json, CliContext};
 pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyhow::Result<()> {
     use templar_gateway_methods_spec::{storage, token};
 
-    let signer = ctx.signer_account()?;
+    let (signer, secret_key) = args.signer.resolve()?;
+    let client = ctx.signing_client(signer.clone(), secret_key)?;
     let account_id = signer.0.clone();
     let token = token::TokenReference::Ft {
         contract_id: args.token_id.clone(),
     };
 
-    sweep_token(
-        &ctx,
-        &ctx.client,
-        &signer,
-        token.clone(),
-        &args.beneficiary_id,
-    )
-    .await?;
+    sweep_token(&ctx, &client, &signer, token.clone(), &args.beneficiary_id).await?;
 
     // Re-read before unregistering: a failed/partial transfer must not lead to
     // unregistering storage while tokens remain (which would strand them).
@@ -47,8 +41,7 @@ pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyh
         );
     }
 
-    let result = ctx
-        .client
+    let result = client
         .execute_as(
             signer,
             storage::Unregister {
@@ -58,7 +51,8 @@ pub(super) async fn recover_nep141(ctx: CliContext, args: RecoverNep141) -> anyh
         )
         .await?;
     ctx.report_tx(&result);
-    print_json(&result)
+    print_json(&result)?;
+    check_operation_status(&result)
 }
 
 /// Remove a single registry version, or every version with `--all`.
@@ -69,18 +63,20 @@ pub(super) async fn remove_version(
     // clap's arg group guarantees exactly one of --version-key / --all, so a
     // present single spec is the single-version case; its absence means --all.
     if let Some(spec) = args.single() {
-        return ctx.write(spec).await;
+        return ctx.write(args.signer.clone(), spec).await;
     }
 
-    let signer = ctx.signer_account()?;
-    let removed = remove_all_versions(&ctx, &signer, args.registry_id()).await?;
+    let (signer, secret_key) = args.signer.resolve()?;
+    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let removed = remove_all_versions(&ctx, &client, &signer, args.registry_id()).await?;
     print_json(&json!({ "removed": removed }))
 }
 
-/// Remove every version registered under `registry_id`, signed by `signer`,
-/// reporting each tx and returning the removed version keys.
+/// Remove every version registered under `registry_id`, signed as `signer`
+/// through `client`, reporting each tx and returning the removed version keys.
 async fn remove_all_versions(
     ctx: &CliContext,
+    client: &Client,
     signer: &ManagedAccountId,
     registry_id: &AccountId,
 ) -> anyhow::Result<Vec<String>> {
@@ -96,8 +92,7 @@ async fn remove_all_versions(
         .values;
 
     for version_key in &versions {
-        let result = ctx
-            .client
+        let result = client
             .execute_as(
                 signer.clone(),
                 spec::RemoveVersion {
@@ -106,7 +101,7 @@ async fn remove_all_versions(
                 },
             )
             .await?;
-        ctx.report_tx(&result);
+        ctx.report_checked(&result)?;
     }
     Ok(versions)
 }
@@ -116,12 +111,12 @@ async fn remove_all_versions(
 pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> anyhow::Result<()> {
     use templar_gateway_methods_spec::account;
 
-    let signer = ctx.signer_account()?;
+    let (signer, secret_key) = args.signer.resolve()?;
+    let client = ctx.signing_client(signer.clone(), secret_key)?;
     let registry_id = signer.0.clone();
-    remove_all_versions(&ctx, &signer, &registry_id).await?;
+    remove_all_versions(&ctx, &client, &signer, &registry_id).await?;
 
-    let result = ctx
-        .client
+    let result = client
         .execute_as(
             signer,
             account::Delete {
@@ -130,7 +125,8 @@ pub(super) async fn registry_remove(ctx: CliContext, args: registry::Remove) -> 
         )
         .await?;
     ctx.report_tx(&result);
-    print_json(&result)
+    print_json(&result)?;
+    check_operation_status(&result)
 }
 
 /// Remove every market deployed from the registry, signing each removal as the
@@ -144,6 +140,8 @@ pub(super) async fn clear_deployments(
 
     let beneficiary = args.beneficiary_id();
     let force = args.force();
+    // One authorized key signs every discovered market's self-removal.
+    let secret_key = args.signer.secret()?;
     // Only markets are torn down here (removal reads a market configuration), so
     // filter by kind rather than trying `remove_market` on every deployment.
     let accounts = ctx
@@ -158,7 +156,7 @@ pub(super) async fn clear_deployments(
 
     let mut removed = Vec::new();
     for account in accounts {
-        let client = ctx.signing_client_for(account.clone())?;
+        let client = ctx.signing_client(account.clone(), secret_key.clone())?;
         match remove_market(&ctx, &client, account.clone().into(), &beneficiary, force).await {
             Ok(()) => removed.push(account),
             Err(error) if force => {
@@ -241,8 +239,7 @@ pub(super) async fn remove_market(
             },
         )
         .await?;
-    ctx.report_tx(&result);
-    Ok(())
+    ctx.report_checked(&result)
 }
 
 /// Transfer a token's full balance from `from` to `beneficiary` if non-zero,
@@ -276,7 +273,7 @@ async fn sweep_token(
                 },
             )
             .await?;
-        ctx.report_tx(&result);
+        ctx.report_checked(&result)?;
     }
     Ok(())
 }
@@ -321,7 +318,7 @@ async fn reclaim_storage(
                 },
             )
             .await?;
-        ctx.report_tx(&result);
+        ctx.report_checked(&result)?;
     }
     Ok(())
 }

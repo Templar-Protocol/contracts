@@ -1,6 +1,8 @@
 use clap::Args;
 use near_account_id::AccountId;
 
+use crate::commands::signer::SignerArgs;
+
 /// Recover a NEP-141 balance from the signer account to a beneficiary, then
 /// unregister the signer's storage. The signer is both the source of the tokens
 /// and the account whose storage is unregistered.
@@ -15,4 +17,6 @@ pub struct RecoverNep141 {
     /// Forwarded to `storage_unregister(force = …)`; only affects unregistration.
     #[arg(long)]
     pub force: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }

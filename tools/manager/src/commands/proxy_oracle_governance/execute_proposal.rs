@@ -2,6 +2,8 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct ExecuteProposalArgs {
     /// Governance contract account.
@@ -14,6 +16,8 @@ pub struct ExecuteProposalArgs {
     /// failing if it has not yet matured.
     #[arg(long)]
     when_ready: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl ExecuteProposalArgs {

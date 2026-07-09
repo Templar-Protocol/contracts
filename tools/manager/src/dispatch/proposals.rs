@@ -6,8 +6,9 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use serde::Serialize;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_gateway_client::Client;
 use templar_gateway_methods_spec::proxy_oracle_governance as gov;
-use templar_gateway_types::common::WriteOperationResult;
+use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId};
 
 use crate::commands::proxy_oracle_governance::{CreateProposal, ExecuteProposalArgs};
 use crate::context::{print_json, CliContext};
@@ -18,6 +19,8 @@ use crate::context::{print_json, CliContext};
 /// id. Always emits the resolved proposal id so scripts can learn it. With
 /// `--execute-when-ready`, waits for the proposal's TTL to elapse and executes.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
+    let (signer, secret_key) = args.signer.resolve()?;
+    let client = ctx.signing_client(signer.clone(), secret_key)?;
     let governance_id = args.governance_id().clone();
     let execute_when_ready = args.execute_when_ready();
 
@@ -43,17 +46,18 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         }
     };
 
-    let create = ctx
-        .client
-        .execute_as(ctx.signer_account()?, args.try_into_spec(id)?)
+    let create = client
+        .execute_as(signer.clone(), args.try_into_spec(id)?)
         .await?;
-    ctx.report_tx(&create);
+    // Fail fast if the create reverted, before waiting on / executing a proposal
+    // that was never created.
+    ctx.report_checked(&create)?;
     // Emit the id now so it survives a later wait/execute failure below.
     tracing::info!(proposal_id = id, "created proposal");
 
     let execute = if execute_when_ready {
         wait_for_maturity(&ctx, &governance_id, id).await?;
-        let result = execute_now(&ctx, &governance_id, id).await?;
+        let result = execute_now(&ctx, &client, &signer, &governance_id, id).await?;
         Some(result)
     } else {
         None
@@ -73,26 +77,28 @@ pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyho
     if args.when_ready() {
         wait_for_maturity(&ctx, args.governance_id(), args.id()).await?;
     }
-    ctx.write(args.into_spec()).await
+    ctx.write(args.signer.clone(), args.into_spec()).await
 }
 
-/// Execute proposal `id` on its own (no idempotency key), reporting the tx link.
+/// Execute proposal `id` on its own (no idempotency key), signed as `signer`
+/// through `client`, reporting the tx link.
 async fn execute_now(
     ctx: &CliContext,
+    client: &Client,
+    signer: &ManagedAccountId,
     governance_id: &AccountId,
     id: u32,
 ) -> anyhow::Result<WriteOperationResult> {
-    let result = ctx
-        .client
+    let result = client
         .execute_as(
-            ctx.signer_account()?,
+            signer.clone(),
             gov::ExecuteProposal {
                 governance_id: governance_id.clone(),
                 id,
             },
         )
         .await?;
-    ctx.report_tx(&result);
+    ctx.report_checked(&result)?;
     Ok(result)
 }
 

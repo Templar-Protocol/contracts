@@ -1,6 +1,7 @@
 use clap::Parser;
 use serde_json::json;
 
+use super::CREDS;
 use crate::cli::{Cli, Command};
 use crate::commands::storage::StorageNs;
 
@@ -54,18 +55,22 @@ fn parses_storage_get_balance_of_typed_args() {
 
 #[test]
 fn parses_storage_deposit_typed_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "deposit",
-        "--contract-id",
-        "storage.testnet",
-        "--beneficiary-id",
-        "beneficiary.testnet",
-        "--registration-only",
-        "--deposit",
-        "1.25 NEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "deposit",
+            "--contract-id",
+            "storage.testnet",
+            "--beneficiary-id",
+            "beneficiary.testnet",
+            "--registration-only",
+            "--deposit",
+            "1.25 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("deposit should parse");
 
     let params = match cli.command {
@@ -82,14 +87,18 @@ fn parses_storage_deposit_typed_args() {
 
 #[test]
 fn parses_storage_unregister_typed_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "unregister",
-        "--contract-id",
-        "storage.testnet",
-        "--force",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "unregister",
+            "--contract-id",
+            "storage.testnet",
+            "--force",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("unregister should parse");
 
     let params = match cli.command {
@@ -106,19 +115,23 @@ fn parses_storage_unregister_typed_args() {
 
 #[test]
 fn parses_storage_ensure_deposit_typed_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "ensure-deposit",
-        "--contract-id",
-        "storage.testnet",
-        "--account-id",
-        "alice.testnet",
-        "--mode",
-        "minimum-total",
-        "--amount",
-        "2.5 NEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "ensure-deposit",
+            "--contract-id",
+            "storage.testnet",
+            "--account-id",
+            "alice.testnet",
+            "--mode",
+            "minimum-total",
+            "--amount",
+            "2.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("ensure-deposit should parse");
 
     let params = match cli.command {
@@ -163,17 +176,21 @@ fn parses_storage_kebab_case_aliases() {
         _ => panic!("expected Storage variant"),
     }
 
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "ensure-deposit",
-        "--contract-id",
-        "storage.testnet",
-        "--account-id",
-        "alice.testnet",
-        "--mode",
-        "registered",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "ensure-deposit",
+            "--contract-id",
+            "storage.testnet",
+            "--account-id",
+            "alice.testnet",
+            "--mode",
+            "registered",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("ensure-deposit should parse");
     match cli.command {
         Command::Storage { .. } => {}
@@ -183,19 +200,23 @@ fn parses_storage_kebab_case_aliases() {
 
 #[test]
 fn registered_ensure_deposit_rejects_amount() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "storage",
-        "ensure-deposit",
-        "--contract-id",
-        "storage.testnet",
-        "--account-id",
-        "alice.testnet",
-        "--mode",
-        "registered",
-        "--amount",
-        "1 yoctoNEAR",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "storage",
+            "ensure-deposit",
+            "--contract-id",
+            "storage.testnet",
+            "--account-id",
+            "alice.testnet",
+            "--mode",
+            "registered",
+            "--amount",
+            "1 yoctoNEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("registered ensure-deposit should parse before typed validation");
 
     let error = match cli.command {

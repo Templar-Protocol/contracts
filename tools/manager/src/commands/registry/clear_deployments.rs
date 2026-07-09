@@ -1,6 +1,8 @@
 use clap::Args;
 use near_account_id::AccountId;
 
+use crate::commands::signer::SecretKeyArgs;
+
 #[derive(Args, Debug)]
 pub struct ClearDeployments {
     /// Registry whose deployments to clear.
@@ -12,6 +14,8 @@ pub struct ClearDeployments {
     /// Continue past a market that fails to remove instead of stopping.
     #[arg(long)]
     force: bool,
+    #[command(flatten)]
+    pub(crate) signer: SecretKeyArgs,
 }
 
 impl ClearDeployments {

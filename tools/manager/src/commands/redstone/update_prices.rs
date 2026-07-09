@@ -6,6 +6,8 @@ use templar_common::oracle::redstone::FeedId;
 use templar_gateway_methods_spec::redstone as spec;
 use templar_gateway_types::Base64Bytes;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct UpdatePrices {
     /// RedStone adapter account to update.
@@ -22,6 +24,8 @@ pub struct UpdatePrices {
         value_name = "PATH"
     )]
     node_path: PathBuf,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl UpdatePrices {

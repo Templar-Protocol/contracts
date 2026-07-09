@@ -12,6 +12,7 @@ pub mod proxy_oracle_owner;
 pub mod recover;
 pub mod redstone;
 pub mod registry;
+pub mod signer;
 pub mod storage;
 
 pub use account::AccountNs;

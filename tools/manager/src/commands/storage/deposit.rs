@@ -3,6 +3,8 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::storage as spec;
 use templar_gateway_types::NearToken;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct StorageDeposit {
     /// Contract to deposit storage on.
@@ -17,6 +19,8 @@ pub struct StorageDeposit {
     /// Amount of NEAR to deposit.
     #[arg(long, value_name = "AMOUNT")]
     deposit: NearToken,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl StorageDeposit {

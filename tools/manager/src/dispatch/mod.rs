@@ -41,7 +41,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
 async fn account(ctx: CliContext, ns: AccountNs) -> anyhow::Result<()> {
     match ns {
         AccountNs::Get(a) => ctx.read(a.into_spec()).await,
-        AccountNs::Delete(a) => ctx.write(a.into_spec()).await,
+        AccountNs::Delete(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
 
@@ -51,8 +51,8 @@ async fn registry(ctx: CliContext, ns: RegistryNs) -> anyhow::Result<()> {
         RegistryNs::ListDeployments(a) => ctx.read(a.into_spec()).await,
         RegistryNs::ListDeploymentsByKind(a) => ctx.read(a.into_spec()).await,
         RegistryNs::GetDeployment(a) => ctx.read(a.into_spec()).await,
-        RegistryNs::AddVersion(a) => ctx.write(a.try_into_spec()?).await,
-        RegistryNs::Deploy(a) => ctx.write(a.try_into_spec(&ctx)?).await,
+        RegistryNs::AddVersion(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        RegistryNs::Deploy(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         RegistryNs::RemoveVersion(a) => teardown::remove_version(ctx, a).await,
         RegistryNs::Remove(a) => teardown::registry_remove(ctx, a).await,
         RegistryNs::ClearDeployments(a) => teardown::clear_deployments(ctx, a).await,
@@ -63,27 +63,29 @@ async fn storage(ctx: CliContext, ns: StorageNs) -> anyhow::Result<()> {
     match ns {
         StorageNs::GetBalanceBounds(a) => ctx.read(a.into_spec()).await,
         StorageNs::GetBalanceOf(a) => ctx.read(a.into_spec()).await,
-        StorageNs::Deposit(a) => ctx.write(a.into_spec()).await,
-        StorageNs::Unregister(a) => ctx.write(a.into_spec()).await,
-        StorageNs::EnsureDeposit(a) => ctx.write(a.try_into_spec()?).await,
+        StorageNs::Deposit(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        StorageNs::Unregister(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        StorageNs::EnsureDeposit(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
     }
 }
 
 async fn ft(ctx: CliContext, ns: FtNs) -> anyhow::Result<()> {
     match ns {
         FtNs::GetBalanceOf(a) => ctx.read(a.into_spec()).await,
-        FtNs::Transfer(a) => ctx.write(a.into_spec()).await,
-        FtNs::TransferCall(a) => ctx.write(a.into_spec()).await,
+        FtNs::Transfer(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        FtNs::TransferCall(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
 
 async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
     match ns {
-        MarketNs::Create(a) => ctx.write(a.try_into_spec(&ctx)?).await,
+        MarketNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         MarketNs::Remove(a) => {
-            let signer = ctx.signer_account()?;
-            teardown::remove_market(&ctx, &ctx.client, signer, a.beneficiary_id(), a.force())
-                .await?;
+            // `market remove` is self-signed: the signer is the market account
+            // being torn down.
+            let (market, secret_key) = a.signer.resolve()?;
+            let client = ctx.signing_client(market.clone(), secret_key)?;
+            teardown::remove_market(&ctx, &client, market, a.beneficiary_id(), a.force()).await?;
             print_json(&serde_json::json!({ "removed": true }))
         }
     }
@@ -94,7 +96,7 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
         ProxyOracleNs::GetProxy(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::ListProxies(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.into_spec()).await,
+        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
 
@@ -102,9 +104,9 @@ async fn proxy_oracle_owner(ctx: CliContext, ns: ProxyOracleOwnerNs) -> anyhow::
     match ns {
         ProxyOracleOwnerNs::GetOwner(a) => ctx.read(a.into_spec()).await,
         ProxyOracleOwnerNs::GetProposedOwner(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleOwnerNs::ProposeOwner(a) => ctx.write(a.into_spec()).await,
-        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.into_spec()).await,
-        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.into_spec()).await,
+        ProxyOracleOwnerNs::ProposeOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
 
@@ -113,9 +115,9 @@ async fn proxy_oracle_governance(
     ns: ProxyOracleGovernanceNs,
 ) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleGovernanceNs::Create(a) => ctx.write(a.try_into_spec(&ctx)?).await,
+        ProxyOracleGovernanceNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         ProxyOracleGovernanceNs::CreateProposal(a) => proposals::create(ctx, a).await,
-        ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.cancel()).await,
+        ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.signer.clone(), a.cancel()).await,
         ProxyOracleGovernanceNs::ExecuteProposal(a) => proposals::execute(ctx, a).await,
         ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.get()).await,
         ProxyOracleGovernanceNs::ListProposals(a) => ctx.read(a.into_spec()).await,
@@ -131,12 +133,12 @@ async fn proxy_oracle_governance(
 
 async fn redstone(ctx: CliContext, ns: RedstoneNs) -> anyhow::Result<()> {
     match ns {
-        RedstoneNs::Create(a) => ctx.write(a.try_into_spec(&ctx)?).await,
+        RedstoneNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         RedstoneNs::GetConfig(a) => ctx.read(a.into_spec()).await,
         RedstoneNs::ReadPriceData(a) => ctx.read(a.into_spec()).await,
         RedstoneNs::ListRole(a) => ctx.read(a.into_spec()).await,
-        RedstoneNs::SetRole(a) => ctx.write(a.into_spec()).await,
-        RedstoneNs::WritePrices(a) => ctx.write(a.try_into_spec()?).await,
+        RedstoneNs::SetRole(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        RedstoneNs::WritePrices(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         RedstoneNs::UpdatePrices(a) => prices::update_redstone(ctx, a).await,
     }
 }
