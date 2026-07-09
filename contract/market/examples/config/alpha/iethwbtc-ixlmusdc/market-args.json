@@ -12,11 +12,11 @@
     "collateral_asset": {
       "Nep245": {
         "contract_id": "intents.near",
-        "token_id": "nep141:eth-0x06ea695b91700071b161a434fed42d1dcbad9f00.omft.near"
+        "token_id": "nep141:eth-0x2260fac5e5542a773aa44fbcfedf7c193bc2c599.omft.near"
       }
     },
     "price_oracle_configuration": {
-      "account_id": "proxy-oracle-iethhemibtc-ixlmusdc.templar-alpha.near",
+      "account_id": "proxy-oracle-iethwbtc-ixlmusdc.templar-alpha.near",
       "collateral_asset_price_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "collateral_asset_decimals": 8,
       "borrow_asset_price_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

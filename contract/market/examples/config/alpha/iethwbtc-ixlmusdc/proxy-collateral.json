@@ -7,7 +7,7 @@
             "Request": {
               "Lazer": {
                 "oracle_id": "pyth-lazer.templar-alpha.near",
-                "feed_id": 1
+                "feed_id": 103
               }
             }
           },
@@ -18,7 +18,7 @@
             "Request": {
               "RedStone": {
                 "oracle_id": "redstone-adapter.v1.tmplr.near",
-                "price_id": "BTC"
+                "price_id": "WBTC"
               }
             }
           },
