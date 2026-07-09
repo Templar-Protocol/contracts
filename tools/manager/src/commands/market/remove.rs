@@ -12,6 +12,9 @@ pub struct Remove {
     /// asset fails.
     #[arg(long)]
     force: bool,
+    /// Credentials for the market account being removed — `market remove` is
+    /// self-signed, so the signer both authorizes the teardown and identifies the
+    /// target account (there is no separate market-id flag).
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }

@@ -126,16 +126,18 @@ fn write_command_requires_credentials() {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let restore = clear_credential_env();
 
-    let error = Cli::try_parse_from([
+    let result = Cli::try_parse_from([
         "tmplrmgr",
         "write",
         "registry.removeVersion",
         "--json",
         r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-    ])
-    .expect_err("a write with no credentials should fail to parse");
+    ]);
 
+    // Restore before asserting: a panic here must not leak cleared env vars into
+    // later tests sharing this process.
     restore();
+    let error = result.expect_err("a write with no credentials should fail to parse");
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument

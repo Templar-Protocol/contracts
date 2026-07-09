@@ -53,7 +53,7 @@ impl CliContext {
     }
 
     /// Execute a write signed by `signer`, report the tx link, print the JSON
-    /// result, then fail if the operation reverted on chain.
+    /// result, then fail unless the operation succeeded on chain.
     pub(crate) async fn write<S>(&self, signer: SignerArgs, body: S) -> anyhow::Result<()>
     where
         S: MethodSpec<Output = WriteOperationResult>,
@@ -87,37 +87,46 @@ impl CliContext {
     }
 }
 
-/// Fail when a submitted write's terminal status is `Failed`: the RPC round-trip
-/// succeeded but the operation reverted on chain. Emits a concise stderr
-/// diagnostic naming the failed receipt(s), then returns an error so the process
-/// exits non-zero — letting driver scripts stop instead of continuing past a
-/// failed step. Callers print the machine-readable JSON first.
+/// Succeed only when a submitted write reached a `Succeeded` terminal status.
+/// A `Failed` operation (RPC round-trip fine, but reverted on chain) errors with
+/// a concise stderr diagnostic naming the failed receipt(s); a non-terminal
+/// `Pending`/`InProgress` operation also errors, because the CLI's transient
+/// in-memory store has no later resume, so an unconfirmed outcome must not read
+/// as success. Either way the process exits non-zero — letting driver scripts
+/// stop instead of continuing past a failed or unknown step. Callers print the
+/// machine-readable JSON first.
 pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::Result<()> {
     let operation = &result.operation;
-    if operation.status != OperationStatus::Failed {
-        return Ok(());
-    }
+    match operation.status {
+        OperationStatus::Succeeded => Ok(()),
+        OperationStatus::Failed => {
+            let failed_contracts: Vec<&str> = operation
+                .final_outcome()
+                .map(|outcome| {
+                    outcome
+                        .receipts
+                        .iter()
+                        .filter(|receipt| receipt.status == ReceiptStatus::Failed)
+                        .map(|receipt| receipt.contract_id.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
 
-    let failed_contracts: Vec<&str> = operation
-        .final_outcome()
-        .map(|outcome| {
-            outcome
-                .receipts
-                .iter()
-                .filter(|receipt| receipt.status == ReceiptStatus::Failed)
-                .map(|receipt| receipt.contract_id.as_str())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if failed_contracts.is_empty() {
-        anyhow::bail!("operation {} failed on chain", operation.id.0);
+            if failed_contracts.is_empty() {
+                anyhow::bail!("operation {} failed on chain", operation.id.0);
+            }
+            anyhow::bail!(
+                "operation {} failed on chain; reverted receipt(s) on: {}",
+                operation.id.0,
+                failed_contracts.join(", ")
+            )
+        }
+        status @ (OperationStatus::Pending | OperationStatus::InProgress) => anyhow::bail!(
+            "operation {} did not reach a terminal state (status: {status:?}); \
+             its on-chain outcome is unknown",
+            operation.id.0,
+        ),
     }
-    anyhow::bail!(
-        "operation {} failed on chain; reverted receipt(s) on: {}",
-        operation.id.0,
-        failed_contracts.join(", ")
-    )
 }
 
 /// Serialize `output` as a single line of JSON to stdout — the machine-readable
@@ -197,5 +206,19 @@ mod tests {
     fn succeeded_operation_is_ok() {
         check_operation_status(&result("Succeeded", "Succeeded"))
             .expect("a succeeded operation must not error");
+    }
+
+    #[test]
+    fn non_terminal_operation_errors() {
+        // A non-terminal status is an unknown outcome, not a success: with the
+        // CLI's transient store there is no later resume to confirm it.
+        for status in ["Pending", "InProgress"] {
+            let error = check_operation_status(&result(status, "Succeeded"))
+                .expect_err("a non-terminal operation must error");
+            assert!(
+                error.to_string().contains("did not reach a terminal state"),
+                "status {status}: {error}"
+            );
+        }
     }
 }
