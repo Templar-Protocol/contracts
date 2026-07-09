@@ -530,14 +530,24 @@ impl OperationDriver {
                     if step.is_success {
                         operation.record_success(transaction, tx_hash, step.outcome);
                     } else {
-                        tracing::warn!(
-                            operation_id = %operation.id.0,
-                            %tx_hash,
-                            "current step transaction reverted"
-                        );
                         // Tolerance is decided by the step's own flag, so a
                         // continue_on_failure step reverting mid-reconcile advances
-                        // rather than blocking — same rule as live execution.
+                        // rather than blocking — same rule as live execution. A
+                        // tolerated revert is routine (log quietly); only a terminal,
+                        // blocking revert warrants a warning.
+                        if transaction.continue_on_failure {
+                            tracing::debug!(
+                                operation_id = %operation.id.0,
+                                %tx_hash,
+                                "tolerated step reverted during reconciliation; operation advances"
+                            );
+                        } else {
+                            tracing::warn!(
+                                operation_id = %operation.id.0,
+                                %tx_hash,
+                                "current step transaction reverted"
+                            );
+                        }
                         operation.record_revert(transaction, tx_hash, step.outcome);
                     }
                 }
