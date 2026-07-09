@@ -2,6 +2,8 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_owner as spec;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct ProposeOwner {
     /// Proxy-oracle account.
@@ -10,6 +12,8 @@ pub struct ProposeOwner {
     /// Account to propose as the new owner (omit to clear any pending proposal).
     #[arg(long, value_name = "ACCOUNT_ID")]
     account_id: Option<AccountId>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl ProposeOwner {

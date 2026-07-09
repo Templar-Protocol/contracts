@@ -3,6 +3,8 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::storage as spec;
 use templar_gateway_types::NearToken;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Clone, Debug, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 pub enum EnsureModeArg {
@@ -25,6 +27,8 @@ pub struct EnsureDeposit {
     /// Target amount (required for minimum-total and minimum-available modes).
     #[arg(long, value_name = "AMOUNT")]
     amount: Option<NearToken>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl EnsureDeposit {

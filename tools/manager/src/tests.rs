@@ -39,15 +39,19 @@ fn help_lists_all_top_level_commands() {
 
 #[test]
 fn parses_recover_nep141_args() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "recover-nep141",
-        "--token-id",
-        "usdt.testnet",
-        "--beneficiary-id",
-        "treasury.testnet",
-        "--force",
-    ])
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "recover-nep141",
+            "--token-id",
+            "usdt.testnet",
+            "--beneficiary-id",
+            "treasury.testnet",
+            "--force",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
     .expect("recover-nep141 should parse");
     match cli.command {
         super::cli::Command::RecoverNep141(args) => {
@@ -79,6 +83,17 @@ fn parses_read_fallback_with_json() {
     }
 }
 
+const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
+
+/// Signer credentials appended to write-command argv in parse tests, so the
+/// structural `SignerArgs` are satisfied. Shared by the submodules.
+const CREDS: [&str; 4] = [
+    "--signer-id",
+    "signer.testnet",
+    "--secret-key",
+    TEST_SECRET_KEY,
+];
+
 #[test]
 fn parses_write_fallback_with_json() {
     let cli = Cli::try_parse_from([
@@ -87,16 +102,63 @@ fn parses_write_fallback_with_json() {
         "registry.removeVersion",
         "--json",
         r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        TEST_SECRET_KEY,
     ])
     .expect("write fallback should parse");
 
     match cli.command {
         super::cli::Command::Write(call) => {
-            assert_eq!(call.method, "registry.removeVersion");
-            assert!(call.json.is_some());
+            assert_eq!(call.call.method, "registry.removeVersion");
+            assert!(call.call.json.is_some());
+            call.signer.resolve().expect("credentials should resolve");
         }
         _ => panic!("expected Write variant"),
     }
+}
+
+#[test]
+fn write_command_requires_credentials() {
+    // With credentials structural on the write, omitting them is a parse error —
+    // no build or network work is reachable.
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+    ]);
+
+    // Restore before asserting: a panic here must not leak cleared env vars into
+    // later tests sharing this process.
+    restore();
+    let error = result.expect_err("a write with no credentials should fail to parse");
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+#[test]
+fn read_command_rejects_credentials() {
+    // Reads don't flatten the signer, so credentials are an unexpected argument.
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "read",
+        "account.get",
+        "--json",
+        r#"{"account_id":"signer.testnet"}"#,
+        "--secret-key",
+        TEST_SECRET_KEY,
+    ])
+    .expect_err("credentials on a read should fail to parse");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
 #[test]
@@ -104,20 +166,23 @@ fn invalid_secret_key_error_does_not_echo_input() {
     let secret = "not-a-real-secret-key";
     let cli = Cli::try_parse_from([
         "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
         "--signer-id",
         "signer.testnet",
         "--secret-key",
         secret,
-        "read",
-        "account.get",
-        "--json",
-        r#"{"account_id":"signer.testnet"}"#,
     ])
     .expect("secret key should parse as an opaque string at the clap boundary");
 
-    let error = match super::context::build_context(&cli) {
-        Ok(_) => panic!("invalid secret key should be rejected after clap parsing"),
-        Err(error) => error,
+    let error = match cli.command {
+        super::cli::Command::Write(call) => call
+            .signer
+            .resolve()
+            .expect_err("invalid secret key should be rejected"),
+        _ => panic!("expected Write variant"),
     };
 
     let message = error.to_string();
@@ -126,84 +191,56 @@ fn invalid_secret_key_error_does_not_echo_input() {
 }
 
 #[test]
-fn secret_key_env_satisfies_signer_configuration() {
+fn signer_env_satisfies_write_credentials() {
+    // Scripted/CI usage relies on SIGNER_ID/SECRET_KEY env sourcing satisfying the
+    // structural credentials with no explicit flags.
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let original = std::env::var_os("SECRET_KEY");
-    std::env::set_var(
-        "SECRET_KEY",
-        "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q",
-    );
+    let original_signer = std::env::var_os("SIGNER_ID");
+    let original_secret = std::env::var_os("SECRET_KEY");
+    std::env::set_var("SIGNER_ID", "signer.testnet");
+    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
 
     let result = (|| {
         let cli = Cli::try_parse_from([
             "tmplrmgr",
-            "--signer-id",
-            "signer.testnet",
-            "read",
-            "account.get",
+            "write",
+            "registry.removeVersion",
             "--json",
-            r#"{"account_id":"signer.testnet"}"#,
+            r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
         ])
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
-        super::context::build_context(&cli)
+        match cli.command {
+            super::cli::Command::Write(call) => call.signer.resolve().map(|_| ()),
+            _ => anyhow::bail!("expected Write variant"),
+        }
     })();
 
+    restore_env("SIGNER_ID", original_signer);
+    restore_env("SECRET_KEY", original_secret);
+
+    result.expect("env-provided credentials should satisfy a write command");
+}
+
+/// Clear the credential env vars (under `ENV_LOCK`) so a "missing credentials"
+/// parse test isn't satisfied by an ambient `SIGNER_ID`/`SECRET_KEY`. Returns a
+/// closure that restores the originals.
+fn clear_credential_env() -> impl FnOnce() {
+    let original_signer = std::env::var_os("SIGNER_ID");
+    let original_secret = std::env::var_os("SECRET_KEY");
+    std::env::remove_var("SIGNER_ID");
+    std::env::remove_var("SECRET_KEY");
+    move || {
+        restore_env("SIGNER_ID", original_signer);
+        restore_env("SECRET_KEY", original_secret);
+    }
+}
+
+fn restore_env(key: &str, original: Option<std::ffi::OsString>) {
     match original {
-        Some(value) => std::env::set_var("SECRET_KEY", value),
-        None => std::env::remove_var("SECRET_KEY"),
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
     }
-
-    result.expect("env-provided SECRET_KEY should configure a signed client");
-}
-
-/// A `Cli` with the given signer halves and a trivial read command, built
-/// directly so clap never reads `SIGNER_ID`/`SECRET_KEY` from the environment.
-fn cli_with_signer(signer_id: Option<&str>, secret_key: Option<&str>) -> Cli {
-    use super::cli::{Command, GenericMethodCall};
-    Cli {
-        network: templar_gateway_client::Network::Testnet,
-        rpc_url: None,
-        rpc_api_key: None,
-        signer_id: signer_id.map(|id| id.parse().expect("valid account id")),
-        secret_key: secret_key.map(str::to_owned),
-        transaction_url_prefix: None,
-        quiet: 0,
-        verbose: 0,
-        command: Command::Read(GenericMethodCall {
-            method: "contract.getVersion".to_owned(),
-            json: Some("{}".to_owned()),
-            json_file: None,
-        }),
-    }
-}
-
-#[test]
-fn partial_signer_config_builds_read_only_context() {
-    const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-
-    // Only --signer-id: builds a (read-only) context rather than failing up
-    // front, so read commands still work; the signer path reports the missing
-    // secret only when a signer is actually needed.
-    let ctx = super::context::build_context(&cli_with_signer(Some("signer.testnet"), None))
-        .expect("signer-id-only config should still build a read-only context");
-    assert_eq!(
-        ctx.signer_account()
-            .expect_err("a write signer requires both halves")
-            .to_string(),
-        "--secret-key is required with --signer-id"
-    );
-
-    // Only --secret-key: also builds (teardown flows sign per-account with just
-    // the key); the default-signer path reports the missing id.
-    let ctx = super::context::build_context(&cli_with_signer(None, Some(TEST_SECRET_KEY)))
-        .expect("secret-key-only config should still build a context");
-    assert_eq!(
-        ctx.signer_account()
-            .expect_err("a default write signer requires both halves")
-            .to_string(),
-        "--signer-id is required with --secret-key"
-    );
 }
 
 #[test]

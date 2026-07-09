@@ -3,6 +3,8 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::ft as spec;
 use templar_primitives::SU128;
 
+use crate::commands::signer::SignerArgs;
+
 #[derive(Args, Debug)]
 pub struct Transfer {
     /// Token contract to transfer from.
@@ -17,6 +19,8 @@ pub struct Transfer {
     /// Optional memo attached to the transfer.
     #[arg(long, value_name = "TEXT")]
     memo: Option<String>,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl Transfer {

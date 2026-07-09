@@ -3,6 +3,7 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::redstone as spec;
 
 use super::RoleArg;
+use crate::commands::signer::SignerArgs;
 
 #[derive(Args, Debug)]
 pub struct SetRole {
@@ -18,6 +19,8 @@ pub struct SetRole {
     /// Revoke the role instead of granting it.
     #[arg(long)]
     revoke: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
 }
 
 impl SetRole {
