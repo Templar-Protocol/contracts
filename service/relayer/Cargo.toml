@@ -54,11 +54,15 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tracing = { workspace = true, features = ["attributes"] }
 
 [dev-dependencies]
-near-workspaces = { workspace = true, features = ["experimental"] }
+anyhow.workspace = true
+near-api.workspace = true
+near-token.workspace = true
 p256.workspace = true
 reqwest = { version = "0.12.24", features = ["json"] }
 rstest.workspace = true
+serde_json.workspace = true
 solana-sdk.workspace = true
+templar-gateway-testing.workspace = true
 test-utils.workspace = true
 
 [lints]
