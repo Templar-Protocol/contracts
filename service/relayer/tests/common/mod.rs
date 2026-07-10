@@ -15,7 +15,6 @@ use near_sdk::Gas;
 use near_token::NearToken;
 use serde_json::json;
 use templar_gateway_testing::SandboxHarness;
-use test_utils::RegistryController;
 
 /// The fixed sandbox key shared by every account the harness provisions.
 pub const TEST_SECRET_KEY: &str =
@@ -105,7 +104,7 @@ pub async fn deploy_registry(
     deploy_code(
         &harness.network,
         &registry_id,
-        RegistryController::wasm().await.to_vec(),
+        templar_gateway_testing::wasm::registry().await.to_vec(),
     )
     .await?;
     call(

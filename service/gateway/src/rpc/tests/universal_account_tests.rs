@@ -1,9 +1,7 @@
+use super::*;
 use near_account_id::AccountId;
 use templar_gateway_types::OperationStatus;
 use templar_universal_account::PayloadExecutionParameters;
-use test_utils::UniversalAccountController;
-
-use super::*;
 
 #[tokio::test]
 async fn universal_account_get_key_endpoint_works_against_sandbox() -> Result<()> {
@@ -97,7 +95,11 @@ async fn universal_account_write_endpoints_work_against_sandbox() -> Result<()> 
                 registry_id: registry_id.clone(),
                 version_key: "ua@1.0.0".to_owned(),
                 deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(UniversalAccountController::wasm().await.to_vec()),
+                code: Base64Bytes(
+                    templar_gateway_testing::wasm::universal_account()
+                        .await
+                        .to_vec(),
+                ),
                 deposit: NearToken::from_yoctonear(1),
             },
         })

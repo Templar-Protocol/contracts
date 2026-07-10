@@ -26,7 +26,7 @@ async fn setup_registry(harness: &SandboxHarness) -> Result<Registry> {
     let registry_id = harness.deploy_registry().await?;
     let deployer = harness.registry_signer_account_id.clone();
 
-    let market_wasm = test_utils::MarketController::wasm().await.to_vec();
+    let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
     let cost_per_byte = NearToken::from_near(1).saturating_div(10_000);
     let deposit = cost_per_byte.saturating_mul(market_wasm.len() as u128);
     harness

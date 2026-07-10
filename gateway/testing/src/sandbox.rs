@@ -33,15 +33,9 @@ use templar_proxy_oracle_near_common::{
 use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
 use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
-use test_utils::{
-    controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
-    market_configuration,
-    test_signer::TestSigner,
-    vault_configuration, FtController, GovernanceContractController, MarketController,
-    MockOracleController, ProxyOracleController, PythLazerAdapterController, ReceiverController,
-    RedStoneAdapterController, RefFinanceController, RegistryController,
-    UniversalAccountController,
-};
+use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
+
+use crate::wasm::PoolInfo;
 
 pub struct SandboxHarness {
     /// The owned `neard` process in owned mode; `None` in attach mode, where
@@ -128,7 +122,7 @@ impl SandboxHarness {
             &harness.network,
             ft_contract_id.clone(),
             ft_signer,
-            FtController::wasm().await.to_vec(),
+            crate::wasm::ft().await.to_vec(),
             "new",
             serde_json::json!({
                 "name": "Mock FT",
@@ -230,7 +224,7 @@ impl SandboxHarness {
     }
 
     pub async fn ft_wasm(&self) -> Vec<u8> {
-        FtController::wasm().await.to_vec()
+        crate::wasm::ft().await.to_vec()
     }
 
     pub async fn deploy_mt(&self, account_id: AccountId) -> Result<AccountId> {
@@ -241,9 +235,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            test_utils::controller::mt::MtController::wasm()
-                .await
-                .to_vec(),
+            crate::wasm::mt().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -259,7 +251,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            ReceiverController::wasm().await.to_vec(),
+            crate::wasm::receiver().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -279,7 +271,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            RefFinanceController::wasm().await.to_vec(),
+            crate::wasm::ref_finance().await.to_vec(),
             "new",
             serde_json::json!({ "pools": pools }),
         )
@@ -293,7 +285,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             account_signer()?,
-            RegistryController::wasm().await.to_vec(),
+            crate::wasm::registry().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -318,7 +310,7 @@ impl SandboxHarness {
             &self.network,
             oracle_id.clone(),
             oracle_signer,
-            MockOracleController::wasm().await.to_vec(),
+            crate::wasm::mock_oracle().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -342,7 +334,7 @@ impl SandboxHarness {
             &self.network,
             borrow_asset_id.clone(),
             borrow_signer,
-            FtController::wasm().await.to_vec(),
+            crate::wasm::ft().await.to_vec(),
             "new",
             serde_json::json!({ "name": "Borrow FT", "symbol": "BFT" }),
         )
@@ -354,7 +346,7 @@ impl SandboxHarness {
             &self.network,
             collateral_asset_id.clone(),
             collateral_signer,
-            FtController::wasm().await.to_vec(),
+            crate::wasm::ft().await.to_vec(),
             "new",
             serde_json::json!({ "name": "Collateral FT", "symbol": "CFT" }),
         )
@@ -374,7 +366,7 @@ impl SandboxHarness {
             &self.network,
             market_id.clone(),
             market_signer,
-            MarketController::wasm().await.to_vec(),
+            crate::wasm::market().await.to_vec(),
             "new",
             serde_json::json!({
                 "configuration": configuration.clone(),
@@ -403,7 +395,7 @@ impl SandboxHarness {
             &self.network,
             vault_id.clone(),
             signer,
-            test_utils::controller::vault::load_wasm().await.to_vec(),
+            crate::wasm::vault().await.to_vec(),
             "new",
             serde_json::json!({
                 "configuration": configuration.clone(),
@@ -430,7 +422,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            UniversalAccountController::wasm().await.to_vec(),
+            crate::wasm::universal_account().await.to_vec(),
             "new",
             &init,
         )
@@ -448,7 +440,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            ProxyOracleController::wasm().await.to_vec(),
+            crate::wasm::proxy_oracle().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -468,7 +460,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            ProxyOracleController::wasm_v0().to_vec(),
+            crate::wasm::PROXY_ORACLE_V0.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -485,7 +477,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            MockOracleController::wasm().await.to_vec(),
+            crate::wasm::mock_oracle().await.to_vec(),
             "new",
             serde_json::json!({}),
         )
@@ -502,7 +494,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            FtController::wasm().await.to_vec(),
+            crate::wasm::ft().await.to_vec(),
             "new",
             serde_json::json!({ "name": name, "symbol": symbol }),
         )
@@ -522,7 +514,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            RedStoneAdapterController::wasm().await.to_vec(),
+            crate::wasm::redstone_adapter().await.to_vec(),
             "new",
             serde_json::json!({
                 "config": config,
@@ -559,7 +551,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            PythLazerAdapterController::wasm().await.to_vec(),
+            crate::wasm::pyth_lazer_adapter().await.to_vec(),
             "new",
             serde_json::json!({ "owner": account_id, "config": config }),
         )
@@ -655,7 +647,7 @@ impl SandboxHarness {
             &self.network,
             id.clone(),
             signer,
-            LstOracleController::wasm().await.to_vec(),
+            crate::wasm::lst_oracle().await.to_vec(),
             "new",
             serde_json::json!({ "oracle_id": oracle_id }),
         )
@@ -758,7 +750,7 @@ impl SandboxHarness {
             &self.network,
             governance_id.clone(),
             deploy_signer,
-            GovernanceContractController::wasm().await.to_vec(),
+            crate::wasm::proxy_governance().await.to_vec(),
             "new",
             serde_json::json!({
                 "proxy_oracle_id": oracle_id,

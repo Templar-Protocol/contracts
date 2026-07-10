@@ -9,11 +9,11 @@ use templar_gateway_core::{
 };
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{account, tx};
+use templar_gateway_testing::wasm as testing_wasm;
 use templar_gateway_types::{
     common::{ContractArgs, WriteRequest},
     ContractMethodName, ManagedAccountId, NearGas,
 };
-use test_utils::FtController;
 
 #[tokio::test]
 async fn core_can_be_used_directly_without_runtime() -> Result<()> {
@@ -31,7 +31,7 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
         &network,
         ft_contract_id.clone(),
         ft_signer,
-        FtController::wasm().await.to_vec(),
+        testing_wasm::ft().await.to_vec(),
         "new",
         serde_json::json!({
             "name": "Mock FT",

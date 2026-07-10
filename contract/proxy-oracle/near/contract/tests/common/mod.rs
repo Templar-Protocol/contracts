@@ -222,7 +222,7 @@ pub async fn deploy_from_patch(
     deploy_code(
         &harness.network,
         &account_id,
-        test_utils::ProxyOracleController::wasm_v0().to_vec(),
+        templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
     )
     .await?;
 
@@ -231,7 +231,7 @@ pub async fn deploy_from_patch(
     deploy_code(
         &harness.network,
         &account_id,
-        test_utils::ProxyOracleController::wasm().await.to_vec(),
+        templar_gateway_testing::wasm::proxy_oracle().await.to_vec(),
     )
     .await?;
 

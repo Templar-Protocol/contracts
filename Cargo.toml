@@ -103,7 +103,6 @@ near-sdk = { version = "5.25", default-features = false, features = ["unstable"]
 near-sdk-contract-tools = "4.0.0"
 near-sandbox = "0.3.9"
 near-token = "0.3.3"
-near-workspaces = "0.22.1"
 p256 = "0.13.2"
 primitive-types = { version = "0.14.0", features = ["serde"] }
 pyth-lazer-protocol = { git = "https://github.com/Templar-Protocol/pyth-lazer-public", rev = "10aebfd0075887e9784f9fb65ef28ddbadb57139", default-features = false }

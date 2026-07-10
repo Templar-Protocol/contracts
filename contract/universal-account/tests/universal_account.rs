@@ -57,7 +57,7 @@ async fn setup(
             network,
             &ua,
             test_signer(),
-            test_utils::UniversalAccountController::wasm_0_2_0().to_vec(),
+            templar_gateway_testing::wasm::UNIVERSAL_ACCOUNT_0_2_0.to_vec(),
             "new",
             serde_json::json!({ "key": sk.id() }),
         )
@@ -67,7 +67,7 @@ async fn setup(
             network,
             &ua,
             test_signer(),
-            test_utils::UniversalAccountController::wasm()
+            templar_gateway_testing::wasm::universal_account()
                 .await
                 .to_vec(),
         )
@@ -107,7 +107,7 @@ async fn setup(
             network,
             &ua,
             test_signer(),
-            test_utils::UniversalAccountController::wasm()
+            templar_gateway_testing::wasm::universal_account()
                 .await
                 .to_vec(),
             "new",

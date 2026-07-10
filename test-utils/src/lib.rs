@@ -3,33 +3,11 @@
     reason = "test harness helpers intentionally fail fast on setup and assertion errors"
 )]
 
-use std::{num::NonZero, path::Path, str::FromStr};
+use std::{num::NonZero, str::FromStr};
 
-use crate::controller::vault::{UnifiedVaultController, VaultController};
-pub use controller::{
-    ft::FtController,
-    governance_contract::GovernanceContractController,
-    market::{MarketController, UnifiedMarketController},
-    mock_oracle::MockOracleController,
-    proxy_oracle::{GovernanceController, ProxyOracleController},
-    pyth_lazer_adapter::PythLazerAdapterController,
-    receiver::ReceiverController,
-    redstone_adapter::{RedStoneAdapterController, RedStoneAdapterInterface},
-    ref_finance::RefFinanceController,
-    registry::RegistryController,
-    storage_management::StorageManagementController,
-    universal_account::UniversalAccountController,
-    ContractController,
-};
-use controller::{mt::MtController, token::TokenController};
 use near_sdk::{
     json_types::{I64, U64},
-    serde_json, AccountId, NearToken,
-};
-use near_workspaces::{
-    network::Sandbox,
-    result::{ExecutionSuccess, ValueOrReceiptId},
-    Account, DevNetwork, Worker,
+    AccountId,
 };
 use templar_common::{
     asset::FungibleAsset,
@@ -38,15 +16,12 @@ use templar_common::{
     interest_rate_strategy::InterestRateStrategy,
     market::{MarketConfiguration, PriceOracleConfiguration, YieldWeights},
     oracle::pyth::{self, PriceIdentifier, PythTimestamp},
-    registry::DeployMode,
     vault::{
         prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD},
         Fee as VaultFee, Fees as VaultFees, VaultConfiguration,
     },
     Decimal,
 };
-pub(crate) use templar_contract_artifacts::ArtifactId;
-use templar_contract_artifacts::{load_artifact_bytes, ArtifactMetadata};
 
 pub const DEFAULT_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cccccccc232290221461220bd4e2acd1dcdfbc89c84092c93c18bdc7756c1588"
@@ -55,21 +30,9 @@ pub const DEFAULT_BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier(hex_literal
     "bbbbbbbbf4f61076456d1a73b14c7edc1cf5cef4f4d6193a33424288f11bd0f4"
 ));
 
-pub mod controller;
 pub mod partial;
 pub mod pyth_price_id;
 pub mod test_signer;
-
-pub fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_WORKSPACE_DIR"))
-}
-
-#[rstest::fixture]
-pub async fn worker() -> Worker<Sandbox> {
-    near_workspaces::sandbox_with_version("2.10.7")
-        .await
-        .unwrap()
-}
 
 pub fn to_price(price: f64) -> pyth::Price {
     pyth::Price {
@@ -78,46 +41,6 @@ pub fn to_price(price: f64) -> pyth::Price {
         expo: -4,
         publish_time: PythTimestamp::from_secs(0),
     }
-}
-
-pub async fn create_prefixed_account(
-    prefix: &str,
-    worker: &Worker<impl DevNetwork + 'static>,
-) -> Account {
-    let (genid, sk) = worker.generate_dev_account_credentials();
-    let new_id: AccountId = format!("{prefix}{}", &genid.as_str()[prefix.len()..])
-        .parse()
-        .unwrap();
-    worker
-        .create_root_account_subaccount(new_id, sk)
-        .await
-        .unwrap()
-        .unwrap()
-}
-
-#[macro_export]
-macro_rules! accounts {
-    ($w: expr, $($n:ident),*) => {
-        $(let $n = $crate::create_prefixed_account(stringify!($n), &$w).await;)*
-    };
-}
-
-#[macro_export]
-macro_rules! setup_test {
-    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr) vconfig($v:expr)) => {
-        $crate::accounts!($w, $($n),*);
-        let s = $crate::setup_everything(&$w, $f, $v).await;
-        ::tokio::join!(
-            $(s.vault.init_account(&$n)),*
-        );
-        let $crate::SetupEverything { $($e,)* .. } = s;
-    };
-    ($w:ident extract($($e:ident),*) accounts($($n:ident),*) config($f:expr)) => {
-        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config($f) vconfig(|_| {}));
-    };
-    ($w:ident extract($($e:ident),*) accounts($($n:ident),*)) => {
-        $crate::setup_test!($w extract($($e),*) accounts($($n),*) config(|_| {}) vconfig(|_| {}));
-    };
 }
 
 pub fn market_configuration(
@@ -195,214 +118,5 @@ pub fn vault_configuration(
         refresh_cooldown_ns: None,
         idle_resync_cooldown_ns: None,
         withdrawal_cooldown_ns: Some(U64(0)),
-    }
-}
-
-async fn compile_contract(metadata: &ArtifactMetadata) -> Vec<u8> {
-    let path = workspace_root().join(metadata.source_path);
-    near_workspaces::compile_project(path.to_str().unwrap())
-        .await
-        .unwrap()
-}
-
-async fn read_contract(metadata: &ArtifactMetadata) -> Vec<u8> {
-    load_artifact_bytes(workspace_root(), metadata).unwrap()
-}
-
-async fn get_contract(artifact: ArtifactId) -> Vec<u8> {
-    let metadata = artifact.metadata();
-    if std::env::var("TEST_CONTRACTS_PREBUILT").is_ok() {
-        read_contract(metadata).await
-    } else {
-        compile_contract(metadata).await
-    }
-}
-
-pub struct SetupEverything {
-    pub c: UnifiedMarketController,
-    pub protocol_yield_user: Account,
-    pub insurance_yield_user: Account,
-    pub vault: UnifiedVaultController,
-    pub vault_owner: Account,
-    pub vault_curator: Account,
-    pub vault_guardian: Account,
-    pub vault_sentinel: Account,
-    pub skim_recipient: Account,
-    pub fee_recipient: Account,
-}
-
-pub async fn setup_everything(
-    worker: &Worker<Sandbox>,
-    customize_market_configuration: impl FnOnce(&mut MarketConfiguration),
-    customize_vault_configuration: impl FnOnce(&mut VaultConfiguration),
-) -> SetupEverything {
-    accounts!(
-        worker,
-        market,
-        protocol_yield_user,
-        insurance_yield_user,
-        collateral_asset,
-        borrow_asset,
-        price_oracle,
-        vault,
-        vault_owner,
-        vault_curator,
-        vault_guardian,
-        vault_sentinel,
-        skim_recipient,
-        fee_recipient
-    );
-    let mut config = market_configuration(
-        price_oracle.id().clone(),
-        borrow_asset.id().clone(),
-        collateral_asset.id().clone(),
-        protocol_yield_user.id().clone(),
-        YieldWeights::new_with_supply_weight(8)
-            .with_static(protocol_yield_user.id().clone(), 1)
-            .with_static(insurance_yield_user.id().clone(), 1),
-    );
-    customize_market_configuration(&mut config);
-
-    let mut vault_config = vault_configuration(
-        vault_owner.id().clone(),
-        vault_curator.id().clone(),
-        vault_guardian.id().clone(),
-        vault_sentinel.id().clone(),
-        borrow_asset.id().clone(),
-        skim_recipient.id().clone(),
-        fee_recipient.id().clone(),
-    );
-    customize_vault_configuration(&mut vault_config);
-
-    let (market, price_oracle, borrow_asset, collateral_asset, vault) = tokio::join!(
-        MarketController::deploy(market, &config),
-        MockOracleController::deploy(price_oracle),
-        async {
-            if config.borrow_asset.is_nep141(borrow_asset.id()) {
-                TokenController::Ft {
-                    controller: FtController::deploy(borrow_asset, "Borrow Asset", "BORROW").await,
-                }
-            } else {
-                TokenController::Mt {
-                    controller: MtController::deploy(borrow_asset).await,
-                    token_id: "mt_borrow".into(),
-                }
-            }
-        },
-        async {
-            if config.collateral_asset.is_nep141(collateral_asset.id()) {
-                TokenController::Ft {
-                    controller: FtController::deploy(
-                        collateral_asset,
-                        "Collateral Asset",
-                        "COLLATERAL",
-                    )
-                    .await,
-                }
-            } else {
-                TokenController::Mt {
-                    controller: MtController::deploy(collateral_asset).await,
-                    token_id: "mt_collateral".into(),
-                }
-            }
-        },
-        VaultController::deploy(vault, &vault_config)
-    );
-
-    let c =
-        UnifiedMarketController::new(market, config, price_oracle, borrow_asset, collateral_asset);
-
-    c.set_borrow_asset_price(1.0).await;
-    c.set_collateral_asset_price(1.0).await;
-
-    let v = UnifiedVaultController::new(vault, vault_config, c.clone());
-
-    let mkt = c.market.contract().as_account();
-    // Asset opt-ins.
-    tokio::join!(
-        c.storage_deposits(mkt),
-        c.init_account(&protocol_yield_user),
-        c.init_account(&insurance_yield_user),
-        v.storage_deposits(v.vault.contract().as_account()),
-        v.storage_deposits(&skim_recipient),
-        v.storage_deposits(&fee_recipient),
-    );
-
-    v.setup_caps(&vault_owner, &[mkt.id().clone()], u128::MAX)
-        .await;
-
-    SetupEverything {
-        c,
-        protocol_yield_user,
-        insurance_yield_user,
-        vault: v,
-        vault_owner,
-        vault_curator,
-        vault_guardian,
-        vault_sentinel,
-        skim_recipient,
-        fee_recipient,
-    }
-}
-
-pub async fn setup_registry(worker: &Worker<Sandbox>) -> RegistryController {
-    accounts!(worker, registry);
-
-    let r = RegistryController::new(registry).await;
-
-    let wasm = controller::market::MarketController::wasm().await;
-
-    let cost_per_byte = NearToken::from_near(1).saturating_div(10 * 1_000);
-    let deployment_cost = cost_per_byte.saturating_mul(wasm.len() as u128);
-
-    r.add_version(
-        r.contract.as_account(),
-        deployment_cost,
-        "market@0.0.0",
-        DeployMode::GlobalHash,
-        wasm,
-    )
-    .await;
-
-    r
-}
-
-pub fn print_execution(e: &ExecutionSuccess) {
-    eprintln!("Execution:");
-    eprintln!("Total gas burnt: {}", e.total_gas_burnt);
-    eprintln!("Executor: {}", e.outcome().executor_id);
-    eprintln!("Receipts:");
-    for (i, receipt) in e.receipt_outcomes().iter().enumerate() {
-        eprintln!("\tReceipt #{i}:");
-        eprintln!("\tExecutor: {}", receipt.executor_id);
-        eprintln!("\tGas burnt: {}", receipt.gas_burnt);
-        if !receipt.logs.is_empty() {
-            eprintln!("\tLogs:");
-            for log in &receipt.logs {
-                eprintln!("\t\t{log}");
-            }
-        }
-        match receipt.clone().into_result() {
-            Ok(ValueOrReceiptId::Value(value)) => {
-                if let Some(s) = value
-                    .json::<serde_json::Value>()
-                    .ok()
-                    .and_then(|v| serde_json::to_string(&v).ok())
-                {
-                    eprintln!("\tReturn value: {s}");
-                }
-            }
-            Err(e) => {
-                eprintln!("\tError: {e:?}");
-            }
-            _ => {}
-        }
-        eprintln!();
-    }
-}
-
-pub fn assert_all_outcomes_success(result: &ExecutionSuccess) {
-    for outcome in result.outcomes() {
-        outcome.clone().into_result().unwrap();
     }
 }

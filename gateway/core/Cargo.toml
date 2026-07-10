@@ -42,5 +42,5 @@ templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true
 near-sandbox.workspace = true
 near-token.workspace = true
-test-utils.workspace = true
+templar-gateway-testing.workspace = true
 tokio.workspace = true

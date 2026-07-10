@@ -132,8 +132,6 @@ mod tests {
         common::{ContractArgs, WriteRequest},
         ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken, OperationStatus,
     };
-    use test_utils::FtController;
-
     struct TestHarness {
         _sandbox: Sandbox,
         gateway_signer_account_id: ManagedAccountId,
@@ -169,7 +167,7 @@ mod tests {
             &network,
             ft_contract_id.clone(),
             ft_signer,
-            FtController::wasm().await.to_vec(),
+            templar_gateway_testing::wasm::ft().await.to_vec(),
             "new",
             serde_json::json!({
                 "name": "Mock FT",

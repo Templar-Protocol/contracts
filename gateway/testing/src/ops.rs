@@ -321,7 +321,7 @@ impl SandboxHarness {
             &self.network,
             vault_id.clone(),
             signer,
-            test_utils::controller::vault::load_wasm().await.to_vec(),
+            crate::wasm::vault().await.to_vec(),
             "new",
             serde_json::json!({ "configuration": configuration.clone() }),
         )

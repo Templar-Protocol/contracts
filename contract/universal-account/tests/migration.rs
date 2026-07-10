@@ -19,6 +19,7 @@ use near_sdk::{
 };
 use near_token::NearToken;
 use rstest::rstest;
+use templar_gateway_testing::wasm::{UNIVERSAL_ACCOUNT_0_2_0, UNIVERSAL_ACCOUNT_0_4_0};
 use templar_gateway_testing::SandboxHarness;
 use templar_universal_account::{
     authentication::{with_raw_string::WithRawString, Payload},
@@ -26,7 +27,7 @@ use templar_universal_account::{
     transaction::Transaction,
     InitArgs, KeyId, NEAR_TESTNET_CHAIN_ID,
 };
-use test_utils::{test_signer::TestSigner, UniversalAccountController};
+use test_utils::test_signer::TestSigner;
 
 static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_patch.borsh");
 static WASM_0_4_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_4_0_state_patch.borsh");
@@ -97,7 +98,9 @@ async fn deploy_patched_with_version(
         network,
         &ua,
         test_signer(),
-        UniversalAccountController::wasm().await.to_vec(),
+        templar_gateway_testing::wasm::universal_account()
+            .await
+            .to_vec(),
     )
     .await?;
 
@@ -110,7 +113,9 @@ async fn deploy_current(harness: &SandboxHarness, key: KeyId) -> Result<AccountI
         &harness.network,
         &ua,
         test_signer(),
-        UniversalAccountController::wasm().await.to_vec(),
+        templar_gateway_testing::wasm::universal_account()
+            .await
+            .to_vec(),
         "new",
         InitArgs {
             key,
@@ -131,20 +136,10 @@ async fn deploy_for_sequence(
             deploy_current(harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await
         }
         MigrationSequenceStart::From0_2_0 => {
-            deploy_patched(
-                harness,
-                UniversalAccountController::wasm_0_2_0(),
-                WASM_0_2_0_STATE_PATCH,
-            )
-            .await
+            deploy_patched(harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await
         }
         MigrationSequenceStart::From0_4_0 => {
-            deploy_patched(
-                harness,
-                UniversalAccountController::wasm_0_4_0(),
-                WASM_0_4_0_STATE_PATCH,
-            )
-            .await
+            deploy_patched(harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await
         }
     }
 }
@@ -260,12 +255,7 @@ async fn migrate_can_only_be_called_reflexively(
 async fn migrate_accepts_legacy_direct_payload(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_2_0(),
-        WASM_0_2_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
     let network = &harness.network;
 
     migrate(
@@ -288,12 +278,7 @@ async fn migrate_accepts_legacy_direct_payload(
 #[ignore = "requires NEAR sandbox"]
 async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let passkey = patch_keys().passkey;
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_2_0(),
-        WASM_0_2_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
     let network = &harness.network;
 
     assert_eq!(stored_state_version(network, &ua).await?, 0);
@@ -336,12 +321,7 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 #[tokio::test]
 #[ignore = "requires NEAR sandbox"]
 async fn from_0_2_0_fail_migrate_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_2_0(),
-        WASM_0_2_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
 
     run_migration_step(&harness, &ua, MigrationStep::V0)
         .await?
@@ -375,12 +355,7 @@ async fn current_state_fail_reinitialize_version(
 #[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let expected_keys = patch_keys();
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_4_0(),
-        WASM_0_4_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
     let network = &harness.network;
     let ft = common::ft_id(&harness);
 
@@ -446,7 +421,7 @@ async fn from_0_4_0_with_stored_v1_migrates_via_v1(
 ) -> Result<()> {
     let ua = deploy_patched_with_version(
         &harness,
-        UniversalAccountController::wasm_0_4_0(),
+        UNIVERSAL_ACCOUNT_0_4_0,
         WASM_0_4_0_STATE_PATCH,
         Some(1),
     )
@@ -471,12 +446,7 @@ async fn from_0_4_0_with_stored_v1_migrates_via_v1(
 #[tokio::test]
 #[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_4_0(),
-        WASM_0_4_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
 
     run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
         .await?
@@ -495,12 +465,7 @@ async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness
 async fn from_0_4_0_fail_v1_migration_without_unbrick(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
-    let ua = deploy_patched(
-        &harness,
-        UniversalAccountController::wasm_0_4_0(),
-        WASM_0_4_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
 
     run_migration_step(&harness, &ua, MigrationStep::V1)
         .await?

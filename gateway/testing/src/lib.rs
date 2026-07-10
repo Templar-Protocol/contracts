@@ -3,6 +3,7 @@
 pub mod controller;
 pub mod ops;
 pub mod sandbox;
+pub mod wasm;
 
 pub use controller::TestController;
 pub use ops::{DeployedMarket, DeployedVault};
