@@ -63,6 +63,7 @@ pub struct LazerSourceConfig {
     api_token: RedactedString,
     channel: Channel,
     max_payload_age: Duration,
+    idle_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +94,7 @@ impl LazerSourceConfig {
             api_token,
             channel,
             max_payload_age,
+            idle_timeout: STREAM_IDLE_TIMEOUT,
         })
     }
 
@@ -109,7 +111,16 @@ impl LazerSourceConfig {
             api_token: RedactedString::from("test-token"),
             channel: parse_channel("fixed_rate@200ms".to_owned()).expect("valid channel"),
             max_payload_age,
+            idle_timeout: STREAM_IDLE_TIMEOUT,
         }
+    }
+
+    /// Test-only: shorten the idle timeout so a silent-stream test needn't wait
+    /// [`STREAM_IDLE_TIMEOUT`].
+    #[cfg(test)]
+    pub(crate) fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
     }
 }
 
@@ -376,6 +387,13 @@ impl StreamTask {
         let mut stream = self.connect().await?;
         self.replay_subscriptions(&mut stream).await?;
 
+        // One deadline for the whole connection, reset only by traffic from the server.
+        // Rebuilding a `timeout(..., stream.next())` each iteration would restart the
+        // idle timer every time the request branch won, so a steady trickle of fetches
+        // would hide a silent, dead socket indefinitely.
+        let idle = tokio::time::sleep(self.config.idle_timeout);
+        tokio::pin!(idle);
+
         loop {
             // Every subscription was rejected: drop the connection instead of letting
             // it idle. A connection exists exactly while a subscription does.
@@ -384,9 +402,11 @@ impl StreamTask {
             }
 
             tokio::select! {
-                message = timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
-                    let message = message
-                        .map_err(|_| LazerClientError::Request("websocket idle timeout".to_owned()))?;
+                () = &mut idle => {
+                    return Err(LazerClientError::Request("websocket idle timeout".to_owned()));
+                }
+                message = stream.next() => {
+                    idle.as_mut().reset(Instant::now() + self.config.idle_timeout);
                     let Some(message) = message else {
                         return Err(LazerClientError::Request("websocket closed".to_owned()));
                     };
@@ -472,6 +492,11 @@ impl StreamTask {
 
     /// Hand the caller the slot of a subscription covering `feed_ids`, creating one if
     /// no live subscription already does.
+    ///
+    /// A requester that timed out or was cancelled has dropped its receiver. Hand the
+    /// slot over *before* touching any state, so an abandoned request cannot evict a
+    /// live subscription or strand one that nothing is waiting on — which would also
+    /// hold the connection open forever.
     fn register(&mut self, request: SubscribeRequest) -> Registration {
         let SubscribeRequest { feed_ids, slot_tx } = request;
 
@@ -484,11 +509,14 @@ impl StreamTask {
             return Registration::default();
         }
 
+        let (slot, slot_rx) = watch::channel(Slot::Waiting);
+        if slot_tx.send(slot_rx).is_err() {
+            return Registration::default();
+        }
+
         let evicted = self.evict_to_fit();
         let id = SubscriptionId(self.next_id);
         self.next_id += 1;
-        let (slot, slot_rx) = watch::channel(Slot::Waiting);
-        let _ = slot_tx.send(slot_rx);
         self.subscriptions
             .insert(id, Subscription { feed_ids, slot });
 
