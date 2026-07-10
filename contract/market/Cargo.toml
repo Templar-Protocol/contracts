@@ -40,7 +40,6 @@ anyhow.workspace = true
 itertools.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-token.workspace = true
-near-workspaces.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
 test-utils.workspace = true
@@ -55,7 +54,4 @@ templar-relayer = { path = "../../service/relayer" }
 workspace = true
 
 [[example]]
-name = "gas_report"
-
-[[example]]
-name = "receipt_gas"
+name = "market_gas_report"
