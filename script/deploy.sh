@@ -5,8 +5,8 @@
 # governance contract is a distinct account that administers the oracle by
 # executing proposals that call into those mutators. So governance must be the
 # oracle's owner before it can configure any price feeds. Both account ids are
-# derived below, so the oracle is initialized with governance as its owner
-# directly and no ownership handoff is needed.
+# derived below, so governance is deployed first and the oracle is then
+# initialized with it as owner directly — no ownership handoff is needed.
 #
 # Usage: SECRET_KEY=... ./deploy.sh ./<market>/env.sh
 
@@ -121,19 +121,23 @@ operator() {
         tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
 }
 
-# The oracle names governance as its owner before that account exists. This is
-# safe: `registry deploy` is one atomic promise batch that drops its reservation
-# on failure, and GOVERNANCE_ID is derived, so a failed governance step is fixed
-# by re-running it at the same id. Only the oracle step is not re-runnable — a
-# second attempt collides on the market id.
-echo "Deploying proxy oracle ($PROXY_ORACLE_ID), owned by $GOVERNANCE_ID..."
-operator registry deploy \
-    --registry-id "$REGISTRY_ID" \
-    --name "$PROXY_ORACLE_NAME" \
-    --version-key "$PROXY_ORACLE_VERSION_KEY" \
-    --init-args "$(printf '{"owner_id":"%s"}' "$GOVERNANCE_ID")" \
-    --deposit "5 NEAR"
-
+# Governance is deployed first so that the oracle can name it as owner at init
+# and skip the old two-step handoff. Governance's `new` only records the oracle's
+# account id, so it does not need the oracle to exist yet.
+#
+# Ordering is what makes naming an owner up front safe. `registry deploy` is one
+# atomic promise batch — create_account, deploy, `new` — and the registry tails
+# it with a callback that re-panics when the batch fails, so the failure lands on
+# the transaction's final receipt and this step aborts the script. An id that
+# already exists therefore cannot silently become the oracle's owner: it fails
+# `create_account` if the registry never recorded it, or the registry's own
+# "Market ID collision" check if it did. Either way the oracle below is never
+# reached, and governance owns the oracle only if it was created fresh here with
+# the expected code and admin.
+#
+# The script is not re-runnable end to end. If the oracle step fails, governance
+# survives and only the oracle and the steps after it need re-running by hand —
+# a second full run collides on the governance id.
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle-governance create \
     --registry-id "$REGISTRY_ID" \
@@ -143,6 +147,14 @@ operator proxy-oracle-governance create \
     --admin-id "$SIGNER_ID" \
     --ttl-default 0s \
     --deposit "3.5 NEAR"
+
+echo "Deploying proxy oracle ($PROXY_ORACLE_ID), owned by $GOVERNANCE_ID..."
+operator registry deploy \
+    --registry-id "$REGISTRY_ID" \
+    --name "$PROXY_ORACLE_NAME" \
+    --version-key "$PROXY_ORACLE_VERSION_KEY" \
+    --init-args "$(printf '{"owner_id":"%s"}' "$GOVERNANCE_ID")" \
+    --deposit "5 NEAR"
 
 # --ttl-default 0s (above) makes every proposal executable immediately, so
 # --execute-when-ready creates and executes each in a single call.
