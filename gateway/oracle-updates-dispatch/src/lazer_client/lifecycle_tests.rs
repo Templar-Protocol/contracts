@@ -306,3 +306,77 @@ fn an_abandoned_request_registers_nothing() {
         "an abandoned request must not leave a subscription behind"
     );
 }
+
+/// An abandoned request registers nothing, so the task must keep waiting for demand
+/// rather than connect. A websocket with no subscription on it is the very thing
+/// connect-on-demand exists to prevent, and the connect would stall a real fetch.
+#[tokio::test]
+async fn an_abandoned_first_request_does_not_connect() {
+    let mut server = MockLazer::start().await;
+    let (requests_tx, requests_rx) = mpsc::channel(4);
+    let task = tokio::spawn(
+        StreamTask::new(LazerSourceConfig::for_mock_server(
+            server.url(),
+            Duration::from_secs(5),
+        ))
+        .run(requests_rx),
+    );
+
+    let (slot_tx, slot_rx) = oneshot::channel();
+    drop(slot_rx);
+    requests_tx
+        .send(SubscribeRequest {
+            feed_ids: [FIXTURE_FEED].into_iter().collect(),
+            slot_tx,
+        })
+        .await
+        .expect("stream task should accept the request");
+
+    let connection = server.accept_within(Duration::from_millis(500)).await;
+    task.abort();
+
+    assert!(
+        connection.is_none(),
+        "an abandoned request must not open a subscription-less websocket"
+    );
+}
+
+/// A subscribed socket that goes silent without closing must be detected, reconnected,
+/// and replayed inside a single fetch's deadline — otherwise `FETCH_TIMEOUT` expires
+/// first and the fetch fails spuriously. Guarded for production values by the
+/// `STREAM_IDLE_TIMEOUT + INITIAL_RECONNECT_BACKOFF < FETCH_TIMEOUT` assertion.
+#[tokio::test]
+async fn a_fetch_survives_a_silent_socket() {
+    let mut server = MockLazer::start().await;
+    let source = source_with_idle_timeout(
+        &server,
+        Duration::from_millis(100),
+        Duration::from_millis(300),
+    );
+
+    let probe = source.clone();
+    let fetch = tokio::spawn(async move { probe.fetch_payload(&[FIXTURE_FEED]).await });
+    let _silent = accept_and_serve(&mut server).await;
+    timeout(Duration::from_secs(5), fetch)
+        .await
+        .expect("first fetch should not time out")
+        .expect("fetch task should not panic")
+        .expect("first fetch should return the payload");
+
+    // Let the cached payload go stale while the socket stays open and silent.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let probe = source.clone();
+    let fetch = tokio::spawn(async move { probe.fetch_payload(&[FIXTURE_FEED]).await });
+
+    // The idle timer fires, the task reconnects and replays; serve the fetch there.
+    let _reconnected = accept_and_serve(&mut server).await;
+
+    let payload = timeout(Duration::from_secs(5), fetch)
+        .await
+        .expect("fetch should not time out")
+        .expect("fetch task should not panic")
+        .expect("a fetch must survive a silent socket, not expire waiting on it");
+
+    assert_eq!(payload, fixture_bytes());
+}

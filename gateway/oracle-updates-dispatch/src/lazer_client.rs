@@ -35,14 +35,24 @@ use crate::lazer_wire::{
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
-/// A subscribed stream delivers at least once per channel interval, so prolonged
-/// silence means the connection is dead. Stays well under the 60s after which the
-/// server closes a connection, so our own timeout can't race theirs.
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// A subscribed stream delivers at least once per channel interval — once a second even
+/// on the slowest (`fixed_rate@1000ms`) — so this much silence means the socket is dead.
+/// A socket can go silent while staying open, and nothing else detects that.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long [`LazerPayloadSource::fetch_payload`] waits for a payload covering its
-/// feeds — long enough to absorb a reconnect. Distinct from `max_payload_age`, which
-/// bounds how old an already-cached payload may be when it is served.
+/// feeds. Distinct from `max_payload_age`, which bounds how old an already-cached
+/// payload may be when it is served.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A fetch must outlive one silent-socket recovery, or it expires before the stream task
+/// notices the socket is dead: detect (`STREAM_IDLE_TIMEOUT`) + backoff (reset to
+/// `INITIAL_RECONNECT_BACKOFF` by the last payload) + reconnect, replay, and first
+/// payload. Roughly 5s + 1s + <1s against a 10s deadline.
+const _: () = assert!(
+    STREAM_IDLE_TIMEOUT.as_millis() + INITIAL_RECONNECT_BACKOFF.as_millis()
+        < FETCH_TIMEOUT.as_millis(),
+    "FETCH_TIMEOUT must leave room to detect a silent socket and reconnect",
+);
 
 #[cfg(test)]
 mod config_tests;
@@ -335,7 +345,11 @@ impl StreamTask {
             // With no subscription there is nothing to stream, and the server closes a
             // subscription-less connection after 60s — an idle connection is just a
             // reconnect loop. Hold none, and wait for demand instead.
-            if self.subscriptions.is_empty() {
+            //
+            // Keep waiting rather than connecting once: an abandoned request registers
+            // nothing, and connecting for it would open a websocket with no subscription
+            // on it — and stall a real fetch behind that connect.
+            while self.subscriptions.is_empty() {
                 let Some(request) = requests.recv().await else {
                     return;
                 };
