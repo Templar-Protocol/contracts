@@ -282,8 +282,8 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
     "templar-proxy-oracle-near-contract",
     "templar_proxy_oracle_near_contract",
     "contract/proxy-oracle/near/contract",
-    "0.2.0",
-    "d2943deefdb0fe6b25f2e182974250e94c040d24afa227c269f7b85ff7cd4cf0"
+    "0.3.0",
+    "8f4da3363885b842e655c993a4247fe4fb08d6f4eb88db20846c4a0d0156ee0b"
 );
 static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     ProxyGovernance,
