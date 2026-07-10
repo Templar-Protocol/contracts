@@ -162,30 +162,20 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     }
 }
 
+/// `owner_id` seats that account; omitting it falls back to the predecessor.
 #[allow(clippy::unwrap_used)]
-#[test]
-pub fn new_without_owner_id_seats_the_predecessor() {
+#[rstest::rstest]
+#[case::explicit_owner(Some("governance.near"), "governance.near")]
+#[case::predecessor_fallback(None, "registry.near")]
+pub fn new_seats_the_owner(#[case] owner_id: Option<&str>, #[case] expected_owner: &str) {
     testing_env!(VMContextBuilder::new()
         .current_account_id("proxy.near".parse().unwrap())
         .predecessor_account_id("registry.near".parse().unwrap())
         .build());
 
-    let c = Contract::new(None);
+    let c = Contract::new(owner_id.map(|id| id.parse().unwrap()));
 
-    assert_eq!(c.own_get_owner(), Some("registry.near".parse().unwrap()));
-}
-
-#[allow(clippy::unwrap_used)]
-#[test]
-pub fn new_with_owner_id_seats_that_owner_over_the_predecessor() {
-    testing_env!(VMContextBuilder::new()
-        .current_account_id("proxy.near".parse().unwrap())
-        .predecessor_account_id("registry.near".parse().unwrap())
-        .build());
-
-    let c = Contract::new(Some("governance.near".parse().unwrap()));
-
-    assert_eq!(c.own_get_owner(), Some("governance.near".parse().unwrap()));
+    assert_eq!(c.own_get_owner(), Some(expected_owner.parse().unwrap()));
 }
 
 /// The deploy flow's whole point: a deployer that names another owner must not
@@ -681,18 +671,11 @@ pub async fn init_args_seat_the_owner_over_the_wire(#[future(awt)] worker: Worke
     let default = ProxyOracleController::deploy(default_owner_oracle);
     let (explicit, default) = tokio::join!(explicit, default);
 
-    assert_eq!(
-        explicit
-            .view::<Option<near_sdk::AccountId>>("own_get_owner", ())
-            .await,
-        Some(governance.id().clone()),
-    );
-    assert_eq!(
-        default
-            .view::<Option<near_sdk::AccountId>>("own_get_owner", ())
-            .await,
-        Some(default.id().clone()),
-    );
+    let (explicit_owner, default_owner) =
+        tokio::join!(explicit.own_get_owner(), default.own_get_owner());
+
+    assert_eq!(explicit_owner, Some(governance.id().clone()));
+    assert_eq!(default_owner, Some(default.id().clone()));
 }
 
 /// A Lazer-backed proxy source must resolve on-chain: `update_prices` dispatches the adapter's

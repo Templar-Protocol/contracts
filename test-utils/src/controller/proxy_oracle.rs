@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use near_sdk::{
     json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
-    serde_json::{self, json},
+    serde_json::json,
 };
 use near_workspaces::{Account, Contract};
 use templar_common::{
@@ -62,7 +62,7 @@ impl ProxyOracleController {
         Self::deploy_with_init_args(account, json!({ "owner_id": owner_id })).await
     }
 
-    async fn deploy_with_init_args(account: Account, init_args: serde_json::Value) -> Self {
+    async fn deploy_with_init_args(account: Account, init_args: impl Serialize) -> Self {
         let contract = account
             .deploy(Self::wasm().await)
             .await
@@ -162,6 +162,7 @@ impl ProxyOracleController {
     }
 
     define! {
+        #[view] pub fn own_get_owner() -> Option<near_sdk::AccountId>;
         #[view] pub fn list_proxies(offset: Option<u32>, count: Option<u32>) -> Vec<PriceIdentifier>;
         #[view] pub fn get_proxy(id: PriceIdentifier) -> Option<Proxy<Source>>;
         #[view] pub fn get_proxy_circuit_breaker_set(id: PriceIdentifier) -> Option<CircuitBreakerSet>;
