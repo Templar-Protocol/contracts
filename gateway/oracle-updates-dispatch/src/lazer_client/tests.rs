@@ -8,6 +8,7 @@ use pyth_lazer_protocol::api::{
 };
 use pyth_lazer_protocol::message::SolanaMessage;
 use pyth_lazer_protocol::PriceFeedId;
+use rstest::rstest;
 use templar_gateway_core::OraclePayloadSource;
 use templar_pyth_lazer_verifier::{verify_solana_update, Crypto, TrustedSigner, VerifyParams};
 use tokio::time::Instant;
@@ -184,51 +185,38 @@ fn decoded_fixture_is_accepted_by_pyth_lazer_verifier() {
     );
 }
 
-#[test]
-fn decodes_subscription_events_with_ids() {
-    let cases = [
-        (
-            WsResponse::Subscribed(SubscribedResponse {
-                subscription_id: SubscriptionId(3),
-            }),
-            LazerStreamEvent::Subscribed {
-                subscription_id: SubscriptionId(3),
-            },
-        ),
-        (
-            WsResponse::Unsubscribed(UnsubscribedResponse {
-                subscription_id: SubscriptionId(4),
-            }),
-            LazerStreamEvent::Unsubscribed {
-                subscription_id: SubscriptionId(4),
-            },
-        ),
-        (
-            WsResponse::SubscriptionError(SubscriptionErrorResponse {
-                subscription_id: SubscriptionId(5),
-                error: "denied".to_owned(),
-            }),
-            LazerStreamEvent::SubscriptionError {
-                subscription_id: SubscriptionId(5),
-                error: "denied".to_owned(),
-            },
-        ),
-        (
-            WsResponse::Error(ErrorResponse {
-                error: "bad request".to_owned(),
-            }),
-            LazerStreamEvent::Error {
-                error: "bad request".to_owned(),
-            },
-        ),
-    ];
+#[rstest]
+#[case::subscribed(
+    WsResponse::Subscribed(SubscribedResponse { subscription_id: SubscriptionId(3) }),
+    LazerStreamEvent::Subscribed { subscription_id: SubscriptionId(3) },
+)]
+#[case::unsubscribed(
+    WsResponse::Unsubscribed(UnsubscribedResponse { subscription_id: SubscriptionId(4) }),
+    LazerStreamEvent::Unsubscribed { subscription_id: SubscriptionId(4) },
+)]
+#[case::subscription_error(
+    WsResponse::SubscriptionError(SubscriptionErrorResponse {
+        subscription_id: SubscriptionId(5),
+        error: "denied".to_owned(),
+    }),
+    LazerStreamEvent::SubscriptionError {
+        subscription_id: SubscriptionId(5),
+        error: "denied".to_owned(),
+    },
+)]
+#[case::stream_error(
+    WsResponse::Error(ErrorResponse { error: "bad request".to_owned() }),
+    LazerStreamEvent::Error { error: "bad request".to_owned() },
+)]
+fn decodes_subscription_events_with_ids(
+    #[case] response: WsResponse,
+    #[case] expected: LazerStreamEvent,
+) {
+    let message = serde_json::to_string(&response).expect("protocol response serializes");
 
-    for (response, expected) in cases {
-        let message = serde_json::to_string(&response).expect("protocol response serializes");
-        let event = decode_stream_message(&message).expect("event should decode");
+    let event = decode_stream_message(&message).expect("event should decode");
 
-        assert_eq!(event, expected);
-    }
+    assert_eq!(event, expected);
 }
 
 #[test]

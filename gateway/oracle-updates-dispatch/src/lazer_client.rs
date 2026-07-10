@@ -79,7 +79,6 @@ pub struct LazerSourceConfig {
     api_token: RedactedString,
     channel: Channel,
     max_payload_age: Duration,
-    idle_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +109,6 @@ impl LazerSourceConfig {
             api_token,
             channel,
             max_payload_age,
-            idle_timeout: STREAM_IDLE_TIMEOUT,
         })
     }
 
@@ -127,16 +125,7 @@ impl LazerSourceConfig {
             api_token: RedactedString::from("test-token"),
             channel: parse_channel("fixed_rate@200ms".to_owned()).expect("valid channel"),
             max_payload_age,
-            idle_timeout: STREAM_IDLE_TIMEOUT,
         }
-    }
-
-    /// Test-only: shorten the idle timeout so a silent-stream test needn't wait
-    /// [`STREAM_IDLE_TIMEOUT`].
-    #[cfg(test)]
-    pub(crate) fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
-        self.idle_timeout = idle_timeout;
-        self
     }
 }
 
@@ -219,9 +208,24 @@ impl Drop for TaskGuard {
 
 impl LazerPayloadSource {
     pub fn spawn(config: LazerSourceConfig) -> Self {
+        Self::spawn_with(config, STREAM_IDLE_TIMEOUT)
+    }
+
+    /// Test-only: shorten silence detection so a silent-stream test needn't wait
+    /// [`STREAM_IDLE_TIMEOUT`]. Kept off [`LazerSourceConfig`], which carries only what
+    /// production configures.
+    #[cfg(test)]
+    pub(crate) fn spawn_with_idle_timeout(
+        config: LazerSourceConfig,
+        idle_timeout: Duration,
+    ) -> Self {
+        Self::spawn_with(config, idle_timeout)
+    }
+
+    fn spawn_with(config: LazerSourceConfig, idle_timeout: Duration) -> Self {
         let max_payload_age = config.max_payload_age;
         let (subscribe_tx, subscribe_rx) = mpsc::channel(32);
-        let task = tokio::spawn(StreamTask::new(config).run(subscribe_rx));
+        let task = tokio::spawn(StreamTask::new(config, idle_timeout).run(subscribe_rx));
         Self {
             max_payload_age,
             subscribe_tx,
@@ -312,6 +316,7 @@ struct StreamTask {
     subscriptions: BTreeMap<SubscriptionId, Subscription>,
     next_id: u64,
     backoff: Duration,
+    idle_timeout: Duration,
 }
 
 struct Subscription {
@@ -337,12 +342,13 @@ enum StreamEnd {
 }
 
 impl StreamTask {
-    fn new(config: LazerSourceConfig) -> Self {
+    fn new(config: LazerSourceConfig, idle_timeout: Duration) -> Self {
         Self {
             config,
             subscriptions: BTreeMap::new(),
             next_id: 1,
             backoff: INITIAL_RECONNECT_BACKOFF,
+            idle_timeout,
         }
     }
 
@@ -411,7 +417,7 @@ impl StreamTask {
         // Rebuilding a `timeout(..., stream.next())` each iteration would restart the
         // idle timer every time the request branch won, so a steady trickle of fetches
         // would hide a silent, dead socket indefinitely.
-        let idle = tokio::time::sleep(self.config.idle_timeout);
+        let idle = tokio::time::sleep(self.idle_timeout);
         tokio::pin!(idle);
 
         loop {
@@ -426,7 +432,7 @@ impl StreamTask {
                     return Err(LazerClientError::Request("websocket idle timeout".to_owned()));
                 }
                 message = stream.next() => {
-                    idle.as_mut().reset(Instant::now() + self.config.idle_timeout);
+                    idle.as_mut().reset(Instant::now() + self.idle_timeout);
                     let Some(message) = message else {
                         return Err(LazerClientError::Request("websocket closed".to_owned()));
                     };
