@@ -34,12 +34,14 @@ fn signer() -> ManagedAccountId {
     ManagedAccountId::from("signer.testnet".parse::<AccountId>().unwrap())
 }
 
-async fn plan<S>(body: S) -> OperationPlan
+/// Plan `body` through dispatcher `D` against a source-free [`GatewayContext`].
+async fn plan_via<D, S>(body: S) -> OperationPlan
 where
     S: MethodSpec<Output = WriteOperationResult>,
-    Dispatch: PlanWrite<S, GatewayContext>,
+    D: PlanWrite<S, GatewayContext>,
 {
     offline_client()
+        .via::<D>()
         .plan_request(WriteRequest {
             signer_account_id: signer(),
             idempotency_key: None,
@@ -49,23 +51,22 @@ where
         .expect("offline plan")
 }
 
-/// Plan an `oracle.*` update against a source-free [`GatewayContext`]. Only
-/// `oracle.updatePyth` can be planned this way: the other three fetch a payload from
-/// an in-process source before they build any step, so their plans are not offline.
+async fn plan<S>(body: S) -> OperationPlan
+where
+    S: MethodSpec<Output = WriteOperationResult>,
+    Dispatch: PlanWrite<S, GatewayContext>,
+{
+    plan_via::<Dispatch, S>(body).await
+}
+
+/// Only `oracle.updatePyth` can be planned offline: the other three fetch a payload
+/// from an in-process source before they build any step.
 async fn oracle_plan<S>(body: S) -> OperationPlan
 where
     S: MethodSpec<Output = WriteOperationResult>,
     OracleUpdatesDispatch: PlanWrite<S, GatewayContext>,
 {
-    offline_client()
-        .via::<OracleUpdatesDispatch>()
-        .plan_request(WriteRequest {
-            signer_account_id: signer(),
-            idempotency_key: None,
-            body,
-        })
-        .await
-        .expect("offline plan")
+    plan_via::<OracleUpdatesDispatch, S>(body).await
 }
 
 struct Call {
