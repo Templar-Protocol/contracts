@@ -15,6 +15,21 @@ use near_sdk::Gas;
 use near_token::NearToken;
 use serde_json::json;
 use templar_gateway_testing::SandboxHarness;
+use tokio::sync::OnceCell;
+
+/// A process-wide reqwest client, built once so tx-status checks reuse one
+/// connection pool instead of standing up a fresh client per call.
+async fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceCell<reqwest::Client> = OnceCell::const_new();
+    CLIENT
+        .get_or_init(|| async {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .expect("failed to build reqwest client")
+        })
+        .await
+}
 
 /// The fixed sandbox key shared by every account the harness provisions.
 pub const TEST_SECRET_KEY: &str =
@@ -129,10 +144,8 @@ pub async fn assert_tx_succeeded(
     sender_id: &near_api::types::AccountId,
 ) -> Result<()> {
     let url = network.rpc_endpoints[0].url.clone();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()?;
-    let response: serde_json::Value = client
+    let response: serde_json::Value = http_client()
+        .await
         .post(url)
         .json(&json!({
             "jsonrpc": "2.0",

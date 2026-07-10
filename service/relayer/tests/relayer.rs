@@ -128,55 +128,43 @@ struct InitTest {
 }
 
 impl InitTest {
-    /// Deploy a market (through the monitored registry) backed by a fresh mock
-    /// Pyth oracle, then refresh the relayer's market view.
-    async fn market_with_pyth_oracle(&mut self) -> (AccountId, AccountId) {
+    /// Deploy a market named `name` (through the monitored registry) backed by
+    /// `oracle`, then refresh the relayer's market view.
+    async fn deploy_market_backed_by(&mut self, name: &str, oracle: &AccountId) -> AccountId {
         let protocol_yield_user = common::create_account(&self.harness, "protocol-yield")
             .await
             .unwrap();
+        let config = market_configuration(
+            oracle.clone(),
+            self.borrow_asset.clone(),
+            self.collateral_asset.clone(),
+            protocol_yield_user,
+            YieldWeights::new_with_supply_weight(8),
+        );
+        let market = self.deploy_market_via_registry(name, &config).await;
+        self.app.load_markets().await;
+        market
+    }
+
+    /// Deploy a market backed by a fresh mock Pyth oracle.
+    async fn market_with_pyth_oracle(&mut self) -> (AccountId, AccountId) {
         let pyth_oracle = self
             .harness
             .deploy_mock_oracle("pyth-oracle.near".parse().unwrap())
             .await
             .unwrap();
-
-        let config = market_configuration(
-            pyth_oracle.clone(),
-            self.borrow_asset.clone(),
-            self.collateral_asset.clone(),
-            protocol_yield_user,
-            YieldWeights::new_with_supply_weight(8),
-        );
         let market = self
-            .deploy_market_via_registry("market_w_pyth", &config)
+            .deploy_market_backed_by("market_w_pyth", &pyth_oracle)
             .await;
-
-        self.app.load_markets().await;
-
         (market, pyth_oracle)
     }
 
-    /// Deploy a market backed by a proxy oracle (empty proxies for now), through
-    /// the monitored registry.
+    /// Deploy a market backed by a proxy oracle (empty proxies for now).
     async fn market_proxy(&mut self) -> (AccountId, AccountId) {
-        let protocol_yield_user = common::create_account(&self.harness, "protocol-yield")
-            .await
-            .unwrap();
         let proxy_oracle = self.harness.deploy_proxy_oracle().await.unwrap();
-
-        let config = market_configuration(
-            proxy_oracle.clone(),
-            self.borrow_asset.clone(),
-            self.collateral_asset.clone(),
-            protocol_yield_user,
-            YieldWeights::new_with_supply_weight(8),
-        );
         let market = self
-            .deploy_market_via_registry("market_w_proxy", &config)
+            .deploy_market_backed_by("market_w_proxy", &proxy_oracle)
             .await;
-
-        self.app.load_markets().await;
-
         (market, proxy_oracle)
     }
 
@@ -464,33 +452,34 @@ async fn init_test(#[future(awt)] harness: SandboxHarness) -> InitTest {
     // Register the market and universal-account code versions on their
     // registries. `add_version` asserts a 1-yoctoNEAR deposit for `Normal`
     // (state-stored) code; a `GlobalHash` version pays the global-contract
-    // deployment cost from the deposit.
-    let deployer = harness.registry_signer_account_id.clone();
-    harness
-        .registry_add_version(
-            &deployer,
+    // deployment cost from the deposit. The two registries have distinct owner
+    // accounts, so their registrations run concurrently.
+    let market_deployer = harness.registry_signer_account_id.clone();
+    let ua_deployer = ManagedAccountId(ua_registry.clone());
+    let market_wasm = templar_gateway_testing::wasm::market().await.to_vec();
+    let ua_wasm = templar_gateway_testing::wasm::universal_account()
+        .await
+        .to_vec();
+    let (market_version, ua_version) = tokio::join!(
+        harness.registry_add_version(
+            &market_deployer,
             &market_registry,
             MARKET_VERSION,
             DeployMode::Normal,
-            templar_gateway_testing::wasm::market().await.to_vec(),
+            market_wasm,
             NearToken::from_yoctonear(1),
-        )
-        .await
-        .unwrap();
-
-    harness
-        .registry_add_version(
-            &ManagedAccountId(ua_registry.clone()),
+        ),
+        harness.registry_add_version(
+            &ua_deployer,
             &ua_registry,
             "latest",
             DeployMode::GlobalHash,
-            templar_gateway_testing::wasm::universal_account()
-                .await
-                .to_vec(),
+            ua_wasm,
             NearToken::from_near(80),
-        )
-        .await
-        .unwrap();
+        ),
+    );
+    market_version.unwrap();
+    ua_version.unwrap();
 
     // The borrow asset is an LST whose redemption rate the proxy oracle reads.
     common::call(
@@ -1110,25 +1099,19 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
         .unwrap();
 }
 
-#[rstest]
-#[tokio::test]
-#[ignore = "requires NEAR sandbox"]
-pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
-    let (market, _) = init_test.market_with_pyth_oracle().await;
-    let InitTest {
-        harness,
-        app,
-        ua_registry,
-        borrow_user,
-        ..
-    } = init_test;
-
-    // Relay a signed delegate action.
+/// Deploy a universal account through the relayer's `create` route (mining the
+/// required PoW against `borrow_user`'s access key) and assert the deployment
+/// landed. Returns the new account id and the passkey secret it was created
+/// with, for follow-up relays.
+async fn create_universal_account(
+    app: &App,
+    network: &near_api::NetworkConfig,
+    ua_registry: &AccountId,
+    borrow_user: &AccountId,
+) -> (AccountId, p256::SecretKey, passkey::VerifyKey) {
     let borrow_secret_key = near_crypto::SecretKey::from_str(common::TEST_SECRET_KEY).unwrap();
     let fetch_nonce =
-        view_access_key(&app.gateway, &borrow_user, borrow_secret_key.public_key()).await;
-
-    // Deploy a universal account.
+        view_access_key(&app.gateway, borrow_user, borrow_secret_key.public_key()).await;
 
     let secret_key = p256::SecretKey::random(&mut OsRng);
     let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
@@ -1162,17 +1145,32 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
     )
     .await;
 
-    eprintln!("UA deploy response: {response:?}");
-
     let SimpleResponse::Success(response) = response else {
         panic!("Universal account deployment should succeed");
     };
-
     let ua_account_id = response.account_id.clone();
-
-    common::assert_tx_succeeded(&harness.network, response.transaction_hash, &ua_registry)
+    common::assert_tx_succeeded(network, response.transaction_hash, ua_registry)
         .await
         .unwrap();
+
+    (ua_account_id, secret_key, passkey)
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
+    let (market, _) = init_test.market_with_pyth_oracle().await;
+    let InitTest {
+        harness,
+        app,
+        ua_registry,
+        borrow_user,
+        ..
+    } = init_test;
+
+    let (ua_account_id, secret_key, passkey) =
+        create_universal_account(&app, &harness.network, &ua_registry, &borrow_user).await;
 
     // Send an action to the universal account contract
 
@@ -1278,56 +1276,8 @@ pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
         ..
     } = init_test;
 
-    // Relay a signed delegate action.
-    let borrow_secret_key = near_crypto::SecretKey::from_str(common::TEST_SECRET_KEY).unwrap();
-    let fetch_nonce =
-        view_access_key(&app.gateway, &borrow_user, borrow_secret_key.public_key()).await;
-
-    // Deploy a universal account.
-
-    let secret_key = p256::SecretKey::random(&mut OsRng);
-    let passkey = passkey::VerifyKey(PublicKey(secret_key.public_key()));
-
-    let message = create_message(
-        &secret_key,
-        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
-            .zero()
-            .verifying_contract(ua_registry.clone())
-            .build_salt(),
-        Pow::mine(
-            CreateUniversalAccount {
-                key: passkey.clone().into(),
-                block_hash: fetch_nonce.block_hash,
-            },
-            POW_DIFFICULTY,
-            10_000,
-        )
-        .unwrap(),
-    );
-
-    let response = templar_relayer::route::universal_account::create::create(
-        State(app.clone()),
-        Json(CreateRequest::ExecuteArgs(
-            ExecuteArgsMessage {
-                key: passkey.clone(),
-                mws: Box::new(message),
-            }
-            .into(),
-        )),
-    )
-    .await;
-
-    eprintln!("UA deploy response: {response:?}");
-
-    let SimpleResponse::Success(response) = response else {
-        panic!("Universal account deployment should succeed");
-    };
-
-    let ua_account_id = response.account_id.clone();
-
-    common::assert_tx_succeeded(&harness.network, response.transaction_hash, &ua_registry)
-        .await
-        .unwrap();
+    let (ua_account_id, secret_key, passkey) =
+        create_universal_account(&app, &harness.network, &ua_registry, &borrow_user).await;
 
     // Send an action to the universal account contract
 
