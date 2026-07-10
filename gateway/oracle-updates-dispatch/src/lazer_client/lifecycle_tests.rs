@@ -380,3 +380,35 @@ async fn a_fetch_survives_a_silent_socket() {
 
     assert_eq!(payload, fixture_bytes());
 }
+
+/// `FETCH_TIMEOUT` is summed on the assumption that the first reconnect after a payload
+/// sleeps only `INITIAL_RECONNECT_BACKOFF`. That assumption lives here, in the reset
+/// `cache_payload` performs — without it the derived deadline no longer covers a
+/// silent-socket recovery.
+#[test]
+fn a_payload_resets_the_reconnect_backoff() {
+    let mut task = StreamTask::new(LazerSourceConfig::for_mock_server(
+        "ws://127.0.0.1:1/v1/stream".parse().expect("valid url"),
+        Duration::from_secs(5),
+    ));
+    let (slot_tx, _slot_rx) = oneshot::channel();
+    let subscription_id = task
+        .register(SubscribeRequest {
+            feed_ids: [FIXTURE_FEED].into_iter().collect(),
+            slot_tx,
+        })
+        .new_subscription
+        .expect("a live requester registers a subscription");
+
+    task.backoff = MAX_RECONNECT_BACKOFF;
+    task.cache_payload(DecodedLazerPayload {
+        subscription_id,
+        bytes: fixture_bytes(),
+        feed_ids: [FIXTURE_FEED].into_iter().collect(),
+    });
+
+    assert_eq!(
+        task.backoff, INITIAL_RECONNECT_BACKOFF,
+        "a payload must reset the backoff, or FETCH_TIMEOUT's budget is wrong"
+    );
+}

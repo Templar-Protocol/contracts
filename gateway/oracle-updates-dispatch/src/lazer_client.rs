@@ -39,20 +39,26 @@ const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
 /// on the slowest (`fixed_rate@1000ms`) — so this much silence means the socket is dead.
 /// A socket can go silent while staying open, and nothing else detects that.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long [`LazerPayloadSource::fetch_payload`] waits for a payload covering its
-/// feeds. Distinct from `max_payload_age`, which bounds how old an already-cached
-/// payload may be when it is served.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Headroom, within [`FETCH_TIMEOUT`], for the reconnect itself: TLS handshake,
+/// subscription replay, and the first payload off the new stream.
+const RECONNECT_LATENCY_BUDGET: Duration = Duration::from_secs(4);
 
-/// A fetch must outlive one silent-socket recovery, or it expires before the stream task
-/// notices the socket is dead: detect (`STREAM_IDLE_TIMEOUT`) + backoff (reset to
-/// `INITIAL_RECONNECT_BACKOFF` by the last payload) + reconnect, replay, and first
-/// payload. Roughly 5s + 1s + <1s against a 10s deadline.
-const _: () = assert!(
-    STREAM_IDLE_TIMEOUT.as_millis() + INITIAL_RECONNECT_BACKOFF.as_millis()
-        < FETCH_TIMEOUT.as_millis(),
-    "FETCH_TIMEOUT must leave room to detect a silent socket and reconnect",
-);
+/// How long [`LazerPayloadSource::fetch_payload`] waits for a payload covering its feeds.
+/// Distinct from `max_payload_age`, which bounds how old an already-cached payload may be
+/// when it is served.
+///
+/// Summed, not chosen: a fetch has to outlive one recovery from a socket that fell silent
+/// while healthy — notice the silence, sleep the backoff, reconnect, replay, receive. Any
+/// smaller value would expire before the stream task even noticed the socket was dead.
+///
+/// *While healthy* is the precondition, and [`StreamTask::cache_payload`] establishes it:
+/// a payload resets the backoff, so the first reconnect after one sleeps exactly
+/// [`INITIAL_RECONNECT_BACKOFF`]. A larger backoff means no payload has arrived since the
+/// last disconnect — the stream is degraded, and expiring the fetch is then the intended
+/// answer rather than holding a caller's request open for [`MAX_RECONNECT_BACKOFF`].
+const FETCH_TIMEOUT: Duration = STREAM_IDLE_TIMEOUT
+    .saturating_add(INITIAL_RECONNECT_BACKOFF)
+    .saturating_add(RECONNECT_LATENCY_BUDGET);
 
 #[cfg(test)]
 mod config_tests;
