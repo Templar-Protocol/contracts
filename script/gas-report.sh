@@ -2,7 +2,8 @@
 set -e
 
 SCRIPT_DIR=$(dirname "$(readlink -f ${BASH_SOURCE[0]})")
-source "$SCRIPT_DIR/prebuild-test-contracts.sh"
+"$SCRIPT_DIR/prebuild-test-contracts.sh"
+export TEST_CONTRACTS_PREBUILT=1
 
 cargo run --package templar-market-contract --example gas_report
 cargo run --package templar-vault-contract --example vault_gas_report

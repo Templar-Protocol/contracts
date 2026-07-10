@@ -221,10 +221,16 @@ pub async fn relay(
     drop(accounts);
 
     if update_prices {
+        // Best-effort: a failed oracle refresh must not block the user's already-paid
+        // transaction. Shout loudly, then relay anyway so it lands on-chain and the
+        // contract returns a precise result the user can reference, rather than an
+        // opaque transient relayer error.
         if let Err(error) = app.update_market_prices(&market_ids).await {
-            return SimpleResponse::Failure {
-                error: error.to_string(),
-            };
+            tracing::error!(
+                %error,
+                ?market_ids,
+                "Failed to refresh oracle prices before relay; relaying anyway",
+            );
         }
     }
 

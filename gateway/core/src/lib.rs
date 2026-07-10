@@ -8,10 +8,12 @@ mod executor;
 mod near_client_provider;
 mod operation;
 mod operation_driver;
+mod oracle_resolution;
 mod oracle_write;
 mod payload;
 mod planning;
 mod read;
+mod redacted_string;
 
 use async_trait::async_trait;
 use templar_gateway_types::{operation::OperationId, IdempotencyKey, ManagedAccountId};
@@ -26,15 +28,17 @@ pub use executor::{
 };
 pub use near_client_provider::HasNearClient;
 pub use operation::{
-    CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation, PlannedTransaction,
-    PreparedCurrentStep, PreparedTransactionResult, SharedOperationStore, StoredOperation,
-    SubmittedCurrentStep, SucceededStep,
+    CompletedStep, CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation,
+    PlannedTransaction, PreparedCurrentStep, PreparedTransactionResult, RevertedStep,
+    SharedOperationStore, StoredOperation, SubmittedCurrentStep, SucceededStep,
 };
 pub use operation_driver::{request_fingerprint, OperationDriver};
-pub use oracle_write::{plan_pyth_update, plan_redstone_write_prices};
+pub use oracle_resolution::{get_proxy, query_oracle_kind, resolve_price_dependencies};
+pub use oracle_write::{plan_pyth_lazer_update, plan_pyth_update, plan_redstone_write_prices};
 pub use payload::OraclePayloadSource;
 pub use planning::{DispatchRead, HasIdempotencyKey, HasSignerAccountId, PlanWrite};
 pub use read::ReadNear;
+pub use redacted_string::RedactedString;
 
 pub enum CreateOperationResult {
     Created(StoredOperation),

@@ -12,8 +12,8 @@ use sqlx::{
     FromRow, PgPool,
 };
 use templar_gateway_core::{
-    CreateOperationResult, CurrentStep, GatewayError, GatewayResult, OperationPlan, OperationStore,
-    PlannedTransaction, StoredOperation, SucceededStep,
+    CompletedStep, CreateOperationResult, CurrentStep, GatewayError, GatewayResult, OperationPlan,
+    OperationStore, PlannedTransaction, RevertedStep, StoredOperation, SucceededStep,
 };
 use templar_gateway_types::{
     operation::{ExecutionOutcome, OperationId, ReceiptOutcome, ReceiptStatus},
@@ -85,6 +85,7 @@ struct StepLifecycleRow {
     signer_account_id: String,
     receiver_id: String,
     actions: Value,
+    continue_on_failure: bool,
     execution_tx_hash: Option<String>,
     signed_transaction: Option<Vec<u8>>,
     submitted_at: Option<DateTime<Utc>>,
@@ -269,7 +270,7 @@ impl OperationStore for PostgresStore {
             // reservation (the no-op case is promoted from a reservation later,
             // never created directly).
             planned: !plan.steps.is_empty(),
-            succeeded_steps: vec![],
+            completed_steps: vec![],
             current_step: None,
             remaining_steps: VecDeque::from(plan.steps),
         };
@@ -661,7 +662,7 @@ async fn insert_operation_steps(
     existing_step_state: &ExistingStepStateByStep,
 ) -> GatewayResult<()> {
     let current_index =
-        insert_succeeded_steps(tx, operation_uuid, operation, existing_step_state).await?;
+        insert_completed_steps(tx, operation_uuid, operation, existing_step_state).await?;
     let remaining_start = insert_current_step(
         tx,
         operation_uuid,
@@ -681,40 +682,53 @@ async fn insert_operation_steps(
     Ok(())
 }
 
-async fn insert_succeeded_steps(
+async fn insert_completed_steps(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     operation_uuid: uuid::Uuid,
     operation: &StoredOperation,
     existing_step_state: &ExistingStepStateByStep,
 ) -> GatewayResult<i32> {
-    for (index, step) in operation.succeeded_steps.iter().enumerate() {
+    for (index, step) in operation.completed_steps.iter().enumerate() {
         let step_index = step_index(index)?;
         let existing_execution = existing_execution(existing_step_state, step_index)?;
+        // A tolerated revert executed on chain like a success and produced an
+        // outcome, so it persists with the same lifecycle rows — only the outcome
+        // status (Failed) and the step's own `continue_on_failure` flag (on the
+        // plan-step row) mark it, which is what `apply_step_row` reads back.
+        let (transaction, tx_hash, outcome, status) = match step {
+            CompletedStep::Succeeded(step) => (
+                &step.transaction,
+                step.tx_hash,
+                &step.outcome,
+                OutcomeStatusRow::Succeeded,
+            ),
+            CompletedStep::Reverted(step) => (
+                &step.transaction,
+                step.tx_hash,
+                &step.outcome,
+                OutcomeStatusRow::Failed,
+            ),
+        };
         insert_step_lifecycle(
             tx,
             StepLifecycleInsert {
                 operation_id: operation_uuid,
                 step_index,
-                transaction: &step.transaction,
+                transaction,
                 execution: Some(StepExecution {
-                    tx_hash: step.tx_hash,
+                    tx_hash,
                     signed_transaction: &existing_execution.signed_transaction,
                     prepared_at: existing_execution.prepared_at,
                     submitted_at: existing_execution.submitted_at,
                 }),
-                result: Some(StepResult {
-                    tx_hash: step.tx_hash,
-                }),
-                outcome: Some(StepOutcome {
-                    status: OutcomeStatusRow::Succeeded,
-                    outcome: &step.outcome,
-                }),
+                result: Some(StepResult { tx_hash }),
+                outcome: Some(StepOutcome { status, outcome }),
                 existing_state: existing_step_state.get(&step_index),
             },
         )
         .await?;
     }
-    step_index(operation.succeeded_steps.len())
+    step_index(operation.completed_steps.len())
 }
 
 async fn insert_current_step(
@@ -1009,10 +1023,11 @@ INSERT INTO
         signer_account_id,
         receiver_id,
         actions,
+        continue_on_failure,
         created_at
     )
 VALUES
-    ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+    ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
 ",
     )
     .bind(operation_id)
@@ -1020,6 +1035,7 @@ VALUES
     .bind(transaction.signer_account_id.0.to_string())
     .bind(transaction.receiver_id.to_string())
     .bind(actions)
+    .bind(transaction.continue_on_failure)
     .bind(created_at)
     .execute(&mut **tx)
     .await?;
@@ -1212,6 +1228,7 @@ SELECT
     step.signer_account_id,
     step.receiver_id,
     step.actions,
+    step.continue_on_failure,
     execution.tx_hash AS execution_tx_hash,
     execution.signed_transaction,
     execution.submitted_at,
@@ -1287,7 +1304,7 @@ fn rows_to_stored_operation(
     step_rows: Vec<StepLifecycleRow>,
     mut receipts_by_step: ReceiptMap,
 ) -> GatewayResult<StoredOperation> {
-    let mut succeeded_steps = Vec::new();
+    let mut completed_steps = Vec::new();
     let mut current_step = None;
     let mut remaining_steps = VecDeque::new();
 
@@ -1296,7 +1313,7 @@ fn rows_to_stored_operation(
         apply_step_row(
             row,
             receipts,
-            &mut succeeded_steps,
+            &mut completed_steps,
             &mut current_step,
             &mut remaining_steps,
         )?;
@@ -1321,7 +1338,7 @@ fn rows_to_stored_operation(
         id,
         signer_account_id,
         planned: operation_row.plan_created_at.is_some(),
-        succeeded_steps,
+        completed_steps,
         current_step,
         remaining_steps,
     })
@@ -1330,7 +1347,7 @@ fn rows_to_stored_operation(
 fn apply_step_row(
     row: StepLifecycleRow,
     receipts: Vec<ReceiptOutcome>,
-    succeeded_steps: &mut Vec<SucceededStep>,
+    completed_steps: &mut Vec<CompletedStep>,
     current_step: &mut Option<CurrentStep>,
     remaining_steps: &mut VecDeque<PlannedTransaction>,
 ) -> GatewayResult<()> {
@@ -1375,22 +1392,35 @@ fn apply_step_row(
             )?;
         }
         RowLifecycle::Reverted { tx_hash } => {
-            set_current_step(
-                current_step,
-                row.step_index,
-                CurrentStep::Reverted {
+            let outcome = build_outcome(&row, receipts)?;
+            // The persisted `continue_on_failure` flag is the sole disambiguator:
+            // a tolerated revert reconstructs as a completed step (cursor advanced),
+            // a non-tolerated one as the terminal blocking `current_step`. This
+            // mirrors `StoredOperation::record_revert` at reload time.
+            if transaction.continue_on_failure {
+                completed_steps.push(CompletedStep::Reverted(RevertedStep {
                     transaction,
                     tx_hash,
-                    outcome: build_outcome(&row, receipts)?,
-                },
-            )?;
+                    outcome,
+                }));
+            } else {
+                set_current_step(
+                    current_step,
+                    row.step_index,
+                    CurrentStep::Reverted {
+                        transaction,
+                        tx_hash,
+                        outcome,
+                    },
+                )?;
+            }
         }
         RowLifecycle::Succeeded { tx_hash } => {
-            succeeded_steps.push(SucceededStep {
+            completed_steps.push(CompletedStep::Succeeded(SucceededStep {
                 transaction,
                 tx_hash,
                 outcome: build_outcome(&row, receipts)?,
-            });
+            }));
         }
     }
     Ok(())
@@ -1500,6 +1530,7 @@ fn step_row_transaction(row: &StepLifecycleRow) -> GatewayResult<PlannedTransact
         signer_account_id: ManagedAccountId(parse_account_id(&row.signer_account_id)?),
         receiver_id: parse_account_id(&row.receiver_id)?,
         actions: serde_json::from_value(row.actions.clone())?,
+        continue_on_failure: row.continue_on_failure,
     })
 }
 
@@ -1606,7 +1637,7 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 planned: true,
-                succeeded_steps: vec![],
+                completed_steps: vec![],
                 current_step: None,
                 remaining_steps: VecDeque::from([transaction]),
             },
@@ -1617,7 +1648,7 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 planned: true,
-                succeeded_steps: vec![],
+                completed_steps: vec![],
                 current_step: Some(CurrentStep::Submitted {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
@@ -1632,11 +1663,11 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 planned: true,
-                succeeded_steps: vec![SucceededStep {
+                completed_steps: vec![CompletedStep::Succeeded(SucceededStep {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
                     outcome: sample_outcome(),
-                }],
+                })],
                 current_step: None,
                 remaining_steps: VecDeque::new(),
             },
@@ -1648,7 +1679,7 @@ mod tests {
                 id: OperationId(uuid::Uuid::new_v4().to_string()),
                 signer_account_id: ManagedAccountId("signer.near".parse().unwrap()),
                 planned: true,
-                succeeded_steps: vec![],
+                completed_steps: vec![],
                 current_step: Some(CurrentStep::Reverted {
                     transaction,
                     tx_hash: CryptoHash(NearCryptoHash::default()),
@@ -1710,11 +1741,13 @@ mod tests {
         else {
             panic!("expected prepared step");
         };
-        operation.succeeded_steps.push(SucceededStep {
-            transaction,
-            tx_hash,
-            outcome: sample_outcome(),
-        });
+        operation
+            .completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome: sample_outcome(),
+            }));
         store.save_operation(operation.clone()).await.unwrap();
 
         let found = store
@@ -1902,11 +1935,13 @@ mod tests {
         else {
             panic!("expected prepared step");
         };
-        operation.succeeded_steps.push(SucceededStep {
-            transaction,
-            tx_hash,
-            outcome: sample_outcome(),
-        });
+        operation
+            .completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome: sample_outcome(),
+            }));
         store.save_operation(operation.clone()).await.unwrap();
         let first_completed_at = operation_completed_at(&store.pool, operation_uuid)
             .await
@@ -1955,11 +1990,13 @@ mod tests {
         else {
             panic!("expected prepared step");
         };
-        terminal.succeeded_steps.push(SucceededStep {
-            transaction,
-            tx_hash,
-            outcome: sample_outcome(),
-        });
+        terminal
+            .completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome: sample_outcome(),
+            }));
         store.save_operation(terminal.clone()).await.unwrap();
         sqlx::query("DELETE FROM gateway_plan_steps WHERE operation_id = $1")
             .bind(uuid::Uuid::from_str(&terminal.id.0).unwrap())
@@ -2005,11 +2042,13 @@ mod tests {
         else {
             panic!("expected prepared step");
         };
-        operation.succeeded_steps.push(SucceededStep {
-            transaction,
-            tx_hash,
-            outcome: sample_outcome(),
-        });
+        operation
+            .completed_steps
+            .push(CompletedStep::Succeeded(SucceededStep {
+                transaction,
+                tx_hash,
+                outcome: sample_outcome(),
+            }));
         store.save_operation(operation.clone()).await.unwrap();
 
         let before_step_timestamps = step_timestamps(&store.pool, operation_uuid).await;
@@ -2195,7 +2234,10 @@ ORDER BY step_index, receipt_index
     #[test]
     fn rows_round_trip_preserves_succeeded_operation() {
         let operation = sample_operation(OperationStatus::Succeeded);
-        let succeeded_step = operation.succeeded_steps.first().unwrap();
+        let CompletedStep::Succeeded(succeeded_step) = operation.completed_steps.first().unwrap()
+        else {
+            panic!("expected a succeeded completed step");
+        };
         let operation_row = OperationRow {
             id: uuid::Uuid::from_str(&operation.id.0).unwrap(),
             rpc_method: operation.rpc_method.clone(),
@@ -2214,6 +2256,7 @@ ORDER BY step_index, receipt_index
             signer_account_id: operation.signer_account_id.0.to_string(),
             receiver_id: succeeded_step.transaction.receiver_id.to_string(),
             actions: serde_json::to_value(&succeeded_step.transaction.actions).unwrap(),
+            continue_on_failure: false,
             execution_tx_hash: Some(succeeded_step.tx_hash.0.to_string()),
             signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
             submitted_at: Some(Utc::now()),
@@ -2228,11 +2271,108 @@ ORDER BY step_index, receipt_index
 
         let restored = rows_to_stored_operation(operation_row, step_rows, receipts).unwrap();
         assert_eq!(restored.status(), OperationStatus::Succeeded);
-        assert_eq!(restored.succeeded_steps.len(), 1);
-        assert_eq!(
-            restored.succeeded_steps.first().unwrap().outcome,
-            sample_outcome()
+        assert_eq!(restored.completed_steps.len(), 1);
+        let CompletedStep::Succeeded(restored_step) = restored.completed_steps.first().unwrap()
+        else {
+            panic!("expected a succeeded completed step");
+        };
+        assert_eq!(restored_step.outcome, sample_outcome());
+    }
+
+    /// Build a lifecycle row for a step that executed on chain and produced an
+    /// outcome (Succeeded or Failed), carrying the given `continue_on_failure` flag.
+    fn completed_step_row(
+        operation_id: uuid::Uuid,
+        step_index: i32,
+        continue_on_failure: bool,
+        outcome_status: OutcomeStatusRow,
+    ) -> StepLifecycleRow {
+        let transaction = sample_transaction();
+        let tx_hash = NearCryptoHash::default().to_string();
+        StepLifecycleRow {
+            operation_id,
+            step_index,
+            signer_account_id: transaction.signer_account_id.0.to_string(),
+            receiver_id: transaction.receiver_id.to_string(),
+            actions: serde_json::to_value(&transaction.actions).unwrap(),
+            continue_on_failure,
+            execution_tx_hash: Some(tx_hash.clone()),
+            signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
+            submitted_at: Some(Utc::now()),
+            result_tx_hash: Some(tx_hash),
+            outcome_status: Some(outcome_status),
+            tokens_burnt: Some(sample_outcome().tokens_burnt.as_yoctonear().to_string()),
+            total_gas_burnt: Some(sample_outcome().total_gas_burnt.as_gas().to_string()),
+            return_value: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn sample_operation_row(id: uuid::Uuid, completed_at: Option<DateTime<Utc>>) -> OperationRow {
+        OperationRow {
+            id,
+            rpc_method: "tx.transfer".to_owned(),
+            signer_account_id: "signer.near".to_owned(),
+            idempotency_key: None,
+            request_fingerprint_hash: [0; 32].to_vec(),
+            request_payload: serde_json::json!({}),
+            plan_created_at: Some(Utc::now()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at,
+        }
+    }
+
+    /// A reverted step whose plan row is `continue_on_failure` must reconstruct as a
+    /// tolerated *completed* step (cursor advanced), never as the terminal blocking
+    /// `current_step`. The persisted flag is the sole disambiguator, mirroring
+    /// `StoredOperation::record_revert` at reload time.
+    #[test]
+    fn rows_round_trip_tolerated_revert_becomes_completed_step() {
+        let id = uuid::Uuid::new_v4();
+        let operation_row = sample_operation_row(id, Some(Utc::now()));
+        let step_rows = vec![
+            completed_step_row(id, 0, true, OutcomeStatusRow::Failed),
+            completed_step_row(id, 1, false, OutcomeStatusRow::Succeeded),
+        ];
+
+        let restored =
+            rows_to_stored_operation(operation_row, step_rows, ReceiptMap::default()).unwrap();
+
+        assert!(
+            restored.current_step.is_none(),
+            "a tolerated revert must not block as current_step"
         );
+        assert_eq!(restored.completed_steps.len(), 2);
+        assert!(matches!(
+            restored.completed_steps[0],
+            CompletedStep::Reverted(_)
+        ));
+        assert!(matches!(
+            restored.completed_steps[1],
+            CompletedStep::Succeeded(_)
+        ));
+        assert_eq!(restored.status(), OperationStatus::Succeeded);
+    }
+
+    /// Without the flag, a revert is terminal: it reconstructs as the blocking
+    /// `current_step` and the operation is `Failed` — the invariant the tolerant
+    /// path must never weaken.
+    #[test]
+    fn rows_round_trip_non_tolerated_revert_stays_terminal() {
+        let id = uuid::Uuid::new_v4();
+        let operation_row = sample_operation_row(id, None);
+        let step_rows = vec![completed_step_row(id, 0, false, OutcomeStatusRow::Failed)];
+
+        let restored =
+            rows_to_stored_operation(operation_row, step_rows, ReceiptMap::default()).unwrap();
+
+        assert!(restored.completed_steps.is_empty());
+        assert!(matches!(
+            restored.current_step,
+            Some(CurrentStep::Reverted { .. })
+        ));
+        assert_eq!(restored.status(), OperationStatus::Failed);
     }
 
     #[test]
@@ -2260,6 +2400,7 @@ ORDER BY step_index, receipt_index
                 signer_account_id: operation.signer_account_id.0.to_string(),
                 receiver_id: first_transaction.receiver_id.to_string(),
                 actions: serde_json::to_value(&first_transaction.actions).unwrap(),
+                continue_on_failure: false,
                 execution_tx_hash: Some(tx_hash.clone()),
                 signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
                 submitted_at: None,
@@ -2276,6 +2417,7 @@ ORDER BY step_index, receipt_index
                 signer_account_id: operation.signer_account_id.0.to_string(),
                 receiver_id: second_transaction.receiver_id.to_string(),
                 actions: serde_json::to_value(&second_transaction.actions).unwrap(),
+                continue_on_failure: false,
                 execution_tx_hash: Some(tx_hash),
                 signed_transaction: Some(to_vec(&dummy_signed_transaction()).unwrap()),
                 submitted_at: None,

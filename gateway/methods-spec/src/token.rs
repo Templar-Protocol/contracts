@@ -17,6 +17,16 @@ pub enum TokenReference {
     },
 }
 
+impl TokenReference {
+    /// The token contract account — shared across NEP-245 token ids on the same
+    /// contract.
+    pub fn contract_id(&self) -> &AccountId {
+        match self {
+            Self::Ft { contract_id } | Self::Mt { contract_id, .. } => contract_id,
+        }
+    }
+}
+
 impl<T: AssetClass> From<&FungibleAsset<T>> for TokenReference {
     fn from(asset: &FungibleAsset<T>) -> Self {
         let contract_id = asset.contract_id().to_owned();

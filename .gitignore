@@ -29,6 +29,7 @@ _site/
 
 # fuzz artifacts
 **/artifacts
+!contract/artifacts/
 **/corpus
 **/fuzz*.log
 **/coverage
@@ -39,14 +40,15 @@ contract/proxy-*-soroban/test_snapshots/
 contract/proxy-oracle/**/test_snapshots/
 contract/proxy-*-soroban/**/test_snapshots/
 
-# pyth pro payloads
-contract/pyth-pro/payloads
+# pyth lazer payloads
+contract/pyth-lazer/payloads
 
 # generated bindings
 client/vault/dist/
 
 # local agent scratch space
 .codex/
+.codegraph
 
 .aider*
 .claude/

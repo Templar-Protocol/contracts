@@ -1,0 +1,1074 @@
+#![allow(clippy::unwrap_used)]
+
+use byteorder::LE;
+use ed25519_dalek::{Signer, SigningKey};
+use near_sdk::{
+    json_types::{Base64VecU8, I64},
+    mock::MockAction,
+    test_utils::{get_created_receipts, VMContextBuilder},
+    testing_env, AccountId, NearToken,
+};
+use pyth_lazer_protocol::message::SolanaMessage;
+use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadPropertyValue};
+use pyth_lazer_protocol::time::TimestampUs;
+use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
+use rstest::rstest;
+use templar_common::versioned_state::MigrateExternalInterface;
+
+use templar_pyth_lazer_adapter_contract::{Config, ConfigArgs, Contract, TrustedSigner};
+
+const FEED_ID: u32 = 2;
+const NOW_S: u64 = 1_700_000_000;
+const EXPO: i16 = -8;
+
+fn signing_key() -> SigningKey {
+    SigningKey::from_bytes(&[7u8; 32])
+}
+
+fn signer_public_key() -> [u8; 32] {
+    signing_key().verifying_key().to_bytes()
+}
+
+/// Sign a solana-format (ed25519) Lazer message wrapping `data` with the default signer.
+fn sign(data: &PayloadData) -> Vec<u8> {
+    sign_with(&signing_key(), data)
+}
+
+/// Sign a solana-format (ed25519) Lazer message wrapping `data` with an arbitrary key (used to
+/// exercise signer rotation).
+fn sign_with(key: &SigningKey, data: &PayloadData) -> Vec<u8> {
+    let mut payload = Vec::new();
+    data.serialize::<LE>(&mut payload).unwrap();
+
+    let message = SolanaMessage {
+        signature: key.sign(&payload).to_bytes(),
+        public_key: key.verifying_key().to_bytes(),
+        payload,
+    };
+    let mut raw = Vec::new();
+    message.serialize(&mut raw).unwrap();
+    raw
+}
+
+/// A standard single-feed real-time payload signed by `key` (for rotation tests).
+fn real_time_signed_by(
+    key: &SigningKey,
+    timestamp_us: u64,
+    price: i64,
+    ema: i64,
+    conf: i64,
+) -> Vec<u8> {
+    sign_with(
+        key,
+        &PayloadData {
+            timestamp_us: TimestampUs::from_micros(timestamp_us),
+            channel_id: ChannelId(ChannelId::REAL_TIME.0),
+            feeds: vec![PayloadFeedData {
+                feed_id: PriceFeedId(FEED_ID),
+                properties: full_props(price, ema, conf, timestamp_us),
+            }],
+        },
+    )
+}
+
+/// Build a single-feed (FEED_ID) signed payload with arbitrary properties.
+fn build_payload(timestamp_us: u64, channel: u8, properties: Vec<PayloadPropertyValue>) -> Vec<u8> {
+    sign(&PayloadData {
+        timestamp_us: TimestampUs::from_micros(timestamp_us),
+        channel_id: ChannelId(channel),
+        feeds: vec![PayloadFeedData {
+            feed_id: PriceFeedId(FEED_ID),
+            properties,
+        }],
+    })
+}
+
+/// The standard property set: spot price + confidence + exponent + EMA price + per-feed timestamp.
+fn full_props(price: i64, ema: i64, conf: i64, timestamp_us: u64) -> Vec<PayloadPropertyValue> {
+    vec![
+        PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+        PayloadPropertyValue::Confidence(Some(Price::from_mantissa(conf).unwrap())),
+        PayloadPropertyValue::Exponent(EXPO),
+        PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(ema).unwrap())),
+        PayloadPropertyValue::EmaConfidence(Some(Price::from_mantissa(conf).unwrap())),
+        PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(timestamp_us))),
+    ]
+}
+
+/// A well-formed single-feed payload carrying spot, EMA, confidence and a per-feed timestamp.
+fn signed_payload(timestamp_us: u64, channel: u8, price: i64, ema: i64, conf: i64) -> Vec<u8> {
+    build_payload(
+        timestamp_us,
+        channel,
+        full_props(price, ema, conf, timestamp_us),
+    )
+}
+
+fn real_time(timestamp_us: u64, price: i64, ema: i64, conf: i64) -> Vec<u8> {
+    signed_payload(timestamp_us, ChannelId::REAL_TIME.0, price, ema, conf)
+}
+
+fn owner() -> AccountId {
+    "owner.near".parse().unwrap()
+}
+
+fn config() -> ConfigArgs {
+    ConfigArgs {
+        signers: vec![TrustedSigner {
+            public_key: signer_public_key(),
+            expires_at_s: NOW_S + 1_000_000,
+        }],
+        max_timestamp_delay_s: 600,
+        max_timestamp_ahead_s: 600,
+        allowed_channel_id: Some(ChannelId::REAL_TIME.0),
+        update_fee: NearToken::from_yoctonear(0),
+        max_feeds_per_update: 64,
+    }
+}
+
+/// Context as the owner, with 1 yocto attached (for `#[payable]` admin methods).
+fn set_owner_context() {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(owner())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+}
+
+/// Context as an arbitrary relayer attaching `deposit` (for the permissionless update + views).
+fn relayer_context(deposit: NearToken) {
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("relayer.near".parse().unwrap())
+        .attached_deposit(deposit)
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+}
+
+/// Enough to cover one feed's storage in any test.
+fn ample_deposit() -> NearToken {
+    NearToken::from_near(1)
+}
+
+fn deploy() -> Contract {
+    deploy_with(config())
+}
+
+fn deploy_with(config: ConfigArgs) -> Contract {
+    set_owner_context();
+    Contract::new(owner(), config)
+}
+
+/// EMA projection of a single stored feed. The adapter serves raw [`FeedData`]; consumers project
+/// it (here via `to_ema_price`) and apply their own freshness policy — the adapter age-gates
+/// nothing on reads.
+fn ema(contract: &Contract, feed_id: u32) -> Option<templar_common::oracle::pyth::Price> {
+    contract
+        .get_feed_data(feed_id)
+        .and_then(|feed| feed.to_ema_price())
+}
+
+#[test]
+fn serves_stored_feeds_by_feed_id() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    // The bulk read serves the raw stored feed by native `u32` id...
+    let feeds = contract.get_feeds_data(vec![FEED_ID]);
+    let feed = feeds.get(&FEED_ID).unwrap().as_ref().unwrap();
+    assert_eq!(feed.price.0, 123_456);
+    assert_eq!(feed.ema.price.0, 123_000);
+    assert_eq!(feed.conf.0, 50);
+    assert_eq!(feed.expo, -8);
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S);
+
+    // ...the single-feed getter agrees...
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap(), *feed);
+
+    // ...and the consumer-side EMA projection reads the EMA mantissa.
+    let ema_price = ema(&contract, FEED_ID).unwrap();
+    assert_eq!(ema_price.price.0, 123_000);
+    assert_eq!(
+        ema_price.publish_time.as_secs(),
+        i64::try_from(NOW_S).unwrap()
+    );
+
+    // An unknown feed id resolves to nothing (an explicit `None` in the bulk response).
+    let unknown_feed = FEED_ID + 1;
+    assert!(contract
+        .get_feeds_data(vec![unknown_feed])
+        .get(&unknown_feed)
+        .unwrap()
+        .is_none());
+    assert!(contract.get_feed_data(unknown_feed).is_none());
+}
+
+#[test]
+fn replays_are_ignored_and_newer_updates_apply() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    let first = real_time(NOW_S * 1_000_000, 100, 100, 1);
+    contract.update_price_feeds(Base64VecU8(first.clone()));
+
+    // Same timestamp again => ignored (monotonic gate); price stays 100. Overwrite attempt consumes
+    // no storage, so a zero deposit is accepted.
+    relayer_context(NearToken::from_yoctonear(0));
+    contract.update_price_feeds(Base64VecU8(first));
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 100);
+
+    // A strictly newer payload applies (same footprint => still free).
+    contract.update_price_feeds(Base64VecU8(real_time((NOW_S + 1) * 1_000_000, 200, 200, 1)));
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 200);
+}
+
+#[test]
+fn full_deposit_refunded_when_no_new_storage() {
+    let mut contract = deploy();
+
+    // First update creates the feed (consumes storage).
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(NOW_S * 1_000_000, 100, 100, 1)));
+
+    // A strictly-newer overwrite consumes no new storage; with update_fee = 0 the whole attached
+    // deposit must be refunded. (relayer_context resets the VM, so only this call's receipts remain.)
+    let deposit = NearToken::from_near(1);
+    relayer_context(deposit);
+    contract.update_price_feeds(Base64VecU8(real_time((NOW_S + 1) * 1_000_000, 200, 200, 1)));
+
+    let refunds: Vec<NearToken> = get_created_receipts()
+        .into_iter()
+        .flat_map(|receipt| receipt.actions)
+        .filter_map(|action| match action {
+            MockAction::Transfer { deposit, .. } => Some(deposit),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refunds, vec![deposit]);
+}
+
+#[test]
+fn newer_package_with_older_feed_timestamp_does_not_regress() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    // First: package + per-feed timestamp at NOW.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        full_props(100, 100, 1, NOW_S * 1_000_000),
+    )));
+
+    // Second: newer *package* timestamp (NOW+10) but an *older* per-feed FeedUpdateTimestamp
+    // (NOW-10). The per-feed monotonic gate must reject it, so the stored feed does not regress.
+    relayer_context(NearToken::from_yoctonear(0));
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        (NOW_S + 10) * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        full_props(999, 999, 1, (NOW_S - 10) * 1_000_000),
+    )));
+
+    let feed = contract.get_feed_data(FEED_ID).unwrap();
+    assert_eq!(feed.price.0, 100);
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S);
+}
+
+#[test]
+fn future_feed_timestamp_is_rejected() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    // Package timestamp is current (passes the verifier window), but the per-feed FeedUpdateTimestamp
+    // is far in the future (beyond max_timestamp_ahead_s), so the feed must not be stored.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        full_props(123_456, 123_000, 50, (NOW_S + 10_000) * 1_000_000),
+    )));
+
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+}
+
+#[test]
+fn future_feed_within_tolerance_is_stored() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    // Per-feed timestamp 5s ahead of block time: within max_timestamp_ahead_s, so it is stored.
+    // (The adapter stores and serves raw; freshness — including any fail-closed treatment of a
+    // future publish time — is the consumer's concern, not the adapter's.)
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        full_props(123_456, 123_000, 50, (NOW_S + 5) * 1_000_000),
+    )));
+
+    let feed = contract.get_feed_data(FEED_ID).unwrap();
+    assert_eq!(feed.price.0, 123_456);
+    assert_eq!(feed.publish_time_ns.as_secs(), NOW_S + 5);
+    assert_eq!(ema(&contract, FEED_ID).unwrap().price.0, 123_000);
+}
+
+#[test]
+fn missing_spot_confidence_skips_feed() {
+    let mut contract = deploy();
+
+    relayer_context(NearToken::from_yoctonear(0));
+    // Price present but no Confidence property: not definitely-correct, so the feed is not stored.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(123_456).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(123_000).unwrap())),
+            PayloadPropertyValue::EmaConfidence(Some(Price::from_mantissa(50).unwrap())),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    )));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+}
+
+#[test]
+fn ema_price_without_ema_confidence_skips_feed() {
+    let mut contract = deploy();
+
+    relayer_context(NearToken::from_yoctonear(0));
+    // EmaPrice present but no EmaConfidence: a half-specified EMA is malformed, so the whole feed
+    // is skipped (no spot-only storage, no fabricated confidence).
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(123_456).unwrap())),
+            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(50).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(123_000).unwrap())),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    )));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+}
+
+#[test]
+fn duplicate_feed_id_in_payload_is_first_wins() {
+    let mut contract = deploy();
+
+    let feed = |price: i64| PayloadFeedData {
+        feed_id: PriceFeedId(FEED_ID),
+        properties: vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(1).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(price).unwrap())),
+            PayloadPropertyValue::EmaConfidence(Some(Price::from_mantissa(1).unwrap())),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    };
+    let payload = sign(&PayloadData {
+        timestamp_us: TimestampUs::from_micros(NOW_S * 1_000_000),
+        channel_id: ChannelId::REAL_TIME,
+        feeds: vec![feed(111), feed(222)],
+    });
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(payload));
+
+    // Both entries carry the same publish timestamp, so the monotonic gate keeps the first.
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 111);
+}
+
+#[test]
+#[should_panic(expected = "too many feeds in a single update")]
+fn update_exceeding_max_feeds_rejected() {
+    // A signed bundle carrying more feeds than `max_feeds_per_update` is rejected up front, before
+    // any storage write or event emission, so the NEP-297 `UpdatePrices` log stays bounded.
+    let mut contract = deploy_with(ConfigArgs {
+        max_feeds_per_update: 1,
+        ..config()
+    });
+
+    let feed = |id: u32, price: i64| PayloadFeedData {
+        feed_id: PriceFeedId(id),
+        properties: vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(1).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    };
+    let payload = sign(&PayloadData {
+        timestamp_us: TimestampUs::from_micros(NOW_S * 1_000_000),
+        channel_id: ChannelId::REAL_TIME,
+        feeds: vec![feed(FEED_ID, 111), feed(FEED_ID + 1, 222)],
+    });
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(payload));
+}
+
+#[test]
+fn negative_confidence_skips_feed() {
+    let mut contract = deploy();
+
+    // Negative spot confidence is malformed -> the feed is skipped entirely (no storage consumed).
+    relayer_context(NearToken::from_yoctonear(0));
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        -1,
+    )));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+
+    // Negative EMA confidence likewise skips the feed.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(123_456).unwrap())),
+            PayloadPropertyValue::Confidence(Some(Price::from_mantissa(50).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::EmaPrice(Some(Price::from_mantissa(123_000).unwrap())),
+            PayloadPropertyValue::EmaConfidence(Some(Price::from_mantissa(-1).unwrap())),
+            PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(
+                NOW_S * 1_000_000,
+            ))),
+        ],
+    )));
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+}
+
+fn spot_only_props(price: i64, conf: i64, timestamp_us: u64) -> Vec<PayloadPropertyValue> {
+    vec![
+        PayloadPropertyValue::Price(Some(Price::from_mantissa(price).unwrap())),
+        PayloadPropertyValue::Confidence(Some(Price::from_mantissa(conf).unwrap())),
+        PayloadPropertyValue::Exponent(EXPO),
+        PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs::from_micros(timestamp_us))),
+    ]
+}
+
+#[test]
+fn payload_without_ema_is_skipped() {
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    // The stateful path requires EMA: a spot-only payload stores nothing at all (no spot-only
+    // feeds), so it can never overwrite/wipe a stored feed's EMA.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        spot_only_props(123_456, 50, NOW_S * 1_000_000),
+    )));
+
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+    assert!(ema(&contract, FEED_ID).is_none());
+}
+
+#[test]
+fn spot_only_update_cannot_wipe_stored_ema() {
+    // Regression for the market-DoS vector (ENG-385): a relayer submits a valid signed spot-only
+    // update with a strictly-newer timestamp for an already-stored feed. It must NOT overwrite the
+    // stored full feed and drop its EMA.
+    let mut contract = deploy();
+
+    relayer_context(ample_deposit());
+    // Honest full update at NOW: spot + EMA both stored.
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+    assert_eq!(ema(&contract, FEED_ID).unwrap().price.0, 123_000);
+
+    // Attacker's spot-only update at NOW+5s (strictly newer): rejected wholesale, so nothing
+    // changes — the EMA survives, and even the (authentic) newer spot is not applied.
+    contract.update_price_feeds(Base64VecU8(build_payload(
+        (NOW_S + 5) * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        spot_only_props(999_999, 50, (NOW_S + 5) * 1_000_000),
+    )));
+
+    assert_eq!(
+        ema(&contract, FEED_ID).unwrap().price.0,
+        123_000,
+        "spot-only update must not wipe the stored EMA"
+    );
+    assert_eq!(
+        contract.get_feed_data(FEED_ID).unwrap().price.0,
+        123_456,
+        "the rejected spot-only update must not advance spot either"
+    );
+}
+
+#[test]
+fn verify_update_stays_at_parity_for_spot_only_payloads() {
+    // The stateless verify-and-return surface must match the official Pyth Lazer contracts: it does
+    // NOT require EMA. A spot-only payload still verifies and returns its parsed properties.
+    let contract = deploy();
+
+    let view = contract.verify_update(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        spot_only_props(123_456, 50, NOW_S * 1_000_000),
+    )));
+
+    let feed = &view.feeds[0];
+    assert_eq!(feed.price, Some(I64(123_456)));
+    assert!(
+        feed.ema_price.is_none(),
+        "spot-only payload carries no EMA, but verify_update still returns the feed"
+    );
+}
+
+#[test]
+#[should_panic(expected = "Insufficient deposit")]
+fn insufficient_storage_deposit_for_new_feed_panics() {
+    let mut contract = deploy();
+
+    // A brand-new feed consumes storage; a zero deposit cannot cover it.
+    relayer_context(NearToken::from_yoctonear(0));
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+}
+
+#[test]
+#[should_panic(expected = "Insufficient deposit")]
+fn update_fee_must_be_covered() {
+    let mut contract = deploy_with(ConfigArgs {
+        update_fee: NearToken::from_near(5),
+        ..config()
+    });
+
+    // The deposit covers storage but not the 5 NEAR fee.
+    relayer_context(NearToken::from_millinear(100));
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+}
+
+#[test]
+fn update_fee_is_retained_and_excess_refunded() {
+    let update_fee = NearToken::from_millinear(10);
+    let mut contract = deploy_with(ConfigArgs {
+        update_fee,
+        ..config()
+    });
+
+    // First update creates the feed (consumes storage); fund it amply.
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(NOW_S * 1_000_000, 100, 100, 1)));
+    assert!(contract.get_feed_data(FEED_ID).is_some());
+
+    // A strictly-newer overwrite consumes no new storage, so the only charge is `update_fee`: the
+    // refund must be exactly deposit - update_fee. (relayer_context resets the VM, so only this
+    // call's receipts remain; no-new-storage zeroes the storage term so the arithmetic is exact.)
+    let deposit = NearToken::from_near(1);
+    relayer_context(deposit);
+    contract.update_price_feeds(Base64VecU8(real_time((NOW_S + 1) * 1_000_000, 200, 200, 1)));
+
+    let refunds: Vec<NearToken> = get_created_receipts()
+        .into_iter()
+        .flat_map(|receipt| receipt.actions)
+        .filter_map(|action| match action {
+            MockAction::Transfer { deposit, .. } => Some(deposit),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refunds, vec![deposit.saturating_sub(update_fee)]);
+}
+
+#[test]
+#[should_panic(expected = "signer is not trusted")]
+fn rejects_untrusted_signer_payload() {
+    let mut contract = deploy();
+
+    // Reconfigure to trust a different signer, then submit a payload from the original key.
+    set_owner_context();
+    let mut cfg = config();
+    cfg.signers[0].public_key = [0xAB; 32];
+    contract.admin_set_config(cfg);
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(NOW_S * 1_000_000, 100, 100, 1)));
+}
+
+#[test]
+#[should_panic(expected = "Owner only")]
+fn admin_methods_reject_non_owner() {
+    let mut contract = deploy();
+
+    // Non-owner attempting an admin mutation must panic (1 yocto attached to pass the payable gate).
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("attacker.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    contract.admin_set_config(config());
+}
+
+#[test]
+#[should_panic(expected = "Owner only")]
+fn admin_withdraw_rejects_non_owner() {
+    let mut contract = deploy();
+
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("attacker.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    let _ = contract.admin_withdraw(NearToken::from_yoctonear(1));
+}
+
+#[test]
+fn owner_can_withdraw() {
+    let mut contract = deploy();
+    set_owner_context();
+    // Owner withdrawal schedules a transfer without panicking.
+    let _ = contract.admin_withdraw(NearToken::from_yoctonear(1));
+}
+
+#[test]
+#[should_panic(expected = "Owner only")]
+fn admin_upgrade_rejects_non_owner() {
+    let mut contract = deploy();
+
+    // 1 yocto attached so the failure is the owner gate, not the payable gate.
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id("attacker.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+}
+
+#[test]
+#[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
+fn admin_upgrade_requires_one_yocto() {
+    let mut contract = deploy();
+
+    // Owner, but no deposit: the payable gate must reject before any deploy is scheduled.
+    testing_env!(VMContextBuilder::new()
+        .predecessor_account_id(owner())
+        .attached_deposit(NearToken::from_yoctonear(0))
+        .block_timestamp(NOW_S * 1_000_000_000)
+        .build());
+    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+}
+
+#[test]
+fn fresh_deploy_is_at_state_version_one() {
+    let _contract = deploy();
+
+    // A fresh deploy stamps the on-chain state version, and target == stored, so no migration is
+    // pending. (`admin_upgrade`'s batched `migrate` is the seam for future version bumps.)
+    assert_eq!(Contract::get_target_state_version(), 1);
+    assert_eq!(Contract::get_stored_state_version(), 1);
+    assert!(!Contract::needs_migration());
+}
+
+// --- Config validation (W1) ---
+
+#[test]
+#[should_panic(expected = "signer set must not be empty")]
+fn empty_signer_set_rejected() {
+    set_owner_context();
+    let _ = Contract::new(
+        owner(),
+        ConfigArgs {
+            signers: vec![],
+            ..config()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "duplicate signer public key")]
+fn duplicate_signers_rejected() {
+    set_owner_context();
+    let signer = TrustedSigner {
+        public_key: signer_public_key(),
+        expires_at_s: NOW_S + 1,
+    };
+    let _ = Contract::new(
+        owner(),
+        ConfigArgs {
+            signers: vec![signer.clone(), signer],
+            ..config()
+        },
+    );
+}
+
+#[test]
+fn signer_set_serializes_in_public_key_order() {
+    // The `BTreeMap`-backed `SignerSet` yields a deterministic, public-key-sorted array regardless
+    // of insertion order — locking the structural-uniqueness representation's wire behavior.
+    let mut contract = deploy();
+    set_owner_context();
+    // Insert two signers that bracket the default key, in non-sorted order.
+    contract.admin_set_signer(hex::encode([0xFF; 32]), Some(NOW_S + 1));
+    contract.admin_set_signer(hex::encode([0x00; 32]), Some(NOW_S + 1));
+
+    let json = near_sdk::serde_json::to_value(&contract.get_config().signers).unwrap();
+    let keys: Vec<String> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["public_key"].as_str().unwrap().to_string())
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "signers must serialize in public-key order");
+    assert_eq!(keys.len(), 3);
+}
+
+#[test]
+#[should_panic(expected = "max_timestamp_delay_s must be non-zero")]
+fn zero_delay_window_rejected() {
+    set_owner_context();
+    let _ = Contract::new(
+        owner(),
+        ConfigArgs {
+            max_timestamp_delay_s: 0,
+            ..config()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_feeds_per_update must be non-zero")]
+fn zero_max_feeds_per_update_rejected() {
+    set_owner_context();
+    let _ = Contract::new(
+        owner(),
+        ConfigArgs {
+            max_feeds_per_update: 0,
+            ..config()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "signer set must not be empty")]
+fn admin_set_config_validates() {
+    let mut contract = deploy();
+    set_owner_context();
+    contract.admin_set_config(ConfigArgs {
+        signers: vec![],
+        ..config()
+    });
+}
+
+#[test]
+#[should_panic(expected = "cannot remove the last signer")]
+fn admin_set_signer_cannot_remove_last() {
+    let mut contract = deploy();
+    set_owner_context();
+    // config() has exactly one signer; removing it (`None`) must be rejected.
+    contract.admin_set_signer(hex::encode(signer_public_key()), None);
+}
+
+#[test]
+fn admin_set_signer_removes_non_last_signer() {
+    let mut contract = deploy();
+    set_owner_context();
+
+    // Add a second signer, then remove the original — leaving exactly the new one.
+    let other = [0xCD; 32];
+    contract.admin_set_signer(hex::encode(other), Some(NOW_S + 1));
+    contract.admin_set_signer(hex::encode(signer_public_key()), None);
+
+    let json = near_sdk::serde_json::to_value(&contract.get_config().signers).unwrap();
+    let keys: Vec<String> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["public_key"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(keys, vec![hex::encode(other)]);
+}
+
+// --- Signer rotation (Solana key rotation) ---
+
+#[test]
+fn rotating_in_a_new_signer_accepts_its_updates() {
+    // A second Lazer key — the rotation target. (Pyth rotates its ed25519 signer on the Solana
+    // program; the owner mirrors that here via `admin_set_signer`.)
+    let new_key = SigningKey::from_bytes(&[9u8; 32]);
+
+    let mut contract = deploy();
+
+    // Owner rotates the new key in (keeping the existing one during the overlap window).
+    set_owner_context();
+    contract.admin_set_signer(
+        hex::encode(new_key.verifying_key().to_bytes()),
+        Some(NOW_S + 1_000_000),
+    );
+
+    // A payload signed by the newly trusted key now verifies and stores.
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time_signed_by(
+        &new_key,
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+    assert_eq!(contract.get_feed_data(FEED_ID).unwrap().price.0, 123_456);
+}
+
+#[test]
+#[should_panic(expected = "signer is not trusted")]
+fn refreshing_signer_expiry_into_the_past_rejects_updates() {
+    let mut contract = deploy();
+
+    // Refresh the (only) signer's expiry to `now` — i.e. lapse it (`expires_at_s > now` is false).
+    // This exercises both upsert-refresh and the expiry gate in verification.
+    set_owner_context();
+    contract.admin_set_signer(hex::encode(signer_public_key()), Some(NOW_S));
+
+    relayer_context(ample_deposit());
+    contract.update_price_feeds(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+}
+
+// --- Stateless verify_update view ---
+
+#[test]
+fn verify_update_returns_data_without_writing_storage() {
+    let contract = deploy();
+
+    relayer_context(NearToken::from_yoctonear(0)); // a view: no deposit needed
+    let view = contract.verify_update(Base64VecU8(real_time(
+        NOW_S * 1_000_000,
+        123_456,
+        123_000,
+        50,
+    )));
+
+    // Full verified update is returned.
+    assert_eq!(view.signer, signer_public_key());
+    assert_eq!(view.timestamp_ns.as_secs(), NOW_S);
+    assert_eq!(view.feeds.len(), 1);
+    let feed = &view.feeds[0];
+    assert_eq!(feed.feed_id, FEED_ID);
+    assert_eq!(feed.price.unwrap().0, 123_456);
+    assert_eq!(feed.ema_price.unwrap().0, 123_000);
+    assert_eq!(feed.confidence.unwrap().0, 50);
+    assert_eq!(feed.exponent, Some(EXPO));
+
+    // ...and nothing was persisted.
+    assert!(contract.get_feed_data(FEED_ID).is_none());
+}
+
+#[test]
+fn verify_update_surfaces_non_pyth_properties() {
+    let contract = deploy();
+    relayer_context(NearToken::from_yoctonear(0));
+
+    // A payload carrying properties outside the Pyth subset.
+    let view = contract.verify_update(Base64VecU8(build_payload(
+        NOW_S * 1_000_000,
+        ChannelId::REAL_TIME.0,
+        vec![
+            PayloadPropertyValue::Price(Some(Price::from_mantissa(100).unwrap())),
+            PayloadPropertyValue::Exponent(EXPO),
+            PayloadPropertyValue::PublisherCount(9),
+            PayloadPropertyValue::BestBidPrice(Some(Price::from_mantissa(99).unwrap())),
+        ],
+    )));
+    let feed = &view.feeds[0];
+    assert_eq!(feed.publisher_count, Some(9));
+    assert_eq!(feed.best_bid_price.unwrap().0, 99);
+}
+
+#[test]
+#[should_panic(expected = "signer is not trusted")]
+fn verify_update_rejects_untrusted_signer() {
+    let key_b = SigningKey::from_bytes(&[9u8; 32]);
+    let contract = deploy(); // trusts the default key, not key_b
+
+    relayer_context(NearToken::from_yoctonear(0));
+    let _ = contract.verify_update(Base64VecU8(real_time_signed_by(
+        &key_b,
+        NOW_S * 1_000_000,
+        100,
+        100,
+        1,
+    )));
+}
+
+// --- NEP-297 admin events (ENG-438) ---
+//
+// Each owner-gated `admin_*` mutation emits one `pyth-lazer-adapter` event carrying the resulting
+// value. Ownership transfer/renounce is not asserted here — `near_sdk_contract_tools::Owner` already
+// emits its own events under the separate `x-own` standard.
+
+/// The single NEP-297 event emitted since the last `testing_env!` reset, with the standard/version
+/// envelope asserted. Panics unless exactly one `EVENT_JSON:` log is present.
+fn single_event() -> near_sdk::serde_json::Value {
+    let logs = near_sdk::test_utils::get_logs();
+    assert_eq!(logs.len(), 1, "expected exactly one log, got {logs:?}");
+    let json = logs[0].strip_prefix("EVENT_JSON:").unwrap();
+    let event: near_sdk::serde_json::Value = near_sdk::serde_json::from_str(json).unwrap();
+    assert_eq!(event["standard"], "pyth-lazer-adapter");
+    assert_eq!(event["version"], "1.0.0");
+    event
+}
+
+/// A config carrying `n` distinct signers (used to size the `ConfigSet` payload).
+fn config_with_signers(n: u8) -> ConfigArgs {
+    ConfigArgs {
+        signers: (0..n)
+            .map(|i| TrustedSigner {
+                public_key: [i; 32],
+                expires_at_s: NOW_S + 1_000_000,
+            })
+            .collect(),
+        ..config()
+    }
+}
+
+#[rstest]
+#[case(1)]
+#[case(16)]
+fn admin_set_config_emits_config_set(#[case] signers: u8) {
+    let mut contract = deploy();
+    set_owner_context();
+    contract.admin_set_config(config_with_signers(signers));
+
+    let event = single_event();
+    assert_eq!(event["event"], "config_set");
+    // The payload is the stored, validated `Config`...
+    let stored = near_sdk::serde_json::to_value(contract.get_config()).unwrap();
+    assert_eq!(event["data"]["config"], stored);
+    // ...and it round-trips back through serde to an equivalent `Config`.
+    let roundtrip: Config =
+        near_sdk::serde_json::from_value(event["data"]["config"].clone()).unwrap();
+    assert_eq!(&roundtrip, contract.get_config());
+    // The emitted log stays well within NEAR's log-length limit even with many signers.
+    assert!(near_sdk::test_utils::get_logs()[0].len() < 16_000);
+}
+
+#[test]
+fn admin_set_signer_upsert_emits_signer_upserted() {
+    let mut contract = deploy();
+    set_owner_context();
+    let key = [0xCD; 32];
+    contract.admin_set_signer(hex::encode(key), Some(NOW_S + 42));
+
+    let event = single_event();
+    assert_eq!(event["event"], "signer_upserted");
+    assert_eq!(
+        event["data"]["public_key"].as_str().unwrap(),
+        hex::encode(key)
+    );
+    assert_eq!(event["data"]["expires_at_s"], NOW_S + 42);
+}
+
+#[test]
+fn admin_set_signer_remove_emits_signer_removed() {
+    let mut contract = deploy();
+    set_owner_context();
+    // Add a second signer so removing the original isn't the (rejected) last-signer removal.
+    contract.admin_set_signer(hex::encode([0xCD; 32]), Some(NOW_S + 1));
+
+    set_owner_context(); // reset logs before the op under test
+    contract.admin_set_signer(hex::encode(signer_public_key()), None);
+
+    let event = single_event();
+    assert_eq!(event["event"], "signer_removed");
+    assert_eq!(
+        event["data"]["public_key"].as_str().unwrap(),
+        hex::encode(signer_public_key())
+    );
+}
+
+#[test]
+fn admin_withdraw_emits_withdrawn() {
+    let mut contract = deploy();
+    set_owner_context();
+    let amount = NearToken::from_yoctonear(7);
+    let _ = contract.admin_withdraw(amount);
+
+    let event = single_event();
+    assert_eq!(event["event"], "withdrawn");
+    assert_eq!(event["data"]["amount"].as_str().unwrap(), "7");
+    assert_eq!(
+        event["data"]["receiver"].as_str().unwrap(),
+        owner().as_str()
+    );
+}
+
+#[rstest]
+#[case(vec![1u8, 2, 3], true)]
+#[case(vec![], false)]
+fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>, #[case] expected_migrated: bool) {
+    let mut contract = deploy();
+    set_owner_context();
+    let code = vec![0u8, 1, 2, 3, 4];
+    let _ = contract.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args));
+
+    let event = single_event();
+    assert_eq!(event["event"], "upgraded");
+    let expected_hash = near_sdk::bs58::encode(near_sdk::env::sha256(&code)).into_string();
+    assert_eq!(event["data"]["code_hash"].as_str().unwrap(), expected_hash);
+    assert_eq!(event["data"]["migrated"], expected_migrated);
+}
+
+#[test]
+fn rejected_last_signer_removal_emits_no_event() {
+    let mut contract = deploy();
+    set_owner_context();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.admin_set_signer(hex::encode(signer_public_key()), None);
+    }));
+    assert!(result.is_err(), "removing the last signer must be rejected");
+    assert!(
+        near_sdk::test_utils::get_logs().is_empty(),
+        "a rejected op must emit no event"
+    );
+}
+
+#[test]
+fn rejected_invalid_config_emits_no_event() {
+    let mut contract = deploy();
+    set_owner_context();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        contract.admin_set_config(ConfigArgs {
+            signers: vec![],
+            ..config()
+        });
+    }));
+    assert!(result.is_err(), "an invalid config must be rejected");
+    assert!(
+        near_sdk::test_utils::get_logs().is_empty(),
+        "a rejected op must emit no event"
+    );
+}

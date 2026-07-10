@@ -47,13 +47,19 @@ impl ReadNear for NearClient {
     where
         T: DeserializeOwned + Send + Sync + 'static,
     {
-        Ok(Contract(contract_id)
+        Contract(contract_id.clone())
             .call_function_raw(method_name, args)
             .read_only()
             .fetch_from(self.network())
             .await
-            .map_err(|error| GatewayError::NearQuery(error.to_string()))?
-            .data)
+            .map(|response| response.data)
+            .map_err(|error| {
+                if is_unknown_account(&error) {
+                    GatewayError::AccountNotFound(contract_id)
+                } else {
+                    GatewayError::NearQuery(error.to_string())
+                }
+            })
     }
 
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account> {

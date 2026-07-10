@@ -1,0 +1,638 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
+
+use async_trait::async_trait;
+use futures::{SinkExt, StreamExt};
+use pyth_lazer_protocol::api::{Channel, SubscriptionId};
+use templar_gateway_core::{OraclePayloadSource, RedactedString};
+use thiserror::Error;
+use tokio::{
+    net::TcpStream,
+    sync::{mpsc, oneshot, watch},
+    task::JoinHandle,
+    time::{timeout, Instant},
+};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{
+        client::IntoClientRequest,
+        http::{header::AUTHORIZATION, HeaderValue},
+        protocol::WebSocketConfig,
+        Message,
+    },
+    MaybeTlsStream, WebSocketStream,
+};
+use url::Url;
+
+use crate::lazer_wire::{
+    decode_stream_message, subscription_frame_for_feeds, unsubscription_frame, DecodedLazerPayload,
+    LazerStreamEvent, MAX_STREAM_JSON_MESSAGE_BYTES,
+};
+
+const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
+const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
+const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
+/// A subscribed stream delivers once per channel interval — 1s on the slowest — so this
+/// much silence means a socket that is open but dead.
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Headroom in [`FETCH_TIMEOUT`] for the reconnect itself: handshake, replay, first payload.
+const RECONNECT_LATENCY_BUDGET: Duration = Duration::from_secs(4);
+
+/// How long [`LazerPayloadSource::fetch_payload`] waits for a covering payload. Distinct
+/// from `max_payload_age`, which bounds the age of an already-cached one.
+///
+/// Summed, not chosen, so a fetch outlives one recovery from a socket that fell silent
+/// while healthy. [`StreamTask::cache_payload`] resets the backoff on every payload, so
+/// that first reconnect sleeps [`INITIAL_RECONNECT_BACKOFF`]; a larger backoff means the
+/// stream is degraded, and expiring the fetch beats holding a caller open for
+/// [`MAX_RECONNECT_BACKOFF`].
+const FETCH_TIMEOUT: Duration = STREAM_IDLE_TIMEOUT
+    .saturating_add(INITIAL_RECONNECT_BACKOFF)
+    .saturating_add(RECONNECT_LATENCY_BUDGET);
+
+#[cfg(test)]
+mod config_tests;
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
+mod mock_server;
+#[cfg(test)]
+mod tests;
+
+type LazerStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+#[derive(Debug, Clone)]
+pub struct LazerSourceConfig {
+    ws_url: Url,
+    api_token: RedactedString,
+    channel: Channel,
+    max_payload_age: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct LazerSubscriptionConfig {
+    pub channel: String,
+    pub max_payload_age: Duration,
+}
+
+impl LazerSourceConfig {
+    pub fn new(
+        ws_url: Url,
+        api_token: RedactedString,
+        subscription: LazerSubscriptionConfig,
+    ) -> LazerResult<Self> {
+        if ws_url.scheme() != "wss" {
+            return Err(LazerClientError::InsecureWebSocketUrl);
+        }
+        if api_token.trim().is_empty() {
+            return Err(LazerClientError::EmptyApiToken);
+        }
+        if subscription.max_payload_age.is_zero() {
+            return Err(LazerClientError::InvalidMaxPayloadAge);
+        }
+        let max_payload_age = subscription.max_payload_age;
+        let channel = parse_channel(subscription.channel)?;
+        Ok(Self {
+            ws_url,
+            api_token,
+            channel,
+            max_payload_age,
+        })
+    }
+
+    pub(crate) fn channel(&self) -> Channel {
+        self.channel
+    }
+
+    /// Test-only: point the source at the in-process mock server, which speaks
+    /// plaintext `ws://`. Production configs must be `wss://` — see [`Self::new`].
+    #[cfg(test)]
+    pub(crate) fn for_mock_server(ws_url: Url, max_payload_age: Duration) -> Self {
+        Self {
+            ws_url,
+            api_token: RedactedString::from("test-token"),
+            channel: parse_channel("fixed_rate@200ms".to_owned()).expect("valid channel"),
+            max_payload_age,
+        }
+    }
+}
+
+fn parse_channel(channel: String) -> LazerResult<Channel> {
+    serde_json::from_value(serde_json::Value::String(channel.clone()))
+        .map_err(|_| LazerClientError::InvalidChannel(channel))
+}
+
+#[derive(Debug, Error)]
+pub enum LazerClientError {
+    #[error("Pyth Lazer websocket URL must use wss://")]
+    InsecureWebSocketUrl,
+    #[error("Pyth Lazer API token must not be empty")]
+    EmptyApiToken,
+    #[error("unsupported Pyth Lazer channel: {0}")]
+    InvalidChannel(String),
+    #[error("Pyth Lazer max payload age must be greater than zero")]
+    InvalidMaxPayloadAge,
+    #[error("Pyth Lazer request failed: {0}")]
+    Request(String),
+    #[error("Pyth Lazer stream message is missing solana payload")]
+    MissingSolanaPayload,
+    #[error("Pyth Lazer solana payload decode failed: {0}")]
+    Decode(String),
+    #[error("Pyth Lazer solana payload exceeds size limit")]
+    PayloadTooLarge,
+    #[error("Pyth Lazer payload request must include at least one feed id")]
+    EmptyRequest,
+    #[error("timed out waiting for a Pyth Lazer payload")]
+    Timeout,
+    #[error("Pyth Lazer subscription failed: {0}")]
+    SubscriptionFailed(String),
+}
+
+pub type LazerResult<T> = Result<T, LazerClientError>;
+
+fn source_stopped() -> LazerClientError {
+    LazerClientError::Request("Pyth Lazer source task stopped".to_owned())
+}
+
+/// The latest state of one subscription, published to every waiting `fetch_payload`.
+#[derive(Debug, Clone)]
+enum Slot {
+    /// Subscribed, but no payload has arrived yet.
+    Waiting,
+    /// The server rejected the subscription. Terminal: invalid feeds never become valid.
+    Failed(String),
+    Ready(CachedPayload),
+}
+
+#[derive(Debug, Clone)]
+struct CachedPayload {
+    payload: Vec<u8>,
+    feed_ids: BTreeSet<u32>,
+    received_at: Instant,
+}
+
+/// Ask the stream task for the slot of a subscription covering `feed_ids`, creating one if needed.
+#[derive(Debug)]
+struct SubscribeRequest {
+    feed_ids: BTreeSet<u32>,
+    slot_tx: oneshot::Sender<watch::Receiver<Slot>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LazerPayloadSource {
+    max_payload_age: Duration,
+    subscribe_tx: mpsc::Sender<SubscribeRequest>,
+    _task: Arc<TaskGuard>,
+}
+
+#[derive(Debug)]
+struct TaskGuard(JoinHandle<()>);
+
+impl Drop for TaskGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl LazerPayloadSource {
+    pub fn spawn(config: LazerSourceConfig) -> Self {
+        Self::spawn_with(config, STREAM_IDLE_TIMEOUT)
+    }
+
+    /// Test-only: shorten silence detection so a silent-stream test needn't wait
+    /// [`STREAM_IDLE_TIMEOUT`]. Kept off [`LazerSourceConfig`], which carries only what
+    /// production configures.
+    #[cfg(test)]
+    pub(crate) fn spawn_with_idle_timeout(
+        config: LazerSourceConfig,
+        idle_timeout: Duration,
+    ) -> Self {
+        Self::spawn_with(config, idle_timeout)
+    }
+
+    fn spawn_with(config: LazerSourceConfig, idle_timeout: Duration) -> Self {
+        let max_payload_age = config.max_payload_age;
+        let (subscribe_tx, subscribe_rx) = mpsc::channel(32);
+        let task = tokio::spawn(StreamTask::new(config, idle_timeout).run(subscribe_rx));
+        Self {
+            max_payload_age,
+            subscribe_tx,
+            _task: Arc::new(TaskGuard(task)),
+        }
+    }
+
+    async fn subscribe(&self, feed_ids: BTreeSet<u32>) -> LazerResult<watch::Receiver<Slot>> {
+        let (slot_tx, slot_rx) = oneshot::channel();
+        self.subscribe_tx
+            .send(SubscribeRequest { feed_ids, slot_tx })
+            .await
+            .map_err(|_| source_stopped())?;
+        slot_rx.await.map_err(|_| source_stopped())
+    }
+}
+
+#[async_trait]
+impl OraclePayloadSource for LazerPayloadSource {
+    type PriceId = u32;
+    type Error = LazerClientError;
+
+    async fn fetch_payload(&self, price_ids: &[Self::PriceId]) -> Result<Vec<u8>, Self::Error> {
+        if price_ids.is_empty() {
+            return Err(LazerClientError::EmptyRequest);
+        }
+        let feed_ids: BTreeSet<u32> = price_ids.iter().copied().collect();
+
+        // One deadline over both halves: the task may be mid-connect, so waiting for its
+        // reply is as unbounded as waiting for a payload.
+        timeout(FETCH_TIMEOUT, async {
+            // This send also wakes the task out of any reconnect backoff.
+            let mut slot = self.subscribe(feed_ids.clone()).await?;
+            await_payload(&mut slot, &feed_ids, self.max_payload_age).await
+        })
+        .await
+        .map_err(|_| LazerClientError::Timeout)?
+    }
+}
+
+async fn await_payload(
+    slot: &mut watch::Receiver<Slot>,
+    feed_ids: &BTreeSet<u32>,
+    max_payload_age: Duration,
+) -> LazerResult<Vec<u8>> {
+    loop {
+        // Scope the borrow: a `watch::Ref` must not be held across an await.
+        let settled = ready_payload(&slot.borrow_and_update(), feed_ids, max_payload_age);
+        if let Some(result) = settled {
+            return result;
+        }
+        slot.changed().await.map_err(|_| source_stopped())?;
+    }
+}
+
+/// `None` while the subscription has yet to produce a payload we can serve.
+fn ready_payload(
+    slot: &Slot,
+    feed_ids: &BTreeSet<u32>,
+    max_payload_age: Duration,
+) -> Option<LazerResult<Vec<u8>>> {
+    match slot {
+        Slot::Failed(error) => Some(Err(LazerClientError::SubscriptionFailed(error.clone()))),
+        Slot::Ready(cached)
+            if cached.received_at.elapsed() <= max_payload_age
+                && feed_ids.is_subset(&cached.feed_ids) =>
+        {
+            Some(Ok(cached.payload.clone()))
+        }
+        // Stale or not-yet-covering is not a failure: the next frame is a channel interval
+        // away. This cannot stall — a `fixed_rate` frame carries every feed the server
+        // subscribed us to, and a feed it won't serve fails the slot at subscribe time.
+        //
+        // Coverage stays a hard requirement: the payload goes verbatim to the adapter's
+        // `update_price_feeds`, so a frame missing a feed would never refresh that price.
+        Slot::Waiting | Slot::Ready(_) => None,
+    }
+}
+
+/// Owns the websocket and every subscription on it; callers reach it only by message, so
+/// the subscription set needs no lock.
+///
+/// Not an `actix::Actor`: a plain tokio task, so the source stays usable from the
+/// `templar-gateway-client` path, which runs no actix `System`.
+struct StreamTask {
+    config: LazerSourceConfig,
+    /// Ids increase monotonically, so the first key is the oldest — the one eviction takes.
+    subscriptions: BTreeMap<SubscriptionId, Subscription>,
+    next_id: u64,
+    backoff: Duration,
+    idle_timeout: Duration,
+}
+
+struct Subscription {
+    feed_ids: BTreeSet<u32>,
+    slot: watch::Sender<Slot>,
+}
+
+/// What [`StreamTask::register`] changed, and therefore which frames the stream owes the
+/// server. Empty when an existing subscription already covered the request.
+#[derive(Debug, Default)]
+struct Registration {
+    new_subscription: Option<SubscriptionId>,
+    evicted: Vec<SubscriptionId>,
+}
+
+/// A stream that ended without an error, and so without a reconnect.
+#[derive(Debug)]
+enum StreamEnd {
+    /// Every `LazerPayloadSource` was dropped.
+    Shutdown,
+    /// The last subscription went away, so the connection has no purpose.
+    NoSubscriptions,
+}
+
+impl StreamTask {
+    fn new(config: LazerSourceConfig, idle_timeout: Duration) -> Self {
+        Self {
+            config,
+            subscriptions: BTreeMap::new(),
+            next_id: 1,
+            backoff: INITIAL_RECONNECT_BACKOFF,
+            idle_timeout,
+        }
+    }
+
+    async fn run(mut self, mut requests: mpsc::Receiver<SubscribeRequest>) {
+        loop {
+            // Disconnected, so there is nothing to unsubscribe from.
+            self.prune_abandoned();
+
+            // A connection exists exactly while a subscription does: the server closes a
+            // subscription-less socket after 60s. `while`, not `if` — an abandoned request
+            // registers nothing, and connecting for it would open an empty socket.
+            while self.subscriptions.is_empty() {
+                let Some(request) = requests.recv().await else {
+                    return;
+                };
+                self.register(request);
+            }
+
+            match self.connect_and_stream(&mut requests).await {
+                Ok(StreamEnd::Shutdown) => return,
+                // Nothing left to stream: park rather than hold a doomed connection.
+                Ok(StreamEnd::NoSubscriptions) => continue,
+                Err(error) => tracing::warn!(
+                    %error,
+                    subscriptions = self.subscriptions.len(),
+                    "Pyth Lazer stream disconnected",
+                ),
+            }
+
+            if !self.wait_before_reconnect(&mut requests).await {
+                return;
+            }
+        }
+    }
+
+    /// Sleep out the reconnect backoff, waking early for a subscribe request. Returns
+    /// `false` once every sender is gone, which is the shutdown signal.
+    async fn wait_before_reconnect(
+        &mut self,
+        requests: &mut mpsc::Receiver<SubscribeRequest>,
+    ) -> bool {
+        let sleep = self.backoff;
+        self.backoff = (self.backoff * 2).min(MAX_RECONNECT_BACKOFF);
+        tokio::select! {
+            () = tokio::time::sleep(sleep) => true,
+            request = requests.recv() => match request {
+                // Registered now, subscribed by the replay on the next connect.
+                Some(request) => { self.register(request); true }
+                None => false,
+            },
+        }
+    }
+
+    /// Streams until the connection ends. `Ok` is an orderly end (see [`StreamEnd`]);
+    /// every disconnect is an `Err`, which the caller retries after a backoff.
+    async fn connect_and_stream(
+        &mut self,
+        requests: &mut mpsc::Receiver<SubscribeRequest>,
+    ) -> LazerResult<StreamEnd> {
+        let mut stream = self.connect().await?;
+        self.replay_subscriptions(&mut stream).await?;
+
+        // One deadline per connection, reset only by traffic. A `timeout(.., stream.next())`
+        // rebuilt each `select!` iteration would restart whenever the request branch won,
+        // so a trickle of fetches would hide a silent socket.
+        let idle = tokio::time::sleep(self.idle_timeout);
+        tokio::pin!(idle);
+
+        loop {
+            for id in self.prune_abandoned() {
+                send_frame(&mut stream, unsubscription_frame(id)?).await?;
+            }
+
+            // Every subscription was rejected or abandoned; the connection has no purpose.
+            if self.subscriptions.is_empty() {
+                return Ok(StreamEnd::NoSubscriptions);
+            }
+
+            tokio::select! {
+                () = &mut idle => {
+                    return Err(LazerClientError::Request("websocket idle timeout".to_owned()));
+                }
+                message = stream.next() => {
+                    idle.as_mut().reset(Instant::now() + self.idle_timeout);
+                    let Some(message) = message else {
+                        return Err(LazerClientError::Request("websocket closed".to_owned()));
+                    };
+                    let message = message.map_err(|error| LazerClientError::Request(error.to_string()))?;
+                    let Message::Text(text) = message else {
+                        continue;
+                    };
+                    match decode_stream_message(text.as_ref()) {
+                        Ok(event) => self.handle_event(event),
+                        Err(error) => tracing::warn!(%error, "ignored invalid Pyth Lazer stream message"),
+                    }
+                }
+                request = requests.recv() => {
+                    let Some(request) = request else {
+                        return Ok(StreamEnd::Shutdown);
+                    };
+                    let registration = self.register(request);
+                    self.send_registration(&mut stream, &registration).await?;
+                }
+            }
+        }
+    }
+
+    async fn connect(&self) -> LazerResult<LazerStream> {
+        let mut request = self
+            .config
+            .ws_url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        let authorization =
+            HeaderValue::from_str(&format!("Bearer {}", self.config.api_token.as_ref()))
+                .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        request.headers_mut().insert(AUTHORIZATION, authorization);
+
+        let (stream, _) = connect_async_with_config(
+            request,
+            Some(
+                WebSocketConfig::default()
+                    .max_message_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES))
+                    .max_frame_size(Some(MAX_STREAM_JSON_MESSAGE_BYTES)),
+            ),
+            false,
+        )
+        .await
+        .map_err(|error| LazerClientError::Request(error.to_string()))?;
+        Ok(stream)
+    }
+
+    /// Resubscribe every live subscription on a fresh connection. A request that arrived
+    /// while disconnected is already registered, so it replays here too — no queued frame
+    /// can subscribe the same id twice. Cached payloads survive; `max_payload_age` already
+    /// decides whether one is still servable.
+    async fn replay_subscriptions(&self, stream: &mut LazerStream) -> LazerResult<()> {
+        for (id, subscription) in &self.subscriptions {
+            let frame =
+                subscription_frame_for_feeds(&self.config, *id, subscription.feed_ids.clone())?;
+            send_frame(stream, frame).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_registration(
+        &self,
+        stream: &mut LazerStream,
+        registration: &Registration,
+    ) -> LazerResult<()> {
+        for id in &registration.evicted {
+            send_frame(stream, unsubscription_frame(*id)?).await?;
+        }
+        if let Some(id) = registration.new_subscription {
+            let Some(subscription) = self.subscriptions.get(&id) else {
+                return Ok(());
+            };
+            let frame =
+                subscription_frame_for_feeds(&self.config, id, subscription.feed_ids.clone())?;
+            send_frame(stream, frame).await?;
+        }
+        Ok(())
+    }
+
+    /// Hand the caller the slot of a subscription covering `feed_ids`, creating one if none
+    /// does. Hand it over *before* mutating state: a requester that timed out has dropped
+    /// its receiver, and registering for it would strand a subscription nothing waits on
+    /// (holding the connection open) or evict a live one at capacity.
+    fn register(&mut self, request: SubscribeRequest) -> Registration {
+        let SubscribeRequest { feed_ids, slot_tx } = request;
+
+        if let Some(subscription) = self
+            .subscriptions
+            .values()
+            .find(|subscription| feed_ids.is_subset(&subscription.feed_ids))
+        {
+            let _ = slot_tx.send(subscription.slot.subscribe());
+            return Registration::default();
+        }
+
+        let (slot, slot_rx) = watch::channel(Slot::Waiting);
+        if slot_tx.send(slot_rx).is_err() {
+            return Registration::default();
+        }
+
+        let evicted = self.evict_to_fit();
+        let id = SubscriptionId(self.next_id);
+        self.next_id += 1;
+        self.subscriptions
+            .insert(id, Subscription { feed_ids, slot });
+
+        Registration {
+            new_subscription: Some(id),
+            evicted,
+        }
+    }
+
+    /// Drop the subscriptions worth nothing to anyone, returning the ids to unsubscribe:
+    /// a fetch that timed out before its first payload dropped its receiver, and its
+    /// subscription would otherwise hold the connection open for a caller that is gone.
+    /// A cached payload keeps its subscription — that is the warm cache for the next fetch,
+    /// whose own receiver is likewise long dropped.
+    fn prune_abandoned(&mut self) -> Vec<SubscriptionId> {
+        let mut pruned = Vec::new();
+        self.subscriptions.retain(|id, subscription| {
+            let keep = subscription.slot.receiver_count() > 0
+                || matches!(*subscription.slot.borrow(), Slot::Ready(_));
+            if !keep {
+                pruned.push(*id);
+            }
+            keep
+        });
+        pruned
+    }
+
+    fn evict_to_fit(&mut self) -> Vec<SubscriptionId> {
+        let mut evicted = Vec::new();
+        while self.subscriptions.len() >= MAX_ACTIVE_SUBSCRIPTIONS {
+            let Some(&oldest) = self.subscriptions.keys().next() else {
+                break;
+            };
+            self.fail(oldest, "subscription evicted".to_owned());
+            evicted.push(oldest);
+        }
+        evicted
+    }
+
+    fn handle_event(&mut self, event: LazerStreamEvent) {
+        match event {
+            LazerStreamEvent::Payload(payload) => self.cache_payload(payload),
+            // Nothing to do: a fetch waits for the payload, not for the acknowledgement.
+            LazerStreamEvent::Subscribed { .. } => {}
+            LazerStreamEvent::SubscribedWithInvalidFeedIdsIgnored {
+                subscription_id,
+                subscribed_feed_ids,
+            } => {
+                let covered =
+                    self.subscriptions
+                        .get(&subscription_id)
+                        .is_some_and(|subscription| {
+                            subscription.feed_ids.is_subset(&subscribed_feed_ids)
+                        });
+                if !covered {
+                    self.fail(
+                        subscription_id,
+                        "subscription ignored requested feed ids".to_owned(),
+                    );
+                }
+            }
+            LazerStreamEvent::SubscriptionError {
+                subscription_id,
+                error,
+            } => self.fail(subscription_id, error),
+            LazerStreamEvent::Unsubscribed { subscription_id } => tracing::debug!(
+                subscription_id = subscription_id.0,
+                "Pyth Lazer subscription removed"
+            ),
+            LazerStreamEvent::Error { error } => {
+                tracing::warn!(%error, "Pyth Lazer stream returned an error response");
+            }
+        }
+    }
+
+    fn cache_payload(&mut self, payload: DecodedLazerPayload) {
+        self.backoff = INITIAL_RECONNECT_BACKOFF;
+        let Some(subscription) = self.subscriptions.get(&payload.subscription_id) else {
+            tracing::warn!(
+                subscription_id = payload.subscription_id.0,
+                "ignored Pyth Lazer payload for unknown subscription"
+            );
+            return;
+        };
+        subscription.slot.send_replace(Slot::Ready(CachedPayload {
+            payload: payload.bytes,
+            feed_ids: payload.feed_ids,
+            received_at: Instant::now(),
+        }));
+    }
+
+    /// Drop a subscription and wake its waiters. Terminal, so it is not replayed.
+    fn fail(&mut self, subscription_id: SubscriptionId, error: String) {
+        if let Some(subscription) = self.subscriptions.remove(&subscription_id) {
+            subscription.slot.send_replace(Slot::Failed(error));
+        }
+    }
+}
+
+async fn send_frame(stream: &mut LazerStream, frame: String) -> LazerResult<()> {
+    stream
+        .send(Message::Text(frame.into()))
+        .await
+        .map_err(|error| LazerClientError::Request(error.to_string()))
+}

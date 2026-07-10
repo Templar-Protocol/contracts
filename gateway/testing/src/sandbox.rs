@@ -31,14 +31,16 @@ use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
 };
 use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
+use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{
     controller::{lst_oracle::LstOracleController, ref_finance::PoolInfo},
     market_configuration,
     test_signer::TestSigner,
     vault_configuration, FtController, GovernanceContractController, MarketController,
-    MockOracleController, ProxyOracleController, ReceiverController, RedStoneAdapterController,
-    RefFinanceController, RegistryController, UniversalAccountController,
+    MockOracleController, ProxyOracleController, PythLazerAdapterController, ReceiverController,
+    RedStoneAdapterController, RefFinanceController, RegistryController,
+    UniversalAccountController,
 };
 
 pub struct SandboxHarness {
@@ -530,6 +532,42 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
+    /// Deploy a Pyth Lazer adapter. The adapter is Lazer-native and feed-id-addressed; it
+    /// is consumed by wrapping it in a proxy oracle as a `Lazer` source (by feed id), not by
+    /// targeting it directly — tests use this to stand one up behind a proxy or to assert a bare
+    /// adapter is rejected as a standalone oracle. The adapter owns itself (so the harness signer
+    /// drives `admin_*`); the trusted signer is a throwaway key — gateway plans against it are
+    /// inspected, not submitted, so no payload is verified.
+    pub async fn deploy_pyth_lazer_adapter(&self, account_id: AccountId) -> Result<AccountId> {
+        let (account_id, signer) = self
+            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .await?;
+        let config = ConfigArgs {
+            // The adapter never verifies a payload in these plan-only tests (plans are
+            // inspected, not submitted), so any well-formed 32-byte key works.
+            signers: vec![TrustedSigner {
+                public_key: [7u8; 32],
+                expires_at_s: u64::MAX,
+            }],
+            max_timestamp_delay_s: 600,
+            max_timestamp_ahead_s: 600,
+            allowed_channel_id: Some(1),
+            update_fee: NearToken::from_yoctonear(0),
+            max_feeds_per_update: 64,
+        };
+        deploy_contract(
+            &self.network,
+            account_id.clone(),
+            signer,
+            PythLazerAdapterController::wasm().await.to_vec(),
+            "new",
+            serde_json::json!({ "owner": account_id, "config": config }),
+        )
+        .await?;
+
+        Ok(account_id)
+    }
+
     pub async fn set_mock_oracle_pyth_price(
         &self,
         oracle_id: AccountId,
@@ -566,6 +604,31 @@ impl SandboxHarness {
         Contract(oracle_id.clone())
             .call_function(
                 "set_redstone_price",
+                serde_json::json!({
+                    "feed_id": feed_id,
+                    "data": data,
+                }),
+            )
+            .transaction()
+            .gas(near_sdk::Gas::from_tgas(100))
+            .with_signer(oracle_id, signer)
+            .send_to(&self.network)
+            .await?
+            .assert_success();
+        Ok(())
+    }
+
+    pub async fn set_mock_oracle_lazer_price(
+        &self,
+        oracle_id: AccountId,
+        feed_id: u32,
+        data: Option<templar_common::oracle::lazer::FeedData>,
+    ) -> Result<()> {
+        let signer = Signer::from_secret_key(test_secret_key()?)
+            .context("failed to initialize mock oracle signer")?;
+        Contract(oracle_id.clone())
+            .call_function(
+                "set_lazer_price",
                 serde_json::json!({
                     "feed_id": feed_id,
                     "data": data,
@@ -1040,7 +1103,7 @@ pub(crate) async fn deploy_contract(
 }
 
 /// The fixed secret key every harness-created account is provisioned with
-/// (signer accounts and `create_account_signer` contract accounts alike).
+/// (signer accounts and contract accounts alike).
 /// Exposed so external consumers can build their own gateway client against the
 /// sandbox using the same key the harness deploys with.
 pub fn test_secret_key() -> Result<SecretKey> {

@@ -6,14 +6,23 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Duration, Utc};
-use near_crypto::{PublicKey, Signature};
+use near_account_id::AccountId;
+use near_api::{CryptoHash, SecretKey};
 use near_sdk::borsh::{self, BorshSerialize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+
+use templar_gateway_methods_spec::intents::{IntentPayload, SignedIntentPayload};
+use templar_gateway_types::primitive::{PublicKey, Signature};
 
 /// Verifier contract on NEAR
 pub const INTENTS_CONTRACT: &str = "intents.near";
+
+/// NEP-413 off-chain message prefix tag: `(1 << 31) + 413`. Prepended to the
+/// borsh-encoded payload before hashing so an off-chain-signed message can never
+/// collide with an on-chain transaction (which is tagged differently).
+const OFFCHAIN_PREFIX_TAG: u32 = 2_147_484_061;
 
 /// Chain IDs for supported networks
 pub mod chain_ids {
@@ -121,15 +130,6 @@ pub struct IntentMessage {
     pub nonce: Option<String>,
 }
 
-/// Signed payload in NEP-413 format
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignedPayload {
-    pub payload: PayloadWrapper,
-    pub standard: String,
-    pub signature: String,
-    pub public_key: String,
-}
-
 /// Wrapper for payload data (NEP-413 format)
 /// IMPORTANT: Field order matters for Borsh serialization!
 /// NEP-413 specifies: message, nonce, recipient, callbackUrl
@@ -165,20 +165,25 @@ fn borsh_serialize_nonce_as_array<W: std::io::Write>(
 /// Arguments for execute_intents call
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteIntentsArgs {
-    pub signed: Vec<SignedPayload>,
+    pub signed: Vec<SignedIntentPayload>,
 }
 
 /// Builder for creating withdrawal intents
 pub struct WithdrawalIntentBuilder {
-    signer: Arc<near_crypto::Signer>,
+    secret_key: SecretKey,
+    account_id: AccountId,
     deadline_minutes: i64,
 }
 
 impl WithdrawalIntentBuilder {
-    /// Create a new withdrawal intent builder
-    pub fn new(signer: Arc<near_crypto::Signer>) -> Self {
+    /// Create a new withdrawal intent builder.
+    ///
+    /// `account_id` is the treasury account the intents are signed on behalf of
+    /// (the NEP-413 `signer_id`); `secret_key` produces the NEP-413 signatures.
+    pub fn new(secret_key: SecretKey, account_id: AccountId) -> Self {
         Self {
-            signer,
+            secret_key,
+            account_id,
             deadline_minutes: 5, // Default 5 minute deadline
         }
     }
@@ -270,7 +275,7 @@ impl WithdrawalIntentBuilder {
         // Create the message
         let deadline = Utc::now() + Duration::minutes(self.deadline_minutes);
         let message = IntentMessage {
-            signer_id: self.signer.get_account_id().to_string(),
+            signer_id: self.account_id.to_string(),
             deadline: deadline.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             intents: vec![intent],
             nonce: None,
@@ -303,7 +308,7 @@ impl WithdrawalIntentBuilder {
         let data = format!(
             "{}{}",
             Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            self.signer.get_account_id(),
+            self.account_id,
         );
         let hash = Sha256::digest(data.as_bytes());
         nonce.copy_from_slice(&hash[..32]);
@@ -316,67 +321,45 @@ impl WithdrawalIntentBuilder {
     /// 1. Borsh serialize (OFFCHAIN_PREFIX_TAG, payload) tuple
     /// 2. SHA-256 hash the serialized bytes
     /// 3. Sign the hash with Ed25519
-    fn sign_payload(&self, payload: PayloadWrapper) -> Result<SignedPayload, IntentError> {
-        // NEP-413 OFFCHAIN_PREFIX_TAG = (1 << 31) + 413 = 2147484061
-        const OFFCHAIN_PREFIX_TAG: u32 = 2147484061;
-
+    fn sign_payload(&self, payload: PayloadWrapper) -> Result<SignedIntentPayload, IntentError> {
         // Borsh serialize (tag, payload) tuple
         let prehash = borsh::to_vec(&(OFFCHAIN_PREFIX_TAG, &payload))
             .map_err(|e| IntentError::Serialization(e.to_string()))?;
 
         // SHA-256 hash the serialized bytes
         let hash = Sha256::digest(&prehash);
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&hash);
 
-        // Sign the hash
-        let signature = self.signer.sign(&hash);
-        let public_key = self.signer.public_key();
+        // Sign the 32-byte hash with the treasury key (Ed25519)
+        let signature = self.secret_key.sign(CryptoHash(hash_bytes));
+        let public_key = self.secret_key.public_key();
+
+        let recipient: AccountId = payload.recipient.parse().map_err(|e| {
+            IntentError::Serialization(format!("invalid recipient {}: {e}", payload.recipient))
+        })?;
 
         // Debug logging
         tracing::debug!(
             prehash_len = prehash.len(),
-            hash_hex = %hex::encode(hash),
-            public_key = %format_public_key(&public_key),
-            signer_id = %self.signer.get_account_id(),
-            message_preview = %&payload.message[..payload.message.len().min(100)],
+            hash_hex = %hex::encode(hash_bytes),
+            public_key = %public_key,
+            signer_id = %self.account_id,
+            message_preview = %payload.message.chars().take(100).collect::<String>(),
             "Signed NEP-413 payload"
         );
 
-        Ok(SignedPayload {
-            payload,
+        Ok(SignedIntentPayload {
+            payload: IntentPayload {
+                message: payload.message,
+                nonce: payload.nonce,
+                recipient,
+                callback_url: payload.callback_url,
+            },
             standard: "nep413".to_string(),
-            signature: format_signature(&signature),
-            public_key: format_public_key(&public_key),
+            signature: Signature(signature),
+            public_key: PublicKey(public_key),
         })
-    }
-}
-
-/// Format signature in NEAR format (ed25519:base58)
-fn format_signature(sig: &Signature) -> String {
-    match sig {
-        Signature::ED25519(data) => {
-            let bytes = data.to_bytes();
-            format!("ed25519:{}", bs58::encode(&bytes).into_string())
-        }
-        Signature::SECP256K1(_) => {
-            // SECP256K1 is not commonly used for NEAR Intents
-            // ED25519 is the standard key type
-            unimplemented!("SECP256K1 signatures not supported for intents")
-        }
-    }
-}
-
-/// Format public key in NEAR format (ed25519:base58)
-fn format_public_key(pk: &PublicKey) -> String {
-    match pk {
-        PublicKey::ED25519(data) => {
-            let bytes = data.as_ref();
-            format!("ed25519:{}", bs58::encode(bytes).into_string())
-        }
-        PublicKey::SECP256K1(_) => {
-            // SECP256K1 is not commonly used for NEAR Intents
-            // ED25519 is the standard key type
-            unimplemented!("SECP256K1 keys not supported for intents")
-        }
     }
 }
 
@@ -416,17 +399,15 @@ pub fn construct_withdraw_memo(destination_address: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_crypto::KeyType;
-
-    fn test_key() -> near_crypto::SecretKey {
-        near_crypto::SecretKey::from_seed(KeyType::ED25519, "test-seed")
+    /// A fixed, valid ED25519 test key (the gateway sandbox test key).
+    fn test_key() -> SecretKey {
+        "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
+            .parse()
+            .unwrap()
     }
 
-    fn test_signer(id: impl Into<String>) -> Arc<near_crypto::Signer> {
-        Arc::new(near_crypto::InMemorySigner::from_secret_key(
-            id.into().parse().unwrap(),
-            test_key(),
-        ))
+    fn test_builder(account_id: &str) -> WithdrawalIntentBuilder {
+        WithdrawalIntentBuilder::new(test_key(), account_id.parse().unwrap())
     }
 
     #[test]
@@ -455,13 +436,13 @@ mod tests {
 
     #[test]
     fn test_withdrawal_intent_builder_creation() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
-        assert_eq!(builder.signer.get_account_id(), "test.near");
+        let builder = test_builder("test.near");
+        assert_eq!(builder.account_id.as_str(), "test.near");
     }
 
     #[test]
     fn test_build_withdrawal_intent() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
+        let builder = test_builder("treasury.near");
 
         let args = builder
             .build_withdrawal(
@@ -473,12 +454,20 @@ mod tests {
 
         assert_eq!(args.signed.len(), 1);
         assert_eq!(args.signed[0].standard, "nep413");
-        assert!(args.signed[0].signature.starts_with("ed25519:"));
-        assert!(args.signed[0].public_key.starts_with("ed25519:"));
+        assert!(args.signed[0]
+            .signature
+            .0
+            .to_string()
+            .starts_with("ed25519:"));
+        assert!(args.signed[0]
+            .public_key
+            .0
+            .to_string()
+            .starts_with("ed25519:"));
 
-        // Check PayloadWrapper structure (NEP-413 format)
+        // Check payload structure (NEP-413 format)
         let payload = &args.signed[0].payload;
-        assert_eq!(payload.recipient, "intents.near");
+        assert_eq!(payload.recipient.as_str(), "intents.near");
         assert!(!payload.nonce.is_empty());
 
         // Parse the message field as IntentMessage JSON
@@ -543,7 +532,7 @@ mod tests {
 
     #[test]
     fn test_deadline_calculation() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        let builder = test_builder("test.near");
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
@@ -596,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_build_mt_withdrawal() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
+        let builder = test_builder("treasury.near");
 
         let args = builder
             .build_mt_withdrawal(
@@ -642,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_build_mt_withdrawal_invalid_format() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("treasury.near"));
+        let builder = test_builder("treasury.near");
 
         // Missing nep245: prefix
         let result = builder.build_mt_withdrawal(
@@ -656,37 +645,8 @@ mod tests {
     }
 
     #[test]
-    fn test_format_signature() {
-        let key = test_key();
-        let data = b"test data";
-        let signature = key.sign(data);
-
-        let formatted = format_signature(&signature);
-        assert!(formatted.starts_with("ed25519:"));
-
-        // Should be base58 encoded after the prefix
-        let parts: Vec<&str> = formatted.split(':').collect();
-        assert_eq!(parts.len(), 2);
-        assert!(!parts[1].is_empty());
-    }
-
-    #[test]
-    fn test_format_public_key() {
-        let key = test_key();
-        let public_key = key.public_key();
-
-        let formatted = format_public_key(&public_key);
-        assert!(formatted.starts_with("ed25519:"));
-
-        // Should be base58 encoded after the prefix
-        let parts: Vec<&str> = formatted.split(':').collect();
-        assert_eq!(parts.len(), 2);
-        assert!(!parts[1].is_empty());
-    }
-
-    #[test]
     fn test_nonce_generation() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        let builder = test_builder("test.near");
 
         let nonce1 = builder.generate_nonce();
         let nonce2 = builder.generate_nonce();
@@ -734,25 +694,58 @@ mod tests {
 
     #[test]
     fn test_signed_payload_structure() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        let builder = test_builder("test.near");
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
 
         let signed = &args.signed[0];
 
-        // Verify all required fields are present
+        // Verify all required fields are present and well-formed.
         assert_eq!(signed.standard, "nep413");
-        assert!(!signed.signature.is_empty());
-        assert!(!signed.public_key.is_empty());
+        assert!(signed.signature.0.to_string().starts_with("ed25519:"));
+        assert!(signed.public_key.0.to_string().starts_with("ed25519:"));
         assert!(!signed.payload.message.is_empty());
         assert!(!signed.payload.nonce.is_empty());
-        assert_eq!(signed.payload.recipient, "intents.near");
+        assert_eq!(signed.payload.recipient.as_str(), "intents.near");
+    }
+
+    /// Cryptographic regression guard for the near_crypto -> near_api signing
+    /// migration: reconstruct the exact NEP-413 preimage the builder signs, then
+    /// verify the emitted signature against the emitted public key. Fails if the
+    /// preimage, hash, key, or signing routine ever drift.
+    #[test]
+    fn test_nep413_signature_verifies() {
+        let builder = test_builder("treasury.near");
+        let args = builder
+            .build_withdrawal("eth.omft.near", 1000, "0x123")
+            .expect("Should build");
+        let signed = &args.signed[0];
+
+        // Rebuild the borsh preimage: (OFFCHAIN_PREFIX_TAG, PayloadWrapper).
+        let wrapper = PayloadWrapper {
+            message: signed.payload.message.clone(),
+            nonce: signed.payload.nonce.clone(),
+            recipient: signed.payload.recipient.to_string(),
+            callback_url: signed.payload.callback_url.clone(),
+        };
+        let prehash = borsh::to_vec(&(OFFCHAIN_PREFIX_TAG, &wrapper)).unwrap();
+        let hash = Sha256::digest(&prehash);
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(&hash);
+
+        // The emitted key is the treasury key, and the signature verifies over
+        // the reconstructed hash.
+        assert_eq!(signed.public_key.0, test_key().public_key());
+        assert!(signed
+            .signature
+            .0
+            .verify(CryptoHash(hash_bytes), signed.public_key.0));
     }
 
     #[test]
     fn test_execute_intents_args_serialization() {
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        let builder = test_builder("test.near");
         let args = builder
             .build_withdrawal("eth.omft.near", 1000, "0x123")
             .expect("Should build");
@@ -802,7 +795,7 @@ mod tests {
     fn test_multiple_intents_in_one_transaction() {
         // Note: While technically possible, the current builder only supports single intents
         // This test verifies the data structure can handle multiple intents
-        let builder = WithdrawalIntentBuilder::new(test_signer("test.near"));
+        let builder = test_builder("test.near");
 
         let intent1 = Intent::FtWithdraw {
             token: "eth.omft.near".to_string(),
@@ -820,7 +813,7 @@ mod tests {
 
         let deadline = Utc::now() + Duration::minutes(5);
         let message = IntentMessage {
-            signer_id: builder.signer.get_account_id().to_string(),
+            signer_id: builder.account_id.to_string(),
             deadline: deadline.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
             intents: vec![intent1, intent2],
             nonce: None,

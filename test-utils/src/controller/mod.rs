@@ -14,6 +14,7 @@ pub mod migration;
 pub mod mock_oracle;
 pub mod mt;
 pub mod proxy_oracle;
+pub mod pyth_lazer_adapter;
 pub mod receiver;
 pub mod redstone_adapter;
 pub mod ref_finance;

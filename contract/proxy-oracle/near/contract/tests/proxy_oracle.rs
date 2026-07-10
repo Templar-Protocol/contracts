@@ -12,14 +12,17 @@ use std::str::FromStr;
 use anyhow::Result;
 use near_api::{types::AccountId, NetworkConfig};
 use near_sdk::{
-    json_types::Base64VecU8,
+    json_types::{Base64VecU8, I64, U64},
     mock::MockAction,
     test_utils::{get_created_receipts, VMContextBuilder},
     testing_env, NearToken,
 };
 use serde_json::json;
 use templar_common::{
-    oracle::pyth::{self, OracleResponse, PriceIdentifier},
+    oracle::{
+        lazer,
+        pyth::{self, OracleResponse, PriceIdentifier},
+    },
     Decimal, Nanoseconds,
 };
 use templar_gateway_testing::SandboxHarness;
@@ -706,6 +709,65 @@ async fn proxy_oracle_enforces_freshness_filter(
     assert_eq!(
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(expected_price)
+    );
+
+    Ok(())
+}
+
+/// A Lazer-backed proxy source must resolve on-chain: `update_prices` dispatches the adapter's
+/// feed-id-keyed view, the callback folds the returned price in, and the resolved price is cached.
+/// This is the path the empty `OracleRequest::Lazer` arms silently skipped.
+#[rstest::rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let network = harness.network.clone();
+
+    let lazer_adapter = harness
+        .deploy_mock_oracle("lazer-adapter.near".parse()?)
+        .await?;
+    let proxy_oracle = harness.deploy_proxy_oracle().await?;
+
+    let feed_id = 42_u32;
+    let proxy_id = PriceIdentifier([0x0b_u8; 32]);
+    let lazer_proxy = Proxy::median_low(
+        [OracleRequest::lazer(lazer_adapter.clone(), feed_id).into()],
+        FreshnessFilter::empty(),
+    );
+    harness
+        .admin_set_proxy(proxy_oracle.clone(), proxy_id, Some(lazer_proxy))
+        .await?;
+
+    // No Lazer price yet: the proxy resolves to nothing.
+    let result = update_and_list(&network, &proxy_oracle, vec![proxy_id], 60).await?;
+    assert_eq!(result, HashMap::from_iter([(proxy_id, None)]));
+
+    // Publish a Lazer feed, addressed by its native `u32` feed id (no PriceIdentifier map). The
+    // adapter stores raw `FeedData`; the proxy projects it via `to_ema_price`, so the EMA carries
+    // the resolved price.
+    harness
+        .set_mock_oracle_lazer_price(
+            lazer_adapter.clone(),
+            feed_id,
+            Some(lazer::FeedData {
+                price: I64(100_000),
+                conf: U64(0),
+                ema: lazer::EmaData {
+                    price: I64(100_000),
+                    conf: U64(0),
+                },
+                expo: 0,
+                publish_time_ns: common::now_ns(),
+            }),
+        )
+        .await?;
+
+    // ...and the proxy's on-chain update reads it back through the feed-id view + callback.
+    let result = update_and_list(&network, &proxy_oracle, vec![proxy_id], 60).await?;
+    assert_eq!(
+        result.get(&proxy_id).unwrap().as_ref().map(norm_price),
+        Some(100_000),
     );
 
     Ok(())

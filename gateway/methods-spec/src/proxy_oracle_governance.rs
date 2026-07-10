@@ -1,8 +1,9 @@
+use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
-use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal};
+use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Proposal, Role};
 
 /// Get the next governance proposal ID.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -53,6 +54,56 @@ pub struct GetProposal {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetProposalResult {
     pub proposal: Option<Proposal<Operation>>,
+}
+
+/// Get the account id of the proxy oracle this governance contract governs.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleGovernance.getProxyOracleId", output = GetProxyOracleIdResult)]
+pub struct GetProxyOracleId {
+    pub governance_id: AccountId,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetProxyOracleIdResult {
+    pub proxy_oracle_id: AccountId,
+}
+
+/// Check whether an account holds a governance role.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleGovernance.hasRole", output = HasRoleResult)]
+pub struct HasRole {
+    pub governance_id: AccountId,
+    pub account_id: AccountId,
+    pub role: Role,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HasRoleResult {
+    pub has_role: bool,
+}
+
+/// List the accounts holding a governance role.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleGovernance.listRole", output = ListRoleResult)]
+pub struct ListRole {
+    pub governance_id: AccountId,
+    pub role: Role,
+    pub offset: Option<u32>,
+    pub count: Option<u32>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ListRoleResult {
+    pub members: Vec<AccountId>,
+}
+
+/// Get every governance role an account holds.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "proxyOracleGovernance.getRoles", output = GetRolesResult)]
+pub struct GetRoles {
+    pub governance_id: AccountId,
+    pub account_id: AccountId,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetRolesResult {
+    pub roles: Vec<Role>,
 }
 
 /// Create a governance proposal.

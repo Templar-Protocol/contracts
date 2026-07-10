@@ -4,7 +4,7 @@ use templar_universal_account::{
 };
 use tokio::sync::OnceCell;
 
-use crate::{define, get_contract};
+use crate::{define, get_contract, ArtifactId};
 
 use super::{migration::MigrationController, ContractController};
 
@@ -35,13 +35,8 @@ impl UniversalAccountController {
     pub async fn wasm() -> &'static [u8] {
         static WASM: OnceCell<Vec<u8>> = OnceCell::const_new();
 
-        WASM.get_or_init(|| {
-            get_contract(
-                "templar_universal_account_contract",
-                "contract/universal-account",
-            )
-        })
-        .await
+        WASM.get_or_init(|| get_contract(ArtifactId::UniversalAccount))
+            .await
     }
 
     pub async fn deploy(

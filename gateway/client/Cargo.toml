@@ -15,10 +15,14 @@ templar-gateway-store.workspace = true
 templar-gateway-types.workspace = true
 
 [features]
-# Derive `clap::ValueEnum` on `Network` so CLI consumers can use it directly.
+# Derive `clap::ValueEnum` on `Network` for CLI consumers.
 clap = ["dep:clap"]
 
 [dev-dependencies]
+templar-common.workspace = true
+templar-contract-artifacts.workspace = true
+templar-gateway-artifacts-dispatch.workspace = true
+templar-gateway-artifacts-spec.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

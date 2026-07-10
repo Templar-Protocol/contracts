@@ -3,11 +3,13 @@ use jsonrpsee::{
     types::ErrorObjectOwned,
     RpcModule,
 };
+use templar_gateway_artifacts_dispatch::Dispatch as ArtifactsDispatch;
 use templar_gateway_core::{DispatchRead, GatewayError, HasNearClient, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch as MethodsDispatch;
 use templar_gateway_methods_spec::op;
 use templar_gateway_oracle_updates_dispatch::{
-    Dispatch as OracleUpdatesDispatch, ProvidesPythSource, ProvidesRedStoneSource,
+    Dispatch as OracleUpdatesDispatch, ProvidesLazerSource, ProvidesPythSource,
+    ProvidesRedStoneSource,
 };
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
@@ -96,7 +98,11 @@ fn register_gateway_methods<ContextType>(
     builder: &mut GatewayRpcBuilder<ContextType>,
 ) -> Result<(), RegisterMethodError>
 where
-    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+    ContextType: HasNearClient
+        + ProvidesPythSource
+        + ProvidesRedStoneSource
+        + ProvidesLazerSource
+        + std::marker::Unpin,
 {
     // The method lists live in the spec crates (`for_each_read_method!` /
     // `for_each_write_method!` / `for_each_oracle_update_method!`) and are shared
@@ -118,9 +124,22 @@ where
         };
     }
 
+    macro_rules! register_artifact_read {
+        ($spec:ty) => {
+            builder.register_read::<$spec, ArtifactsDispatch>()?;
+        };
+    }
+    macro_rules! register_artifact_write {
+        ($spec:ty) => {
+            builder.register_write::<$spec, ArtifactsDispatch>()?;
+        };
+    }
+
     templar_gateway_methods_spec::for_each_read_method!(register_read);
     templar_gateway_methods_spec::for_each_write_method!(register_write);
     templar_gateway_oracle_updates_spec::for_each_oracle_update_method!(register_oracle_write);
+    templar_gateway_artifacts_spec::for_each_artifact_read_method!(register_artifact_read);
+    templar_gateway_artifacts_spec::for_each_artifact_write_method!(register_artifact_write);
 
     // `op.get` reads the operation store rather than the chain, so it is the one
     // method registered outside the shared macros (it has no `DispatchRead`).
@@ -132,7 +151,11 @@ pub fn attach_gateway<ContextType>(
     service: GatewayService<ContextType>,
 ) -> Result<RpcModule<GatewayService<ContextType>>, RegisterMethodError>
 where
-    ContextType: HasNearClient + ProvidesPythSource + ProvidesRedStoneSource + std::marker::Unpin,
+    ContextType: HasNearClient
+        + ProvidesPythSource
+        + ProvidesRedStoneSource
+        + ProvidesLazerSource
+        + std::marker::Unpin,
 {
     let mut builder = GatewayRpcBuilder::new(service);
     register_gateway_methods(&mut builder)?;

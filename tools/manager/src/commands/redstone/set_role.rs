@@ -1,0 +1,35 @@
+use clap::Args;
+use near_account_id::AccountId;
+use templar_gateway_methods_spec::redstone as spec;
+
+use super::RoleArg;
+use crate::commands::signer::SignerArgs;
+
+#[derive(Args, Debug)]
+pub struct SetRole {
+    /// RedStone adapter account.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    oracle_id: AccountId,
+    /// Account to grant or revoke the role on.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    account_id: AccountId,
+    /// Role to set.
+    #[arg(long, value_enum)]
+    role: RoleArg,
+    /// Revoke the role instead of granting it.
+    #[arg(long)]
+    revoke: bool,
+    #[command(flatten)]
+    pub(crate) signer: SignerArgs,
+}
+
+impl SetRole {
+    pub fn into_spec(self) -> spec::SetRole {
+        spec::SetRole {
+            oracle_id: self.oracle_id,
+            account_id: self.account_id,
+            role: self.role.into(),
+            set: !self.revoke,
+        }
+    }
+}

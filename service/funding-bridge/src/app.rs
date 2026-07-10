@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::{
     bridge::BridgeClient,
     config::Args,
+    error::{FundingError, FundingResult},
     external::{config::EvmChainConfig, evm::EvmChainHandler, ExternalChainRegistry},
     tokens::TokenRegistry,
     treasury::NearHandler,
@@ -37,32 +38,42 @@ pub struct App {
 }
 
 impl App {
-    /// Create new application instance from configuration
-    pub fn new(args: &Args) -> Self {
+    /// Create new application instance from configuration.
+    ///
+    /// Returns a [`FundingError::ConfigError`] when required treasury settings
+    /// are missing, or a [`FundingError::ChainError`] when the treasury handler
+    /// cannot be built (e.g. a malformed `NEAR_RPC_URL`) — startup config
+    /// problems surface to `main` rather than panicking.
+    pub fn new(args: &Args) -> FundingResult<Self> {
         let bridge_client = Arc::new(BridgeClient::new(args.bridge_api_url.clone()));
 
         // NEAR treasury handler is required
         let near_handler = {
-            let account = args
-                .near_treasury_account
-                .as_ref()
-                .expect("NEAR treasury account required");
-            let key = args
-                .near_treasury_key
-                .as_ref()
-                .expect("NEAR treasury key required");
+            let account = args.near_treasury_account.as_ref().ok_or_else(|| {
+                FundingError::ConfigError("NEAR treasury account required".to_string())
+            })?;
+            let key = args.near_treasury_key.as_ref().ok_or_else(|| {
+                FundingError::ConfigError("NEAR treasury key required".to_string())
+            })?;
 
             tracing::info!(
                 account = %account,
                 "Initializing NEAR treasury handler"
             );
 
-            Arc::new(NearHandler::new(
-                account.clone(),
-                key.clone(),
-                args.get_near_treasury_rpc_url(),
-                args.dry_run,
-            ))
+            Arc::new(
+                NearHandler::new(
+                    account.clone(),
+                    key.clone(),
+                    args.get_near_treasury_rpc_url(),
+                    args.network,
+                    args.dry_run,
+                )
+                .map_err(|source| FundingError::ChainError {
+                    chain: "near".to_string(),
+                    source,
+                })?,
+            )
         };
 
         let token_registry = TokenRegistry::new(Arc::clone(&bridge_client));
@@ -70,7 +81,7 @@ impl App {
         // Initialize external chain registry
         let external_chains = Self::build_external_chain_registry(args);
 
-        Self {
+        Ok(Self {
             near_handler,
             bridge_client,
             token_registry,
@@ -78,7 +89,7 @@ impl App {
             config: Arc::new(args.clone()),
             dry_run: args.dry_run,
             version: VERSION,
-        }
+        })
     }
 
     /// Build external chain registry from configuration

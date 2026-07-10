@@ -3,12 +3,15 @@ use std::{collections::HashMap, sync::OnceLock};
 use near_sdk::{env, near, serde::de::DeserializeOwned, serde_json, AccountId};
 use templar_common::{
     oracle::{
+        lazer::FeedDataResponse,
         pyth::{self, OracleResponse},
         redstone::{self, FeedData},
     },
     UnwrapReject,
 };
-use templar_proxy_oracle_near_common::request::{OracleRequest, PythRequest, RedStoneRequest};
+use templar_proxy_oracle_near_common::request::{
+    LazerRequest, OracleRequest, PythRequest, RedStoneRequest,
+};
 
 static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
 
@@ -17,34 +20,39 @@ static ERR_ORACLE_NOT_INVOKED: &str = "Invariant violation: oracle not invoked";
 pub enum OracleType {
     Pyth(AccountId),
     RedStone(AccountId),
+    Lazer(AccountId),
 }
 
 pub struct CallbackHandler<'a> {
     oracle_order: &'a [OracleType],
     pyth_results: HashMap<AccountId, OnceLock<Option<OracleResponse>>>,
     redstone_results: HashMap<AccountId, OnceLock<Option<HashMap<redstone::FeedId, FeedData>>>>,
+    lazer_results: HashMap<AccountId, OnceLock<Option<FeedDataResponse>>>,
 }
 
 impl<'a> CallbackHandler<'a> {
     pub fn new(oracle_order: &'a [OracleType]) -> Self {
-        let (pyth_results, redstone_results) = oracle_order.iter().fold(
-            (HashMap::new(), HashMap::new()),
-            |(mut pyth_results, mut redstone_results), oracle| {
-                match oracle {
-                    OracleType::Pyth(id) => {
-                        pyth_results.insert(id.clone(), OnceLock::new());
-                    }
-                    OracleType::RedStone(id) => {
-                        redstone_results.insert(id.clone(), OnceLock::new());
-                    }
+        let mut pyth_results = HashMap::new();
+        let mut redstone_results = HashMap::new();
+        let mut lazer_results = HashMap::new();
+        for oracle in oracle_order {
+            match oracle {
+                OracleType::Pyth(id) => {
+                    pyth_results.insert(id.clone(), OnceLock::new());
                 }
-                (pyth_results, redstone_results)
-            },
-        );
+                OracleType::RedStone(id) => {
+                    redstone_results.insert(id.clone(), OnceLock::new());
+                }
+                OracleType::Lazer(id) => {
+                    lazer_results.insert(id.clone(), OnceLock::new());
+                }
+            }
+        }
         Self {
             oracle_order,
             pyth_results,
             redstone_results,
+            lazer_results,
         }
     }
 
@@ -82,10 +90,26 @@ impl<'a> CallbackHandler<'a> {
             .and_then(|p| p.to_pyth_price())
     }
 
+    fn lazer(&self, request: &LazerRequest) -> Option<pyth::Price> {
+        self.lazer_results
+            .get(&request.oracle_id)
+            .expect_or_reject(ERR_ORACLE_NOT_INVOKED)
+            .get_or_init(|| {
+                let i = self.oracle_index(OracleType::Lazer(request.oracle_id.clone()));
+                callback_result(i)
+            })
+            .as_ref()?
+            .get(&request.feed_id)
+            .cloned()
+            .flatten()
+            .and_then(|feed| feed.to_ema_price())
+    }
+
     pub fn get(&self, request: &OracleRequest) -> Option<pyth::Price> {
         match request {
             OracleRequest::Pyth(p) => self.pyth(p),
             OracleRequest::RedStone(p) => self.redstone(p),
+            OracleRequest::Lazer(p) => self.lazer(p),
         }
     }
 }

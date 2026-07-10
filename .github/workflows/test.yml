@@ -49,6 +49,7 @@ jobs:
       near_integration: ${{ steps.filter.outputs.near_integration }}
       soroban: ${{ steps.filter.outputs.soroban }}
       feature_matrix: ${{ steps.filter.outputs.feature_matrix }}
+      artifact_manifests: ${{ steps.filter.outputs.artifact_manifests }}
       run_near_integration: ${{ steps.plan.outputs.run_near_integration }}
       run_soroban: ${{ steps.plan.outputs.run_soroban }}
       run_feature_matrix: ${{ steps.plan.outputs.run_feature_matrix }}
@@ -67,10 +68,15 @@ jobs:
             near_integration:
               - '.config/nextest.toml'
               - 'common/src/**'
+              - 'contract/artifacts/Cargo.toml'
+              - 'contract/artifacts/res/**'
+              - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
               - 'contract/market/tests/**'
               - 'contract/proxy-oracle/near/**/src/**'
               - 'contract/proxy-oracle/near/**/tests/**'
+              - 'contract/pyth-lazer/**/src/**'
+              - 'contract/pyth-lazer/**/tests/**'
               - 'contract/redstone-adapter/src/**'
               - 'contract/redstone-adapter/tests/**'
               - 'contract/registry/src/**'
@@ -80,6 +86,7 @@ jobs:
               - 'contract/vault/near/src/**'
               - 'contract/vault/near/tests/**'
               - 'mock/**/src/**'
+              - 'script/check-artifact-drift.sh'
               - 'script/prebuild-test-contracts.sh'
               - 'script/test.sh'
               - 'service/funding-bridge/src/**'
@@ -87,9 +94,12 @@ jobs:
               - 'service/relayer/migrations/**'
               - 'service/relayer/src/**'
               - 'service/relayer/tests/**'
+              - 'test-utils/Cargo.toml'
               - 'test-utils/src/**'
+              - 'tools/manager/Cargo.toml'
               - 'tools/manager/src/**'
-              - 'tools/manager/tests/**'
+              - 'tools/tools-common/Cargo.toml'
+              - 'tools/tools-common/**'
             soroban:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
@@ -103,6 +113,13 @@ jobs:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
+            # A version bump can change catalog version keys without touching
+            # contract `src/**`. The drift check's version guard must run on these
+            # too, or a stale catalog `version` could merge.
+            artifact_manifests:
+              - 'Cargo.toml'
+              - 'contract/**/Cargo.toml'
+              - 'mock/**/Cargo.toml'
 
       - name: Plan CI surface
         id: plan
@@ -179,6 +196,35 @@ jobs:
           SQLX_OFFLINE: true
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
+
+  binary-build:
+    name: Binary Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get clean
+
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+
+      - name: Build all workspace binaries
+        # `cargo check`, `clippy`, and `--lib` tests never link the executables,
+        # so a binary that only fails at link time (e.g. an undefined native
+        # symbol pulled in from a contract crate) slips through. Linking the bins
+        # is the one thing that catches it.
+        env:
+          SQLX_OFFLINE: true
+        run: cargo build --workspace --bins
 
   soroban:
     name: Soroban
@@ -427,7 +473,7 @@ jobs:
           tool: nextest
 
       - name: Install cargo-near
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.16.1/cargo-near-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
       - name: Run full workspace tests
         env:
@@ -465,6 +511,25 @@ jobs:
           bash script/sandbox-down.sh || true
           docker compose --file ./service/relayer/compose.dev.yaml down -v || true
           docker system prune -af --volumes || true
+
+  artifact-drift-check:
+    name: Artifact Drift Check
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ needs.changes.outputs.run_near_integration == 'true' || needs.changes.outputs.artifact_manifests == 'true' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+
+      - name: Check artifact drift
+        env:
+          CARGO_TERM_COLOR: always
+        run: ./script/check-artifact-drift.sh
 
   coverage:
     name: Coverage
@@ -563,10 +628,12 @@ jobs:
       - changes
       - code-formatting
       - code-linter
+      - binary-build
       - soroban
       - feature-matrix
       - fast-tests
       - near-integration-tests
+      - artifact-drift-check
       - coverage
     steps:
       - name: Evaluate required CI surface
@@ -578,8 +645,10 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FORMAT_RESULT: ${{ needs['code-formatting'].result }}
           LINTER_RESULT: ${{ needs['code-linter'].result }}
+          BINARY_BUILD_RESULT: ${{ needs['binary-build'].result }}
           FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
           NEAR_TEST_RESULT: ${{ needs['near-integration-tests'].result }}
+          ARTIFACT_DRIFT_RESULT: ${{ needs['artifact-drift-check'].result }}
           SOROBAN_RESULT: ${{ needs.soroban.result }}
           FEATURE_MATRIX_RESULT: ${{ needs['feature-matrix'].result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
@@ -607,12 +676,15 @@ jobs:
           require_success "Change Detection" "$CHANGES_RESULT"
           require_success "Code Formatting" "$FORMAT_RESULT"
           require_success "Code Linter" "$LINTER_RESULT"
+          require_success "Binary Build" "$BINARY_BUILD_RESULT"
           require_success "Fast Tests" "$FAST_TEST_RESULT"
 
           if [ "$NEAR_REQUIRED" = "true" ]; then
             require_success "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            require_success "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           else
             fail_if_failed "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            fail_if_failed "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           fi
 
           if [ "$SOROBAN_REQUIRED" = "true" ]; then
