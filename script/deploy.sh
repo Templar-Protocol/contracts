@@ -78,12 +78,15 @@ if [[ ! "$GOVERNANCE_ID" =~ ^[a-z0-9._-]+$ ]]; then
 fi
 
 # The oracle's `new` gained its `owner_id` argument in 0.3.0. An older wasm's
-# `new` takes no arguments and would reject the init args below, leaving the
-# freshly created account holding uninitialized code. Version keys are
-# `{package_name}@{version}#{sha256}`, so read the version back out and refuse
-# to deploy anything older. Only exact `major.minor.patch` releases are
-# accepted: `sort -V` orders `0.3.0-rc1` *after* `0.3.0`, the opposite of
-# semver, so a pre-release must be rejected outright rather than compared.
+# `new` takes no arguments, and near-sdk only deserializes input for a method
+# that declares some — so it does not reject the init args below, it silently
+# ignores them and seats the predecessor. Deploying a pre-0.3.0 oracle here
+# would quietly leave the registry owning it while every later step assumes
+# governance does. Version keys are `{package_name}@{version}#{sha256}`, so
+# read the version back out and refuse to deploy anything older. Only exact
+# `major.minor.patch` releases are accepted: `sort -V` orders `0.3.0-rc1`
+# *after* `0.3.0`, the opposite of semver, so a pre-release must be rejected
+# outright rather than compared.
 PROXY_ORACLE_MIN_VERSION="0.3.0"
 proxy_oracle_version="${PROXY_ORACLE_VERSION_KEY##*@}"
 proxy_oracle_version="${proxy_oracle_version%%#*}"
