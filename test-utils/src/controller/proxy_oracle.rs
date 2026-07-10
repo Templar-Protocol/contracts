@@ -51,27 +51,41 @@ impl ProxyOracleController {
             .await
     }
 
-    /// Deploy and initialize without an explicit owner: the predecessor (here,
-    /// the contract account itself) becomes the owner.
+    /// Deploy and initialize without an explicit owner. The contract account
+    /// calls its own `new`, so it becomes its own owner.
     pub async fn deploy(account: Account) -> Self {
-        Self::deploy_with_init_args(account, json!({})).await
+        Self::deploy_and_init(account, None, json!({})).await
     }
 
     /// Deploy and initialize with an explicit `owner_id`.
     pub async fn deploy_with_owner(account: Account, owner_id: &near_sdk::AccountId) -> Self {
-        Self::deploy_with_init_args(account, json!({ "owner_id": owner_id })).await
+        Self::deploy_and_init(account, None, json!({ "owner_id": owner_id })).await
     }
 
-    async fn deploy_with_init_args(account: Account, init_args: impl Serialize) -> Self {
+    /// Deploy and let `deployer` call `new`, mirroring the production `registry
+    /// deploy` path where the registry — not the oracle account — is the
+    /// predecessor, and so the owner when `owner_id` is omitted.
+    pub async fn deploy_initialized_by(account: Account, deployer: &Account) -> Self {
+        Self::deploy_and_init(account, Some(deployer), json!({})).await
+    }
+
+    async fn deploy_and_init(
+        account: Account,
+        deployer: Option<&Account>,
+        init_args: impl Serialize,
+    ) -> Self {
         let contract = account
             .deploy(Self::wasm().await)
             .await
             .expect("proxy oracle deploy RPC failed")
             .into_result()
             .expect("proxy oracle deploy transaction failed");
-        contract
-            .call("new")
-            .args_json(init_args)
+
+        let init = match deployer {
+            Some(deployer) => deployer.call(contract.id(), "new"),
+            None => contract.call("new"),
+        };
+        init.args_json(init_args)
             .transact()
             .await
             .expect("proxy oracle init RPC failed")

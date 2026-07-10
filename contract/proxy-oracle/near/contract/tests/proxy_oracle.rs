@@ -656,26 +656,28 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
 
 /// The `owner_id` init arg must survive JSON deserialization over the wire, since `registry deploy`
 /// is the only way the oracle is initialized in production and it passes init args as raw bytes.
-/// Omitting the key must still select the predecessor.
+/// Omitting the key must still select the predecessor — `registry` here, as in production, so the
+/// assertion cannot pass by accident on a contract that seats its own account id.
 #[rstest::rstest]
 #[tokio::test]
 pub async fn init_args_seat_the_owner_over_the_wire(#[future(awt)] worker: Worker<Sandbox>) {
     accounts!(
         worker,
+        registry,
         governance,
         explicit_owner_oracle,
         default_owner_oracle
     );
 
     let explicit = ProxyOracleController::deploy_with_owner(explicit_owner_oracle, governance.id());
-    let default = ProxyOracleController::deploy(default_owner_oracle);
+    let default = ProxyOracleController::deploy_initialized_by(default_owner_oracle, &registry);
     let (explicit, default) = tokio::join!(explicit, default);
 
     let (explicit_owner, default_owner) =
         tokio::join!(explicit.own_get_owner(), default.own_get_owner());
 
     assert_eq!(explicit_owner, Some(governance.id().clone()));
-    assert_eq!(default_owner, Some(default.id().clone()));
+    assert_eq!(default_owner, Some(registry.id().clone()));
 }
 
 /// A Lazer-backed proxy source must resolve on-chain: `update_prices` dispatches the adapter's
