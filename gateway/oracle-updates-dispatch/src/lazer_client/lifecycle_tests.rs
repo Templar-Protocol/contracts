@@ -1,10 +1,6 @@
-//! Connection-lifecycle tests for [`LazerPayloadSource`], driven against the
-//! in-process [`mock_server`].
-//!
-//! The production Lazer endpoint closes any connection carrying no subscription
-//! after exactly 60s. A source that connects before anything subscribes therefore
-//! reconnects forever, and a fetch arriving while it sleeps in reconnect backoff
-//! is starved. Both properties are asserted here.
+//! Connection-lifecycle tests for [`LazerPayloadSource`], driven against the in-process
+//! [`mock_server`]. The live endpoint closes a subscription-less connection after 60s, so
+//! when the source connects is a correctness question, not a detail.
 
 use std::time::Duration;
 
@@ -46,8 +42,7 @@ fn source_with_idle_timeout(
     )
 }
 
-/// A task pointed at a port nothing listens on: for the tests that drive `register` /
-/// `cache_payload` directly and never connect.
+/// Pointed at a port nothing listens on: for tests that drive the task directly.
 fn offline_task() -> StreamTask {
     StreamTask::new(
         LazerSourceConfig::for_mock_server(
@@ -58,8 +53,7 @@ fn offline_task() -> StreamTask {
     )
 }
 
-/// A fetch for `FIXTURE_FEED`, off the current task so the test can drive the server
-/// while it is in flight.
+/// Off the current task, so the test can drive the server while the fetch is in flight.
 fn spawn_fetch(source: &LazerPayloadSource) -> JoinHandle<LazerResult<Vec<u8>>> {
     let probe = source.clone();
     tokio::spawn(async move { probe.fetch_payload(&[FIXTURE_FEED]).await })
@@ -84,8 +78,8 @@ async fn accept_and_serve(server: &mut MockLazer) -> ServerConn {
     connection
 }
 
-/// Drive the source to one live subscription with a payload cached, and hand back the
-/// connection serving it — the starting state for every test about what happens *next*.
+/// Drive the source to one live subscription with a payload cached, returning the
+/// connection serving it.
 async fn warm_up(source: &LazerPayloadSource, server: &mut MockLazer) -> ServerConn {
     let fetch = spawn_fetch(source);
     let connection = accept_and_serve(server).await;
@@ -93,9 +87,8 @@ async fn warm_up(source: &LazerPayloadSource, server: &mut MockLazer) -> ServerC
     connection
 }
 
-/// The source must not hold a websocket open before anything subscribes: the
-/// live endpoint reaps a subscription-less connection after 60s, so an eager
-/// connect becomes a permanent reconnect loop.
+/// An eager connect becomes a permanent reconnect loop against the live endpoint's
+/// 60s reap of subscription-less connections.
 #[tokio::test]
 async fn does_not_connect_until_a_payload_is_requested() {
     let mut server = MockLazer::start().await;
@@ -120,9 +113,8 @@ async fn first_fetch_connects_subscribes_and_returns_the_payload() {
     assert_eq!(payload_of(fetch).await, fixture_bytes());
 }
 
-/// A fetch arriving while the source sleeps in reconnect backoff must connect
-/// immediately rather than waiting out the sleep. Two disconnects push the
-/// backoff to ~2s; the reconnect must beat that by a wide margin.
+/// A fetch arriving during reconnect backoff must cancel the sleep. Two disconnects push
+/// the backoff to ~2s; the reconnect must beat that by a wide margin.
 #[tokio::test]
 async fn fetch_during_reconnect_backoff_connects_immediately() {
     let mut server = MockLazer::start().await;
@@ -150,8 +142,7 @@ async fn fetch_during_reconnect_backoff_connects_immediately() {
     );
 }
 
-/// After a server-side close the source must resubscribe every live
-/// subscription, without any new fetch prompting it.
+/// A server-side close must resubscribe every live subscription, unprompted.
 #[tokio::test]
 async fn reconnect_replays_active_subscriptions() {
     let mut server = MockLazer::start().await;
@@ -170,8 +161,7 @@ async fn reconnect_replays_active_subscriptions() {
     );
 }
 
-/// A server-side subscription rejection must surface as an error, not as a
-/// silent wait that expires on the fetch timeout.
+/// A rejection must surface as an error, not a wait that expires on the fetch timeout.
 #[tokio::test]
 async fn subscription_error_fails_the_fetch() {
     let mut server = MockLazer::start().await;
@@ -200,10 +190,8 @@ async fn subscription_error_fails_the_fetch() {
         "expected the server's rejection detail, got {error:?}"
     );
 
-    // The rejection left no subscription, so the connection has no purpose: the
-    // source must drop it rather than idle until the server closes it. `source`
-    // stays alive here, so the close can only come from that invariant and not
-    // from the task guard aborting a dropped source.
+    // No subscription left, so the connection must be dropped. `source` stays alive, so
+    // the close cannot come from the task guard aborting a dropped source.
     let closed = timeout(Duration::from_secs(2), connection.next())
         .await
         .expect("source should drop a connection with no subscriptions");
@@ -215,14 +203,12 @@ async fn subscription_error_fails_the_fetch() {
     drop(source);
 }
 
-/// A cached payload older than `max_payload_age` must not be returned, and must
-/// not fail the fetch either: the next payload is ~200ms away on a live stream,
-/// so the fetch waits for it.
+/// A payload older than `max_payload_age` must neither be returned nor fail the fetch:
+/// the next one is a channel interval away, so the fetch waits.
 #[tokio::test]
 async fn stale_cached_payload_waits_for_a_fresh_one() {
     let mut server = MockLazer::start().await;
-    // Production idle timeout: the socket stays up for the whole test, so the fetch
-    // must wait on the *stream*, not on a reconnect.
+    // Production idle timeout: the socket stays up, so the fetch waits on the stream.
     let source = source_for(&server, Duration::from_millis(200));
     let mut connection = warm_up(&source, &mut server).await;
 
@@ -241,10 +227,8 @@ async fn stale_cached_payload_waits_for_a_fresh_one() {
     assert_eq!(payload_of(fetch).await, fixture_bytes());
 }
 
-/// A silent websocket must trip the idle timeout even while fetches keep arriving.
-/// Every fetch messages the task, including one for an already-covered subscription,
-/// so an idle timer rebuilt per `select!` iteration would be reset forever and the
-/// dead socket would never be detected.
+/// A silent websocket must trip the idle timeout even under fetch traffic: every fetch
+/// messages the task, so a timer rebuilt per `select!` iteration would reset forever.
 #[tokio::test]
 async fn silent_stream_reconnects_despite_fetch_traffic() {
     let mut server = MockLazer::start().await;
@@ -272,10 +256,8 @@ async fn silent_stream_reconnects_despite_fetch_traffic() {
     );
 }
 
-/// A subscribed socket that goes silent without closing must be detected, reconnected,
-/// and replayed inside a single fetch's deadline — otherwise `FETCH_TIMEOUT` expires
-/// first and the fetch fails spuriously. In production that headroom comes from
-/// `FETCH_TIMEOUT` being summed over the recovery it must cover.
+/// A socket that goes silent without closing must be detected, reconnected, and replayed
+/// inside one fetch's deadline, or the fetch fails spuriously.
 #[tokio::test]
 async fn a_fetch_survives_a_silent_socket() {
     let mut server = MockLazer::start().await;
@@ -296,9 +278,8 @@ async fn a_fetch_survives_a_silent_socket() {
     assert_eq!(payload_of(fetch).await, fixture_bytes());
 }
 
-/// An abandoned request registers nothing, so the task must keep waiting for demand
-/// rather than connect. A websocket with no subscription on it is the very thing
-/// connect-on-demand exists to prevent, and the connect would stall a real fetch.
+/// An abandoned request registers nothing, so the task must keep waiting rather than open
+/// a subscription-less websocket — and stall a real fetch behind that connect.
 #[tokio::test]
 async fn an_abandoned_first_request_does_not_connect() {
     let mut server = MockLazer::start().await;
@@ -330,10 +311,8 @@ async fn an_abandoned_first_request_does_not_connect() {
     );
 }
 
-/// A requester that timed out or was cancelled has dropped its receiver before the
-/// task handles its request. Registering it anyway would strand a subscription that
-/// nothing waits on — holding the connection open forever — and, at capacity, evict a
-/// live one to make room for it.
+/// A requester that timed out has dropped its receiver. Registering it anyway would strand
+/// a subscription nothing waits on, and at capacity evict a live one to make room.
 #[test]
 fn an_abandoned_request_registers_nothing() {
     let mut task = offline_task();
@@ -353,10 +332,8 @@ fn an_abandoned_request_registers_nothing() {
     );
 }
 
-/// `FETCH_TIMEOUT` is summed on the assumption that the first reconnect after a payload
-/// sleeps only `INITIAL_RECONNECT_BACKOFF`. That assumption lives here, in the reset
-/// `cache_payload` performs — without it the derived deadline no longer covers a
-/// silent-socket recovery.
+/// `FETCH_TIMEOUT` is summed assuming the first reconnect after a payload sleeps only
+/// `INITIAL_RECONNECT_BACKOFF`. That assumption is this reset.
 #[test]
 fn a_payload_resets_the_reconnect_backoff() {
     let mut task = offline_task();

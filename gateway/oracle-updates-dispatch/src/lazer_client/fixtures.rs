@@ -17,9 +17,8 @@ pub(crate) fn fixture_bytes() -> Vec<u8> {
         .expect("fixture should be base64")
 }
 
-/// Build a `streamUpdated` frame from the protocol's own response types, serialized by their serde
-/// impls — so the wire tags (`type`/`streamUpdated`/`solana`/`encoding`) come from the protocol
-/// shape rather than hand-written strings, and a protocol change surfaces here at compile time.
+/// Built from the protocol's own response types, so the wire tags come from the protocol
+/// shape rather than hand-written strings and a protocol change fails to compile.
 pub(crate) fn stream_message(subscription_id: SubscriptionId, solana: JsonBinaryData) -> String {
     serde_json::to_string(&stream_response(subscription_id, solana))
         .expect("protocol response serializes")

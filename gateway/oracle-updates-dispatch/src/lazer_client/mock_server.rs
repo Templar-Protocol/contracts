@@ -1,11 +1,7 @@
-//! A minimal in-process stand-in for the Pyth Lazer stream, so the payload
-//! source's connection lifecycle is testable without the live endpoint.
-//!
-//! The production endpoint closes any connection that carries no subscription
-//! after 60s, which is what makes "when does the source connect?" a correctness
-//! question rather than a detail. Tests drive the accepted [`ServerConn`]
-//! directly: read the client's frames, answer with protocol responses, or drop
-//! the connection to simulate a server-side close.
+//! An in-process stand-in for the Pyth Lazer stream, so the source's connection
+//! lifecycle is testable without the live endpoint. Tests drive the accepted
+//! [`ServerConn`] directly: read frames, answer with protocol responses, or drop
+//! it to simulate a server-side close.
 
 use std::time::Duration;
 
@@ -76,8 +72,7 @@ impl MockLazer {
             .expect("source should have connected")
     }
 
-    /// Wait up to `within` for a connection. `None` means the source did not
-    /// connect — which is the assertion for the idle case.
+    /// `None` means the source did not connect — the assertion for the idle case.
     pub(crate) async fn accept_within(&mut self, within: Duration) -> Option<ServerConn> {
         timeout(within, self.connections.recv())
             .await

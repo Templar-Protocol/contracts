@@ -35,27 +35,20 @@ use crate::lazer_wire::{
 const INITIAL_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_RECONNECT_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_ACTIVE_SUBSCRIPTIONS: usize = 128;
-/// A subscribed stream delivers at least once per channel interval — once a second even
-/// on the slowest (`fixed_rate@1000ms`) — so this much silence means the socket is dead.
-/// A socket can go silent while staying open, and nothing else detects that.
+/// A subscribed stream delivers once per channel interval — 1s on the slowest — so this
+/// much silence means a socket that is open but dead.
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Headroom, within [`FETCH_TIMEOUT`], for the reconnect itself: TLS handshake,
-/// subscription replay, and the first payload off the new stream.
+/// Headroom in [`FETCH_TIMEOUT`] for the reconnect itself: handshake, replay, first payload.
 const RECONNECT_LATENCY_BUDGET: Duration = Duration::from_secs(4);
 
-/// How long [`LazerPayloadSource::fetch_payload`] waits for a payload covering its feeds.
-/// Distinct from `max_payload_age`, which bounds how old an already-cached payload may be
-/// when it is served.
+/// How long [`LazerPayloadSource::fetch_payload`] waits for a covering payload. Distinct
+/// from `max_payload_age`, which bounds the age of an already-cached one.
 ///
-/// Summed, not chosen: a fetch has to outlive one recovery from a socket that fell silent
-/// while healthy — notice the silence, sleep the backoff, reconnect, replay, receive. Any
-/// smaller value would expire before the stream task even noticed the socket was dead.
-///
-/// *While healthy* is the precondition, and [`StreamTask::cache_payload`] establishes it:
-/// a payload resets the backoff, so the first reconnect after one sleeps exactly
-/// [`INITIAL_RECONNECT_BACKOFF`]. A larger backoff means no payload has arrived since the
-/// last disconnect — the stream is degraded, and expiring the fetch is then the intended
-/// answer rather than holding a caller's request open for [`MAX_RECONNECT_BACKOFF`].
+/// Summed, not chosen, so a fetch outlives one recovery from a socket that fell silent
+/// while healthy. [`StreamTask::cache_payload`] resets the backoff on every payload, so
+/// that first reconnect sleeps [`INITIAL_RECONNECT_BACKOFF`]; a larger backoff means the
+/// stream is degraded, and expiring the fetch beats holding a caller open for
+/// [`MAX_RECONNECT_BACKOFF`].
 const FETCH_TIMEOUT: Duration = STREAM_IDLE_TIMEOUT
     .saturating_add(INITIAL_RECONNECT_BACKOFF)
     .saturating_add(RECONNECT_LATENCY_BUDGET);
@@ -254,11 +247,10 @@ impl OraclePayloadSource for LazerPayloadSource {
         }
         let feed_ids: BTreeSet<u32> = price_ids.iter().copied().collect();
 
-        // One deadline over both halves: the stream task may be mid-connect when the request
-        // arrives, so waiting for it to answer is as unbounded as waiting for a payload.
+        // One deadline over both halves: the task may be mid-connect, so waiting for its
+        // reply is as unbounded as waiting for a payload.
         timeout(FETCH_TIMEOUT, async {
-            // Sending the request also wakes the stream task out of any reconnect backoff, so
-            // a fetch never waits on a sleep it could have cancelled.
+            // This send also wakes the task out of any reconnect backoff.
             let mut slot = self.subscribe(feed_ids.clone()).await?;
             await_payload(&mut slot, &feed_ids, self.max_payload_age).await
         })
@@ -296,23 +288,24 @@ fn ready_payload(
         {
             Some(Ok(cached.payload.clone()))
         }
-        // A stale or not-yet-covering payload is not a failure: on a live stream the
-        // next one is a channel interval away. Wait for it rather than erroring.
+        // Stale or not-yet-covering is not a failure: the next frame is a channel interval
+        // away. This cannot stall — a `fixed_rate` frame carries every feed the server
+        // subscribed us to, and a feed it won't serve fails the slot at subscribe time.
+        //
+        // Coverage stays a hard requirement: the payload goes verbatim to the adapter's
+        // `update_price_feeds`, so a frame missing a feed would never refresh that price.
         Slot::Waiting | Slot::Ready(_) => None,
     }
 }
 
-/// The background task that owns the websocket and every subscription on it. Callers
-/// reach it only by message, so the subscription set needs no lock and cannot be observed
-/// mid-update.
+/// Owns the websocket and every subscription on it; callers reach it only by message, so
+/// the subscription set needs no lock.
 ///
-/// Not an `actix::Actor`: this is a plain tokio task owning a long-lived resource, so it
-/// stays usable from the lock-free `templar-gateway-client` path, which runs no actix
-/// `System`. The gateway's actix actors are request/response mailboxes at the RPC edge.
+/// Not an `actix::Actor`: a plain tokio task, so the source stays usable from the
+/// `templar-gateway-client` path, which runs no actix `System`.
 struct StreamTask {
     config: LazerSourceConfig,
-    /// Keyed by a monotonically increasing id, so the first key is the oldest
-    /// subscription — which is the one eviction takes.
+    /// Ids increase monotonically, so the first key is the oldest — the one eviction takes.
     subscriptions: BTreeMap<SubscriptionId, Subscription>,
     next_id: u64,
     backoff: Duration,
@@ -354,13 +347,9 @@ impl StreamTask {
 
     async fn run(mut self, mut requests: mpsc::Receiver<SubscribeRequest>) {
         loop {
-            // With no subscription there is nothing to stream, and the server closes a
-            // subscription-less connection after 60s — an idle connection is just a
-            // reconnect loop. Hold none, and wait for demand instead.
-            //
-            // Keep waiting rather than connecting once: an abandoned request registers
-            // nothing, and connecting for it would open a websocket with no subscription
-            // on it — and stall a real fetch behind that connect.
+            // A connection exists exactly while a subscription does: the server closes a
+            // subscription-less socket after 60s. `while`, not `if` — an abandoned request
+            // registers nothing, and connecting for it would open an empty socket.
             while self.subscriptions.is_empty() {
                 let Some(request) = requests.recv().await else {
                     return;
@@ -370,8 +359,7 @@ impl StreamTask {
 
             match self.connect_and_stream(&mut requests).await {
                 Ok(StreamEnd::Shutdown) => return,
-                // Nothing left to stream: loop back around and park, rather than
-                // hold a connection the server would close anyway.
+                // Nothing left to stream: park rather than hold a doomed connection.
                 Ok(StreamEnd::NoSubscriptions) => continue,
                 Err(error) => tracing::warn!(
                     %error,
@@ -413,16 +401,14 @@ impl StreamTask {
         let mut stream = self.connect().await?;
         self.replay_subscriptions(&mut stream).await?;
 
-        // One deadline for the whole connection, reset only by traffic from the server.
-        // Rebuilding a `timeout(..., stream.next())` each iteration would restart the
-        // idle timer every time the request branch won, so a steady trickle of fetches
-        // would hide a silent, dead socket indefinitely.
+        // One deadline per connection, reset only by traffic. A `timeout(.., stream.next())`
+        // rebuilt each `select!` iteration would restart whenever the request branch won,
+        // so a trickle of fetches would hide a silent socket.
         let idle = tokio::time::sleep(self.idle_timeout);
         tokio::pin!(idle);
 
         loop {
-            // Every subscription was rejected: drop the connection instead of letting
-            // it idle. A connection exists exactly while a subscription does.
+            // Every subscription was rejected; the connection has no purpose.
             if self.subscriptions.is_empty() {
                 return Ok(StreamEnd::NoSubscriptions);
             }
@@ -482,12 +468,10 @@ impl StreamTask {
         Ok(stream)
     }
 
-    /// Resubscribe every live subscription on a fresh connection. A request that
-    /// arrived while disconnected is already registered, so it is replayed here too —
-    /// there is no queued frame that could subscribe the same id twice.
-    ///
-    /// Cached payloads survive the reconnect: `max_payload_age` already decides whether
-    /// one is still servable, so a brief reconnect need not stall a fetch.
+    /// Resubscribe every live subscription on a fresh connection. A request that arrived
+    /// while disconnected is already registered, so it replays here too — no queued frame
+    /// can subscribe the same id twice. Cached payloads survive; `max_payload_age` already
+    /// decides whether one is still servable.
     async fn replay_subscriptions(&self, stream: &mut LazerStream) -> LazerResult<()> {
         for (id, subscription) in &self.subscriptions {
             let frame =
@@ -516,13 +500,10 @@ impl StreamTask {
         Ok(())
     }
 
-    /// Hand the caller the slot of a subscription covering `feed_ids`, creating one if
-    /// no live subscription already does.
-    ///
-    /// A requester that timed out or was cancelled has dropped its receiver. Hand the
-    /// slot over *before* touching any state, so an abandoned request cannot evict a
-    /// live subscription or strand one that nothing is waiting on — which would also
-    /// hold the connection open forever.
+    /// Hand the caller the slot of a subscription covering `feed_ids`, creating one if none
+    /// does. Hand it over *before* mutating state: a requester that timed out has dropped
+    /// its receiver, and registering for it would strand a subscription nothing waits on
+    /// (holding the connection open) or evict a live one at capacity.
     fn register(&mut self, request: SubscribeRequest) -> Registration {
         let SubscribeRequest { feed_ids, slot_tx } = request;
 
@@ -552,7 +533,6 @@ impl StreamTask {
         }
     }
 
-    /// Ids increase monotonically, so the first key is the oldest subscription.
     fn evict_to_fit(&mut self) -> Vec<SubscriptionId> {
         let mut evicted = Vec::new();
         while self.subscriptions.len() >= MAX_ACTIVE_SUBSCRIPTIONS {
@@ -617,8 +597,7 @@ impl StreamTask {
         }));
     }
 
-    /// Drop a subscription and wake its waiters with the reason. Terminal, so it is
-    /// removed rather than left to be replayed on the next connect.
+    /// Drop a subscription and wake its waiters. Terminal, so it is not replayed.
     fn fail(&mut self, subscription_id: SubscriptionId, error: String) {
         if let Some(subscription) = self.subscriptions.remove(&subscription_id) {
             subscription.slot.send_replace(Slot::Failed(error));
