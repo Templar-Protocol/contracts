@@ -1,9 +1,11 @@
 mod get_proxy;
+mod get_proxy_circuit_breaker_set;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;
 
 pub use get_proxy::GetProxy;
+pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
 pub use list_proxies::ListProxies;
 pub use price_feed_exists::PriceFeedExists;
 pub use update_prices::UpdatePrices;
@@ -21,6 +23,8 @@ pub enum ProxyOracleNs {
     ListProxies(ListProxies),
     /// Check whether a price feed exists.
     PriceFeedExists(PriceFeedExists),
+    /// Read the circuit breaker set configured for a price feed.
+    GetProxyCircuitBreakerSet(GetProxyCircuitBreakerSet),
     /// Refresh on-chain prices for one or more feeds.
     UpdatePrices(UpdatePrices),
 }

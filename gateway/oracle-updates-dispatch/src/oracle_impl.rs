@@ -17,10 +17,12 @@ use templar_proxy_oracle_near_common::request::{LazerRequest, OracleRequest};
 
 use crate::{Dispatch, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
 
+/// The VAA arrives in the request body, so this is the one oracle update that
+/// reaches no payload source.
 #[async_trait]
 impl<C> PlanWrite<UpdatePyth, C> for Dispatch
 where
-    C: HasNearClient + ProvidesPythSource,
+    C: HasNearClient,
 {
     async fn plan(
         request: templar_gateway_types::common::WriteRequest<UpdatePyth>,
@@ -47,20 +49,24 @@ where
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        let feed_id = body.feed_id;
+        if body.feed_ids.is_empty() {
+            return Err(GatewayError::InvalidRequest(
+                "oracle.updateRedStone requires at least one feed id".to_owned(),
+            ));
+        }
         tracing::debug!(
             oracle_id = %body.oracle_id,
-            feed_id = %feed_id,
+            feed_count = body.feed_ids.len(),
             "fetching RedStone payload for gateway oracle update"
         );
-        let payload = OraclePayloadSource::fetch_payload(ctx.redstone_source(), &[feed_id.clone()])
+        let payload = OraclePayloadSource::fetch_payload(ctx.redstone_source(), &body.feed_ids)
             .await
             .map_err(|error| GatewayError::ExternalService(error.to_string()))?;
         plan_redstone_write_prices(
             ctx.near_client(),
             request.signer_account_id,
             body.oracle_id,
-            vec![feed_id],
+            body.feed_ids,
             payload,
         )
         .map(OperationPlan::from)

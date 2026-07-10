@@ -159,9 +159,11 @@ fn create_requires_exactly_one_config_source() {
     assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
+/// `redstone update-prices` is gone: `oracle update-red-stone` fetches the payload
+/// inside the gateway rather than spawning the bridge CLI-side.
 #[test]
-fn update_prices_defaults_node_path_and_builds_write_spec() {
-    let cli = Cli::try_parse_from(
+fn update_prices_is_no_longer_a_redstone_subcommand() {
+    let error = Cli::try_parse_from(
         [
             "tmplrmgr",
             "redstone",
@@ -170,24 +172,11 @@ fn update_prices_defaults_node_path_and_builds_write_spec() {
             "redstone.testnet",
             "--feed-id",
             "BTC",
-            "--feed-id",
-            "ETH",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("update-prices should parse");
-    let Command::Redstone {
-        command: RedstoneNs::UpdatePrices(cmd),
-    } = cli.command
-    else {
-        panic!("expected redstone update-prices");
-    };
-    assert_eq!(cmd.node_path(), std::path::Path::new("node"));
-    assert_eq!(cmd.feed_ids().len(), 2);
+    .expect_err("redstone update-prices should no longer parse");
 
-    // A bridge-fetched payload flows into the gateway write spec unchanged.
-    let spec = cmd.into_spec(b"payload".to_vec());
-    assert_eq!(spec.payload.0, b"payload");
-    assert_eq!(spec.feed_ids.len(), 2);
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }

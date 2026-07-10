@@ -9,6 +9,7 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 mod deploy_script;
 mod ft;
 mod market;
+mod oracle;
 mod plan;
 mod proxy_oracle;
 mod redstone;
@@ -25,9 +26,11 @@ fn help_lists_all_top_level_commands() {
         "storage",
         "ft",
         "market",
+        "oracle",
         "proxy-oracle",
         "proxy-oracle-owner",
         "proxy-oracle-governance",
+        "pyth",
         "redstone",
         "recover-nep141",
         "read",
@@ -117,6 +120,28 @@ fn parses_write_fallback_with_json() {
         }
         _ => panic!("expected Write variant"),
     }
+}
+
+/// `write` flattens the oracle source flags because it may dispatch an `oracle.*`
+/// update, but only the dispatched method builds a source. The Lazer token must
+/// therefore stay optional, or every `write` — `market.borrow` included — would demand
+/// it. Asserted against clap's metadata rather than by parsing: a parse test would pass
+/// whenever the developer's environment happens to set `PYTH_LAZER_API_KEY`.
+#[test]
+fn write_fallback_does_not_require_a_lazer_key() {
+    let write = Cli::command()
+        .find_subcommand("write")
+        .expect("write is a subcommand")
+        .clone();
+    let api_key = write
+        .get_arguments()
+        .find(|arg| arg.get_id() == "pyth_lazer_api_key")
+        .expect("write flattens the oracle source flags");
+
+    assert!(
+        !api_key.is_required_set(),
+        "--pyth-lazer-api-key must not be required by `write`"
+    );
 }
 
 #[test]

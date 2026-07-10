@@ -50,7 +50,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
             idempotency_key: None,
             body: oracle_updates::UpdateRedStone {
                 oracle_id: redstone_oracle_id.clone(),
-                feed_id: "BTC".into(),
+                feed_ids: vec!["BTC".into()],
             },
         })
         .await?;

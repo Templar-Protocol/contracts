@@ -8,8 +8,13 @@ use near_api::{NetworkConfig, SecretKey};
 use serde::Serialize;
 use std::io::Write as _;
 use templar_gateway_client::{Client, NetworkConfigBuilder};
-use templar_gateway_core::{DispatchRead, GatewayContext, PlanWrite};
+use templar_gateway_core::{DispatchRead, GatewayContext, GatewayContextBuilder, PlanWrite};
 use templar_gateway_methods_dispatch::Dispatch;
+use templar_gateway_oracle_updates_dispatch::{
+    build_oracle_updates_context, Dispatch as OracleUpdatesDispatch,
+    GatewayContextBuilderOracleExt as _, LazerSourceArgs, OracleSourceArgs, OracleUpdatesContext,
+    RedStoneSourceArgs, WithLazerSource, WithRedStoneSource,
+};
 use templar_gateway_types::{
     common::WriteOperationResult, operation::ReceiptStatus, ManagedAccountId, MethodSpec,
     OperationStatus,
@@ -62,11 +67,44 @@ impl CliContext {
         let (account_id, secret_key) = signer.resolve()?;
         let client = self.signing_client(account_id.clone(), secret_key)?;
         let output = client.execute_as(account_id, body).await?;
-        self.report_tx(&output);
-        // Print the machine-readable result before checking status, so a reverted
-        // operation still emits its JSON on stdout.
-        print_json(&output)?;
-        check_operation_status(&output)
+        self.finish_write(&output)
+    }
+
+    /// Execute an `oracle.*` write through [`OracleUpdatesDispatch`], whose context must
+    /// carry the in-process payload sources that method fetches from. `layer_sources`
+    /// builds that context from the base one, so each method constructs only the sources
+    /// its `PlanWrite` bound names — `oracle.updateRedStone` needs no Lazer token, and
+    /// `oracle.updatePyth`, whose VAA arrives in the request body, passes `Ok` to plan
+    /// against the bare [`GatewayContext`].
+    pub(crate) async fn oracle_write<S, Ctx>(
+        &self,
+        signer: SignerArgs,
+        body: S,
+        layer_sources: impl FnOnce(GatewayContext) -> anyhow::Result<Ctx>,
+    ) -> anyhow::Result<()>
+    where
+        S: MethodSpec<Output = WriteOperationResult>,
+        Ctx: Clone,
+        OracleUpdatesDispatch: PlanWrite<S, Ctx>,
+    {
+        let (account_id, secret_key) = signer.resolve()?;
+        let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
+            .secret_key(account_id.clone(), secret_key)?
+            .build_parts()
+            .context("build oracle-updates client")?;
+        let client: Client<OracleUpdatesDispatch, Ctx> =
+            Client::from_parts(layer_sources(base_context)?, driver, signer_account_ids);
+        let output = client.execute_as(account_id, body).await?;
+        self.finish_write(&output)
+    }
+
+    /// Report the tx link, print the machine-readable result, then fail unless the
+    /// operation succeeded on chain. Printing precedes the status check so a reverted
+    /// operation still emits its JSON on stdout.
+    fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
+        self.report_tx(output);
+        print_json(output)?;
+        check_operation_status(output)
     }
 
     /// Log the explorer link for a completed write to stderr (the JSON result,
@@ -85,6 +123,35 @@ impl CliContext {
         self.report_tx(result);
         check_operation_status(result)
     }
+}
+
+/// `layer_sources` for `oracle.updateRedStone`.
+pub(crate) fn redstone_source(
+    base: GatewayContext,
+    args: &RedStoneSourceArgs,
+) -> anyhow::Result<WithRedStoneSource<GatewayContext>> {
+    Ok(GatewayContextBuilder::new(base)
+        .with_redstone_source(&args.redstone_node_path)?
+        .build())
+}
+
+/// `layer_sources` for `oracle.updateLazer`.
+pub(crate) fn lazer_source(
+    base: GatewayContext,
+    args: &LazerSourceArgs,
+) -> anyhow::Result<WithLazerSource<GatewayContext>> {
+    Ok(GatewayContextBuilder::new(base)
+        .with_lazer_source(args.build()?)
+        .build())
+}
+
+/// `layer_sources` for `oracle.updatePrices`, which resolves a proxy oracle's
+/// dependencies at plan time and so may reach any of the three sources.
+pub(crate) fn all_sources(
+    base: GatewayContext,
+    args: &OracleSourceArgs,
+) -> anyhow::Result<OracleUpdatesContext> {
+    Ok(build_oracle_updates_context(base, args.build()?)?)
 }
 
 /// Succeed only when a submitted write reached a `Succeeded` terminal status.

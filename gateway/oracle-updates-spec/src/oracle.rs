@@ -12,12 +12,14 @@ pub struct UpdatePyth {
     pub vaa: Base64Bytes,
 }
 
-/// Submit a RedStone oracle update.
+/// Submit a RedStone oracle update for one or more feeds.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "oracle.updateRedStone")]
 pub struct UpdateRedStone {
     pub oracle_id: near_account_id::AccountId,
-    pub feed_id: redstone::FeedId,
+    /// Fetched as one payload and written in a single `redstone.writePrices` call,
+    /// matching the adapter's own multi-feed method.
+    pub feed_ids: Vec<redstone::FeedId>,
 }
 
 /// Submit a Pyth Lazer oracle update for a single feed.
