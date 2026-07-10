@@ -347,6 +347,9 @@ impl StreamTask {
 
     async fn run(mut self, mut requests: mpsc::Receiver<SubscribeRequest>) {
         loop {
+            // Disconnected, so there is nothing to unsubscribe from.
+            self.prune_abandoned();
+
             // A connection exists exactly while a subscription does: the server closes a
             // subscription-less socket after 60s. `while`, not `if` — an abandoned request
             // registers nothing, and connecting for it would open an empty socket.
@@ -408,7 +411,11 @@ impl StreamTask {
         tokio::pin!(idle);
 
         loop {
-            // Every subscription was rejected; the connection has no purpose.
+            for id in self.prune_abandoned() {
+                send_frame(&mut stream, unsubscription_frame(id)?).await?;
+            }
+
+            // Every subscription was rejected or abandoned; the connection has no purpose.
             if self.subscriptions.is_empty() {
                 return Ok(StreamEnd::NoSubscriptions);
             }
@@ -531,6 +538,24 @@ impl StreamTask {
             new_subscription: Some(id),
             evicted,
         }
+    }
+
+    /// Drop the subscriptions worth nothing to anyone, returning the ids to unsubscribe:
+    /// a fetch that timed out before its first payload dropped its receiver, and its
+    /// subscription would otherwise hold the connection open for a caller that is gone.
+    /// A cached payload keeps its subscription — that is the warm cache for the next fetch,
+    /// whose own receiver is likewise long dropped.
+    fn prune_abandoned(&mut self) -> Vec<SubscriptionId> {
+        let mut pruned = Vec::new();
+        self.subscriptions.retain(|id, subscription| {
+            let keep = subscription.slot.receiver_count() > 0
+                || matches!(*subscription.slot.borrow(), Slot::Ready(_));
+            if !keep {
+                pruned.push(*id);
+            }
+            keep
+        });
+        pruned
     }
 
     fn evict_to_fit(&mut self) -> Vec<SubscriptionId> {

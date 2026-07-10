@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use pyth_lazer_protocol::api::{SubscriptionErrorResponse, SubscriptionId, WsResponse};
+use pyth_lazer_protocol::api::{SubscriptionErrorResponse, SubscriptionId, WsRequest, WsResponse};
 use templar_gateway_core::OraclePayloadSource;
 use tokio::{
     task::JoinHandle,
@@ -15,7 +15,7 @@ use tokio::{
 use super::*;
 use crate::lazer_client::{
     fixtures::{fixture_bytes, fixture_response},
-    mock_server::{next_subscribed_feed_ids, send, MockLazer, ServerConn},
+    mock_server::{next_request, next_subscribed_feed_ids, send, MockLazer, ServerConn},
 };
 
 /// A feed carried by the captured fixture payload.
@@ -356,5 +356,128 @@ fn a_payload_resets_the_reconnect_backoff() {
     assert_eq!(
         task.backoff, INITIAL_RECONNECT_BACKOFF,
         "a payload must reset the backoff, or FETCH_TIMEOUT's budget is wrong"
+    );
+}
+
+/// A fetch that timed out before its first payload has dropped its receiver. Its
+/// subscription must go with it, or the task reconnects forever for a caller that is gone.
+#[test]
+fn a_timed_out_fetch_prunes_its_subscription() {
+    let mut task = offline_task();
+    let (slot_tx, mut slot_rx) = oneshot::channel();
+    let subscription_id = task
+        .register(SubscribeRequest {
+            feed_ids: [FIXTURE_FEED].into_iter().collect(),
+            slot_tx,
+        })
+        .new_subscription
+        .expect("a live requester registers a subscription");
+    let slot = slot_rx.try_recv().expect("register hands the slot over");
+
+    assert!(
+        task.prune_abandoned().is_empty(),
+        "a fetch is still waiting on this subscription"
+    );
+
+    drop(slot);
+
+    assert_eq!(
+        task.prune_abandoned(),
+        vec![subscription_id],
+        "an abandoned subscription must be unsubscribed"
+    );
+    assert!(task.subscriptions.is_empty());
+}
+
+/// The warm cache: a subscription holding a payload outlives the fetch that created it,
+/// which also dropped its receiver on the way out.
+#[test]
+fn a_cached_payload_outlives_its_fetch() {
+    let mut task = offline_task();
+    let (slot_tx, mut slot_rx) = oneshot::channel();
+    let subscription_id = task
+        .register(SubscribeRequest {
+            feed_ids: [FIXTURE_FEED].into_iter().collect(),
+            slot_tx,
+        })
+        .new_subscription
+        .expect("a live requester registers a subscription");
+    let slot = slot_rx.try_recv().expect("register hands the slot over");
+
+    task.cache_payload(DecodedLazerPayload {
+        subscription_id,
+        bytes: fixture_bytes(),
+        feed_ids: [FIXTURE_FEED].into_iter().collect(),
+    });
+    drop(slot);
+
+    assert!(task.prune_abandoned().is_empty());
+    assert_eq!(
+        task.subscriptions.len(),
+        1,
+        "a cached payload must outlive its fetch, or every fetch reconnects"
+    );
+}
+
+/// Pruning the last subscription ends the connection: unsubscribe, close, and park.
+#[tokio::test]
+async fn an_abandoned_subscription_closes_the_connection() {
+    let mut server = MockLazer::start().await;
+    let source = source_for(&server, Duration::from_secs(5));
+
+    let slot = source
+        .subscribe([FIXTURE_FEED].into_iter().collect())
+        .await
+        .expect("the task should answer a subscribe request");
+    let mut connection = server.accept().await;
+    assert_eq!(
+        next_subscribed_feed_ids(&mut connection).await,
+        vec![FIXTURE_FEED]
+    );
+
+    drop(slot);
+    // Any frame drives the task's loop, which prunes before it streams.
+    send(
+        &mut connection,
+        &WsResponse::SubscriptionError(SubscriptionErrorResponse {
+            subscription_id: SubscriptionId(u64::MAX),
+            error: "for a subscription this task never held".to_owned(),
+        }),
+    )
+    .await;
+
+    match next_request(&mut connection).await {
+        WsRequest::Unsubscribe(request) => assert_eq!(request.subscription_id, SubscriptionId(1)),
+        other @ WsRequest::Subscribe(_) => panic!("expected an unsubscribe request, got {other:?}"),
+    }
+    assert!(
+        server.accept_within(PATIENCE).await.is_none(),
+        "the task must park once its last subscription is pruned, not reconnect"
+    );
+}
+
+/// And a disconnect does not resurrect it: the task parks rather than reconnecting to
+/// replay a subscription nobody waits on.
+#[tokio::test]
+async fn an_abandoned_subscription_is_not_reconnected_for() {
+    let mut server = MockLazer::start().await;
+    let source = source_for(&server, Duration::from_secs(5));
+
+    let slot = source
+        .subscribe([FIXTURE_FEED].into_iter().collect())
+        .await
+        .expect("the task should answer a subscribe request");
+    let mut connection = server.accept().await;
+    assert_eq!(
+        next_subscribed_feed_ids(&mut connection).await,
+        vec![FIXTURE_FEED]
+    );
+
+    drop(slot);
+    drop(connection);
+
+    assert!(
+        server.accept_within(PATIENCE).await.is_none(),
+        "the task must park, not reconnect for an abandoned subscription"
     );
 }
