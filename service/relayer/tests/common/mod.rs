@@ -164,10 +164,28 @@ pub async fn assert_tx_succeeded(
     if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
         anyhow::bail!("tx status error for {tx_hash}: {error}");
     }
-    let status = &response["result"]["status"];
+    let is_success = |status: &serde_json::Value| {
+        status.get("SuccessValue").is_some() || status.get("SuccessReceiptId").is_some()
+    };
+    // Mirror near-primitives' `FinalExecutionOutcomeView::assert_success`: require
+    // the top-level status AND every receipt in the tree to have succeeded, so a
+    // failing sub-receipt (e.g. a panicking relayed callback) is not masked by a
+    // top-level success.
+    let result = &response["result"];
     anyhow::ensure!(
-        status.get("SuccessValue").is_some() || status.get("SuccessReceiptId").is_some(),
-        "transaction {tx_hash} did not succeed: {status}"
+        is_success(&result["status"]),
+        "transaction {tx_hash} did not succeed: {}",
+        result["status"]
     );
+    let receipts = result["receipts_outcome"]
+        .as_array()
+        .context("tx result missing receipts_outcome")?;
+    for (i, receipt) in receipts.iter().enumerate() {
+        let receipt_status = &receipt["outcome"]["status"];
+        anyhow::ensure!(
+            is_success(receipt_status),
+            "transaction {tx_hash} receipt #{i} failed: {receipt_status}"
+        );
+    }
     Ok(())
 }

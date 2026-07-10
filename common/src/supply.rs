@@ -526,4 +526,160 @@ mod tests {
         assert!(p.can_be_removed());
         assert_eq!(p.exists(), !p.can_be_removed());
     }
+
+    /// Restores the coverage lost when the sandbox test
+    /// `contract/market/tests/supply_within_snapshot.rs::partial_snapshot_no_earnings`
+    /// was deleted: the multi-supplier proportional yield split with staggered
+    /// activation, computed by [`SupplyPositionRef::calculate_yield`].
+    ///
+    /// Two suppliers, A and B, each end up with an equal (100-unit) active
+    /// deposit, but B's deposit only activates one snapshot after A's:
+    ///
+    /// * Snapshot N: only A is active (market active = 100). A must receive
+    ///   100% of that snapshot's supply-side yield; B must receive nothing.
+    /// * Snapshot N+1: A and B are both active with equal deposits (market
+    ///   active = 200). They must split that snapshot's yield 50/50.
+    ///
+    /// Yield is supplied via `yield_distribution` (the `other_yield` term) with
+    /// `interest_rate = 0`, so the per-snapshot amount is an exact integer and
+    /// the split can be asserted for exact equality. `yield_distribution` flows
+    /// through the identical proportional-split expression as borrower interest
+    /// (`(interest_paid_by_borrowers + other_yield) * amount / active`), so this
+    /// exercises the split logic the deleted test guarded.
+    ///
+    /// The assertions fail if B were credited from snapshot N, or if the
+    /// snapshot N+1 split were not 50/50.
+    #[test]
+    fn multi_supplier_proportional_split_staggered_activation() {
+        use near_sdk::{test_utils::VMContextBuilder, testing_env};
+
+        use crate::{
+            asset::FungibleAsset,
+            dec,
+            fee::{Fee, TimeBasedFee},
+            interest_rate_strategy::InterestRateStrategy,
+            market::{PriceOracleConfiguration, YieldWeights},
+            oracle::pyth::PriceIdentifier,
+            snapshot::Snapshot,
+            time_chunk::{TimeChunk, TimeChunkConfiguration},
+        };
+        use templar_primitives::number::Decimal;
+
+        // supply weight 1, no static weight => numerator == denominator == 1,
+        // so the whole snapshot yield is distributed to suppliers pro rata.
+        let configuration = crate::market::MarketConfiguration {
+            time_chunk_configuration: TimeChunkConfiguration::new(1),
+            borrow_asset: FungibleAsset::nep141("borrow.near".parse().unwrap()),
+            collateral_asset: FungibleAsset::nep141("collateral.near".parse().unwrap()),
+            price_oracle_configuration: PriceOracleConfiguration {
+                account_id: "pyth-oracle.near".parse().unwrap(),
+                collateral_asset_price_id: PriceIdentifier([0xcc; 32]),
+                collateral_asset_decimals: 24,
+                borrow_asset_price_id: PriceIdentifier([0xbb; 32]),
+                borrow_asset_decimals: 24,
+                price_maximum_age_s: 60,
+            },
+            borrow_mcr_maintenance: dec!("1.25"),
+            borrow_mcr_liquidation: dec!("1.2"),
+            borrow_asset_maximum_usage_ratio: dec!("0.9"),
+            borrow_origination_fee: Fee::zero(),
+            borrow_interest_rate_strategy: InterestRateStrategy::zero(),
+            borrow_maximum_duration_ms: None,
+            borrow_range: (1, None).try_into().unwrap(),
+            supply_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_range: (1, None).try_into().unwrap(),
+            supply_withdrawal_fee: TimeBasedFee::zero(),
+            yield_weights: YieldWeights::new_with_supply_weight(1),
+            protocol_account_id: "revenue.tmplr.near".parse().unwrap(),
+            liquidation_maximum_spread: dec!("0.05"),
+        };
+
+        // Clock at 1ms (1_000_000ns): `Market::new` needs `now() >= 1` (it calls
+        // `TimeChunkConfiguration::previous()`), and `Snapshot::new` stamps
+        // finalized snapshot 0 with `end_timestamp_ms = 1`. The snapshots below
+        // must stay monotonically increasing above that, or the `end - prev`
+        // duration underflows.
+        testing_env!(VMContextBuilder::new().block_timestamp(1_000_000).build());
+
+        let mut market = Market::new(b"m", configuration);
+        // Market::new pushes finalized snapshot index 0 (end_timestamp_ms 1). Its
+        // end timestamp is `prev_end_timestamp_ms` for the first accumulated
+        // snapshot; with interest_rate == 0 the snapshot duration is irrelevant to
+        // the yield.
+        let time_chunk = TimeChunk(0.into());
+
+        // Snapshot N (index 1): only A active. active = 100, yield = 1000.
+        market.finalized_snapshots.push(Snapshot {
+            time_chunk,
+            end_timestamp_ms: 1_000.into(),
+            borrow_asset_deposited_active: 100.into(),
+            borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited: 0.into(),
+            yield_distribution: 1_000.into(),
+            interest_rate: Decimal::ZERO,
+        });
+
+        // Snapshot N+1 (index 2): A and B both active. active = 200, yield = 800.
+        market.finalized_snapshots.push(Snapshot {
+            time_chunk,
+            end_timestamp_ms: 2_000.into(),
+            borrow_asset_deposited_active: 200.into(),
+            borrow_asset_borrowed: 0.into(),
+            collateral_asset_deposited: 0.into(),
+            yield_distribution: 800.into(),
+            interest_rate: Decimal::ZERO,
+        });
+
+        // Supplier A: active for snapshot N (index 1) onward.
+        let position_a = SupplyPosition {
+            started_at_block_timestamp_ms: Some(0.into()),
+            borrow_asset_deposit: Deposit {
+                active: 100.into(),
+                incoming: vec![],
+                outgoing: BorrowAssetAmount::zero(),
+            },
+            borrow_asset_yield: Accumulator::new(1),
+        };
+
+        // Supplier B: deposit activates only at snapshot N+1 (index 2), so B is
+        // NOT active during snapshot N.
+        let position_b = SupplyPosition {
+            started_at_block_timestamp_ms: Some(0.into()),
+            borrow_asset_deposit: Deposit {
+                active: 0.into(),
+                incoming: vec![IncomingDeposit {
+                    activate_at_snapshot_index: 2,
+                    amount: 100.into(),
+                }],
+                outgoing: BorrowAssetAmount::zero(),
+            },
+            borrow_asset_yield: Accumulator::new(1),
+        };
+
+        let yield_a = SupplyPositionRef::new(&market, "a.near".parse().unwrap(), position_a)
+            .calculate_yield(u32::MAX);
+        let yield_b = SupplyPositionRef::new(&market, "b.near".parse().unwrap(), position_b)
+            .calculate_yield(u32::MAX);
+
+        // Snapshot N (only A active): A gets 1000 * 100 / 100 = 1000; B gets 0.
+        // Snapshot N+1 (both active): each gets 800 * 100 / 200 = 400.
+        //   A total = 1000 + 400 = 1400
+        //   B total =    0 + 400 =  400
+        assert_eq!(u128::from(yield_a.get_amount()), 1_400);
+        assert_eq!(u128::from(yield_b.get_amount()), 400);
+
+        // Snapshot-N interest must go entirely to A, never to B.
+        assert!(
+            u128::from(yield_a.get_amount()) > u128::from(yield_b.get_amount()),
+            "A earned the full snapshot-N yield plus half of snapshot N+1; B only half of N+1",
+        );
+        assert_eq!(
+            u128::from(yield_a.get_amount()) - u128::from(yield_b.get_amount()),
+            1_000,
+            "the difference is exactly the snapshot-N yield, which B must not share",
+        );
+
+        assert_eq!(yield_a.next_snapshot_index, 3);
+        assert_eq!(yield_b.next_snapshot_index, 3);
+    }
 }

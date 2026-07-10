@@ -1,10 +1,10 @@
 //! Ported from `contract/market/tests/supply_within_snapshot.rs`.
 //!
 //! `funds_activation` is ported here. The original `partial_snapshot_no_earnings`
-//! asserts *exact* per-snapshot yield amounts computed from snapshot timestamps —
-//! the same exact-interest arithmetic covered deterministically (and node-free)
-//! by the `templar-common` interest/yield unit tests — so it is not reproduced
-//! as a flaky timestamp-bounded integration test.
+//! asserted the multi-supplier proportional yield split with staggered
+//! activation; that is now covered deterministically (and node-free) by
+//! `templar_common::supply::tests::multi_supplier_proportional_split_staggered_activation`,
+//! so it is not reproduced as a flaky timestamp-bounded integration test.
 //!
 //! "Activates in one snapshot" is asserted via the deposit's
 //! `activate_at_snapshot_index`, which the contract fixes (to the next snapshot)
