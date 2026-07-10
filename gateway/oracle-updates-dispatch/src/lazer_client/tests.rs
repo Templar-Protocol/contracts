@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use base64::Engine as _;
 use ed25519_dalek::{Signature, VerifyingKey};
 use pyth_lazer_protocol::api::{
-    ErrorResponse, InvalidFeedSubscriptionDetails, JsonBinaryData, JsonBinaryEncoding, JsonUpdate,
-    StreamUpdatedResponse, SubscribedResponse, SubscribedWithInvalidFeedIdsIgnoredResponse,
-    SubscriptionErrorResponse, UnsubscribedResponse, WsResponse,
+    ErrorResponse, InvalidFeedSubscriptionDetails, JsonBinaryData, JsonBinaryEncoding,
+    SubscribedResponse, SubscribedWithInvalidFeedIdsIgnoredResponse, SubscriptionErrorResponse,
+    UnsubscribedResponse, WsResponse,
 };
 use pyth_lazer_protocol::message::SolanaMessage;
 use pyth_lazer_protocol::PriceFeedId;
@@ -48,9 +47,9 @@ fn live_config_from_env() -> (LazerSourceConfig, Vec<u32>) {
     (config, feed_ids)
 }
 
-const PAYLOAD_001: &str = "uQEagohEipEVyTiNYf6VaHJFux40+GmgzXaVUuzszi4nJMWpoMH4WZB0W3SMzUM41gQlkeJYJDydLouwjUDVBbksHwqA78H0gMVhWvP7Zz1CKH6ZPan7w1BrbkHfoylQggwubBwBddPHk0AKB5JsVAYAAwUHAAAABgD4hPUFAAAAAAUwKwAAAAAAAAT4/wqlkfUFAAAAAAsGNgAAAAAAAAwBQAoHkmxUBgAIAAAABgAvcfQFAAAAAAVeLAAAAAAAAAT4/wpWYvQFAAAAAAt1NwAAAAAAAAwBQAoHkmxUBgABAAAABgAqfglX/QUAAAV2rg9cAQAAAAT4/wqgFefA+wUAAAv8FrtEAQAAAAwBQAoHkmxUBgAbAAAABgC9d+INAAAAAAU27QEAAAAAAAT4/wqQi9sNAAAAAAu07wAAAAAAAAwBQAoHkmxUBgAXAAAABgDQwVgBAAAAAAWSGAAAAAAAAAT4/wqs8FYBAAAAAAvgGAAAAAAAAAwBQAoHkmxUBgA=";
-const EXPECTED_FEEDS: [u32; 5] = [7, 8, 1, 27, 23];
-const PAYLOAD_001_TIMESTAMP_US: u64 = 1_781_675_143_400_000;
+use crate::lazer_client::fixtures::{
+    fixture_bytes, stream_message, EXPECTED_FEEDS, PAYLOAD_001, PAYLOAD_001_TIMESTAMP_US,
+};
 
 struct TestCrypto;
 
@@ -76,34 +75,11 @@ fn test_config(max_payload_age: Duration) -> LazerSourceConfig {
     .expect("valid config")
 }
 
-/// Build a `streamUpdated` frame from the protocol's own response types, serialized by their serde
-/// impls — so the wire tags (`type`/`streamUpdated`/`solana`/`encoding`) come from the protocol
-/// shape rather than hand-written strings, and a protocol change surfaces here at compile time.
-fn stream_message(solana: JsonBinaryData) -> String {
-    let response = WsResponse::StreamUpdated(StreamUpdatedResponse {
-        subscription_id: SubscriptionId(1),
-        payload: JsonUpdate {
-            parsed: None,
-            evm: None,
-            solana: Some(solana),
-            le_ecdsa: None,
-            le_unsigned: None,
-        },
-    });
-    serde_json::to_string(&response).expect("protocol response serializes")
-}
-
 fn decoded_payload(message: &str) -> DecodedLazerPayload {
     match decode_stream_message(message).expect("message should decode") {
         LazerStreamEvent::Payload(payload) => payload,
         event => panic!("expected streamUpdated payload event, got {event:?}"),
     }
-}
-
-fn fixture_bytes() -> Vec<u8> {
-    base64::engine::general_purpose::STANDARD
-        .decode(PAYLOAD_001)
-        .expect("fixture should be base64")
 }
 
 fn signer_of(raw: &[u8]) -> [u8; 32] {
@@ -138,14 +114,20 @@ fn decodes_captured_stream_updated_fixture() {
 #[test]
 fn decodes_explicit_hex_and_base64() {
     let fixture = fixture_bytes();
-    let hex_payload = decoded_payload(&stream_message(JsonBinaryData {
-        encoding: JsonBinaryEncoding::Hex,
-        data: hex::encode(&fixture),
-    }));
-    let base64_payload = decoded_payload(&stream_message(JsonBinaryData {
-        encoding: JsonBinaryEncoding::Base64,
-        data: PAYLOAD_001.to_owned(),
-    }));
+    let hex_payload = decoded_payload(&stream_message(
+        SubscriptionId(1),
+        JsonBinaryData {
+            encoding: JsonBinaryEncoding::Hex,
+            data: hex::encode(&fixture),
+        },
+    ));
+    let base64_payload = decoded_payload(&stream_message(
+        SubscriptionId(1),
+        JsonBinaryData {
+            encoding: JsonBinaryEncoding::Base64,
+            data: PAYLOAD_001.to_owned(),
+        },
+    ));
 
     assert_eq!(hex_payload.bytes, fixture);
     assert_eq!(
@@ -156,10 +138,13 @@ fn decodes_explicit_hex_and_base64() {
 
 #[test]
 fn oversized_payload_returns_error_before_decode() {
-    let message = stream_message(JsonBinaryData {
-        encoding: JsonBinaryEncoding::Hex,
-        data: "00".repeat(1_048_577),
-    });
+    let message = stream_message(
+        SubscriptionId(1),
+        JsonBinaryData {
+            encoding: JsonBinaryEncoding::Hex,
+            data: "00".repeat(1_048_577),
+        },
+    );
 
     let error = decode_stream_message(&message).expect_err("oversized payload should fail");
 
@@ -169,10 +154,13 @@ fn oversized_payload_returns_error_before_decode() {
 #[test]
 fn decoded_fixture_is_accepted_by_pyth_lazer_verifier() {
     let raw = fixture_bytes();
-    let message = stream_message(JsonBinaryData {
-        encoding: JsonBinaryEncoding::Base64,
-        data: PAYLOAD_001.to_owned(),
-    });
+    let message = stream_message(
+        SubscriptionId(1),
+        JsonBinaryData {
+            encoding: JsonBinaryEncoding::Base64,
+            data: PAYLOAD_001.to_owned(),
+        },
+    );
     let decoded = decoded_payload(&message);
     let trusted_signers = [TrustedSigner {
         public_key: signer_of(&raw),
@@ -271,68 +259,12 @@ fn decodes_partial_subscription_acknowledgement() {
     );
 }
 
-#[tokio::test]
-async fn cache_miss_returns_error() {
-    let source = LazerPayloadSource::from_cached(test_config(Duration::from_secs(5)), None);
-
-    let error = source
-        .fetch_payload(&[7])
-        .await
-        .expect_err("empty cache should miss");
-
-    // With dynamic subscriptions, when there's no background task running,
-    // attempting to subscribe will fail with a request error
-    assert!(matches!(error, LazerClientError::Request(_)));
-}
-
-#[tokio::test]
-async fn stale_cache_returns_error() {
-    let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_secs(5)),
-        Some(CachedPayload {
-            payload: vec![1, 2, 3],
-            feed_ids: [7, 8].into_iter().collect(),
-            received_at: Instant::now() - Duration::from_secs(6),
-        }),
-    );
-
-    let error = source
-        .fetch_payload(&[7])
-        .await
-        .expect_err("stale payload should fail");
-
-    assert!(matches!(error, LazerClientError::StalePayload));
-}
-
-#[tokio::test]
-async fn fresh_cache_returns_payload_for_covered_feeds() {
-    let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_secs(5)),
-        Some(CachedPayload {
-            payload: vec![1, 2, 3],
-            feed_ids: [7, 8].into_iter().collect(),
-            received_at: Instant::now(),
-        }),
-    );
-
-    let payload = source
-        .fetch_payload(&[7, 8])
-        .await
-        .expect("fresh payload should be returned");
-
-    assert_eq!(payload, vec![1, 2, 3]);
-}
-
+/// Rejected before the source is consulted, so it needs no stream. Cache
+/// freshness, feed coverage, and subscription failures are covered against the
+/// mock server in `actor_tests`.
 #[tokio::test]
 async fn empty_request_returns_error() {
-    let source = LazerPayloadSource::from_cached(
-        test_config(Duration::from_secs(5)),
-        Some(CachedPayload {
-            payload: vec![1, 2, 3],
-            feed_ids: [7, 8].into_iter().collect(),
-            received_at: Instant::now(),
-        }),
-    );
+    let source = LazerPayloadSource::spawn(test_config(Duration::from_secs(5)));
 
     let error = source
         .fetch_payload(&[])
@@ -447,22 +379,19 @@ async fn capture_live_stream_updated_fixture() {
 /// Live end-to-end smoke test of the production `LazerPayloadSource`: spawn the
 /// actor and confirm it fetches a non-empty payload for the requested feeds against
 /// the real Pyth Lazer stream. Ignored by default (needs credentials + network).
+///
+/// The first fetch must succeed on its own: it connects, subscribes, and waits for
+/// the payload. A retry loop here would only mask a source that connects late.
 #[tokio::test]
 #[ignore = "requires PYTH_LAZER_API_KEY and PYTH_LAZER_FEED_IDS"]
 async fn requires_network_fetches_production_lazer_payload() {
     let (config, feed_ids) = live_config_from_env();
     let source = LazerPayloadSource::spawn(config);
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Ok(payload) = source.fetch_payload(&feed_ids).await {
-            assert!(!payload.is_empty());
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for Pyth Lazer payload"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    let payload = source
+        .fetch_payload(&feed_ids)
+        .await
+        .expect("the first fetch should connect, subscribe, and return a payload");
+
+    assert!(!payload.is_empty());
 }
