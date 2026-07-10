@@ -1,48 +1,83 @@
 //! NEAR chain handler implementation
 //!
-//! Handles NEAR treasury operations including NEP-141 token transfers.
+//! Handles NEAR treasury operations including NEP-141 token transfers, driven
+//! through the in-process gateway client (`templar-gateway-client`) rather than
+//! hand-rolled RPC/signing/transaction plumbing.
 
-use near_crypto::SecretKey;
-use near_jsonrpc_client::{methods, JsonRpcClient};
-use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::{
-    transaction::{Action, FunctionCallAction, SignedTransaction, Transaction, TransactionV0},
-    types::AccountId,
-};
+use near_account_id::AccountId;
+use near_api::SecretKey;
 use near_sdk::NearToken;
-use std::sync::Arc;
+
+use templar_common::SU128;
+use templar_gateway_client::{Network as GatewayNetwork, NetworkConfigBuilder, SigningClient};
+use templar_gateway_methods_spec::{ft, intents::ExecuteIntents, storage};
+use templar_gateway_types::{common::WriteOperationResult, OperationStatus};
 use tracing::{debug, info};
 
 use crate::error::{ChainError, ChainResult};
+use crate::intents::INTENTS_CONTRACT;
+use crate::rpc::Network;
 
 /// NEAR chain handler
 pub struct NearHandler {
     treasury_account: AccountId,
-    signer: Arc<near_crypto::Signer>,
-    rpc_client: JsonRpcClient,
+    /// Treasury key, retained for NEP-413 intent message signing (see
+    /// [`NearHandler::treasury_key`]). All on-chain calls go through `client`.
+    secret_key: SecretKey,
+    client: SigningClient,
+    /// Configured network, used to resolve asset symbols to the right contract
+    /// suffix in [`NearHandler::get_token_contract`].
+    network: Network,
     enabled: bool,
     dry_run: bool,
 }
 
 impl NearHandler {
-    /// Create new NEAR handler
+    /// Create new NEAR handler backed by the in-process gateway client.
     pub fn new(
         treasury_account: AccountId,
         signer_key: SecretKey,
         rpc_url: String,
+        network: Network,
         dry_run: bool,
-    ) -> Self {
-        let signer =
-            near_crypto::InMemorySigner::from_secret_key(treasury_account.clone(), signer_key);
+    ) -> ChainResult<Self> {
+        let gateway_network = match network {
+            Network::Mainnet => GatewayNetwork::Mainnet,
+            Network::Testnet => GatewayNetwork::Testnet,
+        };
+        let network_config = NetworkConfigBuilder::new(gateway_network)
+            .rpc_url(Some(&rpc_url))
+            .map_err(|e| ChainError::ConfigError(format!("invalid RPC URL: {e}")))?
+            .build();
 
-        let rpc_client = JsonRpcClient::connect(&rpc_url);
+        let client =
+            SigningClient::connect(network_config, treasury_account.clone(), signer_key.clone())
+                .map_err(|e| {
+                    ChainError::ConfigError(format!("failed to build gateway client: {e}"))
+                })?;
 
-        Self {
+        Ok(Self {
             treasury_account,
-            signer: Arc::new(signer),
-            rpc_client,
+            secret_key: signer_key,
+            client,
+            network,
             enabled: true,
             dry_run,
+        })
+    }
+
+    /// Map a gateway write result into the tx-hash string the routes expect,
+    /// surfacing a non-success operation as a [`ChainError`].
+    fn tx_result(result: WriteOperationResult) -> ChainResult<String> {
+        match result.operation.status {
+            OperationStatus::Succeeded => Ok(result
+                .operation
+                .latest_tx_hash()
+                .map(|hash| hash.to_string())
+                .unwrap_or_default()),
+            other => Err(ChainError::TransactionFailed(format!(
+                "operation did not succeed (status: {other:?})"
+            ))),
         }
     }
 
@@ -70,88 +105,18 @@ impl NearHandler {
             "Executing ft_transfer"
         );
 
-        // Create ft_transfer action
-        let action = Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "ft_transfer".to_string(),
-            args: serde_json::json!({
-                "receiver_id": receiver_id.to_string(),
-                "amount": amount.to_string(),
-            })
-            .to_string()
-            .into_bytes(),
-            gas: near_primitives::gas::Gas::from_teragas(50), // 50 TGas
-            deposit: NearToken::from_yoctonear(1),            // 1 yoctoNEAR for security
-        }));
-
-        // Get access key
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key(),
-            },
-        };
-
-        let access_key_response = self
-            .rpc_client
-            .call(access_key_query)
-            .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get access key: {}", e)))?;
-
-        let nonce = match access_key_response.kind {
-            QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
-            _ => {
-                return Err(ChainError::RpcError(
-                    "Unexpected query response".to_string(),
-                ))
-            }
-        };
-
-        // Get block hash
-        let block_query = methods::block::RpcBlockRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-        };
-
-        let block = self
-            .rpc_client
-            .call(block_query)
-            .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get block: {}", e)))?;
-
-        // Create and sign transaction
-        let transaction = Transaction::V0(TransactionV0 {
-            signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key(),
-            nonce,
-            receiver_id: token_contract.clone(),
-            block_hash: block.header.hash,
-            actions: vec![action],
-        });
-
-        // Sign transaction
-        let (hash, _) = transaction.get_hash_and_size();
-        let signature = self.signer.sign(hash.as_ref());
-        let signed_transaction = SignedTransaction::new(signature, transaction);
-
-        // Send transaction
-        let tx_request =
-            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction };
-
         let result = self
-            .rpc_client
-            .call(tx_request)
+            .client
+            .execute(ft::Transfer {
+                contract_id: token_contract.clone(),
+                receiver_id: receiver_id.clone(),
+                amount: SU128::from(amount),
+                memo: None,
+            })
             .await
-            .map_err(|e| ChainError::TransactionFailed(format!("Transaction failed: {}", e)))?;
+            .map_err(|e| ChainError::TransactionFailed(format!("ft_transfer failed: {e}")))?;
 
-        // Check if transaction succeeded
-        if let near_primitives::views::FinalExecutionStatus::Failure(failure) = result.status {
-            return Err(ChainError::TransactionFailed(format!(
-                "Transaction failed: {:?}",
-                failure
-            )));
-        }
-
-        Ok(result.transaction.hash.to_string())
+        Self::tx_result(result)
     }
 
     /// Query NEP-141 token balance
@@ -166,39 +131,16 @@ impl NearHandler {
             "Querying ft_balance_of"
         );
 
-        let query_request = methods::query::RpcQueryRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::CallFunction {
-                account_id: token_contract.clone(),
-                method_name: "ft_balance_of".to_string(),
-                args: serde_json::json!({
-                    "account_id": account_id.to_string()
-                })
-                .to_string()
-                .into_bytes()
-                .into(),
-            },
-        };
-
-        let response = self
-            .rpc_client
-            .call(query_request)
+        let result = self
+            .client
+            .read(ft::GetBalanceOf {
+                contract_id: token_contract.clone(),
+                account_id: account_id.clone(),
+            })
             .await
-            .map_err(|e| ChainError::BalanceQueryFailed(format!("RPC error: {}", e)))?;
+            .map_err(|e| ChainError::BalanceQueryFailed(format!("ft_balance_of failed: {e}")))?;
 
-        match response.kind {
-            QueryResponseKind::CallResult(result) => {
-                let balance_str: String = serde_json::from_slice(&result.result)
-                    .map_err(|e| ChainError::BalanceQueryFailed(format!("Parse error: {}", e)))?;
-
-                balance_str
-                    .parse()
-                    .map_err(|e| ChainError::BalanceQueryFailed(format!("Invalid balance: {}", e)))
-            }
-            _ => Err(ChainError::BalanceQueryFailed(
-                "Unexpected query response".to_string(),
-            )),
-        }
+        Ok(*result.balance)
     }
 
     /// Get token contract ID for asset
@@ -211,10 +153,9 @@ impl NearHandler {
         } else {
             // Asset symbol - convert to contract ID (lowercase required)
             let asset_lower = asset.to_lowercase();
-            if self.rpc_client.server_addr().contains("testnet") {
-                format!("{}.fakes.testnet", asset_lower)
-            } else {
-                format!("{}.near", asset_lower)
+            match self.network {
+                Network::Testnet => format!("{}.fakes.testnet", asset_lower),
+                Network::Mainnet => format!("{}.near", asset_lower),
             }
         };
 
@@ -223,7 +164,7 @@ impl NearHandler {
             .map_err(|_| ChainError::InvalidAddress(format!("Invalid asset: {}", asset)))
     }
 
-    /// Execute intents on intents.near contract
+    /// Execute intents on the intents contract
     ///
     /// This is used for cross-chain withdrawals via NEAR Intents
     pub async fn execute_intents(
@@ -233,109 +174,35 @@ impl NearHandler {
         if self.dry_run {
             info!(
                 intents_count = args.signed.len(),
-                "DRY RUN: Would execute intents on intents.near"
+                "DRY RUN: Would execute intents on intents contract"
             );
             return Ok(format!("dry-run-intent-tx-{}", args.signed.len()));
         }
 
         debug!(
             intents_count = args.signed.len(),
-            "Executing intents on intents.near"
+            "Executing intents on intents contract"
         );
 
-        let intents_contract: AccountId = crate::intents::INTENTS_CONTRACT
+        let contract_id: AccountId = INTENTS_CONTRACT
             .parse()
-            .map_err(|_| ChainError::InvalidAddress("Invalid intents.near".to_string()))?;
+            .map_err(|_| ChainError::InvalidAddress("Invalid intents contract".to_string()))?;
 
-        // Create execute_intents action
-        let args_json = serde_json::to_vec(args).map_err(|e| {
-            ChainError::TransactionFailed(format!("Failed to serialize args: {}", e))
-        })?;
-
-        let action = Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "execute_intents".to_string(),
-            args: args_json,
-            gas: near_primitives::gas::Gas::from_teragas(100), // 100 TGas for intent execution
-            deposit: NearToken::ZERO,                          // No deposit required
-        }));
-
-        // Get access key
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key(),
-            },
-        };
-
-        let access_key_response = self
-            .rpc_client
-            .call(access_key_query)
+        let result = self
+            .client
+            .execute(ExecuteIntents {
+                contract_id,
+                signed: args.signed.clone(),
+            })
             .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get access key: {}", e)))?;
+            .map_err(|e| ChainError::TransactionFailed(format!("Intent execution failed: {e}")))?;
 
-        let nonce = match access_key_response.kind {
-            QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
-            _ => {
-                return Err(ChainError::RpcError(
-                    "Unexpected query response".to_string(),
-                ))
-            }
-        };
-
-        // Get block hash
-        let block_query = methods::block::RpcBlockRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-        };
-
-        let block = self
-            .rpc_client
-            .call(block_query)
-            .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get block: {}", e)))?;
-
-        // Create and sign transaction
-        let transaction = Transaction::V0(TransactionV0 {
-            signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key(),
-            nonce,
-            receiver_id: intents_contract,
-            block_hash: block.header.hash,
-            actions: vec![action],
-        });
-
-        // Sign transaction
-        let (hash, _) = transaction.get_hash_and_size();
-        let signature = self.signer.sign(hash.as_ref());
-        let signed_transaction = SignedTransaction::new(signature, transaction);
-
-        // Send transaction
-        let tx_request =
-            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction };
-
-        let result = self.rpc_client.call(tx_request).await.map_err(|e| {
-            ChainError::TransactionFailed(format!("Intent execution failed: {}", e))
-        })?;
-
-        // Check if transaction succeeded
-        if let near_primitives::views::FinalExecutionStatus::Failure(failure) = result.status {
-            return Err(ChainError::TransactionFailed(format!(
-                "Intent execution failed: {:?}",
-                failure
-            )));
-        }
-
-        debug!(
-            tx_hash = %result.transaction.hash,
-            "Intent execution completed"
-        );
-
-        Ok(result.transaction.hash.to_string())
+        Self::tx_result(result)
     }
 
-    /// Get the signer for intent signing
-    pub fn treasury_signer(&self) -> Arc<near_crypto::Signer> {
-        Arc::clone(&self.signer)
+    /// Get the treasury key for NEP-413 intent signing
+    pub fn treasury_key(&self) -> SecretKey {
+        self.secret_key.clone()
     }
 
     /// Get the treasury account ID
@@ -392,12 +259,12 @@ impl NearHandler {
         "near"
     }
 
-    /// Register storage on NEP-245 multi-token contract
+    /// Register storage on a NEP-141/245 token contract
     ///
-    /// Required before an account can receive NEP-245 tokens
+    /// Required before an account can receive tokens on that contract.
     ///
     /// # Arguments
-    /// * `token_contract` - NEP-245 contract account ID
+    /// * `token_contract` - token contract account ID
     /// * `account_id` - Account to register (None = self)
     /// * `storage_deposit` - Amount of NEAR to attach (e.g. 0.01 NEAR)
     ///
@@ -423,118 +290,45 @@ impl NearHandler {
             contract = %token_contract,
             account = ?account_id,
             deposit = %storage_deposit,
-            "Registering storage on NEP-245 contract"
+            "Registering storage on token contract"
         );
 
-        // Create storage_deposit action
-        let args = if let Some(acc) = account_id {
-            serde_json::json!({
-                "account_id": acc.to_string(),
+        let result = self
+            .client
+            .execute(storage::Deposit {
+                contract_id: token_contract.clone(),
+                beneficiary_id: account_id.cloned(),
+                registration_only: false,
+                deposit: storage_deposit,
             })
-        } else {
-            serde_json::json!({})
-        };
-
-        let action = Action::FunctionCall(Box::new(FunctionCallAction {
-            method_name: "storage_deposit".to_string(),
-            args: args.to_string().into_bytes(),
-            gas: near_primitives::gas::Gas::from_teragas(30), // 30 TGas
-            deposit: storage_deposit,
-        }));
-
-        // Get access key
-        let access_key_query = methods::query::RpcQueryRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-            request: near_primitives::views::QueryRequest::ViewAccessKey {
-                account_id: self.treasury_account.clone(),
-                public_key: self.signer.public_key(),
-            },
-        };
-
-        let access_key_response = self
-            .rpc_client
-            .call(access_key_query)
             .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get access key: {}", e)))?;
+            .map_err(|e| ChainError::TransactionFailed(format!("Storage deposit failed: {e}")))?;
 
-        let nonce = match access_key_response.kind {
-            QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
-            _ => {
-                return Err(ChainError::RpcError(
-                    "Unexpected query response".to_string(),
-                ))
-            }
-        };
-
-        // Get block hash
-        let block_query = methods::block::RpcBlockRequest {
-            block_reference: near_primitives::types::BlockReference::latest(),
-        };
-
-        let block = self
-            .rpc_client
-            .call(block_query)
-            .await
-            .map_err(|e| ChainError::RpcError(format!("Failed to get block: {}", e)))?;
-
-        // Create and sign transaction
-        let transaction = Transaction::V0(TransactionV0 {
-            signer_id: self.treasury_account.clone(),
-            public_key: self.signer.public_key(),
-            nonce,
-            receiver_id: token_contract.clone(),
-            block_hash: block.header.hash,
-            actions: vec![action],
-        });
-
-        // Sign transaction
-        let (hash, _) = transaction.get_hash_and_size();
-        let signature = self.signer.sign(hash.as_ref());
-        let signed_transaction = SignedTransaction::new(signature, transaction);
-
-        // Send transaction
-        let tx_request =
-            methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest { signed_transaction };
-
-        let result =
-            self.rpc_client.call(tx_request).await.map_err(|e| {
-                ChainError::TransactionFailed(format!("Storage deposit failed: {}", e))
-            })?;
-
-        // Check if transaction succeeded
-        if let near_primitives::views::FinalExecutionStatus::Failure(failure) = result.status {
-            return Err(ChainError::TransactionFailed(format!(
-                "Storage deposit failed: {:?}",
-                failure
-            )));
-        }
-
-        info!(
-            tx_hash = %result.transaction.hash,
-            contract = %token_contract,
-            "Storage registered successfully"
-        );
-
-        Ok(result.transaction.hash.to_string())
+        Self::tx_result(result)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_primitives::types::AccountId;
-    use std::str::FromStr;
+
+    /// A fixed, valid ED25519 test key (the gateway sandbox test key). Handlers
+    /// built here are dry-run only, so the key is never used to sign anything.
+    fn test_key() -> SecretKey {
+        "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
+            .parse()
+            .unwrap()
+    }
 
     fn create_test_handler() -> NearHandler {
-        let treasury_account = AccountId::from_str("treasury.near").unwrap();
-        let signer_key = SecretKey::from_random(near_crypto::KeyType::ED25519);
-
         NearHandler::new(
-            treasury_account,
-            signer_key,
+            "treasury.near".parse().unwrap(),
+            test_key(),
             "https://rpc.testnet.near.org".to_string(),
+            Network::Testnet,
             true, // dry_run = true for tests
         )
+        .unwrap()
     }
 
     #[test]
@@ -574,15 +368,14 @@ mod tests {
 
     #[test]
     fn test_get_token_contract_mainnet() {
-        let treasury_account = AccountId::from_str("treasury.near").unwrap();
-        let signer_key = SecretKey::from_random(near_crypto::KeyType::ED25519);
-
         let handler = NearHandler::new(
-            treasury_account,
-            signer_key,
+            "treasury.near".parse().unwrap(),
+            test_key(),
             "https://free.rpc.fastnear.com".to_string(),
+            Network::Mainnet,
             true,
-        );
+        )
+        .unwrap();
 
         let contract = handler.get_token_contract("USDC").unwrap();
         assert_eq!(contract.to_string(), "usdc.near");

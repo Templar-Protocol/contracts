@@ -217,7 +217,42 @@ impl JsonSchema for PublicKey {
                 description: Some("NEAR public key.".to_owned()),
                 ..Metadata::default()
             })),
-            format: Some("byte".to_owned()),
+            ..SchemaObject::default()
+        })
+    }
+}
+
+/// A NEAR signature, serialized as `<curve>:<base58>` (e.g. `ed25519:...`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Signature(pub near_api_types::Signature);
+
+impl From<near_api_types::Signature> for Signature {
+    fn from(signature: near_api_types::Signature) -> Self {
+        Self(signature)
+    }
+}
+
+impl From<Signature> for near_api_types::Signature {
+    fn from(signature: Signature) -> Self {
+        signature.0
+    }
+}
+
+impl JsonSchema for Signature {
+    fn schema_name() -> String {
+        "Signature".to_owned()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        Schema::Object(SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            string: Some(Box::new(StringValidation::default())),
+            metadata: Some(Box::new(Metadata {
+                title: Some("Signature".to_owned()),
+                description: Some("NEAR signature (`<curve>:<base58>`).".to_owned()),
+                ..Metadata::default()
+            })),
             ..SchemaObject::default()
         })
     }

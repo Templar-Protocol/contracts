@@ -1,247 +1,156 @@
-//! Integration tests for funding-bridge service
+//! Integration tests for the funding-bridge NEAR treasury handler.
 //!
-//! Tests the NEAR chain handler with real NEAR sandbox environment
+//! These drive the real [`NearHandler`] against the gateway `SandboxHarness`
+//! (which deploys a mock FT and provides pre-funded signer accounts) through the
+//! in-process gateway client — the same path production uses.
+//!
+//! Ignored by default: they spin up `near-sandbox` and deploy the mock FT, so
+//! they need the test wasms prebuilt. Run with:
+//!
+//! ```bash
+//! ./script/prebuild-test-contracts.sh
+//! TEST_CONTRACTS_PREBUILT=1 cargo test -p templar-funding-bridge --test tests -- --ignored
+//! ```
 
 #![allow(clippy::unwrap_used)]
 
-use near_sdk::{json_types::U128, NearToken};
-use near_workspaces::{Account, Contract, Worker};
-use std::sync::Arc;
+use near_account_id::AccountId;
+use rstest::{fixture, rstest};
+use serde_json::json;
 
-use templar_funding_bridge::{
-    app::App, bridge::BridgeClient, config::Args, rpc::Network, treasury::NearHandler,
+use templar_funding_bridge::{app::App, config::Args, rpc::Network, treasury::NearHandler};
+use templar_gateway_client::Client;
+use templar_gateway_methods_spec::{ft, storage, tx};
+use templar_gateway_testing::sandbox::{test_secret_key, SandboxHarness};
+use templar_gateway_types::{
+    common::ContractArgs, ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
 
-const FT_WASM: &[u8] = include_bytes!("../../../mock/ft/res/mock_ft.wasm");
+/// Amount minted to the treasury in the fixture.
+const MINT_AMOUNT: u128 = 1_000_000_000_000;
 
-/// Test fixture containing sandbox worker and accounts
+/// A running sandbox with the mock FT registered for the treasury and user
+/// accounts and `MINT_AMOUNT` minted to the treasury, plus a gateway client for
+/// reading balances / setting up state.
 struct TestContext {
-    worker: Worker<near_workspaces::network::Sandbox>,
-    treasury: Account,
-    user: Account,
-    ft_contract: Contract,
+    // Kept alive for the duration of the test (drops the sandbox on teardown).
+    _harness: SandboxHarness,
+    client: Client,
+    treasury: ManagedAccountId,
+    user: ManagedAccountId,
+    ft: AccountId,
+    rpc_url: String,
 }
 
 impl TestContext {
-    async fn new() -> Self {
-        let worker = near_workspaces::sandbox().await.unwrap();
-
-        // Create accounts
-        let treasury = worker.dev_create_account().await.unwrap();
-        let user = worker.dev_create_account().await.unwrap();
-
-        // Deploy FT contract
-        let ft_contract = worker.dev_deploy(FT_WASM).await.unwrap();
-
-        // Initialize FT contract
-        ft_contract
-            .call("new")
-            .args_json(serde_json::json!({
-                "name": "Test Token",
-                "symbol": "TEST"
-            }))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-
-        // Register treasury account with storage deposit
-        treasury
-            .call(ft_contract.id(), "storage_deposit")
-            .args_json(serde_json::json!({
-                "account_id": treasury.id()
-            }))
-            .deposit(NearToken::from_millinear(10))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-
-        // Register user account with storage deposit
-        treasury
-            .call(ft_contract.id(), "storage_deposit")
-            .args_json(serde_json::json!({
-                "account_id": user.id()
-            }))
-            .deposit(NearToken::from_millinear(10))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-
-        // Mint tokens to treasury account
-        treasury
-            .call(ft_contract.id(), "mint")
-            .args_json(serde_json::json!({
-                "amount": U128::from(1_000_000_000_000u128)
-            }))
-            .transact()
-            .await
-            .unwrap()
-            .unwrap();
-
-        // Verify minting worked
-        let balance: U128 = ft_contract
-            .view("ft_balance_of")
-            .args_json(serde_json::json!({
-                "account_id": treasury.id()
-            }))
-            .await
-            .unwrap()
-            .json()
-            .unwrap();
-
-        assert_eq!(
-            balance.0, 1_000_000_000_000u128,
-            "Treasury should have minted tokens"
-        );
-
-        Self {
-            worker,
-            treasury,
-            user,
-            ft_contract,
-        }
+    fn treasury_id(&self) -> AccountId {
+        self.treasury.0.clone()
     }
 
-    async fn get_ft_balance(&self, account_id: &near_sdk::AccountId) -> u128 {
-        let result: U128 = self
-            .ft_contract
-            .view("ft_balance_of")
-            .args_json(serde_json::json!({
-                "account_id": account_id
-            }))
+    fn user_id(&self) -> AccountId {
+        self.user.0.clone()
+    }
+
+    /// Read a mock-FT balance through the gateway client.
+    async fn ft_balance(&self, account_id: &AccountId) -> u128 {
+        *self
+            .client
+            .read(ft::GetBalanceOf {
+                contract_id: self.ft.clone(),
+                account_id: account_id.clone(),
+            })
             .await
             .unwrap()
-            .json()
-            .unwrap();
+            .balance
+    }
 
-        result.0
+    /// Build a `NearHandler` for the treasury pointed at the sandbox RPC.
+    fn handler(&self, dry_run: bool) -> NearHandler {
+        NearHandler::new(
+            self.treasury_id(),
+            test_secret_key().unwrap(),
+            self.rpc_url.clone(),
+            Network::Testnet,
+            dry_run,
+        )
+        .unwrap()
     }
 }
 
-#[tokio::test]
-async fn test_near_handler_ft_transfer() {
-    let ctx = TestContext::new().await;
+#[fixture]
+async fn ctx() -> TestContext {
+    let harness = SandboxHarness::start().await.unwrap();
+    let treasury = harness.gateway_signer_account_id.clone();
+    let user = harness.cleanup_signer_account_id.clone();
+    let ft = harness.ft_contract_id.clone();
+    let rpc_url = harness.network.rpc_endpoints[0].url.as_str().to_string();
 
-    // Create NEAR handler
-    let handler = NearHandler::new(
-        ctx.treasury.id().as_str().parse().unwrap(),
-        ctx.treasury.secret_key().to_string().parse().unwrap(),
-        ctx.worker.rpc_addr(),
-        false, // not dry run
-    );
-
-    // Check initial balance
-    let initial_balance = handler
-        .get_balance(ctx.ft_contract.id().as_str())
-        .await
+    // Every harness account shares the fixed test key.
+    let key = test_secret_key().unwrap();
+    let client = Client::builder(harness.network.clone())
+        .secret_key(treasury.clone(), key.clone())
+        .unwrap()
+        .secret_key(user.clone(), key.clone())
+        .unwrap()
+        .build()
         .unwrap();
 
-    assert_eq!(initial_balance, 1_000_000_000_000u128);
+    // Register both accounts for storage on the mock FT.
+    for account in [&treasury, &user] {
+        client
+            .execute_as(
+                account.clone(),
+                storage::EnsureDeposit {
+                    contract_id: ft.clone(),
+                    account_id: account.0.clone(),
+                    mode: storage::EnsureDepositMode::Registered,
+                },
+            )
+            .await
+            .unwrap();
+    }
 
-    // Transfer tokens to user
-    let amount = 500_000u128;
-    let tx_hash = handler
-        .send_tokens(
-            ctx.user.id().as_str(),
-            ctx.ft_contract.id().as_str(),
-            amount,
+    // Mint to the treasury (mock FT `mint` credits the predecessor). `mint` is a
+    // test-only method with no typed op, so this uses `tx::FunctionCall` — the
+    // same escape hatch the liquidator sandbox test uses, test-only.
+    let result = client
+        .execute_as(
+            treasury.clone(),
+            tx::FunctionCall {
+                receiver_id: ft.clone(),
+                method_name: ContractMethodName("mint".to_owned()),
+                args: ContractArgs::Json(json!({ "amount": MINT_AMOUNT.to_string() })),
+                gas: NearGas::from_tgas(100),
+                deposit: NearToken::from_yoctonear(0),
+            },
         )
         .await
         .unwrap();
-
-    assert!(!tx_hash.is_empty());
-
-    // Verify balances
-    let treasury_balance = ctx
-        .get_ft_balance(&ctx.treasury.id().as_str().parse().unwrap())
-        .await;
-    let user_balance = ctx
-        .get_ft_balance(&ctx.user.id().as_str().parse().unwrap())
-        .await;
-
-    assert_eq!(treasury_balance, 1_000_000_000_000u128 - amount);
-    assert_eq!(user_balance, amount);
-}
-
-#[tokio::test]
-async fn test_near_handler_dry_run() {
-    let ctx = TestContext::new().await;
-
-    // Create NEAR handler in dry-run mode
-    let handler = NearHandler::new(
-        ctx.treasury.id().as_str().parse().unwrap(),
-        ctx.treasury.secret_key().to_string().parse().unwrap(),
-        ctx.worker.rpc_addr(),
-        true, // dry run
+    assert_eq!(
+        result.operation.status,
+        OperationStatus::Succeeded,
+        "mint should succeed"
     );
 
-    // Transfer should return immediately without actual transaction
-    let tx_hash = handler
-        .send_tokens(
-            ctx.user.id().as_str(),
-            ctx.ft_contract.id().as_str(),
-            500_000u128,
-        )
-        .await
-        .unwrap();
-
-    assert!(tx_hash.starts_with("dry-run-tx-"));
-
-    // Verify no actual transfer happened
-    let user_balance = ctx
-        .get_ft_balance(&ctx.user.id().as_str().parse().unwrap())
-        .await;
-
-    assert_eq!(user_balance, 0);
+    TestContext {
+        _harness: harness,
+        client,
+        treasury,
+        user,
+        ft,
+        rpc_url,
+    }
 }
 
-#[tokio::test]
-async fn test_near_handler_check_balance() {
-    let ctx = TestContext::new().await;
-
-    // Create handler with real sandbox
-    let handler = NearHandler::new(
-        ctx.treasury.id().as_str().parse().unwrap(),
-        ctx.treasury.secret_key().to_string().parse().unwrap(),
-        ctx.worker.rpc_addr(),
-        false,
-    );
-
-    // Check balance should work
-    let balance = handler
-        .get_balance(ctx.ft_contract.id().as_str())
-        .await
-        .unwrap();
-
-    assert_eq!(balance, 1_000_000_000_000u128);
-}
-
-#[tokio::test]
-async fn test_app_initialization() {
-    let ctx = TestContext::new().await;
-
-    // Create minimal config for testing
-    let bridge_client = Arc::new(BridgeClient::new("https://test.api".to_string()));
-    let token_registry =
-        templar_funding_bridge::tokens::TokenRegistry::new(Arc::clone(&bridge_client));
-
-    let near_handler = Arc::new(NearHandler::new(
-        ctx.treasury.id().as_str().parse().unwrap(),
-        ctx.treasury.secret_key().to_string().parse().unwrap(),
-        ctx.worker.rpc_addr(),
-        false,
-    ));
-
-    let args = Args {
+fn make_args(ctx: &TestContext) -> Args {
+    Args {
         port: 3000,
         network: Network::Testnet,
         bridge_api_url: "https://test.api".to_string(),
         dry_run: false,
-        near_treasury_account: Some(ctx.treasury.id().as_str().parse().unwrap()),
-        near_treasury_key: Some(ctx.treasury.secret_key().to_string().parse().unwrap()),
-        near_rpc_url: Some(ctx.worker.rpc_addr()),
+        near_treasury_account: Some(ctx.treasury_id()),
+        near_treasury_key: Some(test_secret_key().unwrap()),
+        near_rpc_url: Some(ctx.rpc_url.clone()),
         eth_private_key: None,
         eth_rpc_url: "https://eth.llamarpc.com".to_string(),
         solana_private_key: None,
@@ -255,57 +164,83 @@ async fn test_app_initialization() {
         stellar_secret_key: None,
         stellar_horizon_url: "https://horizon.stellar.org".to_string(),
         stellar_withdraw_address: None,
-    };
+    }
+}
 
-    let app = App {
-        near_handler: near_handler.clone(),
-        bridge_client,
-        token_registry,
-        external_chains: std::sync::Arc::new(
-            templar_funding_bridge::external::ExternalChainRegistry::new(),
-        ),
-        config: Arc::new(args),
-        dry_run: false,
-        version: "0.1.0-test",
-    };
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
+    let handler = ctx.handler(false);
 
-    // App should be healthy
+    let initial_balance = handler.get_balance(ctx.ft.as_str()).await.unwrap();
+    assert_eq!(initial_balance, MINT_AMOUNT);
+
+    let amount = 500_000u128;
+    let tx_hash = handler
+        .send_tokens(ctx.user_id().as_str(), ctx.ft.as_str(), amount)
+        .await
+        .unwrap();
+    assert!(!tx_hash.is_empty());
+
+    assert_eq!(
+        ctx.ft_balance(&ctx.treasury_id()).await,
+        MINT_AMOUNT - amount
+    );
+    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, amount);
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
+    let handler = ctx.handler(true);
+
+    let tx_hash = handler
+        .send_tokens(ctx.user_id().as_str(), ctx.ft.as_str(), 500_000)
+        .await
+        .unwrap();
+    assert!(tx_hash.starts_with("dry-run-tx-"));
+
+    // No real transfer happened.
+    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, 0);
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn test_near_handler_check_balance(#[future(awt)] ctx: TestContext) {
+    let handler = ctx.handler(false);
+
+    let balance = handler.get_balance(ctx.ft.as_str()).await.unwrap();
+    assert_eq!(balance, MINT_AMOUNT);
+}
+
+#[rstest]
+#[tokio::test]
+#[ignore = "requires NEAR sandbox"]
+async fn test_app_initialization(#[future(awt)] ctx: TestContext) {
+    let args = make_args(&ctx);
+    let app = App::new(&args).expect("build app");
+
     assert!(app.is_healthy());
-
-    // Check treasury account
     assert_eq!(
         app.near_handler.treasury_account().as_str(),
-        ctx.treasury.id().as_str()
+        ctx.treasury_id().as_str()
     );
 }
 
+#[rstest]
 #[tokio::test]
-async fn test_end_to_end_transfer() {
-    let ctx = TestContext::new().await;
+#[ignore = "requires NEAR sandbox"]
+async fn test_end_to_end_transfer(#[future(awt)] ctx: TestContext) {
+    let handler = ctx.handler(false);
 
-    let handler = NearHandler::new(
-        ctx.treasury.id().as_str().parse().unwrap(),
-        ctx.treasury.secret_key().to_string().parse().unwrap(),
-        ctx.worker.rpc_addr(),
-        false,
-    );
-
-    // Execute transfer directly via NearHandler
     let tx_hash = handler
-        .send_tokens(
-            ctx.user.id().as_str(),
-            ctx.ft_contract.id().as_str(),
-            250_000u128,
-        )
+        .send_tokens(ctx.user_id().as_str(), ctx.ft.as_str(), 250_000)
         .await
         .unwrap();
-
     assert!(!tx_hash.is_empty());
 
-    // Verify transfer
-    let user_balance = ctx
-        .get_ft_balance(&ctx.user.id().as_str().parse().unwrap())
-        .await;
-
-    assert_eq!(user_balance, 250_000u128);
+    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, 250_000);
 }
