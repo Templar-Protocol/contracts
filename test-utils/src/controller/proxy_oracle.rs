@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use near_sdk::{
     json_types::Base64VecU8,
     serde::{de::DeserializeOwned, Serialize},
-    serde_json::json,
+    serde_json::{self, json},
 };
 use near_workspaces::{Account, Contract};
 use templar_common::{
@@ -51,7 +51,18 @@ impl ProxyOracleController {
             .await
     }
 
+    /// Deploy and initialize without an explicit owner: the predecessor (here,
+    /// the contract account itself) becomes the owner.
     pub async fn deploy(account: Account) -> Self {
+        Self::deploy_with_init_args(account, json!({})).await
+    }
+
+    /// Deploy and initialize with an explicit `owner_id`.
+    pub async fn deploy_with_owner(account: Account, owner_id: &near_sdk::AccountId) -> Self {
+        Self::deploy_with_init_args(account, json!({ "owner_id": owner_id })).await
+    }
+
+    async fn deploy_with_init_args(account: Account, init_args: serde_json::Value) -> Self {
         let contract = account
             .deploy(Self::wasm().await)
             .await
@@ -60,7 +71,7 @@ impl ProxyOracleController {
             .expect("proxy oracle deploy transaction failed");
         contract
             .call("new")
-            .args_json(json!({}))
+            .args_json(init_args)
             .transact()
             .await
             .expect("proxy oracle init RPC failed")

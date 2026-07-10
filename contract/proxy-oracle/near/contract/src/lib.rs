@@ -75,15 +75,17 @@ impl Contract {
     pub const GAS_FOR_REDSONE_REQUEST: Gas = Gas::from_tgas(17).saturating_div(10);
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
+    /// Initialize the oracle, owned by `owner_id` if given, otherwise by the
+    /// deployer (predecessor).
     #[init]
-    pub fn new() -> Self {
+    pub fn new(owner_id: Option<AccountId>) -> Self {
         let mut self_ = Self {
             state: State::new(()),
         };
 
-        let deployer = env::predecessor_account_id();
+        let owner = owner_id.unwrap_or_else(env::predecessor_account_id);
 
-        Owner::init(&mut self_, &deployer);
+        Owner::init(&mut self_, &owner);
 
         self_
     }

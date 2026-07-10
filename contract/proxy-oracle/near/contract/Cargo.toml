@@ -3,7 +3,7 @@ edition.workspace = true
 license.workspace = true
 name = "templar-proxy-oracle-near-contract"
 repository.workspace = true
-version = "0.2.0"
+version = "0.3.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -38,6 +38,7 @@ templar-proxy-oracle-near-common.workspace = true
 [dev-dependencies]
 hex-literal.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
+near-sdk-contract-tools.workspace = true
 near-workspaces.workspace = true
 rstest.workspace = true
 test-utils.workspace = true
