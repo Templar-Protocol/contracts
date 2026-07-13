@@ -62,7 +62,7 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
 
     let redstone_prices = view_contract_json(
         &stack,
-        redstone_oracle_id,
+        redstone_oracle_id.clone(),
         "read_price_data",
         serde_json::json!({ "feed_ids": ["BTC"] }),
     )
@@ -70,6 +70,30 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
     assert_ne!(
         redstone_prices["BTC"]["price"],
         serde_json::Value::String("0".to_owned())
+    );
+
+    // No feeds is nothing to fetch and nothing to write: a terminal, step-less no-op
+    // rather than an empty `redstone.writePrices` on chain. The CLI cannot reach this
+    // (`--feed-id` is required); a raw JSON-RPC caller can.
+    let empty_result = stack
+        .controller
+        .request::<oracle_updates::UpdateRedStone>(&WriteRequest {
+            signer_account_id: stack.harness.gateway_signer_account_id.clone(),
+            idempotency_key: None,
+            body: oracle_updates::UpdateRedStone {
+                oracle_id: redstone_oracle_id,
+                feed_ids: vec![],
+            },
+        })
+        .await?;
+    assert_eq!(
+        empty_result.operation.status,
+        templar_gateway_types::OperationStatus::Succeeded
+    );
+    assert!(
+        empty_result.operation.steps.is_empty(),
+        "an empty update must plan no steps, got {:?}",
+        empty_result.operation.steps
     );
 
     stack.shutdown().await;

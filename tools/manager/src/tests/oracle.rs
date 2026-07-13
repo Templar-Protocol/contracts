@@ -6,8 +6,10 @@ use templar_gateway_types::MethodSpec;
 
 use super::CREDS;
 use crate::cli::{Cli, Command};
-use crate::commands::OracleNs;
+use crate::commands::{proxy_oracle::parse_price_identifier, OracleNs};
 use crate::dispatch::generic::{oracle_route, OracleRoute};
+
+const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 /// Every `oracle.*` update must be reachable from generic `write`. `write` selects the
 /// context each one needs by hand — one macro callback cannot produce four differently
@@ -104,6 +106,48 @@ fn update_red_stone_requires_a_feed_id() {
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
+    );
+}
+
+/// A repeated `--price-id` would otherwise resolve the same dependencies twice.
+#[test]
+fn update_prices_deduplicates_repeated_price_ids() {
+    const OTHER_PRICE_ID: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "oracle",
+            "update-prices",
+            "--oracle-id",
+            "proxy.testnet",
+            "--price-id",
+            OTHER_PRICE_ID,
+            "--price-id",
+            PRICE_ID,
+            "--price-id",
+            OTHER_PRICE_ID,
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("oracle update-prices should parse");
+
+    let Command::Oracle {
+        command: OracleNs::Prices(cmd),
+    } = cli.command
+    else {
+        panic!("expected oracle update-prices");
+    };
+
+    let spec = cmd.into_spec();
+    assert_eq!(
+        spec.price_ids,
+        vec![
+            parse_price_identifier(PRICE_ID).expect("a valid price id"),
+            parse_price_identifier(OTHER_PRICE_ID).expect("a valid price id"),
+        ],
+        "duplicates dropped, and the remainder ordered by identifier"
     );
 }
 

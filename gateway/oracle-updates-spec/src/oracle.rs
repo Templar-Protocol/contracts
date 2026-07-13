@@ -18,7 +18,7 @@ pub struct UpdatePyth {
 pub struct UpdateRedStone {
     pub oracle_id: near_account_id::AccountId,
     /// Fetched as one payload and written in a single `redstone.writePrices` call,
-    /// matching the adapter's own multi-feed method.
+    /// matching the adapter's own multi-feed method. Empty is a no-op.
     pub feed_ids: Vec<redstone::FeedId>,
 }
 

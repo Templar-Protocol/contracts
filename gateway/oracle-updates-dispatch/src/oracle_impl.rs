@@ -49,10 +49,14 @@ where
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
+        // Nothing to fetch and nothing to write. A step-less plan settles as a terminal
+        // no-op, matching `oracle.updatePrices` with no price ids.
         if body.feed_ids.is_empty() {
-            return Err(GatewayError::InvalidRequest(
-                "oracle.updateRedStone requires at least one feed id".to_owned(),
-            ));
+            tracing::warn!(
+                oracle_id = %body.oracle_id,
+                "oracle.updateRedStone requested with no feed ids; nothing to update"
+            );
+            return Ok(OperationPlan { steps: Vec::new() });
         }
         tracing::debug!(
             oracle_id = %body.oracle_id,
