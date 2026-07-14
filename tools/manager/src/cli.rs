@@ -4,10 +4,12 @@ use clap::{ArgAction, Parser, Subcommand};
 use templar_gateway_client::Network;
 use tracing::level_filters::LevelFilter;
 
+use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
+
 use super::commands::signer::SignerArgs;
 use super::commands::{
-    AccountNs, ContractNs, FtNs, MarketNs, ProxyOracleGovernanceNs, ProxyOracleNs,
-    ProxyOracleOwnerNs, RecoverNep141, RedstoneNs, RegistryNs, StorageNs,
+    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, ProxyOracleGovernanceNs, ProxyOracleNs,
+    ProxyOracleOwnerNs, PythNs, RecoverNep141, RedstoneNs, RegistryNs, StorageNs,
 };
 
 #[derive(Parser, Debug)]
@@ -138,6 +140,16 @@ pub enum Command {
         #[command(subcommand)]
         command: ProxyOracleGovernanceNs,
     },
+    /// Push oracle price updates, fetching their payloads inside the gateway.
+    Oracle {
+        #[command(subcommand)]
+        command: OracleNs,
+    },
+    /// Read and update a Pyth oracle contract directly.
+    Pyth {
+        #[command(subcommand)]
+        command: PythNs,
+    },
     /// Deploy and operate a RedStone price adapter.
     Redstone {
         #[command(subcommand)]
@@ -167,10 +179,16 @@ pub struct GenericMethodCall {
 /// A generic write invocation: the method call plus the signer credentials it
 /// requires. Reads flatten only [`GenericMethodCall`], so credentials are an
 /// unexpected argument there.
+///
+/// The oracle source flags are here because `write oracle.<method>` may reach an
+/// in-process payload source. Only the method actually dispatched builds a source, so
+/// `write market.borrow` needs no Lazer token.
 #[derive(clap::Args, Debug)]
 pub struct WriteMethodCall {
     #[command(flatten)]
     pub call: GenericMethodCall,
+    #[command(flatten)]
+    pub oracle_sources: OracleSourceArgs,
     #[command(flatten)]
     pub signer: SignerArgs,
 }

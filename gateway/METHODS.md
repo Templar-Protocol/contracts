@@ -120,7 +120,7 @@
 | `oracle.updateLazer` | write | `UpdateLazer` → `WriteOperationResult` | Submit a Pyth Lazer oracle update for a single feed. |
 | `oracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Submit all updates needed for prices. |
 | `oracle.updatePyth` | write | `UpdatePyth` → `WriteOperationResult` | Submit a Pyth oracle update. |
-| `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update. |
+| `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update for one or more feeds. |
 
 ## `proxyOracle`
 

@@ -16,9 +16,11 @@ use templar_gateway_types::{
     ManagedAccountId, MethodSpec,
 };
 
+use templar_gateway_oracle_updates_dispatch::Dispatch as OracleUpdatesDispatch;
+
 use super::CREDS;
 use crate::cli::{Cli, Command};
-use crate::commands::{FtNs, ProxyOracleGovernanceNs, RedstoneNs, StorageNs};
+use crate::commands::{FtNs, OracleNs, ProxyOracleGovernanceNs, RedstoneNs, StorageNs};
 
 const TGAS: u64 = 1_000_000_000_000;
 
@@ -32,12 +34,14 @@ fn signer() -> ManagedAccountId {
     ManagedAccountId::from("signer.testnet".parse::<AccountId>().unwrap())
 }
 
-async fn plan<S>(body: S) -> OperationPlan
+/// Plan `body` through dispatcher `D` against a source-free [`GatewayContext`].
+async fn plan_via<D, S>(body: S) -> OperationPlan
 where
     S: MethodSpec<Output = WriteOperationResult>,
-    Dispatch: PlanWrite<S, GatewayContext>,
+    D: PlanWrite<S, GatewayContext>,
 {
     offline_client()
+        .via::<D>()
         .plan_request(WriteRequest {
             signer_account_id: signer(),
             idempotency_key: None,
@@ -45,6 +49,24 @@ where
         })
         .await
         .expect("offline plan")
+}
+
+async fn plan<S>(body: S) -> OperationPlan
+where
+    S: MethodSpec<Output = WriteOperationResult>,
+    Dispatch: PlanWrite<S, GatewayContext>,
+{
+    plan_via::<Dispatch, S>(body).await
+}
+
+/// Only `oracle.updatePyth` can be planned offline: the other three fetch a payload
+/// from an in-process source before they build any step.
+async fn oracle_plan<S>(body: S) -> OperationPlan
+where
+    S: MethodSpec<Output = WriteOperationResult>,
+    OracleUpdatesDispatch: PlanWrite<S, GatewayContext>,
+{
+    plan_via::<OracleUpdatesDispatch, S>(body).await
 }
 
 struct Call {
@@ -233,4 +255,38 @@ async fn redstone_set_role_plans_set_role_action() {
     // `--revoke` absent ⇒ grant the role.
     assert_eq!(call.args["set"], true);
     assert_eq!(call.deposit, 1);
+}
+
+/// `oracle update-pyth` takes its VAA from the CLI, so its plan is offline: the base64
+/// argument must reach the contract as the hex `data` the Pyth adapter expects.
+#[tokio::test]
+async fn oracle_update_pyth_plans_update_price_feeds_action() {
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "oracle",
+            "update-pyth",
+            "--oracle-id",
+            "pyth.testnet",
+            // "hello" encoded as standard base64.
+            "--vaa-base64",
+            "aGVsbG8=",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("oracle update-pyth should parse");
+    let body = match cli.command {
+        Command::Oracle {
+            command: OracleNs::Pyth(a),
+        } => a.try_into_spec().expect("a valid base64 VAA"),
+        _ => panic!("expected oracle update-pyth"),
+    };
+
+    let call = single_call(&oracle_plan(body).await);
+    assert_eq!(call.receiver_id, "pyth.testnet");
+    assert_eq!(call.method_name, "update_price_feeds");
+    assert_eq!(call.args["data"], hex::encode("hello"));
+    assert_eq!(call.deposit, 10_000_000_000_000_000_000_000);
+    assert_eq!(call.gas, 300 * TGAS);
 }

@@ -27,11 +27,12 @@ serde.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
-templar-redstone-bridge.workspace = true
 templar-gateway-client = { workspace = true, features = ["clap"] }
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true
 templar-gateway-methods-spec.workspace = true
+templar-gateway-oracle-updates-dispatch = { workspace = true, features = ["clap"] }
+templar-gateway-oracle-updates-spec.workspace = true
 templar-gateway-store.workspace = true
 templar-gateway-types = { workspace = true, features = ["clap"] }
 templar-tools-common.workspace = true

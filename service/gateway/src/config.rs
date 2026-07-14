@@ -159,7 +159,7 @@ mod tests {
             "https://hermes-beta.pyth.network/"
         );
         assert_eq!(
-            config.oracle_sources.redstone_node_path,
+            config.oracle_sources.redstone.redstone_node_path,
             PathBuf::from("node")
         );
         assert_eq!(config.managed_signers.len(), 1);
