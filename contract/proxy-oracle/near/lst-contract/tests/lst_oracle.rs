@@ -266,11 +266,5 @@ async fn lst_oracle() -> Result<()> {
         Some(200_000),
     );
 
-    // TODO(ENG-388 follow-up): the original near-workspaces test also drove a
-    // full market (supply -> activation -> collateralize -> borrow) against this
-    // LST oracle and asserted the borrow position stayed healthy. That market
-    // flow belongs to the market-domain `SandboxHarness` helpers (migrated
-    // separately); re-add the borrow-health assertion once those land.
-
     Ok(())
 }

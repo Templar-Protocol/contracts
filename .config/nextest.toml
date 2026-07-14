@@ -2,11 +2,17 @@
 # out-of-band neard before node-backed tests).
 experimental = ["setup-scripts"]
 
-# The node-backed crates: every `tests/` integration binary in these packages
-# needs a NEAR sandbox (a `SandboxHarness`). They are excluded from the fast
-# gate and are the *only* thing the `sandbox` profile runs. Keep the two
-# filtersets below in sync; a package missing from the `sandbox` one runs its
-# node tests nowhere. Their `src/` unit tests are `kind(lib)` and always run.
+# The node-backed tests: these need a NEAR sandbox (a `SandboxHarness`). They are
+# excluded from the fast gate and are the *only* thing the `sandbox` profile runs.
+# The two filtersets below are exact complements — keep them in sync; a test in
+# neither runs nowhere, which is how a whole crate's suite once went dark.
+#
+# Two shapes, because `kind` alone cannot express this:
+#   - Ten packages whose *integration* binaries are all node-backed: `kind(test)`.
+#   - `templar-gateway-service`, whose node-backed tests live in `src/` (it is a
+#     bin, so they are `kind(bin)` unit tests, indistinguishable by kind from the
+#     pure `config::tests`). Select them by module instead. Its ~40 sandbox tests
+#     — one of which takes over three minutes — otherwise land in the fast gate.
 #
 # This is deliberately a filterset rather than `#[ignore]` on each test: gating
 # by attribute conflates "needs a sandbox" with "disabled", and left no way to
@@ -26,17 +32,23 @@ retries = 0
 default-filter = """
     not test(/^requires_network_/)
     and not (
-        kind(test) & (
-            package(templar-market-contract)
-            | package(templar-vault-contract)
-            | package(templar-registry-contract)
-            | package(templar-universal-account-contract)
-            | package(templar-proxy-oracle-near-contract)
-            | package(templar-lst-oracle-contract)
-            | package(templar-funding-bridge)
-            | package(templar-relayer)
-            | package(templar-gateway-testing)
-            | package(templar-liquidator)
+        (
+            kind(test) & (
+                package(templar-market-contract)
+                | package(templar-vault-contract)
+                | package(templar-registry-contract)
+                | package(templar-universal-account-contract)
+                | package(templar-proxy-oracle-near-contract)
+                | package(templar-lst-oracle-contract)
+                | package(templar-funding-bridge)
+                | package(templar-relayer)
+                | package(templar-gateway-testing)
+                | package(templar-liquidator)
+            )
+        )
+        | (
+            package(templar-gateway-service)
+            & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
         )
     )
 """
@@ -79,20 +91,28 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 fail-fast = false
 
 # The exact complement of the default profile's exclusion: only the node-backed
-# integration binaries, so this profile never re-runs the fast gate's tests.
+# tests, so this profile never re-runs the fast gate's tests.
 default-filter = """
     not test(/^requires_network_/)
-    and kind(test) & (
-        package(templar-market-contract)
-        | package(templar-vault-contract)
-        | package(templar-registry-contract)
-        | package(templar-universal-account-contract)
-        | package(templar-proxy-oracle-near-contract)
-        | package(templar-lst-oracle-contract)
-        | package(templar-funding-bridge)
-        | package(templar-relayer)
-        | package(templar-gateway-testing)
-        | package(templar-liquidator)
+    and (
+        (
+            kind(test) & (
+                package(templar-market-contract)
+                | package(templar-vault-contract)
+                | package(templar-registry-contract)
+                | package(templar-universal-account-contract)
+                | package(templar-proxy-oracle-near-contract)
+                | package(templar-lst-oracle-contract)
+                | package(templar-funding-bridge)
+                | package(templar-relayer)
+                | package(templar-gateway-testing)
+                | package(templar-liquidator)
+            )
+        )
+        | (
+            package(templar-gateway-service)
+            & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
+        )
     )
 """
 
