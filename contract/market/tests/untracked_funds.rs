@@ -10,7 +10,6 @@ use templar_gateway_types::OperationStatus;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn cannot_borrow_untracked_funds(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -65,7 +64,6 @@ async fn cannot_borrow_untracked_funds(#[future(awt)] harness: SandboxHarness) -
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn cannot_withdraw_untracked_funds(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;

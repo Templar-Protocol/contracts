@@ -93,18 +93,19 @@ async fn call_json<T: DeserializeOwned>(
     Ok(result.json::<T>()?)
 }
 
-fn pyth_price_now(value: i64) -> pyth::Price {
-    pyth::Price {
+/// A Pyth price at the current *chain* time. Not the host clock: the contract
+/// judges freshness against `block_timestamp`, and the sandbox pool reuses a
+/// node across tests, so after a market test has `fast_forward`ed that node its
+/// chain time runs ahead of wall-clock time and a host-stamped price is stale.
+#[allow(clippy::cast_possible_wrap)]
+async fn pyth_price_now(harness: &SandboxHarness, value: i64) -> Result<pyth::Price> {
+    let now = harness.chain_timestamp().await?.as_secs() as i64;
+    Ok(pyth::Price {
         price: value.into(),
         conf: 0.into(),
         expo: 0,
-        publish_time: PythTimestamp::from_secs(
-            std::time::UNIX_EPOCH
-                .elapsed()
-                .unwrap_or_default()
-                .as_secs() as i64,
-        ),
-    }
+        publish_time: PythTimestamp::from_secs(now),
+    })
 }
 
 fn norm_price(price: &pyth::Price) -> u64 {
@@ -135,7 +136,6 @@ fn expected_transformer(collateral_asset: &AccountIdRef) -> PriceTransformer {
 }
 
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn lst_oracle() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let network = harness.network.clone();
@@ -154,26 +154,26 @@ async fn lst_oracle() -> Result<()> {
     .await?;
 
     // Underlying (mock pyth) oracle with the base borrow/collateral feeds.
-    let underlying = harness.deploy_mock_oracle("oracle.near".parse()?).await?;
+    let underlying = harness.deploy_mock_oracle("oracle").await?;
     harness
         .set_mock_oracle_pyth_price(
             underlying.clone(),
             DEFAULT_COLLATERAL_PRICE_ID,
-            Some(pyth_price_now(100_000)),
+            Some(pyth_price_now(&harness, 100_000).await?),
         )
         .await?;
     harness
         .set_mock_oracle_pyth_price(
             underlying.clone(),
             DEFAULT_BORROW_PRICE_ID,
-            Some(pyth_price_now(100_000)),
+            Some(pyth_price_now(&harness, 100_000).await?),
         )
         .await?;
 
     // LST oracle wrapping the underlying oracle, with a transformer for the LST
     // collateral feed.
     let lst_oracle = harness
-        .deploy_lst_oracle("lst-oracle.near".parse()?, underlying.clone())
+        .deploy_lst_oracle("lst-oracle", underlying.clone())
         .await?;
     harness
         .create_lst_transformer(

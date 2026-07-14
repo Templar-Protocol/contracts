@@ -19,6 +19,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 NODE_COUNT="${SANDBOX_NODE_COUNT:-4}"
 
+# The pool's addr/pid files are fixed paths, so starting a pool on top of a live
+# one overwrites them and orphans the older nodes — nothing tracks them after
+# that, and they linger holding RAM. Starting a pool means replacing whatever is
+# already there.
+bash "${SCRIPT_DIR}/sandbox-down.sh" >/dev/null
+
 # Prebuild the contract wasms once so tests don't each recompile them. Skip with
 # SANDBOX_SKIP_PREBUILD=1 when they are known to be current.
 if [ -z "${SANDBOX_SKIP_PREBUILD:-}" ]; then

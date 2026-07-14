@@ -25,7 +25,6 @@ fn linear_regression_slope(data: &[(f64, f64)]) -> f64 {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn many_snapshots(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {

@@ -5,8 +5,8 @@
 //! step is rejected without corrupting state. Every interaction goes through the
 //! gateway `Client` via the `vault_*` harness wrappers.
 //!
-//! Node-backed, so gated behind `#[ignore]`; run with:
-//! `cargo nextest run -p templar-vault-contract --test callback_failure --run-ignored all`
+//! Node-backed: run with
+//! `just test-sandbox -p templar-vault-contract --test callback_failure`.
 #![allow(clippy::too_many_lines)]
 
 use anyhow::Result;
@@ -23,7 +23,6 @@ use common::{harvest, zero_interest};
 /// — but total assets and shares must be preserved regardless.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn unbrick_recovers_stuck_allocation(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness
         .deploy_vault_with_market_with(zero_interest, |_| {})
@@ -74,7 +73,6 @@ async fn unbrick_recovers_stuck_allocation(#[future(awt)] harness: SandboxHarnes
 /// `unbrick` on an already-idle vault is a no-op.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn unbrick_noop_when_idle(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let supply_user = harness.create_user("supply").await?;
@@ -104,7 +102,6 @@ async fn unbrick_noop_when_idle(#[future(awt)] harness: SandboxHarness) -> Resul
 /// `unbrick` from Withdrawing, and the vault remains usable for new deposits.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn vault_usable_after_unbrick_recovery(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness
         .deploy_vault_with_market_with(zero_interest, |_| {})
@@ -169,7 +166,6 @@ async fn vault_usable_after_unbrick_recovery(#[future(awt)] harness: SandboxHarn
 /// leaves the vault in Withdrawing state (no corruption); `unbrick` then recovers it.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn execute_withdrawal_wrong_market_does_not_corrupt(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

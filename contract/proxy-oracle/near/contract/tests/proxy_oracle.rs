@@ -384,21 +384,14 @@ async fn update_and_list(
 #[case::median_low(TestMethod::MedianLow)]
 #[case::priority(TestMethod::Priority)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 #[allow(clippy::too_many_lines)]
 async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let network = harness.network.clone();
 
-    let pyth_oracle = harness
-        .deploy_mock_oracle("pyth-oracle.near".parse()?)
-        .await?;
-    let pyth_oracle2 = harness
-        .deploy_mock_oracle("pyth-oracle2.near".parse()?)
-        .await?;
-    let redstone_adapter = harness
-        .deploy_mock_oracle("redstone-adapter.near".parse()?)
-        .await?;
+    let pyth_oracle = harness.deploy_mock_oracle("pyth-oracle").await?;
+    let pyth_oracle2 = harness.deploy_mock_oracle("pyth-oracle2").await?;
+    let redstone_adapter = harness.deploy_mock_oracle("redstone-adapter").await?;
     let proxy_oracle = harness.deploy_proxy_oracle().await?;
 
     let list_proxies: Vec<PriceIdentifier> = common::view(
@@ -503,7 +496,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         .set_mock_oracle_redstone_price(
             redstone_adapter.clone(),
             "BTC".into(),
-            Some(common::redstone_price_now(100_000)),
+            Some(common::redstone_price_now(&harness, 100_000).await?),
         )
         .await?;
     let result = update_and_list(
@@ -526,14 +519,14 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         .set_mock_oracle_pyth_price(
             pyth_oracle.clone(),
             CRYPTO_BTC_USD,
-            Some(common::pyth_price_now(90_000)),
+            Some(common::pyth_price_now(&harness, 90_000).await?),
         )
         .await?;
     harness
         .set_mock_oracle_redstone_price(
             redstone_adapter.clone(),
             "ETH".into(),
-            Some(common::redstone_price_now(1_800)),
+            Some(common::redstone_price_now(&harness, 1_800).await?),
         )
         .await?;
     let result = update_and_list(
@@ -584,7 +577,7 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
         .set_mock_oracle_pyth_price(
             pyth_oracle2.clone(),
             CRYPTO_BTC_USD,
-            Some(common::pyth_price_now(80_000)),
+            Some(common::pyth_price_now(&harness, 80_000).await?),
         )
         .await?;
     let result = update_and_list(
@@ -631,7 +624,6 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
 #[case::median_low(TestMethod::MedianLow, 100_000)]
 #[case::priority(TestMethod::Priority, 100_000)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn proxy_oracle_enforces_freshness_filter(
     #[case] method: TestMethod,
     #[case] expected_price: u64,
@@ -639,15 +631,9 @@ async fn proxy_oracle_enforces_freshness_filter(
     let harness = SandboxHarness::start().await?;
     let network = harness.network.clone();
 
-    let pyth_oracle = harness
-        .deploy_mock_oracle("pyth-oracle.near".parse()?)
-        .await?;
-    let pyth_oracle2 = harness
-        .deploy_mock_oracle("pyth-oracle2.near".parse()?)
-        .await?;
-    let redstone_adapter = harness
-        .deploy_mock_oracle("redstone-adapter.near".parse()?)
-        .await?;
+    let pyth_oracle = harness.deploy_mock_oracle("pyth-oracle").await?;
+    let pyth_oracle2 = harness.deploy_mock_oracle("pyth-oracle2").await?;
+    let redstone_adapter = harness.deploy_mock_oracle("redstone-adapter").await?;
     let proxy_oracle = harness.deploy_proxy_oracle().await?;
 
     let default_filter = FreshnessFilter::new(
@@ -678,7 +664,7 @@ async fn proxy_oracle_enforces_freshness_filter(
         .admin_set_proxy(proxy_oracle.clone(), btc_proxy_id, Some(btc_proxy_def))
         .await?;
 
-    let now = common::now_ns();
+    let now = common::now_ns(&harness).await?;
     let stale_time = now.saturating_sub(Nanoseconds::from_secs(30));
     let future_time = now.saturating_add(Nanoseconds::from_secs(20));
 
@@ -719,14 +705,11 @@ async fn proxy_oracle_enforces_freshness_filter(
 /// This is the path the empty `OracleRequest::Lazer` arms silently skipped.
 #[rstest::rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let network = harness.network.clone();
 
-    let lazer_adapter = harness
-        .deploy_mock_oracle("lazer-adapter.near".parse()?)
-        .await?;
+    let lazer_adapter = harness.deploy_mock_oracle("lazer-adapter").await?;
     let proxy_oracle = harness.deploy_proxy_oracle().await?;
 
     let feed_id = 42_u32;
@@ -758,7 +741,7 @@ async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
                     conf: U64(0),
                 },
                 expo: 0,
-                publish_time_ns: common::now_ns(),
+                publish_time_ns: common::now_ns(&harness).await?,
             }),
         )
         .await?;

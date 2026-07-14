@@ -4,8 +4,8 @@
 //! gating — every vault interaction through the gateway `Client` (via the
 //! `vault_*` harness wrappers), the same path the services use.
 //!
-//! Node-backed, so gated behind `#[ignore]`; run with:
-//! `cargo nextest run -p templar-vault-contract --test governance --run-ignored all`
+//! Node-backed: run with
+//! `just test-sandbox -p templar-vault-contract --test governance`.
 #![allow(clippy::too_many_lines)]
 
 use anyhow::Result;
@@ -20,7 +20,6 @@ use common::{account_to_kernel_address, zero_interest};
 /// Sentinel can pause the vault; while paused, deposits are rejected.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn pause_blocks_deposits(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let supply_user = harness.create_user("supply").await?;
@@ -69,7 +68,6 @@ async fn pause_blocks_deposits(#[future(awt)] harness: SandboxHarness) -> Result
 /// then the vault is usable again.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn unpause_restores_deposits(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let supply_user = harness.create_user("supply").await?;
@@ -106,7 +104,6 @@ async fn unpause_restores_deposits(#[future(awt)] harness: SandboxHarness) -> Re
 /// A blacklisted user cannot deposit; a non-blacklisted user still can.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn blacklist_blocks_deposit(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let supply_user = harness.create_user("supply").await?;
@@ -158,7 +155,6 @@ async fn blacklist_blocks_deposit(#[future(awt)] harness: SandboxHarness) -> Res
 /// sentinel can pause, and the old one loses the role.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn sentinel_lifecycle(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let new_sentinel = harness.create_user("new-sentinel").await?;
@@ -191,7 +187,6 @@ async fn sentinel_lifecycle(#[future(awt)] harness: SandboxHarness) -> Result<()
 /// The sentinel set at initialization can pause.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn sentinel_can_pause(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
 
@@ -211,7 +206,6 @@ async fn sentinel_can_pause(#[future(awt)] harness: SandboxHarness) -> Result<()
 /// A fee decrease applies immediately (no timelock).
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fee_decrease_immediate(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
 
@@ -234,7 +228,6 @@ async fn fee_decrease_immediate(#[future(awt)] harness: SandboxHarness) -> Resul
 /// A non-allocator cannot allocate; granting the role lets them.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn allocator_role_required_for_allocation(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

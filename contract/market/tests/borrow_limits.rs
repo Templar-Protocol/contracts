@@ -18,7 +18,6 @@ const OUT_OF_RANGE: &str = "New borrow position is outside of allowable range";
 #[case(10, &[10], 10)]
 #[case(0, &[20, 20, 20, 20, 20], 100)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn borrow_within_bounds(
     #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
@@ -65,7 +64,6 @@ async fn borrow_within_bounds(
 #[case(u128::MAX, 1, u128::MAX)]
 #[case(1000, 738, u128::MAX)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn borrow_below_minimum(
     #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
@@ -113,7 +111,6 @@ async fn borrow_below_minimum(
 #[case(100, &[1001], 500)]
 #[case(100, &[100, 100, 100, 100, 100, 100, 100], 500)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn borrow_above_maximum(
     #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
@@ -162,7 +159,6 @@ async fn borrow_above_maximum(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn withdraw_below_minimum(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {

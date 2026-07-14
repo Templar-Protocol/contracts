@@ -30,7 +30,6 @@ async fn register_on_market(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fee_applied_within_window(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let protocol = harness.create_user("protocol").await?;
     let protocol_id = protocol.0.clone();
@@ -97,7 +96,6 @@ async fn fee_applied_within_window(#[future(awt)] harness: SandboxHarness) -> Re
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn no_fee_after_window(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let protocol = harness.create_user("protocol").await?;
     let protocol_id = protocol.0.clone();

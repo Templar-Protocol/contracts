@@ -4,13 +4,8 @@
 //! (which deploys a mock FT and provides pre-funded signer accounts) through the
 //! in-process gateway client — the same path production uses.
 //!
-//! Ignored by default: they spin up `near-sandbox` and deploy the mock FT, so
-//! they need the test wasms prebuilt. Run with:
-//!
-//! ```bash
-//! ./script/prebuild-test-contracts.sh
-//! TEST_CONTRACTS_PREBUILT=1 cargo test -p templar-funding-bridge --test tests -- --ignored
-//! ```
+//! Node-backed: run with `just test-sandbox -p templar-funding-bridge` (which
+//! prebuilds the wasms and starts the neard pool).
 
 #![allow(clippy::unwrap_used)]
 
@@ -169,7 +164,6 @@ fn make_args(ctx: &TestContext) -> Args {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
     let handler = ctx.handler(false);
 
@@ -192,7 +186,6 @@ async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
     let handler = ctx.handler(true);
 
@@ -208,7 +201,6 @@ async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_near_handler_check_balance(#[future(awt)] ctx: TestContext) {
     let handler = ctx.handler(false);
 
@@ -218,7 +210,6 @@ async fn test_near_handler_check_balance(#[future(awt)] ctx: TestContext) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_app_initialization(#[future(awt)] ctx: TestContext) {
     let args = make_args(&ctx);
     let app = App::new(&args).expect("build app");
@@ -232,7 +223,6 @@ async fn test_app_initialization(#[future(awt)] ctx: TestContext) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_end_to_end_transfer(#[future(awt)] ctx: TestContext) {
     let handler = ctx.handler(false);
 

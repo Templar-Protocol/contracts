@@ -64,7 +64,6 @@ async fn setup(harness: &SandboxHarness) -> Result<Fixture> {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn static_yield_success(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let Fixture {
         market,
@@ -140,7 +139,6 @@ async fn static_yield_success(#[future(awt)] harness: SandboxHarness) -> Result<
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn static_yield_withdrawal_blocked_when_unregistered(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

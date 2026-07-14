@@ -20,7 +20,6 @@ const SNAPSHOT_MS: u64 = 20_000;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn activates_in_next_snapshot(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {

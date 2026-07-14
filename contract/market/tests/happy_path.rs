@@ -14,7 +14,6 @@ use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let protocol = harness.create_user("protocol").await?;
     let insurance = harness.create_user("insurance").await?;

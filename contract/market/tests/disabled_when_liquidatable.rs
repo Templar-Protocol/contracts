@@ -47,7 +47,6 @@ async fn collateral_deposit(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn disallow_insufficient_collateralization_while_liquidatable(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -69,7 +68,6 @@ async fn disallow_insufficient_collateralization_while_liquidatable(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn allow_sufficient_collateralization_while_liquidatable(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -92,7 +90,6 @@ async fn allow_sufficient_collateralization_while_liquidatable(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn disallow_repayment_while_liquidatable(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

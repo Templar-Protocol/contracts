@@ -11,7 +11,6 @@ use templar_gateway_types::OperationStatus;
 #[case(&[1_000, 9_000], 10_000)]
 #[case(&[1; 25], 10_000)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn supply_within_maximum(
     #[future(awt)] harness: SandboxHarness,
     #[case] deposits: &[u128],
@@ -48,7 +47,6 @@ async fn supply_within_maximum(
 #[case(&[9_001, 500, 500], 10_000)]
 #[case(&[2], 1)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn supply_beyond_maximum(
     #[future(awt)] harness: SandboxHarness,
     #[case] deposits: &[u128],
@@ -90,7 +88,6 @@ async fn supply_beyond_maximum(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn harvest_yield_beyond_maximum(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     const LIMIT: u128 = 1_000_000;
     let market = harness

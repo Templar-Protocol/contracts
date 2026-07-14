@@ -15,7 +15,6 @@ use templar_gateway_types::OperationStatus;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn supply_requires_market_registration(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;

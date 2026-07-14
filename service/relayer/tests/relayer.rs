@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
 
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, collections::HashSet, str::FromStr};
 
 use axum::extract::Query;
@@ -34,7 +33,7 @@ use templar_common::{
     },
     registry::DeployMode,
 };
-use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness};
+use templar_gateway_testing::{harness, owned_harness, ManagedAccountId, SandboxHarness};
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{
     input::{ProxyPriceTransformer, Source},
@@ -150,7 +149,7 @@ impl InitTest {
     async fn market_with_pyth_oracle(&mut self) -> (AccountId, AccountId) {
         let pyth_oracle = self
             .harness
-            .deploy_mock_oracle("pyth-oracle.near".parse().unwrap())
+            .deploy_mock_oracle("pyth-oracle")
             .await
             .unwrap();
         let market = self
@@ -171,7 +170,7 @@ impl InitTest {
     async fn setup_proxy_oracle_with_redstone(&self, proxy_oracle: &AccountId) -> AccountId {
         let redstone_adapter = self
             .harness
-            .deploy_redstone_adapter("redstone-adapter.near".parse().unwrap())
+            .deploy_redstone_adapter("redstone-adapter")
             .await
             .unwrap();
 
@@ -196,7 +195,7 @@ impl InitTest {
     async fn setup_proxy_oracle_with_pyth(&self, proxy_oracle: &AccountId) -> AccountId {
         let pyth_oracle = self
             .harness
-            .deploy_mock_oracle("pyth-oracle.near".parse().unwrap())
+            .deploy_mock_oracle("pyth-oracle")
             .await
             .unwrap();
 
@@ -204,14 +203,14 @@ impl InitTest {
             &self.harness,
             &pyth_oracle,
             DEFAULT_COLLATERAL_PRICE_ID,
-            fresh_price(1),
+            fresh_price(&self.harness, 1).await,
         )
         .await;
         set_pyth_price(
             &self.harness,
             &pyth_oracle,
             DEFAULT_BORROW_PRICE_ID,
-            fresh_price(1),
+            fresh_price(&self.harness, 1).await,
         )
         .await;
 
@@ -353,10 +352,16 @@ fn create_execute_message(
     )
 }
 
-fn fresh_price(price: i64) -> pyth::Price {
-    #[allow(clippy::cast_possible_wrap)]
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+/// A Pyth price published one second ago on the *chain's* clock — not the
+/// host's. The market judges freshness against `block_timestamp`, and the
+/// sandbox pool reuses a node across tests, so after a market test has
+/// `fast_forward`ed that node its chain time runs ahead of wall-clock time and
+/// a host-stamped price reads as long stale.
+#[allow(clippy::cast_possible_wrap)]
+async fn fresh_price(harness: &SandboxHarness, price: i64) -> pyth::Price {
+    let now = harness
+        .chain_timestamp()
+        .await
         .unwrap()
         .as_secs()
         .saturating_sub(1) as i64;
@@ -420,6 +425,19 @@ async fn init_relayer_app(
 
 #[fixture]
 async fn init_test(#[future(awt)] harness: SandboxHarness) -> InitTest {
+    init_with(harness).await
+}
+
+/// A *dedicated* node, for the tests that create a universal account: that route
+/// ages a block reference against the *host* clock, which a pooled node's
+/// `fast_forward`-skewed chain clock makes it read as "too old". Only those two
+/// tests pay for the node boot — see [`SandboxHarness::start_owned`].
+#[fixture]
+async fn init_test_owned(#[future(awt)] owned_harness: SandboxHarness) -> InitTest {
+    init_with(owned_harness).await
+}
+
+async fn init_with(harness: SandboxHarness) -> InitTest {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(
             "templar_relayer=debug,warn",
@@ -510,7 +528,6 @@ async fn init_test(#[future(awt)] harness: SandboxHarness) -> InitTest {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
     let (market, _) = init_test.market_with_pyth_oracle().await;
     let InitTest {
@@ -571,7 +588,6 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn update_prices_rejects_empty_request(#[future(awt)] init_test: InitTest) {
     let InitTest { app, .. } = init_test;
 
@@ -590,7 +606,6 @@ pub async fn update_prices_rejects_empty_request(#[future(awt)] init_test: InitT
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
     let InitTest { app, .. } = init_test;
 
@@ -611,7 +626,6 @@ pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
     let InitTest { app, .. } = init_test;
 
@@ -632,7 +646,6 @@ pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: Init
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn market_prices_fails_when_known_market_configuration_cannot_be_read(
     #[future(awt)] init_test: InitTest,
 ) {
@@ -663,7 +676,6 @@ pub async fn market_prices_fails_when_known_market_configuration_cannot_be_read(
 /// resolves the charge through the same rule the broom uses.
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn planning_failure_releases_the_accounts_reservation(#[future(awt)] init_test: InitTest) {
     use templar_gateway_methods_spec::storage;
 
@@ -713,7 +725,6 @@ async fn planning_failure_releases_the_accounts_reservation(#[future(awt)] init_
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn requires_network_router_serves_price_routes(#[future(awt)] mut init_test: InitTest) {
     let (market, _proxy_oracle, _redstone_adapter) = init_test.market_proxy_redstone().await;
     let InitTest { app, .. } = init_test;
@@ -765,13 +776,12 @@ pub async fn requires_network_router_serves_price_routes(#[future(awt)] mut init
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_test: InitTest) {
     let (market, pyth_oracle) = init_test.market_with_pyth_oracle().await;
     let InitTest { harness, app, .. } = init_test;
 
-    let borrow_price = fresh_price(345_600);
-    let collateral_price = fresh_price(1_234_500);
+    let borrow_price = fresh_price(&harness, 345_600).await;
+    let collateral_price = fresh_price(&harness, 1_234_500).await;
 
     set_pyth_price(
         &harness,
@@ -806,14 +816,13 @@ pub async fn market_prices_returns_direct_market_prices(#[future(awt)] mut init_
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn market_prices_returns_none_for_missing_asset_price(
     #[future(awt)] mut init_test: InitTest,
 ) {
     let (market, pyth_oracle) = init_test.market_with_pyth_oracle().await;
     let InitTest { harness, app, .. } = init_test;
 
-    let collateral_price = fresh_price(1_234_500);
+    let collateral_price = fresh_price(&harness, 1_234_500).await;
     set_pyth_price(
         &harness,
         &pyth_oracle,
@@ -840,7 +849,6 @@ pub async fn market_prices_returns_none_for_missing_asset_price(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn market_prices_returns_proxy_intermediate_prices(
     #[future(awt)] mut init_test: InitTest,
 ) {
@@ -851,14 +859,14 @@ pub async fn market_prices_returns_proxy_intermediate_prices(
         &harness,
         &pyth_oracle,
         DEFAULT_COLLATERAL_PRICE_ID,
-        fresh_price(2_500_000),
+        fresh_price(&harness, 2_500_000).await,
     )
     .await;
     set_pyth_price(
         &harness,
         &pyth_oracle,
         DEFAULT_BORROW_PRICE_ID,
-        fresh_price(1_000_000),
+        fresh_price(&harness, 1_000_000).await,
     )
     .await;
 
@@ -910,7 +918,6 @@ pub async fn market_prices_returns_proxy_intermediate_prices(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn requires_network_update_prices_updates_redstone_market(
     #[future(awt)] mut init_test: InitTest,
 ) {
@@ -977,7 +984,6 @@ pub async fn requires_network_update_prices_updates_redstone_market(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: InitTest) {
     let (market, _) = init_test.market_with_pyth_oracle().await;
     let InitTest { harness, app, .. } = init_test;
@@ -1146,7 +1152,7 @@ async fn create_universal_account(
     .await;
 
     let SimpleResponse::Success(response) = response else {
-        panic!("Universal account deployment should succeed");
+        panic!("Universal account deployment should succeed, got: {response:?}");
     };
     let ua_account_id = response.account_id.clone();
     common::assert_tx_succeeded(network, response.transaction_hash, ua_registry)
@@ -1158,8 +1164,8 @@ async fn create_universal_account(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
-pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
+pub async fn universal_account(#[future(awt)] init_test_owned: InitTest) {
+    let mut init_test = init_test_owned;
     let (market, _) = init_test.market_with_pyth_oracle().await;
     let InitTest {
         harness,
@@ -1266,15 +1272,14 @@ pub async fn universal_account(#[future(awt)] mut init_test: InitTest) {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
-pub async fn universal_account_reflexive(#[future(awt)] init_test: InitTest) {
+pub async fn universal_account_reflexive(#[future(awt)] init_test_owned: InitTest) {
     let InitTest {
         harness,
         app,
         ua_registry,
         borrow_user,
         ..
-    } = init_test;
+    } = init_test_owned;
 
     let (ua_account_id, secret_key, passkey) =
         create_universal_account(&app, &harness.network, &ua_registry, &borrow_user).await;

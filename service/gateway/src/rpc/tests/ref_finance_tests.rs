@@ -6,7 +6,7 @@ async fn ref_finance_get_pools_endpoint_works_against_sandbox() -> Result<()> {
     let exchange_id = stack
         .harness
         .deploy_ref_finance(
-            "ref.near".parse()?,
+            "ref",
             vec![templar_gateway_testing::wasm::PoolInfo {
                 token_account_ids: vec![
                     stack.harness.ft_contract_id.clone(),

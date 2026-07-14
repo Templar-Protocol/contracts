@@ -69,7 +69,6 @@ fn init_args(configuration: &MarketConfiguration) -> Result<Vec<u8>> {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let registry = setup_registry(&harness).await?;
     let args = init_args(&registry.configuration)?;
@@ -110,7 +109,6 @@ async fn deploy_from_registry(#[future(awt)] harness: SandboxHarness) -> Result<
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let registry = setup_registry(&harness).await?;
     let key = PublicKey::from(TEST_PUBLIC_KEY.parse::<near_api::types::PublicKey>()?);
@@ -152,7 +150,6 @@ async fn deploy_with_access_key(#[future(awt)] harness: SandboxHarness) -> Resul
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn market_id_collision(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let registry = setup_registry(&harness).await?;
     let args = init_args(&registry.configuration)?;

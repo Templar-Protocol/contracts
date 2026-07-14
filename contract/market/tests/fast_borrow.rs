@@ -1,8 +1,7 @@
 //! WS3 spike: `contract/market/tests/fast_borrow.rs` ported onto the in-process
 //! gateway harness. Locks the `SandboxHarness` ops API before batch porting.
 //!
-//! Node-backed, so gated behind `#[ignore]`: run with
-//! `cargo nextest run -p templar-gateway-testing --run-ignored all`.
+//! Node-backed: run with `just test-sandbox -p templar-market-contract`.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -13,7 +12,6 @@ use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fast_borrow_is_not_free(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {

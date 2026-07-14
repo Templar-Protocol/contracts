@@ -41,7 +41,6 @@ async fn setup_underwater(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_liquidation_totally_underwater(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -95,7 +94,6 @@ async fn successful_liquidation_totally_underwater(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_liquidation_exactly_to_zero(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -155,7 +153,6 @@ async fn successful_liquidation_exactly_to_zero(
 #[case(110, 2, 1)]
 #[case(150, 33, 32)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_liquidation_with_spread(
     #[future(awt)] harness: SandboxHarness,
     #[case] mcr: u16,
@@ -235,7 +232,6 @@ async fn successful_liquidation_with_spread(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fail_liquidation_too_little_attached(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -290,7 +286,6 @@ async fn fail_liquidation_too_little_attached(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fail_liquidation_healthy_borrow(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -340,7 +335,6 @@ async fn fail_liquidation_healthy_borrow(#[future(awt)] harness: SandboxHarness)
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_liquidation_only_from_interest(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -409,7 +403,6 @@ async fn successful_liquidation_only_from_interest(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn liquidators_race(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -469,7 +462,6 @@ fn price(value: i64, exponent: i32) -> pyth::Price {
 #[case((10, 1000), (10, 1000), (10, 1000), (11, 1000))]
 #[case((10, 1000), (10, 1000), (10, -1000), (10, 1000))]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn extreme_prices(
     #[future(awt)] harness: SandboxHarness,
     #[case] (collateral_price, collateral_expo): (i64, i32),
@@ -599,7 +591,6 @@ async fn extreme_prices(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn partial_liquidation(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -703,7 +694,6 @@ async fn partial_liquidation(#[future(awt)] harness: SandboxHarness) -> Result<(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn partial_liquidation_fail_offer_too_little(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -773,7 +763,6 @@ async fn partial_liquidation_fail_offer_too_little(
 #[case(&[dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.1"), dec!("0.096")])]
 #[case(&[dec!("0.5"), dec!("0.25"), dec!("0.125"), dec!("0.0625"), dec!("0.06235")])]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn many_little_partial_liquidations(
     #[future(awt)] harness: SandboxHarness,
     #[case] pattern: &[Decimal],
@@ -857,7 +846,6 @@ async fn many_little_partial_liquidations(
 #[case(120, 1250, 1000, 88, dec!(".973"))]
 #[case(120, 1250, 1000, 88, dec!(".95"))]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_liquidation_good_debt_under_mcr(
     #[future(awt)] harness: SandboxHarness,
     #[case] mcr: u16,

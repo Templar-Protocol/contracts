@@ -488,13 +488,16 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: ./script/test.sh --workspace
 
-      # Market and vault integration tests share a pool of out-of-band neard
-      # nodes (one per nextest slot) instead of booting a node per test. The
-      # `sandbox` profile's setup script starts the pool; --test-threads must be
-      # <= SANDBOX_NODE_COUNT. Wasms were prebuilt by the workspace step above,
-      # so skip the rebuild. Both crates gate their node tests behind #[ignore],
-      # so the workspace step above skips them and they run only here.
-      - name: Run market + vault tests on a pooled neard sandbox
+      # Node-backed tests share a pool of out-of-band neard nodes (one per nextest
+      # slot) instead of booting a node per test. The `sandbox` profile's setup
+      # script starts the pool; --test-threads must be <= SANDBOX_NODE_COUNT.
+      # Wasms were prebuilt by the workspace step above, so skip the rebuild.
+      # Which tests run is decided by the profile's default-filter (the node-crate
+      # list in .config/nextest.toml) — the exact complement of what the workspace
+      # step above runs, so the two steps together cover the suite. templar-relayer
+      # additionally needs the compose Postgres, which the workspace step already
+      # started (and the cleanup step tears down).
+      - name: Run node-backed tests on a pooled neard sandbox
         env:
           SANDBOX_NODE_COUNT: "2"
           SANDBOX_SKIP_PREBUILD: "1"
@@ -503,7 +506,7 @@ jobs:
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --profile sandbox --run-ignored only -p templar-market-contract -p templar-vault-contract --test-threads 2
+        run: cargo nextest run --profile sandbox --workspace --test-threads 2
 
       - name: Cleanup Docker resources
         if: always()

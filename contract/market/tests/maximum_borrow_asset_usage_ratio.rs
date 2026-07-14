@@ -8,7 +8,6 @@ use templar_gateway_types::OperationStatus;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn borrow_within_maximum_usage_ratio(
     #[future(awt)] harness: SandboxHarness,
     #[values(1, 50, 99, 100)] percent: u16,
@@ -55,7 +54,6 @@ async fn borrow_within_maximum_usage_ratio(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn borrow_exceeds_maximum_usage_ratio(
     #[future(awt)] harness: SandboxHarness,
     #[values(1, 50, 99, 100)] percent: u16,

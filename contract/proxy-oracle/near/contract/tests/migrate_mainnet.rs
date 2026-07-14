@@ -92,7 +92,6 @@ async fn generate_mainnet_state_patch() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migrate_mainnet_patch_exactly() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;

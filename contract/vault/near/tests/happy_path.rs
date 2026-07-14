@@ -5,8 +5,7 @@
 //! [`state_machine_is_locked_when_another_op_is_running`], which has no
 //! legitimate gateway op and so uses `near-api` directly.
 //!
-//! Node-backed, so gated behind `#[ignore]`; run with:
-//! `cargo nextest run -p templar-vault-contract --run-ignored all`
+//! Node-backed: run with `just test-sandbox -p templar-vault-contract`.
 #![allow(clippy::too_many_lines)]
 
 use anyhow::Result;
@@ -22,7 +21,6 @@ use common::{harvest, zero_interest};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn donation_does_not_change_aum_until_resync(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -77,7 +75,6 @@ async fn donation_does_not_change_aum_until_resync(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn supply_queue_mustnt_have_duplicates(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
     let m = vault.market.market_id.clone();
@@ -95,7 +92,6 @@ async fn supply_queue_mustnt_have_duplicates(#[future(awt)] harness: SandboxHarn
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn set_fees_rejects_management_fee_above_cap(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -117,7 +113,6 @@ async fn set_fees_rejects_management_fee_above_cap(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn set_fees_rejects_performance_fee_above_cap(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -139,7 +134,6 @@ async fn set_fees_rejects_performance_fee_above_cap(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn set_fees_accepts_max_total_assets_growth_rate(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -163,7 +157,6 @@ async fn set_fees_accepts_max_total_assets_growth_rate(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn state_machine_is_locked_when_another_op_is_running(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -218,7 +211,6 @@ async fn state_machine_is_locked_when_another_op_is_running(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness
         .deploy_vault_with_market_with(zero_interest, |_| {})
@@ -433,7 +425,6 @@ async fn happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn deposit_allowed_during_withdrawal_op(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -541,7 +532,6 @@ async fn deposit_allowed_during_withdrawal_op(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn partial_withdrawal_when_market_has_insufficient_liquidity(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -660,7 +650,6 @@ async fn partial_withdrawal_when_market_has_insufficient_liquidity(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn unbrick_recovers_stuck_withdrawal(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness
         .deploy_vault_with_market_with(zero_interest, |_| {})

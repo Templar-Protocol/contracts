@@ -17,7 +17,6 @@ const BORROWERS: usize = 8;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn many_accounts_consistent_position_listings(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

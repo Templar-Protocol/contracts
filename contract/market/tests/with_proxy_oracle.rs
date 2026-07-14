@@ -69,7 +69,6 @@ fn redstone_price(price: f64) -> FeedData {
 #[rstest]
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn proxy_oracle(
     #[future(awt)] harness: SandboxHarness,
     #[values(true, false)] proxy_borrow_pyth_first: bool,
@@ -77,8 +76,8 @@ async fn proxy_oracle(
 ) -> Result<()> {
     // Proxy oracle plus the two mock oracles it aggregates.
     let proxy_id = harness.deploy_proxy_oracle().await?;
-    let pyth_id = harness.deploy_mock_oracle("pyth.near".parse()?).await?;
-    let redstone_id = harness.deploy_mock_oracle("redstone.near".parse()?).await?;
+    let pyth_id = harness.deploy_mock_oracle("pyth").await?;
+    let redstone_id = harness.deploy_mock_oracle("redstone").await?;
 
     // Each proxy aggregates its pyth + redstone source via median_low; the
     // `pyth_first` flags flip the source ordering (which must not matter).

@@ -4,8 +4,7 @@
 //! registered, capped, and queued, and that a supply → allocate round-trips
 //! through the gateway `Client` — the wiring the ported vault tests depend on.
 //!
-//! Node-backed, so gated behind `#[ignore]`; run with:
-//! `cargo nextest run -p templar-gateway-testing --run-ignored all`
+//! Node-backed: run with `just test-sandbox -p templar-gateway-testing`.
 
 use anyhow::Result;
 use near_sdk::json_types::U128;
@@ -15,7 +14,6 @@ use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn vault_fixture_supply_then_allocate(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let vault = harness.deploy_vault_with_market().await?;
 

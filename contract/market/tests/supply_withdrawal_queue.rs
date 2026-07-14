@@ -37,7 +37,6 @@ async fn deposit_total(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn successful_withdrawal(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -71,7 +70,6 @@ async fn successful_withdrawal(#[future(awt)] harness: SandboxHarness) -> Result
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn partial_fulfillment_when_liquidity_insufficient(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -111,7 +109,6 @@ async fn partial_fulfillment_when_liquidity_insufficient(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn reject_withdraw_more_than_incoming_deposit(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -137,7 +134,6 @@ async fn reject_withdraw_more_than_incoming_deposit(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn reject_withdraw_more_than_active_deposit(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -166,7 +162,6 @@ async fn reject_withdraw_more_than_active_deposit(
 #[case(1_000)]
 #[case(2_500)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn reject_withdraw_outside_configured_range(
     #[future(awt)] harness: SandboxHarness,
     #[case] amount: u128,
@@ -199,7 +194,6 @@ async fn reject_withdraw_outside_configured_range(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn partial_fulfillment_across_two_suppliers(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -265,7 +259,6 @@ async fn partial_fulfillment_across_two_suppliers(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn failed_transfer_still_dequeues(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -341,7 +334,6 @@ async fn failed_transfer_still_dequeues(#[future(awt)] harness: SandboxHarness) 
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn deposit_during_withdrawal(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -368,7 +360,6 @@ async fn deposit_during_withdrawal(#[future(awt)] harness: SandboxHarness) -> Re
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn batch_fulfillment(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -412,7 +403,6 @@ async fn batch_fulfillment(#[future(awt)] harness: SandboxHarness) -> Result<()>
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn batch_fulfillment_partial(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;
@@ -477,7 +467,6 @@ async fn batch_fulfillment_partial(#[future(awt)] harness: SandboxHarness) -> Re
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn measure_gas(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     const TGAS: u64 = 1_000_000_000_000;
 

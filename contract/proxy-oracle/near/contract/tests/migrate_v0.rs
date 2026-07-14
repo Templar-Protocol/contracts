@@ -279,7 +279,6 @@ fn generate_v0_state_patch() {
 }
 
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn init_writes_current_state_version() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = harness.deploy_proxy_oracle().await?;
@@ -299,7 +298,6 @@ async fn init_writes_current_state_version() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migrate_v0_fixture_exactly() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;
@@ -375,7 +373,6 @@ async fn migrate_v0_fixture_exactly() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migrate_is_private() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;

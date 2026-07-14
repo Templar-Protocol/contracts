@@ -15,7 +15,6 @@ use test_utils::{partial::check, states};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn snapshot_captures_borrow_and_collateral_state(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -62,7 +61,6 @@ async fn snapshot_captures_borrow_and_collateral_state(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn multiple_snapshots_show_progression(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -107,7 +105,6 @@ async fn multiple_snapshots_show_progression(#[future(awt)] harness: SandboxHarn
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn snapshot_reflects_repayment_changes(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -155,7 +152,6 @@ async fn snapshot_reflects_repayment_changes(#[future(awt)] harness: SandboxHarn
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -190,7 +186,6 @@ async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn snapshot_with_full_repayment(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -243,7 +238,6 @@ async fn snapshot_with_full_repayment(#[future(awt)] harness: SandboxHarness) ->
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -316,7 +310,6 @@ async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Re
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness
         .deploy_full_market_with(|c| {
@@ -338,8 +331,15 @@ async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Res
 
     // Supply both BEFORE either activates, then activate them together so a
     // single snapshot reflects all 3_500_000 active (not one per supplier).
-    harness.supply(&supply_1, &market, 2_000_000).await?;
-    harness.supply(&supply_2, &market, 1_500_000).await?;
+    // Concurrently, like the groups below: a deposit's activation snapshot is
+    // fixed at supply time, so two sequential supplies can straddle a time-chunk
+    // boundary under load and activate in *separate* snapshots.
+    let (s1, s2) = tokio::join!(
+        harness.supply(&supply_1, &market, 2_000_000),
+        harness.supply(&supply_2, &market, 1_500_000),
+    );
+    s1?;
+    s2?;
     harness.fast_forward(1000).await?;
     harness
         .harvest_yield(&supply_1, &market, Some(supply_1.0.clone()))
@@ -412,7 +412,6 @@ async fn create_users(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn incoming(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let market = harness.deploy_full_market().await?;
     harness.set_asset_prices(&market, 1.0, 1.0).await?;

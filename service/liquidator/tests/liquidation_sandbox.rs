@@ -6,13 +6,8 @@
 //! gateway plan/execute path) — not a re-implementation — against a market with
 //! an underwater borrow position, asserting it lands a successful liquidation.
 //!
-//! Ignored by default: it spins up `near-sandbox` and deploys contracts, so it
-//! needs the test wasms prebuilt. Run with:
-//!
-//! ```bash
-//! ./script/prebuild-test-contracts.sh
-//! TEST_CONTRACTS_PREBUILT=1 cargo test -p templar-liquidator --test liquidation_sandbox -- --ignored
-//! ```
+//! Node-backed: run with `just test-sandbox -p templar-liquidator` (which
+//! prebuilds the wasms and starts the neard pool).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,7 +31,6 @@ use templar_liquidator::{CollateralStrategy, LiquidationOutcome};
 use test_utils::to_price;
 
 #[tokio::test]
-#[ignore = "spins up near-sandbox + deploys contracts; run with --ignored (needs TEST_CONTRACTS_PREBUILT)"]
 #[allow(clippy::too_many_lines)]
 async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
     let harness = SandboxHarness::start().await?;

@@ -78,7 +78,27 @@ impl SandboxHarness {
     /// accounts are `*.sandbox` sub-accounts created via near-api against the
     /// genesis root.
     pub async fn start() -> Result<Self> {
-        let (sandbox, network) = connect().await?;
+        Self::start_on(connect().await?).await
+    }
+
+    /// Start on a **dedicated** `neard`, ignoring `NEAR_SANDBOX_RPC_URL`.
+    ///
+    /// For suites that cannot tolerate a pooled node. The pool reuses a node
+    /// across the tests that pass through its slot, and `fast_forward` advances
+    /// that node's chain clock *permanently* — so a pooled node's chain time can
+    /// run arbitrarily far ahead of wall-clock time once any test has advanced
+    /// it. Code that compares a block's timestamp against the host's own clock
+    /// then misreads a skewed node: the relayer's universal-account `create`
+    /// route, for instance, computes the block reference's age as
+    /// `SystemTime::elapsed()` and rejects it as "too old" when the block is
+    /// *ahead* of the host clock. That is correct behavior against a real chain,
+    /// so it must not be weakened to accommodate the pool — the suite exercising
+    /// it needs a pristine node instead.
+    pub async fn start_owned() -> Result<Self> {
+        Self::start_on(start_owned_node().await?).await
+    }
+
+    async fn start_on((sandbox, network): (Option<Sandbox>, NetworkConfig)) -> Result<Self> {
         let root_signer = Signer::from_secret_key(genesis_secret_key()?)
             .context("failed to initialize genesis root signer")?;
         let (tenant_root_id, tenant_root_signer) =
@@ -227,9 +247,13 @@ impl SandboxHarness {
         crate::wasm::ft().await.to_vec()
     }
 
-    pub async fn deploy_mt(&self, account_id: AccountId) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_mt(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         deploy_contract(
             &self.network,
@@ -243,9 +267,13 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    pub async fn deploy_receiver(&self, account_id: AccountId) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_receiver(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         deploy_contract(
             &self.network,
@@ -259,13 +287,13 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    pub async fn deploy_ref_finance(
-        &self,
-        account_id: AccountId,
-        pools: Vec<PoolInfo>,
-    ) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_ref_finance(&self, label: &str, pools: Vec<PoolInfo>) -> Result<AccountId> {
         let (id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         deploy_contract(
             &self.network,
@@ -469,9 +497,13 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
-    pub async fn deploy_mock_oracle(&self, account_id: AccountId) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_mock_oracle(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         deploy_contract(
             &self.network,
@@ -502,9 +534,13 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    pub async fn deploy_redstone_adapter(&self, account_id: AccountId) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_redstone_adapter(&self, label: &str) -> Result<AccountId> {
         let (account_id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         let mut config = redstone_config::prod();
         config.max_timestamp_delay_ms = u64::MAX;
@@ -530,9 +566,13 @@ impl SandboxHarness {
     /// adapter is rejected as a standalone oracle. The adapter owns itself (so the harness signer
     /// drives `admin_*`); the trusted signer is a throwaway key — gateway plans against it are
     /// inspected, not submitted, so no payload is verified.
-    pub async fn deploy_pyth_lazer_adapter(&self, account_id: AccountId) -> Result<AccountId> {
+    /// Deploy a Pyth Lazer adapter under a freshly minted account and return its
+    /// id. The account cannot be named by the caller: in attached mode every
+    /// account is a generated sub-account of the sandbox root, so callers must
+    /// use the returned id rather than one they chose.
+    pub async fn deploy_pyth_lazer_adapter(&self, label: &str) -> Result<AccountId> {
         let (account_id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         let config = ConfigArgs {
             // The adapter never verifies a payload in these plan-only tests (plans are
@@ -635,13 +675,13 @@ impl SandboxHarness {
         Ok(())
     }
 
-    pub async fn deploy_lst_oracle(
-        &self,
-        account_id: AccountId,
-        oracle_id: AccountId,
-    ) -> Result<AccountId> {
+    /// Deploy under a freshly minted account and return its id. The account
+    /// cannot be named by the caller: in attached mode every account is a
+    /// generated sub-account of the sandbox root, so callers must use the
+    /// returned id rather than one they chose.
+    pub async fn deploy_lst_oracle(&self, label: &str, oracle_id: AccountId) -> Result<AccountId> {
         let (id, signer) = self
-            .create_account(label_of(&account_id), NearToken::from_near(100))
+            .create_account(label, NearToken::from_near(100))
             .await?;
         deploy_contract(
             &self.network,
@@ -904,10 +944,15 @@ async fn connect() -> Result<(Option<Sandbox>, NetworkConfig)> {
         );
         Ok((None, network))
     } else {
-        let sandbox = Sandbox::start_sandbox_with_config(sandbox_config()).await?;
-        let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
-        Ok((Some(sandbox), network))
+        start_owned_node().await
     }
+}
+
+/// Launch a dedicated `neard` for this harness.
+async fn start_owned_node() -> Result<(Option<Sandbox>, NetworkConfig)> {
+    let sandbox = Sandbox::start_sandbox_with_config(sandbox_config()).await?;
+    let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
+    Ok((Some(sandbox), network))
 }
 
 /// The RPC url to attach to in attach mode, or `None` for owned mode.
@@ -1071,10 +1116,6 @@ fn account_signer() -> Result<Arc<Signer>> {
 
 /// The label segment of a requested id (e.g. `kind-pyth.near` → `kind-pyth`),
 /// used to namespace caller-supplied contract ids into the harness instance.
-fn label_of(account_id: &AccountId) -> &str {
-    account_id.as_str().split('.').next().unwrap_or("account")
-}
-
 pub(crate) async fn deploy_contract(
     network: &NetworkConfig,
     account_id: AccountId,

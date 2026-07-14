@@ -157,7 +157,6 @@ fn signed_mint_execute_args(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn universal_account(
     #[future(awt)] harness: SandboxHarness,
     #[values(
@@ -287,7 +286,6 @@ async fn universal_account(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn skip_nonce(
     #[future(awt)] harness: SandboxHarness,
     #[values(
@@ -390,7 +388,6 @@ async fn skip_nonce(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn reuse_nonce(
     #[future(awt)] harness: SandboxHarness,
     #[values(
@@ -493,7 +490,6 @@ async fn reuse_nonce(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn failed_execute_does_not_consume_nonce_and_success_consumes_once(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -555,7 +551,6 @@ async fn failed_execute_does_not_consume_nonce_and_success_consumes_once(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn replayed_nonce_fails_without_reexecuting_payload(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -616,7 +611,6 @@ async fn replayed_nonce_fails_without_reexecuting_payload(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn key_indexes_are_unique_across_remove_and_readd(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -656,7 +650,6 @@ async fn key_indexes_are_unique_across_remove_and_readd(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn cannot_remove_last_key(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let sk = TestSigner::random_passkey();
     let Setup { ua, .. } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
@@ -675,7 +668,6 @@ async fn cannot_remove_last_key(#[future(awt)] harness: SandboxHarness) -> Resul
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn removed_key_cannot_execute_transaction(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

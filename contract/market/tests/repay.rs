@@ -14,7 +14,6 @@ enum RepayAccount {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn repay(
     #[future(awt)] harness: SandboxHarness,
     #[values(1, 999_999, 1_000_000, 1_000_001, 2_000_000)] repay_amount: u128,

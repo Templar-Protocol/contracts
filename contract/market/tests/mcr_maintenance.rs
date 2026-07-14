@@ -16,7 +16,6 @@ const HEALTHY_AFTER_WITHDRAWAL: &str =
 #[case(dec!("1.00000001"), dec!("1.1"))]
 #[case(dec!("1.00000000000000000000000000000000001"), dec!("5"))]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn success_above_mcr_maintenance(
     #[future(awt)] harness: SandboxHarness,
     #[case] liquidation: Decimal,
@@ -82,7 +81,6 @@ async fn success_above_mcr_maintenance(
 #[case(dec!("1.001"), dec!("2"))]
 #[case(dec!("1.001"), dec!("5"))]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn fail_below_mcr_maintenance(
     #[future(awt)] harness: SandboxHarness,
     #[case] liquidation: Decimal,
@@ -134,7 +132,6 @@ async fn fail_below_mcr_maintenance(
 #[case(dec!("1.5"), dec!("2"))]
 #[case(dec!("1.5"), dec!("5"))]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn not_in_liquidation_if_below_mcr_maintenance(
     #[future(awt)] harness: SandboxHarness,
     #[case] liquidation: Decimal,
@@ -188,7 +185,6 @@ async fn not_in_liquidation_if_below_mcr_maintenance(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn withdraw_collateral_below_mcr_maintenance(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

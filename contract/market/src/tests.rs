@@ -1,6 +1,18 @@
 use near_sdk::serde_json;
 use templar_common::market::MarketConfiguration;
 
+/// Every checked-in market config under `examples/config/` must still
+/// deserialize into the current [`MarketConfiguration`], so a field rename or a
+/// type change cannot silently invalidate the deployment configs.
+///
+/// The invariant this rests on: under `examples/config/`, a `*.near.json` file
+/// *is* a market configuration. Args for the other contracts of a deployment
+/// (proxy oracle, governance, the Pyth Lazer adapter) live in that deployment's
+/// subdirectory as `*-args.json` — name one `*.near.json` and this test will
+/// fail trying to parse it as a market.
+///
+/// Lives in the lib rather than `tests/` because this crate's integration tests
+/// are node-backed and excluded from the fast gate wholesale, by package.
 #[test]
 fn parse_configurations() {
     let mut read = std::fs::read_dir("./examples/config/")

@@ -27,7 +27,6 @@ async fn realized_interest(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn interest_accrues_and_frequency_does_not_reduce_it(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

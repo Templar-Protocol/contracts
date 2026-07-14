@@ -2,6 +2,17 @@
 # out-of-band neard before node-backed tests).
 experimental = ["setup-scripts"]
 
+# The node-backed crates: every `tests/` integration binary in these packages
+# needs a NEAR sandbox (a `SandboxHarness`). They are excluded from the fast
+# gate and are the *only* thing the `sandbox` profile runs. Keep the two
+# filtersets below in sync; a package missing from the `sandbox` one runs its
+# node tests nowhere. Their `src/` unit tests are `kind(lib)` and always run.
+#
+# This is deliberately a filterset rather than `#[ignore]` on each test: gating
+# by attribute conflates "needs a sandbox" with "disabled", and left no way to
+# actually disable a node test. `#[ignore]` here means what it means everywhere
+# else — disabled.
+
 [profile.default]
 # Limit test threads to reduce memory/disk usage
 test-threads = 4
@@ -9,14 +20,32 @@ test-threads = 4
 # Reduce retries to save disk space
 retries = 0
 
-# Run tests serially in each binary to reduce memory
-max-fail = 10
+# The fast gate: no sandbox, no Docker, no network. `requires_network_*` tests
+# reach live third-party endpoints (Redstone, Lazer). Run either group
+# explicitly with `--profile sandbox` / `-E 'test(/^requires_network_/)'`.
+default-filter = """
+    not test(/^requires_network_/)
+    and not (
+        kind(test) & (
+            package(templar-market-contract)
+            | package(templar-vault-contract)
+            | package(templar-registry-contract)
+            | package(templar-universal-account-contract)
+            | package(templar-proxy-oracle-near-contract)
+            | package(templar-lst-oracle-contract)
+            | package(templar-funding-bridge)
+            | package(templar-relayer)
+            | package(templar-gateway-testing)
+            | package(templar-liquidator)
+        )
+    )
+"""
 
 [profile.ci]
-# CI-specific profile balancing disk space and performance
+# CI-specific profile balancing disk space and performance. Inherits
+# `default-filter` from the default profile.
 test-threads = 6
 retries = 1
-default-filter = "not test(/^requires_network_/)"
 
 # Fail fast to avoid wasting resources
 fail-fast = false
@@ -27,11 +56,10 @@ status-level = "fail"
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }
 
-# Node-backed tests: share one out-of-band `neard` instead of booting one per
-# test. The setup script starts the node and exports NEAR_SANDBOX_RPC_URL +
-# TEST_CONTRACTS_PREBUILT into the test environment. Run via
-# `just test-sandbox` (which guarantees teardown), or
-# `cargo nextest run --profile sandbox --run-ignored all`.
+# Node-backed tests: share a pool of out-of-band `neard` nodes instead of booting
+# one per test. The setup script starts them and exports NEAR_SANDBOX_RPC_URL +
+# TEST_CONTRACTS_PREBUILT into the test environment. Run via `just test-sandbox`
+# (which guarantees teardown), or `cargo nextest run --profile sandbox`.
 [scripts.setup.sandbox]
 command = "script/sandbox-up.sh"
 
@@ -44,6 +72,29 @@ command = "script/sandbox-up.sh"
 # SANDBOX_NODE_COUNT (default 4; keep them in sync, lower both on tight runners).
 test-threads = 4
 slow-timeout = { period = "120s", terminate-after = 5 }
+
+# Profiles inherit from `default`, not from `ci`, so this has to be set here too:
+# CI runs the node suite through this profile and needs the full picture from one
+# run, not an abort on the first failure.
+fail-fast = false
+
+# The exact complement of the default profile's exclusion: only the node-backed
+# integration binaries, so this profile never re-runs the fast gate's tests.
+default-filter = """
+    not test(/^requires_network_/)
+    and kind(test) & (
+        package(templar-market-contract)
+        | package(templar-vault-contract)
+        | package(templar-registry-contract)
+        | package(templar-universal-account-contract)
+        | package(templar-proxy-oracle-near-contract)
+        | package(templar-lst-oracle-contract)
+        | package(templar-funding-bridge)
+        | package(templar-relayer)
+        | package(templar-gateway-testing)
+        | package(templar-liquidator)
+    )
+"""
 
 [[profile.sandbox.scripts]]
 filter = "all()"

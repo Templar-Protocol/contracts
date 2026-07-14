@@ -3,11 +3,8 @@ use super::*;
 #[tokio::test]
 async fn mt_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let mt_contract_id = stack.harness.deploy_mt("mock-mt.near".parse()?).await?;
-    let receiver_id = stack
-        .harness
-        .deploy_receiver("mt-receiver.near".parse()?)
-        .await?;
+    let mt_contract_id = stack.harness.deploy_mt("mock-mt").await?;
+    let receiver_id = stack.harness.deploy_receiver("mt-receiver").await?;
 
     let _ = stack
         .controller

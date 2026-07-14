@@ -26,6 +26,7 @@ use templar_common::{
     primitive_types::U256,
     Nanoseconds,
 };
+use templar_gateway_testing::SandboxHarness;
 
 /// The fixed sandbox key shared by every account the harness provisions.
 pub const TEST_SECRET_KEY: &str =
@@ -130,20 +131,9 @@ pub fn assert_failure_contains(
     );
 }
 
-/// A Pyth price at the current wall-clock time, expo `0`.
-#[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-pub fn pyth_price_now(value: i64) -> pyth::Price {
-    pyth::Price {
-        price: I64(value),
-        conf: U64(0),
-        expo: 0,
-        publish_time: PythTimestamp::from_secs(
-            std::time::UNIX_EPOCH
-                .elapsed()
-                .unwrap_or_default()
-                .as_secs() as i64,
-        ),
-    }
+/// A Pyth price at the current *chain* time, expo `0`. See [`now_ns`].
+pub async fn pyth_price_now(harness: &SandboxHarness, value: i64) -> Result<pyth::Price> {
+    Ok(pyth_price_at(value, now_ns(harness).await?))
 }
 
 /// A Pyth price stamped at an explicit time, expo `0`.
@@ -156,16 +146,9 @@ pub fn pyth_price_at(value: i64, time: Nanoseconds) -> pyth::Price {
     }
 }
 
-/// A RedStone feed (8-decimal) at the current wall-clock time.
-#[allow(clippy::cast_possible_truncation)]
-pub fn redstone_price_now(value: u128) -> FeedData {
-    let now = Nanoseconds::from_ms(
-        std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64,
-    );
-    redstone_price_at(value, now)
+/// A RedStone feed (8-decimal) at the current *chain* time. See [`now_ns`].
+pub async fn redstone_price_now(harness: &SandboxHarness, value: u128) -> Result<FeedData> {
+    Ok(redstone_price_at(value, now_ns(harness).await?))
 }
 
 /// A RedStone feed (8-decimal) stamped at an explicit time.
@@ -177,15 +160,14 @@ pub fn redstone_price_at(value: u128, time: Nanoseconds) -> FeedData {
     }
 }
 
-/// Current wall-clock as [`Nanoseconds`].
-#[allow(clippy::cast_possible_truncation)]
-pub fn now_ns() -> Nanoseconds {
-    Nanoseconds::from_ms(
-        std::time::UNIX_EPOCH
-            .elapsed()
-            .unwrap_or_default()
-            .as_millis() as u64,
-    )
+/// Current *chain* time as [`Nanoseconds`].
+///
+/// Deliberately not the host clock. The contract judges a price's freshness
+/// against `block_timestamp`, and the sandbox pool reuses a node across tests —
+/// so once a market test has `fast_forward`ed that node, chain time runs ahead
+/// of wall-clock time and a host-stamped "now" is rejected as stale.
+pub async fn now_ns(harness: &SandboxHarness) -> Result<Nanoseconds> {
+    harness.chain_timestamp().await
 }
 
 /// Raw contract state: storage key -> value, as captured for migration fixtures.

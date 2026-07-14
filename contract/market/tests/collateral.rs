@@ -13,7 +13,6 @@ use templar_gateway_types::OperationStatus;
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn collateral_withdrawal_blocked_by_storage_unregistration(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -65,7 +64,6 @@ async fn collateral_withdrawal_blocked_by_storage_unregistration(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn excessive_collateral_withdrawal_is_rejected(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {

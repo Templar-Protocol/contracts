@@ -13,7 +13,6 @@ use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn liquidatable_after_expiration(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     // Comfortably longer than the few seconds of reads before the
     // expiration-check, so the "healthy" assertion can't flake and `fast_forward`

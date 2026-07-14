@@ -17,12 +17,13 @@ fmt: sql-fmt
 test *args:
     ./script/test.sh {{args}}
 
-# Run node-backed (#[ignore]-gated) tests against one shared out-of-band neard.
+# Run the node-backed tests against a pool of out-of-band neard nodes. The
+# `sandbox` profile selects them (see .config/nextest.toml); args pass to nextest.
 test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
-    cargo nextest run --profile sandbox --run-ignored only {{args}}
+    cargo nextest run --profile sandbox {{args}}
 
 # Start the out-of-band sandbox neard (prints its RPC url).
 sandbox-up:

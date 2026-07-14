@@ -195,11 +195,10 @@ async fn oracle_update_prices_rejects_bare_pyth_lazer_adapter_as_standalone_orac
     )
     .await?;
 
-    let adapter_id: near_account_id::AccountId = "pyth-lazer-direct.near".parse()?;
     let price_id = PriceIdentifier([0x44; 32]);
-    stack
+    let adapter_id = stack
         .harness
-        .deploy_pyth_lazer_adapter(adapter_id.clone())
+        .deploy_pyth_lazer_adapter("pyth-lazer-direct")
         .await?;
 
     let error =
@@ -239,12 +238,11 @@ async fn oracle_update_prices_rejects_pyth_lazer_adapter_as_classic_pyth_proxy_s
     )
     .await?;
 
-    let adapter_id: near_account_id::AccountId = "pyth-lazer-source.near".parse()?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
     let price_id = PriceIdentifier([0x44; 32]);
-    stack
+    let adapter_id = stack
         .harness
-        .deploy_pyth_lazer_adapter(adapter_id.clone())
+        .deploy_pyth_lazer_adapter("pyth-lazer-source")
         .await?;
     stack
         .harness

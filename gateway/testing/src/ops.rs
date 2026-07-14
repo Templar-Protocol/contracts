@@ -29,7 +29,7 @@ use templar_gateway_types::{
     Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus,
 };
 
-use templar_primitives::{SU128, SU64};
+use templar_primitives::{Nanoseconds, SU128, SU64};
 use test_utils::to_price;
 
 use crate::sandbox::SandboxHarness;
@@ -1656,6 +1656,21 @@ impl SandboxHarness {
         }
     }
 
+    /// The current *on-chain* time.
+    ///
+    /// Any test data whose freshness a contract validates (oracle publish
+    /// times, TTLs) must be stamped against this, never the host clock:
+    /// [`fast_forward`](Self::fast_forward) advances a node's chain clock
+    /// permanently, and the sandbox pool reuses a node across the tests that
+    /// pass through its slot — so by the time a test runs, chain time may be
+    /// arbitrarily far ahead of wall-clock time, and a host-stamped "now" reads
+    /// on-chain as ancient.
+    pub async fn chain_timestamp(&self) -> Result<Nanoseconds> {
+        let url = self.network.rpc_endpoints[0].url.clone();
+        let client = reqwest::Client::new();
+        rpc_block_timestamp(&client, &url).await
+    }
+
     /// Total gas burnt across every transaction an operation produced (each
     /// transaction plus its receipts), summed over the operation's steps. Read
     /// directly from each step's inline [`ExecutionOutcome`], whose
@@ -1848,4 +1863,29 @@ async fn rpc_block_height(client: &reqwest::Client, url: &reqwest::Url) -> Resul
     response["result"]["header"]["height"]
         .as_u64()
         .context("missing block height in RPC response")
+}
+
+async fn rpc_block_timestamp(client: &reqwest::Client, url: &reqwest::Url) -> Result<Nanoseconds> {
+    let response: serde_json::Value = client
+        .post(url.clone())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "block",
+            "method": "block",
+            "params": { "finality": "final" },
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
+        anyhow::bail!("RPC error fetching block timestamp: {error}");
+    }
+    // `timestamp_nanosec` is the string-encoded u64; `timestamp` is lossy in JSON.
+    let nanos: u64 = response["result"]["header"]["timestamp_nanosec"]
+        .as_str()
+        .context("missing block timestamp in RPC response")?
+        .parse()
+        .context("invalid block timestamp in RPC response")?;
+    Ok(Nanoseconds::from_ns(nanos))
 }

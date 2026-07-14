@@ -192,7 +192,6 @@ async fn assert_key_can_increment_counter(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn new_account_writes_current_state_version_on_init(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -207,7 +206,6 @@ async fn new_account_writes_current_state_version_on_init(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migration_views_are_exposed(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await?;
     let network = &harness.network;
@@ -223,7 +221,6 @@ async fn migration_views_are_exposed(#[future(awt)] harness: SandboxHarness) -> 
 #[case::from_0_2_0(MigrationSequenceStart::From0_2_0)]
 #[case::from_0_4_0(MigrationSequenceStart::From0_4_0)]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migrate_can_only_be_called_reflexively(
     #[future(awt)] harness: SandboxHarness,
     #[case] start: MigrationSequenceStart,
@@ -251,7 +248,6 @@ async fn migrate_can_only_be_called_reflexively(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn migrate_accepts_legacy_direct_payload(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -275,7 +271,6 @@ async fn migrate_accepts_legacy_direct_payload(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let passkey = patch_keys().passkey;
     let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
@@ -319,7 +314,6 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_2_0_fail_migrate_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
 
@@ -336,7 +330,6 @@ async fn from_0_2_0_fail_migrate_twice(#[future(awt)] harness: SandboxHarness) -
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn current_state_fail_reinitialize_version(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -352,7 +345,6 @@ async fn current_state_fail_reinitialize_version(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let expected_keys = patch_keys();
     let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
@@ -415,7 +407,6 @@ async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_with_stored_v1_migrates_via_v1(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -444,7 +435,6 @@ async fn from_0_4_0_with_stored_v1_migrates_via_v1(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
 
@@ -461,7 +451,6 @@ async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn from_0_4_0_fail_v1_migration_without_unbrick(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -477,7 +466,6 @@ async fn from_0_4_0_fail_v1_migration_without_unbrick(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn malformed_stored_version_breaks_public_migration_views(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -493,7 +481,6 @@ async fn malformed_stored_version_breaks_public_migration_views(
 
 #[rstest]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn future_stored_version_breaks_public_migration_views(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -553,7 +540,6 @@ async fn future_stored_version_breaks_public_migration_views(
     "Cannot deserialize the contract state.", // Bugged version doesn't have stored state properly set, but still fails correctly.
 )]
 #[tokio::test]
-#[ignore = "requires NEAR sandbox"]
 async fn invalid_migration_sequences_fail(
     #[future(awt)] harness: SandboxHarness,
     #[case] start: MigrationSequenceStart,
