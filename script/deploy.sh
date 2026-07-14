@@ -80,6 +80,13 @@ operator() {
 # the account already exists, so a colliding governance id aborts here, before the
 # oracle below could be handed to an account this script did not create. It also
 # means the script is not re-runnable end to end — a second run collides.
+#
+# The cost of that ordering: PROXY_ORACLE_VERSION_KEY is not validated until the
+# oracle step, which is *after* this one. A key that is stale (< 0.3.0, whose `new`
+# would ignore --owner-id) or malformed aborts there, leaving this governance
+# contract deployed and orphaned — delete $GOVERNANCE_ID before re-running.
+# Validating up front needs a preflight this CLI has no flag for; ENG-463 removes
+# the version check altogether by reading the contract's ABI.
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle-governance create \
     --registry-id "$REGISTRY_ID" \
