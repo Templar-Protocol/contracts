@@ -56,6 +56,10 @@ impl<T> Version<T> {
 
     /// Read the version out of a `{name}@{version}#{sha256}` registry version key.
     ///
+    /// A guess, not a fact: the key shape is a convention, and the registry stores
+    /// whatever key it is handed without checking it against the code. Use this to
+    /// warn an operator, not to gate anything the chain relies on.
+    ///
     /// The version segment is parsed by [`FromStr`](std::str::FromStr), so a
     /// pre-release like `0.3.0-rc1` is rejected rather than ordered.
     pub fn from_version_key(key: &str) -> Result<Self, ParseError> {

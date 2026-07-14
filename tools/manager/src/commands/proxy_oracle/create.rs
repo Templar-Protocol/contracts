@@ -1,7 +1,8 @@
+use anyhow::{bail, Context};
 use clap::Args;
 use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle as spec;
-use templar_gateway_types::NearToken;
+use templar_gateway_types::{version::ProxyOracleVersion, NearToken};
 
 use crate::commands::full_access_key::FullAccessKeyArgs;
 use crate::commands::signer::SignerArgs;
@@ -34,8 +35,34 @@ pub struct Create {
     pub(crate) signer: SignerArgs,
 }
 
+/// Refuse an `owner_id` the named version would ignore — the deploy would
+/// otherwise succeed and leave the registry as owner.
+///
+/// Best-effort, and deliberately confined to the CLI. `{name}@{version}#{sha256}`
+/// is only a convention: the registry stores whatever key it is handed and never
+/// checks it against the code, so the version read back is a guess about a label,
+/// not a fact about the wasm. ENG-463 replaces this by reading the capability off
+/// the contract's own ABI.
+fn check_owner_id_is_honored(version_key: &str, owner_id: &AccountId) -> anyhow::Result<()> {
+    let version = ProxyOracleVersion::from_version_key(version_key)
+        .with_context(|| format!("cannot tell whether {version_key} honors --owner-id"))?;
+
+    if !version.new_accepts_owner_id() {
+        bail!(
+            "proxy oracle {version} cannot seat --owner-id {owner_id}: its `new` takes no \
+             arguments, so the registry would own the oracle. Deploy >= 0.3.0."
+        );
+    }
+
+    Ok(())
+}
+
 impl Create {
     pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
+        if let Some(owner_id) = &self.owner_id {
+            check_owner_id_is_honored(&self.version_key, owner_id)?;
+        }
+
         let full_access_keys = self.full_access_keys.resolve(self.signer.public_key()?);
 
         Ok(spec::Create {

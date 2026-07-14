@@ -39,6 +39,7 @@ fn operation_json(args: &[&str]) -> Value {
 
 /// Parse a `proxy-oracle create` invocation and build its gateway spec.
 fn oracle_create(
+    version_key: &str,
     owner_id: Option<&str>,
 ) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle::Create> {
     let mut args = vec![
@@ -50,7 +51,7 @@ fn oracle_create(
         "--name",
         "proxy-oracle-btc",
         "--version-key",
-        "templar-proxy-oracle-near-contract@0.3.0#abc",
+        version_key,
         "--deposit",
         "5 NEAR",
     ];
@@ -69,11 +70,15 @@ fn oracle_create(
     }
 }
 
+fn version_key(version: &str) -> String {
+    format!("templar-proxy-oracle-near-contract@{version}#{:0>64}", "ab")
+}
+
 /// `--owner-id` reaches the gateway spec as a typed account id, not a JSON string
 /// interpolated by the caller.
 #[test]
 fn create_carries_owner_id_into_the_gateway_spec() {
-    let spec = oracle_create(Some("gov.testnet")).expect("into spec");
+    let spec = oracle_create(&version_key("0.3.0"), Some("gov.testnet")).expect("into spec");
 
     assert_eq!(spec.name, "proxy-oracle-btc");
     assert_eq!(spec.owner_id, Some("gov.testnet".parse().unwrap()));
@@ -85,9 +90,46 @@ fn create_carries_owner_id_into_the_gateway_spec() {
 
 #[test]
 fn create_leaves_owner_id_unset_when_not_given() {
-    let spec = oracle_create(None).expect("into spec");
+    let spec = oracle_create(&version_key("0.3.0"), None).expect("into spec");
 
     assert_eq!(spec.owner_id, None);
+}
+
+/// An older `new` ignores `owner_id` rather than rejecting it, so the CLI refuses
+/// up front instead of letting the deploy quietly seat the registry as owner.
+#[test]
+fn create_refuses_an_owner_id_the_named_version_would_ignore() {
+    let error = oracle_create(&version_key("0.2.0"), Some("gov.testnet"))
+        .expect_err("0.2.0 cannot honor --owner-id");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("takes no arguments"), "{message}");
+}
+
+/// Nothing for an old `new` to drop, so the guard must not fire.
+#[test]
+fn create_allows_an_old_version_when_no_owner_id_is_named() {
+    oracle_create(&version_key("0.2.0"), None).expect("into spec");
+}
+
+/// The version is read from a conventional key, so an unparseable one is refused
+/// rather than assumed new enough.
+#[test]
+fn create_refuses_an_unreadable_version_key_when_an_owner_is_named() {
+    let error = oracle_create(
+        "templar-proxy-oracle-near-contract-0.3.0",
+        Some("gov.testnet"),
+    )
+    .expect_err("a keyless version cannot be checked");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("cannot tell whether"), "{message}");
+}
+
+/// ...but it is not in the way when no owner is named.
+#[test]
+fn create_allows_an_unreadable_version_key_when_no_owner_is_named() {
+    oracle_create("gov@1", None).expect("into spec");
 }
 
 #[test]
