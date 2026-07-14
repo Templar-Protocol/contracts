@@ -17,8 +17,11 @@ use templar_proxy_oracle_near_common::request::{LazerRequest, OracleRequest};
 
 use crate::{Dispatch, ProvidesLazerSource, ProvidesPythSource, ProvidesRedStoneSource};
 
-/// The VAA arrives in the request body, so this is the one oracle update that
-/// reaches no payload source.
+/// The VAA arrives in the request body, so this is the one oracle update that reaches no
+/// payload source — and, submitting the caller's bytes verbatim, a duplicate of
+/// `pyth.updatePriceFeeds`. That is a wart, not a design: ENG-462 reshapes the body to
+/// `price_ids` and fetches from Hermes like the other three, restoring the
+/// `ProvidesPythSource` bound this impl would then actually use.
 #[async_trait]
 impl<C> PlanWrite<UpdatePyth, C> for Dispatch
 where

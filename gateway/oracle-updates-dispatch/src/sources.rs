@@ -130,8 +130,9 @@ mod args {
     /// Every in-process oracle payload source at once. Flatten it into a consumer's
     /// `clap` configuration and call [`OracleSourceArgs::build`]; flatten a single
     /// member instead when only one source is reachable. The Pyth Hermes URL is inline
-    /// because no consumer builds a Hermes source on its own — `oracle.updatePyth` takes
-    /// its VAA from the request body.
+    /// because no consumer builds a Hermes source on its own today — only because
+    /// `oracle.updatePyth` takes its VAA from the request body instead of fetching it,
+    /// which ENG-462 fixes. Expect a `PythSourceArgs` sibling then.
     #[derive(Args, Debug, Clone)]
     pub struct OracleSourceArgs {
         /// Pyth Hermes API URL. See: <https://docs.pyth.network/price-feeds/core/api-reference>
