@@ -1,22 +1,21 @@
 //! Command dispatch: map each parsed clap command to gateway reads and writes.
 //!
 //! Most arms are a direct `ctx.read`/`ctx.write` of a typed spec; the multi-step
-//! flows live in focused submodules ([`teardown`], [`proposals`], [`prices`],
-//! [`generic`]) so this file stays a readable index of the command surface.
+//! flows live in focused submodules ([`teardown`], [`proposals`], [`generic`]) so
+//! this file stays a readable index of the command surface.
 
-mod generic;
-mod prices;
+pub(crate) mod generic;
 mod proposals;
 mod teardown;
 
 use crate::cli::Command;
 use crate::commands::{
-    account::AccountNs, contract::ContractNs, ft::FtNs, market::MarketNs,
+    account::AccountNs, contract::ContractNs, ft::FtNs, market::MarketNs, oracle::OracleNs,
     proxy_oracle::ProxyOracleNs, proxy_oracle_governance::ProxyOracleGovernanceNs,
-    proxy_oracle_owner::ProxyOracleOwnerNs, redstone::RedstoneNs, registry::RegistryNs,
-    storage::StorageNs,
+    proxy_oracle_owner::ProxyOracleOwnerNs, pyth::PythNs, redstone::RedstoneNs,
+    registry::RegistryNs, storage::StorageNs,
 };
-use crate::context::{print_json, CliContext};
+use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
 
 pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Result<()> {
     match command {
@@ -31,6 +30,8 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::ProxyOracle { command } => proxy_oracle(ctx, command).await,
         Command::ProxyOracleOwner { command } => proxy_oracle_owner(ctx, command).await,
         Command::ProxyOracleGovernance { command } => proxy_oracle_governance(ctx, command).await,
+        Command::Oracle { command } => oracle(ctx, command).await,
+        Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
@@ -96,7 +97,44 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
         ProxyOracleNs::GetProxy(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::ListProxies(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.into_spec()).await,
+        ProxyOracleNs::GetProxyCircuitBreakerSet(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::UpdatePrices(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+    }
+}
+
+/// The `oracle.*` updates, served by the oracle-updates dispatcher. Each arm layers
+/// only the payload sources its method fetches from — see [`CliContext::oracle_write`].
+async fn oracle(ctx: CliContext, ns: OracleNs) -> anyhow::Result<()> {
+    match ns {
+        OracleNs::Pyth(a) => {
+            let signer = a.signer.clone();
+            ctx.oracle_write(signer, a.try_into_spec()?, Ok).await
+        }
+        OracleNs::RedStone(a) => {
+            let (signer, sources) = (a.signer.clone(), a.sources.clone());
+            ctx.oracle_write(signer, a.into_spec(), |base| {
+                redstone_source(base, &sources)
+            })
+            .await
+        }
+        OracleNs::Lazer(a) => {
+            let (signer, sources) = (a.signer.clone(), a.sources.clone());
+            ctx.oracle_write(signer, a.into_spec(), |base| lazer_source(base, &sources))
+                .await
+        }
+        OracleNs::Prices(a) => {
+            let (signer, sources) = (a.signer.clone(), a.sources.clone());
+            ctx.oracle_write(signer, a.into_spec(), |base| all_sources(base, &sources))
+                .await
+        }
+    }
+}
+
+async fn pyth(ctx: CliContext, ns: PythNs) -> anyhow::Result<()> {
+    match ns {
+        PythNs::ListEmaPricesNoOlderThan(a) => ctx.read(a.into_spec()).await,
+        PythNs::ListEmaPricesUnsafe(a) => ctx.read(a.into_spec()).await,
+        PythNs::UpdatePriceFeeds(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
     }
 }
 
@@ -139,6 +177,5 @@ async fn redstone(ctx: CliContext, ns: RedstoneNs) -> anyhow::Result<()> {
         RedstoneNs::ListRole(a) => ctx.read(a.into_spec()).await,
         RedstoneNs::SetRole(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         RedstoneNs::WritePrices(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
-        RedstoneNs::UpdatePrices(a) => prices::update_redstone(ctx, a).await,
     }
 }
