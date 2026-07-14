@@ -23,6 +23,7 @@ templar-proxy-oracle-near-common.workspace = true
 templar-universal-account.workspace = true
 
 [dev-dependencies]
+rstest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

@@ -37,6 +37,59 @@ fn operation_json(args: &[&str]) -> Value {
     serde_json::to_value(&spec).unwrap()["operation"].clone()
 }
 
+/// Parse a `proxy-oracle create` invocation and build its gateway spec.
+fn oracle_create(
+    owner_id: Option<&str>,
+) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle::Create> {
+    let mut args = vec![
+        "tmplrmgr",
+        "proxy-oracle",
+        "create",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "proxy-oracle-btc",
+        "--version-key",
+        "templar-proxy-oracle-near-contract@0.3.0#abc",
+        "--deposit",
+        "5 NEAR",
+    ];
+    if let Some(owner_id) = owner_id {
+        args.extend_from_slice(&["--owner-id", owner_id]);
+    }
+
+    match Cli::try_parse_from(args.into_iter().chain(CREDS))
+        .expect("proxy-oracle create should parse")
+        .command
+    {
+        Command::ProxyOracle {
+            command: ProxyOracleNs::Create(cmd),
+        } => cmd.try_into_spec(),
+        _ => panic!("expected proxy-oracle create"),
+    }
+}
+
+/// `--owner-id` reaches the gateway spec as a typed account id, not a JSON string
+/// interpolated by the caller.
+#[test]
+fn create_carries_owner_id_into_the_gateway_spec() {
+    let spec = oracle_create(Some("gov.testnet")).expect("into spec");
+
+    assert_eq!(spec.name, "proxy-oracle-btc");
+    assert_eq!(spec.owner_id, Some("gov.testnet".parse().unwrap()));
+
+    let json = serde_json::to_value(&spec).unwrap();
+    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle::Create>(json)
+        .expect("create params should match the gateway spec");
+}
+
+#[test]
+fn create_leaves_owner_id_unset_when_not_given() {
+    let spec = oracle_create(None).expect("into spec");
+
+    assert_eq!(spec.owner_id, None);
+}
+
 #[test]
 fn set_role_operation_grants_and_revokes() {
     let granted = operation_json(&[

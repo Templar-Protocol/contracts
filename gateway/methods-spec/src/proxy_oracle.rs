@@ -2,8 +2,27 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::MethodSpec;
+use templar_gateway_types::{primitive::PublicKey, NearToken};
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
+
+/// Create a proxy oracle from the registry.
+///
+/// `owner_id` seats the owner at init; omitting it leaves the registry as owner.
+/// Requires a version whose `new` accepts one — see
+/// [`ProxyOracleVersion::new_accepts_owner_id`](templar_gateway_types::version::ProxyOracleVersion::new_accepts_owner_id).
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracle.create")]
+pub struct Create {
+    pub registry_id: near_account_id::AccountId,
+    pub name: String,
+    pub version_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<near_account_id::AccountId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_access_keys: Option<Vec<PublicKey>>,
+    pub deposit: NearToken,
+}
 
 /// List proxy price feeds.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -28,5 +28,8 @@ uuid.workspace = true
 # can accept them directly as arguments.
 clap = ["dep:clap"]
 
+[dev-dependencies]
+rstest.workspace = true
+
 [lints]
 workspace = true
