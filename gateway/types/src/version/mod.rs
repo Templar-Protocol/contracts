@@ -53,6 +53,28 @@ impl<T> Version<T> {
             patch: self.patch,
         }
     }
+
+    /// Read the version out of a `{name}@{version}#{sha256}` registry version key.
+    ///
+    /// A guess, not a fact: the key shape is a convention, and the registry stores
+    /// whatever key it is handed without checking it against the code. Use this to
+    /// warn an operator, not to gate anything the chain relies on.
+    ///
+    /// The version segment is parsed by [`FromStr`](std::str::FromStr), so a
+    /// pre-release like `0.3.0-rc1` is rejected rather than ordered.
+    pub fn from_version_key(key: &str) -> Result<Self, ParseError> {
+        let malformed = || ParseError::VersionKey {
+            input: key.to_string(),
+        };
+
+        let (name, rest) = key.split_once('@').ok_or_else(malformed)?;
+        let (version, sha256) = rest.split_once('#').ok_or_else(malformed)?;
+        if name.is_empty() || sha256.is_empty() {
+            return Err(malformed());
+        }
+
+        version.parse()
+    }
 }
 
 impl<T> std::fmt::Display for Version<T> {
@@ -102,6 +124,8 @@ pub enum ParseError {
     Separator { index: usize, input: String },
     #[error("Failed to parse segment index {index} in input '{input}'")]
     Segment { index: usize, input: String },
+    #[error("Version key is not in {{name}}@{{version}}#{{sha256}} form: '{input}'")]
+    VersionKey { input: String },
 }
 
 impl<T> std::str::FromStr for Version<T> {

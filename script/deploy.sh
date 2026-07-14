@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Deploy a market with its own proxy oracle and a separate governance contract.
 #
-# Architecture: the proxy oracle holds owner-gated `admin_*` mutators; the
-# governance contract is a distinct account that administers the oracle by
-# executing proposals that call into those mutators. So governance must become
-# the oracle's owner before it can configure any price feeds.
+# Governance administers the oracle's owner-gated `admin_*` mutators by executing
+# proposals against them, so it must own the oracle before any feed can be
+# configured. Both account ids are derived below, so governance deploys first and
+# the oracle names it as owner at init — no ownership handoff.
 #
 # Usage: SECRET_KEY=... ./deploy.sh ./<market>/env.sh
 
@@ -60,12 +60,6 @@ for required_file in "${required_files[@]}"; do
     fi
 done
 
-# The registry account owns the oracle immediately after `registry deploy` (it
-# is the predecessor of the contract's `new()`), so it signs the owner handoff.
-# Every other step is signed by the operator, who is the governance admin. When
-# these are different accounts, set REGISTRY_SECRET_KEY; it defaults to SECRET_KEY.
-REGISTRY_SECRET_KEY=${REGISTRY_SECRET_KEY:-$SECRET_KEY}
-
 # derived values
 PROXY_ORACLE_NAME="proxy-oracle-$MARKET_NAME"
 PROXY_ORACLE_ID="$PROXY_ORACLE_NAME.$REGISTRY_ID"
@@ -76,28 +70,23 @@ TMPLRMGR_GLOBAL_ARGS=(
     --network "$NETWORK"
 )
 
-# operator-signed call (governance admin / deployer). Credentials are per-write
-# args sourced from SIGNER_ID/SECRET_KEY in the environment, so they no longer
-# precede the subcommand (they're structural on each write command now).
+# operator-signed call (governance admin / deployer)
 operator() {
     SIGNER_ID="$SIGNER_ID" SECRET_KEY="$SECRET_KEY" \
         tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
 }
 
-# registry-signed call (initial oracle owner)
-registry() {
-    SIGNER_ID="$REGISTRY_ID" SECRET_KEY="$REGISTRY_SECRET_KEY" \
-        tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
-}
-
-echo "Deploying proxy oracle ($PROXY_ORACLE_ID)..."
-operator registry deploy \
-    --registry-id "$REGISTRY_ID" \
-    --name "$PROXY_ORACLE_NAME" \
-    --version-key "$PROXY_ORACLE_VERSION_KEY" \
-    --init-args null \
-    --deposit "5 NEAR"
-
+# Ordering is the safety property: `registry deploy` fails the whole transaction if
+# the account already exists, so a colliding governance id aborts here, before the
+# oracle below could be handed to an account this script did not create. It also
+# means the script is not re-runnable end to end — a second run collides.
+#
+# The cost of that ordering: PROXY_ORACLE_VERSION_KEY is not validated until the
+# oracle step, which is *after* this one. A key that is stale (< 0.3.0, whose `new`
+# would ignore --owner-id) or malformed aborts there, leaving this governance
+# contract deployed and orphaned — delete $GOVERNANCE_ID before re-running.
+# Validating up front needs a preflight this CLI has no flag for; ENG-463 removes
+# the version check altogether by reading the contract's ABI.
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle-governance create \
     --registry-id "$REGISTRY_ID" \
@@ -108,21 +97,16 @@ operator proxy-oracle-governance create \
     --ttl-default 0s \
     --deposit "3.5 NEAR"
 
-echo "Proposing governance as the oracle owner..."
-registry proxy-oracle-owner propose-owner \
-    --oracle-id "$PROXY_ORACLE_ID" \
-    --account-id "$GOVERNANCE_ID"
+echo "Deploying proxy oracle ($PROXY_ORACLE_ID), owned by $GOVERNANCE_ID..."
+operator proxy-oracle create \
+    --registry-id "$REGISTRY_ID" \
+    --name "$PROXY_ORACLE_NAME" \
+    --version-key "$PROXY_ORACLE_VERSION_KEY" \
+    --owner-id "$GOVERNANCE_ID" \
+    --deposit "5 NEAR"
 
 # --ttl-default 0s (above) makes every proposal executable immediately, so
 # --execute-when-ready creates and executes each in a single call.
-echo "Accepting oracle ownership through governance..."
-operator proxy-oracle-governance create-proposal \
-    --governance-id "$GOVERNANCE_ID" \
-    --execute-when-ready \
-    admin-function-call \
-    --method own_accept_owner \
-    --deposit "1 yoctoNEAR"
-
 echo "Configuring collateral proxy..."
 operator proxy-oracle-governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \

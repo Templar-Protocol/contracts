@@ -1,9 +1,11 @@
+mod create;
 mod get_proxy;
 mod get_proxy_circuit_breaker_set;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;
 
+pub use create::Create;
 pub use get_proxy::GetProxy;
 pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
 pub use list_proxies::ListProxies;
@@ -17,6 +19,8 @@ use templar_common::oracle::pyth::PriceIdentifier;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProxyOracleNs {
+    /// Deploy a proxy oracle from a registry, optionally owned by `--owner-id`.
+    Create(Create),
     /// Read a single price feed's proxy configuration.
     GetProxy(GetProxy),
     /// List the oracle's configured price feeds.

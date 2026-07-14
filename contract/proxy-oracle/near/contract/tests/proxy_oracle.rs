@@ -13,6 +13,7 @@ use near_sdk::{
     test_utils::{get_created_receipts, VMContextBuilder},
     testing_env, NearToken,
 };
+use near_sdk_contract_tools::owner::OwnerExternal as _;
 use near_workspaces::{network::Sandbox, Account, Worker};
 
 use templar_common::{
@@ -117,7 +118,7 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
         .current_account_id("proxy.near".parse().unwrap())
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let code = vec![0xde, 0xad, 0xbe, 0xef];
     let migrate_args = br#"{"from_version":"v0"}"#.to_vec();
 
@@ -161,6 +162,38 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     }
 }
 
+/// `owner_id` seats that account; omitting it falls back to the predecessor.
+#[allow(clippy::unwrap_used)]
+#[rstest::rstest]
+#[case::explicit_owner(Some("governance.near"), "governance.near")]
+#[case::predecessor_fallback(None, "registry.near")]
+pub fn new_seats_the_owner(#[case] owner_id: Option<&str>, #[case] expected_owner: &str) {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("registry.near".parse().unwrap())
+        .build());
+
+    let c = Contract::new(owner_id.map(|id| id.parse().unwrap()));
+
+    assert_eq!(c.own_get_owner(), Some(expected_owner.parse().unwrap()));
+}
+
+/// The deploy flow's whole point: a deployer that names another owner must not
+/// retain admin rights over the oracle it initialized.
+#[allow(clippy::unwrap_used)]
+#[test]
+#[should_panic(expected = "Owner only")]
+pub fn new_with_owner_id_locks_out_the_deployer() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("registry.near".parse().unwrap())
+        .build());
+
+    let mut c = Contract::new(Some("governance.near".parse().unwrap()));
+
+    let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
+}
+
 #[allow(clippy::unwrap_used)]
 #[test]
 #[should_panic(expected = "Owner only")]
@@ -169,7 +202,7 @@ pub fn admin_upgrade_requires_owner() {
         .current_account_id("proxy.near".parse().unwrap())
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
 
     testing_env!(VMContextBuilder::new()
         .current_account_id("proxy.near".parse().unwrap())
@@ -185,7 +218,7 @@ pub fn manual_trip_invalidates_cached_price() {
     testing_env!(VMContextBuilder::new()
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x56; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
     cache_test_price(&mut c, proxy_id, proxy_price(100));
@@ -210,7 +243,7 @@ pub fn admin_configure_circuit_breakers_invalidates_cached_price() {
     testing_env!(VMContextBuilder::new()
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x57; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
     cache_test_price(&mut c, proxy_id, proxy_price(100));
@@ -234,7 +267,7 @@ pub fn breaker_mutations_invalidate_cached_price() {
     testing_env!(VMContextBuilder::new()
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x5e; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
 
@@ -272,7 +305,7 @@ pub fn breaker_mutations_invalidate_cached_price() {
 #[test]
 pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
     testing_env!(VMContextBuilder::new().build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x58; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
     let pending = c.proxy_entry(proxy_id).unwrap().prepare_price_update();
@@ -299,7 +332,7 @@ pub fn stale_pending_update_cannot_write_cache_or_mutate_breakers() {
 #[test]
 pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
     testing_env!(VMContextBuilder::new().build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x59; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle-1.near")));
     cache_test_price(&mut c, proxy_id, proxy_price(100));
@@ -315,7 +348,7 @@ pub fn proxy_replacement_clears_cache_and_bumps_epoch() {
 #[test]
 pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
     testing_env!(VMContextBuilder::new().build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x5a; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
     cache_test_price(&mut c, proxy_id, proxy_price(100));
@@ -347,7 +380,7 @@ pub fn proxy_removal_clears_cache_and_stale_update_cannot_write() {
 })]
 pub fn cached_non_accepted_status_reads_as_none(#[case] status: CachedProxyPriceStatus) {
     testing_env!(VMContextBuilder::new().build());
-    let mut c = Contract::new();
+    let mut c = Contract::new(None);
     let proxy_id = PriceIdentifier([0x5b; 32]);
     c.set_proxy(proxy_id, Some(test_proxy("pyth-oracle.near")));
 
@@ -619,6 +652,32 @@ pub async fn proxy_oracle(#[future(awt)] worker: Worker<Sandbox>, #[case] method
         result.get(&btc_proxy_id).unwrap().as_ref().map(norm_price),
         Some(80_000),
     );
+}
+
+/// The `owner_id` init arg must survive JSON deserialization over the wire, since `registry deploy`
+/// is the only way the oracle is initialized in production and it passes init args as raw bytes.
+/// Omitting the key must still select the predecessor — `registry` here, as in production, so the
+/// assertion cannot pass by accident on a contract that seats its own account id.
+#[rstest::rstest]
+#[tokio::test]
+pub async fn init_args_seat_the_owner_over_the_wire(#[future(awt)] worker: Worker<Sandbox>) {
+    accounts!(
+        worker,
+        registry,
+        governance,
+        explicit_owner_oracle,
+        default_owner_oracle
+    );
+
+    let explicit = ProxyOracleController::deploy_with_owner(explicit_owner_oracle, governance.id());
+    let default = ProxyOracleController::deploy_initialized_by(default_owner_oracle, &registry);
+    let (explicit, default) = tokio::join!(explicit, default);
+
+    let (explicit_owner, default_owner) =
+        tokio::join!(explicit.own_get_owner(), default.own_get_owner());
+
+    assert_eq!(explicit_owner, Some(governance.id().clone()));
+    assert_eq!(default_owner, Some(registry.id().clone()));
 }
 
 /// A Lazer-backed proxy source must resolve on-chain: `update_prices` dispatches the adapter's

@@ -13611,6 +13611,7 @@ dependencies = [
  "near-openapi-types",
  "near-sdk",
  "near-token",
+ "rstest",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -13804,7 +13805,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-contract"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.2.17",
  "hex-literal",

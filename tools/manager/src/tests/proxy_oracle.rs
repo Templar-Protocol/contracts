@@ -37,6 +37,87 @@ fn operation_json(args: &[&str]) -> Value {
     serde_json::to_value(&spec).unwrap()["operation"].clone()
 }
 
+/// Parse a `proxy-oracle create` invocation and build its gateway spec.
+fn oracle_create(
+    version_key: &str,
+    owner_id: Option<&str>,
+) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle::Create> {
+    let mut args = vec![
+        "tmplrmgr",
+        "proxy-oracle",
+        "create",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "proxy-oracle-btc",
+        "--version-key",
+        version_key,
+        "--deposit",
+        "5 NEAR",
+    ];
+    if let Some(owner_id) = owner_id {
+        args.extend_from_slice(&["--owner-id", owner_id]);
+    }
+
+    match Cli::try_parse_from(args.into_iter().chain(CREDS))
+        .expect("proxy-oracle create should parse")
+        .command
+    {
+        Command::ProxyOracle {
+            command: ProxyOracleNs::Create(cmd),
+        } => cmd.try_into_spec(),
+        _ => panic!("expected proxy-oracle create"),
+    }
+}
+
+const V0_3_0: &str = "templar-proxy-oracle-near-contract@0.3.0#ab";
+const V0_2_0: &str = "templar-proxy-oracle-near-contract@0.2.0#ab";
+const UNREADABLE: &str = "templar-proxy-oracle-near-contract-0.3.0";
+
+/// `--owner-id` reaches the gateway spec as a typed account id, not a JSON string
+/// interpolated by the caller.
+#[test]
+fn create_carries_owner_id_into_the_gateway_spec() {
+    let spec = oracle_create(V0_3_0, Some("gov.testnet")).expect("into spec");
+
+    assert_eq!(spec.name, "proxy-oracle-btc");
+    assert_eq!(spec.owner_id, Some("gov.testnet".parse().unwrap()));
+
+    let json = serde_json::to_value(&spec).unwrap();
+    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle::Create>(json)
+        .expect("create params should match the gateway spec");
+}
+
+/// The guard fires only when an owner is named: an old `new` silently drops one,
+/// and an unreadable key cannot be shown to accept one. With no owner there is
+/// nothing to drop, so neither may be refused.
+#[rstest::rstest]
+#[case::honored(V0_3_0, Some("gov.testnet"), None)]
+#[case::ignored(V0_2_0, Some("gov.testnet"), Some("takes no arguments"))]
+#[case::unreadable(UNREADABLE, Some("gov.testnet"), Some("cannot tell whether"))]
+#[case::no_owner_new(V0_3_0, None, None)]
+#[case::no_owner_old(V0_2_0, None, None)]
+#[case::no_owner_unreadable(UNREADABLE, None, None)]
+fn create_guards_owner_id_against_the_named_version(
+    #[case] version_key: &str,
+    #[case] owner_id: Option<&str>,
+    #[case] expected_error: Option<&str>,
+) {
+    let result = oracle_create(version_key, owner_id);
+
+    match expected_error {
+        None => {
+            let spec = result.expect("into spec");
+            assert_eq!(spec.owner_id, owner_id.map(|id| id.parse().unwrap()));
+        }
+        Some(expected) => {
+            let error = result.expect_err("guard should refuse");
+            let message = format!("{error:#}");
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+}
+
 #[test]
 fn set_role_operation_grants_and_revokes() {
     let granted = operation_json(&[
