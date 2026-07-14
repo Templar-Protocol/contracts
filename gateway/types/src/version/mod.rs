@@ -63,15 +63,15 @@ impl<T> Version<T> {
     /// The version segment is parsed by [`FromStr`](std::str::FromStr), so a
     /// pre-release like `0.3.0-rc1` is rejected rather than ordered.
     pub fn from_version_key(key: &str) -> Result<Self, ParseError> {
-        let version = key
-            .split_once('@')
-            .and_then(|(name, rest)| {
-                let (version, sha256) = rest.split_once('#')?;
-                (!name.is_empty() && !version.is_empty() && !sha256.is_empty()).then_some(version)
-            })
-            .ok_or_else(|| ParseError::VersionKey {
-                input: key.to_string(),
-            })?;
+        let malformed = || ParseError::VersionKey {
+            input: key.to_string(),
+        };
+
+        let (name, rest) = key.split_once('@').ok_or_else(malformed)?;
+        let (version, sha256) = rest.split_once('#').ok_or_else(malformed)?;
+        if name.is_empty() || sha256.is_empty() {
+            return Err(malformed());
+        }
 
         version.parse()
     }

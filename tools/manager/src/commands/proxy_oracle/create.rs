@@ -38,11 +38,12 @@ pub struct Create {
 /// Refuse an `owner_id` the named version would ignore — the deploy would
 /// otherwise succeed and leave the registry as owner.
 ///
-/// Best-effort, and deliberately confined to the CLI. `{name}@{version}#{sha256}`
-/// is only a convention: the registry stores whatever key it is handed and never
-/// checks it against the code, so the version read back is a guess about a label,
-/// not a fact about the wasm. ENG-463 replaces this by reading the capability off
-/// the contract's own ABI.
+/// Only as good as the version key, which is a convention the registry does not
+/// enforce (see [`Version::from_version_key`]). An operator guardrail, hence the
+/// CLI and not the gateway; ENG-463 replaces it with a check against the
+/// contract's own ABI.
+///
+/// [`Version::from_version_key`]: templar_gateway_types::version::Version::from_version_key
 fn check_owner_id_is_honored(version_key: &str, owner_id: &AccountId) -> anyhow::Result<()> {
     let version = ProxyOracleVersion::from_version_key(version_key)
         .with_context(|| format!("cannot tell whether {version_key} honors --owner-id"))?;

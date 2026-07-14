@@ -70,21 +70,16 @@ TMPLRMGR_GLOBAL_ARGS=(
     --network "$NETWORK"
 )
 
-# operator-signed call (governance admin / deployer). Credentials are per-write
-# args on each write command, sourced from the environment.
+# operator-signed call (governance admin / deployer)
 operator() {
     SIGNER_ID="$SIGNER_ID" SECRET_KEY="$SECRET_KEY" \
         tmplrmgr "${TMPLRMGR_GLOBAL_ARGS[@]}" "$@"
 }
 
-# Governance deploys first — its `new` only records the oracle's id, so the oracle
-# need not exist yet.
-#
-# Ordering is what makes naming an owner up front safe: the registry's `deploy`
-# fails the whole transaction if the account already exists, so this step aborts
-# before the oracle below could be handed to a pre-existing account.
-#
-# Not re-runnable end to end: a second run collides on the governance id.
+# Ordering is the safety property: `registry deploy` fails the whole transaction if
+# the account already exists, so a colliding governance id aborts here, before the
+# oracle below could be handed to an account this script did not create. It also
+# means the script is not re-runnable end to end — a second run collides.
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle-governance create \
     --registry-id "$REGISTRY_ID" \
