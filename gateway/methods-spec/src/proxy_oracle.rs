@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_macros::MethodSpec;
-use templar_gateway_types::{primitive::PublicKey, NearToken};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, NearToken};
 use templar_proxy_oracle_kernel::proxy::{circuit_breaker::CircuitBreakerSet, Proxy};
 use templar_proxy_oracle_near_common::input::Source;
 
@@ -84,4 +84,19 @@ pub struct GetProxyCircuitBreakerSetResult {
 pub struct UpdatePrices {
     pub oracle_id: near_account_id::AccountId,
     pub price_ids: Vec<PriceIdentifier>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Migration {
+    V0,
+}
+
+/// Upgrade a proxy oracle with supplied WASM and an explicit state migration.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(write = "proxyOracle.upgrade")]
+pub struct Upgrade {
+    pub oracle_id: near_account_id::AccountId,
+    pub wasm: Base64Bytes,
+    pub migration: Migration,
 }

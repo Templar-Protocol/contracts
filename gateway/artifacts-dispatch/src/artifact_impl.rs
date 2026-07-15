@@ -77,7 +77,7 @@ impl<C: HasNearClient> PlanWrite<AddArtifactVersion, C> for Dispatch {
         let registry_version = ctx
             .near_client()
             .contract(body.registry_id.clone())
-            .version()
+            .cached_version()
             .await?;
 
         ctx.near_client()

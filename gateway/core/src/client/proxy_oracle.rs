@@ -106,7 +106,7 @@ impl ProxyOracleClient<'_> {
         let version = self
             .inner
             .contract(self.contract_id.clone())
-            .version::<ProxyOracle>()
+            .cached_version::<ProxyOracle>()
             .await?;
         let raw_args = serde_json::to_vec(&args)?;
 
