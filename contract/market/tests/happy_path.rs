@@ -1,8 +1,8 @@
-//! Ported from `contract/market/tests/happy_path.rs` (the NEP-141 variant).
-//!
-//! The original is parametrized over NEP-141 vs NEP-245 (multi-token) assets;
-//! the MT variants need MT-contract deploy support in the harness and are not
-//! ported here. Exercises the full lifecycle including the 8/1/1 yield split.
+//! Ported from `contract/market/tests/happy_path.rs`, parametrized over the four
+//! NEP-141 / NEP-245 (multi-token) asset combinations. The market's asset path
+//! is standard-agnostic, so the full lifecycle — supply, collateralize, borrow,
+//! repay, and the 8/1/1 yield split — runs identically for each; only the
+//! deployed asset contracts and the config's asset shape differ.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -13,8 +13,16 @@ use templar_common::{
 use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
 #[tokio::test]
-async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+async fn test_happy(
+    #[future(awt)] harness: SandboxHarness,
+    #[case] borrow_mt: bool,
+    #[case] collateral_mt: bool,
+) -> Result<()> {
     let protocol = harness.create_user("protocol").await?;
     let insurance = harness.create_user("insurance").await?;
     let supply_user = harness.create_user("supply").await?;
@@ -23,7 +31,7 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let protocol_id = protocol.0.clone();
     let insurance_id = insurance.0.clone();
     let market = harness
-        .deploy_full_market_with(move |c| {
+        .deploy_full_market_std(borrow_mt, collateral_mt, move |c| {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
             // Pin the 10% origination fee this test's 1000 -> 1100 liability
@@ -38,6 +46,14 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     for user in [&protocol, &insurance, &supply_user, &borrow_user] {
         harness.fund_user(user, &market).await?;
     }
+
+    // The deployed configuration carries each asset in the requested standard.
+    let deployed = harness.get_configuration(&market.market_id).await?;
+    assert_eq!(deployed.borrow_asset.nep245_token_id().is_some(), borrow_mt);
+    assert_eq!(
+        deployed.collateral_asset.nep245_token_id().is_some(),
+        collateral_mt,
+    );
 
     assert!(market
         .configuration
@@ -121,12 +137,12 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 
     // Step 3: borrow (1000 + 100 origination fee).
     let balance_before = harness
-        .ft_balance_of(&market.borrow_ft_id, &borrow_user.0)
+        .asset_balance_of(&market.configuration.borrow_asset, &borrow_user.0)
         .await?;
     harness.borrow(&borrow_user, &market, 1000).await?;
     assert_eq!(
         harness
-            .ft_balance_of(&market.borrow_ft_id, &borrow_user.0)
+            .asset_balance_of(&market.configuration.borrow_asset, &borrow_user.0)
             .await?,
         balance_before + 1000,
     );
@@ -172,7 +188,7 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         80,
     );
     let balance_before = harness
-        .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+        .asset_balance_of(&market.configuration.borrow_asset, &supply_user.0)
         .await?;
     harness
         .create_supply_withdrawal_request(&supply_user, &market, 80)
@@ -182,14 +198,14 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         .await?;
     assert_eq!(
         harness
-            .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+            .asset_balance_of(&market.configuration.borrow_asset, &supply_user.0)
             .await?,
         balance_before + 80,
     );
 
     // Withdraw the supplied principal (1100); the position then closes.
     let balance_before = harness
-        .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+        .asset_balance_of(&market.configuration.borrow_asset, &supply_user.0)
         .await?;
     harness
         .create_supply_withdrawal_request(&supply_user, &market, 1100)
@@ -199,7 +215,7 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         .await?;
     assert_eq!(
         harness
-            .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+            .asset_balance_of(&market.configuration.borrow_asset, &supply_user.0)
             .await?,
         balance_before + 1100,
     );
@@ -215,14 +231,14 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
             .await?;
         assert_eq!(harness.static_yield_total(&market, &recipient.0).await?, 10);
         let balance_before = harness
-            .ft_balance_of(&market.borrow_ft_id, &recipient.0)
+            .asset_balance_of(&market.configuration.borrow_asset, &recipient.0)
             .await?;
         harness
             .withdraw_static_yield(recipient, &market, None)
             .await?;
         assert_eq!(
             harness
-                .ft_balance_of(&market.borrow_ft_id, &recipient.0)
+                .asset_balance_of(&market.configuration.borrow_asset, &recipient.0)
                 .await?,
             balance_before + 10,
         );
@@ -230,14 +246,14 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 
     // Borrower withdraws all collateral; the borrow position closes.
     let balance_before = harness
-        .ft_balance_of(&market.collateral_ft_id, &borrow_user.0)
+        .asset_balance_of(&market.configuration.collateral_asset, &borrow_user.0)
         .await?;
     harness
         .withdraw_collateral(&borrow_user, &market, 2000)
         .await?;
     assert_eq!(
         harness
-            .ft_balance_of(&market.collateral_ft_id, &borrow_user.0)
+            .asset_balance_of(&market.configuration.collateral_asset, &borrow_user.0)
             .await?,
         balance_before + 2000,
     );

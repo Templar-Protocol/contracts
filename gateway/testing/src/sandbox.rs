@@ -18,6 +18,7 @@ use near_sandbox::{
 };
 use near_token::NearToken;
 use templar_common::{
+    asset::FungibleAsset,
     market::{MarketConfiguration, YieldWeights},
     oracle::{pyth::PriceIdentifier, redstone::config as redstone_config},
     vault::VaultConfiguration,
@@ -36,6 +37,11 @@ use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
 
 use crate::wasm::PoolInfo;
+
+/// The two token ids the mock NEP-245 contract (`crate::wasm::mt`) pre-creates
+/// in its `new`; a market's MT borrow/collateral asset must reference these.
+const MT_BORROW_TOKEN_ID: &str = "mt_borrow";
+const MT_COLLATERAL_TOKEN_ID: &str = "mt_collateral";
 
 /// Every `deploy_*` helper mints its own account and returns the id it actually
 /// created. The caller cannot name it: in attached mode accounts are generated
@@ -321,6 +327,18 @@ impl SandboxHarness {
         &self,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
+        self.deploy_market_std(false, false, customize).await
+    }
+
+    /// [`deploy_market_with`](Self::deploy_market_with) but with each asset
+    /// deployed as a NEP-141 fungible token or a NEP-245 multi-token, per
+    /// `borrow_mt`/`collateral_mt` — exercises the standard-agnostic asset path.
+    pub async fn deploy_market_std(
+        &self,
+        borrow_mt: bool,
+        collateral_mt: bool,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<(AccountId, MarketConfiguration)> {
         let (oracle_id, oracle_signer) = self
             .create_account("oracle", NearToken::from_near(100))
             .await?;
@@ -334,7 +352,8 @@ impl SandboxHarness {
         )
         .await?;
 
-        self.deploy_market_with_oracle(oracle_id, customize).await
+        self.deploy_market_with_oracle_std(oracle_id, borrow_mt, collateral_mt, customize)
+            .await
     }
 
     /// Deploy a market (plus its FT pair) pointing at an existing `oracle_id`
@@ -346,40 +365,49 @@ impl SandboxHarness {
         oracle_id: AccountId,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
-        let balance = NearToken::from_near(100);
-        let (borrow_asset_id, borrow_signer) = self.create_account("borrow-ft", balance).await?;
-        deploy_contract(
-            &self.network,
-            borrow_asset_id.clone(),
-            borrow_signer,
-            crate::wasm::ft().await.to_vec(),
-            "new",
-            serde_json::json!({ "name": "Borrow FT", "symbol": "BFT" }),
-        )
-        .await?;
+        self.deploy_market_with_oracle_std(oracle_id, false, false, customize)
+            .await
+    }
 
-        let (collateral_asset_id, collateral_signer) =
-            self.create_account("collateral-ft", balance).await?;
-        deploy_contract(
-            &self.network,
-            collateral_asset_id.clone(),
-            collateral_signer,
-            crate::wasm::ft().await.to_vec(),
-            "new",
-            serde_json::json!({ "name": "Collateral FT", "symbol": "CFT" }),
-        )
-        .await?;
+    /// [`deploy_market_with_oracle`](Self::deploy_market_with_oracle) with each
+    /// asset deployed as a NEP-141 token or a NEP-245 multi-token per
+    /// `borrow_mt`/`collateral_mt`.
+    pub async fn deploy_market_with_oracle_std(
+        &self,
+        oracle_id: AccountId,
+        borrow_mt: bool,
+        collateral_mt: bool,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<(AccountId, MarketConfiguration)> {
+        let borrow_asset_id = self
+            .deploy_market_asset("borrow-ft", "Borrow FT", "BFT", borrow_mt)
+            .await?;
+        let collateral_asset_id = self
+            .deploy_market_asset("collateral-ft", "Collateral FT", "CFT", collateral_mt)
+            .await?;
 
         let mut configuration = market_configuration(
             oracle_id,
-            borrow_asset_id,
-            collateral_asset_id,
+            borrow_asset_id.clone(),
+            collateral_asset_id.clone(),
             self.gateway_signer_account_id.0.clone(),
             YieldWeights::new_with_supply_weight(1),
         );
+        // `market_configuration` wraps both ids as NEP-141; re-wrap the MT ones
+        // as NEP-245 referencing the mock's pre-created token ids.
+        if borrow_mt {
+            configuration.borrow_asset =
+                FungibleAsset::nep245(borrow_asset_id, MT_BORROW_TOKEN_ID.to_owned());
+        }
+        if collateral_mt {
+            configuration.collateral_asset =
+                FungibleAsset::nep245(collateral_asset_id, MT_COLLATERAL_TOKEN_ID.to_owned());
+        }
         customize(&mut configuration);
 
-        let (market_id, market_signer) = self.create_account("market", balance).await?;
+        let (market_id, market_signer) = self
+            .create_account("market", NearToken::from_near(100))
+            .await?;
         deploy_contract(
             &self.network,
             market_id.clone(),
@@ -393,6 +421,22 @@ impl SandboxHarness {
         .await?;
 
         Ok((market_id, configuration))
+    }
+
+    /// Deploy a single market asset account: a NEP-245 multi-token when `mt`,
+    /// else a NEP-141 fungible token.
+    async fn deploy_market_asset(
+        &self,
+        label: &str,
+        name: &str,
+        symbol: &str,
+        mt: bool,
+    ) -> Result<AccountId> {
+        if mt {
+            self.deploy_mt(label).await
+        } else {
+            self.deploy_ft(label, name, symbol).await
+        }
     }
 
     pub async fn deploy_vault(&self) -> Result<(AccountId, VaultConfiguration)> {

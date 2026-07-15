@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use near_api::types::AccountId;
 use near_token::NearToken;
 use templar_common::{
-    asset::{BorrowAssetAmount, CollateralAssetAmount},
+    asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
     borrow::{BorrowPosition, BorrowStatus},
     market::{HarvestYieldMode, MarketConfiguration},
     oracle::pyth::OracleResponse,
@@ -24,7 +24,7 @@ use templar_common::{
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{chain, ft, market, registry, storage, tx, vault};
+use templar_gateway_methods_spec::{chain, ft, market, mt, registry, storage, tx, vault};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
     operation::{ReceiptOutcome, ReceiptStatus},
@@ -40,6 +40,7 @@ use crate::sandbox::SandboxHarness;
 
 /// A market deployed by [`SandboxHarness::deploy_full_market`], with the asset
 /// and oracle accounts resolved from its configuration for convenient access.
+#[derive(Clone)]
 pub struct DeployedMarket {
     pub market_id: AccountId,
     pub borrow_ft_id: AccountId,
@@ -99,7 +100,22 @@ impl SandboxHarness {
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<DeployedMarket> {
         let (market_id, configuration) = self.deploy_market_with(customize).await?;
-        Self::resolve_deployed_market(market_id, configuration)
+        Ok(Self::resolve_deployed_market(market_id, configuration))
+    }
+
+    /// [`deploy_full_market_with`](Self::deploy_full_market_with) but with each
+    /// asset deployed as a NEP-141 token or a NEP-245 multi-token per
+    /// `borrow_mt`/`collateral_mt` — for the standard-agnostic asset matrix.
+    pub async fn deploy_full_market_std(
+        &self,
+        borrow_mt: bool,
+        collateral_mt: bool,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<DeployedMarket> {
+        let (market_id, configuration) = self
+            .deploy_market_std(borrow_mt, collateral_mt, customize)
+            .await?;
+        Ok(Self::resolve_deployed_market(market_id, configuration))
     }
 
     /// [`deploy_full_market`](Self::deploy_full_market) but pointing the market at
@@ -112,31 +128,25 @@ impl SandboxHarness {
     ) -> Result<DeployedMarket> {
         let (market_id, configuration) =
             self.deploy_market_with_oracle(oracle_id, customize).await?;
-        Self::resolve_deployed_market(market_id, configuration)
+        Ok(Self::resolve_deployed_market(market_id, configuration))
     }
 
-    /// Resolve the NEP-141 asset account ids from a deployed market's
-    /// configuration into a [`DeployedMarket`].
+    /// Resolve the asset *contract* account ids from a deployed market's
+    /// configuration into a [`DeployedMarket`]. Works for both NEP-141 and
+    /// NEP-245 assets — the id is the token contract either way; the NEP-245
+    /// `token_id` lives on the asset in `configuration`.
     fn resolve_deployed_market(
         market_id: AccountId,
         configuration: MarketConfiguration,
-    ) -> Result<DeployedMarket> {
-        let borrow_ft_id = configuration
-            .borrow_asset
-            .clone()
-            .into_nep141()
-            .context("borrow asset is not a NEP-141 token")?;
-        let collateral_ft_id = configuration
-            .collateral_asset
-            .clone()
-            .into_nep141()
-            .context("collateral asset is not a NEP-141 token")?;
-        Ok(DeployedMarket {
+    ) -> DeployedMarket {
+        let borrow_ft_id = configuration.borrow_asset.contract_id().to_owned();
+        let collateral_ft_id = configuration.collateral_asset.contract_id().to_owned();
+        DeployedMarket {
             market_id,
             borrow_ft_id,
             collateral_ft_id,
             configuration,
-        })
+        }
     }
 
     /// Set the market's mock oracle prices for both assets (in whole units).
@@ -241,7 +251,7 @@ impl SandboxHarness {
         .await
     }
 
-    /// Mint `amount` of a mock fungible token to `user` (the mock FT mints to
+    /// Mint `amount` of a mock NEP-141 token to `user` (the mock FT mints to
     /// its caller).
     pub async fn mint(
         &self,
@@ -262,19 +272,58 @@ impl SandboxHarness {
         .await
     }
 
-    /// Register `user` on the market and both FTs, then mint it a large balance
-    /// of both assets — the setup every borrowing/supplying user needs.
+    /// Mint `amount` of a mock NEP-245 token to `user`. Unlike NEP-141 this
+    /// takes a `token_id` and the mock auto-registers the holder, so no separate
+    /// storage deposit is needed.
+    pub async fn mint_mt(
+        &self,
+        user: &ManagedAccountId,
+        contract_id: &AccountId,
+        token_id: &str,
+        amount: u128,
+    ) -> Result<WriteOperationResult> {
+        self.execute(
+            user,
+            tx::FunctionCall {
+                receiver_id: contract_id.clone(),
+                method_name: ContractMethodName("mint".to_owned()),
+                args: ContractArgs::Json(
+                    serde_json::json!({ "token_id": token_id, "amount": SU128::from(amount) }),
+                ),
+                gas: NearGas::from_tgas(20),
+                deposit: NearToken::from_yoctonear(0),
+            },
+        )
+        .await
+    }
+
+    /// Register `user` on both assets and mint it a large balance of each — the
+    /// setup every borrowing/supplying user needs. Handles NEP-141 (storage
+    /// register + mint) and NEP-245 (mint auto-registers) transparently.
     pub async fn fund_user(&self, user: &ManagedAccountId, market: &DeployedMarket) -> Result<()> {
         const MINT_AMOUNT: u128 = 100_000_000;
-        let ft_registration = NearToken::from_near(1).saturating_div(100);
+        self.fund_asset(user, &market.configuration.borrow_asset, MINT_AMOUNT)
+            .await?;
+        self.fund_asset(user, &market.configuration.collateral_asset, MINT_AMOUNT)
+            .await?;
+        Ok(())
+    }
 
-        self.storage_deposit(user, &market.borrow_ft_id, ft_registration)
-            .await?;
-        self.storage_deposit(user, &market.collateral_ft_id, ft_registration)
-            .await?;
-        self.mint(user, &market.borrow_ft_id, MINT_AMOUNT).await?;
-        self.mint(user, &market.collateral_ft_id, MINT_AMOUNT)
-            .await?;
+    /// Fund `user` with `amount` of a single asset, dispatching on its standard.
+    async fn fund_asset<T: AssetClass>(
+        &self,
+        user: &ManagedAccountId,
+        asset: &FungibleAsset<T>,
+        amount: u128,
+    ) -> Result<()> {
+        if let Some(contract_id) = asset.clone().into_nep141() {
+            let ft_registration = NearToken::from_near(1).saturating_div(100);
+            self.storage_deposit(user, &contract_id, ft_registration)
+                .await?;
+            self.mint(user, &contract_id, amount).await?;
+        } else if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
+            self.mint_mt(user, &contract_id, &token_id, amount).await?;
+        }
         Ok(())
     }
 
@@ -1677,6 +1726,32 @@ impl SandboxHarness {
             .map_err(|error| anyhow::anyhow!("ft_balance_of failed: {error}"))?
             .balance
             .0)
+    }
+
+    /// Read an account's balance of a market asset, dispatching on the asset's
+    /// standard (NEP-141 `ft_balance_of` or NEP-245 `mt_balance_of`).
+    pub async fn asset_balance_of<T: AssetClass>(
+        &self,
+        asset: &FungibleAsset<T>,
+        account_id: &AccountId,
+    ) -> Result<u128> {
+        if let Some((contract_id, token_id)) = asset.clone().into_nep245() {
+            Ok(self
+                .client()?
+                .read(mt::GetBalanceOf {
+                    contract_id,
+                    account_id: account_id.clone(),
+                    token_id,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("mt_balance_of failed: {error}"))?
+                .balance
+                .0)
+        } else if let Some(contract_id) = asset.clone().into_nep141() {
+            self.ft_balance_of(&contract_id, account_id).await
+        } else {
+            anyhow::bail!("asset is neither NEP-141 nor NEP-245")
+        }
     }
 
     /// Transfer fungible tokens and call the receiver (raw NEP-141

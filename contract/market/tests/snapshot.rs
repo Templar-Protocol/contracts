@@ -308,6 +308,85 @@ async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Re
     Ok(())
 }
 
+/// Each user's operation must land in its own finalized snapshot, so a
+/// per-operation snapshot-assignment error is observable. The counterpart to
+/// [`many_users_same_snapshot`], which aggregates everything into one snapshot
+/// and so cannot expose that class of error.
+///
+/// Determinism: the operations are sequential and each is isolated in its own
+/// time chunk by a `fast_forward` across the boundary (the sandbox equivalent of
+/// the original's 1ms chunks + real-clock separation). The following operation
+/// finalizes the previous one's snapshot — snapshot updating runs *before* an
+/// op's own effect is recorded — and a trailing harvest finalizes the last.
+#[rstest]
+#[tokio::test]
+async fn many_users_different_snapshots(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
+            c.borrow_origination_fee = Fee::zero();
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1000);
+        })
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_1 = harness.create_user("supply1").await?;
+    let supply_2 = harness.create_user("supply2").await?;
+    let users: Vec<_> = create_users(&harness, 5).await?;
+    harness.fund_user(&supply_1, &market).await?;
+    harness.fund_user(&supply_2, &market).await?;
+    for user in &users {
+        harness.fund_user(user, &market).await?;
+    }
+
+    // Two suppliers, each activating in its own snapshot.
+    harness
+        .supply_and_harvest_until_activation(&supply_1, &market, 2_000_000)
+        .await?;
+    harness
+        .supply_and_harvest_until_activation(&supply_2, &market, 1_500_000)
+        .await?;
+
+    // Each collateral deposit in a separate snapshot.
+    let collaterals = [400_000u128, 350_000, 300_000, 250_000, 200_000];
+    for (user, amount) in users.iter().zip(collaterals) {
+        harness.fast_forward(100).await?;
+        harness.collateralize(user, &market, amount).await?;
+    }
+
+    // Each borrow in a separate snapshot.
+    let borrows = [150_000u128, 120_000, 100_000, 80_000, 60_000];
+    for (user, amount) in users.iter().zip(borrows) {
+        harness.fast_forward(100).await?;
+        harness.borrow(user, &market, amount).await?;
+    }
+
+    // Finalize the last borrow's snapshot.
+    harness.fast_forward(100).await?;
+    harness
+        .harvest_yield(&supply_1, &market, Some(supply_1.0.clone()))
+        .await?;
+
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    check(
+        states!(
+            { active += 2_000_000 },
+            { active += 1_500_000 },
+            { collateral += 400_000 },
+            { collateral += 350_000 },
+            { collateral += 300_000 },
+            { collateral += 250_000 },
+            { collateral += 200_000 },
+            { borrowed += 150_000 },
+            { borrowed += 120_000 },
+            { borrowed += 100_000 },
+            { borrowed += 80_000 },
+            { borrowed += 60_000 },
+        ),
+        snapshots,
+    );
+
+    Ok(())
+}
+
 #[rstest]
 #[tokio::test]
 async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Result<()> {
