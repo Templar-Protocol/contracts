@@ -6,7 +6,7 @@ pub mod sandbox;
 pub mod wasm;
 
 pub use controller::TestController;
-pub use ops::{DeployedMarket, DeployedVault};
+pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
 pub use sandbox::{test_secret_key, SandboxHarness};
 pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;

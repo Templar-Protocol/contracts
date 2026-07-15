@@ -131,9 +131,10 @@ pub fn assert_failure_contains(
     );
 }
 
-/// A Pyth price at the current *chain* time, expo `0`. See [`now_ns`].
+/// A Pyth price at the current *chain* time, expo `0`. Chain time, not the host
+/// clock — see [`SandboxHarness::chain_timestamp`].
 pub async fn pyth_price_now(harness: &SandboxHarness, value: i64) -> Result<pyth::Price> {
-    Ok(pyth_price_at(value, now_ns(harness).await?))
+    Ok(pyth_price_at(value, harness.chain_timestamp().await?))
 }
 
 /// A Pyth price stamped at an explicit time, expo `0`.
@@ -146,9 +147,10 @@ pub fn pyth_price_at(value: i64, time: Nanoseconds) -> pyth::Price {
     }
 }
 
-/// A RedStone feed (8-decimal) at the current *chain* time. See [`now_ns`].
+/// A RedStone feed (8-decimal) at the current *chain* time. Chain time, not the
+/// host clock — see [`SandboxHarness::chain_timestamp`].
 pub async fn redstone_price_now(harness: &SandboxHarness, value: u128) -> Result<FeedData> {
-    Ok(redstone_price_at(value, now_ns(harness).await?))
+    Ok(redstone_price_at(value, harness.chain_timestamp().await?))
 }
 
 /// A RedStone feed (8-decimal) stamped at an explicit time.
@@ -158,16 +160,6 @@ pub fn redstone_price_at(value: u128, time: Nanoseconds) -> FeedData {
         package_timestamp: time,
         write_timestamp: time,
     }
-}
-
-/// Current *chain* time as [`Nanoseconds`].
-///
-/// Deliberately not the host clock. The contract judges a price's freshness
-/// against `block_timestamp`, and the sandbox pool reuses a node across tests —
-/// so once a market test has `fast_forward`ed that node, chain time runs ahead
-/// of wall-clock time and a host-stamped "now" is rejected as stale.
-pub async fn now_ns(harness: &SandboxHarness) -> Result<Nanoseconds> {
-    harness.chain_timestamp().await
 }
 
 /// Raw contract state: storage key -> value, as captured for migration fixtures.

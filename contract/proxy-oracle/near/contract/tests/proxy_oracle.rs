@@ -664,7 +664,7 @@ async fn proxy_oracle_enforces_freshness_filter(
         .admin_set_proxy(proxy_oracle.clone(), btc_proxy_id, Some(btc_proxy_def))
         .await?;
 
-    let now = common::now_ns(&harness).await?;
+    let now = harness.chain_timestamp().await?;
     let stale_time = now.saturating_sub(Nanoseconds::from_secs(30));
     let future_time = now.saturating_add(Nanoseconds::from_secs(20));
 
@@ -741,7 +741,7 @@ async fn proxy_oracle_resolves_lazer_backed_feed() -> Result<()> {
                     conf: U64(0),
                 },
                 expo: 0,
-                publish_time_ns: common::now_ns(&harness).await?,
+                publish_time_ns: harness.chain_timestamp().await?,
             }),
         )
         .await?;

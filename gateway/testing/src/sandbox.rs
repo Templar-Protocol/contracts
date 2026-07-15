@@ -37,6 +37,10 @@ use test_utils::{market_configuration, test_signer::TestSigner, vault_configurat
 
 use crate::wasm::PoolInfo;
 
+/// Every `deploy_*` helper mints its own account and returns the id it actually
+/// created. The caller cannot name it: in attached mode accounts are generated
+/// sub-accounts of the sandbox root, so a caller-chosen id would address an
+/// account that does not exist.
 pub struct SandboxHarness {
     /// The owned `neard` process in owned mode; `None` in attach mode, where
     /// `neard` runs out-of-band and we only hold an RPC connection. Held purely
@@ -83,17 +87,15 @@ impl SandboxHarness {
 
     /// Start on a **dedicated** `neard`, ignoring `NEAR_SANDBOX_RPC_URL`.
     ///
-    /// For suites that cannot tolerate a pooled node. The pool reuses a node
-    /// across the tests that pass through its slot, and `fast_forward` advances
-    /// that node's chain clock *permanently* — so a pooled node's chain time can
-    /// run arbitrarily far ahead of wall-clock time once any test has advanced
-    /// it. Code that compares a block's timestamp against the host's own clock
-    /// then misreads a skewed node: the relayer's universal-account `create`
-    /// route, for instance, computes the block reference's age as
-    /// `SystemTime::elapsed()` and rejects it as "too old" when the block is
-    /// *ahead* of the host clock. That is correct behavior against a real chain,
-    /// so it must not be weakened to accommodate the pool — the suite exercising
-    /// it needs a pristine node instead.
+    /// A pooled node's chain clock runs ahead of wall-clock time once any test
+    /// has `fast_forward`ed it (see [`SandboxHarness::chain_timestamp`]), which
+    /// trips the relayer's universal-account `create` route: it ages the block
+    /// reference with `SystemTime::elapsed()`, which is `Err` for a
+    /// future-stamped block, and reports that as "too old".
+    ///
+    /// That check is *wrong* — a host whose clock merely lags the chain hits it
+    /// too — but fixing it is a production change tracked in ENG-473. Until then
+    /// the two tests that exercise the route need a pristine node.
     pub async fn start_owned() -> Result<Self> {
         Self::start_on(start_owned_node().await?).await
     }
@@ -247,10 +249,6 @@ impl SandboxHarness {
         crate::wasm::ft().await.to_vec()
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_mt(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -267,10 +265,6 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_receiver(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -287,10 +281,6 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_ref_finance(&self, label: &str, pools: Vec<PoolInfo>) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -497,10 +487,6 @@ impl SandboxHarness {
         Ok(account_id)
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_mock_oracle(&self, label: &str) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -534,10 +520,6 @@ impl SandboxHarness {
         Ok(id)
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_redstone_adapter(&self, label: &str) -> Result<AccountId> {
         let (account_id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -566,10 +548,6 @@ impl SandboxHarness {
     /// adapter is rejected as a standalone oracle. The adapter owns itself (so the harness signer
     /// drives `admin_*`); the trusted signer is a throwaway key — gateway plans against it are
     /// inspected, not submitted, so no payload is verified.
-    /// Deploy a Pyth Lazer adapter under a freshly minted account and return its
-    /// id. The account cannot be named by the caller: in attached mode every
-    /// account is a generated sub-account of the sandbox root, so callers must
-    /// use the returned id rather than one they chose.
     pub async fn deploy_pyth_lazer_adapter(&self, label: &str) -> Result<AccountId> {
         let (account_id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -675,10 +653,6 @@ impl SandboxHarness {
         Ok(())
     }
 
-    /// Deploy under a freshly minted account and return its id. The account
-    /// cannot be named by the caller: in attached mode every account is a
-    /// generated sub-account of the sandbox root, so callers must use the
-    /// returned id rather than one they chose.
     pub async fn deploy_lst_oracle(&self, label: &str, oracle_id: AccountId) -> Result<AccountId> {
         let (id, signer) = self
             .create_account(label, NearToken::from_near(100))
@@ -1114,8 +1088,6 @@ fn account_signer() -> Result<Arc<Signer>> {
     Signer::from_secret_key(test_secret_key()?).context("failed to initialize account signer")
 }
 
-/// The label segment of a requested id (e.g. `kind-pyth.near` → `kind-pyth`),
-/// used to namespace caller-supplied contract ids into the harness instance.
 pub(crate) async fn deploy_contract(
     network: &NetworkConfig,
     account_id: AccountId,

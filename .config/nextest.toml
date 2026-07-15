@@ -2,22 +2,18 @@
 # out-of-band neard before node-backed tests).
 experimental = ["setup-scripts"]
 
-# The node-backed tests: these need a NEAR sandbox (a `SandboxHarness`). They are
-# excluded from the fast gate and are the *only* thing the `sandbox` profile runs.
-# The two filtersets below are exact complements — keep them in sync; a test in
-# neither runs nowhere, which is how a whole crate's suite once went dark.
+# The node-backed tests (they need a `SandboxHarness`) are excluded from the fast
+# gate and are the *only* thing the `sandbox` profile runs. The two filtersets
+# below MUST stay exact complements: a test in neither runs nowhere, which is how
+# a whole crate's suite once went dark.
 #
-# Two shapes, because `kind` alone cannot express this:
-#   - Ten packages whose *integration* binaries are all node-backed: `kind(test)`.
-#   - `templar-gateway-service`, whose node-backed tests live in `src/` (it is a
-#     bin, so they are `kind(bin)` unit tests, indistinguishable by kind from the
-#     pure `config::tests`). Select them by module instead. Its ~40 sandbox tests
-#     — one of which takes over three minutes — otherwise land in the fast gate.
+# `kind` alone cannot express the set. Ten packages are node-backed in their
+# integration binaries (`kind(test)`), but `templar-gateway-service` is a bin
+# whose node tests live in `src/` — `kind(bin)` unit tests, indistinguishable by
+# kind from its pure `config::tests` — so those are selected by module.
 #
-# This is deliberately a filterset rather than `#[ignore]` on each test: gating
-# by attribute conflates "needs a sandbox" with "disabled", and left no way to
-# actually disable a node test. `#[ignore]` here means what it means everywhere
-# else — disabled.
+# A filterset rather than `#[ignore]`, so that `#[ignore]` keeps its usual
+# meaning: disabled.
 
 [profile.default]
 # Limit test threads to reduce memory/disk usage
@@ -44,6 +40,7 @@ default-filter = """
                 | package(templar-relayer)
                 | package(templar-gateway-testing)
                 | package(templar-liquidator)
+                | package(templar-gateway-core)
             )
         )
         | (
@@ -107,6 +104,7 @@ default-filter = """
                 | package(templar-relayer)
                 | package(templar-gateway-testing)
                 | package(templar-liquidator)
+                | package(templar-gateway-core)
             )
         )
         | (

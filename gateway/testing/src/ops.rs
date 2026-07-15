@@ -7,6 +7,8 @@
 //! same gateway dispatch the RPC service uses, so tests exercise production code
 //! paths.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use near_api::types::AccountId;
 use near_token::NearToken;
@@ -22,11 +24,13 @@ use templar_common::{
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{ft, market, registry, storage, tx, vault};
+use templar_gateway_methods_spec::{chain, ft, market, registry, storage, tx, vault};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
+    operation::{ReceiptOutcome, ReceiptStatus},
     primitive::PublicKey,
-    Base64Bytes, ContractMethodName, ManagedAccountId, NearGas, OperationStatus, StepStatus,
+    Base64Bytes, BlockSummary, ContractMethodName, ManagedAccountId, NearGas, OperationStatus,
+    StepStatus,
 };
 
 use templar_primitives::{Nanoseconds, SU128, SU64};
@@ -1558,6 +1562,30 @@ impl SandboxHarness {
         .await
     }
 
+    /// [`execute_next_supply_withdrawal_request`](Self::execute_next_supply_withdrawal_request)
+    /// without asserting receipt-level success.
+    ///
+    /// Dequeuing tolerates a payout transfer that cannot land (an unregistered
+    /// recipient): the request is still removed from the queue. That is a failed
+    /// receipt under an overall-successful transaction, which the strict path
+    /// rejects — so a test exercising it must opt out and assert the failure it
+    /// expects with [`failed_receipts`].
+    pub async fn try_execute_next_supply_withdrawal_request(
+        &self,
+        user: &ManagedAccountId,
+        market: &DeployedMarket,
+        batch_limit: Option<u32>,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            user,
+            market::ExecuteNextSupplyWithdrawalRequest {
+                market_id: market.market_id.clone(),
+                batch_limit,
+            },
+        )
+        .await
+    }
+
     /// Read a fungible token balance.
     pub async fn ft_balance_of(
         &self,
@@ -1624,15 +1652,17 @@ impl SandboxHarness {
     /// RPC, so it works in both owned and attach modes), for deterministic
     /// snapshot/time control instead of wall-clock waits.
     pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
+        let target = self.latest_block().await?.height + blocks;
+
+        // `sandbox_fast_forward` is a sandbox-only RPC extension with no near-api
+        // (and so no gateway) method — the one place the harness must speak raw
+        // JSON-RPC. Generous timeout: it bounds an otherwise-infinite hang, not a
+        // fail-fast budget, since a loaded shared node can take a while to advance.
         let url = self.network.rpc_endpoints[0].url.clone();
-        // Generous: this only bounds an otherwise-infinite hang, not a fail-fast
-        // budget — a loaded shared node can legitimately take a while to advance.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let target = rpc_block_height(&client, &url).await? + blocks;
-        client
-            .post(url.clone())
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?
+            .post(url)
             .json(&serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": "fast_forward",
@@ -1645,14 +1675,14 @@ impl SandboxHarness {
 
         let start = std::time::Instant::now();
         loop {
-            if rpc_block_height(&client, &url).await? >= target {
+            if self.latest_block().await?.height >= target {
                 return Ok(());
             }
             anyhow::ensure!(
-                start.elapsed() < std::time::Duration::from_secs(30),
+                start.elapsed() < Duration::from_secs(30),
                 "fast_forward timed out waiting for block {target}",
             );
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
@@ -1666,9 +1696,16 @@ impl SandboxHarness {
     /// arbitrarily far ahead of wall-clock time, and a host-stamped "now" reads
     /// on-chain as ancient.
     pub async fn chain_timestamp(&self) -> Result<Nanoseconds> {
-        let url = self.network.rpc_endpoints[0].url.clone();
-        let client = reqwest::Client::new();
-        rpc_block_timestamp(&client, &url).await
+        Ok(Nanoseconds::from_ns(
+            self.latest_block().await?.timestamp_ns,
+        ))
+    }
+
+    async fn latest_block(&self) -> Result<BlockSummary> {
+        self.client()?
+            .read(chain::GetBlock::default())
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to read latest block: {error}"))
     }
 
     /// Total gas burnt across every transaction an operation produced (each
@@ -1803,6 +1840,14 @@ impl SandboxHarness {
     /// (the driver records the operation as `Failed` and returns `Ok`), so the
     /// status check here is what turns an unexpected on-chain failure into a
     /// test failure.
+    ///
+    /// Success is checked at *receipt* level, not just top level. Every
+    /// supply/collateralize/repay/liquidate is an `ft_transfer_call`: if
+    /// `ft_on_transfer` panics, the token catches it and refunds, and the
+    /// transaction still reports top-level success. An operation that did
+    /// nothing would otherwise satisfy this assertion, and the test would pass
+    /// while exercising nothing. Tests that *expect* a rejection must use
+    /// [`try_execute`](Self::try_execute) instead.
     async fn execute<Op>(&self, signer: &ManagedAccountId, op: Op) -> Result<WriteOperationResult>
     where
         Op: templar_gateway_types::MethodSpec<Output = WriteOperationResult>,
@@ -1819,6 +1864,20 @@ impl SandboxHarness {
                 .operation
                 .failure_message()
                 .unwrap_or("<no failure message>"),
+        );
+
+        let failed: Vec<_> = failed_receipts(&result).collect();
+        anyhow::ensure!(
+            failed.is_empty(),
+            "operation {} reported top-level success but {} receipt(s) failed \
+             (executed by: {}) — the call was refunded and did nothing",
+            result.operation.id.0,
+            failed.len(),
+            failed
+                .iter()
+                .map(|receipt| receipt.contract_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
         );
         Ok(result)
     }
@@ -1843,49 +1902,27 @@ impl SandboxHarness {
     }
 }
 
-/// Query the current final block height via JSON-RPC.
-async fn rpc_block_height(client: &reqwest::Client, url: &reqwest::Url) -> Result<u64> {
-    let response: serde_json::Value = client
-        .post(url.clone())
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "block",
-            "method": "block",
-            "params": { "finality": "final" },
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-        anyhow::bail!("RPC error fetching block height: {error}");
-    }
-    response["result"]["header"]["height"]
-        .as_u64()
-        .context("missing block height in RPC response")
-}
-
-async fn rpc_block_timestamp(client: &reqwest::Client, url: &reqwest::Url) -> Result<Nanoseconds> {
-    let response: serde_json::Value = client
-        .post(url.clone())
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "block",
-            "method": "block",
-            "params": { "finality": "final" },
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-        anyhow::bail!("RPC error fetching block timestamp: {error}");
-    }
-    // `timestamp_nanosec` is the string-encoded u64; `timestamp` is lossy in JSON.
-    let nanos: u64 = response["result"]["header"]["timestamp_nanosec"]
-        .as_str()
-        .context("missing block timestamp in RPC response")?
-        .parse()
-        .context("invalid block timestamp in RPC response")?;
-    Ok(Nanoseconds::from_ns(nanos))
+/// Every receipt in the operation that failed.
+///
+/// Top-level success is not receipt-level success (see [`ExecutionOutcome`] and
+/// `OperationStatus`): a rejected inner receipt can be refunded by the token
+/// while the transaction still reports success. Tests asserting that a call was
+/// *rejected* should check this rather than the operation status, which would be
+/// `Succeeded`.
+pub fn failed_receipts(result: &WriteOperationResult) -> impl Iterator<Item = &ReceiptOutcome> {
+    result
+        .operation
+        .steps
+        .iter()
+        .filter_map(|step| match &step.status {
+            StepStatus::Succeeded { outcome, .. } | StepStatus::Reverted { outcome, .. } => {
+                Some(outcome)
+            }
+            StepStatus::NotStarted
+            | StepStatus::Prepared { .. }
+            | StepStatus::Submitted { .. }
+            | StepStatus::Rejected { .. } => None,
+        })
+        .flat_map(|outcome| outcome.receipts.iter())
+        .filter(|receipt| receipt.status == ReceiptStatus::Failed)
 }

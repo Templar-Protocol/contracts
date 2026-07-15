@@ -352,11 +352,8 @@ fn create_execute_message(
     )
 }
 
-/// A Pyth price published one second ago on the *chain's* clock — not the
-/// host's. The market judges freshness against `block_timestamp`, and the
-/// sandbox pool reuses a node across tests, so after a market test has
-/// `fast_forward`ed that node its chain time runs ahead of wall-clock time and
-/// a host-stamped price reads as long stale.
+/// A Pyth price published one second ago on the *chain's* clock, not the host's
+/// — see [`SandboxHarness::chain_timestamp`].
 #[allow(clippy::cast_possible_wrap)]
 async fn fresh_price(harness: &SandboxHarness, price: i64) -> pyth::Price {
     let now = harness
@@ -1164,16 +1161,15 @@ async fn create_universal_account(
 
 #[rstest]
 #[tokio::test]
-pub async fn universal_account(#[future(awt)] init_test_owned: InitTest) {
-    let mut init_test = init_test_owned;
-    let (market, _) = init_test.market_with_pyth_oracle().await;
+pub async fn universal_account(#[future(awt)] mut init_test_owned: InitTest) {
+    let (market, _) = init_test_owned.market_with_pyth_oracle().await;
     let InitTest {
         harness,
         app,
         ua_registry,
         borrow_user,
         ..
-    } = init_test;
+    } = init_test_owned;
 
     let (ua_account_id, secret_key, passkey) =
         create_universal_account(&app, &harness.network, &ua_registry, &borrow_user).await;

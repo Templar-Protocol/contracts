@@ -22,11 +22,7 @@ reap_orphans() {
 shopt -s nullglob
 # Per-node pool pid files, plus the legacy single-node pid file.
 pid_files=("${ROOT_DIR}"/target/.sandbox-host.*.pid "${ROOT_DIR}"/target/.sandbox-host.pid)
-if [ ${#pid_files[@]} -eq 0 ]; then
-  echo "no sandbox host pid files; nothing to stop"
-  reap_orphans
-  exit 0
-fi
+[ ${#pid_files[@]} -gt 0 ] || echo "no sandbox host pid files; nothing to stop"
 
 for pid_file in "${pid_files[@]}"; do
   [ -f "$pid_file" ] || continue

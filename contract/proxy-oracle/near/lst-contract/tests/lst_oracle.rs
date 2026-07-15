@@ -93,10 +93,8 @@ async fn call_json<T: DeserializeOwned>(
     Ok(result.json::<T>()?)
 }
 
-/// A Pyth price at the current *chain* time. Not the host clock: the contract
-/// judges freshness against `block_timestamp`, and the sandbox pool reuses a
-/// node across tests, so after a market test has `fast_forward`ed that node its
-/// chain time runs ahead of wall-clock time and a host-stamped price is stale.
+/// A Pyth price at the current *chain* time, not the host clock — see
+/// [`SandboxHarness::chain_timestamp`].
 #[allow(clippy::cast_possible_wrap)]
 async fn pyth_price_now(harness: &SandboxHarness, value: i64) -> Result<pyth::Price> {
     let now = harness.chain_timestamp().await?.as_secs() as i64;
