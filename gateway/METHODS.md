@@ -121,12 +121,13 @@
 | `oracle.updateLazer` | write | `UpdateLazer` → `WriteOperationResult` | Submit a Pyth Lazer oracle update for a single feed. |
 | `oracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Submit all updates needed for prices. |
 | `oracle.updatePyth` | write | `UpdatePyth` → `WriteOperationResult` | Submit a Pyth oracle update. |
-| `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update. |
+| `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update for one or more feeds. |
 
 ## `proxyOracle`
 
 | Method | Kind | Input → Output | Summary |
 |---|---|---|---|
+| `proxyOracle.create` | write | `Create` → `WriteOperationResult` | Create a proxy oracle from the registry. |
 | `proxyOracle.getProxy` | read | `GetProxy` → `GetProxyResult` | Get a proxy price feed definition. |
 | `proxyOracle.getProxyCircuitBreakerSet` | read | `GetProxyCircuitBreakerSet` → `GetProxyCircuitBreakerSetResult` | Get the circuit breaker set configured for a proxy price feed. |
 | `proxyOracle.listProxies` | read | `ListProxies` → `ListProxiesResult` | List proxy price feeds. |

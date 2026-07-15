@@ -166,7 +166,7 @@ pub fn redstone_price_at(value: u128, time: Nanoseconds) -> FeedData {
 pub type StatePatch = std::collections::HashMap<Vec<u8>, Vec<u8>>;
 
 /// Deploy raw wasm to `account_id` with no init call.
-async fn deploy_code(
+pub async fn deploy_code(
     network: &NetworkConfig,
     account_id: &near_api::types::AccountId,
     code: Vec<u8>,

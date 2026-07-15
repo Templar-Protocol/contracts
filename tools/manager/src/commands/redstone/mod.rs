@@ -3,7 +3,6 @@ mod get_config;
 mod list_role;
 mod read_price_data;
 mod set_role;
-mod update_prices;
 mod write_prices;
 
 pub use create::Create;
@@ -11,7 +10,6 @@ pub use get_config::GetConfig;
 pub use list_role::ListRole;
 pub use read_price_data::ReadPriceData;
 pub use set_role::SetRole;
-pub use update_prices::UpdatePrices;
 pub use write_prices::WritePrices;
 
 use clap::{Subcommand, ValueEnum};
@@ -32,9 +30,10 @@ pub enum RedstoneNs {
     /// Grant or revoke a role on an account.
     SetRole(SetRole),
     /// Write a signed RedStone payload on-chain.
+    ///
+    /// To fetch the payload as well, use `oracle update-red-stone`, which runs the
+    /// RedStone bridge inside the gateway.
     WritePrices(WritePrices),
-    /// Fetch signed prices from the RedStone bridge and write them on-chain.
-    UpdatePrices(UpdatePrices),
 }
 
 /// Shared `--role` value for the RedStone role commands.
