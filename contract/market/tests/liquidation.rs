@@ -424,8 +424,11 @@ async fn liquidators_race(#[future(awt)] harness: SandboxHarness) -> Result<()> 
     let (borrow_user, liquidator) = setup_underwater(&harness, &market).await?;
     harness.set_asset_prices(&market, 1.0, 0.5).await?;
 
-    let balance_before = harness
+    let collateral_before = harness
         .ft_balance_of(&market.collateral_ft_id, &liquidator.0)
+        .await?;
+    let borrow_before = harness
+        .ft_balance_of(&market.borrow_ft_id, &liquidator.0)
         .await?;
     let (collateral, price) = harness
         .liquidatable_collateral_with_spread(&market, &borrow_user.0)
@@ -433,7 +436,7 @@ async fn liquidators_race(#[future(awt)] harness: SandboxHarness) -> Result<()> 
 
     // Two identical liquidations race; only one can succeed (the other tries to
     // take more collateral than is eligible and is refunded).
-    let (_a, _b) = tokio::join!(
+    let (a, b) = tokio::join!(
         harness.try_liquidate(
             &liquidator,
             &market,
@@ -449,13 +452,31 @@ async fn liquidators_race(#[future(awt)] harness: SandboxHarness) -> Result<()> 
             Some(u128::from(collateral)),
         ),
     );
+    let (a, b) = (a?, b?);
+
+    // Exactly one loses: its market receipt fails (over-eligible collateral) and
+    // its payment is refunded. Asserting this — not just the collateral total —
+    // is what proves the losing payment did not silently stick.
+    let a_failed = failed_receipts(&a).any(|r| r.contract_id == market.market_id);
+    let b_failed = failed_receipts(&b).any(|r| r.contract_id == market.market_id);
+    assert!(
+        a_failed != b_failed,
+        "exactly one racing liquidation should fail (the refunded loser)",
+    );
 
     assert_eq!(
         harness
             .ft_balance_of(&market.collateral_ft_id, &liquidator.0)
             .await?,
-        balance_before + u128::from(collateral),
+        collateral_before + u128::from(collateral),
         "liquidation should only occur once",
+    );
+    assert_eq!(
+        harness
+            .ft_balance_of(&market.borrow_ft_id, &liquidator.0)
+            .await?,
+        borrow_before - u128::from(price),
+        "the losing liquidation's payment must be refunded (only one `price` leaves)",
     );
 
     Ok(())
@@ -666,6 +687,20 @@ async fn partial_liquidation(#[future(awt)] harness: SandboxHarness) -> Result<(
             Some(u128::from(collateral)),
         )
         .await?;
+    // The position is healthy again after the partial liquidation — assert this
+    // directly, rather than inferring it from Bob's (stale, full-size) offer
+    // being refunded, which would also happen if the borrower stayed liquidatable
+    // with merely insufficient remaining eligible collateral.
+    let prices = harness.get_oracle_prices(&market).await?;
+    assert!(
+        !harness
+            .get_borrow_status(&market, &borrow_user.0, prices)
+            .await?
+            .context("borrow status missing")?
+            .is_liquidation(),
+        "position should be healthy after the partial liquidation",
+    );
+
     // Bob is too late — the position is healthy again, so his attempt is refunded.
     harness
         .try_liquidate(

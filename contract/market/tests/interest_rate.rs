@@ -51,6 +51,38 @@ async fn realized_yield(
     ))
 }
 
+/// Repay `user`'s entire liability *including* interest still pending across
+/// snapshots (read separately from the materialized liability), with a 10%
+/// overpayment, and assert the position clears. Guards that the repay path
+/// settles pending interest, not only the already-materialized portion.
+async fn repay_in_full(
+    harness: &SandboxHarness,
+    market: &DeployedMarket,
+    user: &ManagedAccountId,
+) -> Result<()> {
+    let position = harness
+        .get_borrow_position(market, &user.0)
+        .await?
+        .context("borrow position missing")?;
+    let pending = harness
+        .get_borrow_position_pending_interest(market, &user.0)
+        .await?;
+    assert!(
+        !pending.is_zero(),
+        "expected unrealized interest so the repay actually settles a pending amount",
+    );
+    let owed = u128::from(position.get_total_borrow_asset_liability() + pending);
+    harness.repay(user, market, owed * 110 / 100, None).await?;
+    assert!(
+        harness
+            .get_borrow_position(market, &user.0)
+            .await?
+            .is_none_or(|p| p.get_total_borrow_asset_liability().is_zero()),
+        "borrow should be fully repaid (incl. pending interest) after a 10% overpayment",
+    );
+    Ok(())
+}
+
 #[rstest]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("10"), dec!("500")).unwrap())]
@@ -159,25 +191,35 @@ async fn interest_accrues_per_strategy_and_frequency_is_neutral(
         "harvest frequency changed supply yield (end {yield_end} vs freq {yield_freq})",
     );
 
-    // The eager borrower can fully repay with a 10% overpayment (excess refunded).
-    let position = harness
-        .get_borrow_position(&market, &borrow_eager.0)
-        .await?
-        .context("borrow position missing")?;
-    let pending = harness
-        .get_borrow_position_pending_interest(&market, &borrow_eager.0)
-        .await?;
-    let owed = u128::from(position.get_total_borrow_asset_liability() + pending);
-    harness
-        .repay(&borrow_eager, &market, owed * 110 / 100, None)
-        .await?;
+    // The deployed market must select the rate from the *configured* strategy at
+    // the realized utilization, not a fixed rate or the strategy at the wrong
+    // utilization. Each finalized snapshot records
+    // `interest_rate = strategy.at(usage_ratio(active, borrowed))`; recomputing
+    // that from the snapshot's own recorded active/borrowed must reproduce it.
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    let borrowing = snapshots
+        .iter()
+        .find(|s| u128::from(s.borrow_asset_borrowed) == 2 * principal)
+        .context("no finalized snapshot captured both borrows active")?;
+    let utilization = Decimal::from(borrowing.borrow_asset_borrowed)
+        / Decimal::from(borrowing.borrow_asset_deposited_active);
     assert!(
-        harness
-            .get_borrow_position(&market, &borrow_eager.0)
-            .await?
-            .is_none_or(|p| p.get_total_borrow_asset_liability().is_zero()),
-        "borrow should be fully repaid after a 10% overpayment",
+        borrowing.interest_rate.near_equal(strategy.at(utilization)),
+        "snapshot rate {:?} should equal the configured strategy at its utilization ({:?})",
+        borrowing.interest_rate,
+        strategy.at(utilization),
     );
+
+    // Restore the pending-interest repayment path: advance time and finalize a
+    // fresh snapshot via a supplier harvest that touches neither borrower, so each
+    // now carries interest pending across snapshots; then repay liability +
+    // pending and assert the debt clears.
+    harness.fast_forward(60).await?;
+    harness
+        .harvest_yield(&supply_freq, &market, Some(supply_freq.0.clone()))
+        .await?;
+    repay_in_full(&harness, &market, &borrow_lazy).await?;
+    repay_in_full(&harness, &market, &borrow_eager).await?;
 
     Ok(())
 }

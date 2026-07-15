@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rstest::rstest;
-use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
-use templar_gateway_types::{ManagedAccountId, OperationStatus};
+use templar_gateway_testing::{failed_receipts, harness, DeployedMarket, SandboxHarness};
+use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId, OperationStatus};
 use tokio::task::JoinSet;
 
 const CONCURRENCY: usize = 30;
@@ -38,29 +38,26 @@ async fn collateral_deposit(
 }
 
 /// Fire `CONCURRENCY` collateral withdrawals of `CHUNK` each, all in flight at
-/// once, and wait for every one to settle (each is a `try_` — a blocked
-/// withdrawal reports top-level success while the market recovers the deposit).
+/// once, and return every settled result (each is a `try_` — a blocked
+/// withdrawal reports top-level success while the market recovers the deposit,
+/// so the failure only shows at the receipt level).
 async fn withdraw_concurrently(
     harness: Arc<SandboxHarness>,
     market: DeployedMarket,
     user: ManagedAccountId,
-) -> Result<()> {
+) -> Result<Vec<WriteOperationResult>> {
     let mut set = JoinSet::new();
     for _ in 0..CONCURRENCY {
         let harness = Arc::clone(&harness);
         let market = market.clone();
         let user = user.clone();
-        set.spawn(async move {
-            harness
-                .try_withdraw_collateral(&user, &market, CHUNK)
-                .await
-                .map(|_| ())
-        });
+        set.spawn(async move { harness.try_withdraw_collateral(&user, &market, CHUNK).await });
     }
+    let mut results = Vec::with_capacity(CONCURRENCY);
     while let Some(joined) = set.join_next().await {
-        joined??;
+        results.push(joined??);
     }
-    Ok(())
+    Ok(results)
 }
 
 #[rstest]
@@ -82,8 +79,16 @@ async fn concurrent_collateral_withdrawals_conserve_deposit(
 
     // Phase 1: while registered, every concurrent withdrawal succeeds. This
     // drives `CONCURRENCY` overlapping in-flight initial/final(success)
-    // transitions; the deposit drops by exactly the amount withdrawn.
-    withdraw_concurrently(Arc::clone(&harness), market.clone(), borrow_user.clone()).await?;
+    // transitions; the deposit drops by exactly the amount withdrawn, and no
+    // receipt fails.
+    let registered =
+        withdraw_concurrently(Arc::clone(&harness), market.clone(), borrow_user.clone()).await?;
+    for result in &registered {
+        assert!(
+            failed_receipts(result).next().is_none(),
+            "a registered concurrent withdrawal should not fail any receipt",
+        );
+    }
     let after_success = collateral_deposit(&harness, &market, &borrow_user).await?;
     assert_eq!(
         after_success,
@@ -99,8 +104,18 @@ async fn concurrent_collateral_withdrawals_conserve_deposit(
 
     // Phase 2: another concurrent batch, all now blocked. This drives
     // `CONCURRENCY` overlapping in-flight initial/final(failure→recover)
-    // transitions; no collateral is lost, so the deposit is unchanged.
-    withdraw_concurrently(Arc::clone(&harness), market.clone(), borrow_user.clone()).await?;
+    // transitions. Each withdrawal's collateral transfer to the unregistered
+    // account genuinely fails at the receipt level (the market attempted it and
+    // recovered) — asserting that failure, not just the unchanged deposit,
+    // distinguishes real recovery from a silent short-circuit that never transfers.
+    let blocked =
+        withdraw_concurrently(Arc::clone(&harness), market.clone(), borrow_user.clone()).await?;
+    for result in &blocked {
+        assert!(
+            failed_receipts(result).any(|r| r.contract_id == market.collateral_ft_id),
+            "a blocked withdrawal must fail the collateral-transfer receipt",
+        );
+    }
     let after_blocked = collateral_deposit(&harness, &market, &borrow_user).await?;
     assert_eq!(
         after_blocked, after_success,

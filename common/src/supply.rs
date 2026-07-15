@@ -550,6 +550,7 @@ mod tests {
     /// The assertions fail if B were credited from snapshot N, or if the
     /// snapshot N+1 split were not 50/50.
     #[test]
+    #[allow(clippy::too_many_lines, reason = "hand-built market/snapshot fixture")]
     fn multi_supplier_proportional_split_staggered_activation() {
         use near_sdk::{test_utils::VMContextBuilder, testing_env};
 
@@ -620,10 +621,27 @@ mod tests {
         });
 
         // Snapshot N+1 (index 2): A and B both active. active = 200, yield = 800.
+        // Derive the active denominator through the *production* path
+        // (`current_snapshot` → `incoming_at`) rather than hard-coding 200: A is
+        // active (100) in the market aggregate and B is registered as an incoming
+        // deposit activating at index 2. A regression that omits the incoming
+        // supplier from the denominator (yielding 100, over-distributing to A)
+        // is then caught right here.
+        market.borrow_asset_deposited_active = 100.into();
+        market.borrow_asset_deposited_incoming = vec![IncomingDeposit {
+            activate_at_snapshot_index: 2,
+            amount: 100.into(),
+        }];
+        let derived_active = market.current_snapshot().borrow_asset_deposited_active;
+        assert_eq!(
+            u128::from(derived_active),
+            200,
+            "incoming supplier B must be included in the snapshot N+1 active denominator",
+        );
         market.finalized_snapshots.push(Snapshot {
             time_chunk,
             end_timestamp_ms: 2_000.into(),
-            borrow_asset_deposited_active: 200.into(),
+            borrow_asset_deposited_active: derived_active,
             borrow_asset_borrowed: 0.into(),
             collateral_asset_deposited: 0.into(),
             yield_distribution: 800.into(),

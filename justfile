@@ -13,16 +13,26 @@ sql-fmt:
 fmt: sql-fmt
     cargo fmt
 
-# Run the full test suite (prebuilds wasms, starts postgres); args pass to nextest.
+# Run the full local suite: the fast/default gate AND the node-backed gate
+# (prebuilds wasms, starts postgres, runs a pooled neard sandbox, tears it down).
+# Args pass to nextest. Mirrors what CI runs across its two steps.
 test *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap './script/sandbox-down.sh || true' EXIT
     ./script/test.sh {{args}}
+    export TEST_CONTRACTS_PREBUILT=1 SANDBOX_SKIP_PREBUILD=1
+    source ./script/postgres-up.sh
+    cargo nextest run --profile sandbox {{args}}
 
 # Run the node-backed tests against a pool of out-of-band neard nodes. The
-# `sandbox` profile selects them (see .config/nextest.toml); args pass to nextest.
+# `sandbox` profile selects them (see .config/nextest.toml); args pass to
+# nextest. templar-relayer's tests need the compose Postgres, so start it too.
 test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
+    source ./script/postgres-up.sh
     cargo nextest run --profile sandbox {{args}}
 
 # Start the out-of-band sandbox neard (prints its RPC url).

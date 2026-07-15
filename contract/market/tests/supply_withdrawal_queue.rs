@@ -360,10 +360,17 @@ async fn deposit_during_withdrawal(#[future(awt)] harness: SandboxHarness) -> Re
         .create_supply_withdrawal_request(&supply_user, &market, 10_000)
         .await?;
 
-    // A deposit landing concurrently with the withdrawal must be retained.
+    // A deposit landing *during* the in-flight withdrawal must be retained, not
+    // consumed by it. Order the two so the withdrawal is submitted first and the
+    // supply arrives while it is executing — without the delay the join could
+    // pass trivially on runs where the supply happens to land first. Both use the
+    // non-`try` wrappers, which already assert each side succeeded.
     let (execute, supply) = tokio::join!(
         harness.execute_next_supply_withdrawal_request(&supply_user, &market, None),
-        harness.supply(&supply_user, &market, 1_000),
+        async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            harness.supply(&supply_user, &market, 1_000).await
+        },
     );
     execute?;
     supply?;

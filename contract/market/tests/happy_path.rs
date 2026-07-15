@@ -10,7 +10,7 @@ use templar_common::{
     borrow::BorrowStatus, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
     market::YieldWeights, Decimal,
 };
-use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_testing::{failed_receipts, harness, SandboxHarness};
 
 #[rstest]
 #[case(false, false)]
@@ -202,6 +202,17 @@ async fn test_happy(
             .await?,
         balance_before + 80,
     );
+    // The position's yield ledger is cleared once the yield is withdrawn.
+    assert!(
+        harness
+            .get_supply_position(&market, &supply_user.0)
+            .await?
+            .context("supply position missing")?
+            .borrow_asset_yield
+            .get_total()
+            .is_zero(),
+        "supply position should carry no yield after withdrawing it all",
+    );
 
     // Withdraw the supplied principal (1100); the position then closes.
     let balance_before = harness
@@ -224,7 +235,8 @@ async fn test_happy(
         .await?
         .is_none());
 
-    // Protocol and insurance static yield: 10 each.
+    // Protocol and insurance static yield: 10 each, paid in the borrow asset and
+    // touching only it.
     for recipient in [&protocol, &insurance] {
         harness
             .accumulate_static_yield(recipient, &market, Some(recipient.0.clone()), None)
@@ -233,14 +245,28 @@ async fn test_happy(
         let balance_before = harness
             .asset_balance_of(&market.configuration.borrow_asset, &recipient.0)
             .await?;
-        harness
+        let collateral_before = harness
+            .asset_balance_of(&market.configuration.collateral_asset, &recipient.0)
+            .await?;
+        let result = harness
             .withdraw_static_yield(recipient, &market, None)
             .await?;
+        assert!(
+            failed_receipts(&result).next().is_none(),
+            "static-yield withdrawal should not fail any receipt",
+        );
         assert_eq!(
             harness
                 .asset_balance_of(&market.configuration.borrow_asset, &recipient.0)
                 .await?,
             balance_before + 10,
+        );
+        assert_eq!(
+            harness
+                .asset_balance_of(&market.configuration.collateral_asset, &recipient.0)
+                .await?,
+            collateral_before,
+            "static-yield withdrawal must not move the collateral asset",
         );
     }
 
