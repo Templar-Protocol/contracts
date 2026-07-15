@@ -668,37 +668,40 @@ async fn init_args_seat_the_owner_over_the_wire() -> Result<()> {
     let explicit_oracle = common::create_account(&harness, "explicit-owner-oracle").await?;
     let default_oracle = common::create_account(&harness, "default-owner-oracle").await?;
 
+    // The two oracles are independent accounts, so each stage runs concurrently.
     let code = templar_gateway_testing::wasm::proxy_oracle().await.to_vec();
-    common::deploy_code(&network, &explicit_oracle, code.clone()).await?;
-    common::deploy_code(&network, &default_oracle, code).await?;
+    tokio::try_join!(
+        common::deploy_code(&network, &explicit_oracle, code.clone()),
+        common::deploy_code(&network, &default_oracle, code),
+    )?;
 
-    // Explicit owner: `new` names `governance`, distinct from the deployed account.
-    common::call(
-        &network,
-        &explicit_oracle,
-        &explicit_oracle,
-        "new",
-        json!({ "owner_id": governance }),
-        30,
-        0,
-    )
-    .await?;
-    // Omitted owner: `new` falls back to its predecessor, so sign it as `registry`.
-    common::call(
-        &network,
-        &default_oracle,
-        &registry,
-        "new",
-        json!({ "owner_id": null }),
-        30,
-        0,
-    )
-    .await?;
+    tokio::try_join!(
+        // Explicit owner: `new` names `governance`, distinct from the deployed account.
+        common::call(
+            &network,
+            &explicit_oracle,
+            &explicit_oracle,
+            "new",
+            json!({ "owner_id": governance }),
+            30,
+            0,
+        ),
+        // Omitted owner: `new` falls back to its predecessor, so sign it as `registry`.
+        common::call(
+            &network,
+            &default_oracle,
+            &registry,
+            "new",
+            json!({ "owner_id": null }),
+            30,
+            0,
+        ),
+    )?;
 
-    let explicit_owner: Option<AccountId> =
-        common::view(&network, &explicit_oracle, "own_get_owner", json!({})).await?;
-    let default_owner: Option<AccountId> =
-        common::view(&network, &default_oracle, "own_get_owner", json!({})).await?;
+    let (explicit_owner, default_owner): (Option<AccountId>, Option<AccountId>) = tokio::try_join!(
+        common::view(&network, &explicit_oracle, "own_get_owner", json!({})),
+        common::view(&network, &default_oracle, "own_get_owner", json!({})),
+    )?;
 
     assert_eq!(explicit_owner.as_ref(), Some(&governance));
     assert_eq!(default_owner.as_ref(), Some(&registry));

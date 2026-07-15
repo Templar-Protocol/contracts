@@ -17,41 +17,113 @@ use templar_gateway_core::{
 };
 use templar_gateway_types::{ManagedAccountId, NearToken};
 
-/// Plan a registration `storage_deposit` for `account_id` on `contract_id` when
-/// the contract implements storage management and the account is not yet
-/// registered. Returns `None` when no registration transaction is required.
-pub(crate) async fn ensure_storage_registration<C: HasNearClient>(
+struct StorageStatus {
+    min_yocto: u128,
+    registered: bool,
+    available_yocto: u128,
+}
+
+/// Shared prelude of the `ensure_storage_*` helpers: one bounds + one balance
+/// fetch. `None` when the contract does not implement storage management.
+async fn storage_status<C: HasNearClient>(
     ctx: &C,
-    signer_account_id: ManagedAccountId,
     contract_id: AccountId,
     account_id: AccountId,
-) -> GatewayResult<Option<PlannedTransaction>> {
+) -> GatewayResult<Option<StorageStatus>> {
     let Some(bounds) = storage_balance_bounds_if_supported(ctx, contract_id.clone()).await? else {
         return Ok(None);
     };
 
     let balance = ctx
         .near_client()
-        .storage(contract_id.clone())
-        .storage_balance_of(StorageBalanceOfArgs {
-            account_id: account_id.clone(),
-        })
+        .storage(contract_id)
+        .storage_balance_of(StorageBalanceOfArgs { account_id })
         .await?;
 
-    if balance.is_some() {
+    Ok(Some(StorageStatus {
+        min_yocto: bounds.min.as_yoctonear(),
+        registered: balance.is_some(),
+        available_yocto: balance.map_or(0, |balance| balance.available.as_yoctonear()),
+    }))
+}
+
+/// Register `account_id` on `contract_id` if absent. Gates on presence, correct
+/// where the minimum is consumed by the account entry itself (e.g. an FT slot);
+/// use [`ensure_storage_headroom`] where the contract spends further storage from
+/// the balance.
+pub(crate) async fn ensure_storage_registration<C: HasNearClient>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    contract_id: AccountId,
+    account_id: AccountId,
+) -> GatewayResult<Option<PlannedTransaction>> {
+    let Some(status) = storage_status(ctx, contract_id.clone(), account_id.clone()).await? else {
+        return Ok(None);
+    };
+    if status.registered {
         return Ok(None);
     }
 
-    let tx_result = ctx.near_client().storage(contract_id).storage_deposit(
+    Ok(Some(plan_storage_deposit(
+        ctx,
+        signer_account_id,
+        contract_id,
+        account_id,
+        status.min_yocto,
+        true,
+    )?))
+}
+
+/// Top `account_id`'s *available* balance on `contract_id` up to the minimum
+/// (also registering a fresh account, so it subsumes registration here). The
+/// market charges per-position storage from this balance and its minimum covers
+/// one position, so a signer who supplied first could not otherwise collateralize
+/// without a top-up.
+pub(crate) async fn ensure_storage_headroom<C: HasNearClient>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    contract_id: AccountId,
+    account_id: AccountId,
+) -> GatewayResult<Option<PlannedTransaction>> {
+    let Some(status) = storage_status(ctx, contract_id.clone(), account_id.clone()).await? else {
+        return Ok(None);
+    };
+
+    let deficit = status.min_yocto.saturating_sub(status.available_yocto);
+    if deficit == 0 {
+        return Ok(None);
+    }
+
+    // `registration_only: false` credits the whole deposit to `available` instead
+    // of refunding the excess above the bare registration min.
+    Ok(Some(plan_storage_deposit(
+        ctx,
+        signer_account_id,
+        contract_id,
+        account_id,
+        deficit,
+        false,
+    )?))
+}
+
+/// Shared tail of the `ensure_storage_*` helpers.
+fn plan_storage_deposit<C: HasNearClient>(
+    ctx: &C,
+    signer_account_id: ManagedAccountId,
+    contract_id: AccountId,
+    account_id: AccountId,
+    deposit_yocto: u128,
+    registration_only: bool,
+) -> GatewayResult<PlannedTransaction> {
+    ctx.near_client().storage(contract_id).storage_deposit(
         ContractWriteOptions::new(signer_account_id)
             .tgas(100)
-            .deposit(NearToken::from_yoctonear(bounds.min.as_yoctonear())),
+            .deposit(NearToken::from_yoctonear(deposit_yocto)),
         StorageDepositArgs {
             account_id: Some(account_id),
-            registration_only: true,
+            registration_only,
         },
-    )?;
-    Ok(Some(tx_result))
+    )
 }
 
 /// Fetch a contract's storage-balance bounds, or `None` if it does not implement

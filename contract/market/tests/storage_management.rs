@@ -7,7 +7,7 @@
 //! condition* surfaces as an effect: the market rejects the deposit inside
 //! `ft_on_transfer`, the FT refunds, and no supply position is created.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::market::DepositMsg;
 use templar_gateway_testing::{harness, SandboxHarness};
@@ -59,6 +59,47 @@ async fn supply_requires_market_registration(#[future(awt)] harness: SandboxHarn
         harness.ft_balance_of(&market.borrow_ft_id, &user.0).await?,
         balance_before,
         "the rejected deposit must be refunded",
+    );
+
+    Ok(())
+}
+
+/// Regression: a signer who supplies first — registering on the market at its
+/// minimum, then spending that minimum on the supply position — must still be
+/// able to collateralize through the gateway. Collateralizing opens a *borrow*
+/// position the market charges storage for again, out of the same balance, so the
+/// `collateralize` plan has to top the available balance back up to the minimum;
+/// merely being registered is not enough, and the deposit would otherwise panic
+/// with a storage error inside `execute_collateralize`.
+#[rstest]
+#[tokio::test]
+async fn supply_then_collateralize_by_same_account(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let market = harness.deploy_full_market().await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+
+    let user = harness.create_user("supplier-borrower").await?;
+    harness.fund_user(&user, &market).await?;
+
+    harness.supply(&user, &market, 1000).await?;
+    assert!(
+        harness
+            .get_supply_position(&market, &user.0)
+            .await?
+            .is_some(),
+        "supplying should create a supply position",
+    );
+
+    harness.collateralize(&user, &market, 2000).await?;
+    let borrow_position = harness
+        .get_borrow_position(&market, &user.0)
+        .await?
+        .context("collateralizing after supplying should create a borrow position")?;
+    assert_eq!(
+        u128::from(borrow_position.collateral_asset_deposit),
+        2000,
+        "the collateral must be recorded despite the account already holding a supply position",
     );
 
     Ok(())

@@ -14,7 +14,7 @@ use templar_gateway_core::{
 use templar_gateway_methods_spec::{market, registry::Deploy};
 
 use crate::registry_impl::plan_deploy_from_registry;
-use crate::token_ops::{ensure_storage_registration, transfer_call_asset};
+use crate::token_ops::{ensure_storage_headroom, ensure_storage_registration, transfer_call_asset};
 use crate::Dispatch;
 
 #[derive(serde::Serialize)]
@@ -364,7 +364,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
             }
         }
 
-        if let Some(tx_result) = ensure_storage_registration(
+        if let Some(tx_result) = ensure_storage_headroom(
             &ctx,
             request.signer_account_id.clone(),
             body.market_id.clone(),
@@ -415,7 +415,7 @@ impl<C: HasNearClient> PlanWrite<market::Collateralize, C> for Dispatch {
             }
         }
 
-        if let Some(tx_result) = ensure_storage_registration(
+        if let Some(tx_result) = ensure_storage_headroom(
             &ctx,
             request.signer_account_id.clone(),
             body.market_id.clone(),
