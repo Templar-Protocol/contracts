@@ -14,7 +14,7 @@ use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, market::YieldWeights,
     oracle::pyth, Decimal,
 };
-use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
+use templar_gateway_testing::{failed_receipts, harness, DeployedMarket, SandboxHarness};
 
 /// Supply liquidity and post 500 collateral against a 300 borrow (the common
 /// setup for the underwater cases).
@@ -107,6 +107,10 @@ async fn successful_liquidation_exactly_to_zero(
     let borrow_before = harness
         .ft_balance_of(&market.borrow_ft_id, &liquidator.0)
         .await?;
+    let storage_before = harness
+        .storage_balance_of(&market.market_id, &borrow_user.0)
+        .await?
+        .context("borrower should be registered on the market")?;
 
     // Price chosen to liquidate 100% of both collateral and liability.
     harness.set_asset_prices(&market, 1.0, 2.0 / 3.0).await?;
@@ -142,6 +146,17 @@ async fn successful_liquidation_exactly_to_zero(
         .get_borrow_position(&market, &borrow_user.0)
         .await?
         .is_none());
+    // ...which releases the storage stake the position held.
+    let storage_after = harness
+        .storage_balance_of(&market.market_id, &borrow_user.0)
+        .await?
+        .context("borrower should still be registered after liquidation")?;
+    assert!(
+        storage_after.available > storage_before.available,
+        "clearing the position should release its storage stake (before {:?}, after {:?})",
+        storage_before.available,
+        storage_after.available,
+    );
 
     Ok(())
 }
@@ -730,10 +745,17 @@ async fn partial_liquidation_fail_offer_too_little(
         .ft_balance_of(&market.borrow_ft_id, &liquidator.0)
         .await?;
 
-    // Offering only 10_000 for 50_000 collateral is too low: rejected and refunded.
-    harness
+    // Offering only 10_000 for 50_000 collateral is too low: the market rejects
+    // it inside `ft_on_transfer` and the FT refunds. Assert the *market* receipt
+    // failed (so this proves the offer-too-low branch rejected, not any unrelated
+    // no-op), then that the liquidator's balances are untouched.
+    let result = harness
         .try_liquidate(&liquidator, &market, &borrow_user.0, 10_000, Some(50_000))
         .await?;
+    assert!(
+        failed_receipts(&result).any(|receipt| receipt.contract_id == market.market_id),
+        "the too-low liquidation offer must be rejected by the market",
+    );
 
     assert_eq!(
         harness

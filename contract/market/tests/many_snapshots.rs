@@ -1,6 +1,6 @@
 //! Ported from `contract/market/tests/0_many_snapshots.rs`: as snapshots
 //! accumulate, the per-borrow gas must not grow with the snapshot count. Gas is
-//! read via the harness `operation_gas_burnt` helper. Long-running (256 borrows).
+//! read via the harness `operation_gas_burnt` helper. Long-running (257 borrows).
 
 use anyhow::Result;
 use rstest::rstest;
@@ -44,9 +44,11 @@ async fn many_snapshots(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         .collateralize(&borrow_user, &market, 200_000)
         .await?;
 
-    // 256 = 2 * the snapshot-container chunk size (128), so we cross a boundary.
-    let mut gas_record = Vec::with_capacity(256);
-    for i in 0..256u32 {
+    // 257 = one past 2 * the snapshot-container chunk size (128): the 257th
+    // insertion allocates a *third* chunk, so we exercise the boundary crossing
+    // rather than merely filling two chunks exactly.
+    let mut gas_record = Vec::with_capacity(257);
+    for i in 0..257u32 {
         let result = harness.borrow(&borrow_user, &market, 100).await?;
         let gas = harness.operation_gas_burnt(&result);
         #[allow(clippy::cast_precision_loss)]

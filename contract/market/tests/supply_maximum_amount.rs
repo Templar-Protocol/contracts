@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::time_chunk::TimeChunkConfiguration;
-use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_testing::{failed_receipts, harness, SandboxHarness};
 use templar_gateway_types::OperationStatus;
 
 #[rstest]
@@ -70,17 +70,35 @@ async fn supply_beyond_maximum(
         harness.supply(&supply_user, &market, deposit).await?;
     }
 
+    let balance_before = harness
+        .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+        .await?;
+
     // The market rejects the over-maximum deposit inside `ft_on_transfer`; the FT
     // catches that panic and refunds, so the `ft_transfer_call` operation itself
-    // succeeds while the supply position is left unchanged.
-    harness.try_supply(&supply_user, &market, *last).await?;
+    // succeeds while the market receipt fails. Assert the *market* receipt failed
+    // (not some unrelated no-op), and that the deposit was refunded and left the
+    // position unchanged.
+    let result = harness.try_supply(&supply_user, &market, *last).await?;
+    assert!(
+        failed_receipts(&result).any(|receipt| receipt.contract_id == market.market_id),
+        "the over-maximum deposit must be rejected by the market, not silently no-op",
+    );
+
     let recorded = harness
         .get_supply_position(&market, &supply_user.0)
         .await?
         .map_or(0, |position| u128::from(position.get_deposit().total()));
     assert_eq!(
         recorded, leading_sum,
-        "the over-maximum deposit must be refunded, not recorded",
+        "the over-maximum deposit must not be recorded",
+    );
+    assert_eq!(
+        harness
+            .ft_balance_of(&market.borrow_ft_id, &supply_user.0)
+            .await?,
+        balance_before,
+        "the over-maximum deposit must be refunded",
     );
 
     Ok(())

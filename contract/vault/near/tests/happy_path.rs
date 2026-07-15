@@ -423,16 +423,19 @@ async fn happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     Ok(())
 }
 
-// The deposit this asserts is "allowed" is in fact refunded: the vault's
-// `ft_on_transfer` panics while a withdrawal op is in flight. The test passed
-// only because its assertion (`transferred <= deposit_amount`) is trivially true
-// when nothing transfers — it is vacuous on `dev` too. Receipt-level success
-// checking (ENG-388) surfaced it. Whether the refund is intended is a product
-// question; re-enable as part of the fix.
+// A deposit made while a withdrawal op is in flight is currently **refunded** —
+// the vault's `ft_on_transfer` panics (ENG-475). This test pins that actual
+// behavior (deposit refunded, no shares minted) *and* the surrounding state
+// machine: the concurrent deposit must not disturb the withdrawal op, which must
+// still complete for its original withdrawer. When ENG-475 is fixed to accept
+// the deposit, the two refund assertions below flip to expect minted shares.
+//
+// The test on `dev` was named "…allowed…" and asserted `transferred <=
+// deposit_amount`, which is vacuously true when nothing transfers — so it never
+// actually detected the refund.
 #[rstest]
 #[tokio::test]
-#[ignore = "blocked on ENG-475: vault refunds deposits made during a withdrawal op"]
-async fn deposit_allowed_during_withdrawal_op(
+async fn deposit_during_withdrawal_op_is_refunded(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
     let vault = harness
@@ -488,18 +491,29 @@ async fn deposit_allowed_during_withdrawal_op(
     let second_before = harness
         .ft_balance_of(&vault.market.borrow_ft_id, &second_user.0)
         .await?;
+    // Non-asserting: the deposit is refunded (ENG-475), so the vault receipt
+    // fails under the strict path.
     harness
-        .vault_supply(&second_user, &vault, deposit_amount)
+        .try_vault_supply(&second_user, &vault, deposit_amount)
         .await?;
-    let second_after = harness
-        .ft_balance_of(&vault.market.borrow_ft_id, &second_user.0)
-        .await?;
-    let transferred = second_before.saturating_sub(second_after);
-    assert!(
-        transferred <= deposit_amount,
-        "Second user should never transfer more than requested",
+
+    // ENG-475: the deposit is fully refunded and mints no shares.
+    assert_eq!(
+        harness
+            .ft_balance_of(&vault.market.borrow_ft_id, &second_user.0)
+            .await?,
+        second_before,
+        "deposit during a withdrawal op is currently refunded (ENG-475)",
+    );
+    assert_eq!(
+        harness
+            .ft_balance_of(&vault.vault_id, &second_user.0)
+            .await?,
+        0,
+        "a refunded deposit must mint no shares",
     );
 
+    // The withdrawal op is undisturbed by the concurrent deposit.
     let op_id_after = harness
         .vault_get_withdrawing_op_id(&vault)
         .await?
@@ -508,16 +522,6 @@ async fn deposit_allowed_during_withdrawal_op(
         op_id_before, op_id_after,
         "Concurrent deposit must not reset withdrawing op"
     );
-
-    let second_shares = harness
-        .ft_balance_of(&vault.vault_id, &second_user.0)
-        .await?;
-    if transferred > 0 {
-        assert!(
-            second_shares > 0,
-            "Deposit during withdrawal should mint shares when assets are accepted",
-        );
-    }
 
     harness
         .vault_execute_market_withdrawal(&vault.curator, &vault, op_id_before, market_id, None)

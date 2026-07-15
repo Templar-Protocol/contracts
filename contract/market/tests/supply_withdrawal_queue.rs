@@ -476,6 +476,13 @@ async fn batch_fulfillment_partial(#[future(awt)] harness: SandboxHarness) -> Re
             .await?,
         b3 + 5_000,
     );
+    // ...and its unpaid 5_000 remains queued as a single request — payouts alone
+    // cannot detect a partially-paid request being dropped from the queue.
+    assert_eq!(
+        queue(&harness, &market).await?,
+        (5_000, 1),
+        "the partially-fulfilled request must remain queued for its unpaid remainder",
+    );
 
     Ok(())
 }

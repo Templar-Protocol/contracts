@@ -194,6 +194,21 @@ impl SandboxHarness {
         .await
     }
 
+    /// A contract's storage-balance bounds (min/max registration deposit).
+    pub async fn storage_balance_bounds(
+        &self,
+        contract_id: &AccountId,
+    ) -> Result<templar_gateway_types::common::StorageBalanceBounds> {
+        Ok(self
+            .client()?
+            .read(storage::GetBalanceBounds {
+                contract_id: contract_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("storage_balance_bounds failed: {error}"))?
+            .bounds)
+    }
+
     /// Top up `user`'s storage deposit on `contract_id` by its minimum bound —
     /// the amount the market charges per new supply/borrow position. Unlike
     /// registration this is additive, so it covers a position re-created after a
@@ -203,15 +218,8 @@ impl SandboxHarness {
         user: &ManagedAccountId,
         contract_id: &AccountId,
     ) -> Result<WriteOperationResult> {
-        let bounds = self
-            .client()?
-            .read(storage::GetBalanceBounds {
-                contract_id: contract_id.clone(),
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("storage_balance_bounds failed: {error}"))?
-            .bounds;
-        self.storage_deposit(user, contract_id, bounds.min).await
+        let min = self.storage_balance_bounds(contract_id).await?.min;
+        self.storage_deposit(user, contract_id, min).await
     }
 
     /// Register `user` for storage on `contract_id`, paying `deposit`.
@@ -1490,6 +1498,73 @@ impl SandboxHarness {
             },
         )
         .await
+    }
+
+    /// Interest accrued on a borrow position but not yet realized into it.
+    pub async fn get_borrow_position_pending_interest(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<BorrowAssetAmount> {
+        Ok(self
+            .client()?
+            .read(market::GetBorrowPositionPendingInterest {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+                snapshot_limit: None,
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("get_borrow_position_pending_interest failed: {error}")
+            })?
+            .amount
+            .unwrap_or_default())
+    }
+
+    /// Yield accrued to a supply position but not yet realized into it.
+    pub async fn get_supply_position_pending_yield(
+        &self,
+        market: &DeployedMarket,
+        account_id: &AccountId,
+    ) -> Result<BorrowAssetAmount> {
+        Ok(self
+            .client()?
+            .read(market::GetSupplyPositionPendingYield {
+                market_id: market.market_id.clone(),
+                account_id: account_id.clone(),
+                snapshot_limit: None,
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_supply_position_pending_yield failed: {error}"))?
+            .amount
+            .unwrap_or_default())
+    }
+
+    /// The market's current (unfinalized) snapshot.
+    pub async fn get_current_snapshot(&self, market: &DeployedMarket) -> Result<Snapshot> {
+        self.client()?
+            .read(market::GetCurrentSnapshot {
+                market_id: market.market_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("get_current_snapshot failed: {error}"))
+    }
+
+    /// An account's storage balance on a contract (`None` if unregistered).
+    pub async fn storage_balance_of(
+        &self,
+        contract_id: &AccountId,
+        account_id: &AccountId,
+    ) -> Result<Option<templar_gateway_types::common::StorageBalance>> {
+        Ok(self
+            .client()?
+            .read(storage::GetBalanceOf {
+                contract_id: contract_id.clone(),
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("storage_balance_of failed: {error}"))?
+            .balance)
     }
 
     /// Withdraw collateral from a borrow position.

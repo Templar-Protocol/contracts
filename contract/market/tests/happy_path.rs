@@ -44,6 +44,13 @@ async fn test_happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
         .borrow_mcr_liquidation
         .near_equal(dec!("1.2")));
 
+    // The market charges a nonzero storage stake per registration.
+    assert!(!harness
+        .storage_balance_bounds(&market.market_id)
+        .await?
+        .min
+        .is_zero());
+
     // A single snapshot is generated on init, with no activity.
     let snapshots = harness.list_finalized_snapshots(&market).await?;
     assert_eq!(
