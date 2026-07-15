@@ -85,12 +85,21 @@ jobs:
               - 'contract/universal-account/tests/**'
               - 'contract/vault/near/src/**'
               - 'contract/vault/near/tests/**'
+              # The harness (gateway/testing) and the gateway client every node
+              # test drives the chain through: a change here can break the whole
+              # node suite, so it must trigger it.
+              - 'gateway/**'
               - 'mock/**/src/**'
               - 'script/check-artifact-drift.sh'
               - 'script/prebuild-test-contracts.sh'
+              - 'script/sandbox-down.sh'
+              - 'script/sandbox-up.sh'
               - 'script/test.sh'
               - 'service/funding-bridge/src/**'
               - 'service/funding-bridge/tests/**'
+              - 'service/gateway/src/**'
+              - 'service/liquidator/src/**'
+              - 'service/liquidator/tests/**'
               - 'service/relayer/migrations/**'
               - 'service/relayer/src/**'
               - 'service/relayer/tests/**'

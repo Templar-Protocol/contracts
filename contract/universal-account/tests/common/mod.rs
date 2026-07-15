@@ -160,10 +160,20 @@ pub async fn call(
         .send_to(network)
         .await?;
 
-    let success = result.is_success();
-    let failures = result.into_full().map_or_else(
-        || "<transaction still pending>".to_string(),
-        |full| format!("{:#?}", full.failures()),
+    // Receipt-level, not just top-level: the UA `execute` relays a payload that
+    // fans out to further receipts, and a failed one is masked by an overall
+    // top-level `SuccessValue` — so a relayed call that did nothing would read
+    // as a success.
+    let top_level_success = result.is_success();
+    let (success, failures) = result.into_full().map_or_else(
+        || (top_level_success, "<transaction still pending>".to_string()),
+        |full| {
+            let receipt_failures = full.failures();
+            (
+                top_level_success && receipt_failures.is_empty(),
+                format!("{receipt_failures:#?}"),
+            )
+        },
     );
 
     Ok(CallOutcome { success, failures })

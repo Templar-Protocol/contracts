@@ -15,7 +15,7 @@
 //! caches prices and filters them by freshness, so prices are stamped with the
 //! real current time (not the epoch-zero `to_price`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use near_sdk::json_types::{I64, U64};
 use rstest::rstest;
 use templar_common::{
@@ -24,7 +24,6 @@ use templar_common::{
         redstone::FeedData,
     },
     primitive_types::U256,
-    Nanoseconds,
 };
 use templar_gateway_testing::{harness, SandboxHarness};
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
@@ -38,32 +37,32 @@ const PYTH_COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xc7_u8; 32])
 const REDSTONE_BORROW_FEED_ID: &str = "BORROW/USD";
 const REDSTONE_COLLATERAL_FEED_ID: &str = "COLLATERAL/USD";
 
+/// Stamped on chain time, not the host clock — see
+/// [`SandboxHarness::chain_timestamp`]. The proxy filters a price older than the
+/// market's `price_maximum_age_s` against `block_timestamp`, so on a pooled node
+/// that some earlier test has `fast_forward`ed, a host-stamped price is filtered
+/// out as stale. This test derives its expectations from the same filtered view,
+/// so it would not go red — it would pass while asserting nothing.
 #[allow(clippy::cast_possible_truncation)]
-fn pyth_price(price: f64) -> pyth::Price {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-    pyth::Price {
+async fn pyth_price(harness: &SandboxHarness, price: f64) -> Result<pyth::Price> {
+    Ok(pyth::Price {
         price: I64((price * 10000.0) as i64),
         conf: U64(0),
         expo: -4,
-        publish_time: PythTimestamp::from_ms(now_ms),
-    }
+        publish_time: PythTimestamp::try_from_time(harness.chain_timestamp().await?)
+            .context("chain timestamp out of pyth range")?,
+    })
 }
 
+/// Chain time, not the host clock — see [`pyth_price`].
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn redstone_price(price: f64) -> FeedData {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-    let now_ms = Nanoseconds::from_ms(now_ms);
-    FeedData {
+async fn redstone_price(harness: &SandboxHarness, price: f64) -> Result<FeedData> {
+    let now = harness.chain_timestamp().await?;
+    Ok(FeedData {
         price: U256::from((price * 1e8) as u128).into(),
-        package_timestamp: now_ms,
-        write_timestamp: now_ms,
-    }
+        package_timestamp: now,
+        write_timestamp: now,
+    })
 }
 
 #[rstest]
@@ -131,32 +130,39 @@ async fn proxy_oracle(
         for pyth_collateral in [false, true] {
             for redstone_borrow in [false, true] {
                 for redstone_collateral in [false, true] {
+                    // Re-stamped every iteration: the four set-price transactions
+                    // plus `update_proxy_prices` advance chain time, so a price
+                    // stamped once outside the loop would age past the freshness
+                    // window by the later iterations.
+                    let pyth = pyth_price(&harness, 1.0).await?;
+                    let redstone = redstone_price(&harness, 1.0).await?;
+
                     harness
                         .set_mock_oracle_pyth_price(
                             pyth_id.clone(),
                             PYTH_BORROW_PRICE_ID,
-                            pyth_borrow.then(|| pyth_price(1.0)),
+                            pyth_borrow.then(|| pyth.clone()),
                         )
                         .await?;
                     harness
                         .set_mock_oracle_pyth_price(
                             pyth_id.clone(),
                             PYTH_COLLATERAL_PRICE_ID,
-                            pyth_collateral.then(|| pyth_price(1.0)),
+                            pyth_collateral.then(|| pyth.clone()),
                         )
                         .await?;
                     harness
                         .set_mock_oracle_redstone_price(
                             redstone_id.clone(),
                             REDSTONE_BORROW_FEED_ID.into(),
-                            redstone_borrow.then(|| redstone_price(1.0)),
+                            redstone_borrow.then(|| redstone.clone()),
                         )
                         .await?;
                     harness
                         .set_mock_oracle_redstone_price(
                             redstone_id.clone(),
                             REDSTONE_COLLATERAL_FEED_ID.into(),
-                            redstone_collateral.then(|| redstone_price(1.0)),
+                            redstone_collateral.then(|| redstone.clone()),
                         )
                         .await?;
 

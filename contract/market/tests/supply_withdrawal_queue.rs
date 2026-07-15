@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result};
 use rstest::rstest;
-use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
+use templar_gateway_testing::{failed_receipts, harness, DeployedMarket, SandboxHarness};
 use templar_gateway_types::{ManagedAccountId, OperationStatus};
 
 const OUT_OF_RANGE: &str = "Withdrawal amount is outside of allowable range";
@@ -293,9 +293,24 @@ async fn failed_transfer_still_dequeues(#[future(awt)] harness: SandboxHarness) 
 
     // First execution targets supply_2: the transfer fails, but the request is
     // still removed from the queue.
-    harness
-        .execute_next_supply_withdrawal_request(&supply_user, &market, None)
+    // The payout transfer to the unregistered supply_2 fails, so this is a failed
+    // receipt under an overall-successful transaction — the strict path would
+    // reject it. Assert the failure explicitly: if the transfer ever *stopped*
+    // failing, the balance check below would still pass (supply_2 would just be
+    // paid), and the test would silently stop covering the dequeue-on-failure
+    // path it exists for.
+    let result = harness
+        .try_execute_next_supply_withdrawal_request(&supply_user, &market, None)
         .await?;
+    assert_eq!(
+        result.operation.status,
+        OperationStatus::Succeeded,
+        "dequeuing must succeed at top level even when the payout transfer fails",
+    );
+    assert!(
+        failed_receipts(&result).any(|receipt| receipt.contract_id == market.borrow_ft_id),
+        "expected the payout transfer to the unregistered account to fail",
+    );
     assert_eq!(
         harness
             .ft_balance_of(&market.borrow_ft_id, &supply_2.0)
