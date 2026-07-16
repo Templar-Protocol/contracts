@@ -28,7 +28,7 @@ Use this section as an execution checklist: read the local docs first, preserve 
   Watch for: storage charging/refunds, `storage_unregister` implications, force-unregister behavior, cross-contract finalize paths, and in-flight accounting.
   Minimum verification: `cargo test -p templar-common --lib -- --nocapture`; if contract entrypoints or callbacks changed, also run `cargo test -p templar-market-contract -- --nocapture`.
 - `contract/vault` (`templar-vault-contract`)
-  Read first: `contract/vault/README.md` and `contract/vault/STRIDE.md`.
+  Read first: `contract/vault/README.md` and `contract/vault/near/README.md`.
   Read/inspect: `contract/vault/src/lib.rs`, `contract/vault/src/impl_callbacks.rs`, `contract/vault/src/governance.rs`, `common/src/vault/*`.
   Why it matters: this is the most complex state machine in the repository and the highest-risk place for async accounting bugs.
   Watch for: `OpState` transitions, escrow accounting, keeper-routed withdrawals, callback ordering, idle-balance resync, fee accrual, and reconciliation after partial failures.
@@ -74,21 +74,39 @@ Use this section as an execution checklist: read the local docs first, preserve 
 ## Build And Test
 
 - Format: `cargo fmt`
-- Workspace tests: `./script/test.sh`
+- Fast gate (everyday inner loop): `cargo nextest run`. Pure unit/logic tests only — no neard, Docker, Postgres, or network. The `[profile.default]` `default-filter` in `.config/nextest.toml` excludes the node-backed suites and the `requires_network_*` (live third-party endpoint) tests.
+- Full/node gate: `just test-sandbox` (runs the sandbox profile and guarantees neard teardown), or `cargo nextest run --profile sandbox` directly. The profile's setup script (`script/sandbox-up.sh`) prebuilds the test wasms, starts a pool of out-of-band `neard` nodes, and exports `NEAR_SANDBOX_RPC_URL` + `TEST_CONTRACTS_PREBUILT` to the tests.
+- `./script/test.sh` — the fast gate with contracts prebuilt and a compose Postgres provisioned (`DATABASE_URL` exported for the `#[sqlx::test]` relayer tests). This is what CI's default job runs.
 - Common crate: `cargo test -p templar-common --lib -- --nocapture`
 - One test file: `cargo test -p <package> --test <name> -- --nocapture`
 - One unit test: `cargo test -p <package> <test_name> -- --nocapture`
 
 Notes:
 
-- Some integration tests use `near-workspaces` and may need permission to bind local ports.
+- Node-backed integration tests attach to a `SandboxHarness` (`gateway/testing/src/sandbox.rs`) instead of each booting its own sandbox. Under `--profile sandbox` they attach over RPC to the shared `neard` pool, one node per `NEXTEST_TEST_GLOBAL_SLOT`. With no pool running the harness falls back to *owned* mode and starts its own `neard` per test — acceptable for a single test, but slow and prone to nonce contention across a whole file, so prefer `--profile sandbox` for more than one node test.
+- The node-backed crates are enumerated in `.config/nextest.toml`'s two `default-filter` blocks (market, vault/near, registry, universal-account, the proxy and LST oracles, funding bridge, relayer, liquidator, and the gateway crates). That file is the source of truth — see "Cross-Cutting Lists To Keep In Sync" below before adding one. If these fail because no neard is available, say that clearly instead of silently skipping them.
 - `cargo test -p templar-common --lib` is a good fast regression check for logic changes in `common`.
-- `contract/vault`, `contract/registry`, and `contract/universal-account` all have `near-workspaces`-backed tests. If they fail in a restricted environment, say that clearly instead of silently skipping them.
-- For tests that deploy contracts into `near-workspaces`, prefer prebuilt test contracts. Rebuilding WASM inside each test run is much slower.
-- `./script/test.sh` already handles this by running `./script/prebuild-test-contracts.sh` first and setting `TEST_CONTRACTS_PREBUILT=1`.
-- If you run `near-workspaces` tests directly, prefer following the same pattern: prebuild first, then run tests with `TEST_CONTRACTS_PREBUILT=1`.
+- Node-backed tests need the contract wasms prebuilt; rebuilding WASM inside each run is much slower. The `sandbox` setup script and `./script/test.sh` both run `./script/prebuild-test-contracts.sh` and set `TEST_CONTRACTS_PREBUILT=1`. If you run a node test by hand outside them (e.g. a plain `cargo test` in owned mode), do the same first.
 - Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
 - Embedded contract blobs under `contract/artifacts/res/near/` are pinned *release* artifacts, NOT a mirror of source. **A contract source change does NOT refresh its blob, and no CI check will flag the blob as stale** (the drift check compares blob-vs-pin and version-vs-`Cargo.toml`, never blob-vs-source). When — and only when — you intend a contract source change to become what the gateway deploys, refresh its blob by following `contract/artifacts/README.md` ("⚠️ Refreshing a checked-in blob"): on a clean committed tree, `cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml`, copy the output into `res/near/`, update that entry's `expected_sha256` (+ `version`) in `contract/artifacts/src/ids.rs`, and commit them together. Unreleased work-in-progress is meant to lag the blob — do not refresh reflexively.
+
+## Cross-Cutting Lists To Keep In Sync
+
+Several CI/test-infra files enumerate crates, contracts, or paths by hand. A feature change elsewhere easily leaves one stale, and the failure is silent — tests that never run, jobs that never trigger. When your change matches a trigger below, update the listed files in the *same* change.
+
+- **Adding a node-backed test crate** (integration tests that need a `SandboxHarness`):
+  - `.config/nextest.toml` — add the package to *both* `default-filter` blocks: the `[profile.default]` exclusion **and** the `[profile.sandbox]` inclusion. They must stay exact complements; a crate in neither runs in no gate and goes silently dark. (`templar-gateway-service`'s node tests live in `src/` and are matched by module path, not package.)
+  - `.github/workflows/test.yml` — add the crate's `src/**` and `tests/**` under the `changes` job's `near_integration` paths filter, or the test job won't trigger on changes to it.
+- **Adding or removing a contract / mock WASM**:
+  - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum and its embedded `res/near/...` blob (see `contract/artifacts/README.md`). This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
+  - `gateway/testing/src/wasm.rs` — the `wasm_fns!` list, so the harness can load it.
+- **Adding a new top-level source area / crate**:
+  - `.github/workflows/test.yml` paths groups (`near_integration`, `soroban`, `feature_matrix`, `artifact_manifests`) and `.github/workflows/gas-report.yml` paths — add it to the right group so the relevant jobs fire.
+  - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.
+- **Tuning sandbox parallelism**: `[profile.sandbox] test-threads` in `.config/nextest.toml` and `SANDBOX_NODE_COUNT` in `script/sandbox-up.sh` must stay in sync (`test-threads <= SANDBOX_NODE_COUNT`).
+- **Adding or removing a gateway method**: update the `for_each_*_method!` macros in the spec crates — see the `gateway/*` entry under High-Impact Areas.
+
+nextest has no way to declare a filterset once and reference it (no filter variables/aliases, and TOML has no anchors), so the two node-crate lists in `nextest.toml` are duplicated by necessity — the "MUST stay exact complements" comment there is the guard against them drifting apart.
 
 ## Code Search
 
@@ -119,7 +137,7 @@ Notes:
 ## Documentation
 
 - Pay attention to documentation comments, READMEs, and Markdown documents across the repository. Update them when behavior, interfaces, or operational expectations change.
-- Read crate-local documentation before changing high-impact areas, especially `contract/vault/README.md`, `contract/vault/STRIDE.md`, `contract/universal-account/README.md`, and `service/relayer/README.md`.
+- Read crate-local documentation before changing high-impact areas, especially `contract/vault/README.md`, `contract/vault/near/README.md`, `contract/universal-account/README.md`, and `service/relayer/README.md`.
 - Keep this `AGENTS.md` file up to date when repository workflows, verification steps, important invariants, or high-impact crate guidance change in a way that would matter to future agents.
 
 ## Security Notes
