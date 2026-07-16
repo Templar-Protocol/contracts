@@ -91,6 +91,7 @@ jobs:
               - 'gateway/**'
               - 'mock/**/src/**'
               - 'script/check-artifact-drift.sh'
+              - 'script/postgres-up.sh'
               - 'script/prebuild-test-contracts.sh'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
