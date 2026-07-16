@@ -131,6 +131,44 @@ fn create_prod_preset_builds_config_init_args() {
         init["config"],
         serde_json::to_value(templar_common::oracle::redstone::config::prod()).unwrap()
     );
+    assert_eq!(init["admin_id"], "signer.testnet");
+}
+
+#[test]
+fn create_test_preset_builds_config_init_args() {
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "redstone",
+            "create",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "redstone",
+            "--version-key",
+            "redstone@1",
+            "--test",
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("redstone create --test should parse");
+    let deploy = match cli.command {
+        Command::Redstone {
+            command: RedstoneNs::Create(a),
+        } => a.try_into_spec().expect("into deploy spec"),
+        _ => panic!("expected redstone create"),
+    };
+
+    let init: serde_json::Value =
+        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
+    assert_eq!(
+        init["config"],
+        serde_json::to_value(templar_common::oracle::redstone::config::test()).unwrap()
+    );
+    assert_eq!(init["admin_id"], "signer.testnet");
 }
 
 #[test]

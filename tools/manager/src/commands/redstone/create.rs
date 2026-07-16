@@ -27,7 +27,7 @@ pub struct Create {
     /// Use the built-in test RedStone configuration.
     #[arg(long)]
     test: bool,
-    /// Full init args JSON (`{"config": ...}`).
+    /// Full init args JSON (`{"config": ..., "admin_id": ...}`).
     #[arg(long, value_name = "JSON")]
     init_args: Option<String>,
     /// Path to a full init args JSON file.
@@ -40,12 +40,19 @@ pub struct Create {
 impl Create {
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
         let signer_public_key = self.signer.public_key()?;
+        let admin_id = self.signer.account_id();
         let init_bytes = if self.prod {
-            serde_json::to_vec(&json!({ "config": config::prod() }))
-                .context("serialize prod config")?
+            serde_json::to_vec(&json!({
+                "config": config::prod(),
+                "admin_id": admin_id,
+            }))
+            .context("serialize prod config")?
         } else if self.test {
-            serde_json::to_vec(&json!({ "config": config::test() }))
-                .context("serialize test config")?
+            serde_json::to_vec(&json!({
+                "config": config::test(),
+                "admin_id": admin_id,
+            }))
+            .context("serialize test config")?
         } else if let Some(args) = self.init_args {
             args.into_bytes()
         } else if let Some(path) = self.init_args_file {
