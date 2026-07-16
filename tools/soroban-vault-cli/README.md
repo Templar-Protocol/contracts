@@ -6,6 +6,9 @@ The CLI delegates most transaction construction, signing, and submission to the 
 `stellar` CLI. It owns the Templar-specific pieces around artifact hashing, WASM upload/reuse,
 deployment manifests, compact vault command payloads, and operator command routing.
 
+This is the Stellar vault operator surface. It does not deploy or operate the separate NEAR vault
+executor.
+
 ## Deployment
 
 Before deploying, run `doctor` to check local readiness without submitting transactions:
@@ -216,18 +219,12 @@ which adapter a market id uses, and an existing market id cannot be rebound to a
 submitting a new queue entry. UIs should present adapter selection as a governance/setup workflow and
 present routine allocation as `direction + market id + amount + caller`.
 
-For cross-chain Templar market routes, keep the accounting boundary at the adapter. The vault does
-not track each off-chain hop after assets leave Stellar, and it does not map individual vault shares
-to a NEAR account, universal account, or market position. User shares are derived from vault NAV:
-`total_assets / total_shares`. The adapter reports the aggregate route NAV back to the vault through
-its `total_assets(asset)` surface, and the vault incorporates that value when allocators supply or
+For any route that leaves Stellar, keep the accounting boundary at the adapter. The vault does not
+track off-chain hops or map individual vault shares to external accounts or market positions. User
+shares are derived from aggregate vault NAV: `total_assets / total_shares`. The adapter reports route
+NAV through `total_assets(asset)`, and the vault incorporates that value when allocators supply or
 run `curator refresh-markets`. `curator allocate-withdraw` does not refresh route NAV; it verifies
-the realized token balance delta and subtracts that amount from stored principal.
-
-Operationally, a Templar route may move assets through custody, bridge or intents infrastructure,
-and a NEAR-side supply position. From the Stellar vault's perspective, that path is one
-adapter-bound market route. Yield is reflected when the route NAV reported by the adapter increases;
-the vault share rate changes from aggregate NAV, not from per-user off-chain positions.
+the realized Stellar token-balance delta and subtracts that amount from stored principal.
 
 Withdrawals use two different CLI surfaces:
 
@@ -235,9 +232,10 @@ Withdrawals use two different CLI surfaces:
   bound to a market id by calling the adapter's `progress_withdrawal(vault, asset, amount)`. The
   `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
   returned by the adapter without calling adapter `total_assets`.
-- `user request-withdraw` and `user execute-withdraw` are user exit operations. `request-withdraw`
-  queues shares for withdrawal after the configured cooldown. `execute-withdraw` attempts to pay the
-  next ready request from idle vault assets. If idle assets are not sufficient, an allocator first
+- `user request-withdraw` starts a user exit; `user execute-withdraw` is the allocator/keeper step
+  that completes it. `request-withdraw` queues shares after the configured cooldown.
+  `execute-withdraw` attempts to pay the next ready request from idle vault assets and requires an
+  allocator-authorized operator. If idle assets are not sufficient, an allocator first
   uses `curator allocate-withdraw` to bring liquidity back from one or more market adapters, then
   `user execute-withdraw` can settle the queued request.
 - `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
@@ -258,7 +256,7 @@ tmplr-soroban-vault user request-withdraw \
   --min-assets-out 9.9 \
   --asset-decimals 7
 
-tmplr-soroban-vault user execute-withdraw --operator GUSER...
+tmplr-soroban-vault user execute-withdraw --operator GALLOCATOR...
 
 tmplr-soroban-vault curator abort-withdrawing \
   --caller GALLOCATOR_OR_SENTINEL... \
@@ -384,15 +382,17 @@ restrictions, while normal governance remains with the governance admin.
 tmplr-soroban-vault governance submit-set-sentinel \
   --admin GCURATOR_OR_MULTISIG... \
   --sentinel GSENTINEL...
-tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG... --kind sentinel
+tmplr-soroban-vault governance queue --kind sentinel
 ```
 
-Governance-admin pause and restriction changes use the normal timelocked proposal path:
+The first Sentinel appointment executes immediately. Replacing an existing Sentinel creates a
+timelocked proposal; inspect that proposal and accept it after maturity.
+
+Governance-admin restriction changes use the normal timelocked proposal path. The governance
+submission path cannot pause; `submit-set-paused` is the timelocked unpause path. Omit its
+`--paused` flag so the boolean remains false:
 
 ```sh
-tmplr-soroban-vault governance submit-set-paused \
-  --admin GCURATOR_OR_MULTISIG... \
-  --paused true
 tmplr-soroban-vault governance submit-set-restrictions \
   --admin GCURATOR_OR_MULTISIG... \
   --mode blacklist \
@@ -425,8 +425,7 @@ The governance admin restores normal operation:
 
 ```sh
 tmplr-soroban-vault governance submit-set-paused \
-  --admin GCURATOR_OR_MULTISIG... \
-  --paused false
+  --admin GCURATOR_OR_MULTISIG...
 tmplr-soroban-vault governance accept-ready --admin GCURATOR_OR_MULTISIG... --kind pause
 ```
 
@@ -523,8 +522,8 @@ then allow the deployed adapter, set a nonzero market cap, refresh reported NAV,
 supply queue before allocating to it. Each custodial adapter is bound to the manifest asset token at
 deployment and rejects calls for any other asset. The custodian, adapter admin, or vault can
 explicitly report route NAV on the adapter. Reports include the current stored NAV and a
-monotonically increasing nonce so stale heartbeats cannot re-add assets that have already been
-released back to the vault:
+nonce that must be exactly one greater than the stored nonce, so stale heartbeats cannot re-add
+assets that have already been released back to the vault:
 
 ```sh
 stellar contract invoke \
@@ -729,3 +728,8 @@ deploy input and is not emitted by `export-env`.
 `extend_ttl --caller`. Custodial adapters use their permissionless `extend_ttl` entrypoint and do
 not require a caller argument. Manifest contracts without an explicit deployment-wide TTL entrypoint,
 such as the asset token, are reported as skipped.
+
+The share-token and Blend-adapter TTL entrypoints are admin-gated. `--caller` must be authorized by
+the recorded deployment topology; a human keeper cannot sign as a vault or governance contract.
+Use the relevant contract-authorized path for contract-admin deployments and treat the aggregate
+command as incomplete unless every expected component succeeds.

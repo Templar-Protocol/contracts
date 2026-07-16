@@ -1,77 +1,81 @@
-# Vault Curator Guide (Soroban)
+# Stellar Vault Curator Guide
 
-This guide explains how a Templar **Soroban** vault is structured and the economic
-and governance levers available to a curator: the fees a curator earns, the
-configurable risk "switches" and their timelock rules, and the tooling
-(CLI/SDK and frontend) used to operate a vault day to day.
+This is the operator runbook for Templar vaults on **Stellar/Soroban**. The
+`tmplr-soroban-vault` CLI and its deployment manifest are the supported curator
+interface for deployment, governance, allocation, withdrawal servicing,
+accounting maintenance, and TTL renewal.
 
-> **Key references**
-> - **Architecture & code:** [`contract/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/README.md) (kernel + executor design, state machine, withdrawal/allocation flows). Soroban runtime specifics live in [`contract/vault/soroban/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/README.md).
-> - **Vault CLI / client SDK:** [`client/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/client/vault/README.md).
-> - **Curated vault frontend (UI):** [app.templarfi.org/vaults/curator](https://app.templarfi.org/vaults/curator/).
+> **Scope**
+>
+> The separate NEAR vault executor is not a deployed or audited curator surface
+> and is not an operations reference for this guide. A Stellar vault adapter may
+> represent a route that ultimately leaves Stellar, but the vault, shares,
+> governance, accounting, and curator actions described here remain on Stellar.
 
-## High-level vault structure
+> **Authoritative references**
+>
+> - **Operator CLI:** [`tools/soroban-vault-cli/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/tools/soroban-vault-cli/README.md)
+> - **Stellar runtime mechanics:** [`contract/vault/soroban/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/README.md)
+> - **Vault state machine:** [`contract/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/README.md)
+> - **Stellar threat model:** [`contract/vault/soroban/STRIDE.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/STRIDE.md)
 
-A Templar vault is a **single-asset, ERC-4626-style yield vault**. Depositors
-supply one underlying SEP-41 token and receive transferable **SEP-41 shares**;
-the curator allocates the pooled assets across a chosen set of on-chain lending
-**markets** (adapters) to earn yield.
+## What a curator operates
 
-**Kernel + executor architecture** (see the [architecture README](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/README.md)):
+A Templar Stellar vault is a single-asset vault with ERC-4626-compatible
+deposit, mint, withdraw, redeem, conversion, and limit semantics exposed through
+a Soroban proxy. Depositors supply one SEP-41 asset and receive transferable
+SEP-41 vault shares. Curators configure adapter-backed markets; allocators move
+pooled assets between the vault's idle balance and those markets.
 
-- `templar-vault-kernel` — chain-agnostic source of truth: state machine, math,
-  fee accrual, and invariants. It returns *effects* (mint/burn/transfer/emit)
-  rather than touching chain state directly.
-- **Soroban executor** (`contract/vault/soroban`) — `SorobanVaultContract`
-  entrypoints wrap `CuratorVault<S, A, E>`, which loads versioned state, enforces
-  RBAC via `require_auth()` + `ActionKind`, applies the kernel action, and runs
-  the resulting effects against the SEP-41 share and asset tokens.
-- **Governance contract** (`contract/vault/soroban/governance`) — a *separate*
-  contract that owns proposal submission, timelocks, approvals, revocation, and
-  abdication. Vault-bound changes cross the boundary through a single bridge,
-  `execute_governance(env, caller, payload)`; the runtime remains the canonical
-  owner of applied config/policy state.
-- `contract/vault/curator-primitives` — shared policy/RBAC/governance helpers
-  (caps, cap groups, supply queue, timelocks, restrictions).
+A deployed stack contains:
 
-**Accounting invariant:** `total_assets = idle_assets + external_assets`.
+- **Vault runtime** — canonical custody, accounting, state machine, RBAC,
+  withdrawal queue, and applied policy state.
+- **Share token** — the SEP-41 receipt token. Only the vault can mint and burn
+  shares for vault flows.
+- **Governance contract** — proposal submission, per-action timelocks,
+  acceptance, revocation, and irreversible abdication.
+- **ERC-4626 proxy** — user-friendly deposit, mint, atomic withdraw, redeem, and
+  preview methods.
+- **Curator proxy** — the typed curator-facing proxy included in a full stack.
+- **Adapters** — one contract per market route, such as a Blend pool adapter or
+  a custodial adapter.
 
-- `idle_assets` — uninvested buffer held by the vault; also the liquidity source
-  for immediate withdrawals (there is no separate "idle market"). Unsolicited
-  direct transfers into the vault are reconciled as idle assets for existing
-  shareholders, not captured as profit by the next depositor.
-- `external_assets` — principal deployed into markets via adapters.
+The runtime uses the shared `templar-vault-kernel` state machine, but all
+operational calls in this guide target the Stellar contracts through
+`tmplr-soroban-vault` or `stellar contract invoke`.
 
-**Two withdrawal modes** (a Soroban-specific design point):
+### Accounting model
 
-- `withdraw` / `redeem` — **atomic** ERC-4626-style exits from **idle liquidity
-  only**. They never enqueue work or pull from adapters, and fail if the request
-  exceeds `idle_assets`. (The 4626 proxy's `maxWithdraw`/`maxRedeem` are bounded
-  by idle assets and can read `0` even when a holder's shares are backed by
-  market-deployed assets.)
-- `request_withdraw` → `execute_withdraw` — the **async, keeper-routed** path for
-  positions that need allocator work. `request_withdraw` escrows shares, starts a
-  cooldown, and locks a fixed `expected_assets` claim; `execute_withdraw`
-  (allocator-authorized) settles the head request only when it is cooled down and
-  fully covered by idle assets, otherwise it fails atomically and leaves the
-  request queued.
+The core invariant is:
 
-**Roles:**
+```text
+total_assets = idle_assets + external_assets
+```
 
-- **Owner** — top-level governance.
-- **Curator** — policy admin: market caps, cap groups, supply queue, market
-  removal. Implicitly holds the Allocator role.
-- **Allocator** — operational keeper: allocations, rebalances, `execute_withdraw`,
-  refreshes.
-- **Sentinel** — emergency authority (a *separate* role holder; the governance
-  contract is **not** implicitly the Sentinel): pause / tighten restrictions
-  immediately, abort in-flight operations, and revoke pending timelocked changes.
+- `idle_assets` are underlying tokens held by the vault. They fund deposits,
+  atomic exits, and queued-withdrawal payouts.
+- `external_assets` are the aggregate market principals/NAV recorded from
+  adapters. The vault does not create a per-user market position.
+- Direct transfers of the underlying asset to the vault are reconciled as idle
+  assets for existing shareholders. They are not captured by the next
+  depositor.
+- Adapter NAV is not live-read by every preview. Run `curator refresh-markets`
+  before relying on share-rate or fee-accounting views after a route's value
+  changes.
 
-**Operational note — TTL keeper.** Soroban contract data is not permanent. Every
-vault deployment must run an ops job that periodically calls the permissionless
-`ExtendTtl` path. Related contracts (share token, governance, adapters, 4626
-proxy, oracle) each maintain their **own** TTL and do not inherit the vault's
-renewal.
+### Roles and authority
+
+| Identity | Authority |
+|---|---|
+| **Governance admin** | Submits and accepts governance actions. This is the address passed as `--admin` and may be a Stellar account or a contract/multisig. |
+| **Vault curator** | Runtime policy authority and an implicit allocator. A new stack uses the deployment `--admin` as the initial curator; governance can later replace it. |
+| **Allocator** | Supplies to markets, recalls liquidity, refreshes adapter NAV, executes ready queued withdrawals, and may abort a stale `Withdrawing` operation. |
+| **Sentinel** | Separate emergency backstop. It can pause, tighten restrictions, revoke specified operational/economic proposals, and use allocator-emergency recovery. It cannot unpause, relax restrictions, or accept proposals. |
+
+The governance contract is not implicitly the Sentinel. Production deployments
+should separate governance, allocator, and emergency keys or contracts according
+to their operational risk.
 
 ## Curator economics (fees)
 
@@ -86,9 +90,9 @@ configurable recipient.
 Rates are WAD-scaled (`1e18 = 100%`). Each fee has its own recipient, and they
 can differ.
 
-Two nuances worth understanding:
+Operational details:
 
-- **Checkpoint, not all-time high-water mark.** On Soroban, share-pricing paths
+- **Checkpoint, not all-time high-water mark.** Stellar share-pricing paths
   (`DepositWithMin`, `RefreshFees`, `ResyncIdleBalance`) first reconcile
   `idle_assets` against the live asset-token balance, then reset the `fee_anchor`
   to the reconciled total at the current ledger time. Profit is measured as
@@ -98,120 +102,504 @@ Two nuances worth understanding:
   peak". When fees are active, a deposit first crystallizes elapsed fees before
   the post-deposit anchor is written, so deposit principal cannot erase accrued
   fees.
-- **Anti-donation cap** (`max_total_assets_growth_rate`, optional). Caps how fast
+- **Growth-rate cap** (`max_total_assets_growth_rate` internally and
+  `--max-growth-rate-wad` in the CLI, optional). Caps how fast
   AUM is allowed to count for fee accrual:
   `effective_AUM = min(current, last × (1 + max_rate × dt/yr))`. Relaxing or
   removing this cap is timelocked.
+- **Refresh order matters.** `curator refresh-fees` reconciles the live idle
+  token balance, but it does not query every adapter. Refresh changed markets
+  first, then crystallize fees against the resulting aggregate NAV.
 
-## Governance switches and the timelock rule
+```sh
+tmplr-soroban-vault curator refresh-markets \
+  --caller GALLOCATOR... \
+  --markets 0,1
+tmplr-soroban-vault curator refresh-fees
+```
 
-**The principle behind every switch:** changes that **disadvantage depositors**
-are **timelocked** (so depositors can exit first, and the Sentinel can veto);
-changes that **protect or benefit depositors** take effect **immediately**.
-Timelocks are configurable per kind, bounded between **0 and 30 days** (default 2
-days).
+## Set up the operator CLI
 
-On Soroban, immediate Sentinel actions (pause, tighten restrictions) are applied
-directly; everything timelocked is submitted to the governance contract and only
-applied by the runtime after the delay via `execute_governance`.
+The examples below assume `tmplr-soroban-vault` is on `PATH`. From a source
+checkout, run the same commands with:
 
-| Switch | Immediate (depositor-friendly) | Timelocked (depositor-adverse) |
-|--------|-------------------------------|-------------------------------|
-| **Fees** | Fee **decrease** | Fee **increase**, any **recipient change**, relaxing the growth cap |
-| **Market cap** | **Lower** cap (incl. set to 0 = stop deposits) | **Raise** cap, or a **new** market |
-| **Cap group** (absolute + relative) | **Tighten** (lower / add a cap) | **Loosen** (raise / remove a cap). Relative cap ≤ 100% |
-| **Restrictions** | **Pause / tighten** (blacklist, narrow whitelist) | **Unpause / relax** |
-| **Skim recipient** | — | Recipient change and skim execution are timelocked |
-| **Timelock length** | **Lengthen** | **Shorten** (waits under the old, longer timelock) |
-| **Market removal** | — | Always timelocked; requires the cap to already be 0 |
+```sh
+cargo run -p templar-soroban-vault-cli -- <arguments>
+```
 
-Other levers:
+The current stack uses `stellar-cli` v26 and Rust 1.92. Run the repository's
+Stellar CLI installer or enter its devenv before operating a vault.
 
-- **Supply queue** (`set_supply_queue`) — the ordered list of allocation targets.
-  Up to 64 markets, no duplicates, every market must have a cap > 0, and the
-  vault must be Idle.
-- **Cap groups** — cluster correlated markets under a shared limit. The effective
-  limit is `min(absolute_cap, relative_cap × total_AUM)`.
-- **Allocator and adapter-allowlist** changes are routed through
-  `execute_governance`.
-- **Cooldowns** — withdrawal (default **1 hour**), market refresh (30 seconds),
-  idle resync (120 seconds).
-- **Abdicate** — permanently and irreversibly disable a governance method (for
-  example, to lock fees forever).
+Create a public profile for repeatable network, RPC, manifest, and address
+defaults:
 
-**Adapters (markets).** Soroban ships two adapter types you allow-list and add to
-the supply queue before allocation:
+```sh
+tmplr-soroban-vault profile init testnet
+tmplr-soroban-vault --profile testnet doctor
+```
 
-- **Blend adapter** (`contract/vault/soroban/blend-adapter`) — integrates a Blend
-  lending pool.
-- **Custodial adapter** (`contract/vault/soroban/custodial-adapter`) — an
-  offchain-managed route that forwards assets to a configured custodian/multisig;
-  its NAV is explicit reported accounting. Treat the custodian and its offchain
-  process as part of the vault's trust boundary, and verify the custodial runbook
-  before production use.
+Profiles must not contain seeds or secret keys. Keep signing material in the
+Stellar keystore, select it with `stellar keys use <identity>`, or provide an
+ephemeral secret through `STELLAR_ACCOUNT`. Never place a seed phrase or secret
+key in `--source-account`.
 
-## Worked examples
+The deployment manifest defaults to:
 
-1. **Raising the performance fee 10% → 20%** is timelocked (e.g. 2 days):
-   submitted to the governance contract, applied by the runtime only after the
-   delay; depositors can exit and the Sentinel can revoke. *Lowering* it 20% → 10%
-   applies instantly.
-2. **A market turns risky.** Cutting its cap 1M → 500k is **immediate**; setting
-   it to **0** stops new allocations now (the first step of winding it down).
-   *Raising* a cap 1M → 2M is timelocked.
-3. **Incident response.** Pausing is an **immediate** Sentinel action; *un-pausing*
-   is a governance action that must pass the timelock, so users get notice before
-   normal operation resumes.
-4. **A cap group "blue-chip"** with an absolute cap of 5M and a relative cap of
-   40%: at 8M AUM the cluster can hold at most `min(5M, 0.40 × 8M = 3.2M) = 3.2M`.
-   The limit scales with AUM until the 5M ceiling binds.
-5. **Fee accrual.** The vault grows 10M → 11M between interactions. With a 20%
-   performance fee, roughly 200k (assets-equivalent) of shares mint to the
-   performance recipient (20% of the 1M gain); a 2%/yr management fee additionally
-   mints time-weighted shares on the 10M base for the elapsed interval. Both are
-   dilutive to existing holders by exactly the minted share amount.
+```text
+contract/vault/soroban/.deploy-state/manifest.json
+```
 
-## Operating a vault: CLI and frontend
+It records contract IDs, constructor arguments, artifact hashes, initialization
+state, and successful transaction audit records. Treat it as operational state,
+back it up, and pass `--state` explicitly when operating more than one vault.
 
-### Vault CLI / client SDK
+## Deploy a Stellar vault stack
 
-The vault client SDK ([`client/vault/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/client/vault/README.md))
-is purpose-built for **curator/allocator automation**. Rather than exposing the
-full contract surface, it locks in a focused set of curated, production-ready
-flows with proper fee/deposit attachment, nonce handling, and retry logic:
+Plan the deployment before writing to the network:
 
-- **Curator/allocator operations:** `reallocate` (supply/withdraw a market),
-  `refresh_markets`, `set_fees`, `execute_withdrawal`.
-- **User-style flows:** `deposit`, `withdraw` / `redeem` (two-phase:
-  preview → request → execute), `storage_deposit`.
-- **Views & previews:** `get_total_assets`, `get_idle_balance`, `get_fees`,
-  `get_configuration`, `get_restrictions`, `convert_to_shares` / `convert_to_assets`,
-  `preview_deposit` / `preview_withdraw` / `preview_redeem`,
-  `build_real_assets_report` — 50+ methods generated via the
-  `impl_vault_methods!` macro.
+```sh
+tmplr-soroban-vault deploy plan stack \
+  --admin GCURATOR_OR_MULTISIG... \
+  --asset-token CASSET... \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CBLENDPOOL...
+```
 
-It ships **type-safe bindings** for **Python** (native async), **TypeScript**
-(generated from the contract ABI), and **Rust** (direct library usage) via
-UniFFI, plus production conveniences: a multi-key pool with least-loaded
-selection, per-key nonce caching with retry, TTL-based view caching, zeroizing
-key handling, and health/observability reporting. See the README for prepared
-deposit/withdraw/redeem/refresh/reallocate flow examples and client configuration.
+Then deploy the same configuration:
 
-### Curated vault frontend
+```sh
+tmplr-soroban-vault deploy stack \
+  --admin GCURATOR_OR_MULTISIG... \
+  --asset-token CASSET... \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CBLENDPOOL...
 
-The [curated vault UI at **app.templarfi.org/vaults/curator**](https://app.templarfi.org/vaults/curator/)
-is the reference frontend for curators — a wallet-based interface over the same
-vault operations the CLI/SDK exposes (deposit, withdraw/redeem, refresh,
-reallocate, and curator governance actions). It builds transactions with the
-correct parameters and delegates all signing to the user's connected wallet; the
-frontend never handles private keys. Use it to drive vault operations interactively
-without scripting against the SDK.
+tmplr-soroban-vault status
+tmplr-soroban-vault reconcile --json
+```
 
-### Soroban on-chain operations
+`deploy stack` checkpoints the manifest after each upload, deployment, import,
+and initialization step. Reruns reuse recorded contract IDs and remotely
+available WASM. Use `--force-new` only when fresh contract instances are the
+explicit intent.
 
-For deployment and direct on-chain interaction, the Soroban runtime ships
-`justfile` recipes (`setup`, `deploy-all`, `demo-deposit`, `demo-withdraw`,
-adapter build/deploy) driven by `stellar-cli` v26. See
-[`contract/vault/soroban/README.md`](https://github.com/Templar-Protocol/contracts/blob/dev/contract/vault/soroban/README.md)
-for prerequisites, the deployment artifact/size budget, state-size limits, and the
-TTL keeper requirement.
+If deployment stops after one or more transactions:
+
+```sh
+tmplr-soroban-vault reconcile --json
+tmplr-soroban-vault deploy repair --json
+tmplr-soroban-vault deploy resume \
+  --governance-timelock-ns 86400000000000 \
+  --blend-pool CBLENDPOOL...
+```
+
+Resume only when reconciliation reports `safe_to_resume: true`. `status` reads
+the manifest; `reconcile` compares it with chain state and is the stronger
+check.
+
+Mainnet writes require the global `--allow-mainnet-write` flag. A zero governance
+timelock additionally requires `--allow-zero-timelock` and should be limited to
+explicit local/test configurations.
+
+## Governance lifecycle
+
+The deployment `--admin` becomes both the governance admin and initial vault
+curator. Governance can later assign a different curator, Sentinel, and
+allocator set.
+
+A submission always returns a proposal ID. Directionally safe actions may be
+executed during submission; timelocked actions remain in the pending queue. Do
+not assume every returned ID needs a later `accept` call.
+
+Inspect queued proposals before accepting them:
+
+```sh
+tmplr-soroban-vault governance queue
+tmplr-soroban-vault governance explain --proposal-id 7
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR_OR_MULTISIG... \
+  --proposal-id 7
+```
+
+`governance accept-ready` is useful for routine automation, but exact proposal
+IDs are safer for high-impact changes. In particular, inspect and accept market
+cap proposals by ID; a textual `cap` filter can also match cap-group actions.
+
+### Exact timing rules
+
+Governance timelocks are configured per action kind between 0 and 30 days. The
+initial value is chosen at deployment; there is no universal production default.
+
+| Change | Contract behavior |
+|---|---|
+| Pause | Only the Sentinel can pause, and it is immediate. Governance `submit-set-paused --paused true` is rejected. |
+| Unpause | Governance proposal; timelocked under `Pause`. |
+| Restrictions | Sentinel may apply only a tightening change immediately. Every governance-admin restrictions submission is timelocked. |
+| Fees | A proposal containing only fee decreases and/or a tighter growth cap executes immediately if recipients do not change. Any fee increase, recipient change, or growth-cap relaxation/removal is timelocked. |
+| Market cap | Lowering an existing cap, including setting it to 0, executes immediately. A new market or cap increase is timelocked. |
+| Cap groups | A new group cap, a cap increase, and every membership change are timelocked. Decreasing a known absolute or relative group cap executes immediately. Relative caps cannot exceed 100%. |
+| Supply queue, allowed adapters, allocators | Timelocked. |
+| Curator, governance, admin, market removal, skim, upgrade, migration | Timelocked. |
+| Sentinel appointment | The first appointment may execute immediately; replacing an existing Sentinel is timelocked. |
+| Timelock configuration | Increasing a duration executes immediately. Decreasing one is queued under the `TimelockConfig` timelock. |
+| Withdrawal and idle-resync cooldowns | Every change is timelocked. |
+
+The governance admin can permanently disable an action kind with `abdicate`.
+Abdication is irreversible; confirm the exact action kind and recovery
+implications before submitting it.
+
+### Fees example
+
+Fee values are WAD-scaled integers: `1e18 = 100%`.
+
+```sh
+tmplr-soroban-vault governance submit-set-fees \
+  --admin GCURATOR_OR_MULTISIG... \
+  --performance-fee-wad 200000000000000000 \
+  --performance-recipient GPERFORMANCE... \
+  --management-fee-wad 20000000000000000 \
+  --management-recipient GMANAGEMENT...
+```
+
+The command prints a semantic old/new diff and requires interactive
+confirmation or `--yes`. Inspect whether the proposal executed immediately or
+entered the queue before running `accept`.
+
+### Cap groups
+
+Cap groups limit correlated routes together. When both limits are configured,
+the effective ceiling is:
+
+```text
+min(absolute_cap, relative_cap × total_assets)
+```
+
+Absolute caps use raw asset base units and relative caps use WAD:
+
+```sh
+tmplr-soroban-vault governance submit-set-group-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --group blue-chip \
+  --cap 50000000000000
+
+tmplr-soroban-vault governance submit-set-group-rel-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --group blue-chip \
+  --relative-cap 400000000000000000
+
+tmplr-soroban-vault governance submit-set-group-member \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 0 \
+  --group blue-chip
+```
+
+New group limits and all membership assignments are timelocked. Inspect and
+accept each proposal ID before relying on the group.
+
+### Sentinel emergency actions
+
+Sentinel pause and restriction tightening are direct governance-contract
+entrypoints, not queued CLI governance proposals:
+
+```sh
+stellar contract invoke \
+  --id "$SOROBAN_GOVERNANCE" \
+  --source-account sentinel \
+  -- set_paused \
+  --caller GSENTINEL... \
+  --paused true
+
+stellar contract invoke \
+  --id "$SOROBAN_GOVERNANCE" \
+  --source-account sentinel \
+  -- set_restrictions \
+  --caller GSENTINEL... \
+  --mode 1 \
+  --accounts '["GACCOUNT..."]'
+```
+
+Restriction modes are `0 = none`, `1 = blacklist`, and `2 = whitelist`.
+The governance contract rejects a Sentinel restriction change that relaxes the
+current policy.
+
+Restoring normal operation uses governance and waits for the configured
+timelock:
+
+```sh
+tmplr-soroban-vault governance submit-set-paused \
+  --admin GCURATOR_OR_MULTISIG...
+tmplr-soroban-vault governance queue --kind pause
+```
+
+The CLI's boolean `--paused` flag defaults to false when omitted. Supplying the
+flag requests `true`, which this governance submission path rejects.
+
+Pausing also blocks ordinary allocation and refresh operations. If an incident
+requires liquidity recall, decide whether to lower market caps and unwind routes
+before a global pause. Allocator-emergency recovery such as
+`abort-withdrawing` remains available while paused.
+
+## Add and activate market routes
+
+Deploying an adapter does not make it usable by the vault. An active market
+requires three accepted governance states:
+
+1. The adapter contract is in the allowed-adapter set.
+2. The market ID has a nonzero cap in raw asset base units.
+3. The supply queue binds that market ID to the adapter address.
+
+Add adapters to an existing or imported stack:
+
+```sh
+tmplr-soroban-vault deploy adapters \
+  --vault CVAULT... \
+  --governance CGOVERNANCE... \
+  --asset-token CASSET... \
+  --blend-pool CBLENDPOOL... \
+  --custodian GCUSTODIAN...
+```
+
+Then submit the policy in order:
+
+```sh
+tmplr-soroban-vault governance submit-set-allowed-adapters \
+  --admin GCURATOR_OR_MULTISIG... \
+  --adapters CBLENDADAPTER...,CCUSTODIALADAPTER...
+# After the allowed-adapters proposal is ready:
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind allowed-adapters
+
+tmplr-soroban-vault governance submit-set-cap \
+  --admin GCURATOR_OR_MULTISIG... \
+  --market-id 0 \
+  --cap 1000000000
+# After the cap proposal is ready, verify and accept its exact ID:
+tmplr-soroban-vault governance explain \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
+tmplr-soroban-vault governance accept \
+  --admin GCURATOR_OR_MULTISIG... \
+  --proposal-id CAP_MARKET_0_PROPOSAL_ID
+
+tmplr-soroban-vault governance submit-set-supply-queue \
+  --admin GCURATOR_OR_MULTISIG... \
+  --entry 0:CBLENDADAPTER... \
+  --entry 1:CCUSTODIALADAPTER...
+# After the supply-queue proposal is ready:
+tmplr-soroban-vault governance accept-ready \
+  --admin GCURATOR_OR_MULTISIG... \
+  --kind supply-queue
+```
+
+Each `--entry` is `market_id:adapter_address`. Market IDs are stable identities,
+not queue positions:
+
+- Reordering the queue does not remap a market to another adapter.
+- An existing market ID cannot be rebound to a different adapter.
+- Supply requires the bound adapter to remain allowed.
+- Withdrawal keeps using the stored binding, so liquidity can be recovered after
+  an adapter is removed from new supply.
+- Queue entries must be unique, enabled markets with nonzero caps. Practical
+  queue size is also bounded by Soroban transaction resource limits.
+
+### Adapter trust boundaries
+
+- **Blend adapter** — queries and operates a configured Blend pool on Stellar.
+- **Custodial adapter** — forwards assets to a configured custodian or multisig.
+  The off-chain route, custody controls, NAV reporting, and liquidity-return
+  procedure are part of the vault's trust boundary.
+
+A custodial withdrawal only releases assets already returned to the adapter on
+Stellar; it does not initiate or prove an external unwind. Reported NAV updates
+must match both the current stored amount and the exact next nonce:
+
+```sh
+stellar contract invoke \
+  --id "$CUSTODIAL_ADAPTER_ID" \
+  --source-account custodian \
+  -- set_reported_assets \
+  --caller GCUSTODIAN... \
+  --asset CASSET... \
+  --expected_current 800000000 \
+  --amount 1000000000 \
+  --report_nonce 42
+```
+
+Before using a custodial route, document signer recovery, NAV cadence, report
+approval, reconciliation, and delayed-liquidity procedures.
+
+## Day-to-day allocation and accounting
+
+Routine allocation commands use a positive amount and a stable market ID. The
+allocator does not choose an adapter at execution time.
+
+```sh
+tmplr-soroban-vault curator refresh-markets \
+  --caller GALLOCATOR... \
+  --markets 0,1
+
+tmplr-soroban-vault curator allocate-supply \
+  --caller GALLOCATOR... \
+  --market 0 \
+  --amount 100 \
+  --asset-decimals 7
+
+tmplr-soroban-vault curator allocate-withdraw \
+  --caller GALLOCATOR... \
+  --market 0 \
+  --amount 25 \
+  --asset-decimals 7
+```
+
+Decimal flags are converted without floating point. Automation can use
+`--amount-raw`, `--assets-raw`, or `--shares-raw` for exact base units.
+
+The accounting behavior differs by direction:
+
+- `allocate-supply` transfers assets to the bound adapter, calls its supply
+  method, reads `total_assets(asset)`, and stores the observed route NAV.
+- `allocate-withdraw` requests an amount from the adapter, verifies the actual
+  vault token-balance delta matches the adapter's return value, and subtracts
+  the realized amount. It does not refresh the adapter's remaining NAV.
+- `refresh-markets` reads `total_assets(asset)` for the selected routes and
+  replaces their stored principals. Run it after yield, loss, or a custodial NAV
+  report and before fee/share-rate decisions.
+
+Two maintenance calls are permissionless even though they are grouped under
+`curator` in the CLI:
+
+```sh
+tmplr-soroban-vault curator resync-idle
+tmplr-soroban-vault curator refresh-fees
+```
+
+`resync-idle` requires the vault to be idle and is rate-limited by the idle
+resync cooldown, which defaults to 120 seconds. `refresh-fees` reconciles the
+live idle balance and advances the fee checkpoint. Neither call substitutes for
+`refresh-markets` when adapter NAV has changed.
+
+## Withdrawal operations
+
+The Stellar vault has two distinct exit paths.
+
+### Atomic idle-liquidity exit
+
+`user withdraw` and `user redeem` call the ERC-4626 proxy and complete in one
+transaction only when the vault has enough idle assets. They never pull
+liquidity from an adapter. As a result, `maxWithdraw` and `maxRedeem` can be zero
+while the user's shares still represent assets deployed to markets.
+
+```sh
+tmplr-soroban-vault user preview --owner GUSER...
+
+tmplr-soroban-vault user withdraw \
+  --operator GUSER... \
+  --assets 25 \
+  --asset-decimals 7 \
+  --max-shares-burned 25 \
+  --share-decimals manifest
+```
+
+### Queued withdrawal
+
+Use the queued path when idle liquidity is insufficient:
+
+```sh
+tmplr-soroban-vault user request-withdraw \
+  --owner GUSER... \
+  --shares 10 \
+  --share-decimals manifest \
+  --min-assets-out 9.9 \
+  --asset-decimals 7
+
+# After cooldown, recall enough market liquidity if needed.
+tmplr-soroban-vault curator allocate-withdraw \
+  --caller GALLOCATOR... \
+  --market 0 \
+  --amount 10 \
+  --asset-decimals 7
+
+# The operator is an authorized allocator/curator, not the withdrawing user.
+tmplr-soroban-vault user execute-withdraw \
+  --operator GALLOCATOR...
+```
+
+The queued path has these mechanics:
+
+- `request-withdraw` escrows shares and records a fixed asset claim at request
+  time. The default cooldown is one hour.
+- `execute-withdraw` services the queue head; it does not select a request ID.
+- The caller must have allocator authority. The command is under `user` because
+  it completes a user flow, not because any user may execute it.
+- The head request must be cooled down and fully covered by idle assets. There is
+  no partial payout.
+- Finishing an allocation does not automatically progress the withdrawal queue;
+  call `execute-withdraw` separately.
+- The queue does not reserve idle assets against later atomic exits. Curators
+  must monitor queued claims and maintain enough idle liquidity.
+- There is no user cancellation path. Monitor request and payout events by
+  request ID and alert on stalled heads.
+
+If execution is already stuck in `Withdrawing`, an allocator, Sentinel, or
+curator may abort the exact active operation:
+
+```sh
+tmplr-soroban-vault curator abort-withdrawing \
+  --caller GALLOCATOR_OR_SENTINEL... \
+  --op-id 42
+```
+
+This is an incident-recovery action, not a normal withdrawal tool. A successful
+abort validates the active operation ID, restores collected idle accounting,
+refunds escrowed shares, removes the affected queue head, emits a
+`WithdrawalStopped` event, and returns the vault to `Idle`.
+
+## TTL and archival operations
+
+Soroban contract data is not permanent. Every vault needs an automated TTL job;
+ordinary transaction traffic is not a substitute for a keeper schedule.
+
+```sh
+tmplr-soroban-vault extend-ttl --caller AUTHORIZED_TTL_CALLER...
+```
+
+The CLI attempts the vault runtime, governance, ERC-4626 proxy, curator proxy,
+share token, and every adapter recorded in the manifest. The asset token has no
+deployment-wide TTL entrypoint and is reported as skipped. Treat a failed or
+unexpectedly skipped component as an operational alert.
+
+Vault, governance, proxy, and custodial-adapter TTL entrypoints are
+permissionless. Share-token and Blend-adapter TTL entrypoints are admin-gated,
+so `--caller` must satisfy the recorded deployment authority. When those admins
+are contracts, use the corresponding contract-authorized invocation path; an
+arbitrary keeper account cannot impersonate the vault or governance contract.
+
+Each contract owns its own TTL. Extending the vault runtime does not extend
+governance, proxies, share-token holder entries, adapter storage, or oracle
+storage. If a contract is already archived, restore it through the Stellar
+archival restore flow before resuming its normal TTL entrypoint.
+
+## Safety and automation
+
+- Use `--dry-run` to print redacted Stellar commands and manifest decisions
+  without writes.
+- Every contract write is simulated before submission. Review auth, footprint,
+  resource, fee, and contract-error output on stderr.
+- Use `--json` for stable machine-readable responses or `--json-lines` for
+  long-running automation. The schema lives at
+  `tools/soroban-vault-cli/schema/output.schema.json`.
+- Mainnet writes require `--allow-mainnet-write`.
+- Dangerous governance submissions print an old/new semantic diff and require
+  `--yes` or interactive confirmation.
+- Successful writes append transaction metadata to the manifest. Preserve that
+  audit trail alongside external monitoring and event indexing.
+- Run `reconcile` after interrupted deployment, unexpected RPC results, or any
+  manual contract operation that may have diverged from the manifest.
+- Generate operator completions or a manpage with `completions` and `man` rather
+  than copying stale command snippets into private runbooks.
+
+Before a policy or allocation change, verify the manifest/network, refresh any
+changed adapter NAV, inspect the current proposal queue, and identify the exact
+role that must authorize the action. Afterward, verify the transaction result,
+runtime state, adapter accounting, relevant events, and the manifest audit
+record.

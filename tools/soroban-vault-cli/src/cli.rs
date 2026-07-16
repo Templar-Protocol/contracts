@@ -14,7 +14,7 @@ pub const DEFAULT_CONTRACT_SOURCE_REPO: &str = "github:Templar-Protocol/contract
 #[command(
     version,
     about = "Deploy and operate Templar Soroban vault stacks",
-    long_about = "Deploy Templar Soroban vault contracts, reuse previously uploaded WASM where possible, and run typed user, curator, governance, share-token, and Blend adapter operations through the Stellar CLI."
+    long_about = "Deploy Templar Soroban vault contracts, reuse previously uploaded WASM where possible, and run typed user, curator, governance, share-token, and adapter operations through the Stellar CLI."
 )]
 #[allow(
     clippy::struct_excessive_bools,
@@ -476,9 +476,9 @@ pub enum UserCommand {
         #[arg(long, default_value_t = 7)]
         asset_decimals: u32,
     },
-    /// Execute the caller's pending withdrawal through the proxy when available.
+    /// Execute the next claimable queued withdrawal as an authorized allocator/keeper.
     ExecuteWithdraw {
-        /// Address whose pending withdrawal should execute.
+        /// Authorized allocator/keeper address executing the queue head.
         #[arg(long)]
         operator: AddressStr,
     },
@@ -540,7 +540,7 @@ pub struct CuratorArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum CuratorCommand {
-    /// Allocate a positive or negative supply delta to a market through the vault command payload.
+    /// Supply a positive asset amount to a market through the vault command payload.
     AllocateSupply {
         #[arg(long)]
         caller: AddressStr,
@@ -553,7 +553,7 @@ pub enum CuratorCommand {
         #[arg(long, default_value_t = 7)]
         asset_decimals: u32,
     },
-    /// Allocate a positive or negative withdrawal delta to a market through the vault command payload.
+    /// Request a positive asset amount back from a market through the vault command payload.
     AllocateWithdraw {
         #[arg(long)]
         caller: AddressStr,
@@ -728,12 +728,12 @@ pub enum GovernanceCommand {
         #[arg(long)]
         new_governance: AddressStr,
     },
-    /// Submit a proposal to pause or unpause the vault.
+    /// Submit a timelocked unpause proposal. Omit --paused; Sentinel pause is a direct call.
     SubmitSetPaused {
         /// Governance admin address submitting the proposal.
         #[arg(long)]
         admin: AddressStr,
-        /// Proposed paused state.
+        /// Leave unset for false/unpause. Setting this flag requests true, which governance rejects.
         #[arg(long)]
         paused: bool,
     },
