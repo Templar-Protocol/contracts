@@ -232,7 +232,7 @@ initial value is chosen at deployment; there is no universal production default.
 
 | Change | Contract behavior |
 |---|---|
-| Pause | Only the Sentinel can pause, and it is immediate. Governance `submit-set-paused --paused true` is rejected. |
+| Pause | Only the Sentinel can pause, and it is immediate. Governance `submit-set-paused --paused` is rejected. |
 | Unpause | Governance proposal; timelocked under `Pause`. |
 | Restrictions | Sentinel may apply only a tightening change immediately. Every governance-admin restrictions submission is timelocked. |
 | Fees | A proposal containing only fee decreases and/or a tighter growth cap executes immediately if recipients do not change. Any fee increase, recipient change, or growth-cap relaxation/removal is timelocked. |
@@ -560,7 +560,7 @@ Soroban contract data is not permanent. Every vault needs an automated TTL job;
 ordinary transaction traffic is not a substitute for a keeper schedule.
 
 ```sh
-tmplr-soroban-vault extend-ttl --caller AUTHORIZED_TTL_CALLER...
+tmplr-soroban-vault extend-ttl
 ```
 
 The CLI attempts the vault runtime, governance, ERC-4626 proxy, curator proxy,
@@ -568,16 +568,22 @@ share token, and every adapter recorded in the manifest. The asset token has no
 deployment-wide TTL entrypoint and is reported as skipped. Treat a failed or
 unexpectedly skipped component as an operational alert.
 
-Vault, governance, proxy, and custodial-adapter TTL entrypoints are
-permissionless. Share-token and Blend-adapter TTL entrypoints are admin-gated,
-so `--caller` must satisfy the recorded deployment authority. When those admins
-are contracts, use the corresponding contract-authorized invocation path; an
-arbitrary keeper account cannot impersonate the vault or governance contract.
+Vault, governance, proxy, and custodial-adapter maintenance uses permissionless
+contract entrypoints. Share-token and Blend-adapter TTL entrypoints are
+admin-gated, so the aggregate command does not invoke them. It instead uses
+Stellar protocol-level operations to extend each contract instance and its WASM
+code. The configured source account signs and pays for those operations; no
+vault or governance contract authorization is required. The legacy `--caller`
+option remains accepted for backward compatibility but is ignored.
 
 Each contract owns its own TTL. Extending the vault runtime does not extend
 governance, proxies, share-token holder entries, adapter storage, or oracle
-storage. If a contract is already archived, restore it through the Stellar
-archival restore flow before resuming its normal TTL entrypoint.
+storage. Run the aggregate command before archival: an extend operation cannot
+revive an archived entry. If a contract is already archived, restore both its
+instance with `stellar contract restore --id ...` and its WASM code with
+`stellar contract restore --wasm-hash ...` before rerunning `extend-ttl`.
+Contract-specific persistent entries may require separate restore or renewal
+operations.
 
 ## Safety and automation
 

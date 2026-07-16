@@ -233,11 +233,11 @@ Withdrawals use two different CLI surfaces:
   `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
   returned by the adapter without calling adapter `total_assets`.
 - `user request-withdraw` starts a user exit; `user execute-withdraw` is the allocator/keeper step
-  that completes it. `request-withdraw` queues shares after the configured cooldown.
-  `execute-withdraw` attempts to pay the next ready request from idle vault assets and requires an
-  allocator-authorized operator. If idle assets are not sufficient, an allocator first
-  uses `curator allocate-withdraw` to bring liquidity back from one or more market adapters, then
-  `user execute-withdraw` can settle the queued request.
+  that completes it. `request-withdraw` queues and escrows shares immediately; the configured
+  cooldown gates `execute-withdraw`. Execution attempts to pay the next ready request from idle
+  vault assets and requires an allocator-authorized operator. If idle assets are not sufficient, an
+  allocator first uses `curator allocate-withdraw` to bring liquidity back from one or more market
+  adapters, then `user execute-withdraw` can settle the queued request.
 - `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
   Use it only when the vault is stuck in `Withdrawing` and operators have identified the operation id
   to abort.
@@ -710,7 +710,7 @@ tmplr-soroban-vault adapter --adapter-key blend_adapter_1 admin
 tmplr-soroban-vault adapter --adapter-pool CPOOL... total-assets --asset C...
 
 # Extend TTL for every TTL-capable contract in the manifest.
-tmplr-soroban-vault extend-ttl --caller G...
+tmplr-soroban-vault extend-ttl
 
 # Print shell environment values from the manifest.
 tmplr-soroban-vault export-env
@@ -723,13 +723,19 @@ constructor args are known. Custodial adapters use the same pattern with `CUSTOD
 when constructor args are known. The unindexed `CUSTODIAL_ADDRESS` name is reserved for explicit
 deploy input and is not emitted by `export-env`.
 
-`extend-ttl` runs the vault compact `ExtendTtl` command, governance `extend_ttl`, ERC-4626 proxy
-`extend_ttl`, curator proxy `extend_ttl`, share-token `extend_ttl --caller`, and each Blend adapter
-`extend_ttl --caller`. Custodial adapters use their permissionless `extend_ttl` entrypoint and do
-not require a caller argument. Manifest contracts without an explicit deployment-wide TTL entrypoint,
-such as the asset token, are reported as skipped.
+`extend-ttl` runs the vault compact `ExtendTtl` command and the permissionless `extend_ttl`
+entrypoints on governance, the ERC-4626 proxy, the curator proxy, and custodial adapters. For the
+share token and each Blend adapter, it uses Stellar protocol-level TTL operations to extend both the
+contract instance and its WASM code without invoking the admin-gated contract entrypoint. Shared
+Blend WASM code is extended once per unique hash. Manifest contracts without an explicit
+deployment-wide TTL path, such as the asset token, are reported as skipped.
 
-The share-token and Blend-adapter TTL entrypoints are admin-gated. `--caller` must be authorized by
-the recorded deployment topology; a human keeper cannot sign as a vault or governance contract.
-Use the relevant contract-authorized path for contract-admin deployments and treat the aggregate
-command as incomplete unless every expected component succeeds.
+The configured source account signs and pays for the protocol-level operations. The aggregate
+command still accepts `--caller` and `SOROBAN_TTL_CALLER` for backward compatibility, but ignores
+them; new automation should omit them.
+
+Run `extend-ttl` proactively while every contract entry is live. An extend operation cannot revive
+an archived entry. Restore an archived contract instance and its WASM code with the corresponding
+`stellar contract restore --id ...` and `stellar contract restore --wasm-hash ...` operations, then
+rerun the aggregate command. Contract-specific persistent entries may require their own restore or
+renewal flow.

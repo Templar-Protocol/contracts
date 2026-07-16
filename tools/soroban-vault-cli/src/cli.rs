@@ -174,7 +174,8 @@ pub enum ProfileCommand {
 
 #[derive(Args, Debug)]
 pub struct ExtendTtlArgs {
-    /// Caller/admin address for TTL entrypoints that require authorization. Defaults to `stellar keys address <source-account>`.
+    /// Deprecated compatibility option. Aggregate TTL maintenance no longer
+    /// requires a contract-admin caller.
     #[arg(long, env = "SOROBAN_TTL_CALLER")]
     pub caller: Option<AddressStr>,
 }
@@ -1099,7 +1100,7 @@ impl AdapterCommand {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, DeployCommand, ReconcileArgs};
+    use super::{Cli, Commands, DeployCommand, ExtendTtlArgs, ReconcileArgs};
 
     const ADMIN: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
     const POOL: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
@@ -1255,10 +1256,19 @@ mod tests {
 
     #[test]
     fn parses_deployment_extend_ttl_command() {
-        let cli = Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl", "--caller", ADMIN])
-            .expect("parse cli");
+        let current =
+            Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl"]).expect("parse current CLI");
+        let legacy = Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl", "--caller", ADMIN])
+            .expect("parse legacy CLI");
 
-        assert!(matches!(cli.command, Commands::ExtendTtl(_)));
+        assert!(matches!(
+            current.command,
+            Commands::ExtendTtl(ExtendTtlArgs { caller: None })
+        ));
+        assert!(matches!(
+            legacy.command,
+            Commands::ExtendTtl(ExtendTtlArgs { caller: Some(_) })
+        ));
     }
 
     #[test]

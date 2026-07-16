@@ -31,6 +31,8 @@ use crate::{
     },
 };
 
+const CONTRACT_TTL_EXTEND_LEDGERS: u32 = 3_110_400;
+
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
     debug!(
@@ -3247,10 +3249,11 @@ fn run_adapter<E: CommandExecutor>(
 fn run_extend_ttl<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     manifest: &Manifest,
-    ttl_args: &ExtendTtlArgs,
+    _ttl_args: &ExtendTtlArgs,
 ) -> anyhow::Result<Response> {
     let mut extended = Vec::new();
     let mut skipped = Vec::new();
+    let mut protocol_wasm_hashes = BTreeSet::new();
 
     if let Some(vault) = contract_id(manifest, "vault") {
         let payload = hex::encode(WireVaultCommand::ExtendTtl.encode());
@@ -3281,17 +3284,9 @@ fn run_extend_ttl<E: CommandExecutor>(
         skipped.push("curator_proxy".to_string());
     }
 
-    let caller = if contract_id(manifest, "share_token").is_some()
-        || !blend_adapter_statuses(manifest).is_empty()
-    {
-        Some(resolve_extend_ttl_caller(stellar, ttl_args)?)
-    } else {
-        None
-    };
-
-    if let Some(share) = contract_id(manifest, "share_token") {
-        let caller = caller.as_ref().context("missing TTL caller")?;
-        stellar.invoke(share, "extend_ttl", args([("--caller", caller.as_str())]))?;
+    if let Some(share) = manifest.contracts.get("share_token") {
+        stellar.extend_contract_instance_ttl(&share.contract_id, CONTRACT_TTL_EXTEND_LEDGERS)?;
+        protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, share)?);
         extended.push("share_token".to_string());
     } else {
         skipped.push("share_token".to_string());
@@ -3301,15 +3296,20 @@ fn run_extend_ttl<E: CommandExecutor>(
     if adapters.is_empty() {
         skipped.push("blend_adapters".to_string());
     } else {
-        let caller = caller.as_ref().context("missing TTL caller")?;
         for adapter in adapters {
-            stellar.invoke(
-                &adapter.contract_id,
-                "extend_ttl",
-                args([("--caller", caller.as_str())]),
-            )?;
+            stellar
+                .extend_contract_instance_ttl(&adapter.contract_id, CONTRACT_TTL_EXTEND_LEDGERS)?;
+            let record = manifest
+                .contracts
+                .get(&adapter.key)
+                .with_context(|| format!("missing {} contract record", adapter.key))?;
+            protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, record)?);
             extended.push(adapter.key);
         }
+    }
+
+    for wasm_hash in protocol_wasm_hashes {
+        stellar.extend_contract_code_ttl(&wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
     }
 
     let adapters = custodial_adapter_statuses(manifest);
@@ -3331,14 +3331,13 @@ fn run_extend_ttl<E: CommandExecutor>(
     Ok(Response::ExtendTtl(ExtendTtlResponse { extended, skipped }))
 }
 
-fn resolve_extend_ttl_caller<E: CommandExecutor>(
+fn wasm_hash_for_ttl<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
-    args: &ExtendTtlArgs,
+    record: &ContractRecord,
 ) -> anyhow::Result<String> {
-    if let Some(caller) = &args.caller {
-        return Ok(caller.to_string());
-    }
-    stellar.keys_address_source_account()
+    stellar
+        .fetch_contract_wasm_hash(&record.contract_id)
+        .with_context(|| format!("resolve WASM hash for contract {}", record.contract_id))
 }
 
 fn execute_allocation<E: CommandExecutor>(
@@ -4484,6 +4483,50 @@ mod tests {
         }
     }
 
+    struct TtlRecordingExecutor {
+        inner: RecordingExecutor,
+    }
+
+    impl TtlRecordingExecutor {
+        fn new() -> Self {
+            Self {
+                inner: RecordingExecutor::new(),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.inner.calls()
+        }
+    }
+
+    impl CommandExecutor for TtlRecordingExecutor {
+        fn run(
+            &self,
+            program: &str,
+            args: &[String],
+            redacted_args: &[usize],
+            env: &[crate::stellar::CommandEnv],
+        ) -> anyhow::Result<CommandOutput> {
+            if matches!(args, [contract, fetch, ..] if contract == "contract" && fetch == "fetch") {
+                let contract_id = args
+                    .windows(2)
+                    .find_map(|pair| (pair[0] == "--id").then_some(pair[1].as_str()))
+                    .expect("contract fetch id");
+                let output_path = args
+                    .windows(2)
+                    .find_map(|pair| (pair[0] == "--out-file").then_some(pair[1].as_str()))
+                    .expect("contract fetch output path");
+                let wasm = if contract_id.starts_with("CADAPTER") {
+                    b"shared blend adapter wasm".as_slice()
+                } else {
+                    contract_id.as_bytes()
+                };
+                fs::write(output_path, wasm).expect("write fetched contract WASM");
+            }
+            self.inner.run(program, args, redacted_args, env)
+        }
+    }
+
     struct FailingInitializeExecutor {
         inner: RecordingExecutor,
     }
@@ -4556,9 +4599,23 @@ mod tests {
                     .any(|pair| pair[0] == "--send" && pair[1] == "no")
                     && !args.iter().any(|arg| arg == "--build-only")
                     && !matches!(args.as_slice(), [first, second, ..] if first == "tx" && second == "simulate")
+                    && !matches!(args.as_slice(), [first, second, ..] if first == "contract" && second == "fetch")
             })
             .cloned()
             .collect()
+    }
+
+    fn assert_protocol_ttl_call(calls: &[(String, Vec<String>)], selector: &str, value: &str) {
+        assert!(calls.iter().any(|(program, args)| {
+            program == "stellar"
+                && matches!(args.as_slice(), [contract, extend, ..] if contract == "contract" && extend == "extend")
+                && args
+                    .windows(2)
+                    .any(|pair| pair[0] == selector && pair[1] == value)
+                && args
+                    .windows(2)
+                    .any(|pair| pair == ["--ledgers-to-extend", "3110400"])
+        }));
     }
 
     fn assert_contract_invokes_are_views(calls: &[(String, Vec<String>)]) {
@@ -5227,7 +5284,7 @@ mod tests {
     }
 
     #[test]
-    fn extend_ttl_runs_for_entire_ttl_capable_deployment_set() {
+    fn extend_ttl_supports_default_contract_admin_topology() {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
         let mut manifest = Manifest::new("testnet", None);
@@ -5235,7 +5292,6 @@ mod tests {
             ("vault", "CVAULT"),
             ("governance", "CGOVERNANCE"),
             ("proxy_4626", "CPROXY4626"),
-            ("share_token", "CSHARE"),
             ("curator_proxy", "CCURATORPROXY"),
             ("asset_token", "CASSET"),
         ] {
@@ -5243,9 +5299,41 @@ mod tests {
                 .contracts
                 .insert(key.to_string(), imported_record(contract_id));
         }
-        manifest
-            .contracts
-            .insert("blend_adapter_0".to_string(), imported_record("CADAPTER0"));
+        manifest.contracts.insert(
+            "share_token".to_string(),
+            ContractRecord {
+                wasm_hash: "1111111111111111111111111111111111111111111111111111111111111111"
+                    .to_string(),
+                constructor_args: map_args([("admin", "CVAULT"), ("vault", "CVAULT")]),
+                ..imported_record("CSHARE")
+            },
+        );
+        manifest.contracts.insert(
+            "blend_adapter_0".to_string(),
+            ContractRecord {
+                wasm_hash: "2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+                constructor_args: map_args([
+                    ("admin", "CGOVERNANCE"),
+                    ("vault", "CVAULT"),
+                    ("pool", "CPOOL"),
+                ]),
+                ..imported_record("CADAPTER0")
+            },
+        );
+        manifest.contracts.insert(
+            "blend_adapter_1".to_string(),
+            ContractRecord {
+                wasm_hash: "3333333333333333333333333333333333333333333333333333333333333333"
+                    .to_string(),
+                constructor_args: map_args([
+                    ("admin", "CGOVERNANCE"),
+                    ("vault", "CVAULT"),
+                    ("pool", "CPOOL2"),
+                ]),
+                ..imported_record("CADAPTER1")
+            },
+        );
         manifest.contracts.insert(
             "custodial_adapter_0".to_string(),
             ContractRecord {
@@ -5260,29 +5348,41 @@ mod tests {
                 caller: Some(ACCOUNT.parse().expect("caller")),
             }),
         );
-        let executor = RecordingExecutor::new();
+        let executor = TtlRecordingExecutor::new();
 
         run(&cli, &executor).expect("extend ttl");
 
         let calls = submitted_calls(&executor.calls());
-        assert_eq!(calls.len(), 7);
+        assert_eq!(calls.len(), 10);
         assert!(calls.iter().any(|(_, args)| args
             .windows(2)
             .any(|pair| pair == ["--id", "CVAULT"])
             && args.iter().any(|arg| arg == "execute")));
-        for contract_id in [
-            "CGOVERNANCE",
-            "CPROXY4626",
-            "CCURATORPROXY",
-            "CSHARE",
-            "CADAPTER0",
-            "CCUSTODIAL0",
-        ] {
+        for contract_id in ["CGOVERNANCE", "CPROXY4626", "CCURATORPROXY", "CCUSTODIAL0"] {
             assert!(calls.iter().any(|(_, args)| args
                 .windows(2)
                 .any(|pair| pair == ["--id", contract_id])
                 && args.iter().any(|arg| arg == "extend_ttl")));
         }
+        for contract_id in ["CSHARE", "CADAPTER0", "CADAPTER1"] {
+            assert_protocol_ttl_call(&calls, "--id", contract_id);
+        }
+        for wasm_hash in [
+            format!("{:x}", Sha256::digest(b"CSHARE")),
+            format!("{:x}", Sha256::digest(b"shared blend adapter wasm")),
+        ] {
+            assert_protocol_ttl_call(&calls, "--wasm-hash", &wasm_hash);
+        }
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(_, args)| args.iter().any(|arg| arg == "--wasm-hash"))
+                .count(),
+            2
+        );
+        assert!(!calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "--caller")));
         assert!(!calls
             .iter()
             .any(|(_, args)| args.windows(2).any(|pair| pair == ["--id", "CASSET"])));
