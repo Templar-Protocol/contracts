@@ -58,11 +58,12 @@ Before mainnet execution, refresh and run the production-state fixture:
 ```text
 cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet generate_mainnet_state_patch -- --ignored
 cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet migrate_mainnet_patch_exactly
+cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet failed_migration_reverts_contract_code
 ```
+
 These tests need `near-workspaces`, network access, and local port binding; they do not run in restricted CI environments.
 
-
-The second test must pass after the first downloads the current account state. It deploys the checked-in v0.3.0 release into a sandbox, invokes the same migration payload, and asserts the migrated state and proxy definitions.
+The two non-ignored tests must pass after the first downloads the current account state. `migrate_mainnet_patch_exactly` deploys the checked-in v0.3.0 release into a sandbox, invokes the same migration payload, and asserts the migrated state and proxy definitions. `failed_migration_reverts_contract_code` verifies a failed migration leaves the deployed code at v0.1.0.
 
 Verify the source version, use an audited v0.3.0 WASM, then verify the destination version:
 
@@ -71,6 +72,7 @@ tmplrmgr --network mainnet contract get-version --contract-id <oracle-id>
 tmplrmgr --network mainnet proxy-oracle upgrade --oracle-id <oracle-id> --wasm <proxy-oracle-v0.3.0.wasm> --migration v0 --signer-id <oracle-id>
 tmplrmgr --network mainnet contract get-version --contract-id <oracle-id>
 ```
+
 Set `SECRET_KEY` in the execution environment instead of passing a private key on the command line.
 
 Registry-backed WASM resolution is deferred to [ENG-482](https://linear.app/templar-protocol/issue/ENG-482/support-registry-sourced-wasm-for-proxy-oracle-upgrades). Do not use `--migration v0` for another source version or retry it after a successful upgrade.

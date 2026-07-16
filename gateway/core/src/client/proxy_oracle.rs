@@ -97,7 +97,7 @@ impl ProxyOracleClient<'_> {
 
     /// Fetch a proxy definition, normalizing the legacy (`< 0.2.0`) `v0::Proxy`
     /// shape into the unified `Proxy<Source>` so callers never see the
-    /// pre-kernel representation. The oracle version is read from the (cached)
+    /// pre-kernel representation. The oracle version is read directly from
     /// NEP-330 `contract_source_metadata`.
     pub async fn get_proxy(
         &self,
@@ -106,7 +106,7 @@ impl ProxyOracleClient<'_> {
         let version = self
             .inner
             .contract(self.contract_id.clone())
-            .cached_version::<ProxyOracle>()
+            .version::<ProxyOracle>()
             .await?;
         let raw_args = serde_json::to_vec(&args)?;
 

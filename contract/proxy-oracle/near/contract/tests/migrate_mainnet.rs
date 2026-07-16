@@ -159,6 +159,13 @@ async fn failed_migration_reverts_contract_code(#[future(awt)] worker: Worker<Sa
         .await
         .unwrap();
     assert!(result.is_failure(), "invalid migration should fail");
+    let failures = result.failures();
+    assert_eq!(failures.len(), 1, "only migrate should fail");
+    assert_eq!(
+        failures[0].executor_id,
+        contract.id().clone(),
+        "the migration receipt should be the only failure"
+    );
 
     let metadata: near_sdk::serde_json::Value = contract
         .view("contract_source_metadata")

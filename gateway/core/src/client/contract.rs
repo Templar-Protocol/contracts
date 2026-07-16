@@ -145,7 +145,7 @@ mod tests {
         );
         assert!(
             client
-                .contract(contract_id)
+                .contract(contract_id.clone())
                 .version::<ProxyOracle>()
                 .await
                 .is_err(),
