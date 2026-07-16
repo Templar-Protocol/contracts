@@ -14,7 +14,7 @@ pub const DEFAULT_CONTRACT_SOURCE_REPO: &str = "github:Templar-Protocol/contract
 #[command(
     version,
     about = "Deploy and operate Templar Soroban vault stacks",
-    long_about = "Deploy Templar Soroban vault contracts, reuse previously uploaded WASM where possible, and run typed user, curator, governance, share-token, and Blend adapter operations through the Stellar CLI."
+    long_about = "Deploy Templar Soroban vault contracts, reuse previously uploaded WASM where possible, and run typed user, curator, governance, share-token, and adapter operations through the Stellar CLI."
 )]
 #[allow(
     clippy::struct_excessive_bools,
@@ -174,7 +174,8 @@ pub enum ProfileCommand {
 
 #[derive(Args, Debug)]
 pub struct ExtendTtlArgs {
-    /// Caller/admin address for TTL entrypoints that require authorization. Defaults to `stellar keys address <source-account>`.
+    /// Deprecated compatibility option. Aggregate TTL maintenance no longer
+    /// requires a contract-admin caller.
     #[arg(long, env = "SOROBAN_TTL_CALLER")]
     pub caller: Option<AddressStr>,
 }
@@ -476,9 +477,9 @@ pub enum UserCommand {
         #[arg(long, default_value_t = 7)]
         asset_decimals: u32,
     },
-    /// Execute the caller's pending withdrawal through the proxy when available.
+    /// Execute the next claimable queued withdrawal as an authorized allocator/keeper.
     ExecuteWithdraw {
-        /// Address whose pending withdrawal should execute.
+        /// Authorized allocator/keeper address executing the queue head.
         #[arg(long)]
         operator: AddressStr,
     },
@@ -540,7 +541,7 @@ pub struct CuratorArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum CuratorCommand {
-    /// Allocate a positive or negative supply delta to a market through the vault command payload.
+    /// Supply a positive asset amount to a market through the vault command payload.
     AllocateSupply {
         #[arg(long)]
         caller: AddressStr,
@@ -553,7 +554,7 @@ pub enum CuratorCommand {
         #[arg(long, default_value_t = 7)]
         asset_decimals: u32,
     },
-    /// Allocate a positive or negative withdrawal delta to a market through the vault command payload.
+    /// Request a positive asset amount back from a market through the vault command payload.
     AllocateWithdraw {
         #[arg(long)]
         caller: AddressStr,
@@ -728,12 +729,12 @@ pub enum GovernanceCommand {
         #[arg(long)]
         new_governance: AddressStr,
     },
-    /// Submit a proposal to pause or unpause the vault.
+    /// Submit a timelocked unpause proposal. Omit --paused; Sentinel pause is a direct call.
     SubmitSetPaused {
         /// Governance admin address submitting the proposal.
         #[arg(long)]
         admin: AddressStr,
-        /// Proposed paused state.
+        /// Leave unset for false/unpause. Setting this flag requests true, which governance rejects.
         #[arg(long)]
         paused: bool,
     },
@@ -1099,7 +1100,7 @@ impl AdapterCommand {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, DeployCommand, ReconcileArgs};
+    use super::{Cli, Commands, DeployCommand, ExtendTtlArgs, ReconcileArgs};
 
     const ADMIN: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
     const POOL: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
@@ -1255,10 +1256,19 @@ mod tests {
 
     #[test]
     fn parses_deployment_extend_ttl_command() {
-        let cli = Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl", "--caller", ADMIN])
-            .expect("parse cli");
+        let current =
+            Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl"]).expect("parse current CLI");
+        let legacy = Cli::try_parse_from(["tmplr-soroban-vault", "extend-ttl", "--caller", ADMIN])
+            .expect("parse legacy CLI");
 
-        assert!(matches!(cli.command, Commands::ExtendTtl(_)));
+        assert!(matches!(
+            current.command,
+            Commands::ExtendTtl(ExtendTtlArgs { caller: None })
+        ));
+        assert!(matches!(
+            legacy.command,
+            Commands::ExtendTtl(ExtendTtlArgs { caller: Some(_) })
+        ));
     }
 
     #[test]
