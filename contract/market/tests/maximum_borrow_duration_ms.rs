@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/maximum_borrow_duration_ms.rs`.
-//!
 //! The borrow-status expiration *logic* is covered by a pure unit test in
 //! `templar-common` (`borrow_status_liquidation_on_expiration`); this confirms
 //! the on-chain view reflects it. The original slept 2s of wall-clock; here we

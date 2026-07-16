@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/disabled_when_liquidatable.rs`: while a
+//! While a
 //! position is liquidatable, only actions that cure it are allowed. The rejected
 //! actions go through `ft_transfer_call`, so the contract's panic is caught by
 //! the FT and refunded — asserted here as "no effect".

@@ -1,6 +1,5 @@
-//! Ported from `contract/market/tests/empty_positions.rs` onto the gateway
-//! harness. (The old test re-registered market storage by hand before
-//! re-supplying; the gateway `supply` op does that registration itself.)
+//! The old test re-registered market storage by hand before re-supplying; the
+//! gateway `supply` op does that registration itself.
 
 use anyhow::Result;
 use rstest::rstest;

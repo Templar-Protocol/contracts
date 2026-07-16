@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/supply_within_snapshot.rs`.
-//!
 //! `funds_activation` is ported here. The original `partial_snapshot_no_earnings`
 //! asserted the multi-supplier proportional yield split with staggered
 //! activation; that is now covered deterministically (and node-free) by

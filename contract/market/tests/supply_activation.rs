@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/supply_activation.rs`.
-//!
 //! The original relied on 1ms snapshots ticking between rapid near-workspaces
 //! calls. Under the gateway's slower multi-step ops that timing is unstable, so
 //! we instead use long snapshots (which don't tick on their own during the

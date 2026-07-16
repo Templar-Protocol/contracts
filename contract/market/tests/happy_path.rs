@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/happy_path.rs`, parametrized over the four
+//! Parametrized over the four
 //! NEP-141 / NEP-245 (multi-token) asset combinations. The market's asset path
 //! is standard-agnostic, so the full lifecycle — supply, collateralize, borrow,
 //! repay, and the 8/1/1 yield split — runs identically for each; only the
@@ -78,7 +78,7 @@ async fn test_happy(
     assert!(snapshots[0].borrow_asset_deposited_active.is_zero());
     assert!(snapshots[0].borrow_asset_borrowed.is_zero());
 
-    // Step 1: supply, then activate.
+    // Supply, then activate.
     harness.supply(&supply_user, &market, 1100).await?;
     assert_eq!(
         u128::from(
@@ -114,7 +114,7 @@ async fn test_happy(
         1100,
     );
 
-    // Step 2: collateralize, and confirm healthy with nothing borrowed.
+    // Collateralize, and confirm healthy with nothing borrowed.
     harness.collateralize(&borrow_user, &market, 2000).await?;
     assert_eq!(
         u128::from(
@@ -135,7 +135,7 @@ async fn test_happy(
         BorrowStatus::Healthy,
     );
 
-    // Step 3: borrow (1000 + 100 origination fee).
+    // Borrow (1000 + 100 origination fee).
     let balance_before = harness
         .asset_balance_of(&market.configuration.borrow_asset, &borrow_user.0)
         .await?;
@@ -157,7 +157,7 @@ async fn test_happy(
         1100,
     );
 
-    // Step 4: repay in full.
+    // Repay in full.
     harness.repay(&borrow_user, &market, 1100, None).await?;
     assert_eq!(
         u128::from(

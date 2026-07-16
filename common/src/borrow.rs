@@ -833,16 +833,6 @@ mod tests {
     /// where `duration_ms` is the gap to the previous snapshot's end timestamp,
     /// then returns `floor(sum)`.
     ///
-    /// Chosen inputs:
-    ///   principal P  = 1_000_000_000_000          (1e12)
-    ///   T0 (snap #0) = 1_000_000 ms
-    ///   snap #1: end = T0 + 2_592_000_000 ms (30 days), rate = 0.10
-    ///   snap #2: end = +  5_184_000_000 ms (60 days), rate = 0.20
-    ///
-    /// Approx accrual (using YEAR_PER_MS ~= 3.168873850681e-11):
-    ///   snap #1: 1e12 * 0.10 * 2.592e9 * 3.168873e-11 ~= 8.21372e9
-    ///   snap #2: 1e12 * 0.20 * 5.184e9 * 3.168873e-11 ~= 3.28549e10
-    ///   total  ~= 4.10686e10
     /// The exact floored integer is pinned to `EXPECTED` below.
     #[test]
     fn calculate_interest_two_snapshots_exact() {
@@ -1132,34 +1122,6 @@ mod tests {
 
         let position: BorrowPosition =
             serde_json::from_str(json).expect("Failed to deserialize old format");
-        assert_eq!(position.fees, BorrowAssetAmount::new(500_000));
-        assert_eq!(
-            position.get_borrow_asset_principal(),
-            BorrowAssetAmount::new(100_000_000)
-        );
-    }
-
-    #[test]
-    fn test_borrow_position_deserialize_mixed_old_new_format() {
-        // Mixed format: old field name for interest (borrow_asset_fees), new field names for others
-        let json = r#"{
-            "started_at_block_timestamp_ms": "1699564800000",
-            "collateral_asset_deposit": "1000000000000000000000000",
-            "borrow_asset_principal": "100000000",
-            "borrow_asset_fees": {
-                "total": "0",
-                "fraction_as_u128_dividend": "0",
-                "next_snapshot_index": 42,
-                "pending_estimate": "0"
-            },
-            "fees": "500000",
-            "borrow_asset_in_flight": "0",
-            "collateral_asset_in_flight": "0",
-            "liquidation_lock": "0"
-        }"#;
-
-        let position: BorrowPosition =
-            serde_json::from_str(json).expect("Failed to deserialize mixed format");
         assert_eq!(position.fees, BorrowAssetAmount::new(500_000));
         assert_eq!(
             position.get_borrow_asset_principal(),

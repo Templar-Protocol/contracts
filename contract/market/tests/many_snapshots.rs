@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/0_many_snapshots.rs`: as snapshots
+//! As snapshots
 //! accumulate, the per-borrow gas must not grow with the snapshot count. Gas is
 //! read via the harness `operation_gas_burnt` helper. Long-running (257 borrows).
 

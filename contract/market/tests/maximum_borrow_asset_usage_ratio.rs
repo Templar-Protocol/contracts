@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/maximum_borrow_asset_usage_ratio.rs`.
-
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::Decimal;

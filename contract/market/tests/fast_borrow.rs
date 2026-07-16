@@ -1,7 +1,6 @@
-//! WS3 spike: `contract/market/tests/fast_borrow.rs` ported onto the in-process
-//! gateway harness. Locks the `SandboxHarness` ops API before batch porting.
-//!
-//! Node-backed: run with `just test-sandbox -p templar-market-contract`.
+//! Repaying exactly the principal leaves a nonzero liability: interest accrues
+//! even over a borrow opened and repaid within a single snapshot ("fast borrow
+//! is not free").
 
 use anyhow::{Context, Result};
 use rstest::rstest;

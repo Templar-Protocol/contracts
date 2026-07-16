@@ -23,7 +23,6 @@ fn parse_configurations() {
     while let Some(Ok(entry)) = read.pop() {
         let t = entry.file_type().unwrap();
         if t.is_dir() {
-            // recurse directories
             read.extend(std::fs::read_dir(entry.path()).unwrap());
         } else if t.is_file() {
             let path = entry.path();
@@ -31,7 +30,6 @@ fn parse_configurations() {
             if display.to_string().ends_with(".near.json") {
                 eprint!("Parsing {display}: ");
                 let file = std::fs::File::open(&path).unwrap();
-                // Attempt to parse:
                 serde_json::from_reader::<_, MarketConfiguration>(file)
                     .unwrap_or_else(|e| panic!("Failed: {e}"));
                 eprintln!("Success!");

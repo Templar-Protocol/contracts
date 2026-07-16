@@ -1,6 +1,5 @@
-//! Ported from the near-workspaces registry deployment tests onto the gateway
-//! `SandboxHarness`: deploy markets from a registry version and verify the
-//! deployed configuration and access keys.
+//! Deploy markets from a registry version and verify the deployed configuration
+//! and access keys.
 
 use anyhow::Result;
 use near_api::types::AccountId;

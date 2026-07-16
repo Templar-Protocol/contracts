@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/repay.rs` onto the gateway harness.
-
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::interest_rate_strategy::InterestRateStrategy;

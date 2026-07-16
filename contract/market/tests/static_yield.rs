@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/static_yield.rs`. The original slept real
+//! The original slept real
 //! wall-clock to accrue interest; here we advance time with `fast_forward`. The
 //! second test's mock `patch_storage_unregister` is replaced with the gateway
 //! `storage::unregister` op.

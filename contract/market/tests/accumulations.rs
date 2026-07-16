@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/accumulations.rs`: anyone (not just the
+//! Anyone (not just the
 //! account owner) can drive interest accrual and yield harvesting. A smoke test
 //! that each permissionless call succeeds.
 

@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/0_many_accounts.rs`.
-//!
 //! Restores the original's coverage: many supplier positions driven through the
 //! withdrawal queue *concurrently*, and every fully-principal-withdrawn supplier
 //! still correctly represented in the listing afterwards. A supply position is

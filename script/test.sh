@@ -14,10 +14,6 @@ source "$SCRIPT_DIR/postgres-up.sh"
 # the `sandbox` profile (see `just test` / `just test-sandbox` and CI).
 cargo nextest run "$@"
 
-# Build-artifact cleanup is intentionally NOT done here. Disk is managed by
-# reducing debug info (CARGO_PROFILE_*_DEBUG=line-tables-only in CI) and by
-# Swatinem/rust-cache's own cache-aware pruning. The previous
-# `find … -name '*.rmeta' -delete` ran *after* the tests (too late to relieve
-# in-run disk pressure) and stripped dependency metadata from the saved cache,
-# forcing those deps to recompile next run — spending time to save disk that did
-# not actually materialize.
+# No build-artifact cleanup here: deleting *.rmeta after the run strips dependency
+# metadata from the saved cache and forces those deps to recompile next run. Disk
+# is managed via line-tables-only debug info (CI) + rust-cache's own pruning.

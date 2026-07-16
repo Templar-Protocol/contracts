@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/storage_management.rs`.
-//!
 //! The original asserts that supplying from an account not registered on the
 //! market panics ("is not registered"). The gateway `supply` op auto-registers
 //! the signer, so to exercise the contract's own requirement we bypass it with a

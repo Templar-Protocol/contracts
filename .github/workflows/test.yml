@@ -499,7 +499,7 @@ jobs:
 
       # Node-backed tests share a pool of out-of-band neard nodes (one per nextest
       # slot) instead of booting a node per test. The `sandbox` profile's setup
-      # script starts the pool; --test-threads must be <= SANDBOX_NODE_COUNT.
+      # script starts the pool.
       # Wasms were prebuilt by the workspace step above, so skip the rebuild.
       # Which tests run is decided by the profile's default-filter (the node-crate
       # list in .config/nextest.toml) — the exact complement of what the workspace

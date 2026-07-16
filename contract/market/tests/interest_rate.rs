@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/interest_rate.rs`. The *exact* interest
+//! The *exact* interest
 //! arithmetic is covered by the deterministic, node-free `templar-common` unit
 //! test `calculate_interest_two_snapshots_exact`. This integration test covers
 //! what genuinely needs a node: every interest-rate strategy actually accrues

@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/liquidation.rs`.
-//!
 //! Rejected liquidations pay via `ft_transfer_call`, so the contract's rejection
 //! is refunded and asserted here as "no effect" (balances + position unchanged).
 //! `liquidatable_collateral_fmv`/`_with_spread` are harness helpers mirroring the

@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/borrow_limits.rs`. The original
+//! The original
 //! `borrow_above_maximum` borrowed concurrently via a `JoinSet`; here it borrows
 //! sequentially and asserts at least one borrow is rejected — borrows are direct
 //! market calls that fail outright (unlike `ft_transfer_call` deposits, which

@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/message_regression.rs`: a smoke test that
+//! A smoke test that
 //! every deposit-message variant and market op still works end-to-end (Supply,
 //! Collateralize, Repay, RepayAccount, withdraw collateral, apply interest, and
 //! Liquidate). Each step asserts success via the harness `execute` path. The

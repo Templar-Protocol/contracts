@@ -429,10 +429,6 @@ async fn happy(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 // machine: the concurrent deposit must not disturb the withdrawal op, which must
 // still complete for its original withdrawer. When ENG-475 is fixed to accept
 // the deposit, the two refund assertions below flip to expect minted shares.
-//
-// The test on `dev` was named "…allowed…" and asserted `transferred <=
-// deposit_amount`, which is vacuously true when nothing transfers — so it never
-// actually detected the refund.
 #[rstest]
 #[tokio::test]
 async fn deposit_during_withdrawal_op_is_refunded(

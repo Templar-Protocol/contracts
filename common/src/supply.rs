@@ -546,9 +546,6 @@ mod tests {
     /// through the identical proportional-split expression as borrower interest
     /// (`(interest_paid_by_borrowers + other_yield) * amount / active`), so this
     /// exercises the split logic the deleted test guarded.
-    ///
-    /// The assertions fail if B were credited from snapshot N, or if the
-    /// snapshot N+1 split were not 50/50.
     #[test]
     #[allow(clippy::too_many_lines, reason = "hand-built market/snapshot fixture")]
     fn multi_supplier_proportional_split_staggered_activation() {

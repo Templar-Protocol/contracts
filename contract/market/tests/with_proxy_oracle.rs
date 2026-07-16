@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/with_proxy_oracle.rs`.
-//!
 //! A market whose oracle is a **proxy oracle** that aggregates a pyth mock and a
 //! redstone mock via `Proxy::median_low`, one proxy per asset price id. The two
 //! `proxy_*_pyth_first` parameters flip the source order within each proxy (which

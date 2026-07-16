@@ -1,5 +1,4 @@
-//! Ported from `contract/market/tests/untracked_funds.rs` onto the gateway
-//! harness. The old `#[should_panic]` borrow case asserts on the observable
+//! The old `#[should_panic]` borrow case asserts on the observable
 //! effect (no funds disbursed) rather than the panic string, since the gateway
 //! reports a failed operation without surfacing the contract message.
 

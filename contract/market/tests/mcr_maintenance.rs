@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/mcr_maintenance.rs`.
-
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::{dec, fee::Fee, Decimal};

@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/snapshot.rs`. The original sleeps real
+//! The original sleeps real
 //! wall-clock to cross time-chunk boundaries; here we advance with `fast_forward`.
 //! Generous advances are safe: `partial::check` skips snapshots that match the
 //! previous expected state, so the extra (no-op) snapshots a large advance

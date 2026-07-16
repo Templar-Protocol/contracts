@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/supply_maximum_amount.rs`.
-
 use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::time_chunk::TimeChunkConfiguration;

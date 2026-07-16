@@ -240,7 +240,7 @@ impl SandboxHarness {
 
     /// Snapshot of every (account, signer) the harness can sign as.
     pub(crate) fn signers_snapshot(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
-        self.signers.lock().expect("signers mutex poisoned").clone()
+        self.gateway_signers()
     }
 
     /// Register a signer for an on-demand account.

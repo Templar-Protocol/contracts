@@ -23,10 +23,6 @@ use templar_universal_account::{
     transaction::FunctionCallAction, ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
 
-/// The fixed secret key every harness-provisioned account is created with (see
-/// `gateway/testing/src/sandbox.rs`). Newly created relayer accounts reuse it.
-const TEST_SECRET_KEY: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-
 /// rstest fixture: a freshly started sandbox harness for a single test.
 #[rstest::fixture]
 pub async fn harness() -> SandboxHarness {
@@ -36,7 +32,7 @@ pub async fn harness() -> SandboxHarness {
 }
 
 pub fn test_secret_key() -> SecretKey {
-    TEST_SECRET_KEY.parse().expect("valid test secret key")
+    templar_gateway_testing::test_secret_key().expect("valid test secret key")
 }
 
 pub fn test_signer() -> Arc<Signer> {

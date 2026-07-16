@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use near_api::{types::AccountId, Contract, NetworkConfig, SecretKey, Signer};
+use near_api::{types::AccountId, Contract, NetworkConfig, Signer};
 use near_sdk::{
     json_types::U128,
     serde::{de::DeserializeOwned, Serialize},
@@ -27,16 +27,13 @@ use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_near_common::price_transformer::{Call, PriceTransformer};
 use test_utils::{DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 
-const TEST_SECRET_KEY: &str =
-    "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
 ));
 
 fn signer() -> Result<Arc<Signer>> {
-    let secret_key: SecretKey = TEST_SECRET_KEY.parse().context("parse test key")?;
-    Signer::from_secret_key(secret_key).context("build test signer")
+    Signer::from_secret_key(templar_gateway_testing::test_secret_key()?)
+        .context("build test signer")
 }
 
 async fn view<T: DeserializeOwned + Send + Sync>(

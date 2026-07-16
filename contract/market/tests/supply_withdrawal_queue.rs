@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/supply_withdrawal_queue.rs`.
-//!
 //! The original also asserts on the `WithdrawalQueueStatus` *returned* by
 //! `execute_next_supply_withdrawal_request`; the gateway write op surfaces only
 //! the transaction result, so here we assert the same outcomes via the queue

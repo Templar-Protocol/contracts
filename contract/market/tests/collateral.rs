@@ -1,5 +1,3 @@
-//! Ported from `contract/market/tests/collateral.rs` onto the gateway harness.
-//!
 //! `concurrent_collateral_withdrawals_conserve_deposit` restores the original
 //! `collateral_withdrawal`'s coverage: many withdrawals in flight at once,
 //! driving repeated `collateral_asset_in_flight` initial/final transitions,

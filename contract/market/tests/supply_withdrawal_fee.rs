@@ -1,4 +1,4 @@
-//! Ported from `contract/market/tests/supply_withdrawal_fee.rs`. The original
+//! The original
 //! slept real wall-clock to age the deposit past the fee window; here the expiry
 //! case advances time with `fast_forward`. The `TimeBasedFee` math itself is
 //! covered by pure tests in `templar-common`.

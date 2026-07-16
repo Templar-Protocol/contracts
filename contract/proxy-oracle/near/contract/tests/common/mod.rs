@@ -28,15 +28,9 @@ use templar_common::{
 };
 use templar_gateway_testing::SandboxHarness;
 
-/// The fixed sandbox key shared by every account the harness provisions.
-pub const TEST_SECRET_KEY: &str =
-    "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-
-/// Parse the shared sandbox secret key.
+/// The shared sandbox key every harness-provisioned account uses.
 pub fn secret_key() -> Result<SecretKey> {
-    TEST_SECRET_KEY
-        .parse()
-        .context("failed to parse test secret key")
+    templar_gateway_testing::test_secret_key()
 }
 
 /// Build a signer over the shared sandbox key. Valid for any harness account.

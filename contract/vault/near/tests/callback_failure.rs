@@ -162,8 +162,9 @@ async fn vault_usable_after_unbrick_recovery(#[future(awt)] harness: SandboxHarn
     Ok(())
 }
 
-/// Executing a market-withdrawal step with the wrong `MarketId` is rejected and
-/// leaves the vault in Withdrawing state (no corruption); `unbrick` then recovers it.
+/// Executing a market-withdrawal step with the wrong `MarketId` is rejected: the
+/// vault stops the withdrawal, refunds the escrowed shares, and returns to Idle —
+/// a graceful recovery, no `unbrick` needed.
 #[rstest]
 #[tokio::test]
 async fn execute_withdrawal_wrong_market_does_not_corrupt(
