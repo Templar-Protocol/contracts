@@ -8,6 +8,7 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 
 - **[Smart Contract Addresses](./deployments.md)** - Official contract addresses and verification
 - **[Protocol Governance](./governance.md)** - Administrative controls and upgrade mechanisms
+- **[Stellar Vault Curator Guide](./curator-guide.md)** - Deployment, governance, allocation, withdrawals, and keeper operations
 - **[Oracle System](./oracles.md)** - Price feed infrastructure and monitoring
 - **[Security Reporting](./security.md)** - Security practices and vulnerability reporting
 - **[Monitoring and Risk Management](./monitoring.md)** - Protocol health monitoring systems

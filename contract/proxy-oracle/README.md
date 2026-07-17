@@ -49,6 +49,34 @@ Manual trip/untrip is available through governance operation `SetManualTrip { id
 
 Proxy oracle contract upgrades are available through the Admin-only `AdminUpgrade` operation, which dispatches the proxy's owner-gated `admin_upgrade` entrypoint. `AdminFunctionCall` is also Admin-only and dispatches a raw function call only to the governance contract's configured proxy oracle account; it is intended for exceptional proxy-admin actions such as accepting ownership after an owner transfer is proposed, not for arbitrary receiver calls. Its stored operation gas is a regular NEAR gas value; the manager CLI accepts either raw `--gas` units or `--tgas` shorthand.
 
+### Migrating a legacy NEAR proxy oracle
+
+`tmplrmgr proxy-oracle upgrade --migration v0` accepts only a v0.1.0 source. It requires the proxy-oracle account's full-access key because legacy `migrate` is private, then submits `DEPLOY_CONTRACT` and `migrate({"from_version":"v0"})` with 250 Tgas in one transaction.
+
+Before mainnet execution, refresh and run the production-state fixture:
+
+```text
+cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet generate_mainnet_state_patch -- --ignored
+cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet migrate_mainnet_patch_exactly
+cargo test -p templar-proxy-oracle-near-contract --test migrate_mainnet failed_migration_reverts_contract_code
+```
+
+These tests need `near-workspaces`, network access, and local port binding; they do not run in restricted CI environments.
+
+The two non-ignored tests must pass after the first downloads the current account state. `migrate_mainnet_patch_exactly` deploys the checked-in v0.3.0 release into a sandbox, invokes the same migration payload, and asserts the migrated state and proxy definitions. `failed_migration_reverts_contract_code` verifies a failed migration leaves the deployed code at v0.1.0.
+
+Verify the source version, use an audited v0.3.0 WASM, then verify the destination version:
+
+```text
+tmplrmgr --network mainnet contract get-version --contract-id <oracle-id>
+tmplrmgr --network mainnet proxy-oracle upgrade --oracle-id <oracle-id> --wasm <proxy-oracle-v0.3.0.wasm> --migration v0 --signer-id <oracle-id>
+tmplrmgr --network mainnet contract get-version --contract-id <oracle-id>
+```
+
+Set `SECRET_KEY` in the execution environment instead of passing a private key on the command line.
+
+Registry-backed WASM resolution is deferred to [ENG-482](https://linear.app/templar-protocol/issue/ENG-482/support-registry-sourced-wasm-for-proxy-oracle-upgrades). Do not use `--migration v0` for another source version or retry it after a successful upgrade.
+
 Manual-trip metadata is event-only, encoded as `Base64VecU8`, capped at 1024 bytes, and not stored in contract state. Offline manual-trip events are emitted only when the manual-trip state changes. Governance-derived circuit-breaker configuration events are emitted for successful executions, except no-op manual-trip executions do not emit a manual-trip event.
 
 Proxy and circuit-breaker changes clear the cached price and bump an internal per-price update epoch. In-flight update callbacks whose epoch no longer matches are ignored, so stale callbacks cannot repopulate cache or mutate breaker state after configuration changes.

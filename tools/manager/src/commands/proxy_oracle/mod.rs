@@ -4,6 +4,7 @@ mod get_proxy_circuit_breaker_set;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;
+mod upgrade;
 
 pub use create::Create;
 pub use get_proxy::GetProxy;
@@ -11,6 +12,7 @@ pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
 pub use list_proxies::ListProxies;
 pub use price_feed_exists::PriceFeedExists;
 pub use update_prices::UpdatePrices;
+pub use upgrade::Upgrade;
 
 use anyhow::Context as _;
 use clap::Subcommand;
@@ -31,6 +33,8 @@ pub enum ProxyOracleNs {
     GetProxyCircuitBreakerSet(GetProxyCircuitBreakerSet),
     /// Refresh on-chain prices for one or more feeds.
     UpdatePrices(UpdatePrices),
+    /// Upgrade with an explicit migration and audited local WASM.
+    Upgrade(Upgrade),
 }
 
 /// Parse a 32-byte hex price identifier (accepting an optional `0x` prefix).

@@ -140,3 +140,38 @@ async fn migrate_mainnet_patch_exactly() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_migration_reverts_contract_code() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let network = &harness.network;
+    let account_id = harness.proxy_oracle_signer_account_id.0.clone();
+
+    // Reproduce the legacy v0 contract (v0 code + v0 state), without migrating.
+    common::deploy_code(
+        network,
+        &account_id,
+        templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
+    )
+    .await?;
+    harness.patch_state(&account_id, patch()).await?;
+
+    // Atomically deploy the current wasm and migrate with an invalid version in
+    // one transaction. The migrate call fails, so the whole transaction — the
+    // code deploy included — must revert, leaving the contract on the v0 code.
+    let result = Contract::deploy(account_id.clone())
+        .use_code(templar_gateway_testing::wasm::proxy_oracle().await.to_vec())
+        .with_init_call("migrate", json!({ "from_version": "invalid" }))?
+        .max_gas()
+        .with_signer(common::signer()?)
+        .send_to(network)
+        .await?;
+    assert!(result.is_failure(), "invalid migration should fail");
+
+    // The deploy reverted with the migrate, so the contract still reports v0.
+    let metadata: serde_json::Value =
+        common::view(network, &account_id, "contract_source_metadata", json!({})).await?;
+    assert_eq!(metadata["version"], "0.1.0");
+
+    Ok(())
+}

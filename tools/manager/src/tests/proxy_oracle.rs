@@ -70,6 +70,48 @@ fn oracle_create(
     }
 }
 
+#[test]
+fn upgrade_reads_local_wasm_and_carries_the_migration() {
+    let wasm = b"\0asm\x01\0\0\0proxy-oracle";
+    let path = std::env::temp_dir().join(format!(
+        "tmplrmgr-proxy-upgrade-{}-{}.wasm",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::write(&path, wasm).expect("write WASM fixture");
+
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "proxy-oracle",
+            "upgrade",
+            "--oracle-id",
+            "oracle.testnet",
+            "--wasm",
+            path.to_str().unwrap(),
+            "--migration",
+            "v0",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("upgrade command should parse");
+
+    let spec = match cli.command {
+        Command::ProxyOracle {
+            command: ProxyOracleNs::Upgrade(cmd),
+        } => cmd.try_into_spec().expect("read WASM"),
+        _ => panic!("expected proxy-oracle upgrade"),
+    };
+    std::fs::remove_file(&path).ok();
+
+    assert_eq!(spec.wasm.0, wasm);
+    assert_eq!(
+        serde_json::to_value(spec).unwrap()["migration"],
+        serde_json::json!("v0")
+    );
+}
+
 const V0_3_0: &str = "templar-proxy-oracle-near-contract@0.3.0#ab";
 const V0_2_0: &str = "templar-proxy-oracle-near-contract@0.2.0#ab";
 const UNREADABLE: &str = "templar-proxy-oracle-near-contract-0.3.0";

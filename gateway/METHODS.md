@@ -133,6 +133,7 @@
 | `proxyOracle.listProxies` | read | `ListProxies` → `ListProxiesResult` | List proxy price feeds. |
 | `proxyOracle.priceFeedExists` | read | `PriceFeedExists` → `PriceFeedExistsResult` | Check whether a proxy price feed exists. |
 | `proxyOracle.updatePrices` | write | `UpdatePrices` → `WriteOperationResult` | Refresh the proxy oracle's cached prices for the given feeds. |
+| `proxyOracle.upgrade` | write | `Upgrade` → `WriteOperationResult` | Upgrade a proxy oracle with supplied WASM and an explicit state migration. |
 
 ## `proxyOracleGovernance`
 
