@@ -3,6 +3,7 @@
 pub mod controller;
 pub mod ops;
 pub mod sandbox;
+mod sandbox_ext;
 pub mod wasm;
 
 pub use controller::TestController;
