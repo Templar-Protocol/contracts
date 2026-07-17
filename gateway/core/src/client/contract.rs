@@ -82,8 +82,16 @@ impl ContractClient<'_> {
         .await
     }
 
+    pub async fn cached_version<T>(&self) -> GatewayResult<Version<T>> {
+        self.parse_version(self.cached_contract_source_metadata().await?)
+    }
+
+    /// Read the current on-chain version without using the metadata cache.
     pub async fn version<T>(&self) -> GatewayResult<Version<T>> {
-        let meta = self.cached_contract_source_metadata().await?;
+        self.parse_version(self.contract_source_metadata(()).await?)
+    }
+
+    fn parse_version<T>(&self, meta: ContractSourceMetadata) -> GatewayResult<Version<T>> {
         let Some(ver_str) = meta.version else {
             return Err(std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -98,5 +106,50 @@ impl ContractClient<'_> {
 
     contract_views! {
         pub fn contract_source_metadata(()) -> ContractSourceMetadata;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use near_account_id::AccountId;
+    use near_api::NetworkConfig;
+    use near_contract_standards::contract_metadata::ContractSourceMetadata;
+    use templar_gateway_types::ProxyOracle;
+
+    use crate::client::NearClient;
+
+    #[tokio::test]
+    async fn version_bypasses_cached_metadata() {
+        let contract_id: AccountId = "oracle.test".parse().unwrap();
+        let client = NearClient::new(NetworkConfig::from_rpc_url(
+            "test",
+            "http://127.0.0.1:1".parse().unwrap(),
+        ));
+        client.cache().contract.contract_source_metadata.insert(
+            contract_id.clone(),
+            Arc::new(ContractSourceMetadata {
+                version: Some("0.1.0".to_owned()),
+                ..Default::default()
+            }),
+        );
+
+        assert_eq!(
+            client
+                .contract(contract_id.clone())
+                .cached_version::<ProxyOracle>()
+                .await
+                .unwrap(),
+            (0, 1, 0)
+        );
+        assert!(
+            client
+                .contract(contract_id.clone())
+                .version::<ProxyOracle>()
+                .await
+                .is_err(),
+            "version must not read the cached metadata"
+        );
     }
 }

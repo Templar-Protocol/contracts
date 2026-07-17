@@ -31,7 +31,7 @@ impl<C: HasNearClient> DispatchRead<contract::GetVersion, C> for Dispatch {
         let metadata = ctx
             .near_client()
             .contract(request.contract_id)
-            .cached_contract_source_metadata()
+            .contract_source_metadata(())
             .await?;
         let version_string = metadata.version.ok_or_else(|| {
             GatewayError::NearQuery("contract metadata does not contain version".to_owned())
