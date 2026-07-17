@@ -107,7 +107,7 @@ fn create_prod_preset_builds_config_init_args() {
             "--name",
             "redstone",
             "--version-key",
-            "redstone@1",
+            "templar-redstone-adapter-contract@0.1.1#abc",
             "--prod",
             "--deposit",
             "3.5 NEAR",
@@ -146,7 +146,7 @@ fn create_test_preset_builds_config_init_args() {
             "--name",
             "redstone",
             "--version-key",
-            "redstone@1",
+            "templar-redstone-adapter-contract@0.1.1#abc",
             "--test",
             "--deposit",
             "3.5 NEAR",
@@ -169,6 +169,116 @@ fn create_test_preset_builds_config_init_args() {
         serde_json::to_value(templar_common::oracle::redstone::config::test()).unwrap()
     );
     assert_eq!(init["admin_id"], "signer.testnet");
+}
+
+#[test]
+fn create_custom_init_args_defaults_admin_to_signer() {
+    let init_args = serde_json::to_string(
+        &serde_json::json!({ "config": templar_common::oracle::redstone::config::test() }),
+    )
+    .unwrap();
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "redstone",
+            "create",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "redstone",
+            "--version-key",
+            "templar-redstone-adapter-contract@0.1.1#abc",
+            "--init-args",
+            init_args.as_str(),
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("redstone create with custom init args should parse");
+    let deploy = match cli.command {
+        Command::Redstone {
+            command: RedstoneNs::Create(a),
+        } => a.try_into_spec().expect("into deploy spec"),
+        _ => panic!("expected redstone create"),
+    };
+
+    let init: serde_json::Value =
+        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
+    assert_eq!(init["admin_id"], "signer.testnet");
+}
+
+#[test]
+fn create_custom_init_args_preserves_explicit_admin() {
+    let init_args = serde_json::to_string(&serde_json::json!({
+        "config": templar_common::oracle::redstone::config::test(),
+        "admin_id": "governance.testnet",
+    }))
+    .unwrap();
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "redstone",
+            "create",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "redstone",
+            "--version-key",
+            "templar-redstone-adapter-contract@0.1.1#abc",
+            "--init-args",
+            init_args.as_str(),
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("redstone create with custom init args should parse");
+    let deploy = match cli.command {
+        Command::Redstone {
+            command: RedstoneNs::Create(a),
+        } => a.try_into_spec().expect("into deploy spec"),
+        _ => panic!("expected redstone create"),
+    };
+
+    let init: serde_json::Value =
+        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
+    assert_eq!(init["admin_id"], "governance.testnet");
+}
+
+#[test]
+fn create_rejects_version_that_ignores_admin_id() {
+    let cli = Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "redstone",
+            "create",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "redstone",
+            "--version-key",
+            "templar-redstone-adapter-contract@0.1.0#abc",
+            "--prod",
+            "--deposit",
+            "3.5 NEAR",
+        ]
+        .into_iter()
+        .chain(CREDS),
+    )
+    .expect("redstone create --prod should parse");
+    let error = match cli.command {
+        Command::Redstone {
+            command: RedstoneNs::Create(a),
+        } => a
+            .try_into_spec()
+            .expect_err("old adapters must not receive admin_id"),
+        _ => panic!("expected redstone create"),
+    };
+
+    assert!(error.to_string().contains("Deploy >= 0.1.1"));
 }
 
 #[test]
