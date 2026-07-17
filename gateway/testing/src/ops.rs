@@ -11,6 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use near_api::types::AccountId;
+use near_primitives::{
+    state_record::StateRecord,
+    types::{StoreKey, StoreValue},
+};
 use near_token::NearToken;
 use templar_common::{
     asset::{AssetClass, BorrowAssetAmount, CollateralAssetAmount, FungibleAsset},
@@ -1266,40 +1270,7 @@ impl SandboxHarness {
     /// List `account_id`'s access keys as `(public_key, is_full_access)` via the
     /// JSON-RPC `view_access_key_list` query.
     pub async fn view_access_keys(&self, account_id: &AccountId) -> Result<Vec<(String, bool)>> {
-        let url = self.network.rpc_endpoints[0].url.clone();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let response: serde_json::Value = client
-            .post(url)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": "keys",
-                "method": "query",
-                "params": {
-                    "request_type": "view_access_key_list",
-                    "finality": "final",
-                    "account_id": account_id.to_string(),
-                },
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-            anyhow::bail!("view_access_key_list error: {error}");
-        }
-        let keys = response["result"]["keys"]
-            .as_array()
-            .context("missing keys in access key list")?;
-        Ok(keys
-            .iter()
-            .map(|key| {
-                let public_key = key["public_key"].as_str().unwrap_or_default().to_owned();
-                let full_access = key["access_key"]["permission"].as_str() == Some("FullAccess");
-                (public_key, full_access)
-            })
-            .collect())
+        crate::sandbox_ext::view_access_keys(&self.network, account_id).await
     }
 
     /// Patch raw contract storage entries (key/value byte pairs) on `account_id`
@@ -1310,40 +1281,15 @@ impl SandboxHarness {
         account_id: &AccountId,
         entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
-        use base64::Engine as _;
-        let base64 = base64::engine::general_purpose::STANDARD;
-        let records: Vec<serde_json::Value> = entries
+        let records = entries
             .into_iter()
-            .map(|(key, value)| {
-                serde_json::json!({
-                    "Data": {
-                        "account_id": account_id.to_string(),
-                        "data_key": base64.encode(key),
-                        "value": base64.encode(value),
-                    }
-                })
+            .map(|(key, value)| StateRecord::Data {
+                account_id: account_id.clone(),
+                data_key: StoreKey::from(key),
+                value: StoreValue::from(value),
             })
             .collect();
-        let url = self.network.rpc_endpoints[0].url.clone();
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .build()?;
-        let response: serde_json::Value = client
-            .post(url)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": "patch_state",
-                "method": "sandbox_patch_state",
-                "params": { "records": records },
-            }))
-            .send()
-            .await?
-            .json()
-            .await?;
-        if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-            anyhow::bail!("sandbox_patch_state error: {error}");
-        }
-        Ok(())
+        crate::sandbox_ext::patch_records(&self.network, records).await
     }
 
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
@@ -1804,24 +1750,7 @@ impl SandboxHarness {
     pub async fn fast_forward(&self, blocks: u64) -> Result<()> {
         let target = self.latest_block().await?.height + blocks;
 
-        // `sandbox_fast_forward` is a sandbox-only RPC extension with no near-api
-        // (and so no gateway) method — the one place the harness must speak raw
-        // JSON-RPC. Generous timeout: it bounds an otherwise-infinite hang, not a
-        // fail-fast budget, since a loaded shared node can take a while to advance.
-        let url = self.network.rpc_endpoints[0].url.clone();
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()?
-            .post(url)
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": "fast_forward",
-                "method": "sandbox_fast_forward",
-                "params": { "delta_height": blocks },
-            }))
-            .send()
-            .await?
-            .error_for_status()?;
+        crate::sandbox_ext::fast_forward(&self.network, blocks).await?;
 
         let start = std::time::Instant::now();
         loop {

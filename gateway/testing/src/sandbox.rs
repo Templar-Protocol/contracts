@@ -177,6 +177,12 @@ impl SandboxHarness {
 
     /// Create a uniquely-named funded `*.sandbox` sub-account, register its
     /// signer, and return its id plus a signer for it.
+    ///
+    /// The account and its full-access key are minted directly into chain state
+    /// via `sandbox_patch_state` — instant, zero blocks. For a test that asserts
+    /// on account-creation behavior itself, use
+    /// [`create_account_via_tx`](Self::create_account_via_tx), which creates the
+    /// account with a real transaction.
     pub(crate) async fn create_account(
         &self,
         label: &str,
@@ -184,7 +190,23 @@ impl SandboxHarness {
     ) -> Result<(AccountId, Arc<Signer>)> {
         let account_id = self.unique_account_id(label)?;
         let secret_key = test_secret_key()?;
-        // Fund and sign with the per-process tenant root, not the genesis key.
+        crate::sandbox_ext::create_account(&self.network, &account_id, &secret_key, balance)
+            .await?;
+        self.register_account(account_id, secret_key, label).await
+    }
+
+    /// Like [`create_account`](Self::create_account) but mints the account with a
+    /// real `create_account` transaction funded and signed by the per-process
+    /// tenant root (not the genesis key). Kept for tests that assert on
+    /// account-creation behavior; the patch-based [`create_account`] is the
+    /// default and is far faster.
+    pub async fn create_account_via_tx(
+        &self,
+        label: &str,
+        balance: NearToken,
+    ) -> Result<(AccountId, Arc<Signer>)> {
+        let account_id = self.unique_account_id(label)?;
+        let secret_key = test_secret_key()?;
         create_funded_account(
             &self.network,
             &self.tenant_root_id,
@@ -194,7 +216,17 @@ impl SandboxHarness {
             balance,
         )
         .await?;
+        self.register_account(account_id, secret_key, label).await
+    }
 
+    /// Register a freshly-created account's signer on the harness and return its
+    /// id plus a signer over its key.
+    async fn register_account(
+        &self,
+        account_id: AccountId,
+        secret_key: SecretKey,
+        label: &str,
+    ) -> Result<(AccountId, Arc<Signer>)> {
         let managed = ManagedSigner::new([secret_key])
             .await
             .with_context(|| format!("failed to initialize {label} signer"))?;

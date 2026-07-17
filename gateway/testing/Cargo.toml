@@ -9,6 +9,10 @@ repository.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 near-api.workspace = true
+near-crypto.workspace = true
+near-jsonrpc-client = { workspace = true, features = ["sandbox"] }
+near-jsonrpc-primitives.workspace = true
+near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-sandbox.workspace = true
 near-token.workspace = true
