@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context as _};
 use clap::Args;
-use serde_json::{json, Value};
-use templar_common::oracle::redstone::config;
+use near_account_id::AccountId;
+use templar_common::oracle::redstone::{config, Config};
 use templar_gateway_methods_spec::registry as registry_spec;
-use templar_gateway_types::{version::RedstoneAdapterVersion, ManagedAccountId};
+use templar_gateway_types::version::RedstoneAdapterVersion;
 
 use crate::commands::deploy_common::DeployCommonArgs;
 use crate::commands::signer::SignerArgs;
@@ -13,12 +13,19 @@ use crate::commands::signer::SignerArgs;
 /// Deploy a RedStone price adapter from a registered version, granting the
 /// signer a full access key so the operator retains control of the new account.
 #[derive(Args, Debug)]
-#[command(group(
-    clap::ArgGroup::new("redstone_config")
-        .args(["prod", "test", "init_args", "init_args_file"])
-        .required(true)
-        .multiple(false)
-))]
+#[command(
+    group(
+        clap::ArgGroup::new("redstone_config")
+            .args(["prod", "test", "init_args", "init_args_file"])
+            .required(true)
+            .multiple(false)
+    ),
+    group(
+        clap::ArgGroup::new("redstone_admin")
+            .args(["admin_id", "predecessor_is_admin"])
+            .multiple(false)
+    )
+)]
 pub struct Create {
     #[command(flatten)]
     common: DeployCommonArgs,
@@ -28,10 +35,22 @@ pub struct Create {
     /// Use the built-in test RedStone configuration.
     #[arg(long)]
     test: bool,
-    /// Full init args JSON. When `admin_id` is omitted, it defaults to the signer.
+    /// Account to seed with the adapter's administration roles.
+    #[arg(
+        long,
+        value_name = "ACCOUNT_ID",
+        conflicts_with_all = ["init_args", "init_args_file", "predecessor_is_admin"]
+    )]
+    admin_id: Option<AccountId>,
+    /// Seed the registry predecessor with administration roles.
+    #[arg(long, conflicts_with_all = ["init_args", "init_args_file"])]
+    predecessor_is_admin: bool,
+    /// Full typed init args JSON: `{"config": ..., "admin_id": "account.near"}`.
+    ///
+    /// Use `admin_id: null` to explicitly seed the predecessor.
     #[arg(long, value_name = "JSON")]
     init_args: Option<String>,
-    /// Path to a full init args JSON file.
+    /// Path to a full typed init args JSON file.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
     #[command(flatten)]
@@ -55,50 +74,47 @@ fn check_admin_id_is_honored(version_key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_args_with_default_admin(
-    mut init_args: Value,
-    admin_id: &ManagedAccountId,
-) -> anyhow::Result<(Vec<u8>, bool)> {
-    let args = init_args
-        .as_object_mut()
-        .context("RedStone init args must be a JSON object")?;
-    let seats_admin = if args.contains_key("admin_id") {
-        !args["admin_id"].is_null()
-    } else {
-        args.insert(
-            "admin_id".to_owned(),
-            serde_json::to_value(admin_id).context("serialize RedStone admin_id")?,
-        );
-        true
-    };
-
-    Ok((
-        serde_json::to_vec(&init_args).context("serialize RedStone init args")?,
-        seats_admin,
-    ))
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InitArgs {
+    config: Config,
+    admin_id: Option<AccountId>,
 }
 
 impl Create {
+    fn preset_init_args(&self, config: Config) -> anyhow::Result<InitArgs> {
+        let admin_id = match (&self.admin_id, self.predecessor_is_admin) {
+            (Some(admin_id), false) => Some(admin_id.clone()),
+            (None, true) => None,
+            (None, false) => {
+                bail!("--prod and --test require either --admin-id or --predecessor-is-admin")
+            }
+            (Some(_), true) => bail!("--admin-id conflicts with --predecessor-is-admin"),
+        };
+
+        Ok(InitArgs { config, admin_id })
+    }
+
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
         let signer_public_key = self.signer.public_key()?;
         let init_args = if self.prod {
-            json!({ "config": config::prod() })
+            self.preset_init_args(config::prod())?
         } else if self.test {
-            json!({ "config": config::test() })
+            self.preset_init_args(config::test())?
         } else if let Some(args) = self.init_args {
-            serde_json::from_str(&args).context("parse RedStone init args")?
+            serde_json::from_str(&args).context("parse typed RedStone init args")?
         } else if let Some(path) = self.init_args_file {
             let args = std::fs::read(&path)
                 .with_context(|| format!("read RedStone init args from {}", path.display()))?;
-            serde_json::from_slice(&args).context("parse RedStone init args")?
+            serde_json::from_slice(&args).context("parse typed RedStone init args")?
         } else {
             bail!("provide --prod, --test, --init-args, or --init-args-file");
         };
-        let (init_args, seats_admin) =
-            init_args_with_default_admin(init_args, &self.signer.account_id())?;
-        let deploy = self.common.into_deploy(signer_public_key, init_args);
+        let init_args_bytes =
+            serde_json::to_vec(&init_args).context("serialize typed RedStone init args")?;
+        let deploy = self.common.into_deploy(signer_public_key, init_args_bytes);
 
-        if seats_admin {
+        if init_args.admin_id.is_some() {
             check_admin_id_is_honored(&deploy.version_key)?;
         }
 
