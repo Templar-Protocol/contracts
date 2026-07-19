@@ -10,28 +10,21 @@ use templar_gateway_types::version::RedstoneAdapterVersion;
 use crate::commands::deploy_common::DeployCommonArgs;
 use crate::commands::signer::SignerArgs;
 
-/// Deploy a RedStone price adapter from a registered version, granting the
-/// signer a full access key so the operator retains control of the new account.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum Preset {
     Prod,
     Test,
 }
 
+/// Deploy a RedStone price adapter from a registered version, granting the
+/// signer a full access key so the operator retains control of the new account.
 #[derive(Args, Debug)]
-#[command(
-    group(
-        clap::ArgGroup::new("redstone_config")
-            .args(["preset", "init_args", "init_args_file"])
-            .required(true)
-            .multiple(false)
-    ),
-    group(
-        clap::ArgGroup::new("redstone_admin")
-            .args(["admin_id", "predecessor_is_admin"])
-            .multiple(false)
-    )
-)]
+#[command(group(
+    clap::ArgGroup::new("redstone_config")
+        .args(["preset", "init_args", "init_args_file"])
+        .required(true)
+        .multiple(false)
+))]
 pub struct Create {
     #[command(flatten)]
     common: DeployCommonArgs,
@@ -60,9 +53,14 @@ pub struct Create {
     pub(crate) signer: SignerArgs,
 }
 
-/// Temporarily use the version key as an ABI capability guard. Remove this
-/// check once ENG-463 validates registry-deploy init arguments against the
-/// contract's embedded ABI.
+/// Reject an `admin_id` the target adapter's `new` would silently ignore.
+///
+/// Only as good as the version key, which is a convention the registry does not
+/// enforce (see [`Version::from_version_key`]). An operator guardrail, hence the
+/// CLI and not the gateway; ENG-463 replaces it with a check against the
+/// contract's own ABI.
+///
+/// [`Version::from_version_key`]: templar_gateway_types::version::Version::from_version_key
 fn check_admin_id_is_honored(version_key: &str) -> anyhow::Result<()> {
     let version = RedstoneAdapterVersion::from_version_key(version_key)
         .with_context(|| format!("cannot tell whether {version_key} honors admin_id"))?;
@@ -78,13 +76,13 @@ fn check_admin_id_is_honored(version_key: &str) -> anyhow::Result<()> {
 }
 
 #[derive(serde::Serialize)]
-struct InitArgs {
+struct RedstoneInitArgs {
     config: Config,
     admin_id: Option<AccountId>,
 }
 
 impl Create {
-    fn preset_init_args(&self, config: Config) -> anyhow::Result<InitArgs> {
+    fn preset_init_args(&self, config: Config) -> anyhow::Result<RedstoneInitArgs> {
         let admin_id = match (&self.admin_id, self.predecessor_is_admin) {
             (Some(admin_id), _) => Some(admin_id.clone()),
             (None, true) => None,
@@ -93,7 +91,7 @@ impl Create {
             }
         };
 
-        Ok(InitArgs { config, admin_id })
+        Ok(RedstoneInitArgs { config, admin_id })
     }
 
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
