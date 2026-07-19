@@ -13295,7 +13295,6 @@ dependencies = [
  "near-api",
  "near-crypto",
  "near-jsonrpc-client",
- "near-jsonrpc-primitives",
  "near-primitives",
  "near-sandbox",
  "near-sdk",

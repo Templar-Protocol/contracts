@@ -3,13 +3,14 @@
 //!
 //! The harness mints test accounts by writing state records with
 //! `sandbox_patch_state` — far cheaper than a real `CreateAccount` transaction —
-//! advances chain time with `sandbox_fast_forward`, and reads access keys at a
-//! chosen finality. Those are sandbox-only RPC extensions (or finality controls)
-//! the gateway neither has nor should ever wrap, so all raw-RPC access is confined
-//! to this module; the rest of the harness goes through the gateway.
-//! [`near_jsonrpc_client`] supplies the typed request/response plumbing.
+//! advances chain time with `sandbox_fast_forward`, and polls an access key at
+//! `Final` while a patch settles. Those are sandbox-only RPC extensions (or
+//! finality reads near-api can't express) the gateway neither has nor should ever
+//! wrap, so all raw-RPC access is confined to this module; the rest of the
+//! harness goes through the gateway or near-api. [`near_jsonrpc_client`] supplies
+//! the typed request/response plumbing.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use near_api::{types::AccountId, NetworkConfig, SecretKey};
@@ -20,16 +21,14 @@ use near_jsonrpc_client::{
     },
     JsonRpcClient,
 };
-use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryError};
 use near_primitives::{
     account::{AccessKey, Account as ChainAccount, AccountContract},
     state_record::StateRecord,
-    types::{BlockReference, Finality},
-    views::{AccessKeyPermissionView, QueryRequest},
+    types::{BlockReference, Finality, StoreKey, StoreValue},
+    views::QueryRequest,
 };
 use near_token::NearToken;
 
-/// A JSON-RPC client for `network`.
 fn client(network: &NetworkConfig) -> JsonRpcClient {
     JsonRpcClient::connect(network.rpc_endpoints[0].url.as_str())
 }
@@ -44,7 +43,7 @@ pub(crate) async fn create_account(
     secret_key: &SecretKey,
     balance: NearToken,
 ) -> Result<()> {
-    let public_key = public_key(secret_key)?;
+    let pk = public_key(secret_key)?;
     // `AccountContract::None` is a codeless account (all-zero code hash); `182` is
     // near's canonical storage size for one full-access key. The key nonce starts
     // at 0 — the block-height nonce floor applies only to keys added by a
@@ -61,19 +60,34 @@ pub(crate) async fn create_account(
         },
         StateRecord::AccessKey {
             account_id: account_id.clone(),
-            public_key: public_key.clone(),
+            public_key: pk.clone(),
             access_key: AccessKey::full_access(),
         },
     ];
     patch_records(network, records).await?;
-    wait_until_final(network, account_id, &public_key).await
+    wait_until_final(network, account_id, &pk).await
+}
+
+/// Patch raw contract storage entries (key/value byte pairs) on `account_id`
+/// via `sandbox_patch_state`.
+pub(crate) async fn patch_data(
+    network: &NetworkConfig,
+    account_id: &AccountId,
+    entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
+) -> Result<()> {
+    let records = entries
+        .into_iter()
+        .map(|(key, value)| StateRecord::Data {
+            account_id: account_id.clone(),
+            data_key: StoreKey::from(key),
+            value: StoreValue::from(value),
+        })
+        .collect();
+    patch_records(network, records).await
 }
 
 /// Write `records` directly into chain state via `sandbox_patch_state`.
-pub(crate) async fn patch_records(
-    network: &NetworkConfig,
-    records: Vec<StateRecord>,
-) -> Result<()> {
+async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
     client(network)
         .call(RpcSandboxPatchStateRequest { records })
         .await
@@ -88,37 +102,6 @@ pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> 
         .await
         .context("sandbox_fast_forward failed")?;
     Ok(())
-}
-
-/// List `account_id`'s access keys as `(public_key, is_full_access)` at final
-/// finality.
-pub(crate) async fn view_access_keys(
-    network: &NetworkConfig,
-    account_id: &AccountId,
-) -> Result<Vec<(String, bool)>> {
-    let response = client(network)
-        .call(RpcQueryRequest {
-            block_reference: BlockReference::Finality(Finality::Final),
-            request: QueryRequest::ViewAccessKeyList {
-                account_id: account_id.clone(),
-            },
-        })
-        .await
-        .context("view_access_key_list failed")?;
-    let QueryResponseKind::AccessKeyList(list) = response.kind else {
-        bail!("unexpected query response kind for view_access_key_list");
-    };
-    Ok(list
-        .keys
-        .into_iter()
-        .map(|key| {
-            let full_access = matches!(
-                key.access_key.permission,
-                AccessKeyPermissionView::FullAccess
-            );
-            (key.public_key.to_string(), full_access)
-        })
-        .collect())
 }
 
 /// Block until `public_key`'s access key on `account_id` is visible at
@@ -142,29 +125,22 @@ async fn wait_until_final(
             public_key: public_key.clone(),
         },
     };
-    let mut last_error = None;
-    for _ in 0..200 {
+    // Every error is retried until the deadline: the key not-yet-final
+    // (`UnknownAccessKey`/`UnknownAccount`), node backpressure ("reached its
+    // limits"), and transport blips all resolve on a later block, so a
+    // transiently-busy pooled node must not fail account creation.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
         match client.call(&request).await {
-            // The key is present at final finality.
             Ok(_) => return Ok(()),
-            Err(error) => match error.handler_error() {
-                // The account or key merely hasn't reached final finality yet.
-                Some(
-                    RpcQueryError::UnknownAccessKey { .. } | RpcQueryError::UnknownAccount { .. },
-                ) => {}
-                // A genuine query error (malformed request, node error): fail fast
-                // rather than spinning to the timeout.
-                Some(other) => bail!("view_access_key for {account_id} failed: {other}"),
-                // A transport blip: transient, keep polling.
-                None => last_error = Some(error.to_string()),
-            },
+            Err(error) if Instant::now() >= deadline => bail!(
+                "patched account {account_id} did not reach final finality \
+                 within 10s (last error: {error})"
+            ),
+            Err(_) => {}
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    bail!(
-        "patched account {account_id} did not reach final finality in time{}",
-        last_error.map_or(String::new(), |error| format!(" (last error: {error})"))
-    )
 }
 
 /// The chain-typed (`near_crypto`) public key for a near-api secret key. near-api
