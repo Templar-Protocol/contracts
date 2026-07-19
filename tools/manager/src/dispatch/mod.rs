@@ -100,6 +100,7 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
         ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::GetProxyCircuitBreakerSet(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::UpdatePrices(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        ProxyOracleNs::Upgrade(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
     }
 }
 

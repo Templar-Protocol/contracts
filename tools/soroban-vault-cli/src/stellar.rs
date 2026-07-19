@@ -212,6 +212,38 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         self.run(args, &[], self.source_env())
     }
 
+    pub fn extend_contract_instance_ttl(
+        &self,
+        contract_id: &str,
+        ledgers_to_extend: u32,
+    ) -> anyhow::Result<CommandOutput> {
+        self.extend_ttl_entry("--id", contract_id, ledgers_to_extend)
+    }
+
+    pub fn extend_contract_code_ttl(
+        &self,
+        wasm_hash: &str,
+        ledgers_to_extend: u32,
+    ) -> anyhow::Result<CommandOutput> {
+        self.extend_ttl_entry("--wasm-hash", wasm_hash, ledgers_to_extend)
+    }
+
+    fn extend_ttl_entry(
+        &self,
+        selector: &str,
+        value: &str,
+        ledgers_to_extend: u32,
+    ) -> anyhow::Result<CommandOutput> {
+        let mut args = vec!["contract".to_string(), "extend".to_string()];
+        args.extend([selector.to_string(), value.to_string()]);
+        args.extend([
+            "--ledgers-to-extend".to_string(),
+            ledgers_to_extend.to_string(),
+        ]);
+        args.extend(self.network_args());
+        self.run(args, &[], self.source_env())
+    }
+
     pub fn deploy(&self, wasm_hash: &str, constructor_args: Vec<String>) -> anyhow::Result<String> {
         let mut args = vec!["contract".to_string(), "deploy".to_string()];
         args.extend(["--wasm-hash".to_string(), wasm_hash.to_string()]);
@@ -535,7 +567,8 @@ fn should_confirm_transaction(args: &[String]) -> bool {
     match args {
         [first, second, ..] if first == "tx" && second == "send" => true,
         [first, second, ..]
-            if first == "contract" && matches!(second.as_str(), "deploy" | "invoke" | "upload") =>
+            if first == "contract"
+                && matches!(second.as_str(), "deploy" | "extend" | "invoke" | "upload") =>
         {
             true
         }
@@ -559,7 +592,7 @@ fn preflight_plan(args: &[String]) -> Option<PreflightPlan> {
             invoke_preflight_args(args).map(PreflightPlan::Invoke)
         }
         [first, second, ..]
-            if first == "contract" && matches!(second.as_str(), "deploy" | "upload") =>
+            if first == "contract" && matches!(second.as_str(), "deploy" | "extend" | "upload") =>
         {
             build_only_preflight_args(args).map(PreflightPlan::BuildAndSimulate)
         }
@@ -855,6 +888,10 @@ mod tests {
         ]));
         assert!(should_confirm_transaction(&[
             "contract".to_string(),
+            "extend".to_string()
+        ]));
+        assert!(should_confirm_transaction(&[
+            "contract".to_string(),
             "asset".to_string(),
             "deploy".to_string()
         ]));
@@ -896,6 +933,39 @@ mod tests {
                 "no",
                 "--",
                 "initialize"
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_preflight_args_for_contract_ttl_extension() {
+        let args = vec![
+            "contract".to_string(),
+            "extend".to_string(),
+            "--id".to_string(),
+            "CCONTRACT".to_string(),
+            "--ledgers-to-extend".to_string(),
+            "3110400".to_string(),
+            "--network".to_string(),
+            "testnet".to_string(),
+        ];
+
+        let Some(PreflightPlan::BuildAndSimulate(preflight)) = preflight_plan(&args) else {
+            panic!("expected build-and-simulate preflight plan");
+        };
+
+        assert_eq!(
+            preflight,
+            vec![
+                "contract",
+                "extend",
+                "--id",
+                "CCONTRACT",
+                "--ledgers-to-extend",
+                "3110400",
+                "--network",
+                "testnet",
+                "--build-only"
             ]
         );
     }
