@@ -10,10 +10,9 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use near_api::types::AccountId;
-use near_primitives::{
-    state_record::StateRecord,
-    types::{StoreKey, StoreValue},
+use near_api::{
+    types::{AccessKeyPermission, AccountId, Reference},
+    Account,
 };
 use near_token::NearToken;
 use templar_common::{
@@ -1267,10 +1266,22 @@ impl SandboxHarness {
             .map_err(|error| anyhow::anyhow!("get_configuration failed: {error}"))
     }
 
-    /// List `account_id`'s access keys as `(public_key, is_full_access)` via the
-    /// JSON-RPC `view_access_key_list` query.
+    /// List `account_id`'s access keys as `(public_key, is_full_access)` at final
+    /// finality.
     pub async fn view_access_keys(&self, account_id: &AccountId) -> Result<Vec<(String, bool)>> {
-        crate::sandbox_ext::view_access_keys(&self.network, account_id).await
+        let keys = Account(account_id.clone())
+            .list_keys()
+            .at(Reference::Final)
+            .fetch_from(&self.network)
+            .await?
+            .data;
+        Ok(keys
+            .into_iter()
+            .map(|(public_key, access_key)| {
+                let full_access = matches!(access_key.permission, AccessKeyPermission::FullAccess);
+                (public_key.to_string(), full_access)
+            })
+            .collect())
     }
 
     /// Patch raw contract storage entries (key/value byte pairs) on `account_id`
@@ -1281,15 +1292,7 @@ impl SandboxHarness {
         account_id: &AccountId,
         entries: impl IntoIterator<Item = (Vec<u8>, Vec<u8>)>,
     ) -> Result<()> {
-        let records = entries
-            .into_iter()
-            .map(|(key, value)| StateRecord::Data {
-                account_id: account_id.clone(),
-                data_key: StoreKey::from(key),
-                value: StoreValue::from(value),
-            })
-            .collect();
-        crate::sandbox_ext::patch_records(&self.network, records).await
+        crate::sandbox_ext::patch_data(&self.network, account_id, entries).await
     }
 
     /// Liquidate an unhealthy borrow position (`liquidation_amount` of the borrow
