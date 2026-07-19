@@ -48,12 +48,12 @@ pub struct Create {
     /// Seed the registry predecessor with administration roles.
     #[arg(long, conflicts_with_all = ["init_args", "init_args_file"])]
     predecessor_is_admin: bool,
-    /// Full typed init args JSON: `{"config": ..., "admin_id": "account.near"}`.
+    /// Full init args JSON, passed to the contract verbatim.
     ///
     /// Use `admin_id: null` to explicitly seed the predecessor.
     #[arg(long, value_name = "JSON")]
     init_args: Option<String>,
-    /// Path to a full typed init args JSON file.
+    /// Path to full init args JSON, passed to the contract verbatim.
     #[arg(long, value_name = "PATH")]
     init_args_file: Option<PathBuf>,
     #[command(flatten)]
@@ -77,8 +77,7 @@ fn check_admin_id_is_honored(version_key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(serde::Serialize)]
 struct InitArgs {
     config: Config,
     admin_id: Option<AccountId>,
@@ -87,12 +86,11 @@ struct InitArgs {
 impl Create {
     fn preset_init_args(&self, config: Config) -> anyhow::Result<InitArgs> {
         let admin_id = match (&self.admin_id, self.predecessor_is_admin) {
-            (Some(admin_id), false) => Some(admin_id.clone()),
+            (Some(admin_id), _) => Some(admin_id.clone()),
             (None, true) => None,
             (None, false) => {
                 bail!("--preset requires either --admin-id or --predecessor-is-admin")
             }
-            (Some(_), true) => bail!("--admin-id conflicts with --predecessor-is-admin"),
         };
 
         Ok(InitArgs { config, admin_id })
@@ -100,26 +98,30 @@ impl Create {
 
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
         let signer_public_key = self.signer.public_key()?;
-        let init_args = if let Some(preset) = self.preset {
+        let (init_args, seats_admin) = if let Some(preset) = self.preset {
             let config = match preset {
                 Preset::Prod => config::prod(),
                 Preset::Test => config::test(),
             };
-            self.preset_init_args(config)?
+            let init_args = self.preset_init_args(config)?;
+            (
+                serde_json::to_vec(&init_args).context("serialize RedStone preset init args")?,
+                init_args.admin_id.is_some(),
+            )
         } else if let Some(args) = self.init_args {
-            serde_json::from_str(&args).context("parse typed RedStone init args")?
+            (args.into_bytes(), false)
         } else if let Some(path) = self.init_args_file {
-            let args = std::fs::read(&path)
-                .with_context(|| format!("read RedStone init args from {}", path.display()))?;
-            serde_json::from_slice(&args).context("parse typed RedStone init args")?
+            (
+                std::fs::read(&path)
+                    .with_context(|| format!("read RedStone init args from {}", path.display()))?,
+                false,
+            )
         } else {
             bail!("provide --preset, --init-args, or --init-args-file");
         };
-        let init_args_bytes =
-            serde_json::to_vec(&init_args).context("serialize typed RedStone init args")?;
-        let deploy = self.common.into_deploy(signer_public_key, init_args_bytes);
+        let deploy = self.common.into_deploy(signer_public_key, init_args);
 
-        if init_args.admin_id.is_some() {
+        if seats_admin {
             check_admin_id_is_honored(&deploy.version_key)?;
         }
 

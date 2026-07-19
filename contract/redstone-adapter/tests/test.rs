@@ -13,12 +13,12 @@ use templar_redstone_adapter_contract::*;
 
 /// An explicit admin receives both roles; omitting it retains predecessor seeding.
 #[rstest::rstest]
-#[case::explicit_admin(Some("operator.near"), "operator.near", false)]
-#[case::predecessor_fallback(None, "registry.near", true)]
+#[case::explicit_admin(Some("operator.near"), "operator.near", "registry.near")]
+#[case::predecessor_fallback(None, "registry.near", "operator.near")]
 fn new_seeds_roles(
     #[case] admin_id: Option<&str>,
     #[case] expected_admin: &str,
-    #[case] predecessor_has_roles: bool,
+    #[case] unexpected_admin: &str,
 ) {
     testing_env!(VMContextBuilder::new()
         .current_account_id("adapter.near".parse().unwrap())
@@ -30,18 +30,12 @@ fn new_seeds_roles(
         admin_id.map(|account_id| account_id.parse().unwrap()),
     );
     let expected_admin = expected_admin.parse::<near_sdk::AccountId>().unwrap();
-    let predecessor = "registry.near".parse::<near_sdk::AccountId>().unwrap();
+    let unexpected_admin = unexpected_admin.parse::<near_sdk::AccountId>().unwrap();
 
     assert!(adapter.has_role(expected_admin.clone(), Role::ModifyRoles));
     assert!(adapter.has_role(expected_admin, Role::TrustedUpdater));
-    assert_eq!(
-        adapter.has_role(predecessor.clone(), Role::ModifyRoles),
-        predecessor_has_roles
-    );
-    assert_eq!(
-        adapter.has_role(predecessor, Role::TrustedUpdater),
-        predecessor_has_roles
-    );
+    assert!(!adapter.has_role(unexpected_admin.clone(), Role::ModifyRoles));
+    assert!(!adapter.has_role(unexpected_admin, Role::TrustedUpdater));
 }
 
 #[rstest::rstest]

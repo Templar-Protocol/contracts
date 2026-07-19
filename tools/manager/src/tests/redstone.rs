@@ -246,9 +246,7 @@ fn create_custom_init_args_can_seed_predecessor() {
         _ => panic!("expected redstone create"),
     };
 
-    let init: serde_json::Value =
-        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
-    assert!(init["admin_id"].is_null());
+    assert_eq!(deploy.init_args.0, init_args.as_bytes());
 }
 
 #[test]
@@ -256,6 +254,7 @@ fn create_custom_init_args_preserves_explicit_admin() {
     let init_args = serde_json::to_string(&serde_json::json!({
         "config": templar_common::oracle::redstone::config::test(),
         "admin_id": "governance.testnet",
+        "future_init_field": true,
     }))
     .unwrap();
     let cli = Cli::try_parse_from(
@@ -285,9 +284,7 @@ fn create_custom_init_args_preserves_explicit_admin() {
         _ => panic!("expected redstone create"),
     };
 
-    let init: serde_json::Value =
-        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
-    assert_eq!(init["admin_id"], "governance.testnet");
+    assert_eq!(deploy.init_args.0, init_args.as_bytes());
 }
 
 #[test]
@@ -374,7 +371,7 @@ fn create_rejects_multiple_config_sources() {
             "--name",
             "redstone",
             "--version-key",
-            "redstone@1",
+            "templar-redstone-adapter-contract@0.1.1#abc",
             "--preset",
             "prod",
             "--init-args",
