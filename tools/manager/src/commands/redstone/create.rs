@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context as _};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use near_account_id::AccountId;
 use templar_common::oracle::redstone::{config, Config};
 use templar_gateway_methods_spec::registry as registry_spec;
@@ -12,11 +12,17 @@ use crate::commands::signer::SignerArgs;
 
 /// Deploy a RedStone price adapter from a registered version, granting the
 /// signer a full access key so the operator retains control of the new account.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Preset {
+    Prod,
+    Test,
+}
+
 #[derive(Args, Debug)]
 #[command(
     group(
         clap::ArgGroup::new("redstone_config")
-            .args(["prod", "test", "init_args", "init_args_file"])
+            .args(["preset", "init_args", "init_args_file"])
             .required(true)
             .multiple(false)
     ),
@@ -29,12 +35,9 @@ use crate::commands::signer::SignerArgs;
 pub struct Create {
     #[command(flatten)]
     common: DeployCommonArgs,
-    /// Use the built-in production RedStone configuration.
-    #[arg(long)]
-    prod: bool,
-    /// Use the built-in test RedStone configuration.
-    #[arg(long)]
-    test: bool,
+    /// Built-in RedStone configuration to use.
+    #[arg(long, value_enum)]
+    preset: Option<Preset>,
     /// Account to seed with the adapter's administration roles.
     #[arg(
         long,
@@ -87,7 +90,7 @@ impl Create {
             (Some(admin_id), false) => Some(admin_id.clone()),
             (None, true) => None,
             (None, false) => {
-                bail!("--prod and --test require either --admin-id or --predecessor-is-admin")
+                bail!("--preset requires either --admin-id or --predecessor-is-admin")
             }
             (Some(_), true) => bail!("--admin-id conflicts with --predecessor-is-admin"),
         };
@@ -97,10 +100,12 @@ impl Create {
 
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
         let signer_public_key = self.signer.public_key()?;
-        let init_args = if self.prod {
-            self.preset_init_args(config::prod())?
-        } else if self.test {
-            self.preset_init_args(config::test())?
+        let init_args = if let Some(preset) = self.preset {
+            let config = match preset {
+                Preset::Prod => config::prod(),
+                Preset::Test => config::test(),
+            };
+            self.preset_init_args(config)?
         } else if let Some(args) = self.init_args {
             serde_json::from_str(&args).context("parse typed RedStone init args")?
         } else if let Some(path) = self.init_args_file {
@@ -108,7 +113,7 @@ impl Create {
                 .with_context(|| format!("read RedStone init args from {}", path.display()))?;
             serde_json::from_slice(&args).context("parse typed RedStone init args")?
         } else {
-            bail!("provide --prod, --test, --init-args, or --init-args-file");
+            bail!("provide --preset, --init-args, or --init-args-file");
         };
         let init_args_bytes =
             serde_json::to_vec(&init_args).context("serialize typed RedStone init args")?;

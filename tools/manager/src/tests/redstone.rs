@@ -108,7 +108,8 @@ fn create_prod_preset_builds_config_init_args() {
             "redstone",
             "--version-key",
             "templar-redstone-adapter-contract@0.1.1#abc",
-            "--prod",
+            "--preset",
+            "prod",
             "--admin-id",
             "signer.testnet",
             "--deposit",
@@ -117,7 +118,7 @@ fn create_prod_preset_builds_config_init_args() {
         .into_iter()
         .chain(CREDS),
     )
-    .expect("redstone create --prod should parse");
+    .expect("redstone create --preset prod should parse");
     let deploy = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
@@ -149,7 +150,8 @@ fn create_test_preset_builds_config_init_args() {
             "redstone",
             "--version-key",
             "templar-redstone-adapter-contract@0.1.1#abc",
-            "--test",
+            "--preset",
+            "test",
             "--admin-id",
             "signer.testnet",
             "--deposit",
@@ -158,7 +160,7 @@ fn create_test_preset_builds_config_init_args() {
         .into_iter()
         .chain(CREDS),
     )
-    .expect("redstone create --test should parse");
+    .expect("redstone create --preset test should parse");
     let deploy = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
@@ -188,7 +190,8 @@ fn create_test_preset_can_seed_predecessor() {
             "redstone",
             "--version-key",
             "templar-redstone-adapter-contract@0.1.0#abc",
-            "--test",
+            "--preset",
+            "test",
             "--predecessor-is-admin",
             "--deposit",
             "3.5 NEAR",
@@ -196,7 +199,7 @@ fn create_test_preset_can_seed_predecessor() {
         .into_iter()
         .chain(CREDS),
     )
-    .expect("redstone create --test should parse");
+    .expect("redstone create --preset test should parse");
     let deploy = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
@@ -300,7 +303,8 @@ fn create_rejects_version_that_ignores_admin_id() {
             "redstone",
             "--version-key",
             "templar-redstone-adapter-contract@0.1.0#abc",
-            "--prod",
+            "--preset",
+            "prod",
             "--admin-id",
             "signer.testnet",
             "--deposit",
@@ -309,7 +313,7 @@ fn create_rejects_version_that_ignores_admin_id() {
         .into_iter()
         .chain(CREDS),
     )
-    .expect("redstone create --prod should parse");
+    .expect("redstone create --preset prod should parse");
     let error = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
@@ -335,14 +339,15 @@ fn create_preset_requires_explicit_admin_source() {
             "redstone",
             "--version-key",
             "templar-redstone-adapter-contract@0.1.1#abc",
-            "--prod",
+            "--preset",
+            "prod",
             "--deposit",
             "3.5 NEAR",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("redstone create --prod should parse");
+    .expect("redstone create --preset prod should parse");
     let error = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
@@ -354,12 +359,11 @@ fn create_preset_requires_explicit_admin_source() {
 
     assert!(error
         .to_string()
-        .contains("--prod and --test require either --admin-id or --predecessor-is-admin"));
+        .contains("--preset requires either --admin-id or --predecessor-is-admin"));
 }
 
 #[test]
-fn create_requires_exactly_one_config_source() {
-    // --prod and --test are mutually exclusive.
+fn create_rejects_multiple_config_sources() {
     let error = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -371,15 +375,17 @@ fn create_requires_exactly_one_config_source() {
             "redstone",
             "--version-key",
             "redstone@1",
-            "--prod",
-            "--test",
+            "--preset",
+            "prod",
+            "--init-args",
+            "{}",
             "--deposit",
             "3.5 NEAR",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect_err("--prod with --test should be rejected");
+    .expect_err("--preset with --init-args should be rejected");
     assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
