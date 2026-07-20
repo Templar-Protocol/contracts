@@ -1,11 +1,30 @@
 use async_trait::async_trait;
+use near_account_id::AccountId;
 use templar_gateway_core::{
     client::{owner::OwnerProposeArgs, ContractWriteOptions},
-    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
+    DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::owner;
+use templar_gateway_types::ManagedAccountId;
 
 use crate::Dispatch;
+
+fn ensure_owner_signer(
+    signer_account_id: &ManagedAccountId,
+    contract_id: &AccountId,
+    expected_owner: Option<&AccountId>,
+    required_role: &'static str,
+) -> GatewayResult<()> {
+    if expected_owner == Some(&signer_account_id.0) {
+        return Ok(());
+    }
+
+    Err(GatewayError::OwnerSignerMismatch {
+        signer_account_id: signer_account_id.0.clone(),
+        contract_id: contract_id.clone(),
+        required_role,
+    })
+}
 
 #[async_trait]
 impl<C: HasNearClient> DispatchRead<owner::GetOwner, C> for Dispatch {
@@ -39,10 +58,23 @@ impl<C: HasNearClient> PlanWrite<owner::ProposeOwner, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
+        let signer_account_id = request.signer_account_id;
+        let current_owner = ctx
+            .near_client()
+            .owner(body.contract_id.clone())
+            .own_get_owner(())
+            .await?;
+        ensure_owner_signer(
+            &signer_account_id,
+            &body.contract_id,
+            current_owner.as_ref(),
+            "current owner",
+        )?;
+
         ctx.near_client()
             .owner(body.contract_id)
             .own_propose_owner(
-                ContractWriteOptions::new(request.signer_account_id)
+                ContractWriteOptions::new(signer_account_id)
                     .one_yocto()
                     .tgas(300),
                 OwnerProposeArgs {
@@ -59,10 +91,24 @@ impl<C: HasNearClient> PlanWrite<owner::AcceptOwner, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<owner::AcceptOwner>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
+        let contract_id = request.body.contract_id;
+        let signer_account_id = request.signer_account_id;
+        let proposed_owner = ctx
+            .near_client()
+            .owner(contract_id.clone())
+            .own_get_proposed_owner(())
+            .await?;
+        ensure_owner_signer(
+            &signer_account_id,
+            &contract_id,
+            proposed_owner.as_ref(),
+            "proposed owner",
+        )?;
+
         ctx.near_client()
-            .owner(request.body.contract_id)
+            .owner(contract_id)
             .own_accept_owner(
-                ContractWriteOptions::new(request.signer_account_id)
+                ContractWriteOptions::new(signer_account_id)
                     .one_yocto()
                     .tgas(300),
                 (),
@@ -77,10 +123,24 @@ impl<C: HasNearClient> PlanWrite<owner::RenounceOwner, C> for Dispatch {
         request: templar_gateway_types::common::WriteRequest<owner::RenounceOwner>,
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
+        let contract_id = request.body.contract_id;
+        let signer_account_id = request.signer_account_id;
+        let current_owner = ctx
+            .near_client()
+            .owner(contract_id.clone())
+            .own_get_owner(())
+            .await?;
+        ensure_owner_signer(
+            &signer_account_id,
+            &contract_id,
+            current_owner.as_ref(),
+            "current owner",
+        )?;
+
         ctx.near_client()
-            .owner(request.body.contract_id)
+            .owner(contract_id)
             .own_renounce_owner(
-                ContractWriteOptions::new(request.signer_account_id)
+                ContractWriteOptions::new(signer_account_id)
                     .one_yocto()
                     .tgas(300),
                 (),
