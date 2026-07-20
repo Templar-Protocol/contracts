@@ -507,16 +507,19 @@ jobs:
       # step above runs, so the two steps together cover the suite. templar-relayer
       # additionally needs the compose Postgres, which the workspace step already
       # started (and the cleanup step tears down).
+      # Node count and thread count match the runner's 4 vCPUs (standard public
+      # runner). The gate is latency-bound on block production, not CPU-bound, so
+      # it scales with threads; one pooled node is required per test slot.
       - name: Run node-backed tests on a pooled neard sandbox
         env:
-          SANDBOX_NODE_COUNT: "2"
+          SANDBOX_NODE_COUNT: "4"
           SANDBOX_SKIP_PREBUILD: "1"
           SQLX_OFFLINE: true
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --profile sandbox --workspace --test-threads 2
+        run: cargo nextest run --profile sandbox --workspace --test-threads 4
 
       - name: Cleanup Docker resources
         if: always()
