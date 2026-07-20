@@ -27,7 +27,7 @@ use templar_universal_account::{
 };
 
 use crate::{
-    app::{to_gateway_hash, App},
+    app::{to_gateway_hash, App, SubmitError},
     client::database::AccountedStatus,
     route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
 };
@@ -340,6 +340,14 @@ pub async fn create(
         .await
     {
         Ok(execution) => execution,
+        // A database/lock failure happens before anything is submitted, so it is
+        // not a deploy failure; keep the two distinguishable to the caller.
+        Err(e @ (SubmitError::Database(_) | SubmitError::Lock(_))) => {
+            tracing::error!("Failed to create account in database: {e}");
+            return SimpleResponse::Failure {
+                error: "Failed to create account in database".to_string(),
+            };
+        }
         Err(e) => {
             tracing::error!("Failed to deploy universal account: {e}");
             return SimpleResponse::Failure {
