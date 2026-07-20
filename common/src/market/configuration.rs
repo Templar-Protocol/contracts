@@ -347,7 +347,10 @@ mod tests {
     use rstest::rstest;
     use templar_primitives::dec;
 
-    use crate::{fee::TimeBasedFeeFunction, oracle::pyth::PriceIdentifier};
+    use crate::{
+        fee::TimeBasedFeeFunction,
+        oracle::pyth::{Price, PriceIdentifier, PythTimestamp},
+    };
 
     use super::*;
 
@@ -640,5 +643,59 @@ mod tests {
             apr * single_snapshot_duration_ms / (1000u32 * 60 * 60 * 24) / dec!("365.2425");
 
         assert!(actual.abs_diff(expected) < Decimal::ONE.mul_pow10(-34).unwrap());
+    }
+
+    /// Both legs share exponent/decimals, so `convert(amount)` reduces to
+    /// `amount * collateral_price / borrow_price`.
+    fn price_pair(collateral: i64, borrow: i64) -> PricePair {
+        PricePair::new(
+            &Price {
+                price: collateral.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: PythTimestamp::from_secs(10),
+            },
+            24,
+            &Price {
+                price: borrow.into(),
+                conf: 0.into(),
+                expo: 24,
+                publish_time: PythTimestamp::from_secs(10),
+            },
+            24,
+        )
+        .unwrap()
+    }
+
+    // `valid_configuration` has `liquidation_maximum_spread` 0.05, so the
+    // minimum acceptable amount is `ceil(0.95 * amount * collateral / borrow)`.
+    #[rstest]
+    #[case(2, 1, 100, 190)] // 0.95 * 200 exact
+    #[case(1, 3, 100, 32)] // ceil(0.95 * 33.333…) = ceil(31.666…)
+    #[case(1, 1, 1, 1)] // ceil(0.95) rounds a sub-unit remainder up
+    fn minimum_acceptable_liquidation_amount(
+        #[case] collateral_price: i64,
+        #[case] borrow_price: i64,
+        #[case] amount: u128,
+        #[case] expected: u128,
+    ) {
+        let actual = valid_configuration().minimum_acceptable_liquidation_amount(
+            CollateralAssetAmount::new(amount),
+            &price_pair(collateral_price, borrow_price),
+        );
+        assert_eq!(actual, Some(BorrowAssetAmount::new(expected)));
+    }
+
+    #[test]
+    fn minimum_acceptable_liquidation_amount_zero_spread_is_full_value() {
+        let mut c = valid_configuration();
+        c.liquidation_maximum_spread = dec!("0");
+        assert_eq!(
+            c.minimum_acceptable_liquidation_amount(
+                CollateralAssetAmount::new(100),
+                &price_pair(2, 1),
+            ),
+            Some(BorrowAssetAmount::new(200)),
+        );
     }
 }

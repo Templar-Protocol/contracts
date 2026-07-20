@@ -13,7 +13,7 @@ use near_account_id::AccountId;
 use rstest::{fixture, rstest};
 use serde_json::json;
 
-use templar_funding_bridge::{app::App, config::Args, rpc::Network, treasury::NearHandler};
+use templar_funding_bridge::{rpc::Network, treasury::NearHandler};
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, storage, tx};
 use templar_gateway_testing::sandbox::{test_secret_key, SandboxHarness};
@@ -137,31 +137,6 @@ async fn ctx() -> TestContext {
     }
 }
 
-fn make_args(ctx: &TestContext) -> Args {
-    Args {
-        port: 3000,
-        network: Network::Testnet,
-        bridge_api_url: "https://test.api".to_string(),
-        dry_run: false,
-        near_treasury_account: Some(ctx.treasury_id()),
-        near_treasury_key: Some(test_secret_key().unwrap()),
-        near_rpc_url: Some(ctx.rpc_url.clone()),
-        eth_private_key: None,
-        eth_rpc_url: "https://eth.llamarpc.com".to_string(),
-        solana_private_key: None,
-        solana_rpc_url: "https://api.mainnet-beta.solana.com".to_string(),
-        eth_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
-        arbitrum_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
-        base_withdraw_address: Some("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb0".to_string()),
-        optimism_withdraw_address: None,
-        polygon_withdraw_address: None,
-        solana_withdraw_address: Some("B4b13ZjqPNGmvK7VVXM3kZ3vEpKS7JVzuqVU6vGqXm9D".to_string()),
-        stellar_secret_key: None,
-        stellar_horizon_url: "https://horizon.stellar.org".to_string(),
-        stellar_withdraw_address: None,
-    }
-}
-
 #[rstest]
 #[tokio::test]
 async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
@@ -184,20 +159,7 @@ async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
     assert_eq!(ctx.ft_balance(&ctx.user_id()).await, amount);
 }
 
-#[rstest]
-#[tokio::test]
-async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
-    let handler = ctx.handler(true);
-
-    let tx_hash = handler
-        .send_tokens(ctx.user_id().as_str(), ctx.ft.as_str(), 500_000)
-        .await
-        .unwrap();
-    assert!(tx_hash.starts_with("dry-run-tx-"));
-
-    // No real transfer happened.
-    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, 0);
-}
+// Dry-run send is covered off-node by `treasury::tests::test_send_tokens_dry_run`.
 
 #[rstest]
 #[tokio::test]
@@ -208,18 +170,8 @@ async fn test_near_handler_check_balance(#[future(awt)] ctx: TestContext) {
     assert_eq!(balance, MINT_AMOUNT);
 }
 
-#[rstest]
-#[tokio::test]
-async fn test_app_initialization(#[future(awt)] ctx: TestContext) {
-    let args = make_args(&ctx);
-    let app = App::new(&args).expect("build app");
-
-    assert!(app.is_healthy());
-    assert_eq!(
-        app.near_handler.treasury_account().as_str(),
-        ctx.treasury_id().as_str()
-    );
-}
+// App construction from config is covered off-node by
+// `app::tests::app_new_builds_configured_treasury_handler`.
 
 #[rstest]
 #[tokio::test]

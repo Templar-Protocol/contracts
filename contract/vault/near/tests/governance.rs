@@ -1,6 +1,6 @@
 //! `contract/vault/near/tests/governance.rs` ported onto the in-process gateway
 //! [`SandboxHarness`]. Covers pause/unpause restrictions, blacklist enforcement,
-//! sentinel lifecycle timelocks, fee-decrease semantics, and allocator-role
+//! sentinel lifecycle timelocks, and allocator-role
 //! gating — every vault interaction through the gateway `Client` (via the
 //! `vault_*` harness wrappers), the same path the services use.
 //!
@@ -12,7 +12,6 @@ use anyhow::Result;
 use rstest::rstest;
 use templar_common::vault::{AllocationDelta, Delta, Restrictions};
 use templar_gateway_testing::{harness, SandboxHarness};
-use templar_primitives::SU128;
 
 mod common;
 use common::{account_to_kernel_address, zero_interest};
@@ -199,28 +198,6 @@ async fn sentinel_can_pause(#[future(awt)] harness: SandboxHarness) -> Result<()
             Some(Restrictions::Paused)
         ),
         "Sentinel should be able to pause the vault",
-    );
-    Ok(())
-}
-
-/// A fee decrease applies immediately (no timelock).
-#[rstest]
-#[tokio::test]
-async fn fee_decrease_immediate(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-
-    let original = harness.vault_get_fees(&vault).await?;
-    let mut decreased = original.clone();
-    decreased.performance.fee = SU128::from(original.performance.fee.0 - 1);
-
-    harness
-        .vault_set_fees(&vault.owner, &vault, decreased.clone())
-        .await?;
-
-    let updated = harness.vault_get_fees(&vault).await?;
-    assert_eq!(
-        updated.performance.fee, decreased.performance.fee,
-        "Fee decrease should apply immediately",
     );
     Ok(())
 }

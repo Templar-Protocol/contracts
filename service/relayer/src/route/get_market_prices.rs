@@ -7,7 +7,11 @@ use near_sdk::{
 };
 use templar_gateway_methods_spec::{market, oracle};
 
-use crate::{app::App, route::SimpleResponse, ViewMarketPrices};
+use crate::{
+    app::App,
+    route::{validate_market_ids, SimpleResponse},
+    ViewMarketPrices,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -23,11 +27,14 @@ pub async fn get_market_prices(
     // Only serve markets the relayer has discovered/allowlisted — the same policy
     // boundary /update_prices enforces. (Scope the guard so it isn't held across
     // the gateway read below.)
-    let known_market = app.accounts.read().await.market_ids.contains(&market_id);
-    if !known_market {
-        tracing::info!(%market_id, "Rejecting price request for unknown market");
+    let rejection = {
+        let accounts = app.accounts.read().await;
+        validate_market_ids(std::iter::once(&market_id), &accounts.market_ids).err()
+    };
+    if let Some(rejection) = rejection {
+        tracing::info!(?rejection, "Rejecting price request for unknown market");
         return SimpleResponse::Rejected {
-            reason: format!("Unknown market: {market_id}"),
+            reason: rejection.reason(),
         };
     }
 

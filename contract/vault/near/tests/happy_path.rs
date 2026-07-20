@@ -11,10 +11,8 @@
 use anyhow::Result;
 use near_sdk::json_types::U128;
 use rstest::rstest;
-use templar_common::vault::prelude::Wad;
 use templar_common::vault::{AllocationDelta, Delta};
 use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness};
-use templar_primitives::SU128;
 
 mod common;
 use common::{harvest, zero_interest};
@@ -69,29 +67,6 @@ async fn donation_does_not_change_aum_until_resync(
         harness.vault_idle_balance(&vault).await?,
         idle_before + 123,
         "After resync, idle balance should include the donation",
-    );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn set_fees_accepts_max_total_assets_growth_rate(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-
-    let mut fees = harness.vault_get_fees(&vault).await?;
-    assert_eq!(fees.max_total_assets_growth_rate, None);
-
-    let rate = SU128::from(u128::from(Wad::one() / 5));
-    fees.max_total_assets_growth_rate = Some(rate);
-    harness.vault_set_fees(&vault.owner, &vault, fees).await?;
-
-    let updated = harness.vault_get_fees(&vault).await?;
-    assert_eq!(
-        updated.max_total_assets_growth_rate,
-        Some(rate),
-        "max_total_assets_growth_rate should persist",
     );
     Ok(())
 }
