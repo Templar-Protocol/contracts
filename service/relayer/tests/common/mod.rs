@@ -14,7 +14,7 @@ use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::Gas;
 use near_token::NearToken;
 use serde_json::json;
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 use tokio::sync::OnceCell;
 
 /// A process-wide reqwest client, built once so tx-status checks reuse one
@@ -43,8 +43,8 @@ pub fn secret_key() -> Result<SecretKey> {
 }
 
 /// Build a signer over the shared sandbox key. Valid for any harness account.
-pub fn signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(secret_key()?).context("failed to build test signer")
+pub fn signer() -> Arc<Signer> {
+    templar_gateway_testing::test_signer()
 }
 
 /// Create a fresh, signable sandbox account under the shared test key.
@@ -65,6 +65,7 @@ pub async fn view<T: DeserializeOwned + Send + Sync>(
     Ok(Contract(contract_id.clone())
         .call_function(method, args)
         .read_only::<T>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -85,7 +86,8 @@ pub async fn call(
         .transaction()
         .gas(Gas::from_tgas(gas_tgas))
         .deposit(deposit)
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -101,7 +103,8 @@ pub async fn deploy_code(
     Contract::deploy(account_id.clone())
         .use_code(code)
         .without_init_call()
-        .with_signer(signer()?)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -135,7 +138,7 @@ pub async fn deploy_registry(
     Ok(registry_id)
 }
 
-/// Assert a relayed transaction reached a successful final execution outcome,
+/// Assert a relayed transaction reached a successful complete execution outcome
 /// via the JSON-RPC `tx` query (the near-workspaces `worker.tx_status(...)
 /// .assert_success()` replacement).
 pub async fn assert_tx_succeeded(
@@ -154,7 +157,7 @@ pub async fn assert_tx_succeeded(
             "params": {
                 "tx_hash": tx_hash.to_string(),
                 "sender_account_id": sender_id.to_string(),
-                "wait_until": "FINAL",
+                "wait_until": TEST_FINALITY_POLICY.transaction_status(),
             },
         }))
         .send()

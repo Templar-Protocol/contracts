@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::{
@@ -26,7 +26,7 @@ use templar_common::{
     primitive_types::U256,
     Nanoseconds,
 };
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 
 /// The shared sandbox key every harness-provisioned account uses.
 pub fn secret_key() -> Result<SecretKey> {
@@ -34,8 +34,8 @@ pub fn secret_key() -> Result<SecretKey> {
 }
 
 /// Build a signer over the shared sandbox key. Valid for any harness account.
-pub fn signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(secret_key()?).context("failed to build test signer")
+pub fn signer() -> Arc<Signer> {
+    templar_gateway_testing::test_signer()
 }
 
 /// Create a fresh, signable sandbox account under the shared test key.
@@ -58,6 +58,7 @@ pub async fn view<T: DeserializeOwned + Send + Sync>(
     Ok(Contract(contract_id.clone())
         .call_function(method, args)
         .read_only::<T>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -78,7 +79,8 @@ pub async fn call(
         .transaction()
         .gas(Gas::from_tgas(gas_tgas))
         .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -101,7 +103,8 @@ pub async fn try_call(
         .transaction()
         .gas(Gas::from_tgas(gas_tgas))
         .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?)
 }
@@ -168,7 +171,8 @@ pub async fn deploy_code(
     Contract::deploy(account_id.clone())
         .use_code(code)
         .without_init_call()
-        .with_signer(signer()?)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();

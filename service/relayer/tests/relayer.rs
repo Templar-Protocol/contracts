@@ -381,7 +381,7 @@ async fn init_relayer_app(
     let chain_id = NEAR_TESTNET_CHAIN_ID.to_string();
     let pow_difficulty = POW_DIFFICULTY.to_string();
 
-    let app = App::new(
+    let app = App::new_with_finality_policy_and_signers(
         Configuration::parse_from([
             "relayer",
             "--rpc-url",
@@ -413,6 +413,11 @@ async fn init_relayer_app(
             "test-token",
         ]),
         watch::Sender::default(),
+        templar_gateway_testing::TEST_FINALITY_POLICY,
+        [
+            (relay_user.clone(), templar_gateway_testing::test_signer()),
+            (ua_account.clone(), templar_gateway_testing::test_signer()),
+        ],
     )
     .await
     .unwrap();

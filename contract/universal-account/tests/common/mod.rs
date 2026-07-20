@@ -18,7 +18,7 @@ use near_sdk::{json_types::U128, Gas};
 use near_token::NearToken;
 use serde::Serialize;
 use serde_json::json;
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 use templar_universal_account::{
     transaction::FunctionCallAction, ExecuteArgs, KeyId, PayloadExecutionParameters,
 };
@@ -36,7 +36,7 @@ pub fn test_secret_key() -> SecretKey {
 }
 
 pub fn test_signer() -> Arc<Signer> {
-    Signer::from_secret_key(test_secret_key()).expect("valid signer")
+    templar_gateway_testing::test_signer()
 }
 
 /// The universal-account contract account provisioned by the harness.
@@ -79,6 +79,7 @@ pub async fn deploy_code(
         .use_code(code)
         .without_init_call()
         .with_signer(signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -98,6 +99,7 @@ pub async fn deploy_with_init(
         .use_code(code)
         .with_init_call(method, args)?
         .with_signer(signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -153,6 +155,7 @@ pub async fn call(
         .deposit(deposit)
         .gas(gas)
         .with_signer(signer_id.clone(), signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?;
 
@@ -247,6 +250,7 @@ pub async fn ft_balance_of(
     let balance: U128 = Contract(ft.clone())
         .call_function("ft_balance_of", json!({ "account_id": account_id }))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data;
@@ -261,6 +265,7 @@ pub async fn get_counter(
     Ok(Contract(ft.clone())
         .call_function("get_counter", json!({ "account_id": account_id }))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -274,6 +279,7 @@ pub async fn get_key(
     Ok(Contract(ua.clone())
         .call_function("get_key", json!({ "key": key }))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -283,6 +289,7 @@ pub async fn list_keys(network: &NetworkConfig, ua: &AccountId) -> Result<Vec<Ke
     Ok(Contract(ua.clone())
         .call_function("list_keys", json!({ "offset": null, "count": null }))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -328,6 +335,7 @@ pub async fn stored_state_version(network: &NetworkConfig, ua: &AccountId) -> Re
     Ok(Contract(ua.clone())
         .call_function("get_stored_state_version", json!({}))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -337,6 +345,7 @@ pub async fn target_state_version(network: &NetworkConfig, ua: &AccountId) -> Re
     Ok(Contract(ua.clone())
         .call_function("get_target_state_version", json!({}))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -346,6 +355,7 @@ pub async fn needs_migration(network: &NetworkConfig, ua: &AccountId) -> Result<
     Ok(Contract(ua.clone())
         .call_function("needs_migration", json!({}))
         .read_only()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -357,6 +367,7 @@ pub async fn view_succeeds(network: &NetworkConfig, account_id: &AccountId, meth
     Contract(account_id.clone())
         .call_function(method, json!({}))
         .read_only::<serde_json::Value>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await
         .is_ok()

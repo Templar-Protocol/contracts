@@ -51,7 +51,7 @@ use templar_gateway_oracle_updates_dispatch::{
 };
 use templar_gateway_oracle_updates_spec::oracle as oracle_updates;
 use templar_gateway_store::MemoryStore;
-use templar_gateway_testing::{SandboxHarness, TestController};
+use templar_gateway_testing::{SandboxHarness, TestController, TEST_FINALITY_POLICY};
 use templar_gateway_types::{
     common::{ContractArgs, WriteRequest},
     Base64Bytes, ContractMethodName, CryptoHash, NearGas, NearToken,
@@ -106,6 +106,7 @@ impl TestStack {
     async fn start_with_lazer(pyth_hermes_url: Url, lazer_source: FakeLazerSource) -> Result<Self> {
         let harness = SandboxHarness::start().await?;
         let context = GatewayContext::builder(harness.network.clone())
+            .finality_policy(TEST_FINALITY_POLICY)
             .with_pyth_source(pyth_hermes_url)
             .with_redstone_source(std::path::Path::new("node"))?
             .map(|inner| WithFakeLazerSource::new(inner, lazer_source))

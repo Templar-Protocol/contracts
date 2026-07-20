@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use templar_gateway_types::{operation::ExecutionOutcome, CryptoHash, ManagedAccountId};
 
 use crate::{
-    read::is_unknown_transaction, GatewayError, GatewayResult, PlannedTransaction,
+    read::is_unknown_transaction, FinalityPolicy, GatewayError, GatewayResult, PlannedTransaction,
     PreparedTransactionResult,
 };
 
@@ -51,7 +51,7 @@ pub struct StepOutcome {
 }
 
 impl StepOutcome {
-    fn from_final(result: ExecutionFinalResult) -> Self {
+    fn from_execution(result: ExecutionFinalResult) -> Self {
         Self {
             tx_hash: result.outcome().transaction_hash.into(),
             is_success: result.is_success(),
@@ -62,9 +62,9 @@ impl StepOutcome {
 
 #[async_trait]
 pub trait ExecuteOperation: Send + Sync {
-    /// Submit a signed transaction, waiting for final execution. `Ok(None)` means
-    /// it was broadcast but no full outcome is available yet (still in flight);
-    /// `Ok(Some)` carries the result.
+    /// Submit a signed transaction, waiting for the configured complete
+    /// execution status. `Ok(None)` means it was broadcast but no full outcome
+    /// is available yet (still in flight); `Ok(Some)` carries the result.
     async fn submit_transaction(
         &self,
         signed_transaction: SignedTransaction,
@@ -107,11 +107,19 @@ impl NearTransactionSigner {
 #[derive(Clone)]
 pub struct NearOperationExecutor {
     network: NetworkConfig,
+    finality_policy: FinalityPolicy,
 }
 
 impl NearOperationExecutor {
     pub fn new(network: NetworkConfig) -> Self {
-        Self { network }
+        Self::with_finality_policy(network, FinalityPolicy::default())
+    }
+
+    pub fn with_finality_policy(network: NetworkConfig, finality_policy: FinalityPolicy) -> Self {
+        Self {
+            network,
+            finality_policy,
+        }
     }
 }
 
@@ -149,7 +157,6 @@ impl SignTransaction for NearTransactionSigner {
             },
             signer,
         )
-        .wait_until(near_api::types::TxExecutionStatus::Final)
         .presign_with(&self.network)
         .await
         .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
@@ -187,13 +194,13 @@ impl ExecuteOperation for NearOperationExecutor {
                 Box::new(PrepopulatedTransactionCarrier(prepopulated)),
             )),
             signer: null_signer(),
-            wait_until: near_api::types::TxExecutionStatus::Final,
+            wait_until: self.finality_policy.transaction_status(),
         }
         .send_to(&self.network)
         .await
         .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
 
-        Ok(result.into_full().map(StepOutcome::from_final))
+        Ok(result.into_full().map(StepOutcome::from_execution))
     }
 
     async fn query_transaction(
@@ -206,7 +213,7 @@ impl ExecuteOperation for NearOperationExecutor {
             TransactionStatusRef {
                 sender_account_id: signer_account_id.0.clone(),
                 tx_hash: tx_hash.0,
-                wait_until: near_api::types::TxExecutionStatus::Final,
+                wait_until: self.finality_policy.transaction_status(),
             },
             TransactionStatusHandler,
         )
@@ -222,7 +229,7 @@ impl ExecuteOperation for NearOperationExecutor {
                 GatewayError::NearTransaction(error.to_string())
             }
         })
-        .map(StepOutcome::from_final)
+        .map(StepOutcome::from_execution)
     }
 }
 

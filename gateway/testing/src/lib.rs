@@ -8,9 +8,14 @@ pub mod wasm;
 
 pub use controller::TestController;
 pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
-pub use sandbox::{test_secret_key, SandboxHarness};
+pub use sandbox::{test_secret_key, test_signer, SandboxHarness};
 pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;
+
+/// Sandbox transactions wait only for complete optimistic execution, and all
+/// sandbox reads use the matching optimistic state.
+pub const TEST_FINALITY_POLICY: templar_gateway_core::FinalityPolicy =
+    templar_gateway_core::FinalityPolicy::ExecutedOptimistic;
 
 /// An [`rstest`] fixture yielding a started [`SandboxHarness`], so tests keep
 /// the familiar `#[rstest] ... #[future(awt)] harness: SandboxHarness` shape.

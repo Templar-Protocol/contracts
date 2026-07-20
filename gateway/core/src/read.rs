@@ -50,6 +50,7 @@ impl ReadNear for NearClient {
         Contract(contract_id.clone())
             .call_function_raw(method_name, args)
             .read_only()
+            .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
             .map(|response| response.data)
@@ -65,6 +66,7 @@ impl ReadNear for NearClient {
     async fn view_account(&self, account_id: near_account_id::AccountId) -> GatewayResult<Account> {
         let account = NearAccountView(account_id.clone())
             .view()
+            .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
             .map_err(|error| {
@@ -84,6 +86,7 @@ impl ReadNear for NearClient {
     ) -> GatewayResult<AccessKey> {
         let key = NearAccountView(account_id.clone())
             .access_key(public_key)
+            .at(self.finality_policy().query_reference())
             .fetch_from(self.network())
             .await
             .map_err(|error| {

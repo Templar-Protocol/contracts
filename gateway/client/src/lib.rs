@@ -39,8 +39,9 @@ use std::{
 
 use near_api::{NetworkConfig, SecretKey, Signer};
 use templar_gateway_core::{
-    DispatchRead, GatewayContext, GatewayError, GatewayResult, NearOperationExecutor,
-    NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite, SharedOperationStore,
+    DispatchRead, FinalityPolicy, GatewayContext, GatewayError, GatewayResult, NearClient,
+    NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite,
+    SharedOperationStore,
 };
 use templar_gateway_store::MemoryStore;
 
@@ -60,6 +61,7 @@ pub struct ClientBuilder {
     network: NetworkConfig,
     signers: HashMap<ManagedAccountId, Arc<Signer>>,
     store: SharedOperationStore,
+    finality_policy: FinalityPolicy,
 }
 
 impl ClientBuilder {
@@ -116,6 +118,14 @@ impl ClientBuilder {
         self
     }
 
+    /// Set the transaction-wait and state-query policy. Defaults to final
+    /// execution and finalized reads.
+    #[must_use]
+    pub fn finality_policy(mut self, finality_policy: FinalityPolicy) -> Self {
+        self.finality_policy = finality_policy;
+        self
+    }
+
     /// Build the base gateway context, signer set, executor, and store-backed
     /// operation driver. Returns the raw parts so a consumer can layer a custom
     /// context (e.g. adding in-process oracle payload sources) and hand them to
@@ -124,10 +134,14 @@ impl ClientBuilder {
     pub fn build_parts(
         self,
     ) -> GatewayResult<(GatewayContext, OperationDriver, HashSet<ManagedAccountId>)> {
-        let context = GatewayContext::new(self.network.clone())?;
+        let context = GatewayContext::from_near_client(NearClient::with_finality_policy(
+            self.network.clone(),
+            self.finality_policy,
+        ));
         let signer_account_ids = self.signers.keys().cloned().collect();
         let signer = NearTransactionSigner::new(self.network.clone(), self.signers);
-        let executor = NearOperationExecutor::new(self.network);
+        let executor =
+            NearOperationExecutor::with_finality_policy(self.network, self.finality_policy);
         let driver = OperationDriver::new(self.store, Arc::new(signer), Arc::new(executor));
         Ok((context, driver, signer_account_ids))
     }
@@ -183,6 +197,7 @@ impl Client {
             network,
             signers: HashMap::new(),
             store: Arc::new(MemoryStore::new()),
+            finality_policy: FinalityPolicy::default(),
         }
     }
 
@@ -432,10 +447,35 @@ mod tests {
     use templar_gateway_artifacts_spec::artifact::{
         AddArtifactVersion, GetArtifact, ListArtifacts,
     };
-    use templar_gateway_core::{GatewayContext, PlanWrite};
+    use templar_gateway_core::{FinalityPolicy, GatewayContext, HasNearClient, PlanWrite};
     use templar_gateway_types::NearToken;
 
     use super::{Client, Network, NetworkConfigBuilder};
+
+    #[test]
+    fn client_builder_defaults_to_final_policy() {
+        let (context, _, _) = Client::builder(NetworkConfigBuilder::new(Network::Testnet).build())
+            .build_parts()
+            .expect("testnet network config is valid");
+
+        assert_eq!(
+            context.near_client().finality_policy(),
+            FinalityPolicy::Final
+        );
+    }
+
+    #[test]
+    fn client_builder_propagates_optimistic_policy() {
+        let (context, _, _) = Client::builder(NetworkConfigBuilder::new(Network::Testnet).build())
+            .finality_policy(FinalityPolicy::ExecutedOptimistic)
+            .build_parts()
+            .expect("testnet network config is valid");
+
+        assert_eq!(
+            context.near_client().finality_policy(),
+            FinalityPolicy::ExecutedOptimistic
+        );
+    }
 
     #[tokio::test]
     async fn client_reads_artifact_list() {

@@ -13,7 +13,9 @@ use templar_common::{
     oracle::pyth,
 };
 use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
-use templar_gateway_core::{GatewayContext, GatewayError, GatewayResult, PlanWrite};
+use templar_gateway_core::{
+    FinalityPolicy, GatewayContext, GatewayError, GatewayResult, PlanWrite,
+};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{chain, contract, market, registry, storage};
 use templar_gateway_oracle_updates_dispatch::{
@@ -71,6 +73,31 @@ pub struct App {
 
 impl App {
     pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
+        Self::new_with_finality_policy(args, kill, FinalityPolicy::default()).await
+    }
+
+    /// Construct the relayer with an explicit gateway finality policy.
+    ///
+    /// Production startup uses [`FinalityPolicy::default`]; sandbox integration
+    /// tests select optimistic execution and matching optimistic reads.
+    pub async fn new_with_finality_policy(
+        args: args::Configuration,
+        kill: watch::Sender<()>,
+        finality_policy: FinalityPolicy,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_finality_policy_and_signers(args, kill, finality_policy, []).await
+    }
+
+    /// Construct the relayer with explicit gateway signer instances.
+    ///
+    /// This preserves near-api nonce caches when a caller performed optimistic
+    /// setup transactions with those same signers before starting the relayer.
+    pub async fn new_with_finality_policy_and_signers(
+        args: args::Configuration,
+        kill: watch::Sender<()>,
+        finality_policy: FinalityPolicy,
+        signers: impl IntoIterator<Item = (near_api::types::AccountId, Arc<near_api::Signer>)>,
+    ) -> anyhow::Result<Self> {
         // Build through `NetworkConfigBuilder` so a FastNear-style `?apiKey=…`
         // embedded in `RPC_URL` is routed to the endpoint's auth header instead of
         // being left in the query string (which would produce malformed/401 RPC
@@ -84,16 +111,22 @@ impl App {
 
         // The relay account signs with a rotating multi-key pool; the UA account
         // is registered for the universal-account creation path.
-        let mut builder = GatewayClient::builder(network).store(Arc::new(gateway_store));
-        if !args.relay.secret_key.is_empty() {
+        let mut builder = GatewayClient::builder(network)
+            .finality_policy(finality_policy)
+            .store(Arc::new(gateway_store));
+        let signers: HashMap<_, _> = signers.into_iter().collect();
+        if !signers.contains_key(&args.relay.account_id) && !args.relay.secret_key.is_empty() {
             builder = builder
                 .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())
                 .await?;
         }
-        if !args.ua.secret_key.is_empty() {
+        if !signers.contains_key(&args.ua.account_id) && !args.ua.secret_key.is_empty() {
             builder = builder
                 .secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())
                 .await?;
+        }
+        for (account_id, signer) in signers {
+            builder = builder.with_signer(account_id, signer);
         }
         // The methods client and the oracle-updates client share one operation
         // driver (store, signer pool, executor) and a base context, so idempotency,
