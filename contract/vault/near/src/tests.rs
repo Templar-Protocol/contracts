@@ -2418,6 +2418,54 @@ fn set_fees_increase_is_timelocked(owner_env: OwnerEnv) {
 }
 
 #[rstest]
+fn set_fees_decrease_applies_immediately(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    contract.fees.performance.fee = Wad::one() / 10;
+    let decreased = Wad::one() / 100;
+
+    contract.set_fees(build_fees(
+        decreased,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    ));
+
+    assert_eq!(
+        contract.governance_timelocks.pending_len(),
+        0,
+        "fee decrease should apply immediately"
+    );
+    assert_eq!(contract.fees.performance.fee, decreased);
+}
+
+#[rstest]
+fn set_fees_accepts_and_applies_max_total_assets_growth_rate(owner_env: OwnerEnv) {
+    let OwnerEnv { mut contract, .. } = owner_env;
+
+    assert_eq!(contract.fees.max_total_assets_growth_rate, None);
+
+    let rate = Wad::one() / 5; // 20% annual
+    let mut fees = build_fees(
+        contract.fees.performance.fee,
+        contract.fees.management.fee,
+        contract.fees.performance.recipient.clone(),
+        contract.fees.management.recipient.clone(),
+    );
+    fees.max_total_assets_growth_rate = Some(U128(u128::from(rate)));
+
+    contract.set_fees(fees);
+
+    // Introducing a cap where there was none is a tightening: immediate, not timelocked.
+    assert_eq!(contract.governance_timelocks.pending_len(), 0);
+    assert_eq!(
+        contract.fees.max_total_assets_growth_rate,
+        Some(rate),
+        "growth-rate cap should persist",
+    );
+}
+
+#[rstest]
 fn set_fees_accrues_with_old_rate_then_updates_performance(owner_env: OwnerEnv) {
     let OwnerEnv { mut contract, .. } = owner_env;
 

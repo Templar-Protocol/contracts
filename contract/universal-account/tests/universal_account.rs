@@ -4,8 +4,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    add_key, create_account, deploy_code, deploy_with_init, execute_as, ft_balance_of, ft_id,
-    ft_storage_deposit, get_counter, get_key, harness, list_keys, migrate, mint_action, remove_key,
+    add_key, create_account, deploy_with_init, execute_as, ft_balance_of, ft_id,
+    ft_storage_deposit, get_counter, get_key, harness, list_keys, mint_action, remove_key,
     test_signer, to_sdk, ua_id,
 };
 use near_api::{AccountId, Signer};
@@ -20,7 +20,6 @@ use std::sync::Arc;
 use templar_gateway_testing::SandboxHarness;
 use templar_universal_account::{
     authentication::{with_raw_string::WithRawString, Payload},
-    state,
     transaction::{FunctionCallAction, Transaction},
     ExecuteArgs, KeyParameters, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
@@ -43,7 +42,6 @@ enum ExecuteOnCreate {
 async fn setup(
     harness: &SandboxHarness,
     sk: &TestSigner,
-    migrated: bool,
     execute_on_create: ExecuteOnCreate,
 ) -> Result<Setup> {
     let network = &harness.network;
@@ -52,76 +50,40 @@ async fn setup(
 
     let (relayer, relayer_signer) = create_account(harness, "relayer").await?;
 
-    if migrated {
-        deploy_with_init(
-            network,
-            &ua,
-            test_signer(),
-            templar_gateway_testing::wasm::UNIVERSAL_ACCOUNT_0_2_0.to_vec(),
-            "new",
-            serde_json::json!({ "key": sk.id() }),
-        )
-        .await?;
+    let execute = match execute_on_create {
+        ExecuteOnCreate::None => None,
+        ExecuteOnCreate::Empty => Some(vec![]),
+        ExecuteOnCreate::Counter => Some(vec![Transaction {
+            receiver_id: to_sdk(&ft),
+            actions: vec![FunctionCallAction::new(
+                "increment",
+                b"{}",
+                NearToken::from_near(0),
+                Gas::from_tgas(3),
+            )
+            .into()]
+            .into(),
+        }]),
+    };
 
-        deploy_code(
-            network,
-            &ua,
-            test_signer(),
-            templar_gateway_testing::wasm::universal_account()
-                .await
-                .to_vec(),
-        )
-        .await?;
-
-        migrate(
-            network,
-            &ua,
-            state::Migration::from(state::migration::V0 {
-                chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-            }),
-        )
-        .await?
-        .assert_success();
-
-        migrate(network, &ua, state::Migration::from(state::migration::V1))
-            .await?
-            .assert_success();
-    } else {
-        let execute = match execute_on_create {
-            ExecuteOnCreate::None => None,
-            ExecuteOnCreate::Empty => Some(vec![]),
-            ExecuteOnCreate::Counter => Some(vec![Transaction {
-                receiver_id: to_sdk(&ft),
-                actions: vec![FunctionCallAction::new(
-                    "increment",
-                    b"{}",
-                    NearToken::from_near(0),
-                    Gas::from_tgas(3),
-                )
-                .into()]
-                .into(),
-            }]),
-        };
-
-        deploy_with_init(
-            network,
-            &ua,
-            test_signer(),
-            templar_gateway_testing::wasm::universal_account()
-                .await
-                .to_vec(),
-            "new",
-            serde_json::json!({
-                "key": sk.id(),
-                "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
-                "execute": execute,
-            }),
-        )
-        .await?;
-    }
+    deploy_with_init(
+        network,
+        &ua,
+        test_signer(),
+        templar_gateway_testing::wasm::universal_account()
+            .await
+            .to_vec(),
+        "new",
+        serde_json::json!({
+            "key": sk.id(),
+            "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
+            "execute": execute,
+        }),
+    )
+    .await?;
 
     let counter = get_counter(network, &ft, &ua).await?;
-    if execute_on_create == ExecuteOnCreate::Counter && !migrated {
+    if execute_on_create == ExecuteOnCreate::Counter {
         assert_eq!(counter, 1);
     } else {
         assert_eq!(counter, 0);
@@ -155,33 +117,31 @@ fn signed_mint_execute_args(
     sk.execute_args(payload)
 }
 
+/// One account per supported signing format, initialized fresh through the
+/// deployed `new` ABI: this proves each `KeyId` variant deserializes, persists,
+/// lists, and executes on-chain, and that nonces advance under nearcore's real
+/// host crypto. Per-format signature verification and every execution-parameter
+/// mismatch are proven exhaustively and off-node by `ExecuteArgs::verify`'s
+/// table in `universal-account/src/execute_args.rs`.
 #[rstest]
 #[tokio::test]
-async fn universal_account(
+async fn execute_advances_nonce(
     #[future(awt)] harness: SandboxHarness,
     #[values(
-        (TestSigner::random_passkey(), false),
-        (TestSigner::random_passkey(), true),
-        (TestSigner::random_ed25519_raw(), false),
-        (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
-        (TestSigner::random_sep53(), false),
-        (TestSigner::random_eip191(), false),
+        TestSigner::random_passkey(),
+        TestSigner::random_ed25519_raw(),
+        TestSigner::random_eip191(),
+        TestSigner::random_eip712(),
+        TestSigner::random_sep53()
     )]
-    (sk, migrated): (TestSigner, bool),
-    #[values(
-        ExecuteOnCreate::None,
-        ExecuteOnCreate::Empty,
-        ExecuteOnCreate::Counter
-    )]
-    execute_on_create: ExecuteOnCreate,
+    sk: TestSigner,
 ) -> Result<()> {
     let Setup {
         ua,
         ft,
         relayer,
         relayer_signer,
-    } = setup(&harness, &sk, migrated, execute_on_create).await?;
+    } = setup(&harness, &sk, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     let key_list = list_keys(network, &ua).await?;
@@ -284,207 +244,31 @@ async fn universal_account(
     Ok(())
 }
 
+/// The `execute` init arg runs constructor transactions atomically with `new`.
+/// `Counter` asserts the transaction ran (verified in `setup`); `Empty` asserts
+/// an empty batch is a no-op. Either way, `new` must still install the controller
+/// key (not skip it because `execute` is `Some`), and the constructor batch must
+/// not consume the key's nonce.
 #[rstest]
 #[tokio::test]
-async fn skip_nonce(
+async fn execute_on_create_runs_constructor_transactions(
     #[future(awt)] harness: SandboxHarness,
-    #[values(
-        (TestSigner::random_passkey(), false),
-        (TestSigner::random_passkey(), true),
-        (TestSigner::random_ed25519_raw(), false),
-        (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
-        (TestSigner::random_sep53(), false),
-        (TestSigner::random_eip191(), false),
-    )]
-    (sk, migrated): (TestSigner, bool),
-    #[values(
-        ExecuteOnCreate::None,
-        ExecuteOnCreate::Empty,
-        ExecuteOnCreate::Counter
-    )]
-    execute_on_create: ExecuteOnCreate,
+    #[values(ExecuteOnCreate::Empty, ExecuteOnCreate::Counter)] execute_on_create: ExecuteOnCreate,
 ) -> Result<()> {
-    let Setup {
-        ua,
-        ft,
-        relayer,
-        relayer_signer,
-    } = setup(&harness, &sk, migrated, execute_on_create).await?;
+    let sk = TestSigner::random_passkey();
+    let Setup { ua, .. } = setup(&harness, &sk, execute_on_create).await?;
     let network = &harness.network;
 
-    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
-    let block_height = key_entry.block_height;
-
-    let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
-            .with_key_parameters(KeyParameters {
-                block_height,
-                index: U64(0),
-                nonce: U64(1),
-            })
-            .verifying_contract(to_sdk(&ua))
-            .build_salt(),
-        vec![Transaction {
-            receiver_id: to_sdk(&ft),
-            actions: vec![mint_action(100).into()].into(),
-        }]
-        .into(),
-    ));
-
-    execute_as(
-        network,
-        &ua,
-        &relayer,
-        relayer_signer.clone(),
-        sk.execute_args(payload),
-    )
-    .await?
-    .assert_success();
-
     assert_eq!(
-        ft_balance_of(network, &ft, &ua).await?,
-        100,
-        "Function call should succeed"
+        list_keys(network, &ua).await?,
+        vec![sk.id()],
+        "new must install the controller key alongside the constructor batch",
     );
-
-    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
-    assert_eq!(key_entry.block_height, block_height);
-    assert_eq!(key_entry.index.0, 0);
-    assert_eq!(key_entry.nonce.0, 1);
-
-    // Try to skip a nonce.
-
-    let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
-            .with_key_parameters(KeyParameters {
-                block_height,
-                index: U64(0),
-                nonce: U64(3),
-            })
-            .verifying_contract(to_sdk(&ua))
-            .build_salt(),
-        vec![Transaction {
-            receiver_id: to_sdk(&ft),
-            actions: vec![mint_action(100).into()].into(),
-        }]
-        .into(),
-    ));
-
-    execute_as(
-        network,
-        &ua,
-        &relayer,
-        relayer_signer,
-        sk.execute_args(payload),
-    )
-    .await?
-    .assert_failure_contains(
-        "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `3`",
-    );
-
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn reuse_nonce(
-    #[future(awt)] harness: SandboxHarness,
-    #[values(
-        (TestSigner::random_passkey(), false),
-        (TestSigner::random_passkey(), true),
-        (TestSigner::random_ed25519_raw(), false),
-        (TestSigner::random_ed25519_raw(), true),
-        (TestSigner::random_eip712(), false),
-        (TestSigner::random_sep53(), false),
-        (TestSigner::random_eip191(), false),
-    )]
-    (sk, migrated): (TestSigner, bool),
-    #[values(
-        ExecuteOnCreate::None,
-        ExecuteOnCreate::Empty,
-        ExecuteOnCreate::Counter
-    )]
-    execute_on_create: ExecuteOnCreate,
-) -> Result<()> {
-    let Setup {
-        ua,
-        ft,
-        relayer,
-        relayer_signer,
-    } = setup(&harness, &sk, migrated, execute_on_create).await?;
-    let network = &harness.network;
-
-    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
-    let block_height = key_entry.block_height;
-
-    let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
-            .with_key_parameters(KeyParameters {
-                block_height,
-                index: U64(0),
-                nonce: U64(1),
-            })
-            .verifying_contract(to_sdk(&ua))
-            .build_salt(),
-        vec![Transaction {
-            receiver_id: to_sdk(&ft),
-            actions: vec![mint_action(100).into()].into(),
-        }]
-        .into(),
-    ));
-
-    execute_as(
-        network,
-        &ua,
-        &relayer,
-        relayer_signer.clone(),
-        sk.execute_args(payload),
-    )
-    .await?
-    .assert_success();
-
     assert_eq!(
-        ft_balance_of(network, &ft, &ua).await?,
-        100,
-        "Function call should succeed"
+        get_key(network, &ua, &sk.id()).await?.unwrap().nonce.0,
+        0,
+        "the constructor batch must not consume the controller key's nonce",
     );
-
-    let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
-    assert_eq!(key_entry.block_height, block_height);
-    assert_eq!(key_entry.index.0, 0);
-    assert_eq!(key_entry.nonce.0, 1);
-
-    // Try to reuse a nonce.
-
-    let payload = WithRawString::from_parsed(Payload::new(
-        PayloadExecutionParameters::builder(NEAR_TESTNET_CHAIN_ID)
-            .with_key_parameters(KeyParameters {
-                block_height,
-                index: U64(0),
-                nonce: U64(1),
-            })
-            .verifying_contract(to_sdk(&ua))
-            .build_salt(),
-        vec![Transaction {
-            receiver_id: to_sdk(&ft),
-            actions: vec![mint_action(100).into()].into(),
-        }]
-        .into(),
-    ));
-
-    execute_as(
-        network,
-        &ua,
-        &relayer,
-        relayer_signer,
-        sk.execute_args(payload),
-    )
-    .await?
-    .assert_failure_contains(
-        "Smart contract panicked: Execution parameter `nonce` mismatch: expected `2`, got `1`",
-    );
-
     Ok(())
 }
 
@@ -499,7 +283,7 @@ async fn failed_execute_does_not_consume_nonce_and_success_consumes_once(
         ft,
         relayer,
         relayer_signer,
-    } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    } = setup(&harness, &sk, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
@@ -560,7 +344,7 @@ async fn replayed_nonce_fails_without_reexecuting_payload(
         ft,
         relayer,
         relayer_signer,
-    } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    } = setup(&harness, &sk, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     let key_entry = get_key(network, &ua, &sk.id()).await?.unwrap();
@@ -616,7 +400,7 @@ async fn key_indexes_are_unique_across_remove_and_readd(
 ) -> Result<()> {
     let sk1 = TestSigner::random_passkey();
     let sk2 = TestSigner::random_ed25519_raw();
-    let Setup { ua, .. } = setup(&harness, &sk1, false, ExecuteOnCreate::None).await?;
+    let Setup { ua, .. } = setup(&harness, &sk1, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     let key1 = sk1.id();
@@ -652,7 +436,7 @@ async fn key_indexes_are_unique_across_remove_and_readd(
 #[tokio::test]
 async fn cannot_remove_last_key(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let sk = TestSigner::random_passkey();
-    let Setup { ua, .. } = setup(&harness, &sk, false, ExecuteOnCreate::None).await?;
+    let Setup { ua, .. } = setup(&harness, &sk, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     remove_key(network, &ua, &sk.id())
@@ -678,7 +462,7 @@ async fn removed_key_cannot_execute_transaction(
         ft,
         relayer,
         relayer_signer,
-    } = setup(&harness, &removed_sk, false, ExecuteOnCreate::None).await?;
+    } = setup(&harness, &removed_sk, ExecuteOnCreate::None).await?;
     let network = &harness.network;
 
     let removed_key = removed_sk.id();

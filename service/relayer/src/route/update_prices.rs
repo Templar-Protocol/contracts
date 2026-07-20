@@ -6,7 +6,10 @@ use near_sdk::{
     AccountId,
 };
 
-use crate::{app::App, route::SimpleResponse};
+use crate::{
+    app::App,
+    route::{validate_market_ids, SimpleResponse},
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(crate = "near_sdk::serde")]
@@ -29,26 +32,16 @@ pub async fn update_prices(
     tracing::Span::current().record("market_count", market_ids.len());
     tracing::info!(market_ids = ?market_ids, "Processing price update request");
 
-    if market_ids.is_empty() {
-        tracing::info!("Rejecting empty price update request");
-        return SimpleResponse::Rejected {
-            reason: "market_ids must not be empty".to_string(),
-        };
-    }
-
     // Scope the read guard so it isn't held across the later await (and don't
     // clone the whole `AccountData` just to check membership).
-    let unknown_market = {
+    let rejection = {
         let accounts = app.accounts.read().await;
-        market_ids
-            .iter()
-            .find(|market_id| !accounts.market_ids.contains(*market_id))
-            .cloned()
+        validate_market_ids(&market_ids, &accounts.market_ids).err()
     };
-    if let Some(market_id) = unknown_market {
-        tracing::info!(%market_id, "Rejecting unknown market in price update request");
+    if let Some(rejection) = rejection {
+        tracing::info!(?rejection, "Rejecting price update request");
         return SimpleResponse::Rejected {
-            reason: format!("Unknown market: {market_id}"),
+            reason: rejection.reason(),
         };
     }
 
