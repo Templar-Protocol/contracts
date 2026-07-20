@@ -117,12 +117,12 @@ fn signed_mint_execute_args(
     sk.execute_args(payload)
 }
 
-/// One representative signer per on-chain host-crypto family — `ed25519_verify`
-/// (raw), `ecrecover` (eip191), and `sha256` + native p256 (passkey). Per-format
-/// signature verification and every execution-parameter mismatch are proven
-/// exhaustively and off-node by `ExecuteArgs::verify`'s table in
-/// `universal-account/src/execute_args.rs`; this only confirms nearcore's real
-/// host crypto agrees with that table and that nonces advance on-chain.
+/// One account per supported signing format, initialized fresh through the
+/// deployed `new` ABI: this proves each `KeyId` variant deserializes, persists,
+/// lists, and executes on-chain, and that nonces advance under nearcore's real
+/// host crypto. Per-format signature verification and every execution-parameter
+/// mismatch are proven exhaustively and off-node by `ExecuteArgs::verify`'s
+/// table in `universal-account/src/execute_args.rs`.
 #[rstest]
 #[tokio::test]
 async fn execute_advances_nonce(
@@ -130,7 +130,9 @@ async fn execute_advances_nonce(
     #[values(
         TestSigner::random_passkey(),
         TestSigner::random_ed25519_raw(),
-        TestSigner::random_eip191()
+        TestSigner::random_eip191(),
+        TestSigner::random_eip712(),
+        TestSigner::random_sep53()
     )]
     sk: TestSigner,
 ) -> Result<()> {
@@ -244,7 +246,9 @@ async fn execute_advances_nonce(
 
 /// The `execute` init arg runs constructor transactions atomically with `new`.
 /// `Counter` asserts the transaction ran (verified in `setup`); `Empty` asserts
-/// an empty batch is a no-op.
+/// an empty batch is a no-op. Either way, `new` must still install the controller
+/// key (not skip it because `execute` is `Some`), and the constructor batch must
+/// not consume the key's nonce.
 #[rstest]
 #[tokio::test]
 async fn execute_on_create_runs_constructor_transactions(
@@ -252,7 +256,19 @@ async fn execute_on_create_runs_constructor_transactions(
     #[values(ExecuteOnCreate::Empty, ExecuteOnCreate::Counter)] execute_on_create: ExecuteOnCreate,
 ) -> Result<()> {
     let sk = TestSigner::random_passkey();
-    setup(&harness, &sk, execute_on_create).await?;
+    let Setup { ua, .. } = setup(&harness, &sk, execute_on_create).await?;
+    let network = &harness.network;
+
+    assert_eq!(
+        list_keys(network, &ua).await?,
+        vec![sk.id()],
+        "new must install the controller key alongside the constructor batch",
+    );
+    assert_eq!(
+        get_key(network, &ua, &sk.id()).await?.unwrap().nonce.0,
+        0,
+        "the constructor batch must not consume the controller key's nonce",
+    );
     Ok(())
 }
 
