@@ -1,7 +1,7 @@
 //! `contract/vault/near/tests/governance.rs` ported onto the in-process gateway
 //! [`SandboxHarness`]. Covers pause/unpause restrictions, blacklist enforcement,
-//! sentinel lifecycle timelocks, and allocator-role
-//! gating — every vault interaction through the gateway `Client` (via the
+//! sentinel lifecycle timelocks, the fee-config gateway round trip, and
+//! allocator-role gating — every vault interaction through the gateway `Client` (via the
 //! `vault_*` harness wrappers), the same path the services use.
 //!
 //! Node-backed: run with
@@ -10,8 +10,9 @@
 
 use anyhow::Result;
 use rstest::rstest;
-use templar_common::vault::{AllocationDelta, Delta, Restrictions};
+use templar_common::vault::{prelude::Wad, AllocationDelta, Delta, Restrictions};
 use templar_gateway_testing::{harness, SandboxHarness};
+use templar_primitives::SU128;
 
 mod common;
 use common::{account_to_kernel_address, zero_interest};
@@ -198,6 +199,41 @@ async fn sentinel_can_pause(#[future(awt)] harness: SandboxHarness) -> Result<()
             Some(Restrictions::Paused)
         ),
         "Sentinel should be able to pause the vault",
+    );
+    Ok(())
+}
+
+/// Boundary smoke for the fee-config round trip through the gateway: a fee
+/// change and a growth-rate cap set via `vault_set_fees` persist and read back
+/// through `vault_get_fees` (exercising the `Fees<SU128>` wire conversion and
+/// deployed-state persistence). The immediate-vs-timelocked *decision* is
+/// covered off-node by the pure `set_fees_*` tests in `src/tests.rs`; both
+/// changes here apply immediately, so a single set/read confirms persistence.
+#[rstest]
+#[tokio::test]
+async fn fee_changes_round_trip_through_the_gateway(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+
+    let mut fees = harness.vault_get_fees(&vault).await?;
+    assert_eq!(fees.max_total_assets_growth_rate, None);
+
+    let decreased = SU128::from(fees.performance.fee.0 - 1);
+    let rate = SU128::from(u128::from(Wad::one() / 5));
+    fees.performance.fee = decreased;
+    fees.max_total_assets_growth_rate = Some(rate);
+    harness.vault_set_fees(&vault.owner, &vault, fees).await?;
+
+    let updated = harness.vault_get_fees(&vault).await?;
+    assert_eq!(
+        updated.performance.fee, decreased,
+        "fee decrease should persist"
+    );
+    assert_eq!(
+        updated.max_total_assets_growth_rate,
+        Some(rate),
+        "growth-rate cap should persist",
     );
     Ok(())
 }
