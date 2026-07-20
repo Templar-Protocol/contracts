@@ -19,11 +19,10 @@ fn ensure_owner_signer(
         return Ok(());
     }
 
-    Err(GatewayError::OwnerSignerMismatch {
-        signer_account_id: signer_account_id.0.clone(),
-        contract_id: contract_id.clone(),
-        required_role,
-    })
+    Err(GatewayError::RequestPreconditionFailed(format!(
+        "signer {} is not the {required_role} of contract {contract_id}",
+        signer_account_id.0
+    )))
 }
 
 #[async_trait]

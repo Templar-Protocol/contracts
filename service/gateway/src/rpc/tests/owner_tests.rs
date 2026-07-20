@@ -7,10 +7,15 @@ fn assert_signer_mismatch(
     required_role: &str,
 ) {
     let message = error.to_string();
-    for expected in [signer_id, contract_id, required_role] {
+    for expected in [
+        "request precondition failed",
+        signer_id,
+        contract_id,
+        required_role,
+    ] {
         assert!(
             message.contains(expected),
-            "owner signer mismatch error must contain `{expected}`; got: {message}"
+            "precondition error must contain `{expected}`; got: {message}"
         );
     }
 }

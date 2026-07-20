@@ -14,12 +14,8 @@ pub enum GatewayError {
     AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
-    #[error("signer {signer_account_id} is not the {required_role} of contract {contract_id}")]
-    OwnerSignerMismatch {
-        signer_account_id: near_account_id::AccountId,
-        contract_id: near_account_id::AccountId,
-        required_role: &'static str,
-    },
+    #[error("request precondition failed: {0}")]
+    RequestPreconditionFailed(String),
     #[error("invalid signer key: {0}")]
     InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]
