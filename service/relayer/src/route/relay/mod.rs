@@ -96,10 +96,12 @@ pub async fn relay(
         };
     };
 
+    // Read-only pre-check; execute_and_account provisions a first-seen account.
     let available_allowance = match app
         .database
-        .get_available_allowance_or_create(&account_id, app.args.relay.starting_allowance_yocto)
+        .get_available_allowance(&account_id)
         .await
+        .map(|a| a.unwrap_or(app.args.relay.starting_allowance_yocto))
     {
         Ok(available) => available,
         Err(e) => {
