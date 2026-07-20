@@ -642,27 +642,9 @@ pub async fn market_prices_fails_when_known_market_configuration_cannot_be_read(
     assert_eq!(error, "Failed to load market configuration");
 }
 
-/// A gateway planning failure deletes the reservation before anything is signed,
-/// so the account's in-flight reservation must be released immediately rather than
-/// stranded until the broom's delayed sweep. Exercises the endpoint error path that
-/// resolves the charge through the same rule the broom uses.
-#[rstest]
-#[tokio::test]
-async fn planning_failure_releases_the_accounts_reservation(#[future(awt)] init_test: InitTest) {
+async fn assert_storage_deposit_planning_failure(app: &App, payer: &AccountId) {
     use templar_gateway_methods_spec::storage;
 
-    let InitTest { app, .. } = init_test;
-
-    // Seed a funded account so execute_and_account can lock a reservation.
-    let payer: AccountId = "payer.test.near".parse().unwrap();
-    app.database
-        .create_account(&payer, NearToken::from_near(100))
-        .await
-        .unwrap();
-
-    // EnsureDeposit against a contract that does not exist fails during planning
-    // (the storage-bounds read errors), so the gateway deletes the reservation and
-    // nothing reaches the chain.
     let result = app
         .execute_and_account(
             payer.clone(),
@@ -681,18 +663,42 @@ async fn planning_failure_releases_the_accounts_reservation(#[future(awt)] init_
         matches!(result, Err(SubmitError::Gateway(_))),
         "planning should fail: {result:?}",
     );
+}
 
-    // A fresh lock succeeds because the error path released its reservation
-    // instead of leaving it for the broom.
+#[rstest]
+#[tokio::test]
+async fn planning_failure_creates_missing_account_without_resetting_existing_account(
+    #[future(awt)] init_test: InitTest,
+) {
+    let InitTest { app, .. } = init_test;
+
+    let missing: AccountId = "missing.test.near".parse().unwrap();
+    assert_storage_deposit_planning_failure(&app, &missing).await;
+    assert_eq!(
+        app.database
+            .get_available_allowance(&missing)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_yoctonear(),
+        app.args.relay.starting_allowance_yocto.as_yoctonear(),
+    );
+
+    let existing: AccountId = "existing.test.near".parse().unwrap();
     app.database
-        .lock_pending(
-            &payer,
-            NearToken::from_millinear(1),
-            NearToken::from_near(0),
-            uuid::Uuid::new_v4(),
-        )
+        .create_account(&existing, NearToken::from_near(100))
         .await
-        .expect("reservation should be released immediately after a planning failure");
+        .unwrap();
+    assert_storage_deposit_planning_failure(&app, &existing).await;
+    assert_eq!(
+        app.database
+            .get_available_allowance(&existing)
+            .await
+            .unwrap()
+            .unwrap()
+            .as_yoctonear(),
+        NearToken::from_near(100).as_yoctonear(),
+    );
 }
 
 #[rstest]
