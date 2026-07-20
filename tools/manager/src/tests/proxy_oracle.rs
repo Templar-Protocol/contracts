@@ -1,9 +1,13 @@
+use std::str::FromStr;
+
 use clap::Parser;
 use serde_json::{json, Value};
 
 use super::{parse_create_proposal, parse_governance, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
+use templar_primitives::Decimal;
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
@@ -511,6 +515,21 @@ fn oracle_update_prices_collects_repeated_ids() {
 
 #[test]
 fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
+    let breaker_file = std::env::temp_dir().join(format!(
+        "tmplrmgr-circuit-breaker-{}-{}.json",
+        std::process::id(),
+        line!()
+    ));
+    let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::from_str("0.1").unwrap(),
+    });
+    std::fs::write(
+        &breaker_file,
+        serde_json::to_vec(&breaker).expect("serialize breaker fixture"),
+    )
+    .expect("write breaker fixture");
+    let breaker_file_arg = breaker_file.to_str().expect("fixture path is unicode");
+
     // Omitting --breaker-id marks the proposal for auto-resolution.
     let parse_unresolved = || {
         parse_create_proposal([
@@ -522,7 +541,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
             "--price-id",
             PRICE_ID,
             "--breaker-file",
-            "/does/not/need/to/exist.json",
+            breaker_file_arg,
         ])
     };
     let unresolved = parse_unresolved();
@@ -540,6 +559,13 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     resolved.set_breaker_id(4);
     // Once resolved, it is no longer flagged for auto-fetch.
     assert_eq!(resolved.unresolved_breaker_price_id(), None);
+    let spec = resolved
+        .try_into_spec(0)
+        .expect("resolved breaker id should build");
+    let operation =
+        serde_json::to_value(spec).expect("serialize proposal spec")["operation"].clone();
+    assert_eq!(operation["AddCircuitBreaker"]["breaker_id"], json!(4));
+    std::fs::remove_file(&breaker_file).expect("remove breaker fixture");
 
     // An explicit --breaker-id needs no resolution.
     let explicit = parse_create_proposal([
