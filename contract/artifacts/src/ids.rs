@@ -306,8 +306,8 @@ static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "templar-redstone-adapter-contract",
     "templar_redstone_adapter_contract",
     "contract/redstone-adapter",
-    "0.1.1",
-    "6d2771e173d33c2014d1a56b62fd6d790cd5043e4328a644c6f0c88b640f3626"
+    "0.2.0",
+    "b513b2e839ce1ea59ef4c57519ef9482b133f47c81db0d3a54517b2cd251511a"
 );
 static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     PythLazerAdapter,
