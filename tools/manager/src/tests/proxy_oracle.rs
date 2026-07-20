@@ -10,6 +10,13 @@ use templar_primitives::Decimal;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+struct RemoveFileOnDrop<'a>(&'a std::path::Path);
+
+impl Drop for RemoveFileOnDrop<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
+}
 
 /// Parse a `create-proposal` invocation and return the built gateway spec.
 fn create_proposal(
@@ -520,6 +527,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         std::process::id(),
         line!()
     ));
+    let _breaker_file_cleanup = RemoveFileOnDrop(&breaker_file);
     let breaker = CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: Decimal::from_str("0.1").unwrap(),
     });
@@ -565,7 +573,6 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     let operation =
         serde_json::to_value(spec).expect("serialize proposal spec")["operation"].clone();
     assert_eq!(operation["AddCircuitBreaker"]["breaker_id"], json!(4));
-    std::fs::remove_file(&breaker_file).expect("remove breaker fixture");
 
     // An explicit --breaker-id needs no resolution.
     let explicit = parse_create_proposal([
