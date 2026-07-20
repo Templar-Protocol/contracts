@@ -507,9 +507,7 @@ jobs:
       # step above runs, so the two steps together cover the suite. templar-relayer
       # additionally needs the compose Postgres, which the workspace step already
       # started (and the cleanup step tears down).
-      # Node count and thread count match the runner's 4 vCPUs (standard public
-      # runner). The gate is latency-bound on block production, not CPU-bound, so
-      # it scales with threads; one pooled node is required per test slot.
+      # 4 = the public runner's vCPUs; one pooled node per test slot.
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           SANDBOX_NODE_COUNT: "4"

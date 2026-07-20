@@ -27,8 +27,23 @@ use near_token::NearToken;
 /// `num_extra_bytes_record` 40.
 const ACCOUNT_STORAGE_USAGE: u64 = 182;
 
+const RPC_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The custom client is what carries [`RPC_TIMEOUT`] — `connect`'s default sets
+/// none — and so must also set the content-type header it would have: the node
+/// answers 415 without it.
 fn client(network: &NetworkConfig) -> JsonRpcClient {
-    JsonRpcClient::connect(network.rpc_endpoints[0].url.as_str())
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    let http = reqwest::Client::builder()
+        .timeout(RPC_TIMEOUT)
+        .default_headers(headers)
+        .build()
+        .expect("reqwest client builds");
+    JsonRpcClient::with(http).connect(network.rpc_endpoints[0].url.as_str())
 }
 
 /// Mint `account_id` with `balance` and a full-access key over `secret_key` by
