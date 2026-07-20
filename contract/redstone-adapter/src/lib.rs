@@ -28,15 +28,13 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, admin_id: AccountId) -> Self {
         let mut self_ = Self {
             adapter: RedStoneAdapter::new(b"a", config),
         };
 
-        let predecessor = env::predecessor_account_id();
-
-        <Self as Rbac>::add_role(&mut self_, &predecessor, &Role::ModifyRoles);
-        <Self as Rbac>::add_role(&mut self_, &predecessor, &Role::TrustedUpdater);
+        <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::ModifyRoles);
+        <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::TrustedUpdater);
 
         self_
     }
