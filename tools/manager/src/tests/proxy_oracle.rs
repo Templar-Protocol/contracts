@@ -512,22 +512,34 @@ fn oracle_update_prices_collects_repeated_ids() {
 #[test]
 fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     // Omitting --breaker-id marks the proposal for auto-resolution.
-    let mut cmd = parse_create_proposal([
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "0",
-        "add-circuit-breaker",
-        "--price-id",
-        PRICE_ID,
-        "--breaker-file",
-        "/does/not/need/to/exist.json",
-    ]);
+    let parse_unresolved = || {
+        parse_create_proposal([
+            "--governance-id",
+            "gov.testnet",
+            "--id",
+            "0",
+            "add-circuit-breaker",
+            "--price-id",
+            PRICE_ID,
+            "--breaker-file",
+            "/does/not/need/to/exist.json",
+        ])
+    };
+    let unresolved = parse_unresolved();
     let expected = crate::commands::proxy_oracle::parse_price_identifier(PRICE_ID).unwrap();
-    assert_eq!(cmd.unresolved_breaker_price_id(), Some(expected));
-    cmd.set_breaker_id(4);
+    assert_eq!(unresolved.unresolved_breaker_price_id(), Some(expected));
+    let error = unresolved
+        .try_into_spec(0)
+        .expect_err("building a spec must reject an unresolved breaker id");
+    assert!(
+        error.to_string().contains("breaker id must be resolved"),
+        "{error:#}"
+    );
+
+    let mut resolved = parse_unresolved();
+    resolved.set_breaker_id(4);
     // Once resolved, it is no longer flagged for auto-fetch.
-    assert_eq!(cmd.unresolved_breaker_price_id(), None);
+    assert_eq!(resolved.unresolved_breaker_price_id(), None);
 
     // An explicit --breaker-id needs no resolution.
     let explicit = parse_create_proposal([
