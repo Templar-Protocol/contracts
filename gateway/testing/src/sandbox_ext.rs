@@ -1,18 +1,11 @@
-//! Break-glass direct JSON-RPC to the sandbox node, deliberately bypassing the
-//! gateway.
-//!
-//! The harness mints test accounts by writing state records with
-//! `sandbox_patch_state` — far cheaper than a real `CreateAccount` transaction —
-//! advances chain time with `sandbox_fast_forward`, and polls an access key at
-//! `Final` while a patch settles. Those are sandbox-only RPC extensions (or
-//! finality reads near-api can't express) the gateway neither has nor should ever
-//! wrap, so all raw-RPC access is confined to this module; the rest of the
-//! harness goes through the gateway or near-api. [`near_jsonrpc_client`] supplies
-//! the typed request/response plumbing.
+//! Sandbox-only JSON-RPC that neither the gateway nor near-api wraps:
+//! `sandbox_patch_state` (used to mint test accounts far more cheaply than a real
+//! `CreateAccount` transaction) and `sandbox_fast_forward`. All raw-RPC access is
+//! confined to this module.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use near_api::{types::AccountId, NetworkConfig, SecretKey};
 use near_jsonrpc_client::{
     methods::{
@@ -29,24 +22,31 @@ use near_primitives::{
 };
 use near_token::NearToken;
 
+/// Storage bytes for an account holding one ed25519 full-access key:
+/// `num_bytes_account` 100 + borsh public key 33 + borsh `AccessKey` 9 +
+/// `num_extra_bytes_record` 40.
+const ACCOUNT_STORAGE_USAGE: u64 = 182;
+
 fn client(network: &NetworkConfig) -> JsonRpcClient {
     JsonRpcClient::connect(network.rpc_endpoints[0].url.as_str())
 }
 
-/// Mint `account_id` with `balance` and a full-access key over `secret_key`,
-/// written directly into chain state via `sandbox_patch_state`. Unlike a real
-/// `CreateAccount` transaction this costs zero blocks and debits no funder (the
-/// balance is minted), which is what makes it far cheaper.
+/// Mint `account_id` with `balance` and a full-access key over `secret_key` by
+/// writing state records directly — zero blocks, and no funder is debited.
 pub(crate) async fn create_account(
     network: &NetworkConfig,
     account_id: &AccountId,
     secret_key: &SecretKey,
     balance: NearToken,
 ) -> Result<()> {
-    let pk = public_key(secret_key)?;
-    // `AccountContract::None` is a codeless account (all-zero code hash); `182` is
-    // near's canonical storage size for one full-access key. The key nonce starts
-    // at 0 — the block-height nonce floor applies only to keys added by a
+    // near-api and `near_primitives` use different `PublicKey` types; cross the
+    // boundary by the canonical `ed25519:…` string.
+    let public_key: near_crypto::PublicKey = secret_key
+        .public_key()
+        .to_string()
+        .parse()
+        .context("parse public key")?;
+    // Nonce 0 is safe: the block-height nonce floor applies only to keys added by a
     // transaction, not to patched state.
     let records = vec![
         StateRecord::Account {
@@ -55,21 +55,20 @@ pub(crate) async fn create_account(
                 balance,
                 NearToken::from_yoctonear(0),
                 AccountContract::None,
-                182,
+                ACCOUNT_STORAGE_USAGE,
             ),
         },
         StateRecord::AccessKey {
             account_id: account_id.clone(),
-            public_key: pk.clone(),
+            public_key: public_key.clone(),
             access_key: AccessKey::full_access(),
         },
     ];
     patch_records(network, records).await?;
-    wait_until_final(network, account_id, &pk).await
+    wait_until_final(network, account_id, &public_key).await
 }
 
-/// Patch raw contract storage entries (key/value byte pairs) on `account_id`
-/// via `sandbox_patch_state`.
+/// Patch raw contract storage entries (key/value byte pairs) on `account_id`.
 pub(crate) async fn patch_data(
     network: &NetworkConfig,
     account_id: &AccountId,
@@ -86,7 +85,6 @@ pub(crate) async fn patch_data(
     patch_records(network, records).await
 }
 
-/// Write `records` directly into chain state via `sandbox_patch_state`.
 async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Result<()> {
     client(network)
         .call(RpcSandboxPatchStateRequest { records })
@@ -95,7 +93,7 @@ async fn patch_records(network: &NetworkConfig, records: Vec<StateRecord>) -> Re
     Ok(())
 }
 
-/// Advance the sandbox chain by `delta_height` blocks via `sandbox_fast_forward`.
+/// Advance the sandbox chain by `delta_height` blocks.
 pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> Result<()> {
     client(network)
         .call(RpcSandboxFastForwardRequest { delta_height })
@@ -104,14 +102,11 @@ pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> 
     Ok(())
 }
 
-/// Block until `public_key`'s access key on `account_id` is visible at
-/// `Finality::Final`.
+/// Block until the patched key is visible at `Final`.
 ///
-/// `sandbox_patch_state` takes effect immediately at `optimistic` finality, but
-/// near-api hardcodes `Finality::Final` for every query it issues — including the
-/// nonce/access-key read on the first transaction the account signs — and `Final`
-/// lags the head by ~2 blocks. Without this wait that first transaction races the
-/// patch and fails with "access key ... does not exist".
+/// A patch lands at optimistic finality, but near-api's signer reads the nonce at
+/// a hardcoded `Final`, which lags ~2 blocks — so without this the account's first
+/// transaction fails with "access key ... does not exist".
 async fn wait_until_final(
     network: &NetworkConfig,
     account_id: &AccountId,
@@ -125,31 +120,13 @@ async fn wait_until_final(
             public_key: public_key.clone(),
         },
     };
-    // Every error is retried until the deadline: the key not-yet-final
-    // (`UnknownAccessKey`/`UnknownAccount`), node backpressure ("reached its
-    // limits"), and transport blips all resolve on a later block, so a
-    // transiently-busy pooled node must not fail account creation.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match client.call(&request).await {
-            Ok(_) => return Ok(()),
-            Err(error) if Instant::now() >= deadline => bail!(
-                "patched account {account_id} did not reach final finality \
-                 within 10s (last error: {error})"
-            ),
-            Err(_) => {}
+    // Every error retries: not-yet-final, node backpressure and transport blips all
+    // clear on a later block.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while client.call(&request).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-/// The chain-typed (`near_crypto`) public key for a near-api secret key. near-api
-/// and `near_primitives` use different `PublicKey` types, so cross the boundary by
-/// the canonical `ed25519:…` string.
-fn public_key(secret_key: &SecretKey) -> Result<near_crypto::PublicKey> {
-    secret_key
-        .public_key()
-        .to_string()
-        .parse()
-        .context("parse public key")
+    })
+    .await
+    .with_context(|| format!("patched account {account_id} never reached final finality"))
 }
