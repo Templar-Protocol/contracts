@@ -18,8 +18,8 @@ use templar_gateway_methods_spec::redstone as spec;
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum RedstoneNs {
-    /// Deploy a RedStone adapter from a registry (with `--prod`/`--test` config
-    /// presets).
+    /// Deploy a RedStone adapter from a registry with a built-in `--preset` or
+    /// explicit typed init arguments.
     Create(Create),
     /// Read the RedStone adapter's configuration.
     GetConfig(GetConfig),

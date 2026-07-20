@@ -6,10 +6,28 @@ use near_sdk::{
     testing_env,
 };
 use primitive_types::U256;
-use templar_common::oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface};
+use templar_common::oracle::redstone::{config, FeedData, FeedId, RedStoneContractInterface, Role};
 use templar_primitives::time::Nanoseconds;
 
 use templar_redstone_adapter_contract::*;
+
+/// The specified administrator receives both roles, not the registry predecessor.
+#[test]
+fn new_seeds_roles_on_explicit_admin() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("adapter.near".parse().unwrap())
+        .predecessor_account_id("registry.near".parse().unwrap())
+        .build());
+
+    let adapter = Contract::new(config::prod(), "operator.near".parse().unwrap());
+    let admin = "operator.near".parse::<near_sdk::AccountId>().unwrap();
+    let predecessor = "registry.near".parse::<near_sdk::AccountId>().unwrap();
+
+    assert!(adapter.has_role(admin.clone(), Role::ModifyRoles));
+    assert!(adapter.has_role(admin, Role::TrustedUpdater));
+    assert!(!adapter.has_role(predecessor.clone(), Role::ModifyRoles));
+    assert!(!adapter.has_role(predecessor, Role::TrustedUpdater));
+}
 
 #[rstest::rstest]
 #[case::stellar(1_770_985_144_000, &hex!("45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9030a710019c56f0bec0000000200000015d1cb1a708c63264741b00ce097176e45f708914b8cfdca26b079877a70604e25aa0bcfa3a41df8212eddd51db3496b95c7c3dc4caa9ac9705602af0515db1b31c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec000000020000001dcaf484941c0d206f1898185b953c6a92d7fd188b347505c0f5beb2030e06e3e1b2f7dfb45929ac7676136af93fee7f14a614b40fa4dc2d1e625dbece02eaca21c45544800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002d9028ed04019c56f0bec00000002000000199bd54930138268baad2869e9ceb99b6bc67cd6b8a4cc98e05f0b1cd9b7f07066008208399a728fac3d1dc3ca407cb8199a0209377bceb0c48f2cc3d756078051b4254430000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006179a92ab8c019c56f0bec000000020000001f08af53ed34046f7f64cc02ffb7973252954d7c395e440693c896bffdbc2de1e31cf5675bf66583d3e3438f5002ae9c10870d4dc45de05c560b239aa3a2d50a41b425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec0000000200000011b96dc2763a692e3245ce4f1b0c16ea245c240204e99ebd323b340e58bfb14fb5f0465ce11b8dd52ff839547cc949d20e4e8ba0be43dd6417cade2a8ebfd8c9e1c425443000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000617a1187473019c56f0bec00000002000000114a02710892325b13afc74bbd350dd9ec80342b2d6c0c94df7b7a60dbf67a1b91b182fa4555e0e0db91e6258b279f00b7eeb8f5de9930e352d5321a6b8b64a031c00063137373039383531343539383223302e392e30237374656c6c61722d636f6e6e6563746f72000025000002ed57011e0000"))]
@@ -28,7 +46,7 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
         .build();
     testing_env!(context);
 
-    let mut ra = Contract::new(config::prod());
+    let mut ra = Contract::new(config::prod(), "bob.near".parse().unwrap());
 
     let prices = vec!["ETH".into(), "BTC".into()];
 
@@ -55,7 +73,7 @@ fn output() {
         .build();
     testing_env!(context);
 
-    let mut ra = Contract::new(config::prod());
+    let mut ra = Contract::new(config::prod(), "bob.near".parse().unwrap());
 
     let prices = vec!["ETH".into(), "BTC".into()];
 

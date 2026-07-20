@@ -612,6 +612,7 @@ impl SandboxHarness {
             "new",
             serde_json::json!({
                 "config": config,
+                "admin_id": account_id,
             }),
         )
         .await?;
