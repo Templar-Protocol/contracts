@@ -1,10 +1,9 @@
 use clap::Parser;
 use serde_json::{json, Value};
 
-use super::CREDS;
+use super::{parse_create_proposal, parse_governance, CREDS};
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle::ProxyOracleNs;
-use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
+use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
@@ -12,23 +11,35 @@ const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 fn create_proposal(
     args: &[&str],
 ) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle_governance::CreateProposal> {
-    let mut full = vec!["tmplrmgr", "proxy-oracle-governance", "create-proposal"];
-    // Credentials are create-proposal-level, so they precede the operation
-    // subcommand carried in `args`.
-    full.extend_from_slice(&CREDS);
-    full.extend_from_slice(args);
-    match Cli::try_parse_from(full)
-        .expect("create-proposal should parse")
-        .command
-    {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => {
-            let id = cmd.id().expect("these tests pass --id explicitly");
-            cmd.try_into_spec(id)
+    let cmd = parse_create_proposal(args.iter().copied());
+    let id = cmd.id().expect("these tests pass --id explicitly");
+    cmd.try_into_spec(id)
+}
+
+#[test]
+fn governance_and_gov_parse_into_the_nested_command() {
+    for alias in ["governance", "gov"] {
+        let cli = Cli::try_parse_from([
+            "tmplrmgr",
+            "proxy-oracle",
+            alias,
+            "get-proxy-oracle-id",
+            "--governance-id",
+            "gov.testnet",
+        ])
+        .expect("governance alias should parse");
+
+        match cli.command {
+            Command::ProxyOracle {
+                command: ProxyOracleNs::Governance(ProxyOracleGovernanceNs::GetProxyOracleId(_)),
+            } => {}
+            _ => panic!("expected nested governance command"),
         }
-        _ => panic!("expected create-proposal"),
     }
+
+    let error = Cli::try_parse_from(["tmplrmgr", "proxy-oracle", "g"])
+        .expect_err("removed single-letter alias should be rejected");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 /// The `operation` field of a parsed proposal, as JSON.
@@ -341,64 +352,36 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
 fn create_proposal_id_is_optional_for_auto_fetch() {
     // With --id omitted, the id is left unresolved (the dispatcher fetches the
     // governance contract's next proposal id before writing).
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
+    let cmd = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
         "set-proxy",
         "--price-id",
         PRICE_ID,
-    ])
-    .expect("create-proposal without --id should parse");
-    match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => {
-            assert_eq!(cmd.id(), None);
-            assert!(!cmd.execute_when_ready());
-            assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
-            // A resolved id flows through to the spec.
-            let spec = cmd.try_into_spec(7).expect("into spec");
-            assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
-        }
-        _ => panic!("expected create-proposal"),
-    }
+    ]);
+    assert_eq!(cmd.id(), None);
+    assert!(!cmd.execute_when_ready());
+    assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
+    // A resolved id flows through to the spec.
+    let spec = cmd.try_into_spec(7).expect("into spec");
+    assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
 }
 
 #[test]
 fn create_proposal_execute_when_ready_flag() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
+    let cmd = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
         "--id",
         "0",
         "--execute-when-ready",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
         "admin-function-call",
         "--method",
         "own_accept_owner",
         "--deposit",
         "1 yoctoNEAR",
-    ])
-    .expect("create-proposal --execute-when-ready should parse");
-    match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => assert!(cmd.execute_when_ready()),
-        _ => panic!("expected create-proposal"),
-    }
+    ]);
+    assert!(cmd.execute_when_ready());
 }
 
 #[test]
@@ -416,14 +399,9 @@ fn execute_proposal_when_ready_flag() {
             true,
         ),
     ] {
-        let mut full = vec!["tmplrmgr", "proxy-oracle-governance", "execute-proposal"];
-        full.extend_from_slice(&args);
-        full.extend_from_slice(&CREDS);
-        let cli = Cli::try_parse_from(full).expect("execute-proposal should parse");
-        match cli.command {
-            Command::ProxyOracleGovernance {
-                command: ProxyOracleGovernanceNs::ExecuteProposal(cmd),
-            } => {
+        let command = parse_governance(["execute-proposal"].into_iter().chain(args).chain(CREDS));
+        match command {
+            ProxyOracleGovernanceNs::ExecuteProposal(cmd) => {
                 assert_eq!(cmd.when_ready(), expected);
                 assert_eq!(cmd.id(), 2);
             }
@@ -434,10 +412,8 @@ fn execute_proposal_when_ready_flag() {
 
 #[test]
 fn governance_create_builds_init_args() {
-    let cli = Cli::try_parse_from(
+    let deploy = match parse_governance(
         [
-            "tmplrmgr",
-            "proxy-oracle-governance",
             "create",
             "--registry-id",
             "registry.testnet",
@@ -456,13 +432,8 @@ fn governance_create_builds_init_args() {
         ]
         .into_iter()
         .chain(CREDS),
-    )
-    .expect("governance create should parse");
-
-    let deploy = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::Create(cmd),
-        } => cmd.try_into_spec().expect("into deploy spec"),
+    ) {
+        ProxyOracleGovernanceNs::Create(cmd) => cmd.try_into_spec().expect("into deploy spec"),
         _ => panic!("expected governance create"),
     };
 
@@ -485,9 +456,7 @@ fn governance_create_builds_init_args() {
 
 #[test]
 fn governance_role_reads_parse() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
+    let spec = match parse_governance([
         "list-role",
         "--governance-id",
         "gov.testnet",
@@ -497,12 +466,8 @@ fn governance_role_reads_parse() {
         "0",
         "--count",
         "10",
-    ])
-    .expect("list-role should parse");
-    let spec = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::ListRole(cmd),
-        } => cmd.into_spec(),
+    ]) {
+        ProxyOracleGovernanceNs::ListRole(cmd) => cmd.into_spec(),
         _ => panic!("expected list-role"),
     };
     assert_eq!(
@@ -547,31 +512,17 @@ fn oracle_update_prices_collects_repeated_ids() {
 #[test]
 fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     // Omitting --breaker-id marks the proposal for auto-resolution.
-    let Command::ProxyOracleGovernance {
-        command: ProxyOracleGovernanceNs::CreateProposal(mut cmd),
-    } = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
+    let mut cmd = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
         "--id",
         "0",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
         "add-circuit-breaker",
         "--price-id",
         PRICE_ID,
         "--breaker-file",
         "/does/not/need/to/exist.json",
-    ])
-    .expect("add-circuit-breaker should parse")
-    .command
-    else {
-        panic!("expected create-proposal");
-    };
+    ]);
     let expected = crate::commands::proxy_oracle::parse_price_identifier(PRICE_ID).unwrap();
     assert_eq!(cmd.unresolved_breaker_price_id(), Some(expected));
     cmd.set_breaker_id(4);
@@ -579,20 +530,11 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     assert_eq!(cmd.unresolved_breaker_price_id(), None);
 
     // An explicit --breaker-id needs no resolution.
-    let Command::ProxyOracleGovernance {
-        command: ProxyOracleGovernanceNs::CreateProposal(explicit),
-    } = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
+    let explicit = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
         "--id",
         "0",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
         "add-circuit-breaker",
         "--price-id",
         PRICE_ID,
@@ -600,11 +542,6 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         "7",
         "--breaker-file",
         "/does/not/need/to/exist.json",
-    ])
-    .expect("add-circuit-breaker with --breaker-id should parse")
-    .command
-    else {
-        panic!("expected create-proposal");
-    };
+    ]);
     assert_eq!(explicit.unresolved_breaker_price_id(), None);
 }

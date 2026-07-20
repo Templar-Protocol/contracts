@@ -1,6 +1,7 @@
 mod create;
 mod get_proxy;
 mod get_proxy_circuit_breaker_set;
+mod governance;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;
@@ -9,6 +10,7 @@ mod upgrade;
 pub use create::Create;
 pub use get_proxy::GetProxy;
 pub use get_proxy_circuit_breaker_set::GetProxyCircuitBreakerSet;
+pub use governance::{CreateProposal, ExecuteProposalArgs, ProxyOracleGovernanceNs};
 pub use list_proxies::ListProxies;
 pub use price_feed_exists::PriceFeedExists;
 pub use update_prices::UpdatePrices;
@@ -23,6 +25,9 @@ use templar_common::oracle::pyth::PriceIdentifier;
 pub enum ProxyOracleNs {
     /// Deploy a proxy oracle from a registry, optionally owned by `--owner-id`.
     Create(Create),
+    /// Administer a proxy oracle through its governance contract.
+    #[command(subcommand, visible_alias = "gov")]
+    Governance(ProxyOracleGovernanceNs),
     /// Read a single price feed's proxy configuration.
     GetProxy(GetProxy),
     /// List the oracle's configured price feeds.
