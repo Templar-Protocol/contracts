@@ -583,9 +583,41 @@ pub async fn delegate_action(#[future(awt)] mut init_test: InitTest) {
         .unwrap();
 }
 
-// Empty-request and unknown-market rejection for `/update_prices` and
-// `/get_market_prices` are covered off-node by the pure `validate_market_ids`
-// tests in `src/route/mod.rs`.
+#[rstest]
+#[tokio::test]
+pub async fn update_prices_rejects_empty_request(#[future(awt)] init_test: InitTest) {
+    let InitTest { app, .. } = init_test;
+
+    let response = templar_relayer::route::update_prices::update_prices(
+        State(app),
+        Json(UpdatePricesRequest { market_ids: vec![] }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Empty request should be rejected");
+    };
+    assert_eq!(reason, "market_ids must not be empty");
+}
+
+#[rstest]
+#[tokio::test]
+pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
+    let InitTest { app, .. } = init_test;
+
+    let response = templar_relayer::route::get_market_prices::get_market_prices(
+        State(app),
+        Query(GetMarketPricesRequest {
+            market_id: "unknown-market.test.near".parse().unwrap(),
+        }),
+    )
+    .await;
+
+    let SimpleResponse::Rejected { reason } = response else {
+        panic!("Unknown market should be rejected");
+    };
+    assert_eq!(reason, "Unknown market: unknown-market.test.near");
+}
 
 #[rstest]
 #[tokio::test]

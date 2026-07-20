@@ -161,12 +161,14 @@ async fn test_near_handler_ft_transfer(#[future(awt)] ctx: TestContext) {
 
 // The dry-run *return value* is covered off-node by
 // `treasury::tests::test_send_tokens_dry_run`; this node smoke additionally
-// proves the safety invariant that a dry-run submits no real transfer (the
-// recipient balance is unchanged) end-to-end against a deployed FT.
+// proves the end-to-end safety invariant that a dry-run changes neither the
+// treasury nor recipient balance against a deployed FT.
 #[rstest]
 #[tokio::test]
 async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
     let handler = ctx.handler(true);
+    let treasury_before = ctx.ft_balance(&ctx.treasury_id()).await;
+    let user_before = ctx.ft_balance(&ctx.user_id()).await;
 
     let tx_hash = handler
         .send_tokens(ctx.user_id().as_str(), ctx.ft.as_str(), 500_000)
@@ -174,8 +176,8 @@ async fn test_near_handler_dry_run(#[future(awt)] ctx: TestContext) {
         .unwrap();
     assert!(tx_hash.starts_with("dry-run-tx-"));
 
-    // No real transfer happened.
-    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, 0);
+    assert_eq!(ctx.ft_balance(&ctx.treasury_id()).await, treasury_before);
+    assert_eq!(ctx.ft_balance(&ctx.user_id()).await, user_before);
 }
 
 #[rstest]

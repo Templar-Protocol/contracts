@@ -645,24 +645,29 @@ mod tests {
         assert!(actual.abs_diff(expected) < Decimal::ONE.mul_pow10(-34).unwrap());
     }
 
-    /// Both legs share exponent/decimals, so `convert(amount)` reduces to
-    /// `amount * collateral_price / borrow_price`.
-    fn price_pair(collateral: i64, borrow: i64) -> PricePair {
+    fn price_pair(
+        collateral: i64,
+        collateral_expo: i32,
+        collateral_decimals: i32,
+        borrow: i64,
+        borrow_expo: i32,
+        borrow_decimals: i32,
+    ) -> PricePair {
         PricePair::new(
             &Price {
                 price: collateral.into(),
                 conf: 0.into(),
-                expo: 24,
+                expo: collateral_expo,
                 publish_time: PythTimestamp::from_secs(10),
             },
-            24,
+            collateral_decimals,
             &Price {
                 price: borrow.into(),
                 conf: 0.into(),
-                expo: 24,
+                expo: borrow_expo,
                 publish_time: PythTimestamp::from_secs(10),
             },
-            24,
+            borrow_decimals,
         )
         .unwrap()
     }
@@ -681,9 +686,20 @@ mod tests {
     ) {
         let actual = valid_configuration().minimum_acceptable_liquidation_amount(
             CollateralAssetAmount::new(amount),
-            &price_pair(collateral_price, borrow_price),
+            &price_pair(collateral_price, 24, 24, borrow_price, 24, 24),
         );
         assert_eq!(actual, Some(BorrowAssetAmount::new(expected)));
+    }
+
+    #[test]
+    fn minimum_acceptable_liquidation_amount_normalizes_unequal_scales() {
+        // Collateral base units are worth 2e-8; borrow base units are worth
+        // 1e-13. One collateral base unit converts to 200_000 borrow base units.
+        let actual = valid_configuration().minimum_acceptable_liquidation_amount(
+            CollateralAssetAmount::new(1),
+            &price_pair(2, -2, 6, 1, -5, 8),
+        );
+        assert_eq!(actual, Some(BorrowAssetAmount::new(190_000)));
     }
 
     #[test]
@@ -693,7 +709,7 @@ mod tests {
         assert_eq!(
             c.minimum_acceptable_liquidation_amount(
                 CollateralAssetAmount::new(100),
-                &price_pair(2, 1),
+                &price_pair(2, 24, 24, 1, 24, 24),
             ),
             Some(BorrowAssetAmount::new(200)),
         );
