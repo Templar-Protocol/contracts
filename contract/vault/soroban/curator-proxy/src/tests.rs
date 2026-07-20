@@ -1,9 +1,9 @@
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Vec};
 use templar_soroban_runtime::ContractError as VaultContractError;
 use templar_soroban_shared_types::{
-    EmptyReceipt, I128Receipt, VaultCommand as WireVaultCommand, VAULT_ERR_ALREADY_INITIALIZED,
-    VAULT_ERR_INVALID_INPUT,
+    EmptyReceipt, I128Receipt, ProxyViewResponse, VaultCommand as WireVaultCommand,
+    VAULT_ERR_ALREADY_INITIALIZED, VAULT_ERR_INVALID_INPUT,
 };
 
 use crate::{
@@ -54,6 +54,33 @@ impl MockVaultContract {
         };
 
         Bytes::from_slice(&env, &receipt)
+    }
+}
+
+#[contracterror]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MockForeignVaultError {
+    CollidesWithNotInitialized = 1,
+    CollidesWithNotImplemented = 6,
+}
+
+#[contract]
+struct MockFailingVaultContract;
+
+#[contractimpl]
+impl MockFailingVaultContract {
+    pub fn execute(_env: Env, _payload: Bytes) -> Result<Bytes, MockForeignVaultError> {
+        Err(MockForeignVaultError::CollidesWithNotImplemented)
+    }
+
+    pub fn proxy_view(
+        _env: Env,
+        _owner: Address,
+        _assets: i128,
+        _shares: i128,
+    ) -> Result<ProxyViewResponse, MockForeignVaultError> {
+        Err(MockForeignVaultError::CollidesWithNotInitialized)
     }
 }
 
@@ -502,6 +529,36 @@ fn supply_market_encodes_allocate_command() {
             supply: true,
         }
     );
+}
+
+#[test]
+fn vault_error_codes_do_not_decode_as_curator_proxy_errors() {
+    let fixture = Fixture::new();
+    let failing_vault = fixture.env.register(MockFailingVaultContract, ());
+    let caller = Address::generate(&fixture.env);
+
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            failing_vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+    });
+
+    let execute_result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::allocate(
+            fixture.env.clone(),
+            caller,
+            AllocationDelta::Withdraw(0, 1),
+        )
+    });
+    let view_result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::vault_view(fixture.env.clone())
+    });
+
+    assert_eq!(execute_result, Err(ContractError::VaultError));
+    assert!(matches!(view_result, Err(ContractError::VaultError)));
 }
 
 #[test]
@@ -1026,6 +1083,12 @@ fn vault_error_code_mapping_matches_runtime_discriminants() {
         ContractError::from_vault_error_code(VAULT_ERR_ALREADY_INITIALIZED),
         ContractError::AlreadyInitialized
     );
+    for colliding_code in [1, 2, 4, 5, 6, 7] {
+        assert_eq!(
+            ContractError::from_vault_error_code(colliding_code),
+            ContractError::VaultError
+        );
+    }
     assert_eq!(
         ContractError::from_vault_error_code(u32::MAX),
         ContractError::VaultError

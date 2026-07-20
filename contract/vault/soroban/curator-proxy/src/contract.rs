@@ -733,7 +733,7 @@ pub(crate) fn invoke_vault_execute(
     let vault_address = read_vault_address(env)?;
     let command = command.into_wire()?;
     let payload = Bytes::from_slice(env, &command.encode());
-    let result = env.try_invoke_contract::<Bytes, ContractError>(
+    let result = env.try_invoke_contract::<Bytes, InvokeError>(
         &vault_address,
         &Symbol::new(env, "execute"),
         (&payload,).into_val(env),
@@ -742,13 +742,8 @@ pub(crate) fn invoke_vault_execute(
     let bytes = match result {
         Ok(Ok(bytes)) => bytes,
         Ok(Err(_)) => return Err(ContractError::VaultError),
-        Err(Ok(error)) => return Err(error),
-        Err(Err(invoke_error)) => {
-            return Err(match invoke_error {
-                InvokeError::Abort => ContractError::VaultError,
-                InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
-            })
-        }
+        Err(Ok(invoke_error)) => return Err(map_vault_invoke_error(invoke_error)),
+        Err(Err(invoke_error)) => return Err(map_vault_invoke_error(invoke_error)),
     };
 
     Ok(bytes)
@@ -761,7 +756,7 @@ fn call_proxy_view_full(
     shares: i128,
 ) -> Result<ProxyViewFields, ContractError> {
     let vault_address = read_vault_address(env)?;
-    let result = env.try_invoke_contract::<ProxyViewResponse, ContractError>(
+    let result = env.try_invoke_contract::<ProxyViewResponse, InvokeError>(
         &vault_address,
         &Symbol::new(env, "proxy_view"),
         (owner.clone(), assets, shares).into_val(env),
@@ -770,11 +765,15 @@ fn call_proxy_view_full(
     match result {
         Ok(Ok(response)) => Ok(response.into()),
         Ok(Err(_)) => Err(ContractError::VaultError),
-        Err(Ok(error)) => Err(error),
-        Err(Err(invoke_error)) => Err(match invoke_error {
-            InvokeError::Abort => ContractError::VaultError,
-            InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
-        }),
+        Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
+        Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
+    }
+}
+
+fn map_vault_invoke_error(error: InvokeError) -> ContractError {
+    match error {
+        InvokeError::Abort => ContractError::VaultError,
+        InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
     }
 }
 
