@@ -14,6 +14,8 @@ pub enum GatewayError {
     AccountNotFound(near_account_id::AccountId),
     #[error("unsupported signer account: {0}")]
     UnsupportedSignerAccount(String),
+    #[error("request precondition failed: {0}")]
+    RequestPreconditionFailed(String),
     #[error("invalid signer key: {0}")]
     InvalidSignerKey(String),
     #[error("near transaction failed: {0}")]

@@ -2,8 +2,8 @@ use clap::Parser;
 use serde_json::{json, Value};
 
 use crate::cli::{Cli, Command};
+use crate::commands::owner::OwnerNs;
 use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
-use crate::commands::proxy_oracle_owner::ProxyOracleOwnerNs;
 use crate::commands::registry::RegistryNs;
 
 use super::CREDS;
@@ -180,58 +180,58 @@ fn registry_deploy_reads_init_args_file() {
 }
 
 #[test]
-fn proxy_oracle_owner_typed_commands_parse() {
+fn owner_typed_commands_parse() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
-            "proxy-oracle-owner",
-            "propose-owner",
-            "--oracle-id",
-            "proxy.registry.testnet",
+            "owner",
+            "propose",
+            "--contract-id",
+            "registry.testnet",
             "--account-id",
             "operator.testnet",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("propose-owner should parse");
+    .expect("owner propose should parse");
 
     let params = match cli.command {
-        Command::ProxyOracleOwner {
-            command: ProxyOracleOwnerNs::ProposeOwner(cmd),
+        Command::Owner {
+            command: OwnerNs::Propose(cmd),
         } => cmd.into_spec(),
-        _ => panic!("expected ProxyOracleOwner::ProposeOwner"),
+        _ => panic!("expected Owner::Propose"),
     };
 
-    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_owner::ProposeOwner>(
-        serde_json::to_value(&params).unwrap(),
-    )
-    .expect("typed proposeOwner params should match the gateway spec");
+    let params_json = serde_json::to_value(&params).unwrap();
+    assert_eq!(params_json["contract_id"], json!("registry.testnet"));
+    serde_json::from_value::<templar_gateway_methods_spec::owner::ProposeOwner>(params_json)
+        .expect("typed owner.propose params should match the gateway spec");
 
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
-            "proxy-oracle-owner",
-            "accept-owner",
-            "--oracle-id",
-            "proxy.registry.testnet",
+            "owner",
+            "accept",
+            "--contract-id",
+            "registry.testnet",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("accept-owner should parse");
+    .expect("owner accept should parse");
 
     let params = match cli.command {
-        Command::ProxyOracleOwner {
-            command: ProxyOracleOwnerNs::AcceptOwner(cmd),
+        Command::Owner {
+            command: OwnerNs::Accept(cmd),
         } => cmd.into_spec(),
-        _ => panic!("expected ProxyOracleOwner::AcceptOwner"),
+        _ => panic!("expected Owner::Accept"),
     };
 
-    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_owner::AcceptOwner>(
+    serde_json::from_value::<templar_gateway_methods_spec::owner::AcceptOwner>(
         serde_json::to_value(&params).unwrap(),
     )
-    .expect("typed acceptOwner params should match the gateway spec");
+    .expect("typed owner.accept params should match the gateway spec");
 }
 
 #[test]

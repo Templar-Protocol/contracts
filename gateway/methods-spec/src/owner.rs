@@ -2,11 +2,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_gateway_macros::MethodSpec;
 
-/// Get the current proxy oracle owner.
+/// Get the current contract owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "proxyOracleOwner.getOwner", output = GetOwnerResult)]
+#[method(read = "owner.getOwner", output = GetOwnerResult)]
 pub struct GetOwner {
-    pub oracle_id: near_account_id::AccountId,
+    pub contract_id: near_account_id::AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -14,11 +14,11 @@ pub struct GetOwnerResult {
     pub owner: Option<near_account_id::AccountId>,
 }
 
-/// Get the proposed proxy oracle owner.
+/// Get the proposed contract owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(read = "proxyOracleOwner.getProposedOwner", output = GetProposedOwnerResult)]
+#[method(read = "owner.getProposedOwner", output = GetProposedOwnerResult)]
 pub struct GetProposedOwner {
-    pub oracle_id: near_account_id::AccountId,
+    pub contract_id: near_account_id::AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -26,24 +26,24 @@ pub struct GetProposedOwnerResult {
     pub proposed_owner: Option<near_account_id::AccountId>,
 }
 
-/// Propose a new proxy oracle owner.
+/// Propose a new contract owner.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "proxyOracleOwner.proposeOwner")]
+#[method(write = "owner.proposeOwner")]
 pub struct ProposeOwner {
-    pub oracle_id: near_account_id::AccountId,
+    pub contract_id: near_account_id::AccountId,
     pub account_id: Option<near_account_id::AccountId>,
 }
 
-/// Accept proxy oracle ownership.
+/// Accept contract ownership.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "proxyOracleOwner.acceptOwner")]
+#[method(write = "owner.acceptOwner")]
 pub struct AcceptOwner {
-    pub oracle_id: near_account_id::AccountId,
+    pub contract_id: near_account_id::AccountId,
 }
 
-/// Renounce proxy oracle ownership.
+/// Renounce contract ownership.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[method(write = "proxyOracleOwner.renounceOwner")]
+#[method(write = "owner.renounceOwner")]
 pub struct RenounceOwner {
-    pub oracle_id: near_account_id::AccountId,
+    pub contract_id: near_account_id::AccountId,
 }
