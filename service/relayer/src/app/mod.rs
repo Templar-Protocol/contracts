@@ -672,6 +672,9 @@ impl App {
     {
         tracing::info!("Submitting and accounting for transaction");
         let operation_key = Uuid::new_v4();
+        self.database
+            .create_account(&account_id, self.args.relay.starting_allowance_yocto)
+            .await?;
 
         self.database
             .lock_pending(

@@ -322,17 +322,6 @@ pub async fn create(
         };
     };
 
-    if let Err(e) = app
-        .database
-        .create_account(&account_id, app.args.relay.starting_allowance_yocto)
-        .await
-    {
-        tracing::error!("Failed to create account in database: {e}");
-        return SimpleResponse::Failure {
-            error: "Failed to create account in database".to_string(),
-        };
-    }
-
     // The UA relayer account signs and pays; the new account is charged.
     let execution = match app
         .execute_and_account(
