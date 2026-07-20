@@ -665,6 +665,8 @@ async fn assert_storage_deposit_planning_failure(app: &App, payer: &AccountId) {
     );
 }
 
+/// A planning failure releases the reservation immediately: a first-seen account
+/// keeps the full starting allowance, an existing account its prior balance.
 #[rstest]
 #[tokio::test]
 async fn planning_failure_creates_missing_account_without_resetting_existing_account(
