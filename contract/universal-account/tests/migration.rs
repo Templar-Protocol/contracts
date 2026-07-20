@@ -314,37 +314,6 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 
 #[rstest]
 #[tokio::test]
-async fn from_0_2_0_fail_migrate_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
-
-    run_migration_step(&harness, &ua, MigrationStep::V0)
-        .await?
-        .assert_success();
-    run_migration_step(&harness, &ua, MigrationStep::V0)
-        .await?
-        .assert_failure_contains(
-            "Smart contract panicked: Failed to migrate V0: Stored state version 1 != args `from_version` 0",
-        );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn current_state_fail_reinitialize_version(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let ua = deploy_current(&harness, TestSigner::fixed_passkey([0x22_u8; 32]).id()).await?;
-
-    run_migration_step(&harness, &ua, MigrationStep::V1)
-        .await?
-        .assert_failure_contains(
-            "Smart contract panicked: Failed to migrate V1: Stored state version 2 != args `from_version` 1",
-        );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
 async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let expected_keys = patch_keys();
     let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
@@ -435,37 +404,6 @@ async fn from_0_4_0_with_stored_v1_migrates_via_v1(
 
 #[rstest]
 #[tokio::test]
-async fn from_0_4_0_fail_unbrick_v1_twice(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
-
-    run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
-        .await?
-        .assert_success();
-    run_migration_step(&harness, &ua, MigrationStep::UnbrickV1)
-        .await?
-        .assert_failure_contains(
-            "Smart contract panicked: Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0",
-        );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn from_0_4_0_fail_v1_migration_without_unbrick(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
-
-    run_migration_step(&harness, &ua, MigrationStep::V1)
-        .await?
-        .assert_failure_contains(
-            "Smart contract panicked: Failed to migrate V1: Stored state version 0 != args `from_version` 1",
-        );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
 async fn malformed_stored_version_breaks_public_migration_views(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
@@ -493,63 +431,21 @@ async fn future_stored_version_breaks_public_migration_views(
     Ok(())
 }
 
+/// The only invalid migration sequence that a pure version-guard test cannot
+/// reproduce: the bugged 0.4.0 stores V1-shaped state under version 0, so a
+/// V0→V1 sequence clears the version guards but fails to borsh-deserialize the
+/// contract state on-chain. Every other invalid sequence reduces to a
+/// stored-vs-`from_version` mismatch, covered off-node by
+/// `templar_universal_account::state::migration::tests`.
 #[rstest]
-#[case::current_then_v0(
-    MigrationSequenceStart::Current,
-    &[MigrationStep::V0],
-    "Failed to migrate V0: Stored state version 2 != args `from_version` 0",
-)]
-#[case::current_then_unbrick(
-    MigrationSequenceStart::Current,
-    &[MigrationStep::UnbrickV1],
-    "Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0",
-)]
-#[case::from_0_2_0_skip_to_v1(
-    MigrationSequenceStart::From0_2_0,
-    &[MigrationStep::V1],
-    "Failed to migrate V1: Stored state version 0 != args `from_version` 1",
-)]
-#[case::from_0_2_0_v0_then_unbrick(
-    MigrationSequenceStart::From0_2_0,
-    &[MigrationStep::V0, MigrationStep::UnbrickV1],
-    "Failed to migrate UnbrickV1: Stored state version 1 != args `from_version` 0",
-)]
-#[case::from_0_2_0_complete_then_v0(
-    MigrationSequenceStart::From0_2_0,
-    &[MigrationStep::V0, MigrationStep::V1, MigrationStep::V0],
-    "Failed to migrate V0: Stored state version 2 != args `from_version` 0",
-)]
-#[case::from_0_2_0_complete_then_unbrick(
-    MigrationSequenceStart::From0_2_0,
-    &[MigrationStep::V0, MigrationStep::V1, MigrationStep::UnbrickV1],
-    "Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0",
-)]
-#[case::from_0_4_0_unbrick_then_v0(
-    MigrationSequenceStart::From0_4_0,
-    &[MigrationStep::UnbrickV1, MigrationStep::V0],
-    "Failed to migrate V0: Stored state version 2 != args `from_version` 0",
-)]
-#[case::from_0_4_0_unbrick_then_v1(
-    MigrationSequenceStart::From0_4_0,
-    &[MigrationStep::UnbrickV1, MigrationStep::V1],
-    "Failed to migrate V1: Stored state version 2 != args `from_version` 1",
-)]
-#[case::from_0_4_0_v0_then_v1(
-    MigrationSequenceStart::From0_4_0,
-    &[MigrationStep::V0, MigrationStep::V1],
-    "Cannot deserialize the contract state.", // Bugged version doesn't have stored state properly set, but still fails correctly.
-)]
 #[tokio::test]
-async fn invalid_migration_sequences_fail(
+async fn from_0_4_0_v0_then_v1_fails_to_deserialize(
     #[future(awt)] harness: SandboxHarness,
-    #[case] start: MigrationSequenceStart,
-    #[case] steps: &'static [MigrationStep],
-    #[case] expected_error: &str,
 ) -> Result<()> {
-    let ua = deploy_for_sequence(&harness, start).await?;
+    let ua = deploy_for_sequence(&harness, MigrationSequenceStart::From0_4_0).await?;
 
     let mut first_failure = None;
-    for &step in steps {
+    for step in [MigrationStep::V0, MigrationStep::V1] {
         let outcome = run_migration_step(&harness, &ua, step).await?;
         if !outcome.success {
             first_failure = Some(outcome.failures);
@@ -557,7 +453,10 @@ async fn invalid_migration_sequences_fail(
         }
     }
 
-    let error = first_failure.expect("expected at least one migration failure");
-    assert!(error.contains(expected_error), "unexpected error: {error}");
+    let error = first_failure.expect("expected a migration failure");
+    assert!(
+        error.contains("Cannot deserialize the contract state."),
+        "unexpected error: {error}"
+    );
     Ok(())
 }

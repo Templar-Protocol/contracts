@@ -177,3 +177,30 @@ impl App {
         self.external_chains.chains()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `App::new` builds the NEAR handler from config without any network I/O —
+    /// only a syntactically valid RPC URL and a configured treasury are needed.
+    #[test]
+    fn app_new_builds_configured_treasury_handler() {
+        let args = Args::test_valid();
+        let expected_treasury = args.near_treasury_account.clone().unwrap();
+
+        let app = App::new(&args).expect("build app");
+
+        assert!(app.is_healthy());
+        assert_eq!(app.near_handler.treasury_account(), &expected_treasury);
+    }
+
+    /// A missing treasury account is a configuration error, not a panic.
+    #[test]
+    fn app_new_requires_treasury_account() {
+        let mut args = Args::test_valid();
+        args.near_treasury_account = None;
+
+        assert!(matches!(App::new(&args), Err(FundingError::ConfigError(_))));
+    }
+}

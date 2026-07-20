@@ -162,11 +162,11 @@ impl Args {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::str::FromStr;
-
-    fn create_valid_config() -> Args {
+impl Args {
+    /// A minimal valid configuration (testnet, treasury configured) shared by
+    /// unit tests across the crate.
+    pub(crate) fn test_valid() -> Self {
+        use std::str::FromStr;
         Args {
             port: 3000,
             network: Network::Testnet,
@@ -193,6 +193,15 @@ mod tests {
             stellar_horizon_url: "https://horizon.stellar.org".to_string(),
             stellar_withdraw_address: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_valid_config() -> Args {
+        Args::test_valid()
     }
 
     #[test]
