@@ -27,8 +27,8 @@ use templar_universal_account::{
 };
 
 use crate::{
-    app::{to_gateway_hash, App, SubmitError},
-    client::database::{error::LockError, AccountedStatus},
+    app::{to_gateway_hash, App},
+    client::database::AccountedStatus,
     route::{universal_account::public_key_to_account_id_slug, SimpleResponse},
 };
 
@@ -340,25 +340,6 @@ pub async fn create(
         .await
     {
         Ok(execution) => execution,
-        // Lock failures are all pre-submit: nothing was deployed.
-        Err(SubmitError::Lock(lock)) => {
-            return match lock {
-                LockError::InsufficientAllowance(_) => SimpleResponse::Rejected {
-                    reason: "Insufficient allowance".to_string(),
-                },
-                LockError::PendingCharge(_) => SimpleResponse::Rejected {
-                    reason: "Account creation already in progress".to_string(),
-                },
-                LockError::Sql(e) => {
-                    tracing::error!("Failed to create account in database: {e}");
-                    SimpleResponse::Failure {
-                        error: "Failed to create account in database".to_string(),
-                    }
-                }
-            };
-        }
-        // Gateway/NoTransaction, or a Database error from post-submit settlement:
-        // the deploy may already have landed.
         Err(e) => {
             tracing::error!("Failed to deploy universal account: {e}");
             return SimpleResponse::Failure {
