@@ -1,23 +1,23 @@
 use clap::Args;
 use near_account_id::AccountId;
-use templar_gateway_methods_spec::proxy_oracle_owner as spec;
+use templar_gateway_methods_spec::owner as spec;
 
 use crate::commands::signer::SignerArgs;
 
-/// Accept a pending ownership transfer of a proxy-oracle account.
+/// Accept a pending ownership transfer.
 #[derive(Args, Debug)]
-pub struct AcceptOwner {
-    /// Proxy-oracle account.
+pub struct Accept {
+    /// Contract account.
     #[arg(long, value_name = "ACCOUNT_ID")]
-    oracle_id: AccountId,
+    contract_id: AccountId,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }
 
-impl AcceptOwner {
+impl Accept {
     pub fn into_spec(self) -> spec::AcceptOwner {
         spec::AcceptOwner {
-            oracle_id: self.oracle_id,
+            contract_id: self.contract_id,
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod lst_oracle;
 pub mod macros;
 pub mod market;
 pub mod mt;
+pub mod owner;
 pub mod proxy_governance;
 pub mod proxy_oracle;
 pub mod pyth_lazer_oracle;
@@ -32,6 +33,7 @@ use market::MarketClient;
 use mt::MtClient;
 use near_account_id::{AccountId, AccountIdRef};
 use near_api::NetworkConfig;
+use owner::OwnerClient;
 use proxy_governance::ProxyGovernanceClient;
 use proxy_oracle::ProxyOracleClient;
 use pyth_lazer_oracle::PythLazerOracleClient;
@@ -154,6 +156,13 @@ impl NearClient {
 
     pub fn token<T: AssetClass>(&self, asset: FungibleAsset<T>) -> TokenClient<'_> {
         TokenClient::new(self, asset)
+    }
+
+    pub fn owner(&self, contract_id: AccountId) -> OwnerClient<'_> {
+        OwnerClient {
+            inner: self,
+            contract_id,
+        }
     }
 
     pub fn proxy_oracle(&self, contract_id: AccountId) -> ProxyOracleClient<'_> {

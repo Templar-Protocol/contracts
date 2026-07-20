@@ -197,4 +197,32 @@ mod tests {
             "expected the catalog to collect every gateway method",
         );
     }
+
+    #[test]
+    fn owner_namespace_is_canonical() {
+        let catalog = super::catalog();
+        let mut owner_methods = catalog
+            .iter()
+            .filter(|entry| entry.namespace() == "owner")
+            .map(|entry| entry.rpc_method)
+            .collect::<Vec<_>>();
+        owner_methods.sort_unstable();
+
+        assert_eq!(
+            owner_methods,
+            [
+                "owner.acceptOwner",
+                "owner.getOwner",
+                "owner.getProposedOwner",
+                "owner.proposeOwner",
+                "owner.renounceOwner",
+            ]
+        );
+        assert!(
+            catalog
+                .iter()
+                .all(|entry| entry.namespace() != "proxyOracleOwner"),
+            "legacy proxyOracleOwner methods remain in the catalog"
+        );
+    }
 }

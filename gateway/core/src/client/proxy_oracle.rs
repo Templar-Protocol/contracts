@@ -67,10 +67,6 @@ pub struct GetProxyCircuitBreakerSetArgs {
     pub id: PriceIdentifier,
 }
 #[derive(serde::Serialize)]
-pub struct OwnerProposeArgs {
-    pub account_id: Option<near_account_id::AccountId>,
-}
-#[derive(serde::Serialize)]
 pub struct UpdatePricesArgs {
     pub price_ids: Vec<PriceIdentifier>,
 }
@@ -134,14 +130,9 @@ impl ProxyOracleClient<'_> {
         pub fn list_proxies(ListProxiesArgs) -> Vec<PriceIdentifier>;
         pub fn price_feed_exists(PriceFeedExistsArgs) -> bool;
         pub fn get_proxy_circuit_breaker_set(GetProxyCircuitBreakerSetArgs) -> Option<CircuitBreakerSet>;
-        pub fn own_get_owner(()) -> Option<near_account_id::AccountId>;
-        pub fn own_get_proposed_owner(()) -> Option<near_account_id::AccountId>;
     }
 
     contract_writes! {
-        pub fn own_propose_owner(OwnerProposeArgs);
-        pub fn own_accept_owner(());
-        pub fn own_renounce_owner(());
         pub fn update_prices(UpdatePricesArgs);
     }
 }

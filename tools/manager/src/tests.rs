@@ -28,7 +28,7 @@ fn help_lists_all_top_level_commands() {
         "market",
         "oracle",
         "proxy-oracle",
-        "proxy-oracle-owner",
+        "owner",
         "proxy-oracle-governance",
         "pyth",
         "redstone",
@@ -38,6 +38,28 @@ fn help_lists_all_top_level_commands() {
     ] {
         assert!(rendered.contains(command), "help is missing `{command}`");
     }
+    assert!(
+        !rendered.contains("proxy-oracle-owner"),
+        "help still lists the removed `proxy-oracle-owner` command"
+    );
+}
+
+#[test]
+fn owner_uses_concise_subcommands() {
+    let command = Cli::command();
+    let owner = command
+        .find_subcommand("owner")
+        .expect("owner command should exist");
+    let names = owner
+        .get_subcommands()
+        .map(clap::Command::get_name)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        ["get", "get-proposed", "propose", "accept", "renounce"]
+    );
+    assert!(Cli::try_parse_from(["tmplrmgr", "proxy-oracle-owner"]).is_err());
 }
 
 #[test]
