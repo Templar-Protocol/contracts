@@ -40,15 +40,16 @@ primitive-types = { version = "0.14.0", features = ["serde"] }
 borsh.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
 rstest.workspace = true
+serde_json.workspace = true
+templar-gateway-testing.workspace = true
+templar-primitives.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
-templar-relayer = { path = "../../../service/relayer" }
-rand = "0.8"
 proptest = "*"
-futures.workspace = true
 
 [lints]
 workspace = true

@@ -3,10 +3,7 @@ use super::*;
 #[tokio::test]
 async fn pyth_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let oracle_id = stack
-        .harness
-        .deploy_mock_oracle("pyth-low-level.near".parse()?)
-        .await?;
+    let oracle_id = stack.harness.deploy_mock_oracle("pyth-low-level").await?;
     let price_id = test_utils::DEFAULT_BORROW_PRICE_ID;
     let price = pyth_price(123.45);
     stack

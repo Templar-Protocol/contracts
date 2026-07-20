@@ -3,14 +3,14 @@
     reason = "test utility example intentionally fails fast on invalid setup"
 )]
 
-use std::fs;
+use std::{fs, path::Path};
 
 use templar_common::registry::DeployMode;
 
 pub fn main() {
     let cliargs = std::env::args().collect::<Vec<_>>();
     let name = &cliargs[1];
-    let workspace_root = test_utils::workspace_root();
+    let workspace_root = Path::new(env!("CARGO_WORKSPACE_DIR"));
 
     let path = workspace_root
         .join("target/near/")

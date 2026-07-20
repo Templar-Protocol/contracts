@@ -38,7 +38,7 @@ Install [sleek](https://sleek.dev) to format SQL queries, including queries inli
 
 ```bash
 cargo install --locked sleek
-make sql-fmt # from project root
+just sql-fmt # from project root
 ```
 
 ### Production

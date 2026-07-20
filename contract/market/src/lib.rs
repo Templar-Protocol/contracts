@@ -114,6 +114,9 @@ mod impl_helper;
 mod impl_market_external;
 mod impl_token_receiver;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(target_arch = "wasm32")]
 mod custom_getrandom {
     #![allow(clippy::no_mangle_with_rust_abi)]

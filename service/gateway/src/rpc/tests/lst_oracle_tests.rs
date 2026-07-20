@@ -3,13 +3,10 @@ use super::*;
 #[tokio::test]
 async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let pyth_oracle_id = stack
-        .harness
-        .deploy_mock_oracle("lst-pyth.near".parse()?)
-        .await?;
+    let pyth_oracle_id = stack.harness.deploy_mock_oracle("lst-pyth").await?;
     let lst_oracle_id = stack
         .harness
-        .deploy_lst_oracle("lst-oracle.near".parse()?, pyth_oracle_id.clone())
+        .deploy_lst_oracle("lst-oracle", pyth_oracle_id.clone())
         .await?;
 
     let transformed_price_id = PriceIdentifier([0x42; 32]);

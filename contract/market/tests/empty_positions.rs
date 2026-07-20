@@ -1,45 +1,71 @@
-use near_workspaces::{network::Sandbox, Worker};
-use rstest::rstest;
+//! The old test re-registered market storage by hand before re-supplying; the
+//! gateway `supply` op does that registration itself.
 
-use test_utils::*;
+use anyhow::Result;
+use rstest::rstest;
+use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-async fn empty_positions_are_removed(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-    );
+async fn empty_positions_are_removed(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness.deploy_full_market().await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
 
-    c.supply(&supply_user, 1000).await;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    assert!(c.get_supply_position(supply_user.id()).await.is_some());
+    harness.supply(&supply_user, &market, 1000).await?;
+    assert!(harness
+        .get_supply_position(&market, &supply_user.0)
+        .await?
+        .is_some());
 
-    c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user, None)
-        .await;
-    assert!(c.get_supply_position(supply_user.id()).await.is_none());
+    harness
+        .create_supply_withdrawal_request(&supply_user, &market, 1000)
+        .await?;
+    harness
+        .execute_next_supply_withdrawal_request(&supply_user, &market, None)
+        .await?;
+    assert!(harness
+        .get_supply_position(&market, &supply_user.0)
+        .await?
+        .is_none());
 
-    tokio::join!(
-        async {
-            // Deposit a little bit more again.
-            c.storage_deposit(&supply_user, c.storage_balance_bounds().await.min)
-                .await;
-            c.supply_and_harvest_until_activation(&supply_user, 1000)
-                .await;
-        },
-        async {
-            c.collateralize(&borrow_user, 2000).await;
-            assert!(c.get_borrow_position(borrow_user.id()).await.is_some());
+    // Deposit a little bit more again. A full withdrawal refunds only the
+    // position's storage (not its snapshots'), so top up before re-supplying;
+    // then exercise a collateral round-trip.
+    harness
+        .storage_deposit_min(&supply_user, &market.market_id)
+        .await?;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1000)
+        .await?;
 
-            c.withdraw_collateral(&borrow_user, 2000).await;
-            assert!(c.get_borrow_position(borrow_user.id()).await.is_none());
-        }
-    );
+    harness.collateralize(&borrow_user, &market, 2000).await?;
+    assert!(harness
+        .get_borrow_position(&market, &borrow_user.0)
+        .await?
+        .is_some());
+    harness
+        .withdraw_collateral(&borrow_user, &market, 2000)
+        .await?;
+    assert!(harness
+        .get_borrow_position(&market, &borrow_user.0)
+        .await?
+        .is_none());
 
-    c.create_supply_withdrawal_request(&supply_user, 1000).await;
-    c.execute_next_supply_withdrawal_request(&supply_user, None)
-        .await;
-    assert!(c.get_supply_position(supply_user.id()).await.is_none());
+    harness
+        .create_supply_withdrawal_request(&supply_user, &market, 1000)
+        .await?;
+    harness
+        .execute_next_supply_withdrawal_request(&supply_user, &market, None)
+        .await?;
+    assert!(harness
+        .get_supply_position(&market, &supply_user.0)
+        .await?
+        .is_none());
+
+    Ok(())
 }

@@ -3,10 +3,7 @@ use super::*;
 #[tokio::test]
 async fn ft_transfer_call_endpoint_works_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let receiver_id = stack
-        .harness
-        .deploy_receiver("ft-receiver.near".parse()?)
-        .await?;
+    let receiver_id = stack.harness.deploy_receiver("ft-receiver").await?;
 
     let _ = register_gateway_signer_for_ft(&stack).await?;
     let _ = register_ft_account(&stack, receiver_id.clone()).await?;

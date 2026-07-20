@@ -1,58 +1,51 @@
-use near_workspaces::{network::Sandbox, Worker};
-use partial::check;
+//! The original sleeps real
+//! wall-clock to cross time-chunk boundaries; here we advance with `fast_forward`.
+//! Generous advances are safe: `partial::check` skips snapshots that match the
+//! previous expected state, so the extra (no-op) snapshots a large advance
+//! produces are ignored — only the ordered sequence of *state changes* matters.
+//! The `partial::check` / `states!` DSL is reused from `test-utils`.
+
+use anyhow::{Context, Result};
 use rstest::rstest;
-use std::time::Duration;
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
-use test_utils::*;
+use templar_gateway_testing::{harness, SandboxHarness};
+use test_utils::{partial::check, states};
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn snapshot_captures_borrow_and_collateral_state(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    // Setup liquidity
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
-        .await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
+        .await?;
 
-    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+    harness
+        .collateralize(&borrow_user, &market, 1_000_000)
+        .await?;
+    harness.borrow(&borrow_user, &market, 500_000).await?;
 
-    // Perform operations within the same time chunk
-    c.collateralize(&borrow_user, 1_000_000).await;
-    c.borrow(&borrow_user, 500_000).await;
+    harness.fast_forward(100).await?;
+    // Snapshot updating occurs before the collateral deposit is recorded, so do
+    // it twice to observe the preceding state in a finalized snapshot.
+    harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Wait for snapshot to finalize
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // Trigger something to ensure snapshot finalization
-    c.collateralize(&borrow_user, 1).await;
-    // Snapshot updating occurs before collateral deposit is recorded, so do
-    // it 2x so we can see 1 (from the preceding call) in the current snapshot.
-    c.collateralize(&borrow_user, 1).await;
-
-    let final_snapshots_len = c.get_finalized_snapshots_len().await;
-
-    assert!(
-        final_snapshots_len > initial_snapshots_len,
-        "Should have created a new finalized snapshot"
-    );
-
-    // Get the latest snapshot
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
-    for (i, snapshot) in snapshots.iter().enumerate() {
-        eprintln!("{i}: {snapshot:#?}");
-    }
-
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(
         states!(
             { active += 2_000_000 },
@@ -62,43 +55,41 @@ async fn snapshot_captures_borrow_and_collateral_state(#[future(awt)] worker: Wo
         ),
         snapshots,
     );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(user, supply_user)
-        config(|c| {
+async fn multiple_snapshots_show_progression(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::new(1000);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let user = harness.create_user("user").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&user, &market).await?;
 
-    c.supply_and_harvest_until_activation(&supply_user, 3_000_000)
-        .await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 3_000_000)
+        .await?;
+    harness.fast_forward(100).await?;
 
-    // First period: collateralize
-    c.collateralize(&user, 1_000_000).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    harness.collateralize(&user, &market, 1_000_000).await?;
+    harness.fast_forward(100).await?;
+    harness.borrow(&user, &market, 400_000).await?;
+    harness.fast_forward(100).await?;
+    harness.borrow(&user, &market, 200_000).await?;
+    harness.fast_forward(100).await?;
+    harness
+        .apply_interest(&user, &market, Some(user.0.clone()), None)
+        .await?;
 
-    // Second period: borrow
-    c.borrow(&user, 400_000).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // Third period: more borrowing
-    c.borrow(&user, 200_000).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // Finalize last snapshot
-    c.apply_interest(&user, None, None).await;
-
-    // Get the snapshots
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(
         states!(
             { active = 3_000_000 },
@@ -108,207 +99,181 @@ async fn multiple_snapshots_show_progression(#[future(awt)] worker: Worker<Sandb
         ),
         snapshots,
     );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_reflects_repayment_changes(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn snapshot_reflects_repayment_changes(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy = InterestRateStrategy::zero();
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
-        .await;
-    c.collateralize(&borrow_user, 1_000_000).await;
-    c.borrow(&borrow_user, 500_000).await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
+        .await?;
+    harness
+        .collateralize(&borrow_user, &market, 1_000_000)
+        .await?;
+    harness.borrow(&borrow_user, &market, 500_000).await?;
 
-    // Wait and trigger first snapshot (with borrowed amount)
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
+    let after_borrow = harness.list_finalized_snapshots(&market).await?.len();
 
-    let snapshots_after_borrow = c.get_finalized_snapshots_len().await;
+    harness.repay(&borrow_user, &market, 250_000, None).await?;
 
-    // Repay half
-    c.repay(&borrow_user, None, 250_000).await;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    let after_repay = snapshots.len();
 
-    // Wait and trigger second snapshot (after partial repayment)
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
-
-    let snapshots_after_repay = c.get_finalized_snapshots_len().await;
-
-    assert!(
-        snapshots_after_repay > snapshots_after_borrow,
-        "Should have created snapshot after repayment"
-    );
-
-    // Compare the two snapshots
-    let all_snapshots = c.list_finalized_snapshots(None, None).await;
-    let borrow_snapshot = &all_snapshots[snapshots_after_borrow as usize - 1];
-    let repay_snapshot = &all_snapshots[snapshots_after_repay as usize - 1];
-
-    let amount_after_borrow = u128::from(borrow_snapshot.borrow_asset_borrowed);
-    let amount_after_repay = u128::from(repay_snapshot.borrow_asset_borrowed);
-
-    eprintln!("After borrow: borrowed={amount_after_borrow}");
-    eprintln!("After repay: borrowed={amount_after_repay}");
-
+    assert!(after_repay > after_borrow);
+    let borrowed_after_borrow = u128::from(snapshots[after_borrow - 1].borrow_asset_borrowed);
+    let borrowed_after_repay = u128::from(snapshots[after_repay - 1].borrow_asset_borrowed);
     assert_eq!(
-        amount_after_borrow,
-        amount_after_repay * 2,
-        "Snapshots should reflect different borrowed states",
+        borrowed_after_borrow,
+        borrowed_after_repay * 2,
+        "snapshots should reflect the halved borrowed amount",
     );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_handles_zero_operations(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(supply_user)
-        config(|c| {
-            c.time_chunk_configuration = TimeChunkConfiguration::new(500); // 0.5 seconds
+async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
+            c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.fund_user(&supply_user, &market).await?;
 
-    // Setup initial state
-    c.supply_and_harvest_until_activation(&supply_user, 1_000_000)
-        .await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1_000_000)
+        .await?;
+    let initial = harness.list_finalized_snapshots(&market).await?.len();
 
-    let initial_snapshots_len = c.get_finalized_snapshots_len().await;
+    // Let a chunk elapse with no activity, then trigger a snapshot.
+    harness.fast_forward(100).await?;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1)
+        .await?;
+    let final_len = harness.list_finalized_snapshots(&market).await?.len();
+    assert!(final_len > initial);
 
-    // Wait for time chunk to expire with no operations
-    tokio::time::sleep(Duration::from_secs(1)).await;
-
-    // Trigger snapshot with minimal operation
-    c.supply_and_harvest_until_activation(&supply_user, 1).await;
-
-    let final_snapshots_len = c.get_finalized_snapshots_len().await;
-
-    eprintln!("Snapshots before: {initial_snapshots_len}, after: {final_snapshots_len}");
-
-    // Verify behavior when no meaningful operations occur
-    assert!(final_snapshots_len > initial_snapshots_len);
-
-    // Finalize snapshot
-    c.harvest_yield(&supply_user, None, None).await;
-
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
+    harness
+        .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
+        .await?;
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(states!({ active = 1_000_000 }, { active += 1 }), snapshots);
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_with_full_repayment(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn snapshot_with_full_repayment(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
+
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
+        .await?;
+    harness
+        .collateralize(&borrow_user, &market, 1_000_000)
+        .await?;
+    harness.borrow(&borrow_user, &market, 500_000).await?;
+
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
+
+    let total_liability = u128::from(
+        harness
+            .get_borrow_position(&market, &borrow_user.0)
+            .await?
+            .context("borrow position missing")?
+            .get_total_borrow_asset_liability(),
     );
+    harness
+        .repay(&borrow_user, &market, total_liability, None)
+        .await?;
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 2_000_000),
-        async {
-            c.collateralize(&borrow_user, 1_000_000).await;
-            c.borrow(&borrow_user, 500_000).await;
-        },
-    );
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Create snapshot with borrowed amount
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
-
-    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    let total_liability = u128::from(borrow_position.get_total_borrow_asset_liability());
-
-    eprintln!("Total liability before repayment: {total_liability:?}");
-
-    // Repay everything (including any accrued interest)
-    c.repay(&borrow_user, None, total_liability).await;
-
-    // Create snapshot after full repayment
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
-
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-    let final_snapshot = &snapshots[snapshots.len() - 1];
-
-    eprintln!(
-        "After full repayment: borrowed={:?}",
-        final_snapshot.borrow_asset_borrowed,
-    );
-
-    let final_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
-    eprintln!(
-        "Final position liability: {:?}",
-        final_position.get_total_borrow_asset_liability()
-    );
-
-    eprintln!("Final snapshot:");
-    eprintln!("{final_snapshot:#?}");
-
-    // Verify snapshot reflects full repayment
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    let last = snapshots.last().context("no snapshots")?;
     assert!(
-        final_snapshot.borrow_asset_borrowed <= 1000.into(), // Allow for small rounding
-        "Snapshot should show minimal borrowed amount after full repayment"
+        u128::from(last.borrow_asset_borrowed) <= 1000,
+        "snapshot should show minimal borrowed after full repayment",
     );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn snapshot_field_validation(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy =
-                InterestRateStrategy::linear(dec!("2000"), dec!("3000")).unwrap(); // Higher rates for testing
+                InterestRateStrategy::linear(dec!("2000"), dec!("3000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::new(500);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    // Step 1: Supply (affects borrow_asset_deposited fields)
-    c.supply_and_harvest_until_activation(&supply_user, 1_500_000)
-        .await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1_500_000)
+        .await?;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Step 2: Collateralize (affects collateral_asset_deposited)
-    c.collateralize(&borrow_user, 800_000).await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
+    harness
+        .collateralize(&borrow_user, &market, 800_000)
+        .await?;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Step 3: Borrow (affects borrow_asset_borrowed, interest_rate)
-    c.borrow(&borrow_user, 400_000).await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.collateralize(&borrow_user, 1).await;
+    harness.borrow(&borrow_user, &market, 400_000).await?;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Step 4: Let interest accrue
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    c.collateralize(&borrow_user, 1).await;
+    harness.fast_forward(100).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.collateralize(&borrow_user, &market, 1).await?;
 
-    // Finalize last snapshot
-    c.collateralize(&borrow_user, 1).await;
-
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(
         states!(
             { active = 1_500_000 },
@@ -322,63 +287,85 @@ async fn snapshot_field_validation(#[future(awt)] worker: Worker<Sandbox>) {
         &snapshots,
     );
 
-    let mut last_end_timestamp = snapshots[0].end_timestamp_ms.0;
+    // Timestamps are monotonic and the interest rate reflects utilization.
+    let mut last_ts = snapshots[0].end_timestamp_ms.0;
     for (i, snapshot) in snapshots.iter().enumerate() {
         assert!(
-            snapshot.end_timestamp_ms.0 >= last_end_timestamp,
-            "Timestamps did not increase at {i}",
+            snapshot.end_timestamp_ms.0 >= last_ts,
+            "timestamp decreased at {i}"
         );
-        last_end_timestamp = snapshot.end_timestamp_ms.0;
+        last_ts = snapshot.end_timestamp_ms.0;
     }
-
-    let last = &snapshots[snapshots.len() - 1];
-
-    // Interest rate should reflect utilization
     assert!(
-        !last.interest_rate.is_zero(),
-        "Interest rate should be positive with borrowing activity",
+        !snapshots
+            .last()
+            .context("no snapshots")?
+            .interest_rate
+            .is_zero(),
+        "interest rate should be positive with borrowing activity",
     );
+
+    Ok(())
 }
 
+/// Each user's operation must land in its own finalized snapshot, so a
+/// per-operation snapshot-assignment error is observable. The counterpart to
+/// [`many_users_same_snapshot`], which aggregates everything into one snapshot
+/// and so cannot expose that class of error.
+///
+/// Determinism: the operations are sequential and each is isolated in its own
+/// time chunk by a `fast_forward` across the boundary (the sandbox equivalent of
+/// the original's 1ms chunks + real-clock separation). The following operation
+/// finalizes the previous one's snapshot — snapshot updating runs *before* an
+/// op's own effect is recorded — and a trailing harvest finalizes the last.
 #[rstest]
 #[tokio::test]
-async fn many_users_different_snapshots(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
-        config(|c| {
+async fn many_users_different_snapshots(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::new(1);
+            c.time_chunk_configuration = TimeChunkConfiguration::new(1000);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_1 = harness.create_user("supply1").await?;
+    let supply_2 = harness.create_user("supply2").await?;
+    let users: Vec<_> = create_users(&harness, 5).await?;
+    harness.fund_user(&supply_1, &market).await?;
+    harness.fund_user(&supply_2, &market).await?;
+    for user in &users {
+        harness.fund_user(user, &market).await?;
+    }
 
-    // Multiple suppliers
-    c.supply_and_harvest_until_activation(&supply_user1, 2_000_000)
-        .await;
-    c.supply_and_harvest_until_activation(&supply_user2, 1_500_000)
-        .await;
+    // Two suppliers, each activating in its own snapshot.
+    harness
+        .supply_and_harvest_until_activation(&supply_1, &market, 2_000_000)
+        .await?;
+    harness
+        .supply_and_harvest_until_activation(&supply_2, &market, 1_500_000)
+        .await?;
 
-    // All collateral operations
-    c.collateralize(&user1, 400_000).await;
-    c.collateralize(&user2, 350_000).await;
-    c.collateralize(&user3, 300_000).await;
-    c.collateralize(&user4, 250_000).await;
-    c.collateralize(&user5, 200_000).await;
+    // Each collateral deposit in a separate snapshot.
+    let collaterals = [400_000u128, 350_000, 300_000, 250_000, 200_000];
+    for (user, amount) in users.iter().zip(collaterals) {
+        harness.fast_forward(100).await?;
+        harness.collateralize(user, &market, amount).await?;
+    }
 
-    // All borrow operations
-    c.borrow(&user1, 150_000).await;
-    c.borrow(&user2, 120_000).await;
-    c.borrow(&user3, 100_000).await;
-    c.borrow(&user4, 80_000).await;
-    c.borrow(&user5, 60_000).await;
+    // Each borrow in a separate snapshot.
+    let borrows = [150_000u128, 120_000, 100_000, 80_000, 60_000];
+    for (user, amount) in users.iter().zip(borrows) {
+        harness.fast_forward(100).await?;
+        harness.borrow(user, &market, amount).await?;
+    }
 
-    // Wait and trigger snapshot
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    c.harvest_yield(&supply_user1, None, None).await;
+    // Finalize the last borrow's snapshot.
+    harness.fast_forward(100).await?;
+    harness
+        .harvest_yield(&supply_1, &market, Some(supply_1.0.clone()))
+        .await?;
 
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(
         states!(
             { active += 2_000_000 },
@@ -396,64 +383,89 @@ async fn many_users_different_snapshots(#[future(awt)] worker: Worker<Sandbox>) 
         ),
         snapshots,
     );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn many_users_same_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
-    eprintln!("Fast-forwarding...");
-    // Need to fast forward right away because otherwise the contract will panic because it can't construct a previous time chunk
-    worker.fast_forward(100).await.unwrap();
-    setup_test!(
-        worker
-        extract(c)
-        accounts(user1, user2, user3, user4, user5, supply_user1, supply_user2)
-        config(|c| {
+async fn many_users_same_snapshot(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
             c.time_chunk_configuration = TimeChunkConfiguration::new(10_000);
         })
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_1 = harness.create_user("supply1").await?;
+    let supply_2 = harness.create_user("supply2").await?;
+    let users: Vec<_> = create_users(&harness, 5).await?;
+    harness.fund_user(&supply_1, &market).await?;
+    harness.fund_user(&supply_2, &market).await?;
+    for user in &users {
+        harness.fund_user(user, &market).await?;
+    }
+
+    // Supply both BEFORE either activates, then activate them together so a
+    // single snapshot reflects all 3_500_000 active (not one per supplier).
+    // Concurrently, like the groups below: a deposit's activation snapshot is
+    // fixed at supply time, so two sequential supplies can straddle a time-chunk
+    // boundary under load and activate in *separate* snapshots.
+    let (s1, s2) = tokio::join!(
+        harness.supply(&supply_1, &market, 2_000_000),
+        harness.supply(&supply_2, &market, 1_500_000),
     );
+    s1?;
+    s2?;
+    harness.fast_forward(1000).await?;
+    harness
+        .harvest_yield(&supply_1, &market, Some(supply_1.0.clone()))
+        .await?;
+    harness
+        .harvest_yield(&supply_2, &market, Some(supply_2.0.clone()))
+        .await?;
 
-    // Multiple suppliers
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user1, 2_000_000),
-        c.supply_and_harvest_until_activation(&supply_user2, 1_500_000),
+    // Run each group concurrently so all five land in the same time chunk
+    // (sequential calls would straddle a chunk boundary and split the snapshot).
+    harness.fast_forward(1000).await?;
+    let collaterals = [400_000u128, 350_000, 300_000, 250_000, 200_000];
+    let (a, b, c, d, e) = tokio::join!(
+        harness.collateralize(&users[0], &market, collaterals[0]),
+        harness.collateralize(&users[1], &market, collaterals[1]),
+        harness.collateralize(&users[2], &market, collaterals[2]),
+        harness.collateralize(&users[3], &market, collaterals[3]),
+        harness.collateralize(&users[4], &market, collaterals[4]),
     );
+    a?;
+    b?;
+    c?;
+    d?;
+    e?;
 
-    eprintln!("Fast-forwarding...");
-    worker.fast_forward(100).await.unwrap();
-
-    eprintln!("Collateral operations");
-    tokio::join!(
-        c.collateralize(&user1, 400_000),
-        c.collateralize(&user2, 350_000),
-        c.collateralize(&user3, 300_000),
-        c.collateralize(&user4, 250_000),
-        c.collateralize(&user5, 200_000),
+    harness.fast_forward(1000).await?;
+    let borrows = [150_000u128, 120_000, 100_000, 80_000, 60_000];
+    let (a, b, c, d, e) = tokio::join!(
+        harness.borrow(&users[0], &market, borrows[0]),
+        harness.borrow(&users[1], &market, borrows[1]),
+        harness.borrow(&users[2], &market, borrows[2]),
+        harness.borrow(&users[3], &market, borrows[3]),
+        harness.borrow(&users[4], &market, borrows[4]),
     );
+    a?;
+    b?;
+    c?;
+    d?;
+    e?;
 
-    eprintln!("Fast-forwarding...");
-    worker.fast_forward(100).await.unwrap();
+    harness.fast_forward(1000).await?;
 
-    eprintln!("Borrow operations");
-    tokio::join!(
-        c.borrow(&user1, 150_000),
-        c.borrow(&user2, 120_000),
-        c.borrow(&user3, 100_000),
-        c.borrow(&user4, 80_000),
-        c.borrow(&user5, 60_000),
-    );
+    harness
+        .harvest_yield(&supply_1, &market, Some(supply_1.0.clone()))
+        .await?;
 
-    eprintln!("Fast-forwarding...");
-    worker.fast_forward(100).await.unwrap();
-
-    eprintln!("Trigger snapshot");
-    c.harvest_yield(&supply_user1, None, None).await;
-
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
     check(
         states!(
             { active += 2_000_000 + 1_500_000 },
@@ -462,61 +474,69 @@ async fn many_users_same_snapshot(#[future(awt)] worker: Worker<Sandbox>) {
         ),
         snapshots,
     );
+
+    Ok(())
+}
+
+async fn create_users(
+    harness: &SandboxHarness,
+    n: usize,
+) -> Result<Vec<templar_gateway_types::ManagedAccountId>> {
+    let mut users = Vec::with_capacity(n);
+    for i in 0..n {
+        users.push(harness.create_user(&format!("user{i}")).await?);
+    }
+    Ok(users)
 }
 
 #[rstest]
 #[tokio::test]
-async fn incoming(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(worker extract(c) accounts(borrow_user, supply_user));
+async fn incoming(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness.deploy_full_market().await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    harness.fund_user(&supply_user, &market).await?;
 
-    c.supply(&supply_user, 2_000_000).await;
+    harness.supply(&supply_user, &market, 2_000_000).await?;
+    let activates_at = harness
+        .get_supply_position(&market, &supply_user.0)
+        .await?
+        .context("supply position missing")?
+        .get_deposit()
+        .incoming[0]
+        .activate_at_snapshot_index;
 
-    let supply_position = c.get_supply_position(supply_user.id()).await.unwrap();
-
-    let incoming_activates_at =
-        supply_position.get_deposit().incoming[0].activate_at_snapshot_index;
-
-    while !c
-        .get_supply_position(supply_user.id())
-        .await
-        .unwrap()
+    while !harness
+        .get_supply_position(&market, &supply_user.0)
+        .await?
+        .context("supply position missing")?
         .get_deposit()
         .incoming
         .is_empty()
     {
-        c.harvest_yield(&supply_user, None, None).await;
+        harness
+            .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
+            .await?;
     }
-    // Finalize snapshot where funds were activated
-    c.harvest_yield(&supply_user, None, None).await;
-    // Two more to ensure we have snapshots afterwards
-    c.harvest_yield(&supply_user, None, None).await;
-    c.harvest_yield(&supply_user, None, None).await;
-
-    let snapshots = c.list_finalized_snapshots(None, None).await;
-
-    for (i, snapshot) in snapshots.iter().enumerate() {
-        eprintln!("{i}: {snapshot:#?}");
+    // A few more snapshots after activation.
+    for _ in 0..3 {
+        harness
+            .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
+            .await?;
     }
 
-    eprintln!("Should activate at: {incoming_activates_at}");
-
-    let snapshot_before_before = &snapshots[incoming_activates_at as usize - 2];
-    let snapshot_before = &snapshots[incoming_activates_at as usize - 1];
-    let snapshot_at = &snapshots[incoming_activates_at as usize];
-    let snapshot_after = &snapshots[incoming_activates_at as usize + 1];
-    let snapshot_after_after = &snapshots[incoming_activates_at as usize + 2];
-
-    assert!(snapshot_before_before
-        .borrow_asset_deposited_active
-        .is_zero());
-    assert!(snapshot_before.borrow_asset_deposited_active.is_zero());
-    assert_eq!(snapshot_at.borrow_asset_deposited_active, 2_000_000.into());
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    let at = activates_at as usize;
+    assert!(snapshots[at - 2].borrow_asset_deposited_active.is_zero());
+    assert!(snapshots[at - 1].borrow_asset_deposited_active.is_zero());
     assert_eq!(
-        snapshot_after.borrow_asset_deposited_active,
-        2_000_000.into(),
+        u128::from(snapshots[at].borrow_asset_deposited_active),
+        2_000_000
     );
     assert_eq!(
-        snapshot_after_after.borrow_asset_deposited_active,
-        2_000_000.into(),
+        u128::from(snapshots[at + 1].borrow_asset_deposited_active),
+        2_000_000
     );
+
+    Ok(())
 }

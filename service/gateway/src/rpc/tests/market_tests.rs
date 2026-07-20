@@ -443,7 +443,7 @@ async fn market_create_endpoint_deploys_from_registry_and_registers_tokens() -> 
                 registry_id: registry_id.clone(),
                 version_key: "market@1.0.0".to_owned(),
                 deploy_mode: templar_common::registry::DeployMode::Normal,
-                code: Base64Bytes(test_utils::MarketController::wasm().await.to_vec()),
+                code: Base64Bytes(templar_gateway_testing::wasm::market().await.to_vec()),
                 deposit: NearToken::from_yoctonear(1),
             },
         })

@@ -36,12 +36,16 @@ templar-common.workspace = true
 templar-primitives = { workspace = true, features = ["near"] }
 
 [dev-dependencies]
+anyhow.workspace = true
 itertools.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-workspaces.workspace = true
+near-token.workspace = true
 rstest.workspace = true
+serde_json.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
+templar-gateway-testing.workspace = true
+templar-gateway-types.workspace = true
 templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true
 templar-relayer = { path = "../../service/relayer" }
@@ -50,7 +54,4 @@ templar-relayer = { path = "../../service/relayer" }
 workspace = true
 
 [[example]]
-name = "gas_report"
-
-[[example]]
-name = "receipt_gas"
+name = "market_gas_report"

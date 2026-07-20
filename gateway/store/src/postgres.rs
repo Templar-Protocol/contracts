@@ -1518,6 +1518,10 @@ fn build_outcome(
         total_gas_burnt,
         receipts,
         return_value: row.return_value.clone().map(Into::into),
+        // The failure reason is surfaced in-process (in the returned operation
+        // record); it is not persisted, so an outcome rebuilt from the store
+        // reports `failure: None`.
+        failure: None,
     })
 }
 
@@ -1619,6 +1623,7 @@ mod tests {
                 },
             ],
             return_value: None,
+            failure: None,
         }
     }
 

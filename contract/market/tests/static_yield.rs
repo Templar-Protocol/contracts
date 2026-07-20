@@ -1,169 +1,184 @@
-use std::time::Duration;
+//! The original slept real
+//! wall-clock to accrue interest; here we advance time with `fast_forward`. The
+//! second test's mock `patch_storage_unregister` is replaced with the gateway
+//! `storage::unregister` op.
 
-use near_sdk::{serde_json::json, NearToken};
-use near_workspaces::{network::Sandbox, Worker};
+use anyhow::Result;
+use near_token::NearToken;
 use rstest::rstest;
-use templar_common::{asset::BorrowAssetAmount, dec, interest_rate_strategy::InterestRateStrategy};
-use test_utils::*;
+use templar_common::{dec, interest_rate_strategy::InterestRateStrategy, market::YieldWeights};
+use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
+use templar_gateway_types::ManagedAccountId;
 
-#[rstest]
-#[tokio::test]
-async fn static_yield_success(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c, protocol_yield_user, insurance_yield_user)
-        accounts(borrow_user, supply_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy = InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+struct Fixture {
+    market: DeployedMarket,
+    protocol: ManagedAccountId,
+    insurance: ManagedAccountId,
+    borrow_user: ManagedAccountId,
+}
+
+/// Deploy a high-interest market with `protocol`/`insurance` as static-yield
+/// recipients, supply liquidity, and post collateral.
+#[allow(clippy::unwrap_used)] // infallible strategy construction, in a non-`#[test]` helper
+async fn setup(harness: &SandboxHarness) -> Result<Fixture> {
+    let protocol = harness.create_user("protocol").await?;
+    let insurance = harness.create_user("insurance").await?;
+    let protocol_id = protocol.0.clone();
+    let insurance_id = insurance.0.clone();
+    let market = harness
+        .deploy_full_market_with(move |c| {
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
+            c.yield_weights = YieldWeights::new_with_supply_weight(8)
+                .with_static(protocol_id, 1)
+                .with_static(insurance_id, 1);
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    for user in [&protocol, &insurance, &supply_user, &borrow_user] {
+        harness.fund_user(user, &market).await?;
+    }
+    // Register the recipients on the market so they can hold yield records.
+    for user in [&protocol, &insurance] {
+        harness
+            .storage_deposit(user, &market.market_id, NearToken::from_millinear(50))
+            .await?;
+    }
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 10_000_000),
-        c.collateralize(&borrow_user, 2_000_000),
-    );
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 10_000_000)
+        .await?;
+    harness
+        .collateralize(&borrow_user, &market, 2_000_000)
+        .await?;
 
-    let record_before = c.get_static_yield(protocol_yield_user.id()).await;
-    assert_eq!(record_before, None);
-
-    c.accumulate_static_yield(&protocol_yield_user, None, None)
-        .await;
-
-    let record_after_noop_accumulate = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    assert_eq!(record_after_noop_accumulate, 0.into());
-
-    c.borrow(&borrow_user, 1_000_000).await;
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    c.repay(&borrow_user, None, 1_200_000).await;
-
-    let record_after_repay = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    assert_eq!(record_after_repay, 0.into());
-
-    c.accumulate_static_yield(&protocol_yield_user, None, None)
-        .await;
-
-    let record_after_accumulate = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    assert_ne!(record_after_accumulate, 0.into());
-
-    c.accumulate_static_yield(
-        &protocol_yield_user,
-        Some(insurance_yield_user.id().clone()),
-        None,
-    )
-    .await;
-
-    // Insurance user hasn't done anything yet
-    let second_record_after_accumulate = c
-        .get_static_yield(insurance_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    assert!(second_record_after_accumulate >= record_after_accumulate);
-
-    let balance_before = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
-
-    // Ensure withdrawing works properly
-    c.withdraw_static_yield(&protocol_yield_user, Some(1.into()))
-        .await;
-
-    let balance_after_withdraw_1 = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
-
-    assert_eq!(balance_before + 1, balance_after_withdraw_1);
-
-    let record_after_withdraw_1 = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-
-    assert_eq!(
-        record_after_withdraw_1 + BorrowAssetAmount::from(1),
-        record_after_accumulate,
-    );
-
-    // Withdraw all
-    c.withdraw_static_yield(&protocol_yield_user, None).await;
-
-    let record_after_withdraw_all = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-
-    assert_eq!(record_after_withdraw_all, 0.into());
-
-    let balance_after_withdraw_all = c.borrow_asset.balance_of(protocol_yield_user.id()).await;
-
-    assert_eq!(
-        balance_before + u128::from(record_after_accumulate),
-        balance_after_withdraw_all,
-    );
+    Ok(Fixture {
+        market,
+        protocol,
+        insurance,
+        borrow_user,
+    })
 }
 
 #[rstest]
 #[tokio::test]
-async fn static_yield_fail_storage_unregistered(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c, protocol_yield_user, insurance_yield_user)
-        accounts(borrow_user, supply_user)
-        config(|c| {
-            c.borrow_interest_rate_strategy = InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
-        })
+async fn static_yield_success(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let Fixture {
+        market,
+        protocol,
+        insurance,
+        borrow_user,
+    } = setup(&harness).await?;
+
+    // No record before any accumulation, and a zero record after a no-op one.
+    assert_eq!(
+        harness.static_yield_record(&market, &protocol.0).await?,
+        None
+    );
+    harness
+        .accumulate_static_yield(&protocol, &market, None, None)
+        .await?;
+    assert_eq!(
+        harness.static_yield_record(&market, &protocol.0).await?,
+        Some(0),
     );
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 10_000_000),
-        c.collateralize(&borrow_user, 2_000_000),
+    // Accrue interest, then realize it as static yield.
+    harness.borrow(&borrow_user, &market, 1_000_000).await?;
+    harness.fast_forward(200).await?;
+    harness
+        .repay(&borrow_user, &market, 1_200_000, None)
+        .await?;
+
+    assert_eq!(harness.static_yield_total(&market, &protocol.0).await?, 0);
+    harness
+        .accumulate_static_yield(&protocol, &market, None, None)
+        .await?;
+    let accumulated = harness.static_yield_total(&market, &protocol.0).await?;
+    assert_ne!(accumulated, 0);
+
+    // Anyone can accumulate another account's yield.
+    harness
+        .accumulate_static_yield(&protocol, &market, Some(insurance.0.clone()), None)
+        .await?;
+    assert!(harness.static_yield_total(&market, &insurance.0).await? >= accumulated);
+
+    // Partial then full withdrawal.
+    let balance_before = harness
+        .ft_balance_of(&market.borrow_ft_id, &protocol.0)
+        .await?;
+    harness
+        .withdraw_static_yield(&protocol, &market, Some(1))
+        .await?;
+    assert_eq!(
+        harness
+            .ft_balance_of(&market.borrow_ft_id, &protocol.0)
+            .await?,
+        balance_before + 1,
+    );
+    assert_eq!(
+        harness.static_yield_total(&market, &protocol.0).await?,
+        accumulated - 1,
     );
 
-    c.borrow(&borrow_user, 1_000_000).await;
-    tokio::time::sleep(Duration::from_secs(10)).await;
-    c.repay(&borrow_user, None, 1_200_000).await;
+    harness
+        .withdraw_static_yield(&protocol, &market, None)
+        .await?;
+    assert_eq!(harness.static_yield_total(&market, &protocol.0).await?, 0);
+    assert_eq!(
+        harness
+            .ft_balance_of(&market.borrow_ft_id, &protocol.0)
+            .await?,
+        balance_before + accumulated,
+    );
 
-    c.accumulate_static_yield(&protocol_yield_user, None, None)
-        .await;
+    Ok(())
+}
 
-    let record_after_accumulate = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    eprintln!("Record after accumulate: {record_after_accumulate}");
-    assert_ne!(record_after_accumulate, 0.into());
+#[rstest]
+#[tokio::test]
+async fn static_yield_withdrawal_blocked_when_unregistered(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let Fixture {
+        market,
+        protocol,
+        borrow_user,
+        ..
+    } = setup(&harness).await?;
 
-    let r = protocol_yield_user
-        .call(c.borrow_asset.contract().id(), "patch_storage_unregister")
-        .args_json(json!({"force": true}))
-        .deposit(NearToken::from_yoctonear(1))
-        .transact()
-        .await
-        .unwrap()
-        .into_result()
-        .unwrap();
+    harness.borrow(&borrow_user, &market, 1_000_000).await?;
+    harness.fast_forward(200).await?;
+    harness
+        .repay(&borrow_user, &market, 1_200_000, None)
+        .await?;
 
-    eprintln!("Storage unregister: {r:?}");
+    harness
+        .accumulate_static_yield(&protocol, &market, None, None)
+        .await?;
+    let accumulated = harness.static_yield_total(&market, &protocol.0).await?;
+    assert_ne!(accumulated, 0);
 
-    let r = c.withdraw_static_yield(&protocol_yield_user, None).await;
-    eprintln!("Withdraw static yield: {r:?}");
+    // Unregister from the borrow token so the yield transfer cannot land.
+    harness
+        .storage_unregister(&protocol, &market.borrow_ft_id, true)
+        .await?;
 
-    let record_after_failed_withdrawal = c
-        .get_static_yield(protocol_yield_user.id())
-        .await
-        .unwrap()
-        .get_total();
-    eprintln!("Record after failed withdrawal: {record_after_failed_withdrawal}");
-    assert_eq!(record_after_failed_withdrawal, record_after_accumulate);
+    // The gateway op reports top-level success even though the yield transfer
+    // fails on the unregistered receiver (the failure surfaces in a callback,
+    // not the outer tx — ENG-407), so we assert the *effect*: the withdrawal
+    // record is restored rather than consumed.
+    harness
+        .try_withdraw_static_yield(&protocol, &market, None)
+        .await?;
+
+    // The record is preserved when the withdrawal transfer fails.
+    assert_eq!(
+        harness.static_yield_total(&market, &protocol.0).await?,
+        accumulated,
+    );
+
+    Ok(())
 }

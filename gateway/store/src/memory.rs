@@ -273,6 +273,7 @@ mod tests {
                     total_gas_burnt: NearGas::from_gas(0),
                     receipts: Vec::new(),
                     return_value: None,
+                    failure: None,
                 },
             }));
     }

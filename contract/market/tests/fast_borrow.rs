@@ -1,49 +1,66 @@
-use near_workspaces::{network::Sandbox, Worker};
-use rstest::rstest;
+//! Repaying exactly the principal leaves a nonzero liability: interest accrues
+//! even over a borrow opened and repaid within a single snapshot ("fast borrow
+//! is not free").
 
+use anyhow::{Context, Result};
+use rstest::rstest;
 use templar_common::{
     dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, time_chunk::TimeChunkConfiguration,
 };
-use test_utils::*;
+use templar_gateway_testing::{harness, SandboxHarness};
 
 #[rstest]
 #[tokio::test]
-async fn fast_borrow_is_not_free(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn fast_borrow_is_not_free(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_interest_rate_strategy =
                 InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.time_chunk_configuration = TimeChunkConfiguration::new(60 * 1000); // 1 minute
+            c.time_chunk_configuration = TimeChunkConfiguration::new(60 * 1000);
+            // 1 minute
         })
-    );
+        .await?;
 
-    c.supply_and_harvest_until_activation(&supply_user, 2_000_000)
-        .await;
+    // Both assets priced at 1.0 so collateral covers the borrow.
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
 
-    let snapshot_len_before = c.get_finalized_snapshots_len().await;
-    c.collateralize(&borrow_user, 2_000_000).await;
-    c.borrow(&borrow_user, 1_000_000).await;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    // Repay exact amount that was borrowed
-    c.repay(&borrow_user, None, 1_000_000).await;
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
+        .await?;
 
-    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    let snapshot_len_before = harness.get_finalized_snapshots_len(&market).await?;
+    harness
+        .collateralize(&borrow_user, &market, 2_000_000)
+        .await?;
+    harness.borrow(&borrow_user, &market, 1_000_000).await?;
 
-    eprintln!("{borrow_position:#?}");
+    // Repay the exact amount borrowed; interest accrued over the borrow means
+    // some liability must remain.
+    harness
+        .repay(&borrow_user, &market, 1_000_000, None)
+        .await?;
+
+    let borrow_position = harness
+        .get_borrow_position(&market, &borrow_user.0)
+        .await?
+        .context("borrow position missing")?;
 
     assert!(
         !borrow_position.get_total_borrow_asset_liability().is_zero(),
-        "Borrow position should not have zero liability",
+        "borrow position should not have zero liability",
     );
 
-    let snapshot_len_after = c.get_finalized_snapshots_len().await;
-
+    let snapshot_len_after = harness.get_finalized_snapshots_len(&market).await?;
     assert_eq!(
         snapshot_len_before, snapshot_len_after,
-        "Test should run within a single snapshot",
+        "test should run within a single snapshot",
     );
+
+    Ok(())
 }

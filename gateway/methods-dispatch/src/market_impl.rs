@@ -14,7 +14,7 @@ use templar_gateway_core::{
 use templar_gateway_methods_spec::{market, registry::Deploy};
 
 use crate::registry_impl::plan_deploy_from_registry;
-use crate::token_ops::{ensure_storage_registration, transfer_call_asset};
+use crate::token_ops::{ensure_storage_headroom, ensure_storage_registration, transfer_call_asset};
 use crate::Dispatch;
 
 #[derive(serde::Serialize)]
@@ -364,7 +364,7 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
             }
         }
 
-        if let Some(tx_result) = ensure_storage_registration(
+        if let Some(tx_result) = ensure_storage_headroom(
             &ctx,
             request.signer_account_id.clone(),
             body.market_id.clone(),
@@ -382,6 +382,57 @@ impl<C: HasNearClient> PlanWrite<market::Supply, C> for Dispatch {
             body.market_id,
             body.amount,
             &DepositMsg::Supply,
+        )?);
+
+        Ok(OperationPlan { steps })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<market::Collateralize, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<market::Collateralize>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        let configuration = ctx
+            .near_client()
+            .market(body.market_id.clone())
+            .cached_get_configuration()
+            .await?;
+        let mut steps = Vec::new();
+
+        if let Some(asset_id) = configuration.collateral_asset.clone().into_nep141() {
+            if let Some(tx_result) = ensure_storage_registration(
+                &ctx,
+                request.signer_account_id.clone(),
+                asset_id,
+                body.market_id.clone(),
+            )
+            .await?
+            {
+                steps.push(tx_result);
+            }
+        }
+
+        if let Some(tx_result) = ensure_storage_headroom(
+            &ctx,
+            request.signer_account_id.clone(),
+            body.market_id.clone(),
+            request.signer_account_id.0.clone(),
+        )
+        .await?
+        {
+            steps.push(tx_result);
+        }
+
+        steps.push(transfer_call_asset(
+            &ctx,
+            request.signer_account_id,
+            configuration.collateral_asset,
+            body.market_id,
+            body.amount,
+            &DepositMsg::Collateralize,
         )?);
 
         Ok(OperationPlan { steps })

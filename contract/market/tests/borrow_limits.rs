@@ -1,8 +1,16 @@
-use near_workspaces::{network::Sandbox, Worker};
+//! The original
+//! `borrow_above_maximum` borrowed concurrently via a `JoinSet`; here it borrows
+//! sequentially and asserts at least one borrow is rejected — borrows are direct
+//! market calls that fail outright (unlike `ft_transfer_call` deposits, which
+//! refund), so the rejection surfaces as a failed operation.
+
+use anyhow::{Context, Result};
 use rstest::rstest;
 use templar_common::{fee::Fee, interest_rate_strategy::InterestRateStrategy, Decimal};
-use test_utils::*;
-use tokio::task::JoinSet;
+use templar_gateway_testing::{harness, SandboxHarness};
+use templar_gateway_types::OperationStatus;
+
+const OUT_OF_RANGE: &str = "New borrow position is outside of allowable range";
 
 #[rstest]
 #[case(0, &[1], u128::MAX)]
@@ -11,34 +19,43 @@ use tokio::task::JoinSet;
 #[case(0, &[20, 20, 20, 20, 20], 100)]
 #[tokio::test]
 async fn borrow_within_bounds(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
-) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 1000),
-        c.collateralize(&borrow_user, 2000),
-    );
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1000)
+        .await?;
+    harness.collateralize(&borrow_user, &market, 2000).await?;
 
-    for amount in amounts {
-        c.borrow(&borrow_user, *amount).await;
+    for &amount in amounts {
+        harness.borrow(&borrow_user, &market, amount).await?;
     }
 
-    let borrow_position = c.get_borrow_position(borrow_user.id()).await.unwrap();
     assert_eq!(
-        u128::from(borrow_position.get_borrow_asset_principal()),
-        amounts.iter().sum(),
+        u128::from(
+            harness
+                .get_borrow_position(&market, &borrow_user.0)
+                .await?
+                .context("borrow position missing")?
+                .get_borrow_asset_principal()
+        ),
+        amounts.iter().sum::<u128>(),
     );
+
+    Ok(())
 }
 
 #[rstest]
@@ -47,28 +64,41 @@ async fn borrow_within_bounds(
 #[case(u128::MAX, 1, u128::MAX)]
 #[case(1000, 738, u128::MAX)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_below_minimum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
     #[case] amount: u128,
     #[case] maximum: u128,
-) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
+
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1000)
+        .await?;
+    harness.collateralize(&borrow_user, &market, 2000).await?;
+
+    let result = harness.try_borrow(&borrow_user, &market, amount).await?;
+    assert_eq!(result.operation.status, OperationStatus::Failed);
+    assert!(
+        result
+            .operation
+            .failure_message()
+            .unwrap_or_default()
+            .contains(OUT_OF_RANGE),
+        "unexpected failure reason: {:?}",
+        result.operation.failure_message(),
     );
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 1000),
-        c.collateralize(&borrow_user, 2000),
-    );
-
-    c.borrow(&borrow_user, amount).await;
+    Ok(())
 }
 
 #[rstest]
@@ -81,66 +111,98 @@ async fn borrow_below_minimum(
 #[case(100, &[1001], 500)]
 #[case(100, &[100, 100, 100, 100, 100, 100, 100], 500)]
 #[tokio::test]
-#[should_panic = "Smart contract panicked: New borrow position is outside of allowable range"]
 async fn borrow_above_maximum(
-    #[future(awt)] worker: Worker<Sandbox>,
+    #[future(awt)] harness: SandboxHarness,
     #[case] minimum: u128,
     #[case] amounts: &[u128],
     #[case] maximum: u128,
-) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_range = (minimum, Some(maximum)).try_into().unwrap();
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 10_000),
-        c.collateralize(&borrow_user, 2000),
-    );
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 10_000)
+        .await?;
+    harness.collateralize(&borrow_user, &market, 2000).await?;
 
-    let mut set = JoinSet::new();
-    for amount in amounts {
-        let amount = *amount;
-        let borrow_user = borrow_user.clone();
-        let c = c.clone();
-        set.spawn(async move { c.borrow(&borrow_user, amount).await });
+    let mut any_rejected = false;
+    for &amount in amounts {
+        let result = harness.try_borrow(&borrow_user, &market, amount).await?;
+        if result.operation.status == OperationStatus::Failed {
+            any_rejected = true;
+            assert!(
+                result
+                    .operation
+                    .failure_message()
+                    .unwrap_or_default()
+                    .contains(OUT_OF_RANGE),
+                "unexpected failure reason: {:?}",
+                result.operation.failure_message(),
+            );
+        }
     }
-    set.join_all().await;
+    assert!(
+        any_rejected,
+        "expected at least one borrow to be rejected for exceeding the maximum",
+    );
+
+    Ok(())
 }
 
 #[rstest]
 #[tokio::test]
-async fn withdraw_below_minimum(#[future(awt)] worker: Worker<Sandbox>) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(borrow_user, supply_user)
-        config(|c| {
+async fn withdraw_below_minimum(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with(|c| {
             c.borrow_range = (10, None).try_into().unwrap();
             c.borrow_origination_fee = Fee::zero();
-            c.borrow_interest_rate_strategy = InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
+            c.borrow_interest_rate_strategy =
+                InterestRateStrategy::linear(Decimal::ZERO, Decimal::ZERO).unwrap();
         })
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
+    let supply_user = harness.create_user("supply").await?;
+    let borrow_user = harness.create_user("borrow").await?;
+    harness.fund_user(&supply_user, &market).await?;
+    harness.fund_user(&borrow_user, &market).await?;
+
+    harness
+        .supply_and_harvest_until_activation(&supply_user, &market, 1000)
+        .await?;
+    harness.collateralize(&borrow_user, &market, 2000).await?;
+    harness.borrow(&borrow_user, &market, 100).await?;
+    assert_eq!(
+        u128::from(
+            harness
+                .get_borrow_position(&market, &borrow_user.0)
+                .await?
+                .context("borrow position missing")?
+                .get_total_borrow_asset_liability()
+        ),
+        100,
     );
 
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, 1000),
-        c.collateralize(&borrow_user, 2000),
-    );
-    c.borrow(&borrow_user, 100).await;
-    let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    // Repaying 91 would drop the liability to 9, below the minimum of 10; the
+    // market caps the repayment so the liability stays at the minimum.
+    harness.repay(&borrow_user, &market, 91, None).await?;
     assert_eq!(
-        borrow_position_before.get_total_borrow_asset_liability(),
-        100.into()
+        u128::from(
+            harness
+                .get_borrow_position(&market, &borrow_user.0)
+                .await?
+                .context("borrow position missing")?
+                .get_total_borrow_asset_liability()
+        ),
+        10,
     );
-    c.repay(&borrow_user, None, 91).await;
-    let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
 
-    assert_eq!(
-        borrow_position_after.get_total_borrow_asset_liability(),
-        10.into(),
-    );
+    Ok(())
 }

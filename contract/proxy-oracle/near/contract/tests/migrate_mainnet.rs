@@ -1,23 +1,23 @@
 #![allow(clippy::unwrap_used)]
 
+mod common;
+
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
 };
 
-use near_workspaces::{
-    network::Sandbox, operations::Function, types::Gas, AccountId, Contract, Worker,
-};
+use anyhow::Result;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use near_api::{types::AccountId, Contract, NetworkConfig};
+use serde_json::json;
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
+use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
-use test_utils::{
-    assert_all_outcomes_success, controller::migration::MigrationController,
-    pyth_price_id::stable::CRYPTO_USDC_USD, worker, ProxyOracleController,
-};
+use test_utils::pyth_price_id::stable::CRYPTO_USDC_USD;
 
-type StatePatch = HashMap<Vec<u8>, Vec<u8>>;
+use common::StatePatch;
 
 const USTRY_PRICE_ID: PriceIdentifier =
     PriceIdentifier(*b"USTRY\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
@@ -36,46 +36,10 @@ fn patch() -> StatePatch {
     .unwrap()
 }
 
-async fn deploy_legacy_from_patch(worker: &Worker<Sandbox>, state_patch: StatePatch) -> Contract {
-    let contract = worker
-        .dev_deploy(ProxyOracleController::wasm_v0())
-        .await
-        .unwrap();
-
-    for (key, value) in state_patch {
-        worker
-            .patch_state(contract.id(), &key, &value)
-            .await
-            .unwrap();
-    }
-
-    contract
+fn migration() -> state::migration::Migration {
+    state::migration::Migration::from(state::migration::V0ToV1)
 }
 
-async fn deploy_from_patch(
-    worker: &Worker<Sandbox>,
-    state_patch: StatePatch,
-) -> ProxyOracleController {
-    let contract = deploy_legacy_from_patch(worker, state_patch).await;
-    let wasm = ProxyOracleController::wasm().await;
-    let result = contract
-        .as_account()
-        .batch(contract.id())
-        .deploy(wasm)
-        .call(
-            Function::new("migrate")
-                .args_json(state::migration::Migration::from(state::migration::V0ToV1))
-                .gas(Gas::from_tgas(250)),
-        )
-        .transact()
-        .await
-        .unwrap()
-        .into_result()
-        .unwrap();
-    assert_all_outcomes_success(&result);
-
-    ProxyOracleController { contract }
-}
 fn expected_ustry_proxy() -> Proxy<Source> {
     Proxy::median_low(
         [
@@ -105,74 +69,109 @@ fn expected_usdc_proxy() -> Proxy<Source> {
 
 #[tokio::test]
 #[ignore = "fixture generator"]
-async fn generate_mainnet_state_patch() {
-    let worker = near_workspaces::mainnet().await.unwrap();
-    let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near"
-        .parse()
-        .unwrap();
-    let state_patch = worker
-        .view_state(&account_id)
-        .await
-        .unwrap()
+async fn generate_mainnet_state_patch() -> Result<()> {
+    let network = NetworkConfig::mainnet();
+    let account_id: AccountId = "proxy-oracle-ixlmustry-ixlmusdc.v1.tmplr.near".parse()?;
+    let storage = Contract(account_id)
+        .view_storage()
+        .fetch_from(&network)
+        .await?
+        .data;
+    let state_patch: StatePatch = storage
+        .values
         .into_iter()
-        .collect::<StatePatch>();
-
+        .map(|entry| {
+            (
+                STANDARD.decode(entry.key.0).unwrap(),
+                STANDARD.decode(entry.value.0).unwrap(),
+            )
+        })
+        .collect();
     fs::write(patch_path(), near_sdk::borsh::to_vec(&state_patch).unwrap()).unwrap();
+    Ok(())
 }
 
-#[rstest::rstest]
 #[tokio::test]
-async fn migrate_mainnet_patch_exactly(#[future(awt)] worker: Worker<Sandbox>) {
-    let proxy = deploy_from_patch(&worker, patch()).await;
+async fn migrate_mainnet_patch_exactly() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let proxy = common::deploy_from_patch(&harness, patch()).await?;
+    let network = &harness.network;
 
-    assert_eq!(proxy.get_stored_state_version().await, 1);
-    assert!(!proxy.needs_migration().await);
+    common::call(network, &proxy, &proxy, "migrate", migration(), 300, 0).await?;
 
-    let mut proxies = proxy.list_proxies(None, None).await;
+    assert_eq!(
+        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
+        1
+    );
+    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+
+    let mut proxies: Vec<PriceIdentifier> = common::view(
+        network,
+        &proxy,
+        "list_proxies",
+        json!({ "offset": null, "count": null }),
+    )
+    .await?;
     proxies.sort();
     assert_eq!(proxies, vec![USDC_PRICE_ID, USTRY_PRICE_ID]);
 
     assert_eq!(
-        proxy.get_proxy(USTRY_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": USTRY_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_ustry_proxy()
     );
     assert_eq!(
-        proxy.get_proxy(USDC_PRICE_ID).await.unwrap(),
+        common::view::<Option<Proxy<Source>>>(
+            network,
+            &proxy,
+            "get_proxy",
+            json!({ "id": USDC_PRICE_ID }),
+        )
+        .await?
+        .unwrap(),
         expected_usdc_proxy()
     );
+
+    Ok(())
 }
 
-#[rstest::rstest]
 #[tokio::test]
-async fn failed_migration_reverts_contract_code(#[future(awt)] worker: Worker<Sandbox>) {
-    let contract = deploy_legacy_from_patch(&worker, patch()).await;
-    let result = contract
-        .as_account()
-        .batch(contract.id())
-        .deploy(ProxyOracleController::wasm().await)
-        .call(
-            Function::new("migrate")
-                .args_json(near_sdk::serde_json::json!({ "from_version": "invalid" }))
-                .gas(Gas::from_tgas(250)),
-        )
-        .transact()
-        .await
-        .unwrap();
-    assert!(result.is_failure(), "invalid migration should fail");
-    let failures = result.failures();
-    assert_eq!(failures.len(), 1, "only migrate should fail");
-    assert_eq!(
-        failures[0].executor_id,
-        contract.id().clone(),
-        "the migration receipt should be the only failure"
-    );
+async fn failed_migration_reverts_contract_code() -> Result<()> {
+    let harness = SandboxHarness::start().await?;
+    let network = &harness.network;
+    let account_id = harness.proxy_oracle_signer_account_id.0.clone();
 
-    let metadata: near_sdk::serde_json::Value = contract
-        .view("contract_source_metadata")
-        .args_json(())
-        .await
-        .unwrap()
-        .json()
-        .unwrap();
+    // Reproduce the legacy v0 contract (v0 code + v0 state), without migrating.
+    common::deploy_code(
+        network,
+        &account_id,
+        templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
+    )
+    .await?;
+    harness.patch_state(&account_id, patch()).await?;
+
+    // Atomically deploy the current wasm and migrate with an invalid version in
+    // one transaction. The migrate call fails, so the whole transaction — the
+    // code deploy included — must revert, leaving the contract on the v0 code.
+    let result = Contract::deploy(account_id.clone())
+        .use_code(templar_gateway_testing::wasm::proxy_oracle().await.to_vec())
+        .with_init_call("migrate", json!({ "from_version": "invalid" }))?
+        .max_gas()
+        .with_signer(common::signer()?)
+        .send_to(network)
+        .await?;
+    assert!(result.is_failure(), "invalid migration should fail");
+
+    // The deploy reverted with the migrate, so the contract still reports v0.
+    let metadata: serde_json::Value =
+        common::view(network, &account_id, "contract_source_metadata", json!({})).await?;
     assert_eq!(metadata["version"], "0.1.0");
+
+    Ok(())
 }

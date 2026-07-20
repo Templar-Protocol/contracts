@@ -3,11 +3,8 @@ use super::*;
 #[tokio::test]
 async fn token_endpoints_work_for_ft_and_mt_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let mt_contract_id = stack.harness.deploy_mt("token-mt.near".parse()?).await?;
-    let receiver_id = stack
-        .harness
-        .deploy_receiver("token-receiver.near".parse()?)
-        .await?;
+    let mt_contract_id = stack.harness.deploy_mt("token-mt").await?;
+    let receiver_id = stack.harness.deploy_receiver("token-receiver").await?;
 
     let _ = register_gateway_signer_for_ft(&stack).await?;
     let _ = register_ft_account(&stack, receiver_id.clone()).await?;

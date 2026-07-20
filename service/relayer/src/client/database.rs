@@ -548,6 +548,7 @@ mod tests {
                         total_gas_burnt: NearGas::from_gas(0),
                         receipts: vec![],
                         return_value: None,
+                        failure: None,
                     },
                 },
             }],

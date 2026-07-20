@@ -1,0 +1,58 @@
+{
+  "type": "streamUpdated",
+  "subscriptionId": 1,
+  "parsed": {
+    "timestampUs": "1781691152400000",
+    "priceFeeds": [
+      {
+        "priceFeedId": 7,
+        "price": "99973895",
+        "exponent": -8,
+        "confidence": 13681,
+        "emaPrice": "99976981",
+        "emaConfidence": 13238,
+        "feedUpdateTimestamp": 1781691152400000
+      },
+      {
+        "priceFeedId": 8,
+        "price": "99909113",
+        "exponent": -8,
+        "confidence": 15127,
+        "emaPrice": "99909109",
+        "emaConfidence": 15331,
+        "feedUpdateTimestamp": 1781691152400000
+      },
+      {
+        "priceFeedId": 1,
+        "price": "6484730899587",
+        "exponent": -8,
+        "confidence": 5268600913,
+        "emaPrice": "6496178100000",
+        "emaConfidence": 5420900100,
+        "feedUpdateTimestamp": 1781691152400000
+      },
+      {
+        "priceFeedId": 27,
+        "price": "228045408",
+        "exponent": -8,
+        "confidence": 89001,
+        "emaPrice": "228142648",
+        "emaConfidence": 65888,
+        "feedUpdateTimestamp": 1781691152400000
+      },
+      {
+        "priceFeedId": 23,
+        "price": "21892966",
+        "exponent": -8,
+        "confidence": 6977,
+        "emaPrice": "21986585",
+        "emaConfidence": 6056,
+        "feedUpdateTimestamp": 1781691152400000
+      }
+    ]
+  },
+  "solana": {
+    "encoding": "base64",
+    "data": "uQEaguOkVvsa5HLZxy6eoP/uXxDdwemPRiGzmjmzIfS1zki+uL6ooHWAQCSZlaxG7OeS3Kg7onkkRoEmrE8LXNrRSA2A78H0gMVhWvP7Zz1CKH6ZPan7w1BrbkHfoylQggwubBwBddPHk4D+PExwVAYAAwUHAAAABgAHe/UFAAAAAAVxNQAAAAAAAAT4/woVh/UFAAAAAAu2MwAAAAAAAAwBgP48THBUBgAIAAAABgD5ffQFAAAAAAUXOwAAAAAAAAT4/wr1ffQFAAAAAAvjOwAAAAAAAAwBgP48THBUBgABAAAABgCD7BTY5QUAAAVReAg6AQAAAAT4/wogV2OC6AUAAAsEXxxDAQAAAAwBgP48THBUBgAbAAAABgBgspcNAAAAAAWpWwEAAAAAAAT4/wo4LpkNAAAAAAtgAQEAAAAAAAwBgP48THBUBgAXAAAABgBmD04BAAAAAAVBGwAAAAAAAAT4/woZfU8BAAAAAAuoFwAAAAAAAAwBgP48THBUBgA="
+  }
+}

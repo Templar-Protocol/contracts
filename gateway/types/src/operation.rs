@@ -44,6 +44,11 @@ pub struct ExecutionOutcome {
     pub receipts: Vec<ReceiptOutcome>,
     /// The contract call's raw return value, if any.
     pub return_value: Option<Base64Bytes>,
+    /// The on-chain failure reason (e.g. a contract panic message) when the
+    /// transaction reverted; `None` on success. A contract panic surfaces here,
+    /// not in `receipts[].logs`, so this is the field to assert failure text on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
 }
 
 impl From<near_api_types::transaction::result::ExecutionFinalResult> for ExecutionOutcome {
@@ -79,6 +84,19 @@ impl From<near_api_types::transaction::result::ExecutionFinalResult> for Executi
                 logs: outcome.logs.clone(),
             })
             .collect();
+        // Capture the failure reason before consuming `result`. Only clone on the
+        // (rare) failure path; the private per-receipt status is unreachable, so
+        // `into_result()` is the sole route to the panic/error text.
+        let failure = result
+            .is_failure()
+            .then(|| {
+                result
+                    .clone()
+                    .into_result()
+                    .err()
+                    .map(|error| error.to_string())
+            })
+            .flatten();
         // Consume `result` last: `raw_bytes` takes it by value.
         let return_value = result.raw_bytes().ok().map(Base64Bytes::from);
         Self {
@@ -86,6 +104,7 @@ impl From<near_api_types::transaction::result::ExecutionFinalResult> for Executi
             total_gas_burnt,
             receipts,
             return_value,
+            failure,
         }
     }
 }
@@ -217,5 +236,13 @@ impl OperationRecord {
             .filter_map(|step| step.status.outcome().map(|outcome| (step.index, outcome)))
             .max_by_key(|(index, _)| *index)
             .map(|(_, outcome)| outcome)
+    }
+
+    /// The on-chain failure reason of the operation's last executed step, if it
+    /// reverted (e.g. a contract panic message). `None` if it succeeded or never
+    /// executed. Assert failure text on this rather than on step logs.
+    #[must_use]
+    pub fn failure_message(&self) -> Option<&str> {
+        self.final_outcome()?.failure.as_deref()
     }
 }

@@ -7,23 +7,12 @@ license.workspace = true
 
 [dependencies]
 alloy = { workspace = true, features = ["signer-local"] }
-ed25519-dalek.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
 hex-literal.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
-near-sdk-contract-tools.workspace = true
-near-workspaces = { workspace = true, features = ["unstable"] }
 p256.workspace = true
-rstest.workspace = true
-serde.workspace = true
-templar-contract-artifacts = { workspace = true, features = ["workspace-loader"] }
 templar-common.workspace = true
-templar-primitives.workspace = true
-templar-proxy-oracle-kernel = { workspace = true, features = ["serde"] }
-templar-proxy-oracle-near-common.workspace = true
-templar-proxy-oracle-near-governance-common.workspace = true
-templar-proxy-oracle-near-governance-contract.workspace = true
 templar-universal-account = { workspace = true, features = ["signing"] }
-tokio.workspace = true
 
 [[example]]
 name = "generate_testnet_configuration"

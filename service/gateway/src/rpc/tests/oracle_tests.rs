@@ -5,13 +5,10 @@ async fn oracle_update_endpoints_work_against_sandbox() -> Result<()> {
     let hermes = start_mock_hermes_server("cafebabe").await?;
     let stack = TestStack::start_with_oracle_update_config(hermes.uri().parse()?).await?;
 
-    let pyth_oracle_id = stack
-        .harness
-        .deploy_mock_oracle("pyth-oracle.near".parse()?)
-        .await?;
+    let pyth_oracle_id = stack.harness.deploy_mock_oracle("pyth-oracle").await?;
     let redstone_oracle_id = stack
         .harness
-        .deploy_redstone_adapter("redstone-oracle.near".parse()?)
+        .deploy_redstone_adapter("redstone-oracle")
         .await?;
 
     let pyth_result = stack
@@ -105,13 +102,10 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
     let hermes = start_mock_hermes_server("cafebabe").await?;
     let stack = TestStack::start_with_oracle_update_config(hermes.uri().parse()?).await?;
 
-    let direct_oracle_id = stack
-        .harness
-        .deploy_mock_oracle("composed-pyth.near".parse()?)
-        .await?;
+    let direct_oracle_id = stack.harness.deploy_mock_oracle("composed-pyth").await?;
     let redstone_oracle_id = stack
         .harness
-        .deploy_redstone_adapter("composed-redstone.near".parse()?)
+        .deploy_redstone_adapter("composed-redstone")
         .await?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
 
@@ -215,13 +209,10 @@ async fn oracle_update_prices_endpoint_resolves_and_updates_dependencies() -> Re
 #[tokio::test]
 async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
-    let direct_oracle_id = stack
-        .harness
-        .deploy_mock_oracle("direct-oracle.near".parse()?)
-        .await?;
+    let direct_oracle_id = stack.harness.deploy_mock_oracle("direct-oracle").await?;
     let lst_oracle_id = stack
         .harness
-        .deploy_lst_oracle("lst-oracle.near".parse()?, direct_oracle_id.clone())
+        .deploy_lst_oracle("lst-oracle", direct_oracle_id.clone())
         .await?;
     let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
 
@@ -457,11 +448,10 @@ async fn oracle_resolution_endpoints_work_against_sandbox() -> Result<()> {
 async fn oracle_resolve_rejects_bare_pyth_lazer_adapter_as_standalone_oracle() -> Result<()> {
     let stack = TestStack::start().await?;
 
-    let adapter_id: near_account_id::AccountId = "resolve-pyth-lazer.near".parse()?;
     let price_id = PriceIdentifier([0x66; 32]);
-    stack
+    let adapter_id = stack
         .harness
-        .deploy_pyth_lazer_adapter(adapter_id.clone())
+        .deploy_pyth_lazer_adapter("resolve-pyth-lazer")
         .await?;
 
     // A Pyth Lazer adapter is not a standalone oracle: it is consumed only as a proxy `Lazer`

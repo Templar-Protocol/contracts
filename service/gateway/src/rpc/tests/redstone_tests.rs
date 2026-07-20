@@ -5,7 +5,7 @@ async fn redstone_endpoints_work_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let oracle_id = stack
         .harness
-        .deploy_mock_oracle("redstone-low-level.near".parse()?)
+        .deploy_mock_oracle("redstone-low-level")
         .await?;
 
     stack

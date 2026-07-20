@@ -17,22 +17,19 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
             stack.harness.proxy_oracle_signer_account_id.0.clone(),
         )
         .await?;
-    let pyth_oracle_id = stack
-        .harness
-        .deploy_mock_oracle("kind-pyth.near".parse()?)
-        .await?;
+    let pyth_oracle_id = stack.harness.deploy_mock_oracle("kind-pyth").await?;
     let lst_oracle_id = stack
         .harness
-        .deploy_lst_oracle("kind-lst.near".parse()?, pyth_oracle_id.clone())
+        .deploy_lst_oracle("kind-lst", pyth_oracle_id.clone())
         .await?;
     let (universal_account_id, _) = stack.harness.deploy_universal_account().await?;
     let redstone_oracle_id = stack
         .harness
-        .deploy_redstone_adapter("kind-redstone.near".parse()?)
+        .deploy_redstone_adapter("kind-redstone")
         .await?;
     let pyth_lazer_oracle_id = stack
         .harness
-        .deploy_pyth_lazer_adapter("kind-pyth-lazer.near".parse()?)
+        .deploy_pyth_lazer_adapter("kind-pyth-lazer")
         .await?;
 
     assert_eq!(

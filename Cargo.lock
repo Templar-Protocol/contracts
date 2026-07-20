@@ -1794,31 +1794,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bon"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f47dbe92550676ee653353c310dfb9cf6ba17ee70396e1f7cf0a2020ad49b2fe"
-dependencies = [
- "bon-macros",
- "rustversion",
-]
-
-[[package]]
-name = "bon-macros"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "519bd3116aeeb42d5372c29d982d16d0170d3d4a5ed85fc7dd91642ffff3c67c"
-dependencies = [
- "darling 0.21.3",
- "ident_case",
- "prettyplease 0.2.37",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "borsh"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2091,40 +2066,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-near-build"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73005ffb8b98b39dd7a4dd48412bbd5391f38c5aef907259be3fd135932c6db5"
-dependencies = [
- "bon",
- "bs58 0.5.1",
- "camino",
- "cargo_metadata 0.21.0",
- "colored",
- "dunce",
- "eyre",
- "hex",
- "indenter",
- "pathdiff",
- "rustc_version 0.4.1",
- "sha2 0.10.9",
- "tracing",
-]
-
-[[package]]
 name = "cargo-platform"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35af189006b9c0f00a064685c727031e3ed2d8020f7ba284d78cc2671bd36ea"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "cargo-platform"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84982c6c0ae343635a3a4ee6dedef965513735c8b183caa7289fa6e27399ebd4"
 dependencies = [
  "serde",
 ]
@@ -2136,22 +2081,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "122ec45a44b270afd1402f351b782c676b173e3c3fb28d86ff7ebfb4d86a4ee4"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "cargo-util-schemas"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7dc1a6f7b5651af85774ae5a34b4e8be397d9cf4bc063b7e6dbd99a841837830"
-dependencies = [
- "semver 1.0.28",
- "serde",
- "serde-untagged",
- "serde-value",
- "thiserror 2.0.18",
- "toml 0.8.23",
- "unicode-xid",
- "url",
 ]
 
 [[package]]
@@ -2189,21 +2118,6 @@ checksum = "dd5eb614ed4c27c5d706420e4320fbe3216ab31fa1c33cd8246ac36dae4479ba"
 dependencies = [
  "camino",
  "cargo-platform 0.1.9",
- "semver 1.0.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "cargo_metadata"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cfca2aaa699835ba88faf58a06342a314a950d2b9686165e038286c30316868"
-dependencies = [
- "camino",
- "cargo-platform 0.2.0",
- "cargo-util-schemas",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -2456,15 +2370,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "colored"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
-dependencies = [
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "combine"
 version = "3.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2593,12 +2498,6 @@ name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
-
-[[package]]
-name = "convert_case"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb4a24b1aaf0fd0ce8b45161144d6f42cd91677fd5940fd431183eb023b3a2b8"
 
 [[package]]
 name = "convert_case"
@@ -3703,7 +3602,7 @@ dependencies = [
  "ethers-core",
  "ethers-etherscan",
  "eyre",
- "prettyplease 0.2.37",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -4125,15 +4024,6 @@ dependencies = [
  "crc32fast",
  "miniz_oxide",
  "zlib-rs",
-]
-
-[[package]]
-name = "fluent-uri"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d"
-dependencies = [
- "bitflags 1.3.2",
 ]
 
 [[package]]
@@ -5378,23 +5268,11 @@ checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
 
 [[package]]
 name = "json-patch"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b1fb8864823fad91877e6caea0baca82e49e8db50f8e5c9f9a453e27d3330fc"
-dependencies = [
- "jsonptr 0.4.7",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "json-patch"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f300e415e2134745ef75f04562dd0145405c2f7fd92065db029ac4b16b57fe90"
 dependencies = [
- "jsonptr 0.7.1",
+ "jsonptr",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -5405,17 +5283,6 @@ name = "json_comments"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9dbbfed4e59ba9750e15ba154fdfd9329cee16ff3df539c2666b70f58cc32105"
-
-[[package]]
-name = "jsonptr"
-version = "0.4.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c6e529149475ca0b2820835d3dce8fcc41c6b943ca608d32f35b449255e4627"
-dependencies = [
- "fluent-uri",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "jsonptr"
@@ -6112,46 +5979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "near-abi-client"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879ac02b2e8d6498294adce1de7a2424a5474b35a73e9262c851be39c89d7f92"
-dependencies = [
- "anyhow",
- "convert_case 0.5.0",
- "near-abi-client-impl",
- "near-abi-client-macros",
- "prettyplease 0.1.25",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "near-abi-client-impl"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1139e8a6f60fd8ed1c53c700b67bcecbf6deb4b1f47bbe9a9d5eea760d8a8e91"
-dependencies = [
- "anyhow",
- "near-abi",
- "near_schemafy_lib",
- "proc-macro2",
- "quote",
- "schemars 0.8.22",
- "serde_json",
-]
-
-[[package]]
-name = "near-abi-client-macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebaf2aae80086b310bf96e657bbee0c599c3452afd35e72999f8d6764d6b1899"
-dependencies = [
- "near-abi-client-impl",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "near-account-id"
 version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6420,7 +6247,7 @@ dependencies = [
  "near-stdx",
  "near-time",
  "num-rational 0.3.2",
- "ordered-float 4.6.0",
+ "ordered-float",
  "primitive-types 0.10.1",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -6468,7 +6295,7 @@ checksum = "ffb6493715a4b5d18f23abcb3d6438e466373aba66f25764516c4b32433e92e0"
 dependencies = [
  "flate2",
  "fs4",
- "json-patch 4.1.0",
+ "json-patch",
  "libc",
  "near-account-id",
  "near-token",
@@ -6645,70 +6472,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zeropool-bn",
-]
-
-[[package]]
-name = "near-workspaces"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1052c6f22494d9fbfb671a8efbc4f4c3a1fed0c8cac07336c97680c6088fca63"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "bs58 0.5.1",
- "cargo-near-build",
- "chrono",
- "fs2",
- "json-patch 2.0.0",
- "libc",
- "near-abi-client",
- "near-account-id",
- "near-chain-configs",
- "near-crypto",
- "near-gas",
- "near-jsonrpc-client",
- "near-jsonrpc-primitives",
- "near-primitives",
- "near-sandbox",
- "near-token",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-retry",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "near_schemafy_core"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42d7a1f809a319578773329389529dbf8c8f0abfbb05a429b37f437105f7caf6"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "near_schemafy_lib"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c39ccae55df51adaa1a4e567b7a79ab4380826a695121cebf41f518076d8c3dd"
-dependencies = [
- "Inflector",
- "near_schemafy_core",
- "proc-macro2",
- "quote",
- "serde",
- "serde_derive",
- "serde_json",
- "syn 1.0.109",
- "uriparse",
 ]
 
 [[package]]
@@ -7058,15 +6821,6 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "ordered-float"
-version = "2.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "ordered-float"
 version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
@@ -7180,15 +6934,6 @@ name = "path-slash"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e91099d4268b0e11973f036e885d652fb0b21fedcf69738c627f94db6a44f42"
-
-[[package]]
-name = "pathdiff"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
-dependencies = [
- "camino",
-]
 
 [[package]]
 name = "pbkdf2"
@@ -7471,16 +7216,6 @@ checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
 dependencies = [
  "diff",
  "yansi 1.0.1",
-]
-
-[[package]]
-name = "prettyplease"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c8646e95016a7a6c4adea95bafa8a16baab64b583356217f2c85db4a39d9a86"
-dependencies = [
- "proc-macro2",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -9033,28 +8768,6 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
 dependencies = [
- "serde",
-]
-
-[[package]]
-name = "serde-untagged"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9faf48a4a2d2693be24c6289dbe26552776eb7737074e6722891fadbe6c5058"
-dependencies = [
- "erased-serde",
- "serde",
- "serde_core",
- "typeid",
-]
-
-[[package]]
-name = "serde-value"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3a1a3341211875ef120e117ea7fd5228530ae7e7036a779fdc9117be6b3282c"
-dependencies = [
- "ordered-float 2.10.1",
  "serde",
 ]
 
@@ -11929,7 +11642,7 @@ version = "25.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93c558bca7a693ec8ed67d2d8c8f5b300f3772141d619a4a694ad5dd48461256"
 dependencies = [
- "prettyplease 0.2.37",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "sha2 0.10.9",
@@ -13376,13 +13089,13 @@ dependencies = [
  "templar-common",
  "templar-gateway-methods-dispatch",
  "templar-gateway-methods-spec",
+ "templar-gateway-testing",
  "templar-gateway-types",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
  "templar-universal-account",
- "test-utils",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -13578,17 +13291,27 @@ name = "templar-gateway-testing"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "near-api",
+ "near-crypto",
+ "near-jsonrpc-client",
+ "near-primitives",
  "near-sandbox",
  "near-sdk",
  "near-token",
  "reqwest 0.12.28",
+ "rstest",
  "serde",
  "serde_json",
  "templar-common",
+ "templar-contract-artifacts",
+ "templar-gateway-client",
  "templar-gateway-core",
+ "templar-gateway-methods-dispatch",
+ "templar-gateway-methods-spec",
  "templar-gateway-runtime",
  "templar-gateway-types",
+ "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
@@ -13656,13 +13379,16 @@ dependencies = [
 name = "templar-lst-oracle-contract"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
  "hex-literal",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
  "templar-common",
+ "templar-gateway-testing",
  "templar-proxy-oracle-near-common",
  "test-utils",
  "tokio",
@@ -13707,14 +13433,18 @@ dependencies = [
 name = "templar-market-contract"
 version = "1.4.0"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
  "itertools 0.14.0",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "templar-primitives",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
@@ -13807,13 +13537,18 @@ dependencies = [
 name = "templar-proxy-oracle-near-contract"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "getrandom 0.2.17",
  "hex-literal",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "test-utils",
@@ -13980,12 +13715,17 @@ dependencies = [
 name = "templar-registry-contract"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
  "getrandom 0.2.17",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
+ "templar-gateway-types",
  "test-utils",
  "tokio",
 ]
@@ -14008,10 +13748,11 @@ dependencies = [
  "near-primitives",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
+ "near-token",
  "p256",
  "reqwest 0.12.28",
  "rstest",
+ "serde_json",
  "sha2 0.10.9",
  "solana-sdk",
  "sqlx",
@@ -14023,6 +13764,7 @@ dependencies = [
  "templar-gateway-oracle-updates-dispatch",
  "templar-gateway-oracle-updates-spec",
  "templar-gateway-store",
+ "templar-gateway-testing",
  "templar-gateway-types",
  "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
@@ -14179,11 +13921,17 @@ dependencies = [
 name = "templar-universal-account-contract"
 version = "0.5.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "getrandom 0.2.17",
+ "near-api",
  "near-sdk",
- "near-workspaces",
+ "near-token",
  "rstest",
+ "serde",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
  "templar-universal-account",
  "test-utils",
  "tokio",
@@ -14221,21 +13969,22 @@ dependencies = [
 name = "templar-vault-contract"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
  "borsh 1.6.1",
- "futures",
  "getrandom 0.2.17",
  "itertools 0.14.0",
+ "near-api",
  "near-contract-standards",
  "near-sdk",
  "near-sdk-contract-tools",
- "near-workspaces",
  "primitive-types 0.14.0",
  "proptest",
- "rand 0.8.5",
  "rstest",
+ "serde_json",
  "templar-common",
  "templar-curator-primitives",
- "templar-relayer",
+ "templar-gateway-testing",
+ "templar-primitives",
  "templar-vault-kernel",
  "test-utils",
  "tokio",
@@ -14285,20 +14034,9 @@ dependencies = [
  "ed25519-dalek",
  "hex-literal",
  "near-sdk",
- "near-sdk-contract-tools",
- "near-workspaces",
  "p256",
- "rstest",
- "serde",
  "templar-common",
- "templar-contract-artifacts",
- "templar-primitives",
- "templar-proxy-oracle-kernel",
- "templar-proxy-oracle-near-common",
- "templar-proxy-oracle-near-governance-common",
- "templar-proxy-oracle-near-governance-contract",
  "templar-universal-account",
- "tokio",
 ]
 
 [[package]]
@@ -14468,17 +14206,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
 dependencies = [
  "native-tls",
- "tokio",
-]
-
-[[package]]
-name = "tokio-retry"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
-dependencies = [
- "pin-project 1.1.11",
- "rand 0.8.5",
  "tokio",
 ]
 
@@ -16165,7 +15892,7 @@ dependencies = [
  "anyhow",
  "heck 0.5.0",
  "indexmap 2.13.1",
- "prettyplease 0.2.37",
+ "prettyplease",
  "syn 2.0.117",
  "wasm-metadata",
  "wit-bindgen-core",
@@ -16179,7 +15906,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c0f9bfd77e6a48eccf51359e3ae77140a7f50b1e2ebfe62422d8afdaffab17a"
 dependencies = [
  "anyhow",
- "prettyplease 0.2.37",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

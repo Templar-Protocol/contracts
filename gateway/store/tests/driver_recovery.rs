@@ -54,6 +54,7 @@ fn sample_outcome() -> ExecutionOutcome {
         total_gas_burnt: NearGas::from_gas(1),
         receipts: vec![],
         return_value: None,
+        failure: None,
     }
 }
 

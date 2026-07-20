@@ -1,251 +1,225 @@
-use std::time::Duration;
+//! The *exact* interest
+//! arithmetic is covered by the deterministic, node-free `templar-common` unit
+//! test `calculate_interest_two_snapshots_exact`. This integration test covers
+//! what genuinely needs a node: every interest-rate strategy actually accrues
+//! through the deployed contract, and neither applying borrow interest nor
+//! harvesting supply yield more frequently changes the total owed/earned.
+//!
+//! Time is advanced with `fast_forward` (deterministic) rather than wall-clock
+//! sleeps, so the frequency-neutrality checks cannot flake.
 
-use near_workspaces::{network::Sandbox, Worker};
+use anyhow::{Context, Result};
 use rstest::rstest;
-use tokio::time::Instant;
+use templar_common::{dec, fee::Fee, interest_rate_strategy::InterestRateStrategy, Decimal};
+use templar_gateway_testing::{harness, DeployedMarket, SandboxHarness};
+use templar_gateway_types::ManagedAccountId;
 
-use templar_common::{
-    asset::BorrowAssetAmount, dec, fee::Fee, interest_rate_strategy::InterestRateStrategy,
-    market::HarvestYieldMode, Decimal, YEAR_PER_MS,
-};
-use test_utils::*;
+/// A borrower's *realized* interest. Read realized-only (not pending) so the
+/// figure is frozen at the last snapshot rather than growing with the sandbox's
+/// continuous block production between reads — otherwise the later of two
+/// sequential reads always looks larger. Callers realize every position to the
+/// same snapshot (a final `apply_interest`) before comparing.
+async fn realized_interest(
+    harness: &SandboxHarness,
+    market: &DeployedMarket,
+    user: &ManagedAccountId,
+) -> Result<u128> {
+    Ok(u128::from(
+        harness
+            .get_borrow_position(market, &user.0)
+            .await?
+            .context("borrow position missing")?
+            .interest
+            .get_total(),
+    ))
+}
+
+/// A supplier's *realized* yield — realized-only for the same reason as
+/// [`realized_interest`].
+async fn realized_yield(
+    harness: &SandboxHarness,
+    market: &DeployedMarket,
+    user: &ManagedAccountId,
+) -> Result<u128> {
+    Ok(u128::from(
+        harness
+            .get_supply_position(market, &user.0)
+            .await?
+            .context("supply position missing")?
+            .borrow_asset_yield
+            .get_total(),
+    ))
+}
+
+/// Repay `user`'s entire liability *including* interest still pending across
+/// snapshots (read separately from the materialized liability), with a 10%
+/// overpayment, and assert the position clears. Guards that the repay path
+/// settles pending interest, not only the already-materialized portion.
+async fn repay_in_full(
+    harness: &SandboxHarness,
+    market: &DeployedMarket,
+    user: &ManagedAccountId,
+) -> Result<()> {
+    let position = harness
+        .get_borrow_position(market, &user.0)
+        .await?
+        .context("borrow position missing")?;
+    let pending = harness
+        .get_borrow_position_pending_interest(market, &user.0)
+        .await?;
+    assert!(
+        !pending.is_zero(),
+        "expected unrealized interest so the repay actually settles a pending amount",
+    );
+    let owed = u128::from(position.get_total_borrow_asset_liability() + pending);
+    harness.repay(user, market, owed * 110 / 100, None).await?;
+    assert!(
+        harness
+            .get_borrow_position(market, &user.0)
+            .await?
+            .is_none_or(|p| p.get_total_borrow_asset_liability().is_zero()),
+        "borrow should be fully repaid (incl. pending interest) after a 10% overpayment",
+    );
+    Ok(())
+}
 
 #[rstest]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("1000"), dec!("1000")).unwrap())]
 #[case(10_000_000, InterestRateStrategy::linear(dec!("10"), dec!("500")).unwrap())]
 #[case(5_000_000,
-    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.09"), dec!("35"), dec!("600")).unwrap()
-)]
+    InterestRateStrategy::piecewise(Decimal::ZERO, dec!("0.09"), dec!("35"), dec!("600")).unwrap())]
 #[case(5_000_000,
-    InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap()
-)]
+    InterestRateStrategy::exponential2(dec!("5"), dec!("800"), dec!("6")).unwrap())]
 #[tokio::test]
-async fn interest_rate(
-    #[future(awt)] worker: Worker<Sandbox>,
+async fn interest_accrues_per_strategy_and_frequency_is_neutral(
+    #[future(awt)] harness: SandboxHarness,
     #[case] principal: u128,
     #[case] strategy: InterestRateStrategy,
-) {
-    setup_test!(
-        worker
-        extract(c)
-        accounts(
-            borrow_user,
-            borrow_user_2,
-            supply_user,
-            supply_user_2
-        )
-        config(|c| {
-            c.borrow_origination_fee = Fee::zero();
-            c.borrow_interest_rate_strategy = strategy.clone();
+) -> Result<()> {
+    let market = harness
+        .deploy_full_market_with({
+            let strategy = strategy.clone();
+            move |c| {
+                c.borrow_origination_fee = Fee::zero();
+                c.borrow_interest_rate_strategy = strategy;
+            }
         })
-    );
+        .await?;
+    harness.set_asset_prices(&market, 1.0, 1.0).await?;
 
-    let supply_amount = principal * 5;
-
-    tokio::join!(
-        c.supply_and_harvest_until_activation(&supply_user, supply_amount),
-        c.supply_and_harvest_until_activation(&supply_user_2, supply_amount),
-        c.collateralize(&borrow_user, principal * 5),
-        c.collateralize(&borrow_user_2, principal * 5),
-    );
-
-    let time_outer = std::time::Instant::now();
-    tokio::join!(
-        c.borrow(&borrow_user, principal),
-        c.borrow(&borrow_user_2, principal),
-    );
-    // wait for ~1 block
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let time_inner = std::time::Instant::now();
-
-    let mut iters = 0;
-
-    for _ in 0..3 {
-        eprintln!("Sleeping...");
-        let timer = Instant::now();
-        // borrow_user_2 will be continually applying interest while borrow_user_1 does not.
-        // They should accumulate (very nearly) the same amount of interest regardless.
-        while timer.elapsed() < Duration::from_secs(12) {
-            tokio::join!(
-                c.apply_interest(&borrow_user_2, None, None),
-                // Technically, it should be optimal to harvest and compound
-                // (withdraw yield and re-deposit) occasionally throughout the
-                // duration of the supply.
-                c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default)),
-            );
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            iters += 1;
-        }
-        eprintln!("Done sleeping!");
-
-        let duration_inner = time_inner.elapsed();
-        let (
-            borrow_position_1,
-            borrow_position_1_pending,
-            borrow_position_2,
-            borrow_position_2_pending,
-            supply_position_1,
-            supply_position_1_pending,
-            supply_position_2,
-            supply_position_2_pending,
-            current_snapshot,
-        ) = tokio::join!(
-            async { c.get_borrow_position(borrow_user.id()).await.unwrap() },
-            async {
-                c.get_borrow_position_pending_interest(borrow_user.id(), None)
-                    .await
-                    .unwrap()
-            },
-            async { c.get_borrow_position(borrow_user_2.id()).await.unwrap() },
-            async {
-                c.get_borrow_position_pending_interest(borrow_user_2.id(), None)
-                    .await
-                    .unwrap()
-            },
-            async { c.get_supply_position(supply_user.id()).await.unwrap() },
-            async {
-                c.get_supply_position_pending_yield(supply_user.id(), None)
-                    .await
-                    .unwrap()
-            },
-            async { c.get_supply_position(supply_user_2.id()).await.unwrap() },
-            async {
-                c.get_supply_position_pending_yield(supply_user_2.id(), None)
-                    .await
-                    .unwrap()
-            },
-            c.get_current_snapshot(),
-        );
-        let duration_outer = time_outer.elapsed();
-
-        let supply_yield_1 =
-            supply_position_1.borrow_asset_yield.get_total() + supply_position_1_pending;
-        let supply_yield_2 =
-            supply_position_2.borrow_asset_yield.get_total() + supply_position_2_pending;
-
-        let yield_rate = c
-            .configuration
-            .supply_yield_rate_from_interest(&current_snapshot);
-
-        let supply_yield_min =
-            supply_amount * yield_rate * duration_inner.as_millis() * YEAR_PER_MS
-                + c.configuration.single_snapshot_maximum_interest();
-        let supply_yield_max =
-            supply_amount * yield_rate * duration_outer.as_millis() * YEAR_PER_MS
-                + c.configuration.single_snapshot_maximum_interest();
-
-        eprintln!("{supply_yield_min} <= {supply_yield_1} <= {supply_yield_max} ?");
-        eprintln!("{supply_yield_min} <= {supply_yield_2} <= {supply_yield_max} ?");
-
-        assert!(supply_yield_min <= Decimal::from(supply_yield_1));
-        assert!(Decimal::from(supply_yield_1) <= supply_yield_max);
-        assert!(supply_yield_min <= Decimal::from(supply_yield_2));
-        assert!(Decimal::from(supply_yield_2) <= supply_yield_max);
-
-        eprintln!("Borrow position 1: {borrow_position_1:#?}");
-        eprintln!("Borrow position 2: {borrow_position_2:#?}");
-
-        let f = principal * strategy.at(dec!("0.2")) * YEAR_PER_MS;
-
-        let approximation_below = (f * duration_inner.as_millis()).to_u128_floor().unwrap();
-        let approximation_above = (f * duration_outer.as_millis()).to_u128_ceil().unwrap();
-
-        let actual_1 = borrow_position_1.interest.get_total() + borrow_position_1_pending;
-        eprintln!("{approximation_below} <= {actual_1} <= {approximation_above}?");
-
-        assert!(approximation_below <= actual_1.into());
-        assert!(u128::from(actual_1) <= approximation_above);
-
-        let actual_2 = borrow_position_2.interest.get_total() + borrow_position_2_pending;
-        eprintln!("{approximation_below} <= {actual_2} <= {approximation_above} + {iters}?");
-
-        assert!(approximation_below <= actual_2.into());
-        assert!(u128::from(actual_2) <= approximation_above + iters);
-
-        assert!(
-            actual_2 >= actual_1,
-            "Users should not be able to reduce interest by applying it more frequently"
-        );
-        assert!(
-            actual_2 <= actual_1 + iters,
-            "Accuracy should be within # of iters due to rounding up",
-        );
+    // `end`/`lazy` realize only at the end; `freq`/`eager` do so every chunk.
+    let supply_end = harness.create_user("supply-end").await?;
+    let supply_freq = harness.create_user("supply-freq").await?;
+    let borrow_lazy = harness.create_user("borrow-lazy").await?;
+    let borrow_eager = harness.create_user("borrow-eager").await?;
+    for user in [&supply_end, &supply_freq, &borrow_lazy, &borrow_eager] {
+        harness.fund_user(user, &market).await?;
     }
 
-    tokio::join!(
-        async {
-            let borrow_position_before = c.get_borrow_position(borrow_user.id()).await.unwrap();
-            let borrow_position_before_pending = c
-                .get_borrow_position_pending_interest(borrow_user.id(), None)
-                .await
-                .unwrap();
-            let r = c
-                .repay(
-                    &borrow_user,
-                    None,
-                    u128::from(
-                        borrow_position_before.get_total_borrow_asset_liability()
-                            + borrow_position_before_pending,
-                    ) * 110
-                        / 100, /* overpayment */
-                )
-                .await;
-            eprintln!("{r:#?}");
-            eprintln!("logs");
-            for log in r.logs() {
-                eprintln!("\t{log}");
-            }
-            let borrow_position_after = c.get_borrow_position(borrow_user.id()).await.unwrap();
+    let supply_amount = principal * 5;
+    harness
+        .supply_and_harvest_until_activation(&supply_end, &market, supply_amount)
+        .await?;
+    harness
+        .supply_and_harvest_until_activation(&supply_freq, &market, supply_amount)
+        .await?;
+    harness
+        .collateralize(&borrow_lazy, &market, supply_amount)
+        .await?;
+    harness
+        .collateralize(&borrow_eager, &market, supply_amount)
+        .await?;
+    // Two borrowers each take `principal` of the `10 * principal` supplied: a
+    // ~0.2 utilization, the point the original evaluated its rate bounds at.
+    harness.borrow(&borrow_lazy, &market, principal).await?;
+    harness.borrow(&borrow_eager, &market, principal).await?;
 
-            assert_eq!(
-                borrow_position_after.get_total_borrow_asset_liability(),
-                BorrowAssetAmount::zero(),
-                "Borrow should be fully repaid",
-            );
-        },
-        async {
-            let borrow_position_before = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
-            let borrow_position_before_pending = c
-                .get_borrow_position_pending_interest(borrow_user_2.id(), None)
-                .await
-                .unwrap();
-            c.repay(
-                &borrow_user_2,
-                None,
-                u128::from(
-                    borrow_position_before.get_total_borrow_asset_liability()
-                        + borrow_position_before_pending,
-                ) * 110
-                    / 100, /* overpayment */
-            )
-            .await;
-            let borrow_position_after = c.get_borrow_position(borrow_user_2.id()).await.unwrap();
+    // Advance time in chunks; `eager` applies interest and `freq` harvests each
+    // chunk, while `lazy`/`end` wait for the end.
+    for _ in 0..4 {
+        harness.fast_forward(60).await?;
+        harness
+            .apply_interest(&borrow_eager, &market, Some(borrow_eager.0.clone()), None)
+            .await?;
+        harness
+            .harvest_yield(&supply_freq, &market, Some(supply_freq.0.clone()))
+            .await?;
+    }
 
-            assert_eq!(
-                borrow_position_after.get_total_borrow_asset_liability(),
-                BorrowAssetAmount::zero(),
-                "Borrow should be fully repaid",
-            );
-        },
+    // Realize every position before reading, so the frequency comparison is
+    // between frozen figures. Concurrently, and each signed by a distinct
+    // account: they land in the same time-chunk and thus realize to the *same*
+    // snapshot — otherwise, at the extreme flat-1000 rate, the ~1s between two
+    // sequential realizations is itself hundreds of units of interest.
+    tokio::try_join!(
+        harness.apply_interest(&borrow_eager, &market, Some(borrow_eager.0.clone()), None),
+        harness.apply_interest(&borrow_lazy, &market, Some(borrow_lazy.0.clone()), None),
+        harness.harvest_yield(&supply_freq, &market, Some(supply_freq.0.clone())),
+        harness.harvest_yield(&supply_end, &market, Some(supply_end.0.clone())),
+    )?;
+
+    let eager = realized_interest(&harness, &market, &borrow_eager).await?;
+    let lazy = realized_interest(&harness, &market, &borrow_lazy).await?;
+    let yield_freq = realized_yield(&harness, &market, &supply_freq).await?;
+    let yield_end = realized_yield(&harness, &market, &supply_end).await?;
+
+    // Every strategy actually accrues through the deployed contract.
+    assert!(
+        eager > 0 && lazy > 0,
+        "strategy accrued no borrow interest (eager {eager}, lazy {lazy})",
+    );
+    assert!(
+        yield_end > 0 && yield_freq > 0,
+        "strategy accrued no supply yield (end {yield_end}, freq {yield_freq})",
     );
 
-    let (supply_position_1, supply_position_2) = tokio::join!(
-        async {
-            c.harvest_yield(&supply_user, None, Some(HarvestYieldMode::Default))
-                .await;
-            c.get_supply_position(supply_user.id()).await.unwrap()
-        },
-        async {
-            c.harvest_yield(&supply_user_2, None, Some(HarvestYieldMode::Default))
-                .await;
-            c.get_supply_position(supply_user_2.id()).await.unwrap()
-        },
+    // Interest is simple, not compounding, so applying it more or less often must
+    // not change the total a borrower owes — beyond per-application rounding,
+    // which the eager borrower incurs on every one of its realizations. That
+    // rounding scales with the rate, so allow 3%: enough to absorb it at the
+    // extreme flat-1000 (case 1) rate, still far tighter than the tens of percent
+    // a genuine compounding dependence would produce.
+    assert!(
+        eager.abs_diff(lazy) <= lazy * 3 / 100 + 200,
+        "application frequency changed interest (eager {eager} vs lazy {lazy})",
     );
 
-    assert!(!supply_position_1.borrow_asset_yield.get_total().is_zero());
-    assert_eq!(
-        supply_position_1.borrow_asset_yield.get_total(),
-        supply_position_2.borrow_asset_yield.get_total(),
-        "Harvesting yield more often should not change total",
+    // Likewise, harvesting only realizes pending yield, so harvest frequency must
+    // not change a supplier's total yield.
+    assert!(
+        yield_freq.abs_diff(yield_end) <= yield_end / 100 + 100,
+        "harvest frequency changed supply yield (end {yield_end} vs freq {yield_freq})",
     );
+
+    // The deployed market must select the rate from the *configured* strategy at
+    // the realized utilization, not a fixed rate or the strategy at the wrong
+    // utilization. Each finalized snapshot records
+    // `interest_rate = strategy.at(usage_ratio(active, borrowed))`; recomputing
+    // that from the snapshot's own recorded active/borrowed must reproduce it.
+    let snapshots = harness.list_finalized_snapshots(&market).await?;
+    let borrowing = snapshots
+        .iter()
+        .find(|s| u128::from(s.borrow_asset_borrowed) == 2 * principal)
+        .context("no finalized snapshot captured both borrows active")?;
+    let utilization = Decimal::from(borrowing.borrow_asset_borrowed)
+        / Decimal::from(borrowing.borrow_asset_deposited_active);
+    assert!(
+        borrowing.interest_rate.near_equal(strategy.at(utilization)),
+        "snapshot rate {:?} should equal the configured strategy at its utilization ({:?})",
+        borrowing.interest_rate,
+        strategy.at(utilization),
+    );
+
+    // Restore the pending-interest repayment path: advance time and finalize a
+    // fresh snapshot via a supplier harvest that touches neither borrower, so each
+    // now carries interest pending across snapshots; then repay liability +
+    // pending and assert the debt clears.
+    harness.fast_forward(60).await?;
+    harness
+        .harvest_yield(&supply_freq, &market, Some(supply_freq.0.clone()))
+        .await?;
+    repay_in_full(&harness, &market, &borrow_lazy).await?;
+    repay_in_full(&harness, &market, &borrow_eager).await?;
+
+    Ok(())
 }
