@@ -43,6 +43,7 @@ impl RedStoneAdapterController {
             .call("new")
             .args_json(json!({
                 "config": config,
+                "admin_id": account.id().clone(),
             }))
             .transact()
             .await

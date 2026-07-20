@@ -28,12 +28,10 @@ pub struct Contract {
 #[near]
 impl Contract {
     #[init]
-    pub fn new(config: Config, admin_id: Option<AccountId>) -> Self {
+    pub fn new(config: Config, admin_id: AccountId) -> Self {
         let mut self_ = Self {
             adapter: RedStoneAdapter::new(b"a", config),
         };
-
-        let admin_id = admin_id.unwrap_or_else(env::predecessor_account_id);
 
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::ModifyRoles);
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::TrustedUpdater);

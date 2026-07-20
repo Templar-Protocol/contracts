@@ -11,31 +11,22 @@ use templar_primitives::time::Nanoseconds;
 
 use templar_redstone_adapter_contract::*;
 
-/// An explicit admin receives both roles; omitting it retains predecessor seeding.
-#[rstest::rstest]
-#[case::explicit_admin(Some("operator.near"), "operator.near", "registry.near")]
-#[case::predecessor_fallback(None, "registry.near", "operator.near")]
-fn new_seeds_roles(
-    #[case] admin_id: Option<&str>,
-    #[case] expected_admin: &str,
-    #[case] unexpected_admin: &str,
-) {
+/// The specified administrator receives both roles, not the registry predecessor.
+#[test]
+fn new_seeds_roles_on_explicit_admin() {
     testing_env!(VMContextBuilder::new()
         .current_account_id("adapter.near".parse().unwrap())
         .predecessor_account_id("registry.near".parse().unwrap())
         .build());
 
-    let adapter = Contract::new(
-        config::prod(),
-        admin_id.map(|account_id| account_id.parse().unwrap()),
-    );
-    let expected_admin = expected_admin.parse::<near_sdk::AccountId>().unwrap();
-    let unexpected_admin = unexpected_admin.parse::<near_sdk::AccountId>().unwrap();
+    let adapter = Contract::new(config::prod(), "operator.near".parse().unwrap());
+    let admin = "operator.near".parse::<near_sdk::AccountId>().unwrap();
+    let predecessor = "registry.near".parse::<near_sdk::AccountId>().unwrap();
 
-    assert!(adapter.has_role(expected_admin.clone(), Role::ModifyRoles));
-    assert!(adapter.has_role(expected_admin, Role::TrustedUpdater));
-    assert!(!adapter.has_role(unexpected_admin.clone(), Role::ModifyRoles));
-    assert!(!adapter.has_role(unexpected_admin, Role::TrustedUpdater));
+    assert!(adapter.has_role(admin.clone(), Role::ModifyRoles));
+    assert!(adapter.has_role(admin, Role::TrustedUpdater));
+    assert!(!adapter.has_role(predecessor.clone(), Role::ModifyRoles));
+    assert!(!adapter.has_role(predecessor, Role::TrustedUpdater));
 }
 
 #[rstest::rstest]
@@ -55,7 +46,7 @@ fn payload(#[case] timestamp: u64, #[case] input: &[u8]) {
         .build();
     testing_env!(context);
 
-    let mut ra = Contract::new(config::prod(), None);
+    let mut ra = Contract::new(config::prod(), "bob.near".parse().unwrap());
 
     let prices = vec!["ETH".into(), "BTC".into()];
 
@@ -82,7 +73,7 @@ fn output() {
         .build();
     testing_env!(context);
 
-    let mut ra = Contract::new(config::prod(), None);
+    let mut ra = Contract::new(config::prod(), "bob.near".parse().unwrap());
 
     let prices = vec!["ETH".into(), "BTC".into()];
 

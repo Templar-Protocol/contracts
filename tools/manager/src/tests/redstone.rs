@@ -107,7 +107,7 @@ fn create_prod_preset_builds_config_init_args() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.1.1#abc",
+            "templar-redstone-adapter-contract@0.2.0#abc",
             "--preset",
             "prod",
             "--admin-id",
@@ -149,7 +149,7 @@ fn create_test_preset_builds_config_init_args() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.1.1#abc",
+            "templar-redstone-adapter-contract@0.2.0#abc",
             "--preset",
             "test",
             "--admin-id",
@@ -178,45 +178,10 @@ fn create_test_preset_builds_config_init_args() {
 }
 
 #[test]
-fn create_test_preset_can_seed_predecessor() {
-    let cli = Cli::try_parse_from(
-        [
-            "tmplrmgr",
-            "redstone",
-            "create",
-            "--registry-id",
-            "registry.testnet",
-            "--name",
-            "redstone",
-            "--version-key",
-            "templar-redstone-adapter-contract@0.1.0#abc",
-            "--preset",
-            "test",
-            "--predecessor-is-admin",
-            "--deposit",
-            "3.5 NEAR",
-        ]
-        .into_iter()
-        .chain(CREDS),
-    )
-    .expect("redstone create --preset test should parse");
-    let deploy = match cli.command {
-        Command::Redstone {
-            command: RedstoneNs::Create(a),
-        } => a.try_into_spec().expect("into deploy spec"),
-        _ => panic!("expected redstone create"),
-    };
-
-    let init: serde_json::Value =
-        serde_json::from_slice(&deploy.init_args.0).expect("init args are json");
-    assert!(init["admin_id"].is_null());
-}
-
-#[test]
-fn create_custom_init_args_can_seed_predecessor() {
+fn create_rejects_custom_init_args_for_optional_admin_version() {
     let init_args = serde_json::to_string(&serde_json::json!({
         "config": templar_common::oracle::redstone::config::test(),
-        "admin_id": null,
+        "admin_id": "governance.testnet",
     }))
     .unwrap();
     let cli = Cli::try_parse_from(
@@ -239,14 +204,16 @@ fn create_custom_init_args_can_seed_predecessor() {
         .chain(CREDS),
     )
     .expect("redstone create with custom init args should parse");
-    let deploy = match cli.command {
+    let error = match cli.command {
         Command::Redstone {
             command: RedstoneNs::Create(a),
-        } => a.try_into_spec().expect("into deploy spec"),
+        } => a
+            .try_into_spec()
+            .expect_err("optional-admin adapters must not receive custom init args"),
         _ => panic!("expected redstone create"),
     };
 
-    assert_eq!(deploy.init_args.0, init_args.as_bytes());
+    assert!(error.to_string().contains("Deploy >= 0.2.0"));
 }
 
 #[test]
@@ -267,7 +234,7 @@ fn create_custom_init_args_preserves_explicit_admin() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.1.1#abc",
+            "templar-redstone-adapter-contract@0.2.0#abc",
             "--init-args",
             init_args.as_str(),
             "--deposit",
@@ -288,7 +255,7 @@ fn create_custom_init_args_preserves_explicit_admin() {
 }
 
 #[test]
-fn create_rejects_version_that_ignores_admin_id() {
+fn create_rejects_version_without_required_admin_id() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
@@ -316,11 +283,11 @@ fn create_rejects_version_that_ignores_admin_id() {
             command: RedstoneNs::Create(a),
         } => a
             .try_into_spec()
-            .expect_err("old adapters must not receive admin_id"),
+            .expect_err("optional-admin adapters must not receive init args"),
         _ => panic!("expected redstone create"),
     };
 
-    assert!(error.to_string().contains("Deploy >= 0.1.1"));
+    assert!(error.to_string().contains("Deploy >= 0.2.0"));
 }
 
 #[test]
@@ -335,7 +302,7 @@ fn create_preset_requires_explicit_admin_source() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.1.1#abc",
+            "templar-redstone-adapter-contract@0.2.0#abc",
             "--preset",
             "prod",
             "--deposit",
@@ -354,9 +321,7 @@ fn create_preset_requires_explicit_admin_source() {
         _ => panic!("expected redstone create"),
     };
 
-    assert!(error
-        .to_string()
-        .contains("--preset requires either --admin-id or --predecessor-is-admin"));
+    assert!(error.to_string().contains("--preset requires --admin-id"));
 }
 
 #[test]
@@ -371,7 +336,7 @@ fn create_rejects_multiple_config_sources() {
             "--name",
             "redstone",
             "--version-key",
-            "templar-redstone-adapter-contract@0.1.1#abc",
+            "templar-redstone-adapter-contract@0.2.0#abc",
             "--preset",
             "prod",
             "--init-args",
