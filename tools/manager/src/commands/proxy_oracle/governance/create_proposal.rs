@@ -138,13 +138,17 @@ impl ProposalOperation {
                     history_len: a.history_len,
                 },
             },
-            Self::AddCircuitBreaker(a) => Operation::AddCircuitBreaker {
-                id: a.price_id,
-                // Resolved to the set's next id by the dispatcher when omitted.
-                breaker_id: a.breaker_id.unwrap_or(0),
-                breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
-                    .context("parse circuit breaker")?,
-            },
+            Self::AddCircuitBreaker(a) => {
+                let breaker_id = a.breaker_id.context(
+                    "breaker id must be resolved before building an add-circuit-breaker proposal",
+                )?;
+                Operation::AddCircuitBreaker {
+                    id: a.price_id,
+                    breaker_id,
+                    breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
+                        .context("parse circuit breaker")?,
+                }
+            }
             Self::RemoveCircuitBreaker(a) => Operation::RemoveCircuitBreaker {
                 id: a.price_id,
                 breaker_id: a.breaker_id,

@@ -602,28 +602,7 @@ pub async fn update_prices_rejects_empty_request(#[future(awt)] init_test: InitT
     let SimpleResponse::Rejected { reason } = response else {
         panic!("Empty request should be rejected");
     };
-
     assert_eq!(reason, "market_ids must not be empty");
-}
-
-#[rstest]
-#[tokio::test]
-pub async fn update_prices_rejects_unknown_market(#[future(awt)] init_test: InitTest) {
-    let InitTest { app, .. } = init_test;
-
-    let response = templar_relayer::route::update_prices::update_prices(
-        State(app),
-        Json(UpdatePricesRequest {
-            market_ids: vec!["unknown-market.test.near".parse().unwrap()],
-        }),
-    )
-    .await;
-
-    let SimpleResponse::Rejected { reason } = response else {
-        panic!("Unknown market should be rejected");
-    };
-
-    assert_eq!(reason, "Unknown market: unknown-market.test.near");
 }
 
 #[rstest]
@@ -642,7 +621,6 @@ pub async fn market_prices_rejects_unknown_market(#[future(awt)] init_test: Init
     let SimpleResponse::Rejected { reason } = response else {
         panic!("Unknown market should be rejected");
     };
-
     assert_eq!(reason, "Unknown market: unknown-market.test.near");
 }
 
@@ -695,6 +673,8 @@ async fn assert_storage_deposit_planning_failure(app: &App, payer: &AccountId) {
     );
 }
 
+/// A planning failure releases the reservation immediately: a first-seen account
+/// keeps the full starting allowance, an existing account its prior balance.
 #[rstest]
 #[tokio::test]
 async fn planning_failure_creates_missing_account_without_resetting_existing_account(

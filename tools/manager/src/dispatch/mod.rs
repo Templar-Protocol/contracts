@@ -10,10 +10,17 @@ mod teardown;
 
 use crate::cli::Command;
 use crate::commands::{
-    account::AccountNs, contract::ContractNs, ft::FtNs, market::MarketNs, oracle::OracleNs,
-    proxy_oracle::ProxyOracleNs, proxy_oracle_governance::ProxyOracleGovernanceNs,
-    proxy_oracle_owner::ProxyOracleOwnerNs, pyth::PythNs, redstone::RedstoneNs,
-    registry::RegistryNs, storage::StorageNs,
+    account::AccountNs,
+    contract::ContractNs,
+    ft::FtNs,
+    market::MarketNs,
+    oracle::OracleNs,
+    owner::OwnerNs,
+    proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
+    pyth::PythNs,
+    redstone::RedstoneNs,
+    registry::RegistryNs,
+    storage::StorageNs,
 };
 use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
 
@@ -28,8 +35,7 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Ft { command } => ft(ctx, command).await,
         Command::Market { command } => market(ctx, command).await,
         Command::ProxyOracle { command } => proxy_oracle(ctx, command).await,
-        Command::ProxyOracleOwner { command } => proxy_oracle_owner(ctx, command).await,
-        Command::ProxyOracleGovernance { command } => proxy_oracle_governance(ctx, command).await,
+        Command::Owner { command } => owner(ctx, command).await,
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
@@ -101,6 +107,7 @@ async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> 
         ProxyOracleNs::GetProxyCircuitBreakerSet(a) => ctx.read(a.into_spec()).await,
         ProxyOracleNs::UpdatePrices(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
         ProxyOracleNs::Upgrade(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        ProxyOracleNs::Governance(a) => proxy_oracle_governance(ctx, a).await,
     }
 }
 
@@ -140,13 +147,13 @@ async fn pyth(ctx: CliContext, ns: PythNs) -> anyhow::Result<()> {
     }
 }
 
-async fn proxy_oracle_owner(ctx: CliContext, ns: ProxyOracleOwnerNs) -> anyhow::Result<()> {
+async fn owner(ctx: CliContext, ns: OwnerNs) -> anyhow::Result<()> {
     match ns {
-        ProxyOracleOwnerNs::GetOwner(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleOwnerNs::GetProposedOwner(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleOwnerNs::ProposeOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
-        ProxyOracleOwnerNs::AcceptOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
-        ProxyOracleOwnerNs::RenounceOwner(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        OwnerNs::Get(a) => ctx.read(a.into_spec()).await,
+        OwnerNs::GetProposed(a) => ctx.read(a.into_spec()).await,
+        OwnerNs::Propose(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        OwnerNs::Accept(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
+        OwnerNs::Renounce(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
     }
 }
 

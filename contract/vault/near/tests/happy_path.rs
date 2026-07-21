@@ -11,13 +11,34 @@
 use anyhow::Result;
 use near_sdk::json_types::U128;
 use rstest::rstest;
-use templar_common::vault::prelude::{Wad, MAX_MANAGEMENT_FEE_WAD, MAX_PERFORMANCE_FEE_WAD};
 use templar_common::vault::{AllocationDelta, Delta};
 use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness, TEST_FINALITY_POLICY};
 use templar_primitives::SU128;
 
 mod common;
 use common::{harvest, zero_interest};
+
+/// Boundary smoke for the supply-queue duplicate rule through the gateway: a
+/// duplicate market is rejected via `vault_set_supply_queue` (exercising curator
+/// authorization, account-to-`MarketId` resolution, gateway dispatch, and panic
+/// propagation). The exhaustive duplicate-detection rule is covered off-node by
+/// `prop_supply_queue_mustnt_have_duplicates` in `src/tests.rs`.
+#[rstest]
+#[tokio::test]
+async fn supply_queue_mustnt_have_duplicates(#[future(awt)] harness: SandboxHarness) -> Result<()> {
+    let vault = harness.deploy_vault_with_market().await?;
+    let m = vault.market.market_id.clone();
+
+    let err = harness
+        .vault_set_supply_queue(&vault.curator, &vault, &[m.clone(), m])
+        .await
+        .expect_err("duplicate market in supply queue should be rejected");
+    assert!(
+        err.to_string().contains("Duplicate market"),
+        "expected 'Duplicate market', got: {err}"
+    );
+    Ok(())
+}
 
 #[rstest]
 #[tokio::test]
@@ -69,88 +90,6 @@ async fn donation_does_not_change_aum_until_resync(
         harness.vault_idle_balance(&vault).await?,
         idle_before + 123,
         "After resync, idle balance should include the donation",
-    );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn supply_queue_mustnt_have_duplicates(#[future(awt)] harness: SandboxHarness) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-    let m = vault.market.market_id.clone();
-
-    let err = harness
-        .vault_set_supply_queue(&vault.curator, &vault, &[m.clone(), m])
-        .await
-        .expect_err("duplicate market in supply queue should be rejected");
-    assert!(
-        err.to_string().contains("Duplicate market"),
-        "expected 'Duplicate market', got: {err}"
-    );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn set_fees_rejects_management_fee_above_cap(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-
-    let mut fees = harness.vault_get_fees(&vault).await?;
-    fees.management.fee = SU128::from(MAX_MANAGEMENT_FEE_WAD + 1);
-
-    let err = harness
-        .vault_set_fees(&vault.owner, &vault, fees)
-        .await
-        .expect_err("management fee above cap should be rejected");
-    assert!(
-        err.to_string().contains("management fee too high"),
-        "expected 'management fee too high', got: {err}"
-    );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn set_fees_rejects_performance_fee_above_cap(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-
-    let mut fees = harness.vault_get_fees(&vault).await?;
-    fees.performance.fee = SU128::from(MAX_PERFORMANCE_FEE_WAD + 1);
-
-    let err = harness
-        .vault_set_fees(&vault.owner, &vault, fees)
-        .await
-        .expect_err("performance fee above cap should be rejected");
-    assert!(
-        err.to_string().contains("performance fee too high"),
-        "expected 'performance fee too high', got: {err}"
-    );
-    Ok(())
-}
-
-#[rstest]
-#[tokio::test]
-async fn set_fees_accepts_max_total_assets_growth_rate(
-    #[future(awt)] harness: SandboxHarness,
-) -> Result<()> {
-    let vault = harness.deploy_vault_with_market().await?;
-
-    let mut fees = harness.vault_get_fees(&vault).await?;
-    assert_eq!(fees.max_total_assets_growth_rate, None);
-
-    let rate = SU128::from(u128::from(Wad::one() / 5));
-    fees.max_total_assets_growth_rate = Some(rate);
-    harness.vault_set_fees(&vault.owner, &vault, fees).await?;
-
-    let updated = harness.vault_get_fees(&vault).await?;
-    assert_eq!(
-        updated.max_total_assets_growth_rate,
-        Some(rate),
-        "max_total_assets_growth_rate should persist",
     );
     Ok(())
 }

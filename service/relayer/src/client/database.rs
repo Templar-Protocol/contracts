@@ -46,12 +46,6 @@ pub mod error {
     use thiserror::Error;
 
     #[derive(Debug, Error)]
-    #[error("Account \"{account_id}\" does not exist in database")]
-    pub struct AccountDoesNotExistError {
-        pub account_id: AccountId,
-    }
-
-    #[derive(Debug, Error)]
     #[error("Account \"{account_id}\" has insufficient allowance: {actual} < {required}")]
     pub struct InsufficientAllowanceError {
         pub account_id: AccountId,
@@ -68,8 +62,6 @@ pub mod error {
     /// Failure to lock allowance for a new charge.
     #[derive(Debug, Error)]
     pub enum LockError {
-        #[error(transparent)]
-        AccountDoesNotExist(#[from] AccountDoesNotExistError),
         #[error(transparent)]
         InsufficientAllowance(#[from] InsufficientAllowanceError),
         #[error(transparent)]
@@ -160,32 +152,17 @@ LIMIT
             .collect())
     }
 
-    /// # Errors
-    ///
-    /// - Query errors
-    pub async fn get_available_allowance_or_create(
-        &self,
-        account_id: &AccountIdRef,
-        default_allowance: NearToken,
-    ) -> Result<NearToken, sqlx::Error> {
-        let available = self.get_available_allowance(account_id).await?;
-        if let Some(available) = available {
-            Ok(available)
-        } else {
-            self.create_account(account_id, default_allowance).await?;
-            Ok(default_allowance)
-        }
-    }
-
     /// Lock allowance for a charge the relayer is about to submit, keyed by the
     /// gateway idempotency key (`operation_key`). Records gas and inner-spend
     /// reservations so concurrent gateway operations cannot overdraw the account;
     /// the actual gas cost is read back from the gateway at settlement.
     ///
+    /// A first-seen account is provisioned with `starting_allowance` in the same
+    /// transaction rather than failing the lock.
+    ///
     /// # Errors
     ///
-    /// - Query errors
-    /// - Account does not exist
+    /// - Query errors (a denied account surfaces as an opaque row-not-found)
     /// - Insufficient allowance
     #[tracing::instrument(skip(self), fields(
         account_id = %account_id,
@@ -199,10 +176,26 @@ LIMIT
         gas_estimate: NearToken,
         inner_spend: NearToken,
         operation_key: Uuid,
+        starting_allowance: NearToken,
     ) -> Result<(), error::LockError> {
         tracing::debug!("Locking allowance for charge");
         let mut tx = self.connection.begin().await?;
 
+        // Provision a first-seen account before locking its row.
+        sqlx::query!(
+            r#"
+INSERT INTO
+    account (account_id, allowance)
+VALUES
+    ($1, $2) ON CONFLICT (account_id) DO NOTHING
+"#,
+            account_id.as_str(),
+            Decimal::from(starting_allowance.as_yoctonear()),
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // Denied accounts are filtered out, surfacing as an opaque row-not-found.
         let account = sqlx::query!(
             r#"
 SELECT
@@ -217,15 +210,8 @@ FOR UPDATE
 "#,
             account_id.to_string(),
         )
-        .fetch_optional(&mut *tx)
+        .fetch_one(&mut *tx)
         .await?;
-
-        let Some(account) = account else {
-            return Err(error::AccountDoesNotExistError {
-                account_id: account_id.to_owned(),
-            }
-            .into());
-        };
 
         let required = gas_estimate.saturating_add(inner_spend);
 
@@ -571,7 +557,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
         assert_eq!(allowance(&db, &account).await, 85);
@@ -588,7 +574,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
         db.settle(&account, key, near(8), false).await.unwrap();
@@ -604,13 +590,13 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
         db.release_pending(&account, key).await.unwrap();
         assert_eq!(allowance(&db, &account).await, 100);
 
-        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4(), near(100))
             .await
             .unwrap();
     }
@@ -624,7 +610,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
         db.settle(&account, key, near(8), true).await.unwrap();
@@ -642,7 +628,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
@@ -664,7 +650,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
@@ -686,7 +672,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
@@ -697,7 +683,7 @@ mod tests {
         assert_eq!(status, AccountedStatus::Succeeded);
         // The no-op spent nothing, so the locked deposit is not billed.
         assert_eq!(allowance(&db, &account).await, 100);
-        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4(), near(100))
             .await
             .unwrap();
     }
@@ -711,7 +697,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
@@ -721,7 +707,7 @@ mod tests {
             .unwrap();
         assert_eq!(status, AccountedStatus::Failed);
         assert_eq!(allowance(&db, &account).await, 100);
-        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4(), near(100))
             .await
             .unwrap();
     }
@@ -736,14 +722,14 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
         let status = db.resolve_charge(&account, key, None).await.unwrap();
         assert_eq!(status, AccountedStatus::Failed);
         assert_eq!(allowance(&db, &account).await, 100);
-        db.lock_pending(&account, near(10), near(0), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(0), Uuid::new_v4(), near(100))
             .await
             .unwrap();
     }
@@ -758,10 +744,10 @@ mod tests {
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
 
-        db.lock_pending(&account, near(10), near(5), first)
+        db.lock_pending(&account, near(10), near(5), first, near(100))
             .await
             .unwrap();
-        db.lock_pending(&account, near(20), near(7), second)
+        db.lock_pending(&account, near(20), near(7), second, near(100))
             .await
             .unwrap();
 
@@ -790,7 +776,7 @@ mod tests {
         db.create_account(&account, near(10)).await.unwrap();
 
         let err = db
-            .lock_pending(&account, near(8), near(5), Uuid::new_v4())
+            .lock_pending(&account, near(8), near(5), Uuid::new_v4(), near(100))
             .await
             .unwrap_err();
         assert!(matches!(err, error::LockError::InsufficientAllowance(_)));
@@ -803,12 +789,12 @@ mod tests {
         let account = acct("a.near");
         db.create_account(&account, near(30)).await.unwrap();
 
-        db.lock_pending(&account, near(10), near(5), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(5), Uuid::new_v4(), near(100))
             .await
             .unwrap();
 
         let err = db
-            .lock_pending(&account, near(12), near(4), Uuid::new_v4())
+            .lock_pending(&account, near(12), near(4), Uuid::new_v4(), near(100))
             .await
             .unwrap_err();
         assert!(matches!(err, error::LockError::InsufficientAllowance(_)));
@@ -822,10 +808,10 @@ mod tests {
         let account = acct("a.near");
         db.create_account(&account, near(100)).await.unwrap();
 
-        db.lock_pending(&account, near(10), near(5), Uuid::new_v4())
+        db.lock_pending(&account, near(10), near(5), Uuid::new_v4(), near(100))
             .await
             .unwrap();
-        db.lock_pending(&account, near(20), near(7), Uuid::new_v4())
+        db.lock_pending(&account, near(20), near(7), Uuid::new_v4(), near(100))
             .await
             .unwrap();
 
@@ -841,10 +827,10 @@ mod tests {
 
         let settled = Uuid::new_v4();
         let released = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), settled)
+        db.lock_pending(&account, near(10), near(5), settled, near(100))
             .await
             .unwrap();
-        db.lock_pending(&account, near(20), near(7), released)
+        db.lock_pending(&account, near(20), near(7), released, near(100))
             .await
             .unwrap();
 
@@ -872,7 +858,7 @@ mod tests {
         db.create_account(&account, near(100)).await.unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(0), key)
+        db.lock_pending(&account, near(10), near(0), key, near(100))
             .await
             .unwrap();
 
@@ -915,7 +901,7 @@ mod tests {
             .unwrap();
 
         let key = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(5), key)
+        db.lock_pending(&account, near(10), near(5), key, near(100))
             .await
             .unwrap();
 
@@ -938,10 +924,10 @@ mod tests {
 
         let stale = Uuid::new_v4();
         let fresh = Uuid::new_v4();
-        db.lock_pending(&account, near(10), near(0), stale)
+        db.lock_pending(&account, near(10), near(0), stale, near(100))
             .await
             .unwrap();
-        db.lock_pending(&account, near(10), near(0), fresh)
+        db.lock_pending(&account, near(10), near(0), fresh, near(100))
             .await
             .unwrap();
 

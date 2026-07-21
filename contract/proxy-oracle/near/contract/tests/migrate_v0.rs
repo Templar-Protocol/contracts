@@ -14,7 +14,9 @@ use near_sdk::{
 };
 use serde_json::json;
 use templar_common::{
-    oracle::pyth::PriceIdentifier, versioned_state::write_state_version, Nanoseconds,
+    oracle::pyth::PriceIdentifier,
+    versioned_state::{write_state_version, MigrateExternalInterface},
+    Nanoseconds,
 };
 use templar_gateway_testing::SandboxHarness;
 use templar_proxy_oracle_kernel::proxy::{
@@ -27,6 +29,7 @@ use templar_proxy_oracle_near_common::{
     state,
     state::legacy::v0,
 };
+use templar_proxy_oracle_near_contract::Contract;
 
 use common::StatePatch;
 
@@ -278,23 +281,21 @@ fn generate_v0_state_patch() {
     fs::write(patch_path(), borsh::to_vec(&state_patch).unwrap()).unwrap();
 }
 
-#[tokio::test]
-async fn init_writes_current_state_version() -> Result<()> {
-    let harness = SandboxHarness::start().await?;
-    let proxy = harness.deploy_proxy_oracle().await?;
-    let network = &harness.network;
+/// A fresh `new` writes the current state version, so a newly-deployed oracle
+/// reports matching stored/target versions and needs no migration. The version
+/// bookkeeping is contract-local state, so this runs off-node under `testing_env!`.
+#[test]
+fn init_writes_current_state_version() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("registry.near".parse().unwrap())
+        .build());
 
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
-        1
-    );
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
-        1
-    );
-    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+    let _ = Contract::new(None);
 
-    Ok(())
+    assert_eq!(Contract::get_target_state_version(), 1);
+    assert_eq!(Contract::get_stored_state_version(), 1);
+    assert!(!Contract::needs_migration());
 }
 
 #[tokio::test]

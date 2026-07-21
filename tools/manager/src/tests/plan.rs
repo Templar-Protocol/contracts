@@ -18,9 +18,10 @@ use templar_gateway_types::{
 
 use templar_gateway_oracle_updates_dispatch::Dispatch as OracleUpdatesDispatch;
 
-use super::CREDS;
+use super::{parse_governance, CREDS};
 use crate::cli::{Cli, Command};
-use crate::commands::{FtNs, OracleNs, ProxyOracleGovernanceNs, RedstoneNs, StorageNs};
+use crate::commands::proxy_oracle::ProxyOracleGovernanceNs;
+use crate::commands::{FtNs, OracleNs, RedstoneNs, StorageNs};
 
 const TGAS: u64 = 1_000_000_000_000;
 
@@ -194,10 +195,8 @@ async fn storage_unregister_plans_storage_unregister_action() {
 
 #[tokio::test]
 async fn governance_cancel_proposal_plans_cancel_action() {
-    let cli = Cli::try_parse_from(
+    let body = match parse_governance(
         [
-            "tmplrmgr",
-            "proxy-oracle-governance",
             "cancel-proposal",
             "--governance-id",
             "proxy.registry.testnet",
@@ -206,12 +205,8 @@ async fn governance_cancel_proposal_plans_cancel_action() {
         ]
         .into_iter()
         .chain(CREDS),
-    )
-    .expect("cancel-proposal should parse");
-    let body = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CancelProposal(a),
-        } => a.cancel(),
+    ) {
+        ProxyOracleGovernanceNs::CancelProposal(a) => a.cancel(),
         _ => panic!("expected cancel-proposal"),
     };
 

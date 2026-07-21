@@ -123,6 +123,16 @@
 | `oracle.updatePyth` | write | `UpdatePyth` → `WriteOperationResult` | Submit a Pyth oracle update. |
 | `oracle.updateRedStone` | write | `UpdateRedStone` → `WriteOperationResult` | Submit a RedStone oracle update for one or more feeds. |
 
+## `owner`
+
+| Method | Kind | Input → Output | Summary |
+|---|---|---|---|
+| `owner.acceptOwner` | write | `AcceptOwner` → `WriteOperationResult` | Accept contract ownership. |
+| `owner.getOwner` | read | `GetOwner` → `GetOwnerResult` | Get the current contract owner. |
+| `owner.getProposedOwner` | read | `GetProposedOwner` → `GetProposedOwnerResult` | Get the proposed contract owner. |
+| `owner.proposeOwner` | write | `ProposeOwner` → `WriteOperationResult` | Propose a new contract owner. |
+| `owner.renounceOwner` | write | `RenounceOwner` → `WriteOperationResult` | Renounce contract ownership. |
+
 ## `proxyOracle`
 
 | Method | Kind | Input → Output | Summary |
@@ -151,16 +161,6 @@
 | `proxyOracleGovernance.listRole` | read | `ListRole` → `ListRoleResult` | List the accounts holding a governance role. |
 | `proxyOracleGovernance.nextProposalId` | read | `NextProposalId` → `u32` | Get the next governance proposal ID. |
 | `proxyOracleGovernance.proposalCount` | read | `ProposalCount` → `u32` | Get the count of active governance proposals. |
-
-## `proxyOracleOwner`
-
-| Method | Kind | Input → Output | Summary |
-|---|---|---|---|
-| `proxyOracleOwner.acceptOwner` | write | `AcceptOwner` → `WriteOperationResult` | Accept proxy oracle ownership. |
-| `proxyOracleOwner.getOwner` | read | `GetOwner` → `GetOwnerResult` | Get the current proxy oracle owner. |
-| `proxyOracleOwner.getProposedOwner` | read | `GetProposedOwner` → `GetProposedOwnerResult` | Get the proposed proxy oracle owner. |
-| `proxyOracleOwner.proposeOwner` | write | `ProposeOwner` → `WriteOperationResult` | Propose a new proxy oracle owner. |
-| `proxyOracleOwner.renounceOwner` | write | `RenounceOwner` → `WriteOperationResult` | Renounce proxy oracle ownership. |
 
 ## `pyth`
 

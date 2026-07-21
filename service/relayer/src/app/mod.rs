@@ -679,9 +679,13 @@ impl App {
     /// `account_id` is the account charged for the operation; `signer_account_id`
     /// is the relayer-controlled account that signs and pays (relay or UA).
     ///
+    /// A first-seen account is provisioned with the starting allowance as part
+    /// of the lock; callers gating on prior existence must check first.
+    ///
     /// # Errors
     ///
     /// - Locking or settling the allowance in the database
+    /// - The account being denied allowance
     /// - Gateway execution
     /// - The operation completing without producing a transaction
     #[tracing::instrument(skip(self, body), fields(
@@ -705,9 +709,6 @@ impl App {
     {
         tracing::info!("Submitting and accounting for transaction");
         let operation_key = Uuid::new_v4();
-        self.database
-            .create_account(&account_id, self.args.relay.starting_allowance_yocto)
-            .await?;
 
         self.database
             .lock_pending(
@@ -715,6 +716,7 @@ impl App {
                 gas_cost_estimate,
                 spend_within_transaction,
                 operation_key,
+                self.args.relay.starting_allowance_yocto,
             )
             .await?;
 

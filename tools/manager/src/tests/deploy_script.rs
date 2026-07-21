@@ -2,11 +2,11 @@ use clap::Parser;
 use serde_json::{json, Value};
 
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle_governance::ProxyOracleGovernanceNs;
-use crate::commands::proxy_oracle_owner::ProxyOracleOwnerNs;
+use crate::commands::owner::OwnerNs;
+use crate::commands::proxy_oracle::ProxyOracleGovernanceNs;
 use crate::commands::registry::RegistryNs;
 
-use super::CREDS;
+use super::{parse_create_proposal, parse_governance, try_parse_governance, CREDS};
 
 const COLLATERAL_PRICE_ID: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -180,58 +180,58 @@ fn registry_deploy_reads_init_args_file() {
 }
 
 #[test]
-fn proxy_oracle_owner_typed_commands_parse() {
+fn owner_typed_commands_parse() {
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
-            "proxy-oracle-owner",
-            "propose-owner",
-            "--oracle-id",
-            "proxy.registry.testnet",
+            "owner",
+            "propose",
+            "--contract-id",
+            "registry.testnet",
             "--account-id",
             "operator.testnet",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("propose-owner should parse");
+    .expect("owner propose should parse");
 
     let params = match cli.command {
-        Command::ProxyOracleOwner {
-            command: ProxyOracleOwnerNs::ProposeOwner(cmd),
+        Command::Owner {
+            command: OwnerNs::Propose(cmd),
         } => cmd.into_spec(),
-        _ => panic!("expected ProxyOracleOwner::ProposeOwner"),
+        _ => panic!("expected Owner::Propose"),
     };
 
-    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_owner::ProposeOwner>(
-        serde_json::to_value(&params).unwrap(),
-    )
-    .expect("typed proposeOwner params should match the gateway spec");
+    let params_json = serde_json::to_value(&params).unwrap();
+    assert_eq!(params_json["contract_id"], json!("registry.testnet"));
+    serde_json::from_value::<templar_gateway_methods_spec::owner::ProposeOwner>(params_json)
+        .expect("typed owner.propose params should match the gateway spec");
 
     let cli = Cli::try_parse_from(
         [
             "tmplrmgr",
-            "proxy-oracle-owner",
-            "accept-owner",
-            "--oracle-id",
-            "proxy.registry.testnet",
+            "owner",
+            "accept",
+            "--contract-id",
+            "registry.testnet",
         ]
         .into_iter()
         .chain(CREDS),
     )
-    .expect("accept-owner should parse");
+    .expect("owner accept should parse");
 
     let params = match cli.command {
-        Command::ProxyOracleOwner {
-            command: ProxyOracleOwnerNs::AcceptOwner(cmd),
+        Command::Owner {
+            command: OwnerNs::Accept(cmd),
         } => cmd.into_spec(),
-        _ => panic!("expected ProxyOracleOwner::AcceptOwner"),
+        _ => panic!("expected Owner::Accept"),
     };
 
-    serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_owner::AcceptOwner>(
+    serde_json::from_value::<templar_gateway_methods_spec::owner::AcceptOwner>(
         serde_json::to_value(&params).unwrap(),
     )
-    .expect("typed acceptOwner params should match the gateway spec");
+    .expect("typed owner.accept params should match the gateway spec");
 }
 
 #[test]
@@ -245,34 +245,20 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
     }]);
     let proxy_file = write_legacy_proxy_fixture(&legacy_entries);
 
-    // Credentials flatten at the `create-proposal` level, so they must precede
-    // the `set-proxy` operation subcommand.
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
+    // The helper injects credentials at the `create-proposal` level, before the
+    // `set-proxy` operation subcommand.
+    let cmd = parse_create_proposal([
         "--governance-id",
         "proxy.registry.testnet",
         "--id",
         "0",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
         "set-proxy",
         "--price-id",
         COLLATERAL_PRICE_ID,
         "--proxy-file",
         proxy_file.to_str().expect("fixture path is unicode"),
-    ])
-    .expect("create-proposal with proxy-file should parse");
-
-    let params = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::CreateProposal(cmd),
-        } => cmd.try_into_spec(0).expect("create-proposal should build"),
-        _ => panic!("expected ProxyOracleGovernance::CreateProposal"),
-    };
+    ]);
+    let params = cmd.try_into_spec(0).expect("create-proposal should build");
 
     std::fs::remove_file(&proxy_file).expect("remove proxy fixture");
 
@@ -289,10 +275,8 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
 
 #[test]
 fn governance_execute_proposal_typed_args_parse() {
-    let cli = Cli::try_parse_from(
+    let params = match parse_governance(
         [
-            "tmplrmgr",
-            "proxy-oracle-governance",
             "execute-proposal",
             "--governance-id",
             "proxy.registry.testnet",
@@ -301,14 +285,9 @@ fn governance_execute_proposal_typed_args_parse() {
         ]
         .into_iter()
         .chain(CREDS),
-    )
-    .expect("execute-proposal should parse");
-
-    let params = match cli.command {
-        Command::ProxyOracleGovernance {
-            command: ProxyOracleGovernanceNs::ExecuteProposal(cmd),
-        } => cmd.into_spec(),
-        _ => panic!("expected ProxyOracleGovernance::ExecuteProposal"),
+    ) {
+        ProxyOracleGovernanceNs::ExecuteProposal(cmd) => cmd.into_spec(),
+        _ => panic!("expected execute-proposal"),
     };
 
     serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_governance::ExecuteProposal>(
@@ -319,20 +298,18 @@ fn governance_execute_proposal_typed_args_parse() {
 
 #[test]
 fn create_proposal_set_proxy_requires_price_id() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "proxy-oracle-governance",
-        "create-proposal",
-        "--governance-id",
-        "proxy.registry.testnet",
-        "--id",
-        "0",
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        super::TEST_SECRET_KEY,
-        "set-proxy",
-    ])
+    let error = try_parse_governance(
+        [
+            "create-proposal",
+            "--governance-id",
+            "proxy.registry.testnet",
+            "--id",
+            "0",
+        ]
+        .into_iter()
+        .chain(CREDS)
+        .chain(["set-proxy"]),
+    )
     .expect_err("set-proxy should require --price-id");
 
     assert_eq!(

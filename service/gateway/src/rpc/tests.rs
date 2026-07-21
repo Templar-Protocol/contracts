@@ -13,6 +13,7 @@ mod lst_oracle_tests;
 mod market_tests;
 mod mt_tests;
 mod oracle_tests;
+mod owner_tests;
 mod proxy_oracle_tests;
 mod pyth_tests;
 mod redstone_tests;
@@ -42,8 +43,8 @@ use templar_common::primitive_types::U256;
 use templar_common::Nanoseconds;
 use templar_gateway_core::GatewayContext;
 use templar_gateway_methods_spec::{
-    account, contract, ft, lst_oracle, market, mt, oracle, proxy_oracle, proxy_oracle_governance,
-    proxy_oracle_owner, pyth, redstone, ref_finance, registry, storage, token, tx,
+    account, contract, ft, lst_oracle, market, mt, oracle, owner, proxy_oracle,
+    proxy_oracle_governance, pyth, redstone, ref_finance, registry, storage, token, tx,
     universal_account, vault,
 };
 use templar_gateway_oracle_updates_dispatch::{

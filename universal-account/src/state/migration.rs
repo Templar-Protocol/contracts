@@ -205,6 +205,64 @@ mod tests {
         assert_eq!(new.keys.len(), 1);
         assert_eq!(new.keys.get(&raw_key), Some(&raw_parameters));
     }
+
+    // Every migration rejects a stored state version that does not match its
+    // `from_version`. The guard runs before any state read, so the stored
+    // version alone drives it — no legacy state snapshot required. These replace
+    // the on-node `invalid_migration_sequences` / `fail_migrate_twice` cases,
+    // which staged real wasms only to reach these version pairs.
+
+    fn v0() -> Migration {
+        Migration::from(V0 { chain_id: U128(0) })
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate V0: Stored state version 1 != args `from_version` 0"]
+    fn v0_rejects_stored_v1() {
+        context();
+        write_state_version(1);
+        v0().run();
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate V0: Stored state version 2 != args `from_version` 0"]
+    fn v0_rejects_stored_v2() {
+        context();
+        write_state_version(2);
+        v0().run();
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate V1: Stored state version 0 != args `from_version` 1"]
+    fn v1_rejects_stored_v0() {
+        context();
+        write_state_version(0);
+        Migration::from(V1).run();
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate V1: Stored state version 2 != args `from_version` 1"]
+    fn v1_rejects_stored_v2() {
+        context();
+        write_state_version(2);
+        Migration::from(V1).run();
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate UnbrickV1: Stored state version 1 != args `from_version` 0"]
+    fn unbrick_v1_rejects_stored_v1() {
+        context();
+        write_state_version(1);
+        Migration::from(UnbrickV1).run();
+    }
+
+    #[test]
+    #[should_panic = "Failed to migrate UnbrickV1: Stored state version 2 != args `from_version` 0"]
+    fn unbrick_v1_rejects_stored_v2() {
+        context();
+        write_state_version(2);
+        Migration::from(UnbrickV1).run();
+    }
 }
 
 #[cfg(kani)]

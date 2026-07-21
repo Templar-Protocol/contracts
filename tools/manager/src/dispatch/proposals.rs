@@ -10,7 +10,7 @@ use templar_gateway_client::Client;
 use templar_gateway_methods_spec::proxy_oracle_governance as gov;
 use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId};
 
-use crate::commands::proxy_oracle_governance::{CreateProposal, ExecuteProposalArgs};
+use crate::commands::proxy_oracle::{CreateProposal, ExecuteProposalArgs};
 use crate::context::{print_json, CliContext};
 
 /// Create a governance proposal. Resolves the proposal id (fetching the
