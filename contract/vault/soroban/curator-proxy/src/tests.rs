@@ -533,6 +533,27 @@ fn supply_market_encodes_allocate_command() {
 }
 
 #[test]
+fn allocate_rejects_nonpositive_amounts_before_vault_call() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+    let caller = Address::generate(&fixture.env);
+
+    for delta in [
+        AllocationDelta::Supply(0, 0),
+        AllocationDelta::Supply(0, -1),
+        AllocationDelta::Withdraw(0, 0),
+        AllocationDelta::Withdraw(0, -1),
+    ] {
+        let result = fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::allocate(fixture.env.clone(), caller.clone(), delta)
+        });
+        assert_eq!(result, Err(ContractError::InvalidInput));
+    }
+
+    assert_eq!(fixture.recorded_payloads().len(), 0);
+}
+
+#[test]
 fn vault_error_codes_do_not_decode_as_curator_proxy_errors() {
     let fixture = Fixture::new();
     let failing_vault = fixture.env.register(MockFailingVaultContract, ());

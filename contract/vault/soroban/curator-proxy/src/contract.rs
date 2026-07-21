@@ -215,6 +215,9 @@ impl SorobanCuratorProxyContract {
             AllocationDelta::Supply(market, amount) => (market, amount, true),
             AllocationDelta::Withdraw(market, amount) => (market, amount, false),
         };
+        if amount <= 0 {
+            return Err(ContractError::InvalidInput);
+        }
         expect_i128_result(invoke_vault_execute(
             &env,
             VaultCommand::Allocate {
