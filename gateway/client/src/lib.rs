@@ -118,8 +118,8 @@ impl ClientBuilder {
         self
     }
 
-    /// Set the transaction-wait and state-query policy. Defaults to final
-    /// execution and finalized reads.
+    /// Set the transaction-wait and state-query policy. Defaults to
+    /// [`FinalityPolicy::Executed`].
     #[must_use]
     pub fn finality_policy(mut self, finality_policy: FinalityPolicy) -> Self {
         self.finality_policy = finality_policy;

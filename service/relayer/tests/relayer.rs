@@ -113,8 +113,6 @@ async fn view_access_key(
     }
 }
 
-/// Every harness account shares the fixed test key, so the relay/UA signer for
-/// the `App` configuration is just that key plus the account id.
 struct InitTest {
     harness: SandboxHarness,
     app: App,

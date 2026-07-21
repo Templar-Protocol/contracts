@@ -13,7 +13,6 @@ use near_sdk::json_types::U128;
 use rstest::rstest;
 use templar_common::vault::{AllocationDelta, Delta};
 use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness, TEST_FINALITY_POLICY};
-use templar_primitives::SU128;
 
 mod common;
 use common::{harvest, zero_interest};

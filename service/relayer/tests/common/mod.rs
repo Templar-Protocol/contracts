@@ -5,15 +5,15 @@
 //! account, the UA registry, mock oracles, ad-hoc users, ...).
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use near_api::{Contract, NetworkConfig, SecretKey, Signer};
+use near_api::{Contract, NetworkConfig};
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::Gas;
 use near_token::NearToken;
 use serde_json::json;
+pub use templar_gateway_testing::test_signer as signer;
 use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 use tokio::sync::OnceCell;
 
@@ -34,18 +34,6 @@ async fn http_client() -> &'static reqwest::Client {
 /// The fixed sandbox key shared by every account the harness provisions.
 pub const TEST_SECRET_KEY: &str =
     "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-
-/// Parse the shared sandbox secret key.
-pub fn secret_key() -> Result<SecretKey> {
-    TEST_SECRET_KEY
-        .parse()
-        .context("failed to parse test secret key")
-}
-
-/// Build a signer over the shared sandbox key. Valid for any harness account.
-pub fn signer() -> Arc<Signer> {
-    templar_gateway_testing::test_signer()
-}
 
 /// Create a fresh, signable sandbox account under the shared test key.
 pub async fn create_account(

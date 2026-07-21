@@ -338,7 +338,7 @@ impl SandboxHarness {
         deploy_contract(
             &self.network,
             account_id.clone(),
-            account_signer(),
+            test_signer(),
             crate::wasm::registry().await.to_vec(),
             "new",
             serde_json::json!({}),
@@ -1122,12 +1122,6 @@ fn genesis_secret_key() -> Result<SecretKey> {
     DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY
         .parse()
         .context("failed to parse genesis private key")
-}
-
-/// A signer over the deterministic test key, valid for any harness-created
-/// account (they all share that key).
-fn account_signer() -> Arc<Signer> {
-    test_signer()
 }
 
 pub(crate) async fn deploy_contract(

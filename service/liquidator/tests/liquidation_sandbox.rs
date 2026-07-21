@@ -18,12 +18,8 @@ use tokio::sync::RwLock;
 
 use templar_common::market::DepositMsg;
 use templar_common::oracle::pyth::OracleResponse;
-use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{market, storage, tx};
-use templar_gateway_testing::{
-    sandbox::{test_secret_key, SandboxHarness},
-    TEST_FINALITY_POLICY,
-};
+use templar_gateway_testing::sandbox::SandboxHarness;
 use templar_gateway_types::{
     common::ContractArgs, ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
@@ -54,16 +50,9 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
     let liquidator_id = harness.gateway_signer_account_id.clone();
     let borrower_id = harness.cleanup_signer_account_id.clone();
 
-    // Build a gateway client signing for the liquidator, with the borrower also
-    // registered so the test can set up its position via `execute_as`. Every
-    // harness account shares the fixed test key.
-    let key = test_secret_key()?;
-    let client = Client::builder(harness.network.clone())
-        .finality_policy(TEST_FINALITY_POLICY)
-        .secret_key(liquidator_id.clone(), key.clone())?
-        .secret_key(borrower_id.clone(), key.clone())?
-        .build()?
-        .into_signing(liquidator_id.clone())?;
+    // Bind the liquidator account while retaining every harness signer so the
+    // test can still set up the borrower's position through `execute_as`.
+    let client = harness.client()?.into_signing(liquidator_id.clone())?;
 
     // Healthy starting prices: borrow $1.00, collateral $2.00.
     harness

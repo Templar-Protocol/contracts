@@ -8,10 +8,8 @@
 //! of them (the contract account, mock oracles, ad-hoc users, ...).
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use near_api::{Contract, NetworkConfig, SecretKey, Signer};
+use near_api::{Contract, NetworkConfig};
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::{
     json_types::{I64, U64},
@@ -26,17 +24,8 @@ use templar_common::{
     primitive_types::U256,
     Nanoseconds,
 };
+pub use templar_gateway_testing::test_signer as signer;
 use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
-
-/// The shared sandbox key every harness-provisioned account uses.
-pub fn secret_key() -> Result<SecretKey> {
-    templar_gateway_testing::test_secret_key()
-}
-
-/// Build a signer over the shared sandbox key. Valid for any harness account.
-pub fn signer() -> Arc<Signer> {
-    templar_gateway_testing::test_signer()
-}
 
 /// Create a fresh, signable sandbox account under the shared test key.
 pub async fn create_account(
@@ -74,16 +63,17 @@ pub async fn call(
     gas_tgas: u64,
     deposit_yocto: u128,
 ) -> Result<()> {
-    Contract(contract_id.clone())
-        .call_function(method, args)
-        .transaction()
-        .gas(Gas::from_tgas(gas_tgas))
-        .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
-        .await?
-        .assert_success();
+    try_call(
+        network,
+        contract_id,
+        signer_id,
+        method,
+        args,
+        gas_tgas,
+        deposit_yocto,
+    )
+    .await?
+    .assert_success();
     Ok(())
 }
 

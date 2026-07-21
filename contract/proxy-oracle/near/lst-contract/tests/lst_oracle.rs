@@ -11,10 +11,8 @@
     clippy::too_many_lines
 )]
 
-use std::sync::Arc;
-
 use anyhow::Result;
-use near_api::{types::AccountId, Contract, NetworkConfig, Signer};
+use near_api::{types::AccountId, Contract, NetworkConfig};
 use near_sdk::{
     json_types::U128,
     serde::{de::DeserializeOwned, Serialize},
@@ -23,17 +21,13 @@ use near_sdk::{
 };
 use near_token::NearToken;
 use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp};
-use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
+use templar_gateway_testing::{test_signer as signer, SandboxHarness, TEST_FINALITY_POLICY};
 use templar_proxy_oracle_near_common::price_transformer::{Call, PriceTransformer};
 use test_utils::{DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
 ));
-
-fn signer() -> Arc<Signer> {
-    templar_gateway_testing::test_signer()
-}
 
 async fn view<T: DeserializeOwned + Send + Sync>(
     network: &NetworkConfig,

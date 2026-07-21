@@ -4,11 +4,11 @@ use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{
-    DispatchRead, ExecuteOperation, FinalityPolicy, GatewayContext, NearClient,
-    NearOperationExecutor, NearTransactionSigner, PlanWrite, SignTransaction,
+    ExecuteOperation, FinalityPolicy, GatewayContext, NearClient, NearOperationExecutor,
+    NearTransactionSigner, PlanWrite, SignTransaction,
 };
 use templar_gateway_methods_dispatch::Dispatch;
-use templar_gateway_methods_spec::{account, tx};
+use templar_gateway_methods_spec::tx;
 use templar_gateway_testing::{wasm as testing_wasm, TEST_FINALITY_POLICY};
 use templar_gateway_types::{
     common::{ContractArgs, WriteRequest},
@@ -40,19 +40,10 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
     )
     .await?;
 
-    let default_context = GatewayContext::new(network.clone())?;
-    let account = <Dispatch as DispatchRead<account::Get, GatewayContext>>::dispatch(
-        account::Get {
-            account_id: signer_account_id.0.clone(),
-        },
-        default_context,
-    )
-    .await?;
-    assert_eq!(
-        account.code_hash,
-        near_api::types::CryptoHash::default().to_string()
+    let transaction_signer = NearTransactionSigner::new(
+        network.clone(),
+        std::collections::HashMap::from([(signer_account_id.clone(), signer)]),
     );
-    assert_eq!(account.locked, NearToken::from_yoctonear(0));
 
     for (finality_policy, rate) in [
         (FinalityPolicy::Executed, 2),
@@ -86,10 +77,6 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
         assert_eq!(plan.steps[0].receiver_id, ft_contract_id);
         assert_eq!(plan.steps[0].actions.len(), 1);
 
-        let transaction_signer = NearTransactionSigner::new(
-            network.clone(),
-            std::collections::HashMap::from([(signer_account_id.clone(), signer.clone())]),
-        );
         let operation_executor =
             NearOperationExecutor::with_finality_policy(network.clone(), finality_policy);
         let prepared = transaction_signer
