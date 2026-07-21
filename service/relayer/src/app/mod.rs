@@ -73,22 +73,10 @@ pub struct App {
 
 impl App {
     pub async fn new(args: args::Configuration, kill: watch::Sender<()>) -> anyhow::Result<Self> {
-        Self::new_with_finality_policy(args, kill, FinalityPolicy::default()).await
+        Self::new_with_finality_policy_and_signers(args, kill, FinalityPolicy::default(), []).await
     }
 
-    /// Construct the relayer with an explicit gateway finality policy.
-    ///
-    /// Production startup uses [`FinalityPolicy::default`]; sandbox integration
-    /// tests select optimistic execution and matching optimistic reads.
-    pub async fn new_with_finality_policy(
-        args: args::Configuration,
-        kill: watch::Sender<()>,
-        finality_policy: FinalityPolicy,
-    ) -> anyhow::Result<Self> {
-        Self::new_with_finality_policy_and_signers(args, kill, finality_policy, []).await
-    }
-
-    /// Construct the relayer with explicit gateway signer instances.
+    /// Construct the relayer with an explicit finality policy and gateway signers.
     ///
     /// This preserves near-api nonce caches when a caller performed optimistic
     /// setup transactions with those same signers before starting the relayer.

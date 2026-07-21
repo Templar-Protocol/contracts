@@ -55,8 +55,9 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
     assert_eq!(account.locked, NearToken::from_yoctonear(0));
 
     for (finality_policy, rate) in [
-        (FinalityPolicy::Final, 2),
-        (FinalityPolicy::ExecutedOptimistic, 3),
+        (FinalityPolicy::Executed, 2),
+        (FinalityPolicy::Final, 3),
+        (FinalityPolicy::ExecutedOptimistic, 4),
     ] {
         let near = NearClient::with_finality_policy(network.clone(), finality_policy);
         let context = GatewayContext::from_near_client(near.clone());

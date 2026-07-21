@@ -132,8 +132,8 @@ async fn ctx() -> TestContext {
         "mint should succeed"
     );
 
-    // The handler intentionally retains production-final semantics. Wait once
-    // at the setup/handler boundary so its new signer sees the finalized nonce.
+    // The handler uses production `Executed` semantics. Wait once at the
+    // setup/handler boundary so its new signer sees the finalized nonce.
     let finalized = client
         .read(tx::Get {
             tx_hash: result
@@ -141,7 +141,7 @@ async fn ctx() -> TestContext {
                 .latest_tx_hash()
                 .expect("successful setup transaction should have a hash"),
             sender_account_id: treasury.0.clone(),
-            wait_until: Some(TxExecutionStatus::Final),
+            wait_until: Some(TxExecutionStatus::Executed),
             encoding: tx::ValueEncoding::Json,
         })
         .await

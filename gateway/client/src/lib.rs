@@ -453,14 +453,14 @@ mod tests {
     use super::{Client, Network, NetworkConfigBuilder};
 
     #[test]
-    fn client_builder_defaults_to_final_policy() {
+    fn client_builder_defaults_to_executed_policy() {
         let (context, _, _) = Client::builder(NetworkConfigBuilder::new(Network::Testnet).build())
             .build_parts()
             .expect("testnet network config is valid");
 
         assert_eq!(
             context.near_client().finality_policy(),
-            FinalityPolicy::Final
+            FinalityPolicy::Executed
         );
     }
 
