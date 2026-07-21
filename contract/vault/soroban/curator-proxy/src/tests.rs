@@ -1,14 +1,15 @@
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
-use templar_soroban_runtime::ContractError as VaultContractError;
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, InvokeError, Vec,
+};
 use templar_soroban_shared_types::{
-    EmptyReceipt, I128Receipt, VaultCommand as WireVaultCommand, VAULT_ERR_ALREADY_INITIALIZED,
-    VAULT_ERR_INVALID_INPUT,
+    EmptyReceipt, I128Receipt, ProxyViewResponse, VaultCommand as WireVaultCommand,
 };
 
 use crate::{
     contract::{
-        timelocks_from_kind_values, AllocationDelta, ProxyDataKey, SorobanCuratorProxyContract,
+        map_vault_invoke_error, timelocks_from_kind_values, AllocationDelta, ProxyDataKey,
+        SorobanCuratorProxyContract,
     },
     error::ContractError,
     governance_abi::{
@@ -54,6 +55,33 @@ impl MockVaultContract {
         };
 
         Bytes::from_slice(&env, &receipt)
+    }
+}
+
+#[contracterror]
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum MockForeignVaultError {
+    CollidesWithNotInitialized = 1,
+    CollidesWithNotImplemented = 6,
+}
+
+#[contract]
+struct MockFailingVaultContract;
+
+#[contractimpl]
+impl MockFailingVaultContract {
+    pub fn execute(_env: Env, _payload: Bytes) -> Result<Bytes, MockForeignVaultError> {
+        Err(MockForeignVaultError::CollidesWithNotImplemented)
+    }
+
+    pub fn proxy_view(
+        _env: Env,
+        _owner: Address,
+        _assets: i128,
+        _shares: i128,
+    ) -> Result<ProxyViewResponse, MockForeignVaultError> {
+        Err(MockForeignVaultError::CollidesWithNotInitialized)
     }
 }
 
@@ -502,6 +530,57 @@ fn supply_market_encodes_allocate_command() {
             supply: true,
         }
     );
+}
+
+#[test]
+fn allocate_rejects_nonpositive_amounts_before_vault_call() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+    let caller = Address::generate(&fixture.env);
+
+    for delta in [
+        AllocationDelta::Supply(0, 0),
+        AllocationDelta::Supply(0, -1),
+        AllocationDelta::Withdraw(0, 0),
+        AllocationDelta::Withdraw(0, -1),
+    ] {
+        let result = fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::allocate(fixture.env.clone(), caller.clone(), delta)
+        });
+        assert_eq!(result, Err(ContractError::InvalidInput));
+    }
+
+    assert_eq!(fixture.recorded_payloads().len(), 0);
+}
+
+#[test]
+fn vault_error_codes_do_not_decode_as_curator_proxy_errors() {
+    let fixture = Fixture::new();
+    let failing_vault = fixture.env.register(MockFailingVaultContract, ());
+    let caller = Address::generate(&fixture.env);
+
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            failing_vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+    });
+
+    let execute_result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::allocate(
+            fixture.env.clone(),
+            caller,
+            AllocationDelta::Withdraw(0, 1),
+        )
+    });
+    let view_result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::vault_view(fixture.env.clone())
+    });
+
+    assert_eq!(execute_result, Err(ContractError::VaultError));
+    assert!(matches!(view_result, Err(ContractError::VaultError)));
 }
 
 #[test]
@@ -1009,25 +1088,19 @@ fn timelocks_from_scalar_kind_values_preserves_every_field() {
 }
 
 #[test]
-fn vault_error_code_mapping_matches_runtime_discriminants() {
+fn vault_contract_error_codes_map_to_vault_error() {
+    for code in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, u32::MAX] {
+        assert_eq!(
+            map_vault_invoke_error(InvokeError::Contract(code)),
+            ContractError::VaultError
+        );
+    }
+}
+
+#[test]
+fn abort_vault_invoke_error_maps_to_vault_error() {
     assert_eq!(
-        VAULT_ERR_INVALID_INPUT,
-        VaultContractError::InvalidInput as u32
-    );
-    assert_eq!(
-        VAULT_ERR_ALREADY_INITIALIZED,
-        VaultContractError::AlreadyInitialized as u32
-    );
-    assert_eq!(
-        ContractError::from_vault_error_code(VAULT_ERR_INVALID_INPUT),
-        ContractError::InvalidInput
-    );
-    assert_eq!(
-        ContractError::from_vault_error_code(VAULT_ERR_ALREADY_INITIALIZED),
-        ContractError::AlreadyInitialized
-    );
-    assert_eq!(
-        ContractError::from_vault_error_code(u32::MAX),
+        map_vault_invoke_error(InvokeError::Abort),
         ContractError::VaultError
     );
 }
