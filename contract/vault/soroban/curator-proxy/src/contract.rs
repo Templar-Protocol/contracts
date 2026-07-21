@@ -770,20 +770,11 @@ fn call_proxy_view_full(
     }
 }
 
-fn map_vault_invoke_error(error: InvokeError) -> ContractError {
+pub(crate) fn map_vault_invoke_error(error: InvokeError) -> ContractError {
     match error {
         InvokeError::Abort => ContractError::VaultError,
         InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
     }
-}
-
-#[cfg(test)]
-#[test]
-fn abort_vault_invoke_error_maps_to_vault_error() {
-    assert_eq!(
-        map_vault_invoke_error(InvokeError::Abort),
-        ContractError::VaultError
-    );
 }
 
 fn vault_view_from_response(response: ProxyViewFields) -> VaultView {
