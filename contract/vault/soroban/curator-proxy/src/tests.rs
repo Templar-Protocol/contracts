@@ -2,10 +2,8 @@ use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, InvokeError, Vec,
 };
-use templar_soroban_runtime::ContractError as VaultContractError;
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyViewResponse, VaultCommand as WireVaultCommand,
-    VAULT_ERR_ALREADY_INITIALIZED, VAULT_ERR_INVALID_INPUT,
 };
 
 use crate::{
@@ -1069,33 +1067,13 @@ fn timelocks_from_scalar_kind_values_preserves_every_field() {
 }
 
 #[test]
-fn vault_error_code_mapping_matches_runtime_discriminants() {
-    assert_eq!(
-        VAULT_ERR_INVALID_INPUT,
-        VaultContractError::InvalidInput as u32
-    );
-    assert_eq!(
-        VAULT_ERR_ALREADY_INITIALIZED,
-        VaultContractError::AlreadyInitialized as u32
-    );
-    assert_eq!(
-        ContractError::from_vault_error_code(VAULT_ERR_INVALID_INPUT),
-        ContractError::InvalidInput
-    );
-    assert_eq!(
-        ContractError::from_vault_error_code(VAULT_ERR_ALREADY_INITIALIZED),
-        ContractError::AlreadyInitialized
-    );
-    for colliding_code in [1, 2, 4, 5, 6, 7] {
+fn vault_contract_error_codes_map_to_vault_error() {
+    for code in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, u32::MAX] {
         assert_eq!(
-            ContractError::from_vault_error_code(colliding_code),
+            map_vault_invoke_error(InvokeError::Contract(code)),
             ContractError::VaultError
         );
     }
-    assert_eq!(
-        ContractError::from_vault_error_code(u32::MAX),
-        ContractError::VaultError
-    );
 }
 
 #[test]
