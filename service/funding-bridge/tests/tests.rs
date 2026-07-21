@@ -16,9 +16,13 @@ use serde_json::json;
 use templar_funding_bridge::{rpc::Network, treasury::NearHandler};
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, storage, tx};
-use templar_gateway_testing::sandbox::{test_secret_key, SandboxHarness};
+use templar_gateway_testing::{
+    sandbox::{test_secret_key, SandboxHarness},
+    TEST_FINALITY_POLICY,
+};
 use templar_gateway_types::{
-    common::ContractArgs, ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
+    common::{ContractArgs, TxExecutionStatus},
+    ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
 
 /// Amount minted to the treasury in the fixture.
@@ -83,6 +87,7 @@ async fn ctx() -> TestContext {
     // Every harness account shares the fixed test key.
     let key = test_secret_key().unwrap();
     let client = Client::builder(harness.network.clone())
+        .finality_policy(TEST_FINALITY_POLICY)
         .secret_key(treasury.clone(), key.clone())
         .unwrap()
         .secret_key(user.clone(), key.clone())
@@ -126,6 +131,22 @@ async fn ctx() -> TestContext {
         OperationStatus::Succeeded,
         "mint should succeed"
     );
+
+    // The handler intentionally retains production-final semantics. Wait once
+    // at the setup/handler boundary so its new signer sees the finalized nonce.
+    let finalized = client
+        .read(tx::Get {
+            tx_hash: result
+                .operation
+                .latest_tx_hash()
+                .expect("successful setup transaction should have a hash"),
+            sender_account_id: treasury.0.clone(),
+            wait_until: Some(TxExecutionStatus::Final),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(finalized.status, tx::Status::Succeeded);
 
     TestContext {
         _harness: harness,

@@ -20,7 +20,10 @@ use templar_common::market::DepositMsg;
 use templar_common::oracle::pyth::OracleResponse;
 use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{market, storage, tx};
-use templar_gateway_testing::sandbox::{test_secret_key, SandboxHarness};
+use templar_gateway_testing::{
+    sandbox::{test_secret_key, SandboxHarness},
+    TEST_FINALITY_POLICY,
+};
 use templar_gateway_types::{
     common::ContractArgs, ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
 };
@@ -56,6 +59,7 @@ async fn liquidator_executes_liquidation_on_sandbox() -> Result<()> {
     // harness account shares the fixed test key.
     let key = test_secret_key()?;
     let client = Client::builder(harness.network.clone())
+        .finality_policy(TEST_FINALITY_POLICY)
         .secret_key(liquidator_id.clone(), key.clone())?
         .secret_key(borrower_id.clone(), key.clone())?
         .build()?
