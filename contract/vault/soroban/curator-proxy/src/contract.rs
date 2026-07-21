@@ -772,8 +772,7 @@ fn call_proxy_view_full(
 
 pub(crate) fn map_vault_invoke_error(error: InvokeError) -> ContractError {
     match error {
-        InvokeError::Abort => ContractError::VaultError,
-        InvokeError::Contract(code) => ContractError::from_vault_error_code(code),
+        InvokeError::Abort | InvokeError::Contract(_) => ContractError::VaultError,
     }
 }
 
