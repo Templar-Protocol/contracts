@@ -8,8 +8,8 @@ use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 
 use super::commands::signer::SignerArgs;
 use super::commands::{
-    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, ProxyOracleGovernanceNs,
-    ProxyOracleNs, PythNs, RecoverNep141, RedstoneNs, RegistryNs, StorageNs,
+    AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, ProxyOracleNs, PythNs, RecoverNep141,
+    RedstoneNs, RegistryNs, StorageNs,
 };
 
 #[derive(Parser, Debug)]
@@ -125,7 +125,7 @@ pub enum Command {
         #[command(subcommand)]
         command: MarketNs,
     },
-    /// Read proxy-oracle price feeds and refresh prices.
+    /// Deploy, inspect, update, and govern proxy oracles.
     ProxyOracle {
         #[command(subcommand)]
         command: ProxyOracleNs,
@@ -134,11 +134,6 @@ pub enum Command {
     Owner {
         #[command(subcommand)]
         command: OwnerNs,
-    },
-    /// Administer a proxy oracle through its governance contract.
-    ProxyOracleGovernance {
-        #[command(subcommand)]
-        command: ProxyOracleGovernanceNs,
     },
     /// Push oracle price updates, fetching their payloads inside the gateway.
     Oracle {

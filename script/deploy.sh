@@ -88,7 +88,7 @@ operator() {
 # Validating up front needs a preflight this CLI has no flag for; ENG-463 removes
 # the version check altogether by reading the contract's ABI.
 echo "Deploying governance ($GOVERNANCE_ID)..."
-operator proxy-oracle-governance create \
+operator proxy-oracle governance create \
     --registry-id "$REGISTRY_ID" \
     --name "$GOVERNANCE_NAME" \
     --version-key "$PROXY_GOVERNANCE_VERSION_KEY" \
@@ -108,7 +108,7 @@ operator proxy-oracle create \
 # --ttl-default 0s (above) makes every proposal executable immediately, so
 # --execute-when-ready creates and executes each in a single call.
 echo "Configuring collateral proxy..."
-operator proxy-oracle-governance create-proposal \
+operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
     set-proxy \
@@ -116,7 +116,7 @@ operator proxy-oracle-governance create-proposal \
     --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
 
 echo "Configuring borrow proxy..."
-operator proxy-oracle-governance create-proposal \
+operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
     set-proxy \

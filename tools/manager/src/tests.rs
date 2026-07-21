@@ -2,7 +2,8 @@ use std::sync::Mutex;
 
 use clap::{CommandFactory, Parser};
 
-use super::cli::Cli;
+use super::cli::{Cli, Command};
+use super::commands::proxy_oracle::{CreateProposal, ProxyOracleGovernanceNs, ProxyOracleNs};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -29,7 +30,6 @@ fn help_lists_all_top_level_commands() {
         "oracle",
         "proxy-oracle",
         "owner",
-        "proxy-oracle-governance",
         "pyth",
         "redstone",
         "recover-nep141",
@@ -38,6 +38,12 @@ fn help_lists_all_top_level_commands() {
     ] {
         assert!(rendered.contains(command), "help is missing `{command}`");
     }
+    assert!(
+        Cli::command()
+            .find_subcommand("proxy-oracle-governance")
+            .is_none(),
+        "legacy governance command is still top-level"
+    );
     assert!(
         !rendered.contains("proxy-oracle-owner"),
         "help still lists the removed `proxy-oracle-owner` command"
@@ -118,6 +124,38 @@ const CREDS: [&str; 4] = [
     "--secret-key",
     TEST_SECRET_KEY,
 ];
+
+fn try_parse_governance<'a>(
+    args: impl IntoIterator<Item = &'a str>,
+) -> Result<ProxyOracleGovernanceNs, clap::Error> {
+    let command = Cli::try_parse_from(
+        ["tmplrmgr", "proxy-oracle", "governance"]
+            .into_iter()
+            .chain(args),
+    )?
+    .command;
+    let Command::ProxyOracle {
+        command: ProxyOracleNs::Governance(command),
+    } = command
+    else {
+        unreachable!("governance argv prefix always selects the nested namespace");
+    };
+    Ok(command)
+}
+
+fn parse_governance<'a>(args: impl IntoIterator<Item = &'a str>) -> ProxyOracleGovernanceNs {
+    try_parse_governance(args).expect("governance command should parse")
+}
+
+fn parse_create_proposal<'a>(args: impl IntoIterator<Item = &'a str>) -> CreateProposal {
+    // Credentials belong to `create-proposal` and must precede its operation subcommand.
+    let ProxyOracleGovernanceNs::CreateProposal(command) =
+        parse_governance(["create-proposal"].into_iter().chain(CREDS).chain(args))
+    else {
+        panic!("expected create-proposal");
+    };
+    command
+}
 
 #[test]
 fn parses_write_fallback_with_json() {
