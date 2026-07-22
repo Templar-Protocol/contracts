@@ -42,8 +42,11 @@ where
             .map(|(account_id, signer)| (account_id, signer.signer))
             .collect();
 
-        let signer = NearTransactionSigner::new(context.near_client().network().clone(), signers);
-        let executor = NearOperationExecutor::new(context.near_client().network().clone());
+        let near = context.near_client();
+        let finality_policy = near.finality_policy();
+        let signer = NearTransactionSigner::new(near.network().clone(), signers);
+        let executor =
+            NearOperationExecutor::with_finality_policy(near.network().clone(), finality_policy);
         let driver = OperationDriver::new(store, Arc::new(signer), Arc::new(executor));
 
         let (runtime, read) = spawn_runtime(context.clone())?;
@@ -128,6 +131,7 @@ mod tests {
     use templar_gateway_core::{CreateOperationResult, GatewayContext, GatewayError};
     use templar_gateway_methods_dispatch::Dispatch;
     use templar_gateway_methods_spec::tx;
+    use templar_gateway_testing::TEST_FINALITY_POLICY;
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
         ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken, OperationStatus,
@@ -176,7 +180,9 @@ mod tests {
         )
         .await?;
 
-        let context = GatewayContext::new(network.clone())?;
+        let context = GatewayContext::builder(network.clone())
+            .finality_policy(TEST_FINALITY_POLICY)
+            .build();
         let service = GatewayService::spawn(
             context,
             gateway_signers,
@@ -362,6 +368,7 @@ mod tests {
         let rate: near_api::Data<String> = Contract(harness.ft_contract_id.clone())
             .call_function("redemption_rate", ())
             .read_only()
+            .at(TEST_FINALITY_POLICY.query_reference())
             .fetch_from(&harness.network)
             .await?;
         assert_eq!(
@@ -400,6 +407,7 @@ mod tests {
             .use_code(code)
             .with_init_call(init_method, init_args)?
             .with_signer(signer)
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
             .send_to(network)
             .await?
             .assert_success();

@@ -8,10 +8,8 @@
 //! of them (the contract account, mock oracles, ad-hoc users, ...).
 #![allow(dead_code, clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::Arc;
-
-use anyhow::{Context, Result};
-use near_api::{Contract, NetworkConfig, SecretKey, Signer};
+use anyhow::Result;
+use near_api::{Contract, NetworkConfig};
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
 use near_sdk::{
     json_types::{I64, U64},
@@ -26,17 +24,8 @@ use templar_common::{
     primitive_types::U256,
     Nanoseconds,
 };
-use templar_gateway_testing::SandboxHarness;
-
-/// The shared sandbox key every harness-provisioned account uses.
-pub fn secret_key() -> Result<SecretKey> {
-    templar_gateway_testing::test_secret_key()
-}
-
-/// Build a signer over the shared sandbox key. Valid for any harness account.
-pub fn signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(secret_key()?).context("failed to build test signer")
-}
+pub use templar_gateway_testing::test_signer as signer;
+use templar_gateway_testing::{SandboxHarness, TEST_FINALITY_POLICY};
 
 /// Create a fresh, signable sandbox account under the shared test key.
 pub async fn create_account(
@@ -58,6 +47,7 @@ pub async fn view<T: DeserializeOwned + Send + Sync>(
     Ok(Contract(contract_id.clone())
         .call_function(method, args)
         .read_only::<T>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -73,15 +63,17 @@ pub async fn call(
     gas_tgas: u64,
     deposit_yocto: u128,
 ) -> Result<()> {
-    Contract(contract_id.clone())
-        .call_function(method, args)
-        .transaction()
-        .gas(Gas::from_tgas(gas_tgas))
-        .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
-        .send_to(network)
-        .await?
-        .assert_success();
+    try_call(
+        network,
+        contract_id,
+        signer_id,
+        method,
+        args,
+        gas_tgas,
+        deposit_yocto,
+    )
+    .await?
+    .assert_success();
     Ok(())
 }
 
@@ -101,7 +93,8 @@ pub async fn try_call(
         .transaction()
         .gas(Gas::from_tgas(gas_tgas))
         .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?)
 }
@@ -168,7 +161,8 @@ pub async fn deploy_code(
     Contract::deploy(account_id.clone())
         .use_code(code)
         .without_init_call()
-        .with_signer(signer()?)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();

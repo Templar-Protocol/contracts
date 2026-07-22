@@ -163,7 +163,8 @@ async fn failed_migration_reverts_contract_code() -> Result<()> {
         .use_code(templar_gateway_testing::wasm::proxy_oracle().await.to_vec())
         .with_init_call("migrate", json!({ "from_version": "invalid" }))?
         .max_gas()
-        .with_signer(common::signer()?)
+        .with_signer(common::signer())
+        .wait_until(templar_gateway_testing::TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?;
     assert!(result.is_failure(), "invalid migration should fail");

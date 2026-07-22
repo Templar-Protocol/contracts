@@ -5,6 +5,7 @@ mod context;
 mod contract_kind;
 mod error;
 mod executor;
+mod finality;
 mod near_client_provider;
 mod operation;
 mod operation_driver;
@@ -26,6 +27,7 @@ pub use executor::{
     ExecuteOperation, NearOperationExecutor, NearTransactionSigner, SharedExecuteOperation,
     SharedSignTransaction, SignTransaction, StepOutcome,
 };
+pub use finality::FinalityPolicy;
 pub use near_client_provider::HasNearClient;
 pub use operation::{
     CompletedStep, CurrentStep, CurrentStepRef, OperationPlan, PendingPreparation,

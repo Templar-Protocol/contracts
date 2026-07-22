@@ -18,7 +18,8 @@ use templar_gateway_client::Client;
 use templar_gateway_methods_spec::{ft, storage, tx};
 use templar_gateway_testing::sandbox::{test_secret_key, SandboxHarness};
 use templar_gateway_types::{
-    common::ContractArgs, ContractMethodName, ManagedAccountId, NearGas, NearToken, OperationStatus,
+    common::{ContractArgs, TxExecutionStatus},
+    ContractMethodName, ManagedAccountId, NearGas, NearToken,
 };
 
 /// Amount minted to the treasury in the fixture.
@@ -80,15 +81,7 @@ async fn ctx() -> TestContext {
     let ft = harness.ft_contract_id.clone();
     let rpc_url = harness.network.rpc_endpoints[0].url.as_str().to_string();
 
-    // Every harness account shares the fixed test key.
-    let key = test_secret_key().unwrap();
-    let client = Client::builder(harness.network.clone())
-        .secret_key(treasury.clone(), key.clone())
-        .unwrap()
-        .secret_key(user.clone(), key.clone())
-        .unwrap()
-        .build()
-        .unwrap();
+    let client = harness.client().unwrap();
 
     // Register both accounts for storage on the mock FT.
     for account in [&treasury, &user] {
@@ -121,11 +114,22 @@ async fn ctx() -> TestContext {
         )
         .await
         .unwrap();
-    assert_eq!(
-        result.operation.status,
-        OperationStatus::Succeeded,
-        "mint should succeed"
-    );
+
+    // The handler uses production `Executed` semantics. Wait once at the
+    // setup/handler boundary so its new signer sees the finalized nonce.
+    let finalized = client
+        .read(tx::Get {
+            tx_hash: result
+                .operation
+                .latest_tx_hash()
+                .expect("successful setup transaction should have a hash"),
+            sender_account_id: treasury.0.clone(),
+            wait_until: Some(TxExecutionStatus::Executed),
+            encoding: tx::ValueEncoding::Json,
+        })
+        .await
+        .unwrap();
+    assert_eq!(finalized.status, tx::Status::Succeeded);
 
     TestContext {
         _harness: harness,

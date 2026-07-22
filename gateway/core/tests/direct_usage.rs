@@ -4,19 +4,19 @@ use anyhow::Result;
 use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{
-    DispatchRead, ExecuteOperation, GatewayContext, NearOperationExecutor, NearTransactionSigner,
-    PlanWrite, SignTransaction,
+    ExecuteOperation, FinalityPolicy, GatewayContext, NearClient, NearOperationExecutor,
+    NearTransactionSigner, PlanWrite, SignTransaction,
 };
 use templar_gateway_methods_dispatch::Dispatch;
-use templar_gateway_methods_spec::{account, tx};
-use templar_gateway_testing::wasm as testing_wasm;
+use templar_gateway_methods_spec::tx;
+use templar_gateway_testing::{wasm as testing_wasm, TEST_FINALITY_POLICY};
 use templar_gateway_types::{
     common::{ContractArgs, WriteRequest},
     ContractMethodName, ManagedAccountId, NearGas,
 };
 
 #[tokio::test]
-async fn core_can_be_used_directly_without_runtime() -> Result<()> {
+async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> {
     let sandbox = near_sandbox::Sandbox::start_sandbox().await?;
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
@@ -40,72 +40,70 @@ async fn core_can_be_used_directly_without_runtime() -> Result<()> {
     )
     .await?;
 
-    let context = GatewayContext::new(network.clone())?;
-
-    let account = <Dispatch as DispatchRead<account::Get, GatewayContext>>::dispatch(
-        account::Get {
-            account_id: signer_account_id.0.clone(),
-        },
-        context.clone(),
-    )
-    .await?;
-
-    assert_eq!(
-        account.code_hash,
-        near_api::types::CryptoHash::default().to_string()
-    );
-    assert_eq!(account.locked, NearToken::from_yoctonear(0));
-
-    let plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
-        WriteRequest {
-            signer_account_id: signer_account_id.clone(),
-            idempotency_key: None,
-            body: tx::FunctionCall {
-                receiver_id: ft_contract_id.clone(),
-                method_name: ContractMethodName("set_redemption_rate".to_owned()),
-                args: ContractArgs::Json(serde_json::json!({
-                    "redemption_rate": NearToken::from_near(2).as_yoctonear().to_string(),
-                })),
-                gas: NearGas::from_tgas(100),
-                deposit: NearToken::from_yoctonear(0),
-            },
-        },
-        context.clone(),
-    )
-    .await?;
-
-    assert_eq!(plan.steps.len(), 1);
-    assert_eq!(plan.steps[0].signer_account_id, signer_account_id);
-    assert_eq!(plan.steps[0].receiver_id, ft_contract_id);
-    assert_eq!(plan.steps[0].actions.len(), 1);
-
     let transaction_signer = NearTransactionSigner::new(
         network.clone(),
         std::collections::HashMap::from([(signer_account_id.clone(), signer)]),
     );
-    let operation_executor = NearOperationExecutor::new(network.clone());
-    let prepared = transaction_signer
-        .sign_transaction(plan.steps[0].clone())
-        .await?;
-    let result = operation_executor
-        .submit_transaction(prepared.signed_transaction)
+
+    for (finality_policy, rate) in [
+        (FinalityPolicy::Executed, 2),
+        (FinalityPolicy::Final, 3),
+        (FinalityPolicy::ExecutedOptimistic, 4),
+    ] {
+        let near = NearClient::with_finality_policy(network.clone(), finality_policy);
+        let context = GatewayContext::from_near_client(near.clone());
+        let plan = <Dispatch as PlanWrite<tx::FunctionCall, GatewayContext>>::plan(
+            WriteRequest {
+                signer_account_id: signer_account_id.clone(),
+                idempotency_key: None,
+                body: tx::FunctionCall {
+                    receiver_id: ft_contract_id.clone(),
+                    method_name: ContractMethodName("set_redemption_rate".to_owned()),
+                    args: ContractArgs::Json(serde_json::json!({
+                        "redemption_rate": NearToken::from_near(rate)
+                            .as_yoctonear()
+                            .to_string(),
+                    })),
+                    gas: NearGas::from_tgas(100),
+                    deposit: NearToken::from_yoctonear(0),
+                },
+            },
+            context,
+        )
         .await?;
 
-    assert!(
-        result
-            .expect("submission should carry a full outcome")
-            .is_success
-    );
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].signer_account_id, signer_account_id);
+        assert_eq!(plan.steps[0].receiver_id, ft_contract_id);
+        assert_eq!(plan.steps[0].actions.len(), 1);
 
-    let rate: near_api::Data<String> = Contract(ft_contract_id)
-        .call_function("redemption_rate", ())
-        .read_only()
-        .fetch_from(&network)
-        .await?;
-    assert_eq!(
-        rate.data,
-        NearToken::from_near(2).as_yoctonear().to_string()
-    );
+        let operation_executor =
+            NearOperationExecutor::with_finality_policy(network.clone(), finality_policy);
+        let prepared = transaction_signer
+            .sign_transaction(plan.steps[0].clone())
+            .await?;
+        let result = operation_executor
+            .submit_transaction(prepared.signed_transaction)
+            .await?;
+
+        assert!(
+            result
+                .expect("submission should carry a full outcome")
+                .is_success
+        );
+
+        let observed: String = near
+            .contract(ft_contract_id.clone())
+            .view_function(
+                "redemption_rate",
+                serde_json::to_vec(&serde_json::json!({}))?,
+            )
+            .await?;
+        assert_eq!(
+            observed,
+            NearToken::from_near(rate).as_yoctonear().to_string()
+        );
+    }
 
     Ok(())
 }
@@ -137,6 +135,7 @@ async fn deploy_contract(
         .use_code(code)
         .with_init_call(init_method, init_args)?
         .with_signer(signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
