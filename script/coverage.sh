@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Unit test coverage (excludes slow WASM integration tests)
 #
-# Usage: ./script/coverage.sh [html|lcov|text]
+# Usage: ./script/coverage.sh [html|lcov|text] <nextest-filter>
 
 set -e
+
+filter="${2:?Usage: $0 [html|lcov|text] <nextest-filter>}"
+nextest_args=(--workspace --lib --ignore-default-filter -E "$filter")
 
 echo "🔧 Installing cargo-llvm-cov if needed..."
 if ! command -v cargo-llvm-cov &> /dev/null; then
@@ -19,14 +22,14 @@ export RUSTFLAGS="-Cinstrument-coverage"
 # --lib: run unit tests only (excludes tests/ integration tests)
 case "${1:-html}" in
     html)
-        cargo llvm-cov nextest --lib --html --open
+        cargo llvm-cov nextest "${nextest_args[@]}" --html --open
         ;;
     lcov)
-        cargo llvm-cov nextest --lib --lcov --output-path coverage.lcov
+        cargo llvm-cov nextest "${nextest_args[@]}" --lcov --output-path coverage.lcov
         echo "📊 Coverage report saved to coverage.lcov"
         ;;
     text)
-        cargo llvm-cov nextest --lib
+        cargo llvm-cov nextest "${nextest_args[@]}"
         ;;
     *)
         echo "Usage: $0 [html|lcov|text]"

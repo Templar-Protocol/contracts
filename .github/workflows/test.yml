@@ -68,6 +68,7 @@ jobs:
             near_integration:
               - '.github/workflows/test.yml'
               - '.config/nextest.toml'
+              - 'justfile'
               - 'common/src/**'
               - 'contract/artifacts/Cargo.toml'
               - 'contract/artifacts/res/**'
@@ -96,7 +97,7 @@ jobs:
               - 'script/prebuild-test-contracts.sh'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
-              - 'script/test.sh'
+              - 'script/sandbox-packages.py'
               - 'service/funding-bridge/src/**'
               - 'service/funding-bridge/tests/**'
               - 'service/gateway/src/**'
@@ -112,6 +113,7 @@ jobs:
               - 'tools/tools-common/Cargo.toml'
               - 'tools/tools-common/**'
             soroban:
+              - '.github/workflows/test.yml'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'contract/proxy-oracle/soroban/**'
@@ -121,6 +123,7 @@ jobs:
               - 'script/soroban/**'
               - 'tools/soroban-vault-cli/**'
             feature_matrix:
+              - '.github/workflows/test.yml'
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
@@ -401,8 +404,8 @@ jobs:
     services:
       # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
       # database per test, so they need a reachable postgres at runtime.
-      postgres:
-        image: postgres:17.6
+      postgres: &postgres_service
+        image: postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
         env:
           POSTGRES_USER: relayeruser
           POSTGRES_PASSWORD: password
@@ -435,10 +438,10 @@ jobs:
 
       - uses: ./.github/actions/rust
 
-      - name: Install cargo-nextest
+      - name: Install test tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: nextest
+          tool: nextest,just
 
       - name: Run fast tests
         env:
@@ -449,27 +452,15 @@ jobs:
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --workspace
+        run: just test-fast
 
   near-integration-tests:
-    name: NEAR / Workspace Integration Tests
+    name: NEAR Integration Tests
     timeout-minutes: 40
     runs-on: ubuntu-latest
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
-      postgres:
-        image: postgres:17.6
-        env:
-          POSTGRES_USER: relayeruser
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: relayer
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U relayeruser -d relayer"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      postgres: *postgres_service
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
     steps:
@@ -493,48 +484,23 @@ jobs:
 
       - uses: ./.github/actions/rust
 
-      - name: Install cargo-nextest
+      - name: Install test tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: nextest
+          tool: nextest,just
 
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
-      # Node-backed tests share a pool of out-of-band neard nodes (one per nextest
-      # slot) instead of booting a node per test. The `sandbox` profile's setup
-      # script prebuilds the contract Wasms and starts the pool.
-      #
-      # The package list mirrors the node-backed package predicates in
-      # .config/nextest.toml. Restricting Cargo to those packages avoids compiling
-      # every workspace test target; the profile's default-filter remains the
-      # source of truth for which tests run. Postgres is provided by the job
-      # service above.
-      # 4 = the public runner's vCPUs; one pooled node per test slot.
       - name: Run node-backed tests on a pooled neard sandbox
         env:
-          SANDBOX_NODE_COUNT: "4"
           SQLX_OFFLINE: true
           DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: |
-          cargo nextest run --profile sandbox \
-            -p templar-market-contract \
-            -p templar-vault-contract \
-            -p templar-registry-contract \
-            -p templar-universal-account-contract \
-            -p templar-proxy-oracle-near-contract \
-            -p templar-lst-oracle-contract \
-            -p templar-funding-bridge \
-            -p templar-relayer \
-            -p templar-gateway-testing \
-            -p templar-liquidator \
-            -p templar-gateway-core \
-            -p templar-gateway-service \
-            --test-threads 4
+        run: just test-sandbox
 
       - name: Cleanup Docker resources
         if: always()
@@ -573,19 +539,7 @@ jobs:
     services:
       # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
       # database per test, so they need a reachable postgres at runtime.
-      postgres:
-        image: postgres:17.6
-        env:
-          POSTGRES_USER: relayeruser
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: relayer
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U relayeruser -d relayer"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+      postgres: *postgres_service
     steps:
       - name: Free up disk space
         run: |
@@ -617,7 +571,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: cargo-llvm-cov,nextest
+          tool: cargo-llvm-cov,nextest,just
 
       - name: Run tests with coverage
         env:
@@ -629,7 +583,7 @@ jobs:
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
         run: |
-          cargo llvm-cov nextest --workspace --lib --lcov --output-path coverage.lcov
+          just coverage-lcov
 
           echo "Cleaning up build artifacts..."
           rm -rf target/llvm-cov-target/*/debug/deps/*.profraw 2>/dev/null || true
@@ -710,10 +664,10 @@ jobs:
           require_success "Fast Tests" "$FAST_TEST_RESULT"
 
           if [ "$NEAR_REQUIRED" = "true" ]; then
-            require_success "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            require_success "NEAR Integration Tests" "$NEAR_TEST_RESULT"
             require_success "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           else
-            fail_if_failed "NEAR / Workspace Integration Tests" "$NEAR_TEST_RESULT"
+            fail_if_failed "NEAR Integration Tests" "$NEAR_TEST_RESULT"
             fail_if_failed "Artifact Drift Check" "$ARTIFACT_DRIFT_RESULT"
           fi
 

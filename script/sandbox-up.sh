@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Start a pool of out-of-band `neard` instances for attach-mode tests.
-#
-# Boots SANDBOX_NODE_COUNT nodes (default 4). When run as a nextest setup script
-# for the `sandbox` profile it exports, into the test environment:
+# Start a pool of out-of-band `neard` instances for attach-mode tests and export:
 #   NEAR_SANDBOX_RPC_URL_<i>  - the i-th node's RPC url (i in 0..count-1)
-#   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for non-nextest/manual runs)
+#   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for manual runs)
 #   SANDBOX_NODE_COUNT, TEST_CONTRACTS_PREBUILT
+#
+# Source this script so the exports remain available to the test process.
 #
 # Each test attaches to the node for its NEXTEST_TEST_GLOBAL_SLOT, so a node is
 # used by at most one test at a time (exclusive: fast_forward and chain state
@@ -71,14 +70,9 @@ for i in $(seq 0 $((NODE_COUNT - 1))); do
   echo "sandbox node ${i} up at $(cat "$(addr_file "$i")") (pid $(cat "$(pid_file "$i")"))"
 done
 
-# Export to the nextest test environment when invoked as a setup script.
-if [ -n "${NEXTEST_ENV:-}" ]; then
-  {
-    echo "NEAR_SANDBOX_RPC_URL=$(cat "$(addr_file 0)")"
-    echo "SANDBOX_NODE_COUNT=${NODE_COUNT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-      echo "NEAR_SANDBOX_RPC_URL_${i}=$(cat "$(addr_file "$i")")"
-    done
-    echo "TEST_CONTRACTS_PREBUILT=1"
-  } >>"$NEXTEST_ENV"
-fi
+export NEAR_SANDBOX_RPC_URL="$(cat "$(addr_file 0)")"
+export SANDBOX_NODE_COUNT="${NODE_COUNT}"
+for i in $(seq 0 $((NODE_COUNT - 1))); do
+  export "NEAR_SANDBOX_RPC_URL_${i}=$(cat "$(addr_file "$i")")"
+done
+export TEST_CONTRACTS_PREBUILT=1

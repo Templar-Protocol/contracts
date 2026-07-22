@@ -1,5 +1,32 @@
 # Templar contract-mvp — project tasks. Run `just` to list recipes.
 
+network_filter := 'test(/^requires_network_/)'
+sandbox_filter := '''
+(
+    (
+        kind(test) & (
+            package(templar-market-contract)
+            | package(templar-vault-contract)
+            | package(templar-registry-contract)
+            | package(templar-universal-account-contract)
+            | package(templar-proxy-oracle-near-contract)
+            | package(templar-lst-oracle-contract)
+            | package(templar-funding-bridge)
+            | package(templar-relayer)
+            | package(templar-gateway-testing)
+            | package(templar-liquidator)
+            | package(templar-gateway-core)
+        )
+    )
+    | (
+        package(templar-gateway-service)
+        & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
+    )
+)
+'''
+fast_filter := 'not ' + network_filter + ' and not ' + sandbox_filter
+sandbox_test_filter := 'not ' + network_filter + ' and ' + sandbox_filter
+
 # Show available recipes.
 default:
     @just --list
@@ -13,27 +40,49 @@ sql-fmt:
 fmt: sql-fmt
     cargo fmt
 
-# Run the full local suite: the fast/default gate AND the node-backed gate
-# (prebuilds wasms, starts postgres, runs a pooled neard sandbox, tears it down).
-# Args pass to nextest. Mirrors what CI runs across its two steps.
+# Run the complete local suite with shared prerequisites established once.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    trap './script/sandbox-down.sh || true' EXIT
-    ./script/test.sh {{args}}
-    export TEST_CONTRACTS_PREBUILT=1 SANDBOX_SKIP_PREBUILD=1
     source ./script/postgres-up.sh
-    cargo nextest run --profile sandbox {{args}}
+    just -- _test-fast {{ args }}
+    just -- _test-sandbox {{ args }}
 
-# Run the node-backed tests against a pool of out-of-band neard nodes. The
-# `sandbox` profile selects them (see .config/nextest.toml); args pass to
-# nextest. templar-relayer's tests need the compose Postgres, so start it too.
+# Run the fast/default gate.
+test-fast *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source ./script/postgres-up.sh
+    just -- _test-fast {{ args }}
+
+_test-fast *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo nextest run --ignore-default-filter \
+        -E '{{ fast_filter }}' {{ args }}
+
+# Run the node-backed gate against a pooled neard sandbox.
 test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    trap './script/sandbox-down.sh || true' EXIT
     source ./script/postgres-up.sh
-    cargo nextest run --profile sandbox {{args}}
+    just -- _test-sandbox {{ args }}
+
+_test-sandbox *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap './script/sandbox-down.sh || true' EXIT
+    source ./script/sandbox-up.sh
+    mapfile -t sandbox_packages < <(
+        printf '%s\n' '{{ sandbox_filter }}' | python3 script/sandbox-packages.py
+    )
+    sandbox_package_args=()
+    for package in "${sandbox_packages[@]}"; do
+        sandbox_package_args+=(-p "$package")
+    done
+    cargo nextest run --profile sandbox --ignore-default-filter \
+        "${sandbox_package_args[@]}" \
+        -E '{{ sandbox_test_filter }}' {{ args }}
 
 # Start the out-of-band sandbox neard (prints its RPC url).
 sandbox-up:
@@ -43,9 +92,13 @@ sandbox-up:
 sandbox-down:
     ./script/sandbox-down.sh
 
-# Generate HTML coverage.
+# Generate HTML coverage for the fast library-test cut.
 coverage:
-    ./script/coverage.sh html
+    ./script/coverage.sh html '{{ fast_filter }}'
+
+# Generate LCOV coverage for CI.
+coverage-lcov:
+    ./script/coverage.sh lcov '{{ fast_filter }}'
 
 # Build the docs.
 docs:
