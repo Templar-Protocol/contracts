@@ -17,14 +17,6 @@ inputs:
       passes 10 GB. Defaults to the job id (a private, per-job cache).
     required: false
     default: ""
-  sccache:
-    description: >-
-      Enable sccache compiler-level caching. Unlike rust-cache (which only
-      caches dependency artifacts and discards workspace crates), sccache caches
-      every non-cdylib/non-proc-macro rustc invocation — including workspace
-      libs and the wasm32 `near-sdk` rebuilt once per contract by the prebuild.
-    required: false
-    default: "true"
 runs:
   using: composite
   steps:
@@ -33,24 +25,6 @@ runs:
       with:
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
-
-    - name: Enable sccache
-      if: ${{ inputs.sccache == 'true' }}
-      shell: bash
-      run: |
-        {
-          echo "SCCACHE_GHA_ENABLED=true"
-          echo "RUSTC_WRAPPER=sccache"
-          # Keep the server alive for the whole job. Long jobs (the node suite
-          # compiles for ~25 min, then runs tests for ~15 min with no
-          # compilation) would otherwise idle the server out mid-run, losing its
-          # stats and paying a restart cost.
-          echo "SCCACHE_IDLE_TIMEOUT=0"
-        } >> "$GITHUB_ENV"
-
-    - name: Install sccache
-      if: ${{ inputs.sccache == 'true' }}
-      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
 
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       with:

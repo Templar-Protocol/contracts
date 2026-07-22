@@ -534,10 +534,6 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           components: llvm-tools-preview
-          # Coverage compiles with `-C instrument-coverage`; keep sccache out of
-          # the instrumented build to avoid any chance of cached objects skewing
-          # the line-coverage report.
-          sccache: "false"
 
       - name: Install tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
