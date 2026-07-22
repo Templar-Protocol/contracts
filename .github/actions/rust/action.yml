@@ -1,5 +1,5 @@
 name: Setup Rust
-description: Install Rust version and setup caching
+description: Install the Rust toolchain and wire up compilation + dependency caching.
 inputs:
   targets:
     description: Rust targets to install
@@ -11,13 +11,20 @@ inputs:
     default: ""
   cache-key:
     description: >-
-      Cache build class. Jobs that compile the same target/profile should pass
-      the same value so their dependency artifacts share ONE cache instead of
-      one multi-GB copy per job — GitHub evicts caches once the repo total
-      passes 10 GB, so per-job caches starve the infrequent jobs into cold
-      full rebuilds. Defaults to the job id (a private, per-job cache).
+      rust-cache build class. Jobs that compile the same target/profile should
+      pass the same value so their dependency artifacts share ONE cache instead
+      of a multi-GB copy per job — GitHub evicts caches once the repo total
+      passes 10 GB. Defaults to the job id (a private, per-job cache).
     required: false
     default: ""
+  sccache:
+    description: >-
+      Enable sccache compiler-level caching. Unlike rust-cache (which only
+      caches dependency artifacts and discards workspace crates), sccache caches
+      every non-cdylib/non-proc-macro rustc invocation — including workspace
+      libs and the wasm32 `near-sdk` rebuilt once per contract by the prebuild.
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -27,18 +34,33 @@ runs:
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
 
+    - name: Enable sccache
+      if: ${{ inputs.sccache == 'true' }}
+      shell: bash
+      run: |
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=sccache"
+        } >> "$GITHUB_ENV"
+
+    - name: Install sccache
+      if: ${{ inputs.sccache == 'true' }}
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       with:
-        save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        # Save even on failure/timeout. Otherwise a job slow enough to hit its
-        # timeout is cancelled before the post-step saves, so it can never seed
-        # a warm cache: cold build -> timeout -> still cold. CI runs with
-        # CARGO_INCREMENTAL=0, so there is no incremental state to corrupt.
+        # Cache-factory model: only the default branch (and the merge queue) seed
+        # caches; PR runs restore-only. This keeps feature branches from bloating
+        # the 10 GB budget or racing to write partial caches, and gives every PR a
+        # complete, dev-seeded cache to restore.
+        save-if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'merge_group' }}
+        # Save even on failure/timeout: a job slow enough to hit its timeout is
+        # cancelled before the post-step runs, so it could otherwise never seed a
+        # warm cache. CI runs CARGO_INCREMENTAL=0, so there is no incremental
+        # state to corrupt.
         cache-on-failure: true
-        # Group by build class via `cache-key`, not `github.job`: jobs that share
-        # a target/profile then share one cache instead of a multi-GB copy each.
-        # Do not include raw target or component input strings here: rust-cache
-        # rejects keys containing commas, and comma-separated target lists are
-        # common in this repo.
+        # Group by build class via `cache-key`, not `github.job`. Do not put raw
+        # target/component strings here: rust-cache rejects keys with commas, and
+        # comma-separated target lists are common in this repo.
         shared-key: "rust-${{ runner.os }}-${{ inputs.cache-key || github.job }}"
         workspaces: ". -> target"
