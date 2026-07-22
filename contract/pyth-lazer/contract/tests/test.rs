@@ -669,6 +669,18 @@ fn admin_upgrade_rejects_non_owner() {
 }
 
 #[test]
+#[should_panic(expected = "admin_upgrade: empty code blob")]
+fn admin_upgrade_rejects_empty_code() {
+    let mut contract = deploy();
+    set_owner_context();
+    // An empty `Code` blob can never deploy; the guard rejects it before scheduling anything.
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![])),
+        Base64VecU8(vec![]),
+    );
+}
+
+#[test]
 #[should_panic(expected = "Requires attached deposit of exactly 1 yoctoNEAR")]
 fn admin_upgrade_requires_one_yocto() {
     let mut contract = deploy();
@@ -1039,24 +1051,25 @@ fn admin_withdraw_emits_withdrawn() {
 }
 
 #[rstest]
-#[case(vec![1u8, 2, 3])]
-#[case(vec![])]
-fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>) {
+fn admin_upgrade_emits_upgraded(
+    #[values(vec![1u8, 2, 3], vec![])] migrate_args: Vec<u8>,
+    #[values(
+        UpgradeSource::Code(Base64VecU8(vec![0u8, 1, 2, 3, 4])),
+        UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from([9u8; 32])),
+    )]
+    code: UpgradeSource,
+) {
     let mut contract = deploy();
     set_owner_context();
-    let code = vec![0u8, 1, 2, 3, 4];
-    let _ = contract.admin_upgrade(
-        UpgradeSource::Code(Base64VecU8(code.clone())),
-        Base64VecU8(migrate_args.clone()),
-    );
+    let _ = contract.admin_upgrade(code.clone(), Base64VecU8(migrate_args.clone()));
 
     let event = single_event_with_version("2.0.0");
     assert_eq!(event["event"], "upgraded");
-    // `code` is a structured summary — `CodeHash(<base58 sha256>)` — not the blob itself.
-    let expected_hash = near_sdk::bs58::encode(near_sdk::env::sha256(&code)).into_string();
+    // `code` is a structured summary (a hash), never the blob — exactly `UpgradeSource::summary()`,
+    // covering both the `CodeHash` and `GlobalHash` mappings.
     assert_eq!(
-        event["data"]["code"]["CodeHash"].as_str().unwrap(),
-        expected_hash
+        event["data"]["code"],
+        near_sdk::serde_json::to_value(code.summary()).unwrap()
     );
     // `migrated` is whether a migration was requested — a bounded flag, not the payload.
     assert_eq!(event["data"]["migrated"], !migrate_args.is_empty());

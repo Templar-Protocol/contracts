@@ -500,6 +500,12 @@ impl Contract {
     pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
         assert_one_yocto();
         Self::require_owner();
+        // An empty blob can never deploy; reject up front (mirrors the governance path's
+        // `EmptyUpgradeCode` guard) so no misleading event is logged and no gas is spent on a
+        // doomed deploy.
+        if code.is_empty_code() {
+            env::panic_str("admin_upgrade: empty code blob");
+        }
         // See PythLazerEvent::Upgraded — logs the scheduled upgrade before the deploy+migrate Promise.
         PythLazerEvent::Upgraded {
             code: code.summary(),

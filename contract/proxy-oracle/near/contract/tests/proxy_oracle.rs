@@ -184,10 +184,14 @@ pub fn admin_upgrade_from_global_hash_uses_global_contract_then_migrates() {
     match &receipt.actions[1] {
         MockAction::FunctionCallWeight {
             method_name,
+            args,
+            attached_deposit,
             prepaid_gas,
             ..
         } => {
             assert_eq!(method_name, b"migrate");
+            assert_eq!(args, br#"{"from_version":"v0"}"#);
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
             assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
         }
         action => panic!("expected migrate call second, got {action:?}"),
