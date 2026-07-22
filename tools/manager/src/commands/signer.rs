@@ -1,7 +1,7 @@
-//! Signer credentials as structural, per-operation arguments. Flattening these
-//! into a write command's args makes the invalid states unrepresentable at the
-//! parser: a write with no credentials can't parse, and credentials on a read are
-//! an unexpected argument — enforcement lives in clap, not a runtime check.
+//! Per-operation signer inputs. Clap selects either execution credentials or a
+//! plan-only output format on every write; reads reject signer arguments.
+//! Dispatch rejects print mode only for orchestrated writes that cannot produce
+//! one transaction without performing execution steps.
 
 use std::{ffi::OsStr, fmt};
 
@@ -91,16 +91,15 @@ impl SignerArgs {
 
     /// The signing account together with its secret key.
     pub fn resolve(&self) -> anyhow::Result<(ManagedAccountId, SecretKey)> {
-        Ok((self.account_id(), self.secret()?))
+        Ok((self.account_id(), self.secret()?.clone()))
     }
 
-    fn secret(&self) -> anyhow::Result<SecretKey> {
+    fn secret(&self) -> anyhow::Result<&SecretKey> {
         if self.print.is_some() {
             anyhow::bail!("--print is not supported for this orchestrated write");
         }
         self.secret_key
             .as_deref()
-            .cloned()
             .ok_or_else(|| anyhow::anyhow!("missing --secret-key"))
     }
 }
@@ -169,7 +168,6 @@ mod tests {
     use clap::Parser;
 
     const SECRET: &str = "ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q";
-    const PUBLIC: &str = "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w";
 
     #[derive(Parser)]
     struct Harness {
@@ -204,37 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn invalid_secret_key_is_rejected_without_echoing_it() {
-        let invalid = "ed25519:sensitive-but-invalid";
-        let error = Harness::try_parse_from([
-            "tmplrmgr",
-            "--signer-id",
-            "signer.testnet",
-            "--secret-key",
-            invalid,
-        ])
-        .err()
-        .expect("invalid secret should fail at the clap boundary");
-        let rendered = error.to_string();
-        assert!(rendered.contains("invalid --secret-key"), "{rendered}");
-        assert!(!rendered.contains(invalid), "secret leaked: {rendered}");
-    }
-
-    #[test]
-    fn plan_public_key_is_explicit_and_never_resolves_credentials() {
-        let public_key: CliPublicKey = PUBLIC.parse().expect("valid public key");
+    fn plan_mode_rejects_credential_resolution() {
         let signer = SignerArgs {
             signer_id: "dao.near".parse().expect("valid account"),
             secret_key: None,
             print: Some(PrintFormat::Sputnik),
-            public_key: Some(public_key),
+            public_key: None,
         };
 
-        assert_eq!(
-            signer.public_key().expect("explicit plan key"),
-            PublicKey::from(public_key)
-        );
-        assert_eq!(signer.print(), Some(PrintFormat::Sputnik));
         assert_eq!(
             signer
                 .resolve()

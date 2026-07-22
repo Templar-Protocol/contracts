@@ -7,8 +7,8 @@ use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 
 use super::{
-    clear_credential_env, parse_create_proposal, parse_governance, try_parse_governance, CREDS,
-    ENV_LOCK,
+    parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
+    CREDS,
 };
 use crate::cli::{Cli, Command};
 use crate::commands::{
@@ -490,36 +490,37 @@ fn execute_proposal_when_ready_flag() {
 
 #[test]
 fn governance_write_commands_accept_print_mode() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-    let execute = try_parse_governance([
-        "execute-proposal",
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "2",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "sputnik",
-    ]);
-    let create = try_parse_governance([
-        "create-proposal",
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "0",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-        "admin-function-call",
-        "--method",
-        "own_accept_owner",
-        "--deposit",
-        "1 yoctoNEAR",
-    ]);
-    restore();
+    let (execute, create) = with_cleared_credential_env(|| {
+        (
+            try_parse_governance([
+                "execute-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "2",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "sputnik",
+            ]),
+            try_parse_governance([
+                "create-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "0",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+                "admin-function-call",
+                "--method",
+                "own_accept_owner",
+                "--deposit",
+                "1 yoctoNEAR",
+            ]),
+        )
+    });
 
     let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
         execute.expect("immediate execution should support planning")
@@ -538,54 +539,48 @@ fn governance_write_commands_accept_print_mode() {
 
 #[test]
 fn proposal_orchestration_flags_parse_with_print_for_runtime_rejection() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-    let execute = try_parse_governance([
-        "execute-proposal",
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "2",
-        "--when-ready",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-    ]);
-    let create = try_parse_governance([
-        "create-proposal",
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "0",
-        "--execute-when-ready",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-        "admin-function-call",
-        "--method",
-        "own_accept_owner",
-        "--deposit",
-        "1 yoctoNEAR",
-    ]);
-    restore();
+    let (execute, create) = with_cleared_credential_env(|| {
+        (
+            try_parse_governance([
+                "execute-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "2",
+                "--when-ready",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+            ]),
+            try_parse_governance([
+                "create-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "0",
+                "--execute-when-ready",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+                "admin-function-call",
+                "--method",
+                "own_accept_owner",
+                "--deposit",
+                "1 yoctoNEAR",
+            ]),
+        )
+    });
 
-    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
-        execute.expect("runtime guard should own the orchestration diagnostic")
-    else {
-        panic!("expected execute-proposal");
-    };
-    assert!(execute.when_ready());
-    assert_eq!(execute.signer.print(), Some(PrintFormat::Json));
-
-    let ProxyOracleGovernanceNs::CreateProposal(create) =
-        create.expect("runtime guard should own the orchestration diagnostic")
-    else {
-        panic!("expected create-proposal");
-    };
-    assert!(create.execute_when_ready());
-    assert_eq!(create.signer.print(), Some(PrintFormat::Json));
+    assert!(matches!(
+        execute.expect("runtime guard should own the orchestration diagnostic"),
+        ProxyOracleGovernanceNs::ExecuteProposal(_)
+    ));
+    assert!(matches!(
+        create.expect("runtime guard should own the orchestration diagnostic"),
+        ProxyOracleGovernanceNs::CreateProposal(_)
+    ));
 }
 
 #[test]

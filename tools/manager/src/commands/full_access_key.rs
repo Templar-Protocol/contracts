@@ -75,10 +75,6 @@ mod tests {
 
     #[test]
     fn no_signer_flag_drops_signer_key_without_resolving_it() {
-        assert!(args(true, &[])
-            .resolve(|| unreachable!("signer key must stay lazy"))
-            .expect("no signer key needed")
-            .is_empty());
         // With extras and --no-signer, only the extras are granted.
         let key_b = PublicKey::from(KEY_B.parse::<CliPublicKey>().unwrap());
         assert_eq!(

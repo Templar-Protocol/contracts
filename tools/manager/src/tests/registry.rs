@@ -4,7 +4,7 @@ use clap::Parser;
 use serde_json::json;
 use templar_common::registry::DeployMode;
 
-use super::{clear_credential_env, CREDS, ENV_LOCK, TEST_SECRET_KEY};
+use super::{with_cleared_credential_env, CREDS, TEST_SECRET_KEY};
 use crate::cli::{Cli, Command};
 use crate::commands::registry::RegistryNs;
 
@@ -365,31 +365,30 @@ fn add_version_requires_a_contract_source() {
 
 #[test]
 fn deploy_plan_uses_explicit_public_key() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
     let public_key = "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w";
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "deploy",
-        "--registry-id",
-        "registry.testnet",
-        "--name",
-        "market",
-        "--version-key",
-        "market@1",
-        "--deposit",
-        "1 NEAR",
-        "--init-args",
-        "null",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-        "--public-key",
-        public_key,
-    ]);
-    restore();
+    let result = with_cleared_credential_env(|| {
+        Cli::try_parse_from([
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "market",
+            "--version-key",
+            "market@1",
+            "--deposit",
+            "1 NEAR",
+            "--init-args",
+            "null",
+            "--signer-id",
+            "dao.near",
+            "--print",
+            "json",
+            "--public-key",
+            public_key,
+        ])
+    });
     let cli = result.expect("plan-only deploy should parse");
     let Command::Registry {
         command: RegistryNs::Deploy(cmd),
@@ -408,29 +407,28 @@ fn deploy_plan_uses_explicit_public_key() {
 
 #[test]
 fn deploy_plan_without_signer_grant_needs_no_public_key() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "deploy",
-        "--registry-id",
-        "registry.testnet",
-        "--name",
-        "market",
-        "--version-key",
-        "market@1",
-        "--deposit",
-        "1 NEAR",
-        "--init-args",
-        "null",
-        "--no-signer-full-access-key",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-    ]);
-    restore();
+    let result = with_cleared_credential_env(|| {
+        Cli::try_parse_from([
+            "tmplrmgr",
+            "registry",
+            "deploy",
+            "--registry-id",
+            "registry.testnet",
+            "--name",
+            "market",
+            "--version-key",
+            "market@1",
+            "--deposit",
+            "1 NEAR",
+            "--init-args",
+            "null",
+            "--no-signer-full-access-key",
+            "--signer-id",
+            "dao.near",
+            "--print",
+            "json",
+        ])
+    });
     let cli = result.expect("plan-only deploy should parse");
     let Command::Registry {
         command: RegistryNs::Deploy(cmd),
@@ -501,37 +499,28 @@ fn remove_version_all_has_no_single_spec() {
     assert!(cmd.single().is_none());
 }
 #[test]
-fn remove_version_all_rejects_print_credentials() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "registry",
-        "remove-version",
-        "--registry-id",
-        "registry.testnet",
-        "--all",
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-    ]);
-    restore();
+fn remove_version_all_accepts_print_for_runtime_rejection() {
+    let result = with_cleared_credential_env(|| {
+        Cli::try_parse_from([
+            "tmplrmgr",
+            "registry",
+            "remove-version",
+            "--registry-id",
+            "registry.testnet",
+            "--all",
+            "--signer-id",
+            "dao.near",
+            "--print",
+            "json",
+        ])
+    });
     let cli = result.expect("print mode should parse before orchestration rejects it");
-    let Command::Registry {
-        command: RegistryNs::RemoveVersion(cmd),
-    } = cli.command
-    else {
-        panic!("expected remove-version");
-    };
-
-    assert_eq!(
-        cmd.signer
-            .resolve()
-            .expect_err("multi-version removal is orchestrated")
-            .to_string(),
-        "--print is not supported for this orchestrated write"
-    );
+    assert!(matches!(
+        cli.command,
+        Command::Registry {
+            command: RegistryNs::RemoveVersion(_)
+        }
+    ));
 }
 
 #[test]

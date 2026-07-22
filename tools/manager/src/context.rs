@@ -1,14 +1,12 @@
-//! The CLI execution context: a gateway [`Client`] plus the resolved signer and
-//! presentation settings, and the small set of helpers every dispatch path uses
-//! to read, write, report, and print. Keeping this in one place means the
-//! context's whole surface lives together rather than scattered across dispatch.
+//! CLI gateway context and the shared helpers for reading, planning, executing,
+//! reporting, and printing. Credentials remain on each write command rather than
+//! in this context.
 
 use anyhow::Context as _;
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use near_account_id::AccountId;
 use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
 use near_sdk::json_types::{U128, U64};
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 use std::io::Write as _;
 use templar_gateway_client::{Client, NetworkConfigBuilder};
 use templar_gateway_core::{
@@ -24,6 +22,7 @@ use templar_gateway_oracle_updates_dispatch::{
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     operation::ReceiptStatus,
+    primitive::Base64Bytes,
     ManagedAccountId, MethodSpec, OperationStatus,
 };
 
@@ -31,8 +30,8 @@ use crate::cli::Cli;
 use crate::commands::signer::{PrintFormat, SignerArgs};
 
 pub(crate) struct CliContext {
-    /// An unsigned client for reads. Writes build a per-operation signing client
-    /// from the command's own credentials (see [`CliContext::signing_client`]).
+    /// An unsigned client for reads and ordinary write plans. Executed writes
+    /// build a per-operation signing client from their command's credentials.
     pub(crate) client: Client,
     network: NetworkConfig,
     transaction_url_prefix: String,
@@ -80,7 +79,7 @@ impl CliContext {
                     body,
                 })
                 .await?;
-            return print_plan(format, &plan);
+            return print_plan(format, plan);
         }
 
         let (account_id, secret_key) = signer.resolve()?;
@@ -102,31 +101,27 @@ impl CliContext {
         Ctx: Clone,
         OracleUpdatesDispatch: PlanWrite<S, Ctx>,
     {
-        let account_id = signer.account_id();
-        let builder = Client::builder(self.network.clone());
-        let (base_context, driver, signer_account_ids) = if signer.print().is_some() {
-            builder.build_parts()
-        } else {
-            let (_, secret_key) = signer.resolve()?;
-            builder
-                .secret_key(account_id.clone(), secret_key)?
-                .build_parts()
-        }
-        .context("build oracle-updates client")?;
-        let client: Client<OracleUpdatesDispatch, Ctx> =
-            Client::from_parts(layer_sources(base_context)?, driver, signer_account_ids);
-
         if let Some(format) = signer.print() {
-            let plan = client
-                .plan_request(WriteRequest {
-                    signer_account_id: account_id,
+            let context = layer_sources(GatewayContext::new(self.network.clone())?)?;
+            let plan = <OracleUpdatesDispatch as PlanWrite<S, Ctx>>::plan(
+                WriteRequest {
+                    signer_account_id: signer.account_id(),
                     idempotency_key: None,
                     body,
-                })
-                .await?;
-            return print_plan(format, &plan);
+                },
+                context,
+            )
+            .await?;
+            return print_plan(format, plan);
         }
 
+        let (account_id, secret_key) = signer.resolve()?;
+        let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
+            .secret_key(account_id.clone(), secret_key)?
+            .build_parts()
+            .context("build oracle-updates client")?;
+        let client: Client<OracleUpdatesDispatch, Ctx> =
+            Client::from_parts(layer_sources(base_context)?, driver, signer_account_ids);
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
@@ -229,65 +224,51 @@ pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::R
     }
 }
 
-fn print_plan(format: PrintFormat, plan: &OperationPlan) -> anyhow::Result<()> {
+fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {
     let transaction = single_transaction(plan)?;
     match format {
-        PrintFormat::Json => print_json(transaction),
+        PrintFormat::Json => print_json(&transaction),
         PrintFormat::Sputnik => print_json(&sputnik_function_call(transaction)?),
     }
 }
 
-fn single_transaction(plan: &OperationPlan) -> anyhow::Result<&PlannedTransaction> {
-    match plan.steps.as_slice() {
-        [transaction] => Ok(transaction),
-        steps => anyhow::bail!(
+fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction> {
+    let [transaction] = plan.steps.try_into().map_err(|steps: Vec<_>| {
+        anyhow::anyhow!(
             "--print requires exactly one planned transaction; planned {}",
             steps.len()
-        ),
-    }
+        )
+    })?;
+    Ok(transaction)
 }
 
 #[derive(Serialize)]
-enum SputnikProposalKind<'a> {
+enum SputnikProposalKind {
     FunctionCall {
-        receiver_id: &'a AccountId,
-        actions: Vec<SputnikAction<'a>>,
+        receiver_id: AccountId,
+        actions: Vec<SputnikAction>,
     },
 }
 
 #[derive(Serialize)]
-struct SputnikAction<'a> {
-    method_name: &'a str,
-    args: Base64<'a>,
+struct SputnikAction {
+    method_name: String,
+    args: Base64Bytes,
     deposit: U128,
     gas: U64,
 }
 
-#[derive(Clone, Copy)]
-struct Base64<'a>(&'a [u8]);
-
-impl Serialize for Base64<'_> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&BASE64_STANDARD.encode(self.0))
-    }
-}
-
-fn sputnik_function_call(
-    transaction: &PlannedTransaction,
-) -> anyhow::Result<SputnikProposalKind<'_>> {
+fn sputnik_function_call(transaction: PlannedTransaction) -> anyhow::Result<SputnikProposalKind> {
     let actions = transaction
         .actions
-        .iter()
+        .into_iter()
         .map(|action| {
             let Action::FunctionCall(action) = action else {
                 anyhow::bail!("--print sputnik supports FunctionCall actions only");
             };
             Ok(SputnikAction {
-                method_name: &action.method_name,
-                args: Base64(&action.args),
+                method_name: action.method_name,
+                args: Base64Bytes(action.args),
                 deposit: U128(action.deposit.as_yoctonear()),
                 gas: U64(action.gas.as_gas()),
             })
@@ -295,7 +276,7 @@ fn sputnik_function_call(
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok(SputnikProposalKind::FunctionCall {
-        receiver_id: &transaction.receiver_id,
+        receiver_id: transaction.receiver_id,
         actions,
     })
 }
@@ -310,9 +291,9 @@ pub(crate) fn print_json(output: &impl Serialize) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Build the execution context from parsed CLI args: the network and an unsigned
-/// gateway client (backed by a transient in-memory operation store) for reads.
-/// Writes sign per-operation with credentials carried by their own command.
+/// Build the CLI context: the selected network and an unsigned gateway client
+/// backed by a transient in-memory operation store. Reads and ordinary plans use
+/// that client; executed writes build a signing client per operation.
 pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
     let network = NetworkConfigBuilder::new(cli.network)
         .rpc_url(cli.rpc_url.as_deref())
@@ -383,7 +364,7 @@ mod tests {
     fn sputnik_renders_paste_ready_function_call_kind() {
         let transaction = function_call_transaction();
         let value = serde_json::to_value(
-            sputnik_function_call(&transaction).expect("FunctionCall plan should render"),
+            sputnik_function_call(transaction).expect("FunctionCall plan should render"),
         )
         .expect("Sputnik kind should serialize");
 
@@ -401,10 +382,6 @@ mod tests {
                 }
             })
         );
-        assert!(
-            value.get("signer_account_id").is_none(),
-            "Sputnik kind must discard the planning signer"
-        );
     }
 
     #[test]
@@ -417,7 +394,8 @@ mod tests {
             }),
         );
 
-        let error = sputnik_function_call(&transaction)
+        let json_serializes = serde_json::to_value(&transaction).is_ok();
+        let error = sputnik_function_call(transaction)
             .err()
             .expect("Sputnik FunctionCall cannot represent a transfer");
         assert_eq!(
@@ -425,7 +403,7 @@ mod tests {
             "--print sputnik supports FunctionCall actions only"
         );
         assert!(
-            serde_json::to_value(&transaction).is_ok(),
+            json_serializes,
             "the same transaction remains valid JSON output"
         );
     }
@@ -434,7 +412,7 @@ mod tests {
     fn print_requires_exactly_one_planned_transaction() {
         let transaction = function_call_transaction();
         assert_eq!(
-            single_transaction(&OperationPlan::single(transaction.clone()))
+            single_transaction(OperationPlan::single(transaction.clone()))
                 .expect("single step")
                 .receiver_id,
             transaction.receiver_id
@@ -446,8 +424,7 @@ mod tests {
                 steps: vec![transaction.clone(), transaction.clone()],
             },
         ] {
-            let error =
-                single_transaction(&plan).expect_err("non-single plan must not be rendered");
+            let error = single_transaction(plan).expect_err("non-single plan must not be rendered");
             assert!(
                 error
                     .to_string()

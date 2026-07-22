@@ -126,6 +126,20 @@ const CREDS: [&str; 4] = [
     TEST_SECRET_KEY,
 ];
 
+fn try_parse_write<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Cli, clap::Error> {
+    Cli::try_parse_from(
+        [
+            "tmplrmgr",
+            "write",
+            "registry.removeVersion",
+            "--json",
+            r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        ]
+        .into_iter()
+        .chain(args),
+    )
+}
+
 fn try_parse_governance<'a>(
     args: impl IntoIterator<Item = &'a str>,
 ) -> Result<ProxyOracleGovernanceNs, clap::Error> {
@@ -160,18 +174,7 @@ fn parse_create_proposal<'a>(args: impl IntoIterator<Item = &'a str>) -> CreateP
 
 #[test]
 fn parses_write_fallback_with_json() {
-    let cli = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        TEST_SECRET_KEY,
-    ])
-    .expect("write fallback should parse");
+    let cli = try_parse_write(CREDS).expect("write fallback should parse");
 
     match cli.command {
         super::cli::Command::Write(call) => {
@@ -209,20 +212,7 @@ fn write_fallback_does_not_require_a_lazer_key() {
 fn write_command_requires_credentials() {
     // With credentials structural on the write, omitting them is a parse error —
     // no build or network work is reachable.
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-    ]);
-
-    // Restore before asserting: a panic here must not leak cleared env vars into
-    // later tests sharing this process.
-    restore();
+    let result = with_cleared_credential_env(|| try_parse_write([]));
     let error = result.expect_err("a write with no credentials should fail to parse");
     assert_eq!(
         error.kind(),
@@ -232,44 +222,19 @@ fn write_command_requires_credentials() {
 
 #[test]
 fn write_command_accepts_print_without_secret() {
-    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
-    let restore = clear_credential_env();
-
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "sputnik",
-    ]);
-
-    restore();
+    let result = with_cleared_credential_env(|| {
+        try_parse_write(["--signer-id", "dao.near", "--print", "sputnik"])
+    });
     let cli = result.expect("plan-only write should parse without a secret");
     let Command::Write(call) = cli.command else {
         panic!("expected Write variant");
     };
     assert_eq!(call.signer.print(), Some(PrintFormat::Sputnik));
-    assert_eq!(
-        call.signer
-            .resolve()
-            .expect_err("plan mode must not resolve signing credentials")
-            .to_string(),
-        "--print is not supported for this orchestrated write"
-    );
 }
 
 #[test]
 fn print_conflicts_with_secret_key() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+    let error = try_parse_write([
         "--signer-id",
         "dao.near",
         "--print",
@@ -287,17 +252,7 @@ fn print_conflicts_with_secret_key_from_environment() {
     let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original_secret = std::env::var_os("SECRET_KEY");
     std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
-    let result = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-        "--signer-id",
-        "dao.near",
-        "--print",
-        "json",
-    ]);
+    let result = try_parse_write(["--signer-id", "dao.near", "--print", "json"]);
     restore_env("SECRET_KEY", original_secret);
 
     let error = result.expect_err("environment secret must conflict with --print");
@@ -306,12 +261,7 @@ fn print_conflicts_with_secret_key_from_environment() {
 
 #[test]
 fn public_key_requires_print_mode() {
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+    let error = try_parse_write([
         "--signer-id",
         "signer.testnet",
         "--secret-key",
@@ -344,18 +294,8 @@ fn read_command_rejects_credentials() {
 #[test]
 fn invalid_secret_key_error_does_not_echo_input() {
     let secret = "not-a-real-secret-key";
-    let error = Cli::try_parse_from([
-        "tmplrmgr",
-        "write",
-        "registry.removeVersion",
-        "--json",
-        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        secret,
-    ])
-    .expect_err("invalid secret key should fail at the clap boundary");
+    let error = try_parse_write(["--signer-id", "signer.testnet", "--secret-key", secret])
+        .expect_err("invalid secret key should fail at the clap boundary");
 
     let message = error.to_string();
     assert!(message.contains("invalid --secret-key"), "{message}");
@@ -373,14 +313,7 @@ fn signer_env_satisfies_write_credentials() {
     std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
 
     let result = (|| {
-        let cli = Cli::try_parse_from([
-            "tmplrmgr",
-            "write",
-            "registry.removeVersion",
-            "--json",
-            r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
-        ])
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let cli = try_parse_write([]).map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         match cli.command {
             super::cli::Command::Write(call) => call.signer.resolve().map(|_| ()),
@@ -394,18 +327,18 @@ fn signer_env_satisfies_write_credentials() {
     result.expect("env-provided credentials should satisfy a write command");
 }
 
-/// Clear the credential env vars (under `ENV_LOCK`) so a "missing credentials"
-/// parse test isn't satisfied by an ambient `SIGNER_ID`/`SECRET_KEY`. Returns a
-/// closure that restores the originals.
-fn clear_credential_env() -> impl FnOnce() {
+/// Run `f` with ambient signer credentials cleared and environment mutation
+/// serialized, then restore the original values.
+fn with_cleared_credential_env<T>(f: impl FnOnce() -> T) -> T {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
     let original_signer = std::env::var_os("SIGNER_ID");
     let original_secret = std::env::var_os("SECRET_KEY");
     std::env::remove_var("SIGNER_ID");
     std::env::remove_var("SECRET_KEY");
-    move || {
-        restore_env("SIGNER_ID", original_signer);
-        restore_env("SECRET_KEY", original_secret);
-    }
+    let result = f();
+    restore_env("SIGNER_ID", original_signer);
+    restore_env("SECRET_KEY", original_secret);
+    result
 }
 
 fn restore_env(key: &str, original: Option<std::ffi::OsString>) {
