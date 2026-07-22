@@ -46,7 +46,7 @@ test *args:
     just -- _test-fast "$@"
     just -- _test-sandbox "$@"
 
-# Run the fast/default gate.
+# Run the complete non-node gate.
 test-fast *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -56,8 +56,7 @@ test-fast *args:
 _test-fast *args:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Intentionally include integration targets: this is the complete non-node
-    # partition that replaced the deleted full-workspace test step.
+    # Include integration targets: this is the complete non-node partition.
     cargo nextest run --ignore-default-filter \
         -E '{{ fast_filter }}' "$@"
 
@@ -72,33 +71,32 @@ _test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
-    caller_args=("$@")
     nextest_args=()
     sandbox_package_args=()
     sandbox_test_threads='{{ sandbox_test_threads }}'
     use_default_packages=true
-    for ((i = 0; i < ${#caller_args[@]}; i++)); do
-        arg="${caller_args[i]}"
-        case "$arg" in
+    while (($#)); do
+        case "$1" in
             -p | -p?* | --package | --package=*)
                 use_default_packages=false
-                nextest_args+=("$arg")
+                nextest_args+=("$1")
                 ;;
             --test-threads)
-                i=$((i + 1))
-                if ((i >= ${#caller_args[@]})); then
+                shift
+                if (($# == 0)); then
                     echo "error: --test-threads requires a value" >&2
                     exit 2
                 fi
-                sandbox_test_threads="${caller_args[i]}"
+                sandbox_test_threads="$1"
                 ;;
             --test-threads=*)
-                sandbox_test_threads="${arg#*=}"
+                sandbox_test_threads="${1#*=}"
                 ;;
             *)
-                nextest_args+=("$arg")
+                nextest_args+=("$1")
                 ;;
         esac
+        shift
     done
     if [[ ! "$sandbox_test_threads" =~ ^[1-9][0-9]*$ ]]; then
         echo "error: sandbox test threads must be a positive integer" >&2
@@ -109,8 +107,7 @@ _test-sandbox *args:
             sandbox_package_args+=(-p "$package")
         done <<< '{{ sandbox_packages }}'
     fi
-    export SANDBOX_NODE_COUNT="$sandbox_test_threads"
-    source ./script/sandbox-up.sh
+    SANDBOX_NODE_COUNT="$sandbox_test_threads" source ./script/sandbox-up.sh
     cargo nextest run --profile sandbox --ignore-default-filter \
         --test-threads "$sandbox_test_threads" \
         "${sandbox_package_args[@]}" \

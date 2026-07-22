@@ -445,7 +445,7 @@ jobs:
       - name: Run fast tests
         env:
           SQLX_OFFLINE: true
-          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
+          DATABASE_URL: &postgres_url postgres://relayeruser:password@localhost:5432/relayer
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
@@ -494,7 +494,7 @@ jobs:
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           SQLX_OFFLINE: true
-          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
+          DATABASE_URL: *postgres_url
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
@@ -574,10 +574,7 @@ jobs:
 
       - name: Run tests with coverage
         env:
-          SQLX_OFFLINE: true
-          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
-          CARGO_INCREMENTAL: 0
-          RUSTFLAGS: "-Cinstrument-coverage"
+          DATABASE_URL: *postgres_url
           CARGO_BUILD_JOBS: 2
           NEXTEST_PROFILE: ci
           CARGO_TERM_COLOR: always

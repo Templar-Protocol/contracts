@@ -2,7 +2,7 @@
 # Start a pool of out-of-band `neard` instances for attach-mode tests and export:
 #   NEAR_SANDBOX_RPC_URL_<i>  - the i-th node's RPC url (i in 0..count-1)
 #   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for manual runs)
-#   SANDBOX_NODE_COUNT, TEST_CONTRACTS_PREBUILT
+#   TEST_CONTRACTS_PREBUILT    - confirms contract Wasms were built
 #
 # Source this script so the exports remain available to the test process.
 #
@@ -23,11 +23,8 @@ NODE_COUNT="${SANDBOX_NODE_COUNT:?SANDBOX_NODE_COUNT must be set by test orchest
 # already there.
 bash "${SCRIPT_DIR}/sandbox-down.sh" >/dev/null
 
-# Prebuild the contract wasms once so tests don't each recompile them. Skip with
-# SANDBOX_SKIP_PREBUILD=1 when they are known to be current.
-if [ -z "${SANDBOX_SKIP_PREBUILD:-}" ]; then
-  bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
-fi
+# Prebuild the contract wasms once so tests don't each recompile them.
+bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
 
 cargo build -q -p templar-gateway-testing --bin sandbox-host
 
@@ -65,7 +62,6 @@ for i in $(seq 1 $((NODE_COUNT - 1))); do
   wait_for_node "$i"
 done
 
-export SANDBOX_NODE_COUNT="${NODE_COUNT}"
 for i in $(seq 0 $((NODE_COUNT - 1))); do
   _sandbox_rpc_url="$(cat "$(addr_file "$i")")"
   _sandbox_pid="$(cat "$(pid_file "$i")")"

@@ -8,8 +8,8 @@ Run the complete local suite through the same entrypoints used by CI:
 just test
 ```
 
-Use `just test-fast` for the default non-node gate or `just test-sandbox` for
-the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
+Use `just test-fast` for the complete non-node gate, including non-node
+integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances.
 
 Run the artifact drift check separately when validating checked-in WASM blobs —

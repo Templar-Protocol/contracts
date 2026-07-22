@@ -74,7 +74,7 @@ Use this section as an execution checklist: read the local docs first, preserve 
 ## Build And Test
 
 - Format: `cargo fmt`
-- Fast gate (everyday inner loop): `just test-fast`. Pure unit/logic tests only — no neard, Docker sandbox, or network. The recipe provisions Postgres when needed; `fast_filter` in the root `justfile` owns the test selection.
+- Fast gate (everyday inner loop): `just test-fast`. Complete non-node, non-network partition, including integration targets. The recipe provisions Postgres when needed; `fast_filter` in the root `justfile` owns the test selection.
 - Node gate: `just test-sandbox`. The recipe provisions Postgres, narrows Cargo to the node-backed packages, prebuilds test Wasms, and manages a pooled out-of-band `neard`.
 - Full local gate: `just test`, which runs the same fast and sandbox entrypoints used by CI.
 - Common crate: `cargo test -p templar-common --lib -- --nocapture`
@@ -84,7 +84,7 @@ Use this section as an execution checklist: read the local docs first, preserve 
 Notes:
 
 - Node-backed integration tests attach to a `SandboxHarness` (`gateway/testing/src/sandbox.rs`) instead of each booting its own sandbox. Under the sandbox gate they attach over RPC to the shared `neard` pool, one node per `NEXTEST_TEST_GLOBAL_SLOT`. With no pool running the harness falls back to _owned_ mode and starts its own `neard` per test — acceptable for a single test, but slow and prone to nonce contention across a whole file, so prefer `just test-sandbox` for more than one node test.
-- The node-backed crates are enumerated once by `sandbox_filter` in the root `justfile` (market, vault/near, registry, universal-account, the proxy and LST oracles, funding bridge, relayer, liquidator, and the gateway crates). `just test-sandbox` derives Cargo's package arguments from that filter. See "Cross-Cutting Lists To Keep In Sync" below before adding one. If these fail because no neard is available, say that clearly instead of silently skipping them.
+- The sandbox gate derives test selection and Cargo package narrowing from one package classification. See "Cross-Cutting Lists To Keep In Sync" below before adding a node-backed crate. If these tests fail because no neard is available, say that clearly instead of silently skipping them.
 - `cargo test -p templar-common --lib` is a good fast regression check for logic changes in `common`.
 - Node-backed tests need the contract Wasms prebuilt; rebuilding WASM inside each run is much slower. `just test-sandbox` sources `script/sandbox-up.sh`, which prebuilds them and exports `TEST_CONTRACTS_PREBUILT=1`. If you run a node test by hand outside that recipe (e.g. a plain `cargo test` in owned mode), do the same first.
 - Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
@@ -105,8 +105,6 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
   - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.
 - **Tuning sandbox parallelism**: update `sandbox_test_threads` in `justfile`; the sandbox recipe uses it for both Nextest threads and pooled node count.
 - **Adding or removing a gateway method**: update the `for_each_*_method!` macros in the spec crates — see the `gateway/*` entry under High-Impact Areas.
-
-The root `justfile` owns test-group classification. Keep package membership in `sandbox_full_packages` so both the Nextest filter and Cargo compilation boundary change together.
 
 ## Code Search
 
