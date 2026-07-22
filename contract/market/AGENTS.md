@@ -27,10 +27,10 @@ As of 2026-03-19 (commit `44ebfbe51fb8`; PR [#382](https://github.com/Templar-Pr
   Evidence:
   - `templar_common::borrow::BorrowPositionGuard::record_collateral_asset_withdrawal_initial` (status: open as of `44ebfbe51fb8`)
   - `contract/market/tests/collateral.rs::excessive_collateral_withdrawal` (status: open as of `44ebfbe51fb8`)
-  Security impact:
+    Security impact:
   - This is not a direct fund-loss issue.
   - It is still undesirable for a public entrypoint to rely on overflow panic behavior for bounds enforcement.
-  Guidance:
+    Guidance:
   - Prefer explicit `require!` guards for user-controlled bounds before mutating state.
 
 ## Important Contract Invariants
@@ -60,7 +60,7 @@ These are surprising on first read and should not be changed casually. Some are 
   - `templar_common::borrow::BorrowPositionGuard::record_borrow_initial`
   - `templar_common::market::Market::record_borrow_asset_yield_distribution`
   - `templar_common::borrow::BorrowPositionGuard::record_borrow_final`
-  Test status:
+    Test status:
   - No dedicated regression test currently documents this policy. If behavior around failed borrow finalization changes, add one.
 - Repayment is intentionally disallowed while a position is in liquidation.
   - `contract/market/src/impl_helper.rs::Contract::execute_repay`
@@ -93,7 +93,7 @@ These are surprising on first read and should not be changed casually. Some are 
 For `near-workspaces` tests:
 
 - Prefer prebuilt test contracts.
-- `./script/test.sh` already runs `./script/prebuild-test-contracts.sh` and sets `TEST_CONTRACTS_PREBUILT=1`.
+- `just test-sandbox` sources `script/sandbox-up.sh`, which prebuilds the contracts and sets `TEST_CONTRACTS_PREBUILT=1`.
 - If running market integration tests directly, prefer prebuilding first and setting `TEST_CONTRACTS_PREBUILT=1`.
 - Narrow proxy-oracle verification command:
   - `TEST_CONTRACTS_PREBUILT=1 cargo test proxy_oracle -p templar-market-contract -- --nocapture`

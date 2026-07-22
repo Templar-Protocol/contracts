@@ -414,8 +414,8 @@ Withdrawal addresses must:
 ### Running Tests
 
 ```bash
-# Run all tests (148 tests)
-cargo nextest run -p templar-funding-bridge
+# Run all tests
+just test -p templar-funding-bridge
 
 # Or with standard cargo test
 cargo test -p templar-funding-bridge

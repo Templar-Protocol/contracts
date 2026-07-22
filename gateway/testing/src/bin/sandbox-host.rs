@@ -3,9 +3,9 @@
 //! Launches one sandbox `neard` via near-sandbox (so version/genesis match the
 //! harness), reports its RPC url (stdout and, if an arg is given, that file),
 //! and stays alive until terminated — at which point the `Sandbox` drops and
-//! `neard` is killed. A nextest setup script (or `script/sandbox-up.sh`) runs
-//! this in the background and exports `NEAR_SANDBOX_RPC_URL`, so many test
-//! processes share the one node instead of each booting their own.
+//! `just test-sandbox` starts this in the background through
+//! `script/sandbox-up.sh` and exports `NEAR_SANDBOX_RPC_URL`, so many test
+//! processes share one node instead of each booting its own.
 
 use anyhow::{Context, Result};
 use near_sandbox::Sandbox;

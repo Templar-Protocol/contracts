@@ -2,14 +2,15 @@
 
 ## Test Execution
 
-Invoke the test suite with this script:
+Run the complete local suite through the same entrypoints used by CI:
 
 ```bash
-./script/test.sh
+just test
 ```
 
-The script prebuilds NEAR contracts (fast, non-reproducible) before running the
-test suite.
+Use `just test-fast` for the complete non-node gate, including non-node
+integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
+starting its pooled `neard` instances.
 
 Run the artifact drift check separately when validating checked-in WASM blobs —
 a pure hash/version check with no builds:
@@ -21,24 +22,17 @@ a pure hash/version check with no builds:
 ## Local Testing
 
 ### Running Tests with Coverage
+
 ```bash
-# Install coverage tool
-cargo install cargo-llvm-cov
+# Generate and open HTML coverage for the fast library-test cut
+just coverage
 
-# Prepare test contracts quickly
-./script/prebuild-test-contracts.sh
-
-# Generate coverage report
-cargo llvm-cov --html --output-dir coverage-report
-
-# Generate coverage report (ignore test failures)
-cargo llvm-cov --html --output-dir coverage-report --ignore-run-fail
-
-# View HTML report
-open coverage-report/html/index.html
+# Generate coverage.lcov
+just coverage-lcov
 ```
 
 ### Test Categories
+
 - **Unit tests**: Module-level functionality
 - **Integration tests**: Cross-module interactions
 - **Contract tests**: Smart contract behavior
@@ -47,6 +41,7 @@ open coverage-report/html/index.html
 ## Performance Testing
 
 ### Gas Usage Analysis
+
 Gas usage analysis is available through existing tools:
 
 ```bash
