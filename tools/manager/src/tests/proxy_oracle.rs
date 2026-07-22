@@ -332,24 +332,7 @@ fn admin_upgrade_operation_reads_code_file() {
 }
 
 #[test]
-fn admin_upgrade_accepts_global_sources() {
-    let by_account = operation(&[
-        "--governance-id",
-        "gov.testnet",
-        "--id",
-        "9",
-        "admin-upgrade",
-        "--global-account-id",
-        "global-code.testnet",
-    ]);
-    assert_eq!(
-        by_account,
-        Operation::AdminUpgrade {
-            code: UpgradeSource::GlobalAccountId("global-code.testnet".parse().unwrap()),
-            migrate_args: Base64VecU8(Vec::new()),
-        }
-    );
-
+fn admin_upgrade_accepts_a_global_hash() {
     // 32 base58 '1's decode to 32 zero bytes — a valid code hash.
     let by_hash = operation(&[
         "--governance-id",
@@ -377,13 +360,13 @@ fn self_upgrade_operation_targets_the_governance_contract() {
         "--id",
         "9",
         "self-upgrade",
-        "--global-account-id",
-        "global-code.testnet",
+        "--global-hash",
+        "11111111111111111111111111111111",
     ]);
     assert_eq!(
         op,
         Operation::SelfUpgrade {
-            code: UpgradeSource::GlobalAccountId("global-code.testnet".parse().unwrap()),
+            code: UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
             migrate_args: Base64VecU8(Vec::new()),
         }
     );

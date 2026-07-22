@@ -319,7 +319,7 @@ pub struct SetRoleArgs {
     revoke: bool,
 }
 
-/// The new code for an upgrade: exactly one of the three sources.
+/// The new code for an upgrade: exactly one of the two sources.
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 pub struct UpgradeSourceArgs {
@@ -329,9 +329,6 @@ pub struct UpgradeSourceArgs {
     /// Global contract code hash (base58) to deploy.
     #[arg(long, value_name = "BASE58")]
     global_hash: Option<Base58CryptoHash>,
-    /// Account id that published the global contract to deploy.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    global_account_id: Option<AccountId>,
 }
 
 impl UpgradeSourceArgs {
@@ -343,8 +340,6 @@ impl UpgradeSourceArgs {
             )))
         } else if let Some(hash) = self.global_hash {
             Ok(UpgradeSource::GlobalHash(hash))
-        } else if let Some(account_id) = self.global_account_id {
-            Ok(UpgradeSource::GlobalAccountId(account_id))
         } else {
             // The clap group is `required`, so exactly one of the above is always set.
             anyhow::bail!("no upgrade source provided")

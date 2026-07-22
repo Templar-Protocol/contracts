@@ -1,30 +1,35 @@
 use near_sdk::{
     env,
     json_types::{Base58CryptoHash, Base64VecU8},
-    near, AccountId, Gas, NearToken, Promise,
+    near, Gas, NearToken, Promise,
 };
 
 /// The post-deploy state-migration method every contract exposes.
 pub const MIGRATE_METHOD: &str = "migrate";
 
-/// Where an upgrade's new code comes from. In JSON, `Code` is untagged (a bare base64 string,
-/// matching the pre-`UpgradeSource` wire); the global variants are externally tagged. Borsh tags
-/// all three normally.
+/// Where an upgrade's new code comes from — a raw blob, or a global contract pinned by code hash.
+/// Both are immutable: exactly this code is deployed, then `migrate` runs. (Global-*by-account-id* is
+/// deliberately excluded: it is a live delegation to the publisher, so a later republish would swap
+/// the code with no proposal, timelock, or `migrate` — bypassing governance and bricking versioned
+/// state.)
+///
+/// JSON: `Code` is untagged (a bare base64 string, matching the pre-`UpgradeSource` wire), so serde
+/// requires it declared last; `GlobalHash` is externally tagged. Borsh tags are pinned via explicit
+/// discriminants (`use_discriminant`), decoupling the persisted tag from declaration order —
+/// `UpgradeSource` lives in pending governance proposals, so a future variant just takes its own
+/// discriminant without disturbing the stored ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[near(serializers = [json, borsh])]
+#[near(serializers = [json, borsh(use_discriminant = true)])]
+#[repr(u8)]
 pub enum UpgradeSource {
-    /// A NEAR global contract referenced by its code hash.
-    GlobalHash(Base58CryptoHash),
-    /// A NEAR global contract referenced by the account that published it.
-    GlobalAccountId(AccountId),
-    /// A raw WASM blob deployed onto the account. Untagged in JSON: a bare base64 string. serde
-    /// requires untagged variants to be declared last.
+    /// A NEAR global contract referenced by its (immutable) code hash.
+    GlobalHash(Base58CryptoHash) = 1,
+    /// A raw WASM blob deployed onto the account. Untagged in JSON: a bare base64 string.
     #[serde(untagged)]
-    Code(Base64VecU8),
+    Code(Base64VecU8) = 0,
 }
 
-/// A compact, loggable stand-in for an [`UpgradeSource`] — a hash/reference, never the (potentially
-/// large) blob.
+/// A compact, loggable stand-in for an [`UpgradeSource`] — a hash, never the (potentially large) blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub enum UpgradeSummary {
@@ -32,13 +37,10 @@ pub enum UpgradeSummary {
     CodeHash(Base58CryptoHash),
     /// A global contract referenced by its code hash.
     GlobalHash(Base58CryptoHash),
-    /// A global contract referenced by the account that published it.
-    GlobalAccountId(AccountId),
 }
 
 impl UpgradeSource {
-    /// A `Code` variant carrying an empty blob is never a valid deploy; the global variants have no
-    /// blob to be empty.
+    /// A `Code` variant carrying an empty blob is never a valid deploy.
     pub fn is_empty_code(&self) -> bool {
         matches!(self, UpgradeSource::Code(code) if code.0.is_empty())
     }
@@ -50,9 +52,6 @@ impl UpgradeSource {
                 UpgradeSummary::CodeHash(env::sha256_array(&blob.0).into())
             }
             UpgradeSource::GlobalHash(hash) => UpgradeSummary::GlobalHash(*hash),
-            UpgradeSource::GlobalAccountId(account_id) => {
-                UpgradeSummary::GlobalAccountId(account_id.clone())
-            }
         }
     }
 
@@ -69,9 +68,6 @@ impl UpgradeSource {
         let deployed = match self {
             UpgradeSource::Code(code) => promise.deploy_contract(code.0),
             UpgradeSource::GlobalHash(hash) => promise.use_global_contract(hash),
-            UpgradeSource::GlobalAccountId(account_id) => {
-                promise.use_global_contract_by_account_id(account_id)
-            }
         };
         deployed.function_call(
             migrate_method.into(),
@@ -100,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn global_variants_stay_externally_tagged_in_json() {
+    fn global_hash_stays_externally_tagged_in_json() {
         let hash = UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32]));
         let value = serde_json::to_value(&hash).unwrap();
         assert_eq!(
@@ -111,22 +107,13 @@ mod tests {
             serde_json::from_value::<UpgradeSource>(value).unwrap(),
             hash
         );
-
-        let account = UpgradeSource::GlobalAccountId("global.near".parse().unwrap());
-        let value = serde_json::to_value(&account).unwrap();
-        assert_eq!(value, json!({ "GlobalAccountId": "global.near" }));
-        assert_eq!(
-            serde_json::from_value::<UpgradeSource>(value).unwrap(),
-            account
-        );
     }
 
     #[test]
-    fn all_variants_borsh_roundtrip() {
+    fn both_variants_borsh_roundtrip() {
         for source in [
             UpgradeSource::Code(Base64VecU8(vec![1, 2, 3])),
             UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])),
-            UpgradeSource::GlobalAccountId("global.near".parse().unwrap()),
         ] {
             let bytes = near_sdk::borsh::to_vec(&source).unwrap();
             assert_eq!(
@@ -134,5 +121,24 @@ mod tests {
                 source
             );
         }
+    }
+
+    /// Golden bytes for the persisted borsh format — `UpgradeSource` lives inside pending governance
+    /// proposals, so these explicit discriminants must not shift.
+    #[test]
+    fn borsh_discriminants_are_stable() {
+        // Code = tag 0, then a Vec<u8> (u32 LE length + bytes).
+        assert_eq!(
+            near_sdk::borsh::to_vec(&UpgradeSource::Code(Base64VecU8(vec![0xaa, 0xbb]))).unwrap(),
+            vec![0, 2, 0, 0, 0, 0xaa, 0xbb],
+        );
+        // GlobalHash = tag 1, then the 32-byte hash.
+        assert_eq!(
+            near_sdk::borsh::to_vec(&UpgradeSource::GlobalHash(Base58CryptoHash::from(
+                [0u8; 32]
+            )))
+            .unwrap(),
+            [&[1u8][..], &[0u8; 32][..]].concat(),
+        );
     }
 }

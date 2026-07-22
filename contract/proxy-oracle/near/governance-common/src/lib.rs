@@ -510,7 +510,9 @@ mod tests {
             ),
             (
                 Operation::SelfUpgrade {
-                    code: UpgradeSource::GlobalAccountId("global.near".parse().unwrap()),
+                    code: UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from(
+                        [9u8; 32],
+                    )),
                     migrate_args: Base64VecU8(vec![0xbe, 0xef]),
                 },
                 OperationKind::SelfUpgrade,

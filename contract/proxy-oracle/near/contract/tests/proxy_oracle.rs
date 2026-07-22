@@ -156,22 +156,21 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     }
 }
 
-/// The global-contract sources deploy via `use_global_contract*` instead of a raw blob, but keep the
-/// same batched `migrate` in one self-receipt.
-#[rstest::rstest]
-#[case::by_hash(UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])))]
-#[case::by_account_id(UpgradeSource::GlobalAccountId("global.near".parse().unwrap()))]
-pub fn admin_upgrade_from_global_source_uses_global_contract_then_migrates(
-    #[case] code: UpgradeSource,
-) {
+/// A global-hash source deploys via `use_global_contract` instead of a raw blob, but keeps the same
+/// batched `migrate` in one self-receipt.
+#[test]
+pub fn admin_upgrade_from_global_hash_uses_global_contract_then_migrates() {
     testing_env!(VMContextBuilder::new()
         .current_account_id("proxy.near".parse().unwrap())
         .predecessor_account_id("owner.near".parse().unwrap())
         .build());
     let mut c = Contract::new(None);
 
-    c.admin_upgrade(code, Base64VecU8(br#"{"from_version":"v0"}"#.to_vec()))
-        .detach();
+    c.admin_upgrade(
+        UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])),
+        Base64VecU8(br#"{"from_version":"v0"}"#.to_vec()),
+    )
+    .detach();
 
     let receipts = get_created_receipts();
     assert_eq!(receipts.len(), 1);
