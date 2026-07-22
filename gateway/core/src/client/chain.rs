@@ -12,11 +12,11 @@ pub struct ChainClient<'a> {
 
 impl ChainClient<'_> {
     /// Header summary for a block; `block_hash` selects a specific block,
-    /// otherwise the latest final block is used.
+    /// otherwise the client's configured query finality is used.
     pub async fn block(&self, block_hash: Option<CryptoHash>) -> GatewayResult<BlockSummary> {
         let reference = match block_hash {
             Some(hash) => Reference::AtBlockHash(hash.0),
-            None => Reference::Final,
+            None => self.inner.finality_policy().query_reference(),
         };
 
         let response = Chain::block()

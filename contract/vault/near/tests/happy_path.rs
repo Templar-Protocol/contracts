@@ -12,7 +12,7 @@ use anyhow::Result;
 use near_sdk::json_types::U128;
 use rstest::rstest;
 use templar_common::vault::{AllocationDelta, Delta};
-use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness};
+use templar_gateway_testing::{harness, ManagedAccountId, SandboxHarness, TEST_FINALITY_POLICY};
 
 mod common;
 use common::{harvest, zero_interest};
@@ -100,7 +100,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
 ) -> Result<()> {
     use near_api::{
         types::transaction::actions::{Action, FunctionCallAction},
-        Signer, Transaction,
+        Transaction,
     };
     use near_sdk::NearToken;
 
@@ -118,7 +118,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
     // `allocate` immediately attempts another in the same transaction, tripping
     // the "only one op in flight" invariant. There is no (and should be no)
     // gateway op for this always-invalid composition, so drive it via near-api.
-    let signer = Signer::from_secret_key(templar_gateway_testing::test_secret_key()?)?;
+    let signer = templar_gateway_testing::test_signer();
     let result = Transaction::construct(vault.owner.0.clone(), vault.vault_id.clone())
         .add_action(Action::FunctionCall(Box::new(FunctionCallAction {
             method_name: "resync_idle_balance".to_owned(),
@@ -135,6 +135,7 @@ async fn state_machine_is_locked_when_another_op_is_running(
             deposit: NearToken::from_yoctonear(0),
         })))
         .with_signer(signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(&harness.network)
         .await?;
 

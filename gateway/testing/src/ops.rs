@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use near_api::{
-    types::{AccessKeyPermission, AccountId, Reference},
+    types::{AccessKeyPermission, AccountId},
     Account,
 };
 use near_token::NearToken;
@@ -39,7 +39,7 @@ use templar_gateway_types::{
 use templar_primitives::{Nanoseconds, SU128, SU64};
 use test_utils::to_price;
 
-use crate::sandbox::SandboxHarness;
+use crate::{sandbox::SandboxHarness, TEST_FINALITY_POLICY};
 
 /// A market deployed by [`SandboxHarness::deploy_full_market`], with the asset
 /// and oracle accounts resolved from its configuration for convenient access.
@@ -72,7 +72,8 @@ impl SandboxHarness {
     /// harness can currently sign as. Rebuilt per call so newly-created users
     /// are always available; cheap (no network I/O) for tests.
     pub fn client(&self) -> Result<Client> {
-        let mut builder = Client::builder(self.network.clone());
+        let mut builder =
+            Client::builder(self.network.clone()).finality_policy(TEST_FINALITY_POLICY);
         for (account_id, managed) in self.signers_snapshot() {
             builder = builder.with_signer(account_id, managed.signer.clone());
         }
@@ -1266,12 +1267,12 @@ impl SandboxHarness {
             .map_err(|error| anyhow::anyhow!("get_configuration failed: {error}"))
     }
 
-    /// List `account_id`'s access keys as `(public_key, is_full_access)` at final
-    /// finality.
+    /// List `account_id`'s access keys at the sandbox's optimistic query
+    /// reference as `(public_key, is_full_access)`.
     pub async fn view_access_keys(&self, account_id: &AccountId) -> Result<Vec<(String, bool)>> {
         let keys = Account(account_id.clone())
             .list_keys()
-            .at(Reference::Final)
+            .at(TEST_FINALITY_POLICY.query_reference())
             .fetch_from(&self.network)
             .await?
             .data;

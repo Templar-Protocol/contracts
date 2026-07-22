@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, LazyLock, Mutex,
     },
     time::Duration,
 };
@@ -36,7 +36,7 @@ use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
 
-use crate::wasm::PoolInfo;
+use crate::{wasm::PoolInfo, TEST_FINALITY_POLICY};
 
 /// The two token ids the mock NEP-245 contract (`crate::wasm::mt`) pre-creates
 /// in its `new`; a market's MT borrow/collateral asset must reference these.
@@ -192,7 +192,7 @@ impl SandboxHarness {
         let secret_key = test_secret_key()?;
         crate::sandbox_ext::create_account(&self.network, &account_id, &secret_key, balance)
             .await?;
-        self.register_account(account_id, secret_key, label).await
+        Ok(self.register_account(account_id))
     }
 
     /// Like [`create_account`](Self::create_account) but mints the account with a
@@ -216,23 +216,21 @@ impl SandboxHarness {
             balance,
         )
         .await?;
-        self.register_account(account_id, secret_key, label).await
+        Ok(self.register_account(account_id))
     }
 
-    /// Register a freshly-created account's signer on the harness and return its
-    /// id plus a signer over its key.
-    async fn register_account(
-        &self,
-        account_id: AccountId,
-        secret_key: SecretKey,
-        label: &str,
-    ) -> Result<(AccountId, Arc<Signer>)> {
-        let managed = ManagedSigner::new([secret_key])
-            .await
-            .with_context(|| format!("failed to initialize {label} signer"))?;
-        let signer = managed.signer.clone();
+    /// Register a freshly-created account on the shared signer. near-api caches
+    /// nonces per `(account_id, public_key)`, so one signer safely covers every
+    /// harness account and preserves nonce continuity across gateway and raw
+    /// optimistic test transactions.
+    fn register_account(&self, account_id: AccountId) -> (AccountId, Arc<Signer>) {
+        let signer = test_signer();
+        let managed = ManagedSigner {
+            signer: signer.clone(),
+            key_count: 1,
+        };
         self.register_signer(ManagedAccountId(account_id.clone()), managed);
-        Ok((account_id, signer))
+        (account_id, signer)
     }
 
     /// Like [`create_account`](Self::create_account) but returns the
@@ -258,7 +256,7 @@ impl SandboxHarness {
     }
 
     pub fn gateway_client(&self) -> NearClient {
-        NearClient::new(self.network.clone())
+        NearClient::with_finality_policy(self.network.clone(), TEST_FINALITY_POLICY)
     }
 
     /// Snapshot of the gateway operator signers (and any on-demand accounts) as
@@ -340,7 +338,7 @@ impl SandboxHarness {
         deploy_contract(
             &self.network,
             account_id.clone(),
-            account_signer()?,
+            test_signer(),
             crate::wasm::registry().await.to_vec(),
             "new",
             serde_json::json!({}),
@@ -502,8 +500,7 @@ impl SandboxHarness {
 
     pub async fn deploy_universal_account(&self) -> Result<(AccountId, TestSigner)> {
         let account_id = self.universal_account_signer_account_id.0.clone();
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize universal account deploy signer")?;
+        let signer = test_signer();
 
         let test_signer = TestSigner::fixed_passkey([0x11; 32]);
         let init = InitArgs {
@@ -527,8 +524,7 @@ impl SandboxHarness {
 
     pub async fn deploy_proxy_oracle(&self) -> Result<AccountId> {
         let account_id = self.proxy_oracle_signer_account_id.0.clone();
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize proxy oracle deploy signer")?;
+        let signer = test_signer();
 
         deploy_contract(
             &self.network,
@@ -547,8 +543,7 @@ impl SandboxHarness {
     /// `get_proxy` returns the `v0::Proxy` shape and whose governance is built in.
     pub async fn deploy_legacy_v0_proxy_oracle(&self) -> Result<AccountId> {
         let account_id = self.proxy_oracle_signer_account_id.0.clone();
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize legacy proxy oracle deploy signer")?;
+        let signer = test_signer();
 
         deploy_contract(
             &self.network,
@@ -661,23 +656,18 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         price: Option<templar_common::oracle::pyth::Price>,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize mock oracle signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "set_pyth_price",
-                serde_json::json!({
-                    "price_identifier": price_identifier,
-                    "price": price,
-                }),
-            )
-            .transaction()
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "set_pyth_price",
+            serde_json::json!({
+                "price_identifier": price_identifier,
+                "price": price,
+            }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(0),
+        )
+        .await
     }
 
     pub async fn set_mock_oracle_redstone_price(
@@ -686,23 +676,18 @@ impl SandboxHarness {
         feed_id: templar_common::oracle::redstone::FeedId,
         data: Option<templar_common::oracle::redstone::FeedData>,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize mock oracle signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "set_redstone_price",
-                serde_json::json!({
-                    "feed_id": feed_id,
-                    "data": data,
-                }),
-            )
-            .transaction()
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "set_redstone_price",
+            serde_json::json!({
+                "feed_id": feed_id,
+                "data": data,
+            }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(0),
+        )
+        .await
     }
 
     pub async fn set_mock_oracle_lazer_price(
@@ -711,23 +696,18 @@ impl SandboxHarness {
         feed_id: u32,
         data: Option<templar_common::oracle::lazer::FeedData>,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize mock oracle signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "set_lazer_price",
-                serde_json::json!({
-                    "feed_id": feed_id,
-                    "data": data,
-                }),
-            )
-            .transaction()
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "set_lazer_price",
+            serde_json::json!({
+                "feed_id": feed_id,
+                "data": data,
+            }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(0),
+        )
+        .await
     }
 
     pub async fn deploy_lst_oracle(&self, label: &str, oracle_id: AccountId) -> Result<AccountId> {
@@ -752,24 +732,18 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         entry: PriceTransformer,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize lst oracle signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "create_transformer",
-                serde_json::json!({
-                    "price_identifier": price_identifier,
-                    "entry": entry,
-                }),
-            )
-            .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "create_transformer",
+            serde_json::json!({
+                "price_identifier": price_identifier,
+                "entry": entry,
+            }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(1),
+        )
+        .await
     }
 
     /// Set a proxy definition directly via the owner-gated `admin_set_proxy`
@@ -781,20 +755,15 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         proxy: Option<Proxy<Source>>,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize admin_set_proxy signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "admin_set_proxy",
-                serde_json::json!({ "id": price_identifier, "proxy": proxy }),
-            )
-            .transaction()
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "admin_set_proxy",
+            serde_json::json!({ "id": price_identifier, "proxy": proxy }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(0),
+        )
+        .await
     }
 
     /// Refresh the proxy oracle's cached prices for `price_ids` by invoking
@@ -808,20 +777,15 @@ impl SandboxHarness {
         oracle_id: AccountId,
         price_ids: Vec<PriceIdentifier>,
     ) -> Result<()> {
-        let signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize update_prices signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "update_prices",
-                serde_json::json!({ "price_ids": price_ids }),
-            )
-            .transaction()
-            .gas(near_sdk::Gas::from_tgas(300))
-            .with_signer(oracle_id, signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-        Ok(())
+        self.call_contract(
+            &oracle_id,
+            "update_prices",
+            serde_json::json!({ "price_ids": price_ids }),
+            &oracle_id,
+            300,
+            NearToken::from_yoctonear(0),
+        )
+        .await
     }
 
     /// Deploy a governance contract for `oracle_id` (admin = `admin_id`, all TTLs
@@ -852,20 +816,15 @@ impl SandboxHarness {
         .await?;
 
         // Current owner (the oracle account) proposes the governance contract.
-        let owner_signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize ownership-transfer signer")?;
-        Contract(oracle_id.clone())
-            .call_function(
-                "own_propose_owner",
-                serde_json::json!({ "account_id": governance_id }),
-            )
-            .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(50))
-            .with_signer(oracle_id.clone(), owner_signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
+        self.call_contract(
+            &oracle_id,
+            "own_propose_owner",
+            serde_json::json!({ "account_id": governance_id }),
+            &oracle_id,
+            50,
+            NearToken::from_yoctonear(1),
+        )
+        .await?;
 
         // Governance accepts ownership via an AdminFunctionCall proposal (id 0),
         // which fires `own_accept_owner` on the oracle as the governance contract.
@@ -890,37 +849,29 @@ impl SandboxHarness {
             attached_deposit: near_sdk::json_types::U128(1),
             gas: near_sdk::Gas::from_tgas(50),
         };
-        let admin_signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize governance admin signer")?;
 
-        Contract(governance_id.clone())
-            .call_function(
-                "create_proposal",
-                serde_json::json!({
-                    "id": proposal_id,
-                    "operation": operation,
-                    "requested_ttl": Nanoseconds::zero(),
-                }),
-            )
-            .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(admin_id.clone(), admin_signer.clone())
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-
-        Contract(governance_id.clone())
-            .call_function("execute_proposal", serde_json::json!({ "id": proposal_id }))
-            .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(admin_id.clone(), admin_signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-
-        Ok(())
+        self.call_contract(
+            governance_id,
+            "create_proposal",
+            serde_json::json!({
+                "id": proposal_id,
+                "operation": operation,
+                "requested_ttl": Nanoseconds::zero(),
+            }),
+            admin_id,
+            100,
+            NearToken::from_yoctonear(1),
+        )
+        .await?;
+        self.call_contract(
+            governance_id,
+            "execute_proposal",
+            serde_json::json!({ "id": proposal_id }),
+            admin_id,
+            100,
+            NearToken::from_yoctonear(1),
+        )
+        .await
     }
 
     /// Seed a proxy on a legacy (`< 0.2.0`) oracle, whose only path to set a
@@ -932,36 +883,50 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         proxy: v0::Proxy,
     ) -> Result<()> {
-        let owner_signer = Signer::from_secret_key(test_secret_key()?)
-            .context("failed to initialize legacy proxy signer")?;
         let operation = v0::Operation::SetProxy {
             id: price_identifier,
             proxy: Some(proxy),
         };
 
-        Contract(oracle_id.clone())
-            .call_function(
-                "gov_create",
-                serde_json::json!({ "id": 0, "operation": operation }),
-            )
+        self.call_contract(
+            &oracle_id,
+            "gov_create",
+            serde_json::json!({ "id": 0, "operation": operation }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(1),
+        )
+        .await?;
+        self.call_contract(
+            &oracle_id,
+            "gov_execute",
+            serde_json::json!({ "id": 0 }),
+            &oracle_id,
+            100,
+            NearToken::from_yoctonear(1),
+        )
+        .await
+    }
+    /// Submit a successful sandbox contract call under the shared test policy.
+    async fn call_contract(
+        &self,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+        signer_id: &AccountId,
+        gas_tgas: u64,
+        deposit: NearToken,
+    ) -> Result<()> {
+        Contract(contract_id.clone())
+            .call_function(method_name, args)
             .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id.clone(), owner_signer.clone())
+            .deposit(deposit)
+            .gas(near_sdk::Gas::from_tgas(gas_tgas))
+            .with_signer(signer_id.clone(), test_signer())
+            .wait_until(TEST_FINALITY_POLICY.transaction_status())
             .send_to(&self.network)
             .await?
             .assert_success();
-
-        Contract(oracle_id.clone())
-            .call_function("gov_execute", serde_json::json!({ "id": 0 }))
-            .transaction()
-            .deposit(NearToken::from_yoctonear(1))
-            .gas(near_sdk::Gas::from_tgas(100))
-            .with_signer(oracle_id, owner_signer)
-            .send_to(&self.network)
-            .await?
-            .assert_success();
-
         Ok(())
     }
 }
@@ -1159,12 +1124,6 @@ fn genesis_secret_key() -> Result<SecretKey> {
         .context("failed to parse genesis private key")
 }
 
-/// A signer over the deterministic test key, valid for any harness-created
-/// account (they all share that key).
-fn account_signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(test_secret_key()?).context("failed to initialize account signer")
-}
-
 pub(crate) async fn deploy_contract(
     network: &NetworkConfig,
     account_id: AccountId,
@@ -1177,6 +1136,7 @@ pub(crate) async fn deploy_contract(
         .use_code(code)
         .with_init_call(init_method, init_args)?
         .with_signer(signer)
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -1191,4 +1151,16 @@ pub(crate) async fn deploy_contract(
 pub fn test_secret_key() -> Result<SecretKey> {
     Ok("ed25519:2vVTQWpoZvYZBS4HYFZtzU2rxpoQSrhyFWdaHLqSdyaEfgjefbSKiFpuVatuRqax3HFvVq2tkkqWH2h7tso2nK8q"
         .parse()?)
+}
+
+/// A process-wide signer over the shared sandbox key. Reusing the same
+/// `Arc<Signer>` preserves near-api's per-account nonce cache when sequential
+/// test transactions wait only for optimistic execution.
+pub fn test_signer() -> Arc<Signer> {
+    static SIGNER: LazyLock<Arc<Signer>> = LazyLock::new(|| {
+        Signer::from_secret_key(test_secret_key().expect("fixed test secret key is valid"))
+            .expect("fixed test signer is valid")
+    });
+
+    Arc::clone(&SIGNER)
 }

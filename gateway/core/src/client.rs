@@ -49,6 +49,8 @@ use tx::TxClient;
 use universal_account::UniversalAccountClient;
 use vault::VaultClient;
 
+use crate::FinalityPolicy;
+
 trait BoundContractClient {
     fn client(&self) -> &NearClient;
     fn contract_id(&self) -> &AccountIdRef;
@@ -99,26 +101,37 @@ impl ContractWriteOptions {
 pub struct NearClient {
     network: NetworkConfig,
     cache: Arc<NearClientCache>,
+    finality_policy: FinalityPolicy,
 }
 
 impl std::fmt::Debug for NearClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NearClient")
             .field("network", &self.network)
+            .field("finality_policy", &self.finality_policy)
             .finish_non_exhaustive()
     }
 }
 
 impl NearClient {
     pub fn new(network: NetworkConfig) -> Self {
+        Self::with_finality_policy(network, FinalityPolicy::default())
+    }
+
+    pub fn with_finality_policy(network: NetworkConfig, finality_policy: FinalityPolicy) -> Self {
         Self {
             network,
             cache: Arc::new(NearClientCache::new()),
+            finality_policy,
         }
     }
 
     pub fn network(&self) -> &NetworkConfig {
         &self.network
+    }
+
+    pub const fn finality_policy(&self) -> FinalityPolicy {
+        self.finality_policy
     }
 
     pub(crate) fn cache(&self) -> &NearClientCache {

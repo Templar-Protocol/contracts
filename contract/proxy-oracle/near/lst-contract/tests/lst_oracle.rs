@@ -11,10 +11,8 @@
     clippy::too_many_lines
 )]
 
-use std::sync::Arc;
-
-use anyhow::{Context, Result};
-use near_api::{types::AccountId, Contract, NetworkConfig, Signer};
+use anyhow::Result;
+use near_api::{types::AccountId, Contract, NetworkConfig};
 use near_sdk::{
     json_types::U128,
     serde::{de::DeserializeOwned, Serialize},
@@ -23,18 +21,13 @@ use near_sdk::{
 };
 use near_token::NearToken;
 use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp};
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_testing::{test_signer as signer, SandboxHarness, TEST_FINALITY_POLICY};
 use templar_proxy_oracle_near_common::price_transformer::{Call, PriceTransformer};
 use test_utils::{DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
 ));
-
-fn signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(templar_gateway_testing::test_secret_key()?)
-        .context("build test signer")
-}
 
 async fn view<T: DeserializeOwned + Send + Sync>(
     network: &NetworkConfig,
@@ -45,6 +38,7 @@ async fn view<T: DeserializeOwned + Send + Sync>(
     Ok(Contract(contract_id.clone())
         .call_function(method, args)
         .read_only::<T>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
@@ -64,7 +58,8 @@ async fn call(
         .transaction()
         .gas(Gas::from_tgas(100))
         .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -83,7 +78,8 @@ async fn call_json<T: DeserializeOwned>(
         .call_function(method, args)
         .transaction()
         .gas(Gas::from_tgas(100))
-        .with_signer(signer_id.clone(), signer()?)
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .into_result()?;

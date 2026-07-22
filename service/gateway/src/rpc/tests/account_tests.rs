@@ -13,6 +13,11 @@ async fn account_get_endpoint_works_against_sandbox() -> Result<()> {
 
     assert!(result.amount.as_yoctonear() > 0);
     assert!(result.storage_usage > 0);
+    assert_eq!(
+        result.code_hash,
+        near_api::types::CryptoHash::default().to_string()
+    );
+    assert_eq!(result.locked, NearToken::from_yoctonear(0));
 
     stack.shutdown().await;
     Ok(())
