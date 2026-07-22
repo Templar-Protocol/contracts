@@ -223,13 +223,13 @@ jobs:
     name: Binary Build
     runs-on: ubuntu-latest
     steps:
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
         with:
@@ -420,13 +420,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
         with:
@@ -453,13 +453,13 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
     steps:
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
         with:
@@ -521,15 +521,15 @@ jobs:
       # database per test, so they need a reachable postgres at runtime.
       postgres: *postgres_service
     steps:
-      - name: Free disk space
-        uses: ./.github/actions/free-disk-space
-        with:
-          aggressive: "true"
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          aggressive: "true"
 
       - uses: ./.github/actions/rust
         with:
