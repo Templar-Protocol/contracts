@@ -1058,13 +1058,8 @@ fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>) {
         event["data"]["code"]["CodeHash"].as_str().unwrap(),
         expected_hash
     );
-    // `migrate_args` is `null` for an empty (no-op) refresh, else the base64 of the selector.
-    let expected_args = if migrate_args.is_empty() {
-        near_sdk::serde_json::Value::Null
-    } else {
-        near_sdk::serde_json::to_value(Base64VecU8(migrate_args)).unwrap()
-    };
-    assert_eq!(event["data"]["migrate_args"], expected_args);
+    // `migrated` is whether a migration was requested — a bounded flag, not the payload.
+    assert_eq!(event["data"]["migrated"], !migrate_args.is_empty());
 }
 
 #[test]

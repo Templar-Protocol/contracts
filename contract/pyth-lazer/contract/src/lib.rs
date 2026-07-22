@@ -500,12 +500,13 @@ impl Contract {
     pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
         assert_one_yocto();
         Self::require_owner();
-        // Emit before returning the Promise: deploy+migrate is one atomic receipt, so a failed
-        // `migrate` reverts the whole receipt — including this log. The event summarizes the source
-        // (a blob's hash / global reference — never the full wasm) to stay within the log-size limit.
+        // The deploy+migrate runs in the returned Promise — a *separate* receipt — so this event
+        // records the upgrade being scheduled, not its completion. Summarize the source (a hash /
+        // global reference, never the wasm) and reduce migrate_args to a bounded flag, so the log
+        // stays well under the size limit regardless of the payload.
         PythLazerEvent::Upgraded {
             code: code.summary(),
-            migrate_args: (!migrate_args.0.is_empty()).then(|| migrate_args.clone()),
+            migrated: !migrate_args.0.is_empty(),
         }
         .emit();
         code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)

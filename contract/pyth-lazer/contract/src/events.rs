@@ -1,4 +1,4 @@
-use near_sdk::{json_types::Base64VecU8, near, AccountId, NearToken};
+use near_sdk::{near, AccountId, NearToken};
 use templar_common::oracle::lazer::FeedData;
 use templar_common::upgrade::UpgradeSummary;
 
@@ -37,13 +37,15 @@ pub enum PythLazerEvent {
         receiver: AccountId,
     },
 
-    /// Emitted by `admin_upgrade` before it returns the atomic deploy+migrate `Promise`. `code`
-    /// summarizes the new code (a blob's sha256, or a global-contract reference — never the blob
-    /// itself). `migrate_args` is the migration selector that ran, or `None` for a same-version
-    /// refresh (no migration).
+    /// Emitted by `admin_upgrade` when it *schedules* the deploy+migrate. That runs in the returned
+    /// Promise — a separate receipt — so this records the initiated upgrade, **not** its completion:
+    /// if the deploy or migrate fails, that receipt reverts on its own and this already-committed log
+    /// is not rolled back. `code` summarizes the new code (a blob's sha256 or a global-contract
+    /// reference — never the blob itself); `migrated` is whether a migration was requested (non-empty
+    /// `migrate_args`), a bounded flag so the log can never exceed the size limit.
     #[event_version("2.0.0")]
     Upgraded {
         code: UpgradeSummary,
-        migrate_args: Option<Base64VecU8>,
+        migrated: bool,
     },
 }
