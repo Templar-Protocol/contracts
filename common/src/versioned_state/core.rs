@@ -172,33 +172,34 @@ pub fn run_migration_chain<M: Migrator>(
     migrations: Vec<M>,
     target: u32,
 ) -> Result<(), MigrationChainError> {
-    if migrations.is_empty() {
+    let Some((first, rest)) = migrations.split_first() else {
         return Err(MigrationChainError::Empty);
+    };
+
+    // Validate the whole chain before running any step: the first migration must start at the stored
+    // version, each later migration's input must equal the previous step's output, and the final
+    // output must land on target. An invalid chain thus reverts without writing state.
+    let stored = read_state_version()?;
+    if first.input_version() != stored {
+        return Err(MigrationChainError::StartMismatch {
+            input: first.input_version(),
+            stored,
+        });
     }
 
-    // Thread the expected input version through the chain: it starts at the stored version and, for
-    // each step, must equal that step's input before advancing to the step's output. The first
-    // mismatch is a start error (against stored state); any later one is a broken link.
-    let mut expected_input = read_state_version()?;
-    for (index, migration) in migrations.iter().enumerate() {
+    let mut expected_input = first.output_version();
+    for migration in rest {
         let input = migration.input_version();
         if input != expected_input {
-            return Err(if index == 0 {
-                MigrationChainError::StartMismatch {
-                    input,
-                    stored: expected_input,
-                }
-            } else {
-                MigrationChainError::LinkMismatch {
-                    output: expected_input,
-                    input,
-                }
+            return Err(MigrationChainError::LinkMismatch {
+                output: expected_input,
+                input,
             });
         }
         expected_input = migration.output_version();
     }
 
-    // After the loop `expected_input` holds the final migration's output version.
+    // `expected_input` now holds the final migration's output version.
     if expected_input != target {
         return Err(MigrationChainError::EndMismatch {
             output: expected_input,
