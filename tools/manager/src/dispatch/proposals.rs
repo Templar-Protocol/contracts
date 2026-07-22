@@ -21,7 +21,7 @@ use crate::context::{print_json, CliContext};
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let (signer, secret_key) = args.signer.resolve()?;
     let client = ctx.signing_client(signer.clone(), secret_key)?;
-    let governance_id = args.governance_id().clone();
+    let governance_id = args.target.resolve(&ctx).await?;
     let execute_when_ready = args.execute_when_ready();
 
     // Auto-fill the next breaker id for add-circuit-breaker, resolving the proxy
@@ -47,7 +47,10 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     };
 
     let create = client
-        .execute_as(signer.clone(), args.try_into_spec(id)?)
+        .execute_as(
+            signer.clone(),
+            args.try_into_spec(governance_id.clone(), id)?,
+        )
         .await?;
     // Fail fast if the create reverted, before waiting on / executing a proposal
     // that was never created.
@@ -74,10 +77,12 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 /// elapse first, so an early call blocks instead of failing on an immature
 /// proposal.
 pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
+    let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
-        wait_for_maturity(&ctx, args.governance_id(), args.id()).await?;
+        wait_for_maturity(&ctx, &governance_id, args.id()).await?;
     }
-    ctx.write(args.signer.clone(), args.into_spec()).await
+    ctx.write(args.signer.clone(), args.into_spec(governance_id))
+        .await
 }
 
 /// Execute proposal `id` on its own (no idempotency key), signed as `signer`

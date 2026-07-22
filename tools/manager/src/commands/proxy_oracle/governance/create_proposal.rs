@@ -21,12 +21,12 @@ use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::commands::signer::SignerArgs;
 use crate::proxy::load_proxy_file;
+use crate::resolve::GovernanceTarget;
 
 #[derive(Args, Debug)]
 pub struct CreateProposal {
-    /// Governance contract account.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    governance_id: AccountId,
+    #[command(flatten)]
+    pub(crate) target: GovernanceTarget,
     /// Proposal id; fetched from the governance contract's next id when omitted
     #[arg(long, value_name = "ID")]
     id: Option<u32>,
@@ -44,10 +44,6 @@ pub struct CreateProposal {
 }
 
 impl CreateProposal {
-    pub fn governance_id(&self) -> &AccountId {
-        &self.governance_id
-    }
-
     /// The explicit `--id`, or `None` when it should be auto-fetched.
     pub fn id(&self) -> Option<u32> {
         self.id
@@ -74,10 +70,14 @@ impl CreateProposal {
         }
     }
 
-    /// Build the gateway spec with the resolved proposal id.
-    pub fn try_into_spec(self, id: u32) -> anyhow::Result<spec::CreateProposal> {
+    /// Build the gateway spec with the resolved governance account and proposal id.
+    pub fn try_into_spec(
+        self,
+        governance_id: AccountId,
+        id: u32,
+    ) -> anyhow::Result<spec::CreateProposal> {
         Ok(spec::CreateProposal {
-            governance_id: self.governance_id,
+            governance_id,
             id,
             operation: self.operation.into_operation()?,
             requested_ttl: self.requested_ttl,

@@ -258,7 +258,12 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
         "--proxy-file",
         proxy_file.to_str().expect("fixture path is unicode"),
     ]);
-    let params = cmd.try_into_spec(0).expect("create-proposal should build");
+    let params = cmd
+        .try_into_spec(
+            "proxy.registry.testnet".parse().expect("valid account id"),
+            0,
+        )
+        .expect("create-proposal should build");
 
     std::fs::remove_file(&proxy_file).expect("remove proxy fixture");
 
@@ -286,7 +291,9 @@ fn governance_execute_proposal_typed_args_parse() {
         .into_iter()
         .chain(CREDS),
     ) {
-        ProxyOracleGovernanceNs::ExecuteProposal(cmd) => cmd.into_spec(),
+        ProxyOracleGovernanceNs::ExecuteProposal(cmd) => {
+            cmd.into_spec("proxy.registry.testnet".parse().expect("valid account id"))
+        }
         _ => panic!("expected execute-proposal"),
     };
 

@@ -3,12 +3,12 @@ use near_account_id::AccountId;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 use crate::commands::signer::SignerArgs;
+use crate::resolve::GovernanceTarget;
 
 #[derive(Args, Debug)]
 pub struct ExecuteProposalArgs {
-    /// Governance contract account.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    governance_id: AccountId,
+    #[command(flatten)]
+    pub(crate) target: GovernanceTarget,
     /// Proposal id to execute.
     #[arg(long, value_name = "ID")]
     id: u32,
@@ -21,18 +21,15 @@ pub struct ExecuteProposalArgs {
 }
 
 impl ExecuteProposalArgs {
-    pub fn governance_id(&self) -> &AccountId {
-        &self.governance_id
-    }
     pub fn id(&self) -> u32 {
         self.id
     }
     pub fn when_ready(&self) -> bool {
         self.when_ready
     }
-    pub fn into_spec(self) -> spec::ExecuteProposal {
+    pub fn into_spec(self, governance_id: AccountId) -> spec::ExecuteProposal {
         spec::ExecuteProposal {
-            governance_id: self.governance_id,
+            governance_id,
             id: self.id,
         }
     }

@@ -206,7 +206,9 @@ async fn governance_cancel_proposal_plans_cancel_action() {
         .into_iter()
         .chain(CREDS),
     ) {
-        ProxyOracleGovernanceNs::CancelProposal(a) => a.cancel(),
+        ProxyOracleGovernanceNs::CancelProposal(a) => {
+            a.cancel("proxy.registry.testnet".parse().expect("valid account id"))
+        }
         _ => panic!("expected cancel-proposal"),
     };
 

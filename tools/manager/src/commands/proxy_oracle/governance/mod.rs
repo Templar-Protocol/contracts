@@ -29,6 +29,7 @@ use templar_proxy_oracle_near_governance_common::TtlConfig;
 pub use templar_proxy_oracle_near_governance_common::{OperationKind, Role};
 
 use crate::commands::signer::SignerArgs;
+use crate::resolve::GovernanceTarget;
 
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
@@ -46,13 +47,13 @@ pub enum ProxyOracleGovernanceNs {
     /// List the governance contract's proposals.
     ListProposals(ListProposals),
     /// Read the id the next proposal will use.
-    NextProposalId(GovernanceIdArgs),
+    NextProposalId(GovernanceTarget),
     /// Read the total number of proposals.
-    ProposalCount(GovernanceIdArgs),
+    ProposalCount(GovernanceTarget),
     /// Read the configured TTL for an operation kind.
     GetOperationTtl(GetOperationTtl),
     /// Read the proxy-oracle account this contract governs.
-    GetProxyOracleId(GovernanceIdArgs),
+    GetProxyOracleId(GovernanceTarget),
     /// Check whether an account holds a role.
     HasRole(HasRole),
     /// List the accounts holding a role.
@@ -65,18 +66,17 @@ pub enum ProxyOracleGovernanceNs {
 /// `get-proposal`.
 #[derive(Args, Debug)]
 pub struct ProposalRef {
-    /// Governance contract account.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    governance_id: AccountId,
+    #[command(flatten)]
+    pub(crate) target: GovernanceTarget,
     /// Proposal id.
     #[arg(long, value_name = "ID")]
     id: u32,
 }
 
 impl ProposalRef {
-    pub fn get(self) -> spec::GetProposal {
+    pub fn get(self, governance_id: AccountId) -> spec::GetProposal {
         spec::GetProposal {
-            governance_id: self.governance_id,
+            governance_id,
             id: self.id,
         }
     }
@@ -88,43 +88,16 @@ impl ProposalRef {
 #[derive(Args, Debug)]
 pub struct CancelProposal {
     #[command(flatten)]
-    proposal: ProposalRef,
+    pub(crate) proposal: ProposalRef,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }
 
 impl CancelProposal {
-    pub fn cancel(self) -> spec::CancelProposal {
+    pub fn cancel(self, governance_id: AccountId) -> spec::CancelProposal {
         spec::CancelProposal {
-            governance_id: self.proposal.governance_id,
+            governance_id,
             id: self.proposal.id,
-        }
-    }
-}
-
-/// Argument keyed only by the governance account — shared by the reads that take
-/// no other input (`next-proposal-id`, `proposal-count`, `get-proxy-oracle-id`).
-#[derive(Args, Debug)]
-pub struct GovernanceIdArgs {
-    /// Governance contract account.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    governance_id: AccountId,
-}
-
-impl GovernanceIdArgs {
-    pub fn next_proposal_id(self) -> spec::NextProposalId {
-        spec::NextProposalId {
-            governance_id: self.governance_id,
-        }
-    }
-    pub fn proposal_count(self) -> spec::ProposalCount {
-        spec::ProposalCount {
-            governance_id: self.governance_id,
-        }
-    }
-    pub fn get_proxy_oracle_id(self) -> spec::GetProxyOracleId {
-        spec::GetProxyOracleId {
-            governance_id: self.governance_id,
         }
     }
 }

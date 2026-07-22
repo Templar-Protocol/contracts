@@ -18,13 +18,19 @@ impl Drop for RemoveFileOnDrop<'_> {
     }
 }
 
+/// A stand-in resolved governance account for the offline spec-building tests
+/// (these pass `--governance-id gov.testnet`, so no resolution is exercised).
+fn gov_account() -> near_account_id::AccountId {
+    "gov.testnet".parse().expect("valid account id")
+}
+
 /// Parse a `create-proposal` invocation and return the built gateway spec.
 fn create_proposal(
     args: &[&str],
 ) -> anyhow::Result<templar_gateway_methods_spec::proxy_oracle_governance::CreateProposal> {
     let cmd = parse_create_proposal(args.iter().copied());
     let id = cmd.id().expect("these tests pass --id explicitly");
-    cmd.try_into_spec(id)
+    cmd.try_into_spec(gov_account(), id)
 }
 
 #[test]
@@ -122,7 +128,9 @@ fn upgrade_reads_local_wasm_and_carries_the_migration() {
     let spec = match cli.command {
         Command::ProxyOracle {
             command: ProxyOracleNs::Upgrade(cmd),
-        } => cmd.try_into_spec().expect("read WASM"),
+        } => cmd
+            .try_into_spec("oracle.testnet".parse().expect("valid account id"))
+            .expect("read WASM"),
         _ => panic!("expected proxy-oracle upgrade"),
     };
     std::fs::remove_file(&path).ok();
@@ -372,10 +380,11 @@ fn create_proposal_id_is_optional_for_auto_fetch() {
     ]);
     assert_eq!(cmd.id(), None);
     assert!(!cmd.execute_when_ready());
-    assert_eq!(cmd.governance_id().as_str(), "gov.testnet");
-    // A resolved id flows through to the spec.
-    let spec = cmd.try_into_spec(7).expect("into spec");
-    assert_eq!(serde_json::to_value(&spec).unwrap()["id"], json!(7));
+    // A resolved governance account and id flow through to the spec.
+    let spec = cmd.try_into_spec(gov_account(), 7).expect("into spec");
+    let json = serde_json::to_value(&spec).unwrap();
+    assert_eq!(json["id"], json!(7));
+    assert_eq!(json["governance_id"], json!("gov.testnet"));
 }
 
 #[test]
@@ -478,7 +487,7 @@ fn governance_role_reads_parse() {
         "--count",
         "10",
     ]) {
-        ProxyOracleGovernanceNs::ListRole(cmd) => cmd.into_spec(),
+        ProxyOracleGovernanceNs::ListRole(cmd) => cmd.into_spec(gov_account()),
         _ => panic!("expected list-role"),
     };
     assert_eq!(
@@ -514,7 +523,7 @@ fn oracle_update_prices_collects_repeated_ids() {
     let spec = match cli.command {
         Command::ProxyOracle {
             command: ProxyOracleNs::UpdatePrices(cmd),
-        } => cmd.into_spec(),
+        } => cmd.into_spec("proxy.testnet".parse().expect("valid account id")),
         _ => panic!("expected update-prices"),
     };
     assert_eq!(spec.price_ids.len(), 2);
@@ -556,7 +565,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     let expected = crate::commands::proxy_oracle::parse_price_identifier(PRICE_ID).unwrap();
     assert_eq!(unresolved.unresolved_breaker_price_id(), Some(expected));
     let error = unresolved
-        .try_into_spec(0)
+        .try_into_spec(gov_account(), 0)
         .expect_err("building a spec must reject an unresolved breaker id");
     assert!(
         error.to_string().contains("breaker id must be resolved"),
@@ -568,7 +577,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     // Once resolved, it is no longer flagged for auto-fetch.
     assert_eq!(resolved.unresolved_breaker_price_id(), None);
     let spec = resolved
-        .try_into_spec(0)
+        .try_into_spec(gov_account(), 0)
         .expect("resolved breaker id should build");
     let operation =
         serde_json::to_value(spec).expect("serialize proposal spec")["operation"].clone();
@@ -589,4 +598,66 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         "/does/not/need/to/exist.json",
     ]);
     assert_eq!(explicit.unresolved_breaker_price_id(), None);
+}
+
+/// A `proxy-oracle` command takes exactly one of `--oracle-id` / `--market-id`.
+#[test]
+fn oracle_target_requires_exactly_one_selector() {
+    let base = [
+        "tmplrmgr",
+        "proxy-oracle",
+        "get-proxy",
+        "--price-id",
+        PRICE_ID,
+    ];
+
+    // Neither selector: the required group is unsatisfied.
+    Cli::try_parse_from(base).expect_err("a target selector is required");
+
+    // Both selectors: they are mutually exclusive.
+    Cli::try_parse_from(base.into_iter().chain([
+        "--oracle-id",
+        "oracle.testnet",
+        "--market-id",
+        "market.testnet",
+    ]))
+    .expect_err("--oracle-id and --market-id are mutually exclusive");
+
+    // Either alone parses.
+    for selector in [
+        ["--oracle-id", "oracle.testnet"],
+        ["--market-id", "market.testnet"],
+    ] {
+        Cli::try_parse_from(base.into_iter().chain(selector))
+            .expect("exactly one selector should parse");
+    }
+}
+
+/// A `proxy-oracle gov` command takes exactly one of `--governance-id` /
+/// `--oracle-id` / `--market-id`.
+#[test]
+fn governance_target_requires_exactly_one_selector() {
+    let base = ["tmplrmgr", "proxy-oracle", "gov", "get-proxy-oracle-id"];
+
+    // Neither selector: the required group is unsatisfied.
+    Cli::try_parse_from(base).expect_err("a target selector is required");
+
+    // Two selectors: mutually exclusive.
+    Cli::try_parse_from(base.into_iter().chain([
+        "--governance-id",
+        "gov.testnet",
+        "--oracle-id",
+        "oracle.testnet",
+    ]))
+    .expect_err("governance selectors are mutually exclusive");
+
+    // Each alone parses.
+    for selector in [
+        ["--governance-id", "gov.testnet"],
+        ["--oracle-id", "oracle.testnet"],
+        ["--market-id", "market.testnet"],
+    ] {
+        Cli::try_parse_from(base.into_iter().chain(selector))
+            .expect("exactly one selector should parse");
+    }
 }
