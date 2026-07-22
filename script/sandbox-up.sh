@@ -9,14 +9,13 @@
 # Each test attaches to the node for its NEXTEST_TEST_GLOBAL_SLOT, so a node is
 # used by at most one test at a time (exclusive: fast_forward and chain state
 # stay isolated between concurrent tests) yet reused across the tests that pass
-# through that slot (no per-test boot/teardown). The node count MUST be >= the
-# sandbox profile's `test-threads` in .config/nextest.toml; keep them in sync
-# (override both via SANDBOX_NODE_COUNT and NEXTEST_TEST_THREADS to retune).
+# through that slot (no per-test boot/teardown). Test orchestration must set
+# SANDBOX_NODE_COUNT from the same value passed to nextest's --test-threads.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-NODE_COUNT="${SANDBOX_NODE_COUNT:-4}"
+NODE_COUNT="${SANDBOX_NODE_COUNT:?SANDBOX_NODE_COUNT must be set by test orchestration}"
 
 # The pool's addr/pid files are fixed paths, so starting a pool on top of a live
 # one overwrites them and orphans the older nodes — nothing tracks them after

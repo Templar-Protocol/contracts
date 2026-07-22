@@ -95,7 +95,7 @@ Notes:
 Several CI/test-infra files enumerate crates, contracts, or paths by hand. A feature change elsewhere easily leaves one stale, and the failure is silent — tests that never run, jobs that never trigger. When your change matches a trigger below, update the listed files in the _same_ change.
 
 - **Adding a node-backed test crate** (integration tests that need a `SandboxHarness`):
-  - `justfile` — add the package to `sandbox_filter`. `script/sandbox-packages.py` derives the sandbox recipe's Cargo package boundary from that single classification. (`templar-gateway-service`'s node tests live in `src/` and are matched by module path, not package.)
+  - `justfile` — add the package to `sandbox_full_packages`; the sandbox filter and Cargo package boundary are both derived from that list. (`templar-gateway-service`'s node tests live in `src/` and are matched separately by module path.)
   - `.github/workflows/test.yml` — add the crate's `src/**` and `tests/**` under the `changes` job's `near_integration` paths filter, or the test job won't trigger on changes to it.
 - **Adding or removing a contract / mock WASM**:
   - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum and its embedded `res/near/...` blob (see `contract/artifacts/README.md`). This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
@@ -103,10 +103,10 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
 - **Adding a new top-level source area / crate**:
   - `.github/workflows/test.yml` paths groups (`near_integration`, `soroban`, `feature_matrix`, `artifact_manifests`) and `.github/workflows/gas-report.yml` paths — add it to the right group so the relevant jobs fire.
   - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.
-- **Tuning sandbox parallelism**: `[profile.sandbox] test-threads` in `.config/nextest.toml` and `SANDBOX_NODE_COUNT` in `script/sandbox-up.sh` must stay in sync (`test-threads <= SANDBOX_NODE_COUNT`).
+- **Tuning sandbox parallelism**: update `sandbox_test_threads` in `justfile`; the sandbox recipe uses it for both Nextest threads and pooled node count.
 - **Adding or removing a gateway method**: update the `for_each_*_method!` macros in the spec crates — see the `gateway/*` entry under High-Impact Areas.
 
-nextest has no way to declare a filterset once and reference it (no filter variables/aliases, and TOML has no anchors), so the two node-crate lists in `nextest.toml` are duplicated by necessity — the "MUST stay exact complements" comment there is the guard against them drifting apart.
+The root `justfile` owns test-group classification. Keep package membership in `sandbox_full_packages` so both the Nextest filter and Cargo compilation boundary change together.
 
 ## Code Search
 

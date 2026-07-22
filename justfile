@@ -1,31 +1,29 @@
 # Templar contract-mvp — project tasks. Run `just` to list recipes.
 
+set positional-arguments
+
 network_filter := 'test(/^requires_network_/)'
-sandbox_filter := '''
-(
-    (
-        kind(test) & (
-            package(templar-market-contract)
-            | package(templar-vault-contract)
-            | package(templar-registry-contract)
-            | package(templar-universal-account-contract)
-            | package(templar-proxy-oracle-near-contract)
-            | package(templar-lst-oracle-contract)
-            | package(templar-funding-bridge)
-            | package(templar-relayer)
-            | package(templar-gateway-testing)
-            | package(templar-liquidator)
-            | package(templar-gateway-core)
-        )
-    )
-    | (
-        package(templar-gateway-service)
-        & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
-    )
-)
-'''
+sandbox_full_packages := trim('''
+templar-market-contract
+templar-vault-contract
+templar-registry-contract
+templar-universal-account-contract
+templar-proxy-oracle-near-contract
+templar-lst-oracle-contract
+templar-funding-bridge
+templar-relayer
+templar-gateway-testing
+templar-liquidator
+templar-gateway-core
+''')
+sandbox_gateway_package := 'templar-gateway-service'
+sandbox_packages := sandbox_full_packages + "\n" + sandbox_gateway_package
+sandbox_package_filter := 'package(' + replace(sandbox_full_packages, "\n", ') | package(') + ')'
+sandbox_gateway_filter := 'package(' + sandbox_gateway_package + ') & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))'
+sandbox_filter := '((kind(test) & (' + sandbox_package_filter + ')) | (' + sandbox_gateway_filter + '))'
 fast_filter := 'not ' + network_filter + ' and not ' + sandbox_filter
 sandbox_test_filter := 'not ' + network_filter + ' and ' + sandbox_filter
+sandbox_test_threads := '4'
 
 # Show available recipes.
 default:
@@ -45,61 +43,82 @@ test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source ./script/postgres-up.sh
-    just -- _test-fast {{ args }}
-    just -- _test-sandbox {{ args }}
+    just -- _test-fast "$@"
+    just -- _test-sandbox "$@"
 
 # Run the fast/default gate.
 test-fast *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source ./script/postgres-up.sh
-    just -- _test-fast {{ args }}
+    just -- _test-fast "$@"
 
 _test-fast *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Intentionally include integration targets: this is the complete non-node
+    # partition that replaced the deleted full-workspace test step.
     cargo nextest run --ignore-default-filter \
-        -E '{{ fast_filter }}' {{ args }}
+        -E '{{ fast_filter }}' "$@"
 
 # Run the node-backed gate against a pooled neard sandbox.
 test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source ./script/postgres-up.sh
-    just -- _test-sandbox {{ args }}
+    just -- _test-sandbox "$@"
 
 _test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
-    source ./script/sandbox-up.sh
-    caller_args=({{ args }})
+    caller_args=("$@")
+    nextest_args=()
     sandbox_package_args=()
+    sandbox_test_threads='{{ sandbox_test_threads }}'
     use_default_packages=true
-    for arg in "${caller_args[@]}"; do
+    for ((i = 0; i < ${#caller_args[@]}; i++)); do
+        arg="${caller_args[i]}"
         case "$arg" in
             -p | -p?* | --package | --package=*)
                 use_default_packages=false
-                break
+                nextest_args+=("$arg")
+                ;;
+            --test-threads)
+                i=$((i + 1))
+                if ((i >= ${#caller_args[@]})); then
+                    echo "error: --test-threads requires a value" >&2
+                    exit 2
+                fi
+                sandbox_test_threads="${caller_args[i]}"
+                ;;
+            --test-threads=*)
+                sandbox_test_threads="${arg#*=}"
+                ;;
+            *)
+                nextest_args+=("$arg")
                 ;;
         esac
     done
-    if "$use_default_packages"; then
-        sandbox_package_output="$(
-            printf '%s\n' '{{ sandbox_filter }}' | python3 script/sandbox-packages.py
-        )"
-        mapfile -t sandbox_packages <<< "$sandbox_package_output"
-        for package in "${sandbox_packages[@]}"; do
-            sandbox_package_args+=(-p "$package")
-        done
+    if [[ ! "$sandbox_test_threads" =~ ^[1-9][0-9]*$ ]]; then
+        echo "error: sandbox test threads must be a positive integer" >&2
+        exit 2
     fi
+    if "$use_default_packages"; then
+        while IFS= read -r package; do
+            sandbox_package_args+=(-p "$package")
+        done <<< '{{ sandbox_packages }}'
+    fi
+    export SANDBOX_NODE_COUNT="$sandbox_test_threads"
+    source ./script/sandbox-up.sh
     cargo nextest run --profile sandbox --ignore-default-filter \
+        --test-threads "$sandbox_test_threads" \
         "${sandbox_package_args[@]}" \
-        -E '{{ sandbox_test_filter }}' "${caller_args[@]}"
+        -E '{{ sandbox_test_filter }}' "${nextest_args[@]}"
 
 # Start the out-of-band sandbox neard (prints its RPC url).
 sandbox-up:
-    ./script/sandbox-up.sh
+    SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
 
 # Stop the out-of-band sandbox neard.
 sandbox-down:

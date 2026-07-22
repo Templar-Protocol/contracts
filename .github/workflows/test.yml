@@ -97,7 +97,6 @@ jobs:
               - 'script/prebuild-test-contracts.sh'
               - 'script/sandbox-down.sh'
               - 'script/sandbox-up.sh'
-              - 'script/sandbox-packages.py'
               - 'service/funding-bridge/src/**'
               - 'service/funding-bridge/tests/**'
               - 'service/gateway/src/**'

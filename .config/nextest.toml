@@ -27,12 +27,9 @@ status-level = "fail"
 slow-timeout = { period = "120s", terminate-after = 3 }
 
 [profile.sandbox]
-# Parallel across a pool of neard nodes started by `just test-sandbox`. Each test
-# attaches to the node for its NEXTEST_TEST_GLOBAL_SLOT. Exclusive use per slot
-# keeps fast_forward and chain state isolated between concurrent tests, while
-# reusing a node avoids per-test boot and teardown. test-threads MUST be <=
-# SANDBOX_NODE_COUNT (default 4; keep them in sync).
-test-threads = 4
+# Parallel across a pooled neard sandbox. The supported Just entrypoint passes
+# test-threads from the same setting used to size that pool, overriding the
+# default profile's inherited value.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Profiles inherit from `default`, not from `ci`, so this has to be set here too:
