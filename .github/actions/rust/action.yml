@@ -41,6 +41,11 @@ runs:
         {
           echo "SCCACHE_GHA_ENABLED=true"
           echo "RUSTC_WRAPPER=sccache"
+          # Keep the server alive for the whole job. Long jobs (the node suite
+          # compiles for ~25 min, then runs tests for ~15 min with no
+          # compilation) would otherwise idle the server out mid-run, losing its
+          # stats and paying a restart cost.
+          echo "SCCACHE_IDLE_TIMEOUT=0"
         } >> "$GITHUB_ENV"
 
     - name: Install sccache
