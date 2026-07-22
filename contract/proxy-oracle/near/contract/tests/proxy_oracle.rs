@@ -12,7 +12,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use near_api::{types::AccountId, NetworkConfig};
 use near_sdk::{
-    json_types::{Base64VecU8, I64, U64},
+    json_types::{Base58CryptoHash, Base64VecU8, I64, U64},
     mock::MockAction,
     test_utils::{get_created_receipts, VMContextBuilder},
     testing_env, NearToken,
@@ -24,6 +24,7 @@ use templar_common::{
         lazer,
         pyth::{self, OracleResponse, PriceIdentifier},
     },
+    upgrade::UpgradeSource,
     Decimal, Nanoseconds,
 };
 use templar_gateway_testing::SandboxHarness;
@@ -112,8 +113,11 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     let code = vec![0xde, 0xad, 0xbe, 0xef];
     let migrate_args = br#"{"from_version":"v0"}"#.to_vec();
 
-    c.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args.clone()))
-        .detach();
+    c.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(code.clone())),
+        Base64VecU8(migrate_args.clone()),
+    )
+    .detach();
 
     let receipts = get_created_receipts();
     assert_eq!(receipts.len(), 1);
@@ -152,6 +156,48 @@ pub fn admin_upgrade_creates_one_self_receipt_with_deploy_then_migrate() {
     }
 }
 
+/// A global-hash source deploys via `use_global_contract` instead of a raw blob, but keeps the same
+/// batched `migrate` in one self-receipt.
+#[test]
+pub fn admin_upgrade_from_global_hash_uses_global_contract_then_migrates() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("proxy.near".parse().unwrap())
+        .predecessor_account_id("owner.near".parse().unwrap())
+        .build());
+    let mut c = Contract::new(None);
+
+    c.admin_upgrade(
+        UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])),
+        Base64VecU8(br#"{"from_version":"v0"}"#.to_vec()),
+    )
+    .detach();
+
+    let receipts = get_created_receipts();
+    assert_eq!(receipts.len(), 1);
+    let receipt = &receipts[0];
+    assert_eq!(receipt.receiver_id.as_str(), "proxy.near");
+    assert_eq!(receipt.actions.len(), 2);
+    assert!(matches!(
+        receipt.actions[0],
+        MockAction::UseGlobalContract { .. }
+    ));
+    match &receipt.actions[1] {
+        MockAction::FunctionCallWeight {
+            method_name,
+            args,
+            attached_deposit,
+            prepaid_gas,
+            ..
+        } => {
+            assert_eq!(method_name, b"migrate");
+            assert_eq!(args, br#"{"from_version":"v0"}"#);
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
+            assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
+        }
+        action => panic!("expected migrate call second, got {action:?}"),
+    }
+}
+
 /// `owner_id` seats that account; omitting it falls back to the predecessor.
 #[rstest::rstest]
 #[case::explicit_owner(Some("governance.near"), "governance.near")]
@@ -179,7 +225,10 @@ pub fn new_with_owner_id_locks_out_the_deployer() {
 
     let mut c = Contract::new(Some("governance.near".parse().unwrap()));
 
-    let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
+    let _ = c.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0xde])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]
@@ -196,7 +245,10 @@ pub fn admin_upgrade_requires_owner() {
         .predecessor_account_id("attacker.near".parse().unwrap())
         .build());
 
-    let _ = c.admin_upgrade(Base64VecU8(vec![0xde]), Base64VecU8(vec![]));
+    let _ = c.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0xde])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]

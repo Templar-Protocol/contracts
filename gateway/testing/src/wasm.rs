@@ -75,3 +75,11 @@ pub const UNIVERSAL_ACCOUNT_0_2_0: &[u8] = include_bytes!("wasm/uac_0_2_0.wasm")
 pub const UNIVERSAL_ACCOUNT_0_4_0: &[u8] = include_bytes!("wasm/uac_0_4_0.wasm");
 /// Legacy (`0.1.0`, pre-kernelization) proxy-oracle WASM (pinned blob).
 pub const PROXY_ORACLE_V0: &[u8] = include_bytes!("wasm/proxy_oracle_v0.wasm");
+/// Currently-deployed proxy-oracle WASM (`0.3.0`, on-chain state version 1), pinned from
+/// `proxy-oracle-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob, for
+/// cross-version upgrade tests.
+pub const PROXY_ORACLE_0_3_0: &[u8] = include_bytes!("wasm/proxy_oracle_0_3_0.wasm");
+/// Currently-deployed proxy-oracle-governance WASM (`0.1.0`, no versioned state / no `migrate`),
+/// pinned from `proxy-gov-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob,
+/// for cross-version upgrade tests.
+pub const PROXY_GOVERNANCE_0_1_0: &[u8] = include_bytes!("wasm/proxy_governance_0_1_0.wasm");

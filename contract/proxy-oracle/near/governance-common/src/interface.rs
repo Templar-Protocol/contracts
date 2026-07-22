@@ -1,5 +1,7 @@
-use near_sdk::{near, serde::Serialize, AccountId};
+use near_sdk::{near, AccountId};
 use templar_proxy_oracle_governance_kernel as kernel;
+
+use crate::OperationKind;
 
 pub type Proposal<T> = kernel::Proposal<T, AccountId>;
 pub type Governance = kernel::Governance<crate::TtlConfig>;
@@ -9,17 +11,20 @@ pub use kernel::{
     ProposalDoesNotExistError, TtlNotElapsedError,
 };
 
+/// Governance lifecycle events. They carry only the proposal id and operation kind — never the full
+/// operation, whose payload (e.g. an `AdminUpgrade`/`SelfUpgrade` wasm blob) can exceed NEAR's
+/// per-log size limit. Fetch the full proposal body via `get_proposal`.
 #[near(event_json(standard = "templar-governance"))]
-pub enum Event<T: Serialize> {
+pub enum Event {
     /// When a new proposal is created.
-    #[event_version("1.0.0")]
-    Created { id: u32, proposal: Proposal<T> },
+    #[event_version("2.0.0")]
+    Created { id: u32, kind: OperationKind },
     /// When a proposal is cancelled.
-    #[event_version("1.0.0")]
-    Cancelled { id: u32, proposal: Proposal<T> },
+    #[event_version("2.0.0")]
+    Cancelled { id: u32, kind: OperationKind },
     /// When a proposal is executed.
-    #[event_version("1.0.0")]
-    Executed { id: u32, proposal: Proposal<T> },
+    #[event_version("2.0.0")]
+    Executed { id: u32, kind: OperationKind },
 }
 
 pub trait Validatable {

@@ -24,6 +24,7 @@ templar-pyth-lazer-verifier.workspace = true
 [dev-dependencies]
 byteorder = "1"
 ed25519-dalek.workspace = true
+near-primitives.workspace = true
 near-sdk = { workspace = true, features = ["non-contract-usage", "unit-testing"] }
 pyth-lazer-protocol.workspace = true
 rstest.workspace = true

@@ -5,7 +5,7 @@ use near_sdk::{
     testing_env, AccountId, NearToken,
 };
 use near_sdk_contract_tools::rbac::Rbac;
-use templar_common::Nanoseconds;
+use templar_common::{upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Role, TtlConfig};
 
 use crate::{Contract, ProxyGovernanceInterface};
@@ -23,6 +23,7 @@ fn default_ttls() -> TtlConfig {
         set_role: Nanoseconds::from_secs(24 * 60 * 60),
         admin_upgrade: Nanoseconds::from_secs(24 * 60 * 60),
         admin_function_call: Nanoseconds::from_secs(24 * 60 * 60),
+        self_upgrade: Nanoseconds::from_secs(24 * 60 * 60),
     }
 }
 
@@ -548,7 +549,7 @@ fn admin_upgrade_requires_admin_role_to_create() {
     testing_env!(context_with_account("tripper.near"));
 
     let operation = Operation::AdminUpgrade {
-        code: Base64VecU8(vec![0xde, 0xad]),
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
         migrate_args: Base64VecU8(vec![0xbe, 0xef]),
     };
 
@@ -565,7 +566,7 @@ fn admin_can_create_admin_upgrade_proposal() {
     let mut contract = contract();
 
     let operation = Operation::AdminUpgrade {
-        code: Base64VecU8(vec![0xde, 0xad]),
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
         migrate_args: Base64VecU8(vec![0xbe, 0xef]),
     };
 
@@ -585,7 +586,7 @@ fn admin_upgrade_execution_dispatches_proxy_admin_call() {
         .set(OperationKind::AdminUpgrade, Nanoseconds::zero());
 
     let operation = Operation::AdminUpgrade {
-        code: Base64VecU8(vec![0xde, 0xad]),
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
         migrate_args: Base64VecU8(br#"{"from_version":"v0"}"#.to_vec()),
     };
 
@@ -627,7 +628,7 @@ fn admin_upgrade_respects_configured_ttl() {
         .set(OperationKind::AdminUpgrade, Nanoseconds::from_secs(3600));
 
     let operation = Operation::AdminUpgrade {
-        code: Base64VecU8(vec![0xde, 0xad]),
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
         migrate_args: Base64VecU8(vec![0xbe, 0xef]),
     };
 
@@ -646,7 +647,7 @@ fn admin_upgrade_rejects_empty_code_in_create() {
         .set(OperationKind::AdminUpgrade, Nanoseconds::zero());
 
     let operation = Operation::AdminUpgrade {
-        code: Base64VecU8(vec![]),
+        code: UpgradeSource::Code(Base64VecU8(vec![])),
         migrate_args: Base64VecU8(vec![0x00]),
     };
 
@@ -654,4 +655,54 @@ fn admin_upgrade_rejects_empty_code_in_create() {
         contract.create_proposal(0, operation, Nanoseconds::zero());
     }));
     assert!(result.is_err());
+}
+
+#[test]
+fn self_upgrade_execution_self_deploys_and_migrates() {
+    testing_env!(VMContextBuilder::new()
+        .current_account_id("governance.near".parse().unwrap())
+        .predecessor_account_id("admin.near".parse().unwrap())
+        .attached_deposit(NearToken::from_yoctonear(1))
+        .build());
+
+    let mut contract = contract();
+    contract
+        .header
+        .ttls
+        .set(OperationKind::SelfUpgrade, Nanoseconds::zero());
+
+    let operation = Operation::SelfUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
+        migrate_args: Base64VecU8(br#"{"from_version":"v0"}"#.to_vec()),
+    };
+
+    contract.create_proposal(0, operation, Nanoseconds::zero());
+    contract.execute_proposal(0);
+
+    assert_eq!(contract.get_proposal(0), None);
+
+    // Deploy + migrate are batched onto a single receipt targeting this contract's own account.
+    let receipts = get_created_receipts();
+    assert_eq!(receipts.len(), 1);
+    let receipt = &receipts[0];
+    assert_eq!(receipt.receiver_id.as_str(), "governance.near");
+    assert_eq!(receipt.actions.len(), 2);
+
+    assert!(matches!(
+        receipt.actions[0],
+        MockAction::DeployContract { .. }
+    ));
+    match &receipt.actions[1] {
+        MockAction::FunctionCallWeight {
+            method_name,
+            attached_deposit,
+            prepaid_gas,
+            ..
+        } => {
+            assert_eq!(method_name, b"migrate");
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
+            assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
+        }
+        action => panic!("expected migrate function call, got {action:?}"),
+    }
 }

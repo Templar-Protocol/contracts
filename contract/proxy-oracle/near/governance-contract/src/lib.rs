@@ -1,39 +1,64 @@
+use std::ops::{Deref, DerefMut};
+
 use near_sdk::{
-    borsh::BorshSerialize, env, near, require, store::LookupMap, AccountId, BorshStorageKey, Gas,
-    NearToken, PanicOnDefault, Promise,
+    borsh::BorshSerialize, env, near, require, AccountId, BorshStorageKey, Gas, NearToken,
+    PanicOnDefault, Promise,
 };
 use near_sdk_contract_tools::{rbac::Rbac, Rbac};
-use templar_common::{contract::list, Nanoseconds, UnwrapReject};
+use templar_common::{
+    contract::list,
+    upgrade::MIGRATE_METHOD,
+    versioned_state::{impl_versioned_state, StateVersion, VersionedState},
+    Nanoseconds, UnwrapReject,
+};
 use templar_proxy_oracle_near_common::governance::ext_proxy_oracle_admin;
 use templar_proxy_oracle_near_governance_common::{
-    gen_ext_governance, Event, Governance, Operation, OperationKind, Proposal, Role, TtlConfig,
+    gen_ext_governance, Event, Operation, OperationKind, Proposal, Role, TtlConfig,
     MAX_PROPOSAL_TTL,
 };
 
+mod state;
+use state::State;
+
 gen_ext_governance!(ext_proxy_governance, ProxyGovernanceInterface, Operation);
 
-const MAX_PENDING_PROPOSALS: u32 = 64;
+pub(crate) const MAX_PENDING_PROPOSALS: u32 = 64;
 
 #[derive(BorshSerialize, BorshStorageKey)]
 #[borsh(crate = "near_sdk::borsh")]
-enum StorageKey {
+pub(crate) enum StorageKey {
     Proposals,
 }
 
+/// Wraps the versioned governance [`State`] (kernel ledger header, proposal bodies, governed oracle
+/// account). Role membership lives in `near-sdk-contract-tools` RBAC storage, separate from `state`.
 #[derive(Debug, Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]
 #[near(contract_state)]
 pub struct Contract {
-    /// The governance kernel ledger: `next_id`, pending id set, TTL table, and
-    /// the pending cap. Proposal bodies are stored per-key in `proposals`;
-    /// role membership lives in `near-sdk-contract-tools` RBAC storage.
-    pub header: Governance,
-    pub proposals: LookupMap<u32, Proposal<Operation>>,
-    pub proxy_oracle_id: AccountId,
+    pub state: VersionedState<State>,
 }
+
+impl Deref for Contract {
+    type Target = State;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for Contract {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
+}
+
+impl_versioned_state!(Contract, State, state::migration::Migration);
 
 impl Contract {
     pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
+    /// Gas for the `migrate` call batched onto a `SelfUpgrade` self-deploy of this contract.
+    pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
     fn assert_authorized(operation: &Operation) {
         let required = operation.required_role();
@@ -121,12 +146,9 @@ impl ProxyGovernanceInterface for Contract {
                 effective_ttl,
             )
             .unwrap_or_reject();
+        let kind = proposal.operation.kind();
         self.proposals.insert(id, proposal.clone());
-        Event::Created {
-            id,
-            proposal: proposal.clone(),
-        }
-        .emit();
+        Event::Created { id, kind }.emit();
         proposal
     }
 
@@ -138,7 +160,11 @@ impl ProxyGovernanceInterface for Contract {
 
         self.header.cancel(u64::from(id)).unwrap_or_reject();
         let proposal = self.proposals.remove(&id).unwrap_or_reject();
-        Event::Cancelled { id, proposal }.emit();
+        Event::Cancelled {
+            id,
+            kind: proposal.operation.kind(),
+        }
+        .emit();
     }
 
     #[payable]
@@ -162,9 +188,12 @@ impl ProxyGovernanceInterface for Contract {
         self.header
             .execute(u64::from(id), &proposal, Nanoseconds::near_timestamp())
             .unwrap_or_reject();
-        let proposal = self.proposals.remove(&id).unwrap_or_reject();
-        let operation = proposal.operation.clone();
-        Event::Executed { id, proposal }.emit();
+        let operation = self.proposals.remove(&id).unwrap_or_reject().operation;
+        Event::Executed {
+            id,
+            kind: operation.kind(),
+        }
+        .emit();
 
         let proxy_oracle_id = self.proxy_oracle_id.clone();
 
@@ -261,6 +290,10 @@ impl ProxyGovernanceInterface for Contract {
                     )
                     .detach();
             }
+            Operation::SelfUpgrade { code, migrate_args } => {
+                code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
+                    .detach();
+            }
         }
     }
 }
@@ -271,9 +304,7 @@ impl Contract {
     #[init]
     pub fn new(proxy_oracle_id: AccountId, admin_id: AccountId, ttls: TtlConfig) -> Self {
         let mut self_ = Self {
-            header: Governance::new(ttls, MAX_PENDING_PROPOSALS),
-            proposals: LookupMap::new(StorageKey::Proposals),
-            proxy_oracle_id,
+            state: State::new((proxy_oracle_id, ttls)),
         };
 
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::Admin);

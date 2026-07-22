@@ -1,5 +1,6 @@
 use near_sdk::{near, AccountId, NearToken};
 use templar_common::oracle::lazer::FeedData;
+use templar_common::upgrade::UpgradeSummary;
 
 use crate::Config;
 
@@ -36,9 +37,13 @@ pub enum PythLazerEvent {
         receiver: AccountId,
     },
 
-    /// Emitted by `admin_upgrade` before it returns the atomic deploy+migrate `Promise`.
-    /// `code_hash` is the base58 sha256 of the new wasm; `migrated` is whether a migration transform
-    /// was requested (non-empty `migrate_args`).
-    #[event_version("1.0.0")]
-    Upgraded { code_hash: String, migrated: bool },
+    /// Emitted by `admin_upgrade` when it *schedules* the deploy+migrate (which runs in the returned
+    /// Promise, a separate receipt) — so this records the initiated upgrade, **not** its completion; a
+    /// later deploy/migrate failure reverts that receipt but not this log. `code` is a compact summary
+    /// (never the blob); `migrated` is a bounded flag (was a migration requested).
+    #[event_version("2.0.0")]
+    Upgraded {
+        code: UpgradeSummary,
+        migrated: bool,
+    },
 }

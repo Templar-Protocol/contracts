@@ -945,6 +945,7 @@ fn zero_ttl_config() -> TtlConfig {
         set_role: zero,
         admin_upgrade: zero,
         admin_function_call: zero,
+        self_upgrade: zero,
     }
 }
 

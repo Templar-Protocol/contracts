@@ -26,6 +26,7 @@ use near_sdk::{
 use near_sdk_contract_tools::{owner::Owner, utils::apply_storage_fee_and_refund, Owner};
 use templar_common::{
     oracle::lazer::{EmaData, FeedData, FeedDataResponse},
+    upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
@@ -496,25 +497,22 @@ impl Contract {
     /// this is the seam for future upgrades). The batched `migrate` is private — the runtime calls
     /// it as this account, so only the owner-gated path here can trigger it.
     #[payable]
-    pub fn admin_upgrade(&mut self, code: Base64VecU8, migrate_args: Base64VecU8) -> Promise {
+    pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
         assert_one_yocto();
         Self::require_owner();
-        // Emit before returning the Promise: deploy+migrate is one atomic receipt, so a failed
-        // `migrate` reverts the whole receipt — including this log. Hash (never log) the full wasm to
-        // stay within NEAR's total-log-length limit.
+        // An empty blob can never deploy; reject up front (mirrors the governance path's
+        // `EmptyUpgradeCode` guard) so no misleading event is logged and no gas is spent on a
+        // doomed deploy.
+        if code.is_empty_code() {
+            env::panic_str("admin_upgrade: empty code blob");
+        }
+        // See PythLazerEvent::Upgraded — logs the scheduled upgrade before the deploy+migrate Promise.
         PythLazerEvent::Upgraded {
-            code_hash: near_sdk::bs58::encode(env::sha256(&code.0)).into_string(),
+            code: code.summary(),
             migrated: !migrate_args.0.is_empty(),
         }
         .emit();
-        Promise::new(env::current_account_id())
-            .deploy_contract(code.0)
-            .function_call(
-                "migrate".to_string(),
-                migrate_args.0,
-                NearToken::from_yoctonear(0),
-                Self::GAS_FOR_MIGRATE,
-            )
+        code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
     }
 
     /// Verify a Pyth Lazer solana-format (ed25519) signed payload and store its feeds. Permissionless:

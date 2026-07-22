@@ -2,6 +2,7 @@
 
 use byteorder::LE;
 use ed25519_dalek::{Signer, SigningKey};
+use near_primitives::action::GlobalContractIdentifier;
 use near_sdk::{
     json_types::{Base64VecU8, I64},
     mock::MockAction,
@@ -13,6 +14,7 @@ use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadProperty
 use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
 use rstest::rstest;
+use templar_common::upgrade::UpgradeSource;
 use templar_common::versioned_state::MigrateExternalInterface;
 
 use templar_pyth_lazer_adapter_contract::{Config, ConfigArgs, Contract, TrustedSigner};
@@ -661,7 +663,22 @@ fn admin_upgrade_rejects_non_owner() {
         .attached_deposit(NearToken::from_yoctonear(1))
         .block_timestamp(NOW_S * 1_000_000_000)
         .build());
-    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0u8])),
+        Base64VecU8(vec![]),
+    );
+}
+
+#[test]
+#[should_panic(expected = "admin_upgrade: empty code blob")]
+fn admin_upgrade_rejects_empty_code() {
+    let mut contract = deploy();
+    set_owner_context();
+    // An empty `Code` blob can never deploy; the guard rejects it before scheduling anything.
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]
@@ -675,7 +692,10 @@ fn admin_upgrade_requires_one_yocto() {
         .attached_deposit(NearToken::from_yoctonear(0))
         .block_timestamp(NOW_S * 1_000_000_000)
         .build());
-    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0u8])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]
@@ -933,12 +953,17 @@ fn verify_update_rejects_untrusted_signer() {
 /// The single NEP-297 event emitted since the last `testing_env!` reset, with the standard/version
 /// envelope asserted. Panics unless exactly one `EVENT_JSON:` log is present.
 fn single_event() -> near_sdk::serde_json::Value {
+    single_event_with_version("1.0.0")
+}
+
+/// Like [`single_event`], but asserts an explicit event version (events are independently versioned).
+fn single_event_with_version(version: &str) -> near_sdk::serde_json::Value {
     let logs = near_sdk::test_utils::get_logs();
     assert_eq!(logs.len(), 1, "expected exactly one log, got {logs:?}");
     let json = logs[0].strip_prefix("EVENT_JSON:").unwrap();
     let event: near_sdk::serde_json::Value = near_sdk::serde_json::from_str(json).unwrap();
     assert_eq!(event["standard"], "pyth-lazer-adapter");
-    assert_eq!(event["version"], "1.0.0");
+    assert_eq!(event["version"], version);
     event
 }
 
@@ -1027,19 +1052,72 @@ fn admin_withdraw_emits_withdrawn() {
 }
 
 #[rstest]
-#[case(vec![1u8, 2, 3], true)]
-#[case(vec![], false)]
-fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>, #[case] expected_migrated: bool) {
+fn admin_upgrade_emits_upgraded(
+    #[values(vec![1u8, 2, 3], vec![])] migrate_args: Vec<u8>,
+    #[values(
+        UpgradeSource::Code(Base64VecU8(vec![0u8, 1, 2, 3, 4])),
+        UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from([9u8; 32])),
+    )]
+    code: UpgradeSource,
+) {
     let mut contract = deploy();
     set_owner_context();
-    let code = vec![0u8, 1, 2, 3, 4];
-    let _ = contract.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args));
+    let _ = contract.admin_upgrade(code.clone(), Base64VecU8(migrate_args.clone()));
 
-    let event = single_event();
+    let event = single_event_with_version("2.0.0");
     assert_eq!(event["event"], "upgraded");
-    let expected_hash = near_sdk::bs58::encode(near_sdk::env::sha256(&code)).into_string();
-    assert_eq!(event["data"]["code_hash"].as_str().unwrap(), expected_hash);
-    assert_eq!(event["data"]["migrated"], expected_migrated);
+    // `code` is a structured summary (a hash), never the blob — exactly `UpgradeSource::summary()`,
+    // covering both the `CodeHash` and `GlobalHash` mappings.
+    assert_eq!(
+        event["data"]["code"],
+        near_sdk::serde_json::to_value(code.summary()).unwrap()
+    );
+    // `migrated` is whether a migration was requested — a bounded flag, not the payload.
+    assert_eq!(event["data"]["migrated"], !migrate_args.is_empty());
+
+    // The scheduled receipt batches the requested source's deploy with a `migrate` call carrying the
+    // exact args, zero deposit, and the adapter's GAS_FOR_MIGRATE — locking the adapter-specific
+    // wiring, not just the event.
+    let receipts = get_created_receipts();
+    assert_eq!(receipts.len(), 1);
+    let actions = &receipts[0].actions;
+    assert_eq!(actions.len(), 2);
+    match &code {
+        UpgradeSource::Code(blob) => match &actions[0] {
+            MockAction::DeployContract { code, .. } => {
+                assert_eq!(code, &blob.0, "deployed blob should match the source");
+            }
+            other => panic!("expected DeployContract, got {other:?}"),
+        },
+        UpgradeSource::GlobalHash(hash) => {
+            let expected: near_sdk::CryptoHash = hash.into();
+            match &actions[0] {
+                MockAction::UseGlobalContract {
+                    contract_id: GlobalContractIdentifier::CodeHash(h),
+                    ..
+                } => assert_eq!(
+                    h.0, expected,
+                    "global-contract code hash should match the source"
+                ),
+                other => panic!("expected UseGlobalContract(CodeHash), got {other:?}"),
+            }
+        }
+    }
+    match &actions[1] {
+        MockAction::FunctionCallWeight {
+            method_name,
+            args,
+            attached_deposit,
+            prepaid_gas,
+            ..
+        } => {
+            assert_eq!(method_name, b"migrate");
+            assert_eq!(args, &migrate_args);
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
+            assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
+        }
+        action => panic!("expected migrate call second, got {action:?}"),
+    }
 }
 
 #[test]

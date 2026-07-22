@@ -9,6 +9,7 @@ templar-vault-contract
 templar-registry-contract
 templar-universal-account-contract
 templar-proxy-oracle-near-contract
+templar-proxy-oracle-near-governance-contract
 templar-lst-oracle-contract
 templar-funding-bridge
 templar-relayer

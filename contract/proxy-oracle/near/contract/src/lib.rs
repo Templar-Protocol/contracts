@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 
 use near_sdk::{
-    env, json_types::Base64VecU8, near, require, AccountId, Gas, NearToken, PanicOnDefault,
-    Promise, PromiseOrValue,
+    env, json_types::Base64VecU8, near, require, AccountId, Gas, PanicOnDefault, Promise,
+    PromiseOrValue,
 };
 use near_sdk_contract_tools::{owner::Owner, Owner};
 use templar_common::{
@@ -15,6 +15,7 @@ use templar_common::{
         redstone::{self, ext_redstone},
     },
     self_ext,
+    upgrade::{UpgradeSource, MIGRATE_METHOD},
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Decimal, Nanoseconds, UnwrapReject,
 };
@@ -433,16 +434,9 @@ impl ProxyOracleAdminInterface for Contract {
         emit_outcome(id, result);
     }
 
-    fn admin_upgrade(&mut self, code: Base64VecU8, migrate_args: Base64VecU8) -> Promise {
+    fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
         self.assert_owner();
-        Promise::new(env::current_account_id())
-            .deploy_contract(code.0)
-            .function_call(
-                "migrate".to_string(),
-                migrate_args.0,
-                NearToken::from_yoctonear(0),
-                Self::GAS_FOR_MIGRATE,
-            )
+        code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
     }
 }
 

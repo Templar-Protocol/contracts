@@ -13573,12 +13573,21 @@ dependencies = [
 name = "templar-proxy-oracle-near-governance-contract"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
  "getrandom 0.2.17",
+ "near-api",
  "near-sdk",
  "near-sdk-contract-tools",
+ "near-token",
+ "serde_json",
  "templar-common",
+ "templar-gateway-testing",
+ "templar-proxy-oracle-governance-kernel",
+ "templar-proxy-oracle-kernel",
  "templar-proxy-oracle-near-common",
  "templar-proxy-oracle-near-governance-common",
+ "tokio",
 ]
 
 [[package]]
@@ -13662,6 +13671,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
+ "near-primitives",
  "near-sdk",
  "near-sdk-contract-tools",
  "pyth-lazer-protocol",
