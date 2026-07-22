@@ -29,13 +29,8 @@ macro_rules! impl_versioned_state {
                 "migrate function is private",
             );
 
-            // Whether a state migration runs is decided by the framework — comparing the stored
-            // version to the target — never by the caller. `admin_upgrade`/`SelfUpgrade` always batch
-            // a `migrate` call; this function then classifies: a same-version code refresh (nothing to
-            // migrate) is a defined no-op, a needed migration runs the selected transform, and a
-            // downgrade errors. `migrate_args` is only a cross-check, so a caller can neither skip a
-            // required migration (which would corrupt state) nor slip a stale transform past an
-            // already-current contract.
+            // Stored-vs-target version — never `migrate_args` — decides whether to migrate, so a
+            // caller can't skip a required migration or slip a stale transform past a current contract.
             let needs =
                 <$current_state as $crate::versioned_state::StateVersion>::needs_migration()
                     .unwrap_or_else(|e| env::panic_str(&e.to_string()));

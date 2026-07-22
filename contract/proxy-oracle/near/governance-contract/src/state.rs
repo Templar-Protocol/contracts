@@ -8,8 +8,7 @@ use templar_proxy_oracle_near_governance_common::{Operation, Proposal, TtlConfig
 
 use crate::{StorageKey, MAX_PENDING_PROPOSALS};
 
-/// Current (v1) governance state: the kernel ledger header, the proposal bodies, and the governed
-/// oracle account.
+/// Current (v1) governance state.
 #[derive(Debug)]
 #[near(serializers = [borsh])]
 pub struct State {
@@ -32,9 +31,8 @@ impl StateVersion for State {
 }
 
 pub mod legacy {
-    //! v0: the pre-standardized-upgrade layout. Its `TtlConfig` predates the `self_upgrade` field and
-    //! its `Operation::AdminUpgrade` carried a raw `code` blob (there was no `SelfUpgrade`). Only used
-    //! to read the old on-chain state during migration.
+    //! v0: the pre-standardized-upgrade layout (`TtlConfig` without `self_upgrade`). Read-only,
+    //! during migration.
     use super::{Governance, LookupMap, Proposal, StateVersion, VersionedState};
     use near_sdk::{
         json_types::{Base64VecU8, U128},
@@ -228,11 +226,8 @@ pub mod migration {
         versioned_state::{Migrator, StateTransformer},
     };
 
-    /// v0 → v1: add the `self_upgrade` timelock (defaulted to the existing `admin_upgrade` timelock —
-    /// self-upgrading governance is at least as sensitive as upgrading the oracle) and rewrite every
-    /// pending proposal body from the old `Operation` layout to the new one (`AdminUpgrade`'s raw
-    /// `code` blob becomes an `UpgradeSource::Code`). Bodies are rewritten in place under the same
-    /// storage prefix, so nothing is left unreadable and pending proposals stay executable.
+    /// v0 → v1: default the new `self_upgrade` timelock to `admin_upgrade`'s, and rewrite each pending
+    /// proposal body to the new `Operation` layout (`AdminUpgrade`'s raw `code` → `UpgradeSource::Code`).
     #[derive(Clone, Debug)]
     #[near(serializers = [json])]
     pub struct V0ToV1;
@@ -264,10 +259,8 @@ pub mod migration {
                 self_upgrade: header.ttls.admin_upgrade,
             };
 
-            // `active_ids` enumerates exactly the stored proposals. `remove` reads each body under the
-            // v0 layout (correct deserialization) and clears its storage key; converted bodies are
-            // collected, then `old_proposals` is dropped so the deletions flush *before* the new map
-            // reuses the same prefix. This avoids the new-typed map reading stale v0 bytes.
+            // Drain the v0-typed map and drop it so deletions flush before the new-typed map reuses
+            // the same storage prefix — otherwise it would read stale v0 bytes.
             let migrated: Vec<(u32, Proposal<Operation>)> = header
                 .active_ids
                 .iter()
@@ -399,7 +392,6 @@ pub mod migration {
             assert_eq!(new.header.active_ids, vec![7]);
             assert_eq!(new.header.max_pending_proposals, 64);
             assert_eq!(new.proxy_oracle_id.as_str(), "proxy.near");
-            // self_upgrade inherits the admin_upgrade timelock; the other fields carry through.
             assert_eq!(new.header.ttls.self_upgrade, Nanoseconds::from_secs(42));
             assert_eq!(new.header.ttls.admin_upgrade, Nanoseconds::from_secs(42));
             assert_eq!(new.header.ttls.set_proxy, Nanoseconds::from_secs(1));
@@ -408,8 +400,6 @@ pub mod migration {
                 Nanoseconds::from_secs(11)
             );
 
-            // The pending proposal is now readable in the new layout, its blob reshaped into a
-            // `UpgradeSource::Code`, and its metadata preserved.
             let migrated = new.proposals.get(&7).expect("proposal 7 migrated");
             assert_eq!(migrated.created_at, Nanoseconds::from_secs(10));
             assert_eq!(migrated.ttl, Nanoseconds::from_secs(15));
@@ -426,12 +416,8 @@ pub mod migration {
             }
         }
 
-        // `migrate()` classifies no-op / run / reject purely from this framework check — never the
-        // caller's args — so a caller can never skip a required migration. The `migrate()` wasm entry
-        // point installs a panic hook (unsafe to call in-process here); its run path (a real gov
-        // v0→v1 migration) is exercised end-to-end against the pinned mainnet blob in the sandbox
-        // `upgrade_ordering` tests. The no-op and reject branches are covered by this decision check
-        // plus the surrounding framework logic.
+        // The full migrate() run path is exercised in the sandbox upgrade_ordering test; here we just
+        // cover the stored-vs-target version decision that drives it.
         #[test]
         fn needs_migration_is_decided_by_stored_vs_target_version() {
             use templar_common::versioned_state::StateVersion;

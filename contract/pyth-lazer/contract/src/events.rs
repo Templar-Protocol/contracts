@@ -37,12 +37,10 @@ pub enum PythLazerEvent {
         receiver: AccountId,
     },
 
-    /// Emitted by `admin_upgrade` when it *schedules* the deploy+migrate. That runs in the returned
-    /// Promise — a separate receipt — so this records the initiated upgrade, **not** its completion:
-    /// if the deploy or migrate fails, that receipt reverts on its own and this already-committed log
-    /// is not rolled back. `code` summarizes the new code (a blob's sha256 or a global-contract
-    /// reference — never the blob itself); `migrated` is whether a migration was requested (non-empty
-    /// `migrate_args`), a bounded flag so the log can never exceed the size limit.
+    /// Emitted by `admin_upgrade` when it *schedules* the deploy+migrate (which runs in the returned
+    /// Promise, a separate receipt) — so this records the initiated upgrade, **not** its completion; a
+    /// later deploy/migrate failure reverts that receipt but not this log. `code` is a compact summary
+    /// (never the blob); `migrated` is a bounded flag (was a migration requested).
     #[event_version("2.0.0")]
     Upgraded {
         code: UpgradeSummary,

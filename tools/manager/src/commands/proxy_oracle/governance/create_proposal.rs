@@ -319,8 +319,7 @@ pub struct SetRoleArgs {
     revoke: bool,
 }
 
-/// The new code for an upgrade: exactly one of a raw WASM blob, a global contract by code hash, or a
-/// global contract by account id.
+/// The new code for an upgrade: exactly one of the three sources.
 #[derive(Args, Debug)]
 #[group(required = true, multiple = false)]
 pub struct UpgradeSourceArgs {

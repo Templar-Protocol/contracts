@@ -4,20 +4,12 @@ use near_sdk::{
     near, AccountId, Gas, NearToken, Promise,
 };
 
-/// The migrate method every contract exposes for post-deploy state migration. The
-/// [`UpgradeSource::deploy_and_migrate`] helper takes the name as a parameter, but all call sites
-/// pass this constant so the method name stays uniform across contracts.
+/// The post-deploy state-migration method every contract exposes.
 pub const MIGRATE_METHOD: &str = "migrate";
 
-/// Where an upgrade's new code comes from. Deploying from a raw blob, a global contract by code
-/// hash, or a global contract by account id are the three forms NEAR supports; all three batch
-/// identically with a follow-up `migrate` call.
-///
-/// In JSON, `Code` is **untagged** — it serializes as a bare base64 string (matching the
-/// pre-`UpgradeSource` wire, where the input was a bare `Base64VecU8`), while the global variants are
-/// externally tagged (`{"GlobalHash": …}` / `{"GlobalAccountId": …}`). There is no ambiguity: a bare
-/// string can only be `Code`, an object only a global variant. Borsh is unaffected by `untagged` and
-/// tags every variant as usual.
+/// Where an upgrade's new code comes from. In JSON, `Code` is untagged (a bare base64 string,
+/// matching the pre-`UpgradeSource` wire); the global variants are externally tagged. Borsh tags
+/// all three normally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum UpgradeSource {
@@ -31,9 +23,8 @@ pub enum UpgradeSource {
     Code(Base64VecU8),
 }
 
-/// A compact, loggable summary of an [`UpgradeSource`], mirroring its three variants: for a raw
-/// blob, the blob's sha256 (the blob itself is never logged); otherwise the global-contract
-/// reference. Emitted by upgrade events in place of the (potentially multi-hundred-KB) source.
+/// A compact, loggable stand-in for an [`UpgradeSource`] — a hash/reference, never the (potentially
+/// large) blob.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json])]
 pub enum UpgradeSummary {
@@ -52,8 +43,7 @@ impl UpgradeSource {
         matches!(self, UpgradeSource::Code(code) if code.0.is_empty())
     }
 
-    /// A compact [`UpgradeSummary`] for event logging — for a `Code` blob, its sha256 (via the NEAR
-    /// host `sha256`, so contract-only) rather than the blob itself.
+    /// A compact [`UpgradeSummary`] for event logging (`Code` → its sha256, via the on-chain host).
     pub fn summary(&self) -> UpgradeSummary {
         match self {
             UpgradeSource::Code(blob) => {

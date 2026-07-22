@@ -2,14 +2,9 @@
 //! currently-deployed (pre-standardized-upgrade) wasm to this branch's wasm does **not** brick,
 //! **in either order**.
 //!
-//! The already-deployed contracts can't be changed, so the realistic path is **key-driven**: a bare
-//! `DeployContract` for the v1 oracle (its state layout is unchanged, so no migrate is needed) and
-//! `DeployContract + migrate` for the gov (v0 → v1). Each contract upgrades independently through its
-//! own full-access key, so neither order strands the other. (Governance-driven upgrades are a
-//! separate, post-key-deletion concern: raw-blob `AdminUpgrade` of a ~500KB contract doesn't fit the
-//! 300 Tgas cap, so that path uses the compact global-contract sources ENG-481 adds; the cross-
-//! version wire itself — `{"code": <bare blob>}` accepted by both old and new oracle — is covered by
-//! the `UpgradeSource` unit tests.)
+//! Upgrades are key-driven (the deployed contracts can't be changed): a bare `DeployContract` for
+//! the v1 oracle (state layout unchanged, no migrate) and `DeployContract + migrate` for the gov
+//! (v0 → v1). Each upgrades independently through its own key, so neither order strands the other.
 //!
 //! Fixtures are the real on-chain blobs (`PROXY_ORACLE_0_3_0`, state v1; `PROXY_GOVERNANCE_0_1_0`,
 //! pre-versioned-state), pinned from mainnet.
@@ -70,8 +65,7 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     let admin = harness.create_user("admin").await?.0;
     let network = &harness.network;
 
-    // Two independent deploys (different accounts, different nonces) — run them concurrently. The
-    // oracle is owned by the gov account, so the gov can drive `admin_upgrade`.
+    // The oracle is owned by the gov account, so the gov can drive `admin_upgrade`.
     tokio::try_join!(
         deploy_with_init(
             network,
