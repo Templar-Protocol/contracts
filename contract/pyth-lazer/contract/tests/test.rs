@@ -2,6 +2,7 @@
 
 use byteorder::LE;
 use ed25519_dalek::{Signer, SigningKey};
+use near_primitives::action::GlobalContractIdentifier;
 use near_sdk::{
     json_types::{Base64VecU8, I64},
     mock::MockAction,
@@ -1082,9 +1083,24 @@ fn admin_upgrade_emits_upgraded(
     let actions = &receipts[0].actions;
     assert_eq!(actions.len(), 2);
     match &code {
-        UpgradeSource::Code(_) => assert!(matches!(actions[0], MockAction::DeployContract { .. })),
-        UpgradeSource::GlobalHash(_) => {
-            assert!(matches!(actions[0], MockAction::UseGlobalContract { .. }));
+        UpgradeSource::Code(blob) => match &actions[0] {
+            MockAction::DeployContract { code, .. } => {
+                assert_eq!(code, &blob.0, "deployed blob should match the source");
+            }
+            other => panic!("expected DeployContract, got {other:?}"),
+        },
+        UpgradeSource::GlobalHash(hash) => {
+            let expected: near_sdk::CryptoHash = hash.into();
+            match &actions[0] {
+                MockAction::UseGlobalContract {
+                    contract_id: GlobalContractIdentifier::CodeHash(h),
+                    ..
+                } => assert_eq!(
+                    h.0, expected,
+                    "global-contract code hash should match the source"
+                ),
+                other => panic!("expected UseGlobalContract(CodeHash), got {other:?}"),
+            }
         }
     }
     match &actions[1] {

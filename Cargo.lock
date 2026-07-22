@@ -13671,6 +13671,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
+ "near-primitives",
  "near-sdk",
  "near-sdk-contract-tools",
  "pyth-lazer-protocol",
