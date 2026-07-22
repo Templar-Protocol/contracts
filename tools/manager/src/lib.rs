@@ -3,6 +3,7 @@ mod commands;
 mod context;
 mod dispatch;
 mod proxy;
+mod resolve;
 
 #[cfg(test)]
 mod tests;

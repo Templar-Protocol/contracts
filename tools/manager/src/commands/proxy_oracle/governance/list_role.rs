@@ -4,12 +4,12 @@ use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 
 use super::Role;
 use crate::commands::pagination::PaginationArgs;
+use crate::resolve::GovernanceTarget;
 
 #[derive(Args, Debug)]
 pub struct ListRole {
-    /// Governance contract to query.
-    #[arg(long, value_name = "ACCOUNT_ID")]
-    governance_id: AccountId,
+    #[command(flatten)]
+    pub(crate) target: GovernanceTarget,
     /// Role whose members to list.
     #[arg(long, value_enum)]
     role: Role,
@@ -18,9 +18,9 @@ pub struct ListRole {
 }
 
 impl ListRole {
-    pub fn into_spec(self) -> spec::ListRole {
+    pub fn into_spec(self, governance_id: AccountId) -> spec::ListRole {
         spec::ListRole {
-            governance_id: self.governance_id,
+            governance_id,
             role: self.role,
             offset: self.pagination.offset,
             count: self.pagination.count,

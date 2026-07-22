@@ -101,12 +101,31 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
 async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {
     match ns {
         ProxyOracleNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
-        ProxyOracleNs::GetProxy(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::ListProxies(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::PriceFeedExists(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::GetProxyCircuitBreakerSet(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleNs::UpdatePrices(a) => ctx.write(a.signer.clone(), a.into_spec()).await,
-        ProxyOracleNs::Upgrade(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        ProxyOracleNs::GetProxy(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(oracle_id)).await
+        }
+        ProxyOracleNs::ListProxies(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(oracle_id)).await
+        }
+        ProxyOracleNs::PriceFeedExists(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(oracle_id)).await
+        }
+        ProxyOracleNs::GetProxyCircuitBreakerSet(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(oracle_id)).await
+        }
+        ProxyOracleNs::UpdatePrices(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.write(a.signer.clone(), a.into_spec(oracle_id)).await
+        }
+        ProxyOracleNs::Upgrade(a) => {
+            let oracle_id = a.target.resolve(&ctx).await?;
+            ctx.write(a.signer.clone(), a.try_into_spec(oracle_id)?)
+                .await
+        }
         ProxyOracleNs::Governance(a) => proxy_oracle_governance(ctx, a).await,
     }
 }
@@ -161,20 +180,52 @@ async fn proxy_oracle_governance(
     ctx: CliContext,
     ns: ProxyOracleGovernanceNs,
 ) -> anyhow::Result<()> {
+    use templar_gateway_methods_spec::proxy_oracle_governance as gov;
+
     match ns {
         ProxyOracleGovernanceNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         ProxyOracleGovernanceNs::CreateProposal(a) => proposals::create(ctx, a).await,
-        ProxyOracleGovernanceNs::CancelProposal(a) => ctx.write(a.signer.clone(), a.cancel()).await,
+        ProxyOracleGovernanceNs::CancelProposal(a) => {
+            let governance_id = a.proposal.target.resolve(&ctx).await?;
+            ctx.write(a.signer.clone(), a.cancel(governance_id)).await
+        }
         ProxyOracleGovernanceNs::ExecuteProposal(a) => proposals::execute(ctx, a).await,
-        ProxyOracleGovernanceNs::GetProposal(a) => ctx.read(a.get()).await,
-        ProxyOracleGovernanceNs::ListProposals(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleGovernanceNs::NextProposalId(a) => ctx.read(a.next_proposal_id()).await,
-        ProxyOracleGovernanceNs::ProposalCount(a) => ctx.read(a.proposal_count()).await,
-        ProxyOracleGovernanceNs::GetOperationTtl(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleGovernanceNs::GetProxyOracleId(a) => ctx.read(a.get_proxy_oracle_id()).await,
-        ProxyOracleGovernanceNs::HasRole(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleGovernanceNs::ListRole(a) => ctx.read(a.into_spec()).await,
-        ProxyOracleGovernanceNs::GetRoles(a) => ctx.read(a.into_spec()).await,
+        ProxyOracleGovernanceNs::GetProposal(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.get(governance_id)).await
+        }
+        ProxyOracleGovernanceNs::ListProposals(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(governance_id)).await
+        }
+        ProxyOracleGovernanceNs::NextProposalId(a) => {
+            let governance_id = a.resolve(&ctx).await?;
+            ctx.read(gov::NextProposalId { governance_id }).await
+        }
+        ProxyOracleGovernanceNs::ProposalCount(a) => {
+            let governance_id = a.resolve(&ctx).await?;
+            ctx.read(gov::ProposalCount { governance_id }).await
+        }
+        ProxyOracleGovernanceNs::GetOperationTtl(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(governance_id)).await
+        }
+        ProxyOracleGovernanceNs::GetProxyOracleId(a) => {
+            let governance_id = a.resolve(&ctx).await?;
+            ctx.read(gov::GetProxyOracleId { governance_id }).await
+        }
+        ProxyOracleGovernanceNs::HasRole(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(governance_id)).await
+        }
+        ProxyOracleGovernanceNs::ListRole(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(governance_id)).await
+        }
+        ProxyOracleGovernanceNs::GetRoles(a) => {
+            let governance_id = a.target.resolve(&ctx).await?;
+            ctx.read(a.into_spec(governance_id)).await
+        }
     }
 }
 
