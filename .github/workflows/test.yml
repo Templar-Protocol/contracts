@@ -488,7 +488,11 @@ jobs:
 
       - uses: ./.github/actions/rust
         with:
-          cache-key: host
+          # Dedicated key, not `host`: this job runs the full cargo-near
+          # contract prebuild, so its cache must hold the wasm/ABI dependency
+          # artifacts. The host-only jobs never build wasm32 and would win the
+          # shared key first, leaving this job with a wasm-less cache.
+          cache-key: contracts
 
       - name: Install test tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
