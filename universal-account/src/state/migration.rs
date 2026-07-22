@@ -75,6 +75,22 @@ impl From<UnbrickV1> for Migration {
 }
 
 impl Migrator for Migration {
+    fn input_version(&self) -> u32 {
+        match self {
+            Migration::V0(v0) => v0.input_version(),
+            Migration::V1(v1) => v1.input_version(),
+            Migration::UnbrickV1(unbrick_v1) => unbrick_v1.input_version(),
+        }
+    }
+
+    fn output_version(&self) -> u32 {
+        match self {
+            Migration::V0(v0) => v0.output_version(),
+            Migration::V1(v1) => v1.output_version(),
+            Migration::UnbrickV1(unbrick_v1) => unbrick_v1.output_version(),
+        }
+    }
+
     fn run(self) {
         match self {
             Migration::V0(v0) => {
@@ -97,7 +113,9 @@ impl Migrator for Migration {
 #[cfg(test)]
 mod tests {
     use near_sdk::{env, store::IterableMap, test_utils::VMContextBuilder, testing_env};
-    use templar_common::versioned_state::{read_state_version, write_state_version};
+    use templar_common::versioned_state::{
+        read_state_version, run_migration_chain, write_state_version, MigrationChainError,
+    };
 
     use crate::{
         authentication::{
@@ -262,6 +280,73 @@ mod tests {
         context();
         write_state_version(2);
         Migration::from(UnbrickV1).run();
+    }
+
+    // A genuine two-version catch-up (v0 → v1 → v2) in a single `run_migration_chain` call, over the
+    // real `state::V0`/`V1`/`V2` structs — the case that previously required two deploy+migrate
+    // round-trips.
+    #[test]
+    fn chained_v0_to_v2_in_one_call() {
+        context();
+
+        let mut old = state::V0 {
+            next_key_index: 42,
+            keys: IterableMap::new(b"k"),
+        };
+        let raw_key = KeyId::Ed25519Raw(raw::VerifyKey([0xee_u8; 32].into()));
+        let raw_parameters = KeyParameters {
+            block_height: 4444.into(),
+            index: 5555.into(),
+            nonce: 6666.into(),
+        };
+        old.keys.insert(raw_key.clone(), raw_parameters);
+        env::state_write(&old);
+        drop(old);
+        write_state_version(0);
+
+        run_migration_chain(
+            vec![
+                Migration::from(V0 {
+                    chain_id: 1234.into(),
+                }),
+                Migration::from(V1),
+            ],
+            state::V2::VERSION,
+        )
+        .unwrap();
+
+        assert_eq!(read_state_version().unwrap(), 2);
+        let new = env::state_read::<state::V2>().unwrap();
+        assert_eq!(new.chain_id, 1234);
+        assert_eq!(new.next_key_index, 42);
+        assert_eq!(new.keys.len(), 1);
+        assert_eq!(new.keys.get(&raw_key), Some(&raw_parameters));
+    }
+
+    // A chain whose second step's input version doesn't follow the first step's output is rejected
+    // before any transform runs — stored state is untouched.
+    #[test]
+    fn chained_rejects_broken_link_before_running() {
+        context();
+        write_state_version(0);
+
+        let err = run_migration_chain(
+            vec![
+                Migration::from(V0 { chain_id: 1.into() }),
+                Migration::from(V0 { chain_id: 2.into() }),
+            ],
+            state::V2::VERSION,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            MigrationChainError::LinkMismatch {
+                output: 1,
+                input: 0
+            }
+        ));
+        assert_eq!(read_state_version().unwrap(), 0);
     }
 }
 

@@ -19,6 +19,14 @@ use templar_common::versioned_state::Migrator;
 pub enum Migration {}
 
 impl Migrator for Migration {
+    fn input_version(&self) -> u32 {
+        match *self {}
+    }
+
+    fn output_version(&self) -> u32 {
+        match *self {}
+    }
+
     fn run(self) {
         match self {}
     }

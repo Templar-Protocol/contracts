@@ -45,25 +45,27 @@ macro_rules! impl_versioned_state {
                 return;
             }
 
-            let args: $migrations = ::near_sdk::serde_json::from_slice(&input)
+            // Accept either a single migration (legacy wire shape) or an ordered list, and run the
+            // whole chain in one receipt: each step's output version must feed the next step's
+            // input, the first must start at the stored version, and the last must land on target.
+            // The chain is fully validated before any transform runs, so an invalid chain reverts
+            // without writing state.
+            let migrations: Vec<$migrations> = $crate::versioned_state::parse_one_or_many(&input)
                 .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-            // A contract may launch at its first state version with no migrations defined, making
-            // `$migrations` an uninhabited (empty) enum. The deserialize above then has type `!`
-            // (it can only panic), so this block is statically unreachable — expected, not a bug.
-            #[allow(unreachable_code)]
-            {
-                $crate::versioned_state::Migrator::run(args);
+            $crate::versioned_state::run_migration_chain(
+                migrations,
+                <$current_state as $crate::versioned_state::StateVersion>::VERSION,
+            )
+            .unwrap_or_else(|e| env::panic_str(&e.to_string()));
 
-                // One `Migrator::run` advances a single version step; re-assert we reached the target
-                // so a deploy several versions ahead of stored reverts atomically instead of leaving
-                // state stranded between versions.
-                ::near_sdk::require!(
-                    !<$current_state as $crate::versioned_state::StateVersion>::needs_migration()
-                        .unwrap_or_else(|e| env::panic_str(&e.to_string())),
-                    "state migration incomplete: stored version is still behind target",
-                );
-            }
+            // Defense in depth: the chain validated its endpoints against the args, but re-assert
+            // against live state so a run that somehow left state stranded reverts atomically.
+            ::near_sdk::require!(
+                !<$current_state as $crate::versioned_state::StateVersion>::needs_migration()
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string())),
+                "state migration incomplete: stored version is still behind target",
+            );
         }
     };
 }
