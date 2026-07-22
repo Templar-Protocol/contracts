@@ -1,12 +1,13 @@
-//! `--market-id` target resolution: turn a market account into the concrete
-//! oracle or governance account a command operates on, asserting the resolved
-//! contract is the expected kind before any write is planned.
+//! Target resolution for `proxy-oracle`/`proxy-oracle gov` commands: turn a
+//! `--market-id` (or, for governance, an `--oracle-id`) into the concrete oracle
+//! or governance account a command operates on, asserting the resolved contract
+//! is the expected kind before any write is planned.
 //!
 //! Each resolution is a handful of extra view calls — fine for an ops CLI. The
-//! kind assertions are hard errors, not warnings: a wrong-target admin write is
-//! the failure mode this prevents, so a market whose oracle isn't a proxy oracle
-//! (or a proxy oracle not owned by a governance contract) fails with a
-//! diagnostic naming the resolution step that broke.
+//! assertions are hard errors, not warnings: a wrong-target admin write is the
+//! failure mode this prevents, so a market whose oracle isn't a proxy oracle (or
+//! a proxy oracle not owned by a governance contract) fails with a diagnostic
+//! naming the resolution step that broke.
 
 use anyhow::{bail, Context as _};
 use clap::{ArgGroup, Args};
@@ -35,7 +36,7 @@ impl OracleTarget {
     pub(crate) async fn resolve(&self, ctx: &CliContext) -> anyhow::Result<AccountId> {
         match (&self.oracle_id, &self.market_id) {
             (Some(oracle_id), _) => Ok(oracle_id.clone()),
-            (_, Some(market_id)) => resolve_oracle_from_market(ctx, market_id.clone()).await,
+            (_, Some(market_id)) => resolve_oracle_from_market(ctx, market_id).await,
             (None, None) => bail!("either --oracle-id or --market-id is required"),
         }
     }
@@ -67,8 +68,8 @@ impl GovernanceTarget {
     pub(crate) async fn resolve(&self, ctx: &CliContext) -> anyhow::Result<AccountId> {
         match (&self.governance_id, &self.oracle_id, &self.market_id) {
             (Some(governance_id), _, _) => Ok(governance_id.clone()),
-            (_, Some(oracle_id), _) => resolve_governance_from_oracle(ctx, oracle_id.clone()).await,
-            (_, _, Some(market_id)) => resolve_governance_from_market(ctx, market_id.clone()).await,
+            (_, Some(oracle_id), _) => resolve_governance_from_oracle(ctx, oracle_id).await,
+            (_, _, Some(market_id)) => resolve_governance_from_market(ctx, market_id).await,
             (None, None, None) => {
                 bail!("one of --governance-id, --oracle-id, or --market-id is required")
             }
@@ -76,12 +77,9 @@ impl GovernanceTarget {
     }
 }
 
-/// Read a market's configured oracle and assert it is a proxy oracle.
-async fn resolve_oracle_from_market(
-    ctx: &CliContext,
-    market_id: AccountId,
-) -> anyhow::Result<AccountId> {
-    let oracle_id = ctx
+/// Read a market's configured price-oracle account (no kind assertion).
+async fn read_market_oracle(ctx: &CliContext, market_id: &AccountId) -> anyhow::Result<AccountId> {
+    Ok(ctx
         .client
         .read(market::GetConfiguration {
             market_id: market_id.clone(),
@@ -89,7 +87,16 @@ async fn resolve_oracle_from_market(
         .await
         .with_context(|| format!("read market.getConfiguration for {market_id}"))?
         .price_oracle_configuration
-        .account_id;
+        .account_id)
+}
+
+/// Read a market's configured oracle and assert it is a proxy oracle. Used on the
+/// `--market-id` proxy-oracle path, which has no later round-trip to prove it.
+async fn resolve_oracle_from_market(
+    ctx: &CliContext,
+    market_id: &AccountId,
+) -> anyhow::Result<AccountId> {
+    let oracle_id = read_market_oracle(ctx, market_id).await?;
 
     let kind = ctx
         .client
@@ -104,21 +111,23 @@ async fn resolve_oracle_from_market(
     Ok(oracle_id)
 }
 
-/// Resolve a market's governance contract: resolve the market's proxy oracle,
-/// then the governance contract that owns it.
+/// Resolve a market's governance contract: read the market's oracle, then the
+/// governance contract that owns it. No proxy-oracle `getKind` assertion here —
+/// the `getProxyOracleId` round-trip in [`resolve_governance_from_oracle`] is
+/// itself proof the oracle is a proxy oracle governed by that account.
 async fn resolve_governance_from_market(
     ctx: &CliContext,
-    market_id: AccountId,
+    market_id: &AccountId,
 ) -> anyhow::Result<AccountId> {
-    let oracle_id = resolve_oracle_from_market(ctx, market_id).await?;
-    resolve_governance_from_oracle(ctx, oracle_id).await
+    let oracle_id = read_market_oracle(ctx, market_id).await?;
+    resolve_governance_from_oracle(ctx, &oracle_id).await
 }
 
 /// Resolve a proxy oracle's governance contract: read the oracle's owner, then
 /// confirm it governs that oracle by round-tripping `getProxyOracleId`.
 async fn resolve_governance_from_oracle(
     ctx: &CliContext,
-    oracle_id: AccountId,
+    oracle_id: &AccountId,
 ) -> anyhow::Result<AccountId> {
     let owner = ctx
         .client
@@ -128,7 +137,7 @@ async fn resolve_governance_from_oracle(
         .await
         .with_context(|| format!("read owner.getOwner for oracle {oracle_id}"))?
         .owner;
-    let governance_id = ensure_owner_present(owner, &oracle_id)?;
+    let governance_id = ensure_owner_present(owner, oracle_id)?;
 
     let governed = ctx
         .client
@@ -140,7 +149,7 @@ async fn resolve_governance_from_oracle(
             format!("read proxyOracleGovernance.getProxyOracleId for {governance_id}")
         })?
         .proxy_oracle_id;
-    ensure_governs(&oracle_id, &governance_id, &governed)?;
+    ensure_governs(oracle_id, &governance_id, &governed)?;
 
     Ok(governance_id)
 }
