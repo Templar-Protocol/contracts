@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
-# Start a pool of out-of-band `neard` instances for attach-mode tests.
-#
-# Boots SANDBOX_NODE_COUNT nodes (default 4). When run as a nextest setup script
-# for the `sandbox` profile it exports, into the test environment:
+# Start a pool of out-of-band `neard` instances for attach-mode tests and export:
 #   NEAR_SANDBOX_RPC_URL_<i>  - the i-th node's RPC url (i in 0..count-1)
-#   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for non-nextest/manual runs)
-#   SANDBOX_NODE_COUNT, TEST_CONTRACTS_PREBUILT
+#   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for manual runs)
+#   TEST_CONTRACTS_PREBUILT    - confirms contract Wasms were built
+#
+# Source this script so the exports remain available to the test process.
 #
 # Each test attaches to the node for its NEXTEST_TEST_GLOBAL_SLOT, so a node is
 # used by at most one test at a time (exclusive: fast_forward and chain state
 # stay isolated between concurrent tests) yet reused across the tests that pass
-# through that slot (no per-test boot/teardown). The node count MUST be >= the
-# sandbox profile's `test-threads` in .config/nextest.toml; keep them in sync
-# (override both via SANDBOX_NODE_COUNT and NEXTEST_TEST_THREADS to retune).
+# through that slot (no per-test boot/teardown). Test orchestration must set
+# SANDBOX_NODE_COUNT from the same value passed to nextest's --test-threads.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-NODE_COUNT="${SANDBOX_NODE_COUNT:-4}"
+NODE_COUNT="${SANDBOX_NODE_COUNT:?SANDBOX_NODE_COUNT must be set by test orchestration}"
 
 # The pool's addr/pid files are fixed paths, so starting a pool on top of a live
 # one overwrites them and orphans the older nodes — nothing tracks them after
@@ -25,11 +23,8 @@ NODE_COUNT="${SANDBOX_NODE_COUNT:-4}"
 # already there.
 bash "${SCRIPT_DIR}/sandbox-down.sh" >/dev/null
 
-# Prebuild the contract wasms once so tests don't each recompile them. Skip with
-# SANDBOX_SKIP_PREBUILD=1 when they are known to be current.
-if [ -z "${SANDBOX_SKIP_PREBUILD:-}" ]; then
-  bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
-fi
+# Prebuild the contract wasms once so tests don't each recompile them.
+bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
 
 cargo build -q -p templar-gateway-testing --bin sandbox-host
 
@@ -68,17 +63,13 @@ for i in $(seq 1 $((NODE_COUNT - 1))); do
 done
 
 for i in $(seq 0 $((NODE_COUNT - 1))); do
-  echo "sandbox node ${i} up at $(cat "$(addr_file "$i")") (pid $(cat "$(pid_file "$i")"))"
+  _sandbox_rpc_url="$(cat "$(addr_file "$i")")"
+  _sandbox_pid="$(cat "$(pid_file "$i")")"
+  echo "sandbox node ${i} up at ${_sandbox_rpc_url} (pid ${_sandbox_pid})"
+  export "NEAR_SANDBOX_RPC_URL_${i}=${_sandbox_rpc_url}"
+  if [ "$i" -eq 0 ]; then
+    export NEAR_SANDBOX_RPC_URL="${_sandbox_rpc_url}"
+  fi
 done
-
-# Export to the nextest test environment when invoked as a setup script.
-if [ -n "${NEXTEST_ENV:-}" ]; then
-  {
-    echo "NEAR_SANDBOX_RPC_URL=$(cat "$(addr_file 0)")"
-    echo "SANDBOX_NODE_COUNT=${NODE_COUNT}"
-    for i in $(seq 0 $((NODE_COUNT - 1))); do
-      echo "NEAR_SANDBOX_RPC_URL_${i}=$(cat "$(addr_file "$i")")"
-    done
-    echo "TEST_CONTRACTS_PREBUILT=1"
-  } >>"$NEXTEST_ENV"
-fi
+export TEST_CONTRACTS_PREBUILT=1
+unset _sandbox_rpc_url _sandbox_pid

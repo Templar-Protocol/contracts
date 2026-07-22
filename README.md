@@ -37,7 +37,7 @@ Templar Protocol is an overcollateralized lending protocol. This repository cont
 ## Build and run tests
 
 ```bash
-./script/test.sh
+just test
 ```
 
 ## Links

@@ -1,19 +1,5 @@
-# Opt into setup scripts (used by the `sandbox` profile to start one shared
-# out-of-band neard before node-backed tests).
-experimental = ["setup-scripts"]
-
-# The node-backed tests (they need a `SandboxHarness`) are excluded from the fast
-# gate and are the *only* thing the `sandbox` profile runs. The two filtersets
-# below MUST stay exact complements: a test in neither runs nowhere, which is how
-# a whole crate's suite once went dark.
-#
-# `kind` alone cannot express the set. Ten packages are node-backed in their
-# integration binaries (`kind(test)`), but `templar-gateway-service` is a bin
-# whose node tests live in `src/` — `kind(bin)` unit tests, indistinguishable by
-# kind from its pure `config::tests` — so those are selected by module.
-#
-# A filterset rather than `#[ignore]`, so that `#[ignore]` keeps its usual
-# meaning: disabled.
+# Test-group filters and setup orchestration live in the root justfile. Nextest
+# profiles define execution behavior only; invoke tests through `just test-*`.
 
 [profile.default]
 # Limit test threads to reduce memory/disk usage
@@ -22,38 +8,12 @@ test-threads = 4
 # Reduce retries to save disk space
 retries = 0
 
-# The fast gate: no sandbox, no Docker, no network. `requires_network_*` tests
-# reach live third-party endpoints (Redstone, Lazer). Run either group
-# explicitly with `--profile sandbox` / `-E 'test(/^requires_network_/)'`.
-default-filter = """
-    not test(/^requires_network_/)
-    and not (
-        (
-            kind(test) & (
-                package(templar-market-contract)
-                | package(templar-vault-contract)
-                | package(templar-registry-contract)
-                | package(templar-universal-account-contract)
-                | package(templar-proxy-oracle-near-contract)
-                | package(templar-proxy-oracle-near-governance-contract)
-                | package(templar-lst-oracle-contract)
-                | package(templar-funding-bridge)
-                | package(templar-relayer)
-                | package(templar-gateway-testing)
-                | package(templar-liquidator)
-                | package(templar-gateway-core)
-            )
-        )
-        | (
-            package(templar-gateway-service)
-            & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
-        )
-    )
-"""
+# Fail closed when nextest is invoked directly. Just recipes always provide one
+# of the repository's explicit test-group filters.
+default-filter = "none()"
 
 [profile.ci]
-# CI-specific profile balancing disk space and performance. Inherits
-# `default-filter` from the default profile.
+# CI-specific profile balancing disk space and performance.
 test-threads = 6
 retries = 1
 
@@ -66,59 +26,16 @@ status-level = "fail"
 # Set slower timeout for CI runners
 slow-timeout = { period = "120s", terminate-after = 3 }
 
-# Node-backed tests: share a pool of out-of-band `neard` nodes instead of booting
-# one per test. The setup script starts them and exports NEAR_SANDBOX_RPC_URL +
-# TEST_CONTRACTS_PREBUILT into the test environment. Run via `just test-sandbox`
-# (which guarantees teardown), or `cargo nextest run --profile sandbox`.
-[scripts.setup.sandbox]
-command = "script/sandbox-up.sh"
-
 [profile.sandbox]
-# Parallel across a pool of neard nodes: the setup script (script/sandbox-up.sh)
-# starts one node per slot and each test attaches to the node for its
-# NEXTEST_TEST_GLOBAL_SLOT. Exclusive use per slot keeps fast_forward and chain
-# state isolated between concurrent tests, while reusing a node across the tests
-# that pass through its slot avoids per-test boot. test-threads MUST be <=
-# SANDBOX_NODE_COUNT (default 4; keep them in sync, lower both on tight runners).
-test-threads = 4
+# Parallel across a pooled neard sandbox. The supported Just entrypoint passes
+# test-threads from the same setting used to size that pool, overriding the
+# default profile's inherited value.
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Profiles inherit from `default`, not from `ci`, so this has to be set here too:
 # CI runs the node suite through this profile and needs the full picture from one
 # run, not an abort on the first failure.
 fail-fast = false
-
-# The exact complement of the default profile's exclusion: only the node-backed
-# tests, so this profile never re-runs the fast gate's tests.
-default-filter = """
-    not test(/^requires_network_/)
-    and (
-        (
-            kind(test) & (
-                package(templar-market-contract)
-                | package(templar-vault-contract)
-                | package(templar-registry-contract)
-                | package(templar-universal-account-contract)
-                | package(templar-proxy-oracle-near-contract)
-                | package(templar-proxy-oracle-near-governance-contract)
-                | package(templar-lst-oracle-contract)
-                | package(templar-funding-bridge)
-                | package(templar-relayer)
-                | package(templar-gateway-testing)
-                | package(templar-liquidator)
-                | package(templar-gateway-core)
-            )
-        )
-        | (
-            package(templar-gateway-service)
-            & (test(/^rpc::tests::/) | test(/^gateway_service::tests::/))
-        )
-    )
-"""
-
-[[profile.sandbox.scripts]]
-filter = "all()"
-setup = "sandbox"
 
 [store]
 # Location of nextest's run store (metadata + archived test outputs).
