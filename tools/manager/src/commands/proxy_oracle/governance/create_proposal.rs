@@ -328,7 +328,7 @@ pub struct UpgradeSourceArgs {
     #[arg(long, value_name = "PATH")]
     code_file: Option<PathBuf>,
     /// Global contract code hash (base58) to deploy.
-    #[arg(long, value_name = "BASE58", value_parser = parse_global_hash)]
+    #[arg(long, value_name = "BASE58")]
     global_hash: Option<Base58CryptoHash>,
     /// Account id that published the global contract to deploy.
     #[arg(long, value_name = "ACCOUNT_ID")]
@@ -374,17 +374,6 @@ impl UpgradeArgs {
         });
         Ok((code, migrate_args))
     }
-}
-
-fn parse_global_hash(value: &str) -> Result<Base58CryptoHash, String> {
-    let bytes = near_sdk::bs58::decode(value)
-        .into_vec()
-        .map_err(|e| format!("invalid base58: {e}"))?;
-    let hash: [u8; 32] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| format!("code hash must be 32 bytes, got {}", bytes.len()))?;
-    Ok(Base58CryptoHash::from(hash))
 }
 
 #[derive(Args, Debug)]

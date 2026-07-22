@@ -21,7 +21,7 @@ use anyhow::Result;
 use near_api::types::AccountId;
 use near_api::{Contract, NetworkConfig};
 use serde_json::{json, Value};
-use templar_gateway_testing::{wasm, SandboxHarness};
+use templar_gateway_testing::{wasm, SandboxHarness, TEST_FINALITY_POLICY};
 
 use common::{code_hash, deploy_code, signer, view};
 
@@ -42,36 +42,21 @@ fn old_ttls() -> Value {
     })
 }
 
-/// Deploy + init a contract via its full-access key.
-async fn deploy_init(
+/// Deploy `code` to `account` via its full-access key, atomically calling `method` (`new` to init,
+/// `migrate` to bootstrap-upgrade).
+async fn deploy_with_init(
     network: &NetworkConfig,
     account: &AccountId,
     code: Vec<u8>,
+    method: &str,
     args: Value,
 ) -> Result<()> {
     Contract::deploy(account.clone())
         .use_code(code)
-        .with_init_call("new", args)?
+        .with_init_call(method, args)?
         .max_gas()
-        .with_signer(signer()?)
-        .send_to(network)
-        .await?
-        .assert_success();
-    Ok(())
-}
-
-/// Bootstrap-upgrade a contract via its full-access key: atomic deploy + migrate.
-async fn deploy_migrate(
-    network: &NetworkConfig,
-    account: &AccountId,
-    code: Vec<u8>,
-    migrate_args: Value,
-) -> Result<()> {
-    Contract::deploy(account.clone())
-        .use_code(code)
-        .with_init_call("migrate", migrate_args)?
-        .max_gas()
-        .with_signer(signer()?)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -85,20 +70,24 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     let admin = harness.create_user("admin").await?.0;
     let network = &harness.network;
 
-    deploy_init(
-        network,
-        &oracle,
-        wasm::PROXY_ORACLE_0_3_0.to_vec(),
-        json!({ "owner_id": gov }),
-    )
-    .await?;
-    deploy_init(
-        network,
-        &gov,
-        wasm::PROXY_GOVERNANCE_0_1_0.to_vec(),
-        json!({ "proxy_oracle_id": oracle, "admin_id": admin, "ttls": old_ttls() }),
-    )
-    .await?;
+    // Two independent deploys (different accounts, different nonces) — run them concurrently. The
+    // oracle is owned by the gov account, so the gov can drive `admin_upgrade`.
+    tokio::try_join!(
+        deploy_with_init(
+            network,
+            &oracle,
+            wasm::PROXY_ORACLE_0_3_0.to_vec(),
+            "new",
+            json!({ "owner_id": gov }),
+        ),
+        deploy_with_init(
+            network,
+            &gov,
+            wasm::PROXY_GOVERNANCE_0_1_0.to_vec(),
+            "new",
+            json!({ "proxy_oracle_id": oracle, "admin_id": admin, "ttls": old_ttls() }),
+        ),
+    )?;
 
     Ok((oracle, gov))
 }
@@ -124,10 +113,11 @@ async fn upgrade_oracle(network: &NetworkConfig, oracle: &AccountId) -> Result<(
 /// now versioned (`get_stored_state_version` — a method the old, pre-versioned-state gov lacked).
 async fn upgrade_gov(network: &NetworkConfig, gov: &AccountId) -> Result<()> {
     let before = code_hash(network, gov).await?;
-    deploy_migrate(
+    deploy_with_init(
         network,
         gov,
         wasm::proxy_governance().await.to_vec(),
+        "migrate",
         json!({ "from_version": "v0" }),
     )
     .await?;

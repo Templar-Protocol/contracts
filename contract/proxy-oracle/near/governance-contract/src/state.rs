@@ -272,7 +272,10 @@ pub mod migration {
                 .active_ids
                 .iter()
                 .filter_map(|&id| {
-                    let id = u32::try_from(id).ok()?;
+                    // Proposal ids are stored as u32 keys; mirror the contract's overflow panic
+                    // rather than silently dropping a pending proposal.
+                    let id = u32::try_from(id)
+                        .unwrap_or_else(|_| near_sdk::env::panic_str("Proposal ID exceeds u32"));
                     let old = old_proposals.remove(&id)?;
                     Some((
                         id,
@@ -424,10 +427,11 @@ pub mod migration {
         }
 
         // `migrate()` classifies no-op / run / reject purely from this framework check — never the
-        // caller's args — so a caller can never skip a required migration. The full `migrate()` entry
-        // point (a wasm export that installs a panic hook) is exercised end-to-end in the sandbox
-        // upgrade tests: the no-op path (same-version oracle refresh), the run path (gov v0→v1), and
-        // the revert paths (bad args) — where a bad `migrate` is a failed transaction, not a panic.
+        // caller's args — so a caller can never skip a required migration. The `migrate()` wasm entry
+        // point installs a panic hook (unsafe to call in-process here); its run path (a real gov
+        // v0→v1 migration) is exercised end-to-end against the pinned mainnet blob in the sandbox
+        // `upgrade_ordering` tests. The no-op and reject branches are covered by this decision check
+        // plus the surrounding framework logic.
         #[test]
         fn needs_migration_is_decided_by_stored_vs_target_version() {
             use templar_common::versioned_state::StateVersion;

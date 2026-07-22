@@ -1,21 +1,15 @@
-//! Minimal `near_api` helpers for the sandbox upgrade tests. Every harness account shares the same
-//! well-known test key, so one [`signer`] signs for any of them.
+//! Minimal `near_api` helpers for the sandbox upgrade tests, mirroring the proxy-oracle test common.
+//! Every harness account shares the same well-known test key, so one [`signer`] signs for any of
+//! them; reads and writes pin the shared [`TEST_FINALITY_POLICY`] for deterministic finality.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use near_api::types::AccountId;
-use near_api::{Account, Contract, NetworkConfig, Signer};
+use near_api::{Account, Contract, NetworkConfig};
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
-use near_sdk::Gas;
-use near_token::NearToken;
 
-/// A signer over the shared sandbox key, valid for any harness account.
-pub fn signer() -> Result<Arc<Signer>> {
-    Signer::from_secret_key(templar_gateway_testing::test_secret_key()?)
-        .context("failed to build test signer")
-}
+pub use templar_gateway_testing::test_signer as signer;
+use templar_gateway_testing::TEST_FINALITY_POLICY;
 
 /// Dispatch a view call and deserialize the result.
 pub async fn view<T: DeserializeOwned + Send + Sync>(
@@ -27,31 +21,10 @@ pub async fn view<T: DeserializeOwned + Send + Sync>(
     Ok(Contract(contract_id.clone())
         .call_function(method, args)
         .read_only::<T>()
+        .at(TEST_FINALITY_POLICY.query_reference())
         .fetch_from(network)
         .await?
         .data)
-}
-
-/// Submit a signed contract call and assert it succeeded (top-level).
-pub async fn call(
-    network: &NetworkConfig,
-    contract_id: &AccountId,
-    signer_id: &AccountId,
-    method: &str,
-    args: impl Serialize,
-    gas_tgas: u64,
-    deposit_yocto: u128,
-) -> Result<()> {
-    Contract(contract_id.clone())
-        .call_function(method, args)
-        .transaction()
-        .gas(Gas::from_tgas(gas_tgas))
-        .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer()?)
-        .send_to(network)
-        .await?
-        .assert_success();
-    Ok(())
 }
 
 /// Deploy raw wasm to `account` via its full-access key, with no init call (a bare code refresh).
@@ -63,7 +36,8 @@ pub async fn deploy_code(
     Contract::deploy(account.clone())
         .use_code(code)
         .without_init_call()
-        .with_signer(signer()?)
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
         .await?
         .assert_success();
@@ -78,6 +52,7 @@ pub async fn code_hash(network: &NetworkConfig, id: &AccountId) -> Result<String
         "{:?}",
         Account(id.clone())
             .view()
+            .at(TEST_FINALITY_POLICY.query_reference())
             .fetch_from(network)
             .await?
             .data
