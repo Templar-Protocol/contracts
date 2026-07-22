@@ -439,7 +439,7 @@ jobs:
         with:
           tool: nextest
 
-      - name: Run fast lib tests
+      - name: Run fast tests
         env:
           SQLX_OFFLINE: true
           DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
@@ -448,12 +448,27 @@ jobs:
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --workspace --lib
+        run: cargo nextest run --workspace
 
   near-integration-tests:
     name: NEAR / Workspace Integration Tests
     timeout-minutes: 40
     runs-on: ubuntu-latest
+    services:
+      # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: relayeruser
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: relayer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relayeruser -d relayer"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
     steps:
@@ -485,45 +500,45 @@ jobs:
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
-      - name: Run full workspace tests
-        env:
-          SQLX_OFFLINE: true
-          NEXTEST_PROFILE: ci
-          CARGO_TERM_COLOR: always
-          CARGO_INCREMENTAL: 0
-          # Shrink target/ + the cached artifacts (debug symbols are the bulk of
-          # both) while keeping panic backtraces (file:line). Disk relief without
-          # forcing recompilation, unlike deleting build artifacts after the fact.
-          CARGO_PROFILE_DEV_DEBUG: line-tables-only
-          CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: ./script/test.sh --workspace
-
       # Node-backed tests share a pool of out-of-band neard nodes (one per nextest
       # slot) instead of booting a node per test. The `sandbox` profile's setup
-      # script starts the pool.
-      # Wasms were prebuilt by the workspace step above, so skip the rebuild.
-      # Which tests run is decided by the profile's default-filter (the node-crate
-      # list in .config/nextest.toml) — the exact complement of what the workspace
-      # step above runs, so the two steps together cover the suite. templar-relayer
-      # additionally needs the compose Postgres, which the workspace step already
-      # started (and the cleanup step tears down).
+      # script prebuilds the contract Wasms and starts the pool.
+      #
+      # The package list mirrors the node-backed package predicates in
+      # .config/nextest.toml. Restricting Cargo to those packages avoids compiling
+      # every workspace test target; the profile's default-filter remains the
+      # source of truth for which tests run. Postgres is provided by the job
+      # service above.
       # 4 = the public runner's vCPUs; one pooled node per test slot.
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           SANDBOX_NODE_COUNT: "4"
-          SANDBOX_SKIP_PREBUILD: "1"
           SQLX_OFFLINE: true
+          DATABASE_URL: postgres://relayeruser:password@localhost:5432/relayer
           CARGO_TERM_COLOR: always
           CARGO_INCREMENTAL: 0
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
-        run: cargo nextest run --profile sandbox --workspace --test-threads 4
+        run: |
+          cargo nextest run --profile sandbox \
+            -p templar-market-contract \
+            -p templar-vault-contract \
+            -p templar-registry-contract \
+            -p templar-universal-account-contract \
+            -p templar-proxy-oracle-near-contract \
+            -p templar-lst-oracle-contract \
+            -p templar-funding-bridge \
+            -p templar-relayer \
+            -p templar-gateway-testing \
+            -p templar-liquidator \
+            -p templar-gateway-core \
+            -p templar-gateway-service \
+            --test-threads 4
 
       - name: Cleanup Docker resources
         if: always()
         run: |
           bash script/sandbox-down.sh || true
-          docker compose --file ./service/relayer/compose.dev.yaml down -v || true
           docker system prune -af --volumes || true
 
   artifact-drift-check:
