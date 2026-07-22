@@ -24,7 +24,7 @@ pub const MIGRATE_METHOD: &str = "migrate";
 pub enum UpgradeSource {
     /// A NEAR global contract referenced by its (immutable) code hash.
     GlobalHash(Base58CryptoHash) = 1,
-    /// A raw WASM blob deployed onto the account. Untagged in JSON: a bare base64 string.
+    /// A raw WASM blob deployed onto the account.
     #[serde(untagged)]
     Code(Base64VecU8) = 0,
 }

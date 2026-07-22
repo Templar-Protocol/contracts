@@ -38,6 +38,7 @@ near-token.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
 templar-gateway-testing.workspace = true
+templar-proxy-oracle-near-governance-common.workspace = true
 tokio.workspace = true
 
 [lints]

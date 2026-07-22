@@ -1,10 +1,17 @@
 //! End-to-end proof that upgrading the proxy oracle and its governance contract from their
-//! currently-deployed (pre-standardized-upgrade) wasm to this branch's wasm does **not** brick,
-//! **in either order**.
+//! currently-deployed (pre-standardized-upgrade) wasm to this branch's wasm leaves both contracts
+//! functional, **in either order**.
 //!
-//! Upgrades are key-driven (the deployed contracts can't be changed): a bare `DeployContract` for
-//! the v1 oracle (state layout unchanged, no migrate) and `DeployContract + migrate` for the gov
-//! (v0 → v1). Each upgrades independently through its own key, so neither order strands the other.
+//! The deployed contracts predate the standardized upgrade path, so the upgrades are key-driven: a
+//! bare `DeployContract` for the v1 oracle (state layout unchanged, no migrate) and
+//! `DeployContract + migrate` for the gov (v0 → v1). Because each account upgrades independently
+//! through its own key, neither order strands the other — the ordering coupling only bites once the
+//! governance-driven cross-contract path is in use, which requires both sides already upgraded.
+//!
+//! The gov starts with a pending `AdminUpgrade` proposal, so the v0→v1 migrate must reshape a real
+//! stored proposal body on-chain (`AdminUpgrade`'s raw `code` → `UpgradeSource::Code`), not just an
+//! empty map; each upgraded contract is then probed with a domain view to prove it still answers,
+//! not merely that its code hash changed.
 //!
 //! Fixtures are the real on-chain blobs (`PROXY_ORACLE_0_3_0`, state v1; `PROXY_GOVERNANCE_0_1_0`,
 //! pre-versioned-state), pinned from mainnet.
@@ -15,10 +22,45 @@ mod common;
 use anyhow::Result;
 use near_api::types::AccountId;
 use near_api::{Contract, NetworkConfig};
+use near_sdk::json_types::Base64VecU8;
+use near_sdk::serde::Serialize;
+use near_sdk::NearToken;
 use serde_json::{json, Value};
+use templar_common::upgrade::UpgradeSource;
+use templar_common::Nanoseconds;
 use templar_gateway_testing::{wasm, SandboxHarness, TEST_FINALITY_POLICY};
+use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
 
-use common::{code_hash, deploy_code, signer, view};
+use common::{call, code_hash, deploy_code, signer, view};
+
+/// The raw blob (`0xDEADBEEF`) of the pending `AdminUpgrade` proposal seeded on the old gov, whose
+/// stored body the v0→v1 migrate must reshape into `UpgradeSource::Code`.
+const PENDING_UPGRADE_CODE: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+
+/// `create_proposal` named args (no typed struct is exported by the contract's ABI).
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct CreateProposalArgs {
+    id: u32,
+    operation: Operation,
+    requested_ttl: Nanoseconds,
+}
+
+/// Single-`id` named args, shared by `get_proposal`.
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct ProposalIdArgs {
+    id: u32,
+}
+
+/// The `AdminUpgrade` seeded before migration, in the current (v1) typed form. Serializing it for the
+/// old gov also guards that the wire shape stays compatible with the immutable deployed contract.
+fn seeded_upgrade() -> Operation {
+    Operation::AdminUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(PENDING_UPGRADE_CODE.to_vec())),
+        migrate_args: Base64VecU8(Vec::new()),
+    }
+}
 
 /// The pre-standardized-upgrade (v0) 11-field `TtlConfig` — no `self_upgrade`.
 fn old_ttls() -> Value {
@@ -83,12 +125,33 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
         ),
     )?;
 
+    // Seed a pending AdminUpgrade proposal on the OLD gov (v0 `code` is a raw blob) so the later
+    // v0→v1 migrate must reshape a real stored proposal body, not an empty map.
+    call(
+        network,
+        &gov,
+        "create_proposal",
+        CreateProposalArgs {
+            id: 0,
+            operation: seeded_upgrade(),
+            requested_ttl: Nanoseconds::zero(),
+        },
+        &admin,
+        NearToken::from_yoctonear(1),
+    )
+    .await?;
+
     Ok((oracle, gov))
 }
 
 /// Upgrade the oracle via its key: a bare deploy (unchanged v1 state layout, so no migrate). Asserts
-/// the code was replaced and the contract stays functional (answers a versioned-state view at v1).
-async fn upgrade_oracle(network: &NetworkConfig, oracle: &AccountId) -> Result<()> {
+/// the code was replaced and the contract stays functional — it reports state version 1 and still
+/// answers a domain view (`own_get_owner`) with its pre-upgrade owner.
+async fn upgrade_oracle(
+    network: &NetworkConfig,
+    oracle: &AccountId,
+    owner: &AccountId,
+) -> Result<()> {
     let before = code_hash(network, oracle).await?;
     deploy_code(network, oracle, wasm::proxy_oracle().await.to_vec()).await?;
     assert_ne!(
@@ -99,6 +162,11 @@ async fn upgrade_oracle(network: &NetworkConfig, oracle: &AccountId) -> Result<(
     assert_eq!(
         view::<u32>(network, oracle, "get_stored_state_version", json!({})).await?,
         1
+    );
+    assert_eq!(
+        view::<Option<AccountId>>(network, oracle, "own_get_owner", json!({})).await?,
+        Some(owner.clone()),
+        "upgraded oracle should retain its owner"
     );
     Ok(())
 }
@@ -124,6 +192,18 @@ async fn upgrade_gov(network: &NetworkConfig, gov: &AccountId) -> Result<()> {
         view::<u32>(network, gov, "get_stored_state_version", json!({})).await?,
         1
     );
+    // The seeded proposal survived the v0→v1 borsh reshape: it still deserializes as a v1
+    // `Proposal<Operation>` from storage, and its raw `code` became `UpgradeSource::Code` intact.
+    let proposal: Option<Proposal<Operation>> =
+        view(network, gov, "get_proposal", ProposalIdArgs { id: 0 }).await?;
+    let operation = proposal
+        .expect("seeded proposal survived migration")
+        .operation;
+    assert_eq!(
+        operation,
+        seeded_upgrade(),
+        "migrated proposal should reshape the raw code into UpgradeSource::Code"
+    );
     Ok(())
 }
 
@@ -133,7 +213,7 @@ async fn oracle_first_upgrade_does_not_brick() -> Result<()> {
     let network = &harness.network;
     let (oracle, gov) = setup(&harness).await?;
 
-    upgrade_oracle(network, &oracle).await?;
+    upgrade_oracle(network, &oracle, &gov).await?;
     upgrade_gov(network, &gov).await?;
 
     Ok(())
@@ -146,7 +226,7 @@ async fn gov_first_upgrade_does_not_brick() -> Result<()> {
     let (oracle, gov) = setup(&harness).await?;
 
     upgrade_gov(network, &gov).await?;
-    upgrade_oracle(network, &oracle).await?;
+    upgrade_oracle(network, &oracle, &gov).await?;
 
     Ok(())
 }

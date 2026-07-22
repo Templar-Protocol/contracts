@@ -44,6 +44,29 @@ pub async fn deploy_code(
     Ok(())
 }
 
+/// Submit a mutating call to `contract_id` signed as `signer_id` (all harness accounts share the
+/// test key), attaching `deposit`.
+pub async fn call(
+    network: &NetworkConfig,
+    contract_id: &AccountId,
+    method: &str,
+    args: impl Serialize,
+    signer_id: &AccountId,
+    deposit: near_sdk::NearToken,
+) -> Result<()> {
+    Contract(contract_id.clone())
+        .call_function(method, args)
+        .transaction()
+        .deposit(deposit)
+        .gas(near_sdk::Gas::from_tgas(100))
+        .with_signer(signer_id.clone(), signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(network)
+        .await?
+        .assert_success();
+    Ok(())
+}
+
 /// The account's deployed code hash, as a stable string for equality checks (a change proves the
 /// code was actually replaced — i.e. the upgrade took effect and didn't revert).
 pub async fn code_hash(network: &NetworkConfig, id: &AccountId) -> Result<String> {

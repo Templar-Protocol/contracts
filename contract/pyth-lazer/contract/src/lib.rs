@@ -500,8 +500,7 @@ impl Contract {
     pub fn admin_upgrade(&mut self, code: UpgradeSource, migrate_args: Base64VecU8) -> Promise {
         assert_one_yocto();
         Self::require_owner();
-        // Log the scheduled upgrade (a compact, bounded summary — see PythLazerEvent::Upgraded); the
-        // deploy+migrate runs in the returned Promise.
+        // See PythLazerEvent::Upgraded — logs the scheduled upgrade before the deploy+migrate Promise.
         PythLazerEvent::Upgraded {
             code: code.summary(),
             migrated: !migrate_args.0.is_empty(),

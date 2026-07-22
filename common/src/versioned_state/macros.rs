@@ -50,9 +50,20 @@ macro_rules! impl_versioned_state {
 
             // A contract may launch at its first state version with no migrations defined, making
             // `$migrations` an uninhabited (empty) enum. The deserialize above then has type `!`
-            // (it can only panic), so this call is statically unreachable — expected, not a bug.
+            // (it can only panic), so this block is statically unreachable — expected, not a bug.
             #[allow(unreachable_code)]
-            $crate::versioned_state::Migrator::run(args);
+            {
+                $crate::versioned_state::Migrator::run(args);
+
+                // One `Migrator::run` advances a single version step; re-assert we reached the target
+                // so a deploy several versions ahead of stored reverts atomically instead of leaving
+                // state stranded between versions.
+                ::near_sdk::require!(
+                    !<$current_state as $crate::versioned_state::StateVersion>::needs_migration()
+                        .unwrap_or_else(|e| env::panic_str(&e.to_string())),
+                    "state migration incomplete: stored version is still behind target",
+                );
+            }
         }
     };
 }
