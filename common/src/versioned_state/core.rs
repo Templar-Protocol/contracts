@@ -176,9 +176,6 @@ pub fn run_migration_chain<M: Migrator>(
         return Err(MigrationChainError::Empty);
     };
 
-    // Validate the whole chain before running any step: the first migration must start at the stored
-    // version, each later migration's input must equal the previous step's output, and the final
-    // output must land on target. An invalid chain thus reverts without writing state.
     let stored = read_state_version()?;
     if first.input_version() != stored {
         return Err(MigrationChainError::StartMismatch {
