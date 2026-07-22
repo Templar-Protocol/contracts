@@ -9,6 +9,15 @@ inputs:
     description: Rust components to install
     required: false
     default: ""
+  cache-key:
+    description: >-
+      Cache build class. Jobs that compile the same target/profile should pass
+      the same value so their dependency artifacts share ONE cache instead of
+      one multi-GB copy per job — GitHub evicts caches once the repo total
+      passes 10 GB, so per-job caches starve the infrequent jobs into cold
+      full rebuilds. Defaults to the job id (a private, per-job cache).
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -21,10 +30,15 @@ runs:
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       with:
         save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        # Cache target directory but with smart cleanup
-        cache-on-failure: false
-        # Keep caches reusable inside a job class. Do not include raw target or
-        # component input strings here: rust-cache rejects keys containing
-        # commas, and comma-separated target lists are common in this repo.
-        shared-key: "rust-${{ runner.os }}-${{ github.job }}"
+        # Save even on failure/timeout. Otherwise a job slow enough to hit its
+        # timeout is cancelled before the post-step saves, so it can never seed
+        # a warm cache: cold build -> timeout -> still cold. CI runs with
+        # CARGO_INCREMENTAL=0, so there is no incremental state to corrupt.
+        cache-on-failure: true
+        # Group by build class via `cache-key`, not `github.job`: jobs that share
+        # a target/profile then share one cache instead of a multi-GB copy each.
+        # Do not include raw target or component input strings here: rust-cache
+        # rejects keys containing commas, and comma-separated target lists are
+        # common in this repo.
+        shared-key: "rust-${{ runner.os }}-${{ inputs.cache-key || github.job }}"
         workspaces: ". -> target"

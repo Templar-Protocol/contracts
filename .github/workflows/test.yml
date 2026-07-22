@@ -204,6 +204,7 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           components: clippy
+          cache-key: host
       - name: Run cargo clippy
         env:
           SQLX_OFFLINE: true
@@ -229,6 +230,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust
+        with:
+          cache-key: host
 
       - name: Build all workspace binaries
         # `cargo check`, `clippy`, and `--lib` tests never link the executables,
@@ -436,6 +439,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust
+        with:
+          cache-key: host
 
       - name: Install test tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
@@ -482,6 +487,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust
+        with:
+          cache-key: host
 
       - name: Install test tools
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
@@ -520,6 +527,8 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/rust
+        with:
+          cache-key: host
 
       - name: Check artifact drift
         env:
