@@ -66,13 +66,15 @@ for i in $(seq 1 $((NODE_COUNT - 1))); do
   wait_for_node "$i"
 done
 
-for i in $(seq 0 $((NODE_COUNT - 1))); do
-  echo "sandbox node ${i} up at $(cat "$(addr_file "$i")") (pid $(cat "$(pid_file "$i")"))"
-done
-
-export NEAR_SANDBOX_RPC_URL="$(cat "$(addr_file 0)")"
 export SANDBOX_NODE_COUNT="${NODE_COUNT}"
 for i in $(seq 0 $((NODE_COUNT - 1))); do
-  export "NEAR_SANDBOX_RPC_URL_${i}=$(cat "$(addr_file "$i")")"
+  _sandbox_rpc_url="$(cat "$(addr_file "$i")")"
+  _sandbox_pid="$(cat "$(pid_file "$i")")"
+  echo "sandbox node ${i} up at ${_sandbox_rpc_url} (pid ${_sandbox_pid})"
+  export "NEAR_SANDBOX_RPC_URL_${i}=${_sandbox_rpc_url}"
+  if [ "$i" -eq 0 ]; then
+    export NEAR_SANDBOX_RPC_URL="${_sandbox_rpc_url}"
+  fi
 done
 export TEST_CONTRACTS_PREBUILT=1
+unset _sandbox_rpc_url _sandbox_pid

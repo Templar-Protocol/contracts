@@ -73,16 +73,29 @@ _test-sandbox *args:
     set -euo pipefail
     trap './script/sandbox-down.sh || true' EXIT
     source ./script/sandbox-up.sh
-    mapfile -t sandbox_packages < <(
-        printf '%s\n' '{{ sandbox_filter }}' | python3 script/sandbox-packages.py
-    )
+    caller_args=({{ args }})
     sandbox_package_args=()
-    for package in "${sandbox_packages[@]}"; do
-        sandbox_package_args+=(-p "$package")
+    use_default_packages=true
+    for arg in "${caller_args[@]}"; do
+        case "$arg" in
+            -p | -p?* | --package | --package=*)
+                use_default_packages=false
+                break
+                ;;
+        esac
     done
+    if "$use_default_packages"; then
+        sandbox_package_output="$(
+            printf '%s\n' '{{ sandbox_filter }}' | python3 script/sandbox-packages.py
+        )"
+        mapfile -t sandbox_packages <<< "$sandbox_package_output"
+        for package in "${sandbox_packages[@]}"; do
+            sandbox_package_args+=(-p "$package")
+        done
+    fi
     cargo nextest run --profile sandbox --ignore-default-filter \
         "${sandbox_package_args[@]}" \
-        -E '{{ sandbox_test_filter }}' {{ args }}
+        -E '{{ sandbox_test_filter }}' "${caller_args[@]}"
 
 # Start the out-of-band sandbox neard (prints its RPC url).
 sandbox-up:
