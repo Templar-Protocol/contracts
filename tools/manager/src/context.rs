@@ -1,6 +1,6 @@
 //! CLI gateway context and the shared helpers for reading, planning, executing,
-//! reporting, and printing. Credentials remain on each write command rather than
-//! in this context.
+//! reporting, and printing. Execution credentials and plan output selection
+//! remain on each write command rather than in this context.
 
 use anyhow::Context as _;
 use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
@@ -37,9 +37,9 @@ pub(crate) struct CliContext {
 
 impl CliContext {
     /// Build a single-signer client for `account_id` from `secret_key`. Each
-    /// write signs with credentials carried by its own command, and teardown
-    /// flows (e.g. `registry clear-deployments`) sign many discovered accounts
-    /// with one authorized key.
+    /// executed write signs with credentials carried by its own command, and
+    /// teardown flows (e.g. `registry clear-deployments`) sign many discovered
+    /// accounts with one authorized key.
     pub(crate) fn signing_client(
         &self,
         account_id: impl Into<ManagedAccountId>,
@@ -250,24 +250,22 @@ fn sputnik_function_call(
             let Action::FunctionCall(action) = action else {
                 anyhow::bail!("--print sputnik supports FunctionCall actions only");
             };
-            Ok(serde_json::json!({
+            // `ActionCall` is public but its fields are private, so construct
+            // each action through the contract's JSON boundary.
+            serde_json::from_value(serde_json::json!({
                 "method_name": action.method_name,
                 "args": Base64VecU8(action.args),
                 "deposit": action.deposit,
                 "gas": action.gas,
             }))
+            .context("build Sputnik FunctionCall action")
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect::<anyhow::Result<Vec<sputnikdao2::proposals::ActionCall>>>()?;
 
-    // Sputnik's canonical `ActionCall` fields are private, so construct its
-    // public `ProposalKind` through the same JSON boundary the contract uses.
-    serde_json::from_value(serde_json::json!({
-        "FunctionCall": {
-            "receiver_id": transaction.receiver_id,
-            "actions": actions,
-        }
-    }))
-    .context("build Sputnik FunctionCall proposal kind")
+    Ok(sputnikdao2::ProposalKind::FunctionCall {
+        receiver_id: transaction.receiver_id,
+        actions,
+    })
 }
 
 /// Serialize `output` as a single line of JSON to stdout — the machine-readable

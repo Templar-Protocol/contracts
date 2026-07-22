@@ -209,11 +209,11 @@ fn write_fallback_does_not_require_a_lazer_key() {
 }
 
 #[test]
-fn write_command_requires_credentials() {
-    // With credentials structural on the write, omitting them is a parse error —
-    // no build or network work is reachable.
-    let result = with_cleared_credential_env(|| try_parse_write([]));
-    let error = result.expect_err("a write with no credentials should fail to parse");
+fn write_requires_secret_key_or_print() {
+    // Omitting both execution credentials and plan mode is a parse error, so no
+    // build or network work is reachable.
+    let result = with_cleared_credential_env(|| try_parse_write(["--signer-id", "dao.near"]));
+    let error = result.expect_err("a write needs --secret-key or --print");
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
@@ -261,17 +261,21 @@ fn print_conflicts_with_secret_key_from_environment() {
 
 #[test]
 fn public_key_requires_print_mode() {
-    let error = try_parse_write([
-        "--signer-id",
-        "signer.testnet",
-        "--secret-key",
-        TEST_SECRET_KEY,
-        "--public-key",
-        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
-    ])
+    let error = with_cleared_credential_env(|| {
+        try_parse_write([
+            "--signer-id",
+            "signer.testnet",
+            "--public-key",
+            "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+        ])
+    })
     .expect_err("--public-key is plan-only");
 
-    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    assert_eq!(
+        error.kind(),
+        clap::error::ErrorKind::MissingRequiredArgument
+    );
+    assert!(error.to_string().contains("--print <FORMAT>"));
 }
 
 #[test]

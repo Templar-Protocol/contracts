@@ -1,6 +1,6 @@
-//! Governance proposal orchestration: creating a proposal (with id and
-//! breaker-id auto-resolution, and optional wait-then-execute) and executing one
-//! after it matures.
+//! Governance proposal planning and orchestration: resolving proposal inputs,
+//! rendering plans, creating proposals, and optionally waiting for maturity
+//! before execution.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -13,11 +13,12 @@ use templar_gateway_types::{common::WriteOperationResult, ManagedAccountId};
 use crate::commands::proxy_oracle::{CreateProposal, ExecuteProposalArgs};
 use crate::context::{print_json, CliContext};
 
-/// Create a governance proposal. Resolves the proposal id (fetching the
+/// Plan or create a governance proposal. Resolves the proposal id (fetching the
 /// governance contract's next id when `--id` was omitted) and, for an
 /// `add-circuit-breaker` proposal without `--breaker-id`, the set's next breaker
-/// id. Always emits the resolved proposal id so scripts can learn it. With
-/// `--execute-when-ready`, waits for the proposal's TTL to elapse and executes.
+/// id. Print mode emits the selected plan representation without sending.
+/// Execution mode logs the resolved id, and `--execute-when-ready` waits for the
+/// proposal's TTL to elapse before executing it.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let execute_when_ready = args.execute_when_ready();
     let signer_args = args.signer.clone();
@@ -74,9 +75,9 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     })
 }
 
-/// Execute a governance proposal. With `--when-ready`, wait for its TTL to
-/// elapse first, so an early call blocks instead of failing on an immature
-/// proposal.
+/// Plan or execute a governance proposal. In execution mode, `--when-ready`
+/// waits for its TTL to elapse, so an early call blocks instead of failing on
+/// an immature proposal.
 pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
     let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
@@ -136,9 +137,9 @@ async fn next_breaker_id(
     Ok(set.map_or(0, |set| set.next_id()))
 }
 
-/// Machine-readable result of a `create-proposal` run. `id` is always present
-/// (resolved even when auto-fetched); `execute` is present only when the
-/// proposal was executed via `--execute-when-ready`.
+/// Machine-readable result of an execution-mode `create-proposal` run. `id` is
+/// always present (resolved even when auto-fetched); `execute` is present only
+/// when the proposal was executed via `--execute-when-ready`.
 #[derive(Serialize)]
 struct CreateProposalOutput {
     id: u32,
