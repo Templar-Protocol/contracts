@@ -444,18 +444,12 @@ jobs:
         run: just test-fast
 
   near-integration-tests:
-    name: NEAR Integration Tests (shard ${{ matrix.shard }}/3)
-    timeout-minutes: 40
+    name: NEAR Integration Tests
+    # Ceiling only (billing is actual runtime): ~35 min cold, less once the
+    # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
+    # over 40 avoids a cold-run variance kill wasting a whole run.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # The ~20 min wasm prebuild can't be sharded (every shard deploys the
-        # full contract set), so it runs on each shard in parallel while the
-        # ~18 min test phase is split N ways. 3 shards keeps the job comfortably
-        # under its timeout; raising the count trades runner CPU for a shorter
-        # test phase. Keep the `/N` in the partition arg in sync with this list.
-        shard: [1, 2, 3]
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
       postgres: *postgres_service
@@ -489,10 +483,7 @@ jobs:
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           DATABASE_URL: *postgres_url
-        # This shard runs its 1/N slice of the node suite (nextest hashes each
-        # test name into a partition). Every shard still prebuilds the full
-        # contract set, since any test may deploy any contract.
-        run: just test-sandbox --partition hash:${{ matrix.shard }}/3
+        run: just test-sandbox
 
       - name: Cleanup Docker resources
         if: always()
