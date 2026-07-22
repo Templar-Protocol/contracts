@@ -46,8 +46,8 @@ fn create_proposal(
 }
 
 #[test]
-fn governance_aliases_parse_into_the_nested_command() {
-    for alias in ["governance", "gov", "g"] {
+fn governance_and_gov_parse_into_the_nested_command() {
+    for alias in ["governance", "gov"] {
         let cli = Cli::try_parse_from([
             "tmplrmgr",
             "proxy-oracle",
@@ -65,6 +65,13 @@ fn governance_aliases_parse_into_the_nested_command() {
             _ => panic!("expected nested governance command"),
         }
     }
+}
+
+#[test]
+fn g_alias_is_rejected() {
+    let error = Cli::try_parse_from(["tmplrmgr", "proxy-oracle", "g"])
+        .expect_err("single-letter governance alias must stay unsupported");
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 /// The typed `operation` a `create-proposal` invocation parses into.

@@ -26,7 +26,7 @@ pub enum ProxyOracleNs {
     /// Deploy a proxy oracle from a registry, optionally owned by `--owner-id`.
     Create(Create),
     /// Administer a proxy oracle through its governance contract.
-    #[command(subcommand, visible_aliases = ["gov", "g"])]
+    #[command(subcommand, visible_alias = "gov")]
     Governance(ProxyOracleGovernanceNs),
     /// Read a single price feed's proxy configuration.
     GetProxy(GetProxy),
