@@ -14,7 +14,7 @@ pub struct ExecuteProposalArgs {
     id: u32,
     /// Wait for the proposal's TTL to elapse before executing, instead of
     /// failing if it has not yet matured.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "print")]
     when_ready: bool,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,

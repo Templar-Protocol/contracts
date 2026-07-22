@@ -545,7 +545,7 @@ fn governance_write_commands_accept_print_mode() {
 }
 
 #[test]
-fn proposal_orchestration_flags_parse_with_print_for_runtime_rejection() {
+fn proposal_orchestration_flags_conflict_with_print() {
     let (execute, create) = with_cleared_credential_env(|| {
         (
             try_parse_governance([
@@ -580,14 +580,18 @@ fn proposal_orchestration_flags_parse_with_print_for_runtime_rejection() {
         )
     });
 
-    assert!(matches!(
-        execute.expect("runtime guard should own the orchestration diagnostic"),
-        ProxyOracleGovernanceNs::ExecuteProposal(_)
-    ));
-    assert!(matches!(
-        create.expect("runtime guard should own the orchestration diagnostic"),
-        ProxyOracleGovernanceNs::CreateProposal(_)
-    ));
+    assert_eq!(
+        execute
+            .expect_err("--when-ready must conflict with --print")
+            .kind(),
+        clap::error::ErrorKind::ArgumentConflict
+    );
+    assert_eq!(
+        create
+            .expect_err("--execute-when-ready must conflict with --print")
+            .kind(),
+        clap::error::ErrorKind::ArgumentConflict
+    );
 }
 
 #[test]

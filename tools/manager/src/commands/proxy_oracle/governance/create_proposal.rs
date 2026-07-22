@@ -36,7 +36,7 @@ pub struct CreateProposal {
     requested_ttl: Nanoseconds,
     /// After creating, wait for the proposal's TTL to elapse, then execute it.
     /// Blocks for the full (effective) TTL, so it is only practical for short ones.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "print")]
     execute_when_ready: bool,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,

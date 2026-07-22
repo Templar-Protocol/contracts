@@ -20,9 +20,6 @@ use crate::context::{print_json, CliContext};
 /// `--execute-when-ready`, waits for the proposal's TTL to elapse and executes.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
     let execute_when_ready = args.execute_when_ready();
-    if execute_when_ready && args.signer.print().is_some() {
-        anyhow::bail!("--print is not supported with --execute-when-ready");
-    }
     let signer_args = args.signer.clone();
     let governance_id = args.target.resolve(&ctx).await?;
 
@@ -81,9 +78,6 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 /// elapse first, so an early call blocks instead of failing on an immature
 /// proposal.
 pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
-    if args.when_ready() && args.signer.print().is_some() {
-        anyhow::bail!("--print is not supported with --when-ready");
-    }
     let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
         wait_for_maturity(&ctx, &governance_id, args.id()).await?;

@@ -499,8 +499,8 @@ fn remove_version_all_has_no_single_spec() {
     assert!(cmd.single().is_none());
 }
 #[test]
-fn remove_version_all_accepts_print_for_runtime_rejection() {
-    let result = with_cleared_credential_env(|| {
+fn remove_version_all_conflicts_with_print() {
+    let error = with_cleared_credential_env(|| {
         Cli::try_parse_from([
             "tmplrmgr",
             "registry",
@@ -513,14 +513,10 @@ fn remove_version_all_accepts_print_for_runtime_rejection() {
             "--print",
             "json",
         ])
-    });
-    let cli = result.expect("print mode should parse before orchestration rejects it");
-    assert!(matches!(
-        cli.command,
-        Command::Registry {
-            command: RegistryNs::RemoveVersion(_)
-        }
-    ));
+    })
+    .expect_err("--all must conflict with --print");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
 }
 
 #[test]

@@ -3,9 +3,8 @@
 //! in this context.
 
 use anyhow::Context as _;
-use near_account_id::AccountId;
 use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
-use near_sdk::json_types::{U128, U64};
+use near_sdk::json_types::Base64VecU8;
 use serde::Serialize;
 use std::io::Write as _;
 use templar_gateway_client::{Client, NetworkConfigBuilder};
@@ -22,7 +21,6 @@ use templar_gateway_oracle_updates_dispatch::{
 use templar_gateway_types::{
     common::{WriteOperationResult, WriteRequest},
     operation::ReceiptStatus,
-    primitive::Base64Bytes,
     ManagedAccountId, MethodSpec, OperationStatus,
 };
 
@@ -242,23 +240,9 @@ fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction>
     Ok(transaction)
 }
 
-#[derive(Serialize)]
-enum SputnikProposalKind {
-    FunctionCall {
-        receiver_id: AccountId,
-        actions: Vec<SputnikAction>,
-    },
-}
-
-#[derive(Serialize)]
-struct SputnikAction {
-    method_name: String,
-    args: Base64Bytes,
-    deposit: U128,
-    gas: U64,
-}
-
-fn sputnik_function_call(transaction: PlannedTransaction) -> anyhow::Result<SputnikProposalKind> {
+fn sputnik_function_call(
+    transaction: PlannedTransaction,
+) -> anyhow::Result<sputnikdao2::ProposalKind> {
     let actions = transaction
         .actions
         .into_iter()
@@ -266,19 +250,24 @@ fn sputnik_function_call(transaction: PlannedTransaction) -> anyhow::Result<Sput
             let Action::FunctionCall(action) = action else {
                 anyhow::bail!("--print sputnik supports FunctionCall actions only");
             };
-            Ok(SputnikAction {
-                method_name: action.method_name,
-                args: Base64Bytes(action.args),
-                deposit: U128(action.deposit.as_yoctonear()),
-                gas: U64(action.gas.as_gas()),
-            })
+            Ok(serde_json::json!({
+                "method_name": action.method_name,
+                "args": Base64VecU8(action.args),
+                "deposit": action.deposit,
+                "gas": action.gas,
+            }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
 
-    Ok(SputnikProposalKind::FunctionCall {
-        receiver_id: transaction.receiver_id,
-        actions,
-    })
+    // Sputnik's canonical `ActionCall` fields are private, so construct its
+    // public `ProposalKind` through the same JSON boundary the contract uses.
+    serde_json::from_value(serde_json::json!({
+        "FunctionCall": {
+            "receiver_id": transaction.receiver_id,
+            "actions": actions,
+        }
+    }))
+    .context("build Sputnik FunctionCall proposal kind")
 }
 
 /// Serialize `output` as a single line of JSON to stdout — the machine-readable
@@ -395,9 +384,9 @@ mod tests {
         );
 
         let json_serializes = serde_json::to_value(&transaction).is_ok();
-        let error = sputnik_function_call(transaction)
-            .err()
-            .expect("Sputnik FunctionCall cannot represent a transfer");
+        let Err(error) = sputnik_function_call(transaction) else {
+            panic!("Sputnik FunctionCall cannot represent a transfer");
+        };
         assert_eq!(
             error.to_string(),
             "--print sputnik supports FunctionCall actions only"
