@@ -24,7 +24,7 @@ NODE_COUNT="${SANDBOX_NODE_COUNT:?SANDBOX_NODE_COUNT must be set by test orchest
 bash "${SCRIPT_DIR}/sandbox-down.sh" >/dev/null
 
 # Prebuild the contract wasms once so tests don't each recompile them.
-bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
+#bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
 
 cargo build -q -p templar-gateway-testing --bin sandbox-host
 

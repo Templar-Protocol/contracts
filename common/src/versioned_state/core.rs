@@ -217,6 +217,7 @@ pub fn run_migration_chain<M: Migrator>(
 #[cfg(test)]
 mod tests {
     use near_sdk::{test_utils::VMContextBuilder, testing_env};
+    use rstest::rstest;
 
     use super::*;
 
@@ -340,69 +341,23 @@ mod tests {
         assert_eq!(read_state_version().unwrap(), 2);
     }
 
-    #[test]
-    fn chain_rejects_empty_list() {
+    // Every invalid chain is rejected before any transform runs, so the stored version is left
+    // untouched. `matches` pins the exact error variant (and its versions) per case.
+    #[rstest]
+    #[case::empty(Vec::new(), 2, |e: &_| matches!(e, MigrationChainError::Empty))]
+    #[case::wrong_start(vec![m(1, 2)], 2, |e: &_| matches!(e, MigrationChainError::StartMismatch { input: 1, stored: 0 }))]
+    #[case::broken_link(vec![m(0, 1), m(2, 3)], 3, |e: &_| matches!(e, MigrationChainError::LinkMismatch { output: 1, input: 2 }))]
+    #[case::not_landing_on_target(vec![m(0, 1)], 2, |e: &_| matches!(e, MigrationChainError::EndMismatch { output: 1, target: 2 }))]
+    fn chain_rejects_invalid(
+        #[case] migrations: Vec<MockMigration>,
+        #[case] target: u32,
+        #[case] matches: fn(&MigrationChainError) -> bool,
+    ) {
         context();
         write_state_version(0);
 
-        let err = run_migration_chain(Vec::<MockMigration>::new(), 2).unwrap_err();
-        assert!(matches!(err, MigrationChainError::Empty));
-        assert_eq!(read_state_version().unwrap(), 0);
-    }
-
-    #[test]
-    fn chain_rejects_wrong_start() {
-        context();
-        write_state_version(0);
-
-        let err = run_migration_chain(vec![m(1, 2)], 2).unwrap_err();
-        assert!(matches!(
-            err,
-            MigrationChainError::StartMismatch {
-                input: 1,
-                stored: 0
-            }
-        ));
-        assert_eq!(
-            read_state_version().unwrap(),
-            0,
-            "no state written on invalid chain"
-        );
-    }
-
-    #[test]
-    fn chain_rejects_broken_link() {
-        context();
-        write_state_version(0);
-
-        let err = run_migration_chain(vec![m(0, 1), m(2, 3)], 3).unwrap_err();
-        assert!(matches!(
-            err,
-            MigrationChainError::LinkMismatch {
-                output: 1,
-                input: 2
-            }
-        ));
-        assert_eq!(
-            read_state_version().unwrap(),
-            0,
-            "no state written on invalid chain"
-        );
-    }
-
-    #[test]
-    fn chain_rejects_not_landing_on_target() {
-        context();
-        write_state_version(0);
-
-        let err = run_migration_chain(vec![m(0, 1)], 2).unwrap_err();
-        assert!(matches!(
-            err,
-            MigrationChainError::EndMismatch {
-                output: 1,
-                target: 2
-            }
-        ));
+        let err = run_migration_chain(migrations, target).unwrap_err();
+        assert!(matches(&err), "unexpected error variant: {err:?}");
         assert_eq!(
             read_state_version().unwrap(),
             0,
