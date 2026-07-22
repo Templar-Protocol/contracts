@@ -3,11 +3,17 @@ use std::str::FromStr;
 use clap::Parser;
 use serde_json::{json, Value};
 
+use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
+use near_sdk::Gas;
+
 use super::{parse_create_proposal, parse_governance, CREDS};
 use crate::cli::{Cli, Command};
 use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
+use templar_common::upgrade::UpgradeSource;
+use templar_common::Nanoseconds;
 use templar_primitives::Decimal;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
+use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Role};
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 struct RemoveFileOnDrop<'a>(&'a std::path::Path);
@@ -53,10 +59,9 @@ fn governance_and_gov_parse_into_the_nested_command() {
     assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
-/// The `operation` field of a parsed proposal, as JSON.
-fn operation_json(args: &[&str]) -> Value {
-    let spec = create_proposal(args).expect("into spec");
-    serde_json::to_value(&spec).unwrap()["operation"].clone()
+/// The typed `operation` a `create-proposal` invocation parses into.
+fn operation(args: &[&str]) -> Operation {
+    create_proposal(args).expect("into spec").operation
 }
 
 /// Parse a `proxy-oracle create` invocation and build its gateway spec.
@@ -184,7 +189,7 @@ fn create_guards_owner_id_against_the_named_version(
 
 #[test]
 fn set_role_operation_grants_and_revokes() {
-    let granted = operation_json(&[
+    let granted = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -197,10 +202,14 @@ fn set_role_operation_grants_and_revokes() {
     ]);
     assert_eq!(
         granted,
-        json!({ "SetRole": { "account_id": "op.testnet", "role": "Admin", "set": true } })
+        Operation::SetRole {
+            account_id: "op.testnet".parse().unwrap(),
+            role: Role::Admin,
+            set: true,
+        }
     );
 
-    let revoked = operation_json(&[
+    let revoked = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -214,15 +223,17 @@ fn set_role_operation_grants_and_revokes() {
     ]);
     assert_eq!(
         revoked,
-        json!({
-            "SetRole": { "account_id": "op.testnet", "role": "CircuitBreakerOperator", "set": false }
-        })
+        Operation::SetRole {
+            account_id: "op.testnet".parse().unwrap(),
+            role: Role::CircuitBreakerOperator,
+            set: false,
+        }
     );
 }
 
 #[test]
 fn admin_function_call_operation_defaults_and_encodes_args() {
-    let op = operation_json(&[
+    let op = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -235,20 +246,18 @@ fn admin_function_call_operation_defaults_and_encodes_args() {
     ]);
     assert_eq!(
         op,
-        json!({
-            "AdminFunctionCall": {
-                "method_name": "own_accept_owner",
-                "args": "e30=", // base64("{}")
-                "attached_deposit": "1",
-                "gas": "30000000000000", // 30 Tgas default
-            }
-        })
+        Operation::AdminFunctionCall {
+            method_name: "own_accept_owner".to_string(),
+            args: Base64VecU8(b"{}".to_vec()),
+            attached_deposit: U128(1),
+            gas: Gas::from_tgas(30),
+        }
     );
 }
 
 #[test]
 fn set_action_ttl_operation_builds_kind_and_ttl() {
-    let op = operation_json(&[
+    let op = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -261,13 +270,16 @@ fn set_action_ttl_operation_builds_kind_and_ttl() {
     ]);
     assert_eq!(
         op,
-        json!({ "SetActionTtl": { "kind": "AdminUpgrade", "new_ttl": "86400000000000" } })
+        Operation::SetActionTtl {
+            kind: OperationKind::AdminUpgrade,
+            new_ttl: Nanoseconds::from_secs(24 * 60 * 60),
+        }
     );
 }
 
 #[test]
 fn configure_circuit_breakers_operation_builds_config() {
-    let op = operation_json(&[
+    let op = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -280,14 +292,13 @@ fn configure_circuit_breakers_operation_builds_config() {
         "--history-len",
         "8",
     ]);
-    assert_eq!(
-        op["ConfigureCircuitBreakers"]["config"]["history_len"],
-        json!(8)
-    );
-    assert_eq!(
-        op["ConfigureCircuitBreakers"]["config"]["sample_interval_ns"],
-        json!("1000")
-    );
+    match op {
+        Operation::ConfigureCircuitBreakers { config, .. } => {
+            assert_eq!(config.history_len, 8);
+            assert_eq!(config.sample_interval_ns, Nanoseconds::from_ns(1000));
+        }
+        other => panic!("expected ConfigureCircuitBreakers, got {other:?}"),
+    }
 }
 
 #[test]
@@ -300,7 +311,7 @@ fn admin_upgrade_operation_reads_code_file() {
     ));
     std::fs::write(&path, wasm).expect("write wasm fixture");
 
-    let op = operation_json(&[
+    let op = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
@@ -311,9 +322,71 @@ fn admin_upgrade_operation_reads_code_file() {
     ]);
     std::fs::remove_file(&path).ok();
 
-    // Base64VecU8 serializes bytes as a base64 string; migrate_args defaults empty.
-    assert!(op["AdminUpgrade"]["code"].is_string());
-    assert_eq!(op["AdminUpgrade"]["migrate_args"], json!(""));
+    assert_eq!(
+        op,
+        Operation::AdminUpgrade {
+            code: UpgradeSource::Code(Base64VecU8(wasm.to_vec())),
+            migrate_args: Base64VecU8(Vec::new()),
+        }
+    );
+}
+
+#[test]
+fn admin_upgrade_accepts_global_sources() {
+    let by_account = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "9",
+        "admin-upgrade",
+        "--global-account-id",
+        "global-code.testnet",
+    ]);
+    assert_eq!(
+        by_account,
+        Operation::AdminUpgrade {
+            code: UpgradeSource::GlobalAccountId("global-code.testnet".parse().unwrap()),
+            migrate_args: Base64VecU8(Vec::new()),
+        }
+    );
+
+    // 32 base58 '1's decode to 32 zero bytes — a valid code hash.
+    let by_hash = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "9",
+        "admin-upgrade",
+        "--global-hash",
+        "11111111111111111111111111111111",
+    ]);
+    assert_eq!(
+        by_hash,
+        Operation::AdminUpgrade {
+            code: UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
+            migrate_args: Base64VecU8(Vec::new()),
+        }
+    );
+}
+
+#[test]
+fn self_upgrade_operation_targets_the_governance_contract() {
+    let op = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "9",
+        "self-upgrade",
+        "--global-account-id",
+        "global-code.testnet",
+    ]);
+    assert_eq!(
+        op,
+        Operation::SelfUpgrade {
+            code: UpgradeSource::GlobalAccountId("global-code.testnet".parse().unwrap()),
+            migrate_args: Base64VecU8(Vec::new()),
+        }
+    );
 }
 
 #[test]
@@ -456,9 +529,9 @@ fn governance_create_builds_init_args() {
         "proxy-oracle-market.registry.testnet"
     );
     assert_eq!(init["admin_id"], "operator.testnet");
-    // All 11 operation-kind TTL fields present and uniform.
+    // All 12 operation-kind TTL fields present and uniform.
     let ttls = init["ttls"].as_object().expect("ttls object");
-    assert_eq!(ttls.len(), 11);
+    assert_eq!(ttls.len(), 12);
     let zero = &ttls["set_proxy"];
     for (_, v) in ttls {
         assert_eq!(v, zero);

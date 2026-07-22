@@ -5,6 +5,7 @@ use near_sdk::{
     near, AccountId, BorshStorageKey, Gas,
 };
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::upgrade::UpgradeSource;
 use templar_proxy_oracle_kernel::proxy::{
     circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
     Proxy,
@@ -117,7 +118,7 @@ governance_operations! {
         set: bool,
     },
     AdminUpgrade => admin_upgrade {
-        code: Base64VecU8,
+        code: UpgradeSource,
         migrate_args: Base64VecU8,
     },
     AdminFunctionCall => admin_function_call {
@@ -125,6 +126,10 @@ governance_operations! {
         args: Base64VecU8,
         attached_deposit: U128,
         gas: Gas,
+    },
+    SelfUpgrade => self_upgrade {
+        code: UpgradeSource,
+        migrate_args: Base64VecU8,
     },
 }
 
@@ -151,8 +156,10 @@ impl Validatable for Operation {
                     actual: *new_ttl,
                 })
             }
-            Operation::AdminUpgrade { code, .. } if code.0.is_empty() => {
-                Err(ValidationError::EmptyAdminUpgradeCode)
+            Operation::AdminUpgrade { code, .. } | Operation::SelfUpgrade { code, .. }
+                if code.is_empty_code() =>
+            {
+                Err(ValidationError::EmptyUpgradeCode)
             }
             Operation::AdminFunctionCall { gas, .. } if gas.is_zero() => {
                 Err(ValidationError::ZeroAdminFunctionCallGas)
@@ -190,8 +197,8 @@ pub enum ValidationError {
         maximum: Nanoseconds,
         actual: Nanoseconds,
     },
-    #[error("Admin upgrade code must not be empty")]
-    EmptyAdminUpgradeCode,
+    #[error("Upgrade code must not be empty")]
+    EmptyUpgradeCode,
     #[error("Admin function call method name must not be empty")]
     EmptyAdminFunctionCallMethodName,
     #[error("Admin function call gas must not be zero")]
@@ -229,6 +236,7 @@ impl Operation {
             | Operation::SetActionTtl { .. } => Role::ProxyConfigurationManager,
             Operation::SetRole { .. }
             | Operation::AdminUpgrade { .. }
+            | Operation::SelfUpgrade { .. }
             | Operation::AdminFunctionCall { .. } => Role::Admin,
         }
     }
@@ -486,7 +494,7 @@ mod tests {
             ),
             (
                 Operation::AdminUpgrade {
-                    code: Base64VecU8(vec![0xde, 0xad]),
+                    code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
                     migrate_args: Base64VecU8(vec![0xbe, 0xef]),
                 },
                 OperationKind::AdminUpgrade,
@@ -499,6 +507,13 @@ mod tests {
                     gas: Gas::from_gas(20_000_000_000_000),
                 },
                 OperationKind::AdminFunctionCall,
+            ),
+            (
+                Operation::SelfUpgrade {
+                    code: UpgradeSource::GlobalAccountId("global.near".parse().unwrap()),
+                    migrate_args: Base64VecU8(vec![0xbe, 0xef]),
+                },
+                OperationKind::SelfUpgrade,
             ),
         ];
 
@@ -521,6 +536,7 @@ mod tests {
             set_role: Nanoseconds::from_secs(9),
             admin_upgrade: Nanoseconds::from_secs(10),
             admin_function_call: Nanoseconds::from_secs(11),
+            self_upgrade: Nanoseconds::from_secs(12),
         };
         let cases = [
             (OperationKind::SetProxy, Nanoseconds::from_secs(1)),
@@ -540,6 +556,7 @@ mod tests {
             (OperationKind::SetRole, Nanoseconds::from_secs(9)),
             (OperationKind::AdminUpgrade, Nanoseconds::from_secs(10)),
             (OperationKind::AdminFunctionCall, Nanoseconds::from_secs(11)),
+            (OperationKind::SelfUpgrade, Nanoseconds::from_secs(12)),
         ];
 
         for (kind, expected) in cases {
@@ -572,6 +589,7 @@ mod tests {
             set_role: Nanoseconds::from_secs(9),
             admin_upgrade: Nanoseconds::from_secs(10),
             admin_function_call: Nanoseconds::from_secs(11),
+            self_upgrade: Nanoseconds::from_secs(12),
         };
         let config_json = near_sdk::serde_json::to_value(config).unwrap();
         let config_fields = config_json.as_object().unwrap();
@@ -586,6 +604,7 @@ mod tests {
         assert!(config_fields.contains_key("set_role"));
         assert!(config_fields.contains_key("admin_upgrade"));
         assert!(config_fields.contains_key("admin_function_call"));
+        assert!(config_fields.contains_key("self_upgrade"));
 
         let operation = Operation::SetRole {
             account_id: "operator.near".parse().unwrap(),
@@ -627,6 +646,7 @@ mod tests {
             set_role: Nanoseconds::from_secs(42),
             admin_upgrade: Nanoseconds::from_secs(43),
             admin_function_call: Nanoseconds::from_secs(44),
+            self_upgrade: Nanoseconds::from_secs(45),
         };
 
         assert_eq!(
@@ -662,7 +682,7 @@ mod tests {
     #[test]
     fn admin_upgrade_requires_admin_role() {
         let operation = Operation::AdminUpgrade {
-            code: Base64VecU8(vec![0xde, 0xad]),
+            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
             migrate_args: Base64VecU8(vec![0xbe, 0xef]),
         };
         assert_eq!(operation.required_role(), Role::Admin);
@@ -672,12 +692,12 @@ mod tests {
     #[test]
     fn admin_upgrade_rejects_empty_code() {
         let operation = Operation::AdminUpgrade {
-            code: Base64VecU8(vec![]),
+            code: UpgradeSource::Code(Base64VecU8(vec![])),
             migrate_args: Base64VecU8(vec![0x00]),
         };
         assert_eq!(
             operation.on_create(),
-            Err(ValidationError::EmptyAdminUpgradeCode)
+            Err(ValidationError::EmptyUpgradeCode)
         );
         assert_eq!(operation.on_execute(), operation.on_create());
     }
@@ -685,7 +705,7 @@ mod tests {
     #[test]
     fn admin_upgrade_accepts_valid_code() {
         let operation = Operation::AdminUpgrade {
-            code: Base64VecU8(vec![0xde, 0xad]),
+            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
             migrate_args: Base64VecU8(vec![]),
         };
         assert_eq!(operation.on_create(), Ok(()));
@@ -706,6 +726,7 @@ mod tests {
             set_role: Nanoseconds::from_secs(1),
             admin_upgrade: Nanoseconds::from_secs(3600),
             admin_function_call: Nanoseconds::from_secs(1),
+            self_upgrade: Nanoseconds::from_secs(1),
         };
         assert_eq!(
             config.get(OperationKind::AdminUpgrade),
@@ -721,11 +742,12 @@ mod tests {
     #[test]
     fn admin_upgrade_json_roundtrip() {
         let operation = Operation::AdminUpgrade {
-            code: Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef]),
+            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
             migrate_args: Base64VecU8(vec![0xca, 0xfe]),
         };
         let json_value = near_sdk::serde_json::to_value(&operation).unwrap();
-        // Base64VecU8 serializes as base64 strings in JSON
+        // `UpgradeSource::Code` is untagged in JSON, so `source` is a bare base64 string — matching
+        // the pre-`UpgradeSource` `code` wire.
         assert_eq!(
             json_value,
             near_sdk::serde_json::json!({
@@ -808,12 +830,31 @@ mod tests {
     #[test]
     fn admin_upgrade_borsh_roundtrip() {
         let operation = Operation::AdminUpgrade {
-            code: Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef]),
+            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
             migrate_args: Base64VecU8(vec![0xca, 0xfe]),
         };
         let bytes = near_sdk::borsh::to_vec(&operation).unwrap();
         let deserialized: Operation = near_sdk::borsh::from_slice(&bytes).unwrap();
         assert_eq!(deserialized, operation);
+    }
+
+    #[test]
+    fn self_upgrade_requires_admin_and_validates_code() {
+        let operation = Operation::SelfUpgrade {
+            code: UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from(
+                [7u8; 32],
+            )),
+            migrate_args: Base64VecU8(vec![]),
+        };
+        assert_eq!(operation.required_role(), Role::Admin);
+        assert_eq!(operation.kind(), OperationKind::SelfUpgrade);
+        assert_eq!(operation.on_create(), Ok(()));
+
+        let empty = Operation::SelfUpgrade {
+            code: UpgradeSource::Code(Base64VecU8(vec![])),
+            migrate_args: Base64VecU8(vec![]),
+        };
+        assert_eq!(empty.on_create(), Err(ValidationError::EmptyUpgradeCode));
     }
 }
 

@@ -3,9 +3,10 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use near_account_id::AccountId;
-use near_sdk::json_types::{Base64VecU8, U128};
+use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::NearToken;
@@ -110,9 +111,11 @@ pub enum ProposalOperation {
     /// Grant or revoke a governance role.
     SetRole(SetRoleArgs),
     /// Upgrade the proxy oracle's contract code.
-    AdminUpgrade(AdminUpgradeArgs),
+    AdminUpgrade(UpgradeArgs),
     /// Call an arbitrary method on the proxy oracle.
     AdminFunctionCall(AdminFunctionCallArgs),
+    /// Upgrade the governance contract itself.
+    SelfUpgrade(UpgradeArgs),
 }
 
 impl ProposalOperation {
@@ -181,17 +184,14 @@ impl ProposalOperation {
                 role: a.role,
                 set: !a.revoke,
             },
-            Self::AdminUpgrade(a) => Operation::AdminUpgrade {
-                code: Base64VecU8(
-                    std::fs::read(&a.code_file)
-                        .with_context(|| format!("read WASM from {}", a.code_file.display()))?,
-                ),
-                migrate_args: Base64VecU8(match a.migrate_args_file {
-                    Some(path) => std::fs::read(&path)
-                        .with_context(|| format!("read migrate args from {}", path.display()))?,
-                    None => Vec::new(),
-                }),
-            },
+            Self::AdminUpgrade(a) => {
+                let (code, migrate_args) = a.parts()?;
+                Operation::AdminUpgrade { code, migrate_args }
+            }
+            Self::SelfUpgrade(a) => {
+                let (code, migrate_args) = a.parts()?;
+                Operation::SelfUpgrade { code, migrate_args }
+            }
             Self::AdminFunctionCall(a) => {
                 // Fail early on malformed args rather than sending garbage bytes.
                 serde_json::from_str::<serde_json::Value>(&a.args)
@@ -319,14 +319,72 @@ pub struct SetRoleArgs {
     revoke: bool,
 }
 
+/// The new code for an upgrade: exactly one of a raw WASM blob, a global contract by code hash, or a
+/// global contract by account id.
 #[derive(Args, Debug)]
-pub struct AdminUpgradeArgs {
-    /// WASM file to deploy to the proxy oracle
+#[group(required = true, multiple = false)]
+pub struct UpgradeSourceArgs {
+    /// WASM file to deploy.
     #[arg(long, value_name = "PATH")]
-    code_file: PathBuf,
-    /// Migrate args passed to the oracle's `migrate` (raw bytes); empty if omitted
+    code_file: Option<PathBuf>,
+    /// Global contract code hash (base58) to deploy.
+    #[arg(long, value_name = "BASE58", value_parser = parse_global_hash)]
+    global_hash: Option<Base58CryptoHash>,
+    /// Account id that published the global contract to deploy.
+    #[arg(long, value_name = "ACCOUNT_ID")]
+    global_account_id: Option<AccountId>,
+}
+
+impl UpgradeSourceArgs {
+    fn into_source(self) -> anyhow::Result<UpgradeSource> {
+        if let Some(path) = self.code_file {
+            Ok(UpgradeSource::Code(Base64VecU8(
+                std::fs::read(&path)
+                    .with_context(|| format!("read WASM from {}", path.display()))?,
+            )))
+        } else if let Some(hash) = self.global_hash {
+            Ok(UpgradeSource::GlobalHash(hash))
+        } else if let Some(account_id) = self.global_account_id {
+            Ok(UpgradeSource::GlobalAccountId(account_id))
+        } else {
+            // The clap group is `required`, so exactly one of the above is always set.
+            anyhow::bail!("no upgrade source provided")
+        }
+    }
+}
+
+/// A standardized upgrade: an [`UpgradeSourceArgs`] plus optional migrate args. Shared by the
+/// oracle-targeted `AdminUpgrade` and the governance-contract `SelfUpgrade`.
+#[derive(Args, Debug)]
+pub struct UpgradeArgs {
+    #[command(flatten)]
+    code: UpgradeSourceArgs,
+    /// Migrate args passed to `migrate` (raw bytes); empty if omitted
     #[arg(long, value_name = "PATH")]
     migrate_args_file: Option<PathBuf>,
+}
+
+impl UpgradeArgs {
+    fn parts(self) -> anyhow::Result<(UpgradeSource, Base64VecU8)> {
+        let code = self.code.into_source()?;
+        let migrate_args = Base64VecU8(match self.migrate_args_file {
+            Some(path) => std::fs::read(&path)
+                .with_context(|| format!("read migrate args from {}", path.display()))?,
+            None => Vec::new(),
+        });
+        Ok((code, migrate_args))
+    }
+}
+
+fn parse_global_hash(value: &str) -> Result<Base58CryptoHash, String> {
+    let bytes = near_sdk::bs58::decode(value)
+        .into_vec()
+        .map_err(|e| format!("invalid base58: {e}"))?;
+    let hash: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| format!("code hash must be 32 bytes, got {}", bytes.len()))?;
+    Ok(Base58CryptoHash::from(hash))
 }
 
 #[derive(Args, Debug)]

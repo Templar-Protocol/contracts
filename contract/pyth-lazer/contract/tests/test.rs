@@ -13,6 +13,7 @@ use pyth_lazer_protocol::payload::{PayloadData, PayloadFeedData, PayloadProperty
 use pyth_lazer_protocol::time::TimestampUs;
 use pyth_lazer_protocol::{ChannelId, Price, PriceFeedId};
 use rstest::rstest;
+use templar_common::upgrade::UpgradeSource;
 use templar_common::versioned_state::MigrateExternalInterface;
 
 use templar_pyth_lazer_adapter_contract::{Config, ConfigArgs, Contract, TrustedSigner};
@@ -661,7 +662,10 @@ fn admin_upgrade_rejects_non_owner() {
         .attached_deposit(NearToken::from_yoctonear(1))
         .block_timestamp(NOW_S * 1_000_000_000)
         .build());
-    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0u8])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]
@@ -675,7 +679,10 @@ fn admin_upgrade_requires_one_yocto() {
         .attached_deposit(NearToken::from_yoctonear(0))
         .block_timestamp(NOW_S * 1_000_000_000)
         .build());
-    let _ = contract.admin_upgrade(Base64VecU8(vec![0u8]), Base64VecU8(vec![]));
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0u8])),
+        Base64VecU8(vec![]),
+    );
 }
 
 #[test]
@@ -933,12 +940,17 @@ fn verify_update_rejects_untrusted_signer() {
 /// The single NEP-297 event emitted since the last `testing_env!` reset, with the standard/version
 /// envelope asserted. Panics unless exactly one `EVENT_JSON:` log is present.
 fn single_event() -> near_sdk::serde_json::Value {
+    single_event_with_version("1.0.0")
+}
+
+/// Like [`single_event`], but asserts an explicit event version (events are independently versioned).
+fn single_event_with_version(version: &str) -> near_sdk::serde_json::Value {
     let logs = near_sdk::test_utils::get_logs();
     assert_eq!(logs.len(), 1, "expected exactly one log, got {logs:?}");
     let json = logs[0].strip_prefix("EVENT_JSON:").unwrap();
     let event: near_sdk::serde_json::Value = near_sdk::serde_json::from_str(json).unwrap();
     assert_eq!(event["standard"], "pyth-lazer-adapter");
-    assert_eq!(event["version"], "1.0.0");
+    assert_eq!(event["version"], version);
     event
 }
 
@@ -1027,19 +1039,32 @@ fn admin_withdraw_emits_withdrawn() {
 }
 
 #[rstest]
-#[case(vec![1u8, 2, 3], true)]
-#[case(vec![], false)]
-fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>, #[case] expected_migrated: bool) {
+#[case(vec![1u8, 2, 3])]
+#[case(vec![])]
+fn admin_upgrade_emits_upgraded(#[case] migrate_args: Vec<u8>) {
     let mut contract = deploy();
     set_owner_context();
     let code = vec![0u8, 1, 2, 3, 4];
-    let _ = contract.admin_upgrade(Base64VecU8(code.clone()), Base64VecU8(migrate_args));
+    let _ = contract.admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(code.clone())),
+        Base64VecU8(migrate_args.clone()),
+    );
 
-    let event = single_event();
+    let event = single_event_with_version("2.0.0");
     assert_eq!(event["event"], "upgraded");
+    // `code` is a structured summary — `CodeHash(<base58 sha256>)` — not the blob itself.
     let expected_hash = near_sdk::bs58::encode(near_sdk::env::sha256(&code)).into_string();
-    assert_eq!(event["data"]["code_hash"].as_str().unwrap(), expected_hash);
-    assert_eq!(event["data"]["migrated"], expected_migrated);
+    assert_eq!(
+        event["data"]["code"]["CodeHash"].as_str().unwrap(),
+        expected_hash
+    );
+    // `migrate_args` is `null` for an empty (no-op) refresh, else the base64 of the selector.
+    let expected_args = if migrate_args.is_empty() {
+        near_sdk::serde_json::Value::Null
+    } else {
+        near_sdk::serde_json::to_value(Base64VecU8(migrate_args)).unwrap()
+    };
+    assert_eq!(event["data"]["migrate_args"], expected_args);
 }
 
 #[test]

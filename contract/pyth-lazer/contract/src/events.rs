@@ -1,5 +1,6 @@
-use near_sdk::{near, AccountId, NearToken};
+use near_sdk::{json_types::Base64VecU8, near, AccountId, NearToken};
 use templar_common::oracle::lazer::FeedData;
+use templar_common::upgrade::UpgradeSummary;
 
 use crate::Config;
 
@@ -36,9 +37,13 @@ pub enum PythLazerEvent {
         receiver: AccountId,
     },
 
-    /// Emitted by `admin_upgrade` before it returns the atomic deploy+migrate `Promise`.
-    /// `code_hash` is the base58 sha256 of the new wasm; `migrated` is whether a migration transform
-    /// was requested (non-empty `migrate_args`).
-    #[event_version("1.0.0")]
-    Upgraded { code_hash: String, migrated: bool },
+    /// Emitted by `admin_upgrade` before it returns the atomic deploy+migrate `Promise`. `code`
+    /// summarizes the new code (a blob's sha256, or a global-contract reference — never the blob
+    /// itself). `migrate_args` is the migration selector that ran, or `None` for a same-version
+    /// refresh (no migration).
+    #[event_version("2.0.0")]
+    Upgraded {
+        code: UpgradeSummary,
+        migrate_args: Option<Base64VecU8>,
+    },
 }

@@ -24,11 +24,21 @@ getrandom.workspace = true
 near-sdk.workspace = true
 near-sdk-contract-tools.workspace = true
 templar-common.workspace = true
+templar-proxy-oracle-governance-kernel.workspace = true
+templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true
 templar-proxy-oracle-near-governance-common.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+base64.workspace = true
+near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
+near-token.workspace = true
+serde_json.workspace = true
+templar-common.workspace = true
+templar-gateway-testing.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

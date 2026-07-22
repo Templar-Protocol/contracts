@@ -29,7 +29,26 @@ macro_rules! impl_versioned_state {
                 "migrate function is private",
             );
 
-            let input = env::input().unwrap_or_else(|| env::panic_str("no input"));
+            // Whether a state migration runs is decided by the framework — comparing the stored
+            // version to the target — never by the caller. `admin_upgrade`/`SelfUpgrade` always batch
+            // a `migrate` call; this function then classifies: a same-version code refresh (nothing to
+            // migrate) is a defined no-op, a needed migration runs the selected transform, and a
+            // downgrade errors. `migrate_args` is only a cross-check, so a caller can neither skip a
+            // required migration (which would corrupt state) nor slip a stale transform past an
+            // already-current contract.
+            let needs =
+                <$current_state as $crate::versioned_state::StateVersion>::needs_migration()
+                    .unwrap_or_else(|e| env::panic_str(&e.to_string()));
+
+            let input = env::input().unwrap_or_default();
+
+            if !needs {
+                ::near_sdk::require!(
+                    input.is_empty(),
+                    "no state migration is needed; migrate_args must be empty",
+                );
+                return;
+            }
 
             let args: $migrations = ::near_sdk::serde_json::from_slice(&input)
                 .unwrap_or_else(|e| env::panic_str(&e.to_string()));

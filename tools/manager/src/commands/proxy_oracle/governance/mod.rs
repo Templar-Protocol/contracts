@@ -142,6 +142,7 @@ fn uniform_ttls(ttl: Nanoseconds) -> TtlConfig {
         set_role: ttl,
         admin_upgrade: ttl,
         admin_function_call: ttl,
+        self_upgrade: ttl,
     }
 }
 
