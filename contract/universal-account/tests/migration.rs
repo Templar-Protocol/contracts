@@ -48,7 +48,6 @@ enum MigrationSequenceStart {
 
 #[derive(Clone, Copy, Debug)]
 enum MigrationStep {
-    V0,
     V1,
     UnbrickV1,
 }
@@ -150,9 +149,6 @@ async fn run_migration_step(
     step: MigrationStep,
 ) -> Result<CallOutcome> {
     let args = match step {
-        MigrationStep::V0 => state::Migration::from(state::migration::V0 {
-            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        }),
         MigrationStep::V1 => state::Migration::from(state::migration::V1),
         MigrationStep::UnbrickV1 => state::Migration::from(state::migration::UnbrickV1),
     };
@@ -251,21 +247,20 @@ async fn migrate_can_only_be_called_reflexively(
 async fn migrate_accepts_legacy_direct_payload(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
-    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
+    // The legacy single-object (non-array) `migrate_args` shape must still be accepted. 0.4.0's
+    // unbrick migration reaches the target version in one step, so a bare object completes it.
+    let ua = deploy_patched(&harness, UNIVERSAL_ACCOUNT_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
     let network = &harness.network;
 
     migrate(
         network,
         &ua,
-        serde_json::json!({
-            "from_version": "v0",
-            "chain_id": U128(NEAR_TESTNET_CHAIN_ID),
-        }),
+        serde_json::json!({ "from_version": "unbrick_v1" }),
     )
     .await?
     .assert_success();
 
-    assert_eq!(stored_state_version(network, &ua).await?, 1);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
     Ok(())
 }
 
@@ -280,19 +275,23 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     assert_eq!(target_state_version(network, &ua).await?, 2);
     assert!(needs_migration(network, &ua).await?);
 
+    // 0.2.0 is two state versions behind, so catch up with a single chained V0 → V1 migration.
     migrate(
         network,
         &ua,
-        state::Migration::from(state::migration::V0 {
-            chain_id: U128(NEAR_TESTNET_CHAIN_ID),
-        }),
+        vec![
+            state::Migration::from(state::migration::V0 {
+                chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+            }),
+            state::Migration::from(state::migration::V1),
+        ],
     )
     .await?
     .assert_success();
 
-    assert_eq!(stored_state_version(network, &ua).await?, 1);
+    assert_eq!(stored_state_version(network, &ua).await?, 2);
     assert_eq!(target_state_version(network, &ua).await?, 2);
-    assert!(needs_migration(network, &ua).await?);
+    assert!(!needs_migration(network, &ua).await?);
 
     let get_key = get_key(network, &ua, &passkey.id()).await?.unwrap();
 
@@ -301,14 +300,6 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     assert_eq!(get_key.name, Some("Templar Universal Account".to_string()));
     assert_eq!(get_key.nonce, U64(0));
     assert_eq!(get_key.verifying_contract, to_sdk(&ua));
-
-    migrate(network, &ua, state::Migration::from(state::migration::V1))
-        .await?
-        .assert_success();
-
-    assert_eq!(stored_state_version(network, &ua).await?, 2);
-    assert_eq!(target_state_version(network, &ua).await?, 2);
-    assert!(!needs_migration(network, &ua).await?);
     Ok(())
 }
 
@@ -431,11 +422,11 @@ async fn future_stored_version_breaks_public_migration_views(
     Ok(())
 }
 
-/// The only invalid migration sequence that a pure version-guard test cannot
-/// reproduce: the bugged 0.4.0 stores V1-shaped state under version 0, so a
-/// V0→V1 sequence clears the version guards but fails to borsh-deserialize the
-/// contract state on-chain. Every other invalid sequence reduces to a
-/// stored-vs-`from_version` mismatch, covered off-node by
+/// The only invalid migration that a pure version-guard test cannot reproduce:
+/// the bugged 0.4.0 stores V1-shaped state under version 0, so a V0 → V1 chain
+/// passes the version guards but fails to borsh-deserialize the contract state
+/// on-chain (the correct path is `UnbrickV1`). Every other invalid chain reduces
+/// to a stored-vs-`from_version` mismatch, covered off-node by
 /// `templar_universal_account::state::migration::tests`.
 #[rstest]
 #[tokio::test]
@@ -444,19 +435,23 @@ async fn from_0_4_0_v0_then_v1_fails_to_deserialize(
 ) -> Result<()> {
     let ua = deploy_for_sequence(&harness, MigrationSequenceStart::From0_4_0).await?;
 
-    let mut first_failure = None;
-    for step in [MigrationStep::V0, MigrationStep::V1] {
-        let outcome = run_migration_step(&harness, &ua, step).await?;
-        if !outcome.success {
-            first_failure = Some(outcome.failures);
-            break;
-        }
-    }
+    let outcome = migrate(
+        &harness.network,
+        &ua,
+        vec![
+            state::Migration::from(state::migration::V0 {
+                chain_id: U128(NEAR_TESTNET_CHAIN_ID),
+            }),
+            state::Migration::from(state::migration::V1),
+        ],
+    )
+    .await?;
 
-    let error = first_failure.expect("expected a migration failure");
+    assert!(!outcome.success, "expected the V0 → V1 chain to fail");
     assert!(
-        error.contains("Cannot deserialize the contract state."),
-        "unexpected error: {error}"
+        outcome.failures.contains("deserialize"),
+        "unexpected error: {}",
+        outcome.failures
     );
     Ok(())
 }
