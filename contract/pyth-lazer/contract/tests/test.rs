@@ -1073,6 +1073,35 @@ fn admin_upgrade_emits_upgraded(
     );
     // `migrated` is whether a migration was requested — a bounded flag, not the payload.
     assert_eq!(event["data"]["migrated"], !migrate_args.is_empty());
+
+    // The scheduled receipt batches the requested source's deploy with a `migrate` call carrying the
+    // exact args, zero deposit, and the adapter's GAS_FOR_MIGRATE — locking the adapter-specific
+    // wiring, not just the event.
+    let receipts = get_created_receipts();
+    assert_eq!(receipts.len(), 1);
+    let actions = &receipts[0].actions;
+    assert_eq!(actions.len(), 2);
+    match &code {
+        UpgradeSource::Code(_) => assert!(matches!(actions[0], MockAction::DeployContract { .. })),
+        UpgradeSource::GlobalHash(_) => {
+            assert!(matches!(actions[0], MockAction::UseGlobalContract { .. }));
+        }
+    }
+    match &actions[1] {
+        MockAction::FunctionCallWeight {
+            method_name,
+            args,
+            attached_deposit,
+            prepaid_gas,
+            ..
+        } => {
+            assert_eq!(method_name, b"migrate");
+            assert_eq!(args, &migrate_args);
+            assert_eq!(*attached_deposit, NearToken::from_yoctonear(0));
+            assert_eq!(*prepaid_gas, Contract::GAS_FOR_MIGRATE);
+        }
+        action => panic!("expected migrate call second, got {action:?}"),
+    }
 }
 
 #[test]
