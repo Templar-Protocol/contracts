@@ -4,6 +4,7 @@ use clap::{CommandFactory, Parser};
 
 use super::cli::{Cli, Command};
 use super::commands::proxy_oracle::{CreateProposal, ProxyOracleGovernanceNs, ProxyOracleNs};
+use super::commands::signer::PrintFormat;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -230,6 +231,100 @@ fn write_command_requires_credentials() {
 }
 
 #[test]
+fn write_command_accepts_print_without_secret() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "sputnik",
+    ]);
+
+    restore();
+    let cli = result.expect("plan-only write should parse without a secret");
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant");
+    };
+    assert_eq!(call.signer.print(), Some(PrintFormat::Sputnik));
+    assert_eq!(
+        call.signer
+            .resolve()
+            .expect_err("plan mode must not resolve signing credentials")
+            .to_string(),
+        "--print is not supported for this orchestrated write"
+    );
+}
+
+#[test]
+fn print_conflicts_with_secret_key() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "--secret-key",
+        TEST_SECRET_KEY,
+    ])
+    .expect_err("plan and execution credentials must be mutually exclusive");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn print_conflicts_with_secret_key_from_environment() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let original_secret = std::env::var_os("SECRET_KEY");
+    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    restore_env("SECRET_KEY", original_secret);
+
+    let error = result.expect_err("environment secret must conflict with --print");
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
+fn public_key_requires_print_mode() {
+    let error = Cli::try_parse_from([
+        "tmplrmgr",
+        "write",
+        "registry.removeVersion",
+        "--json",
+        r#"{"registry_id":"registry.testnet","version_key":"v1"}"#,
+        "--signer-id",
+        "signer.testnet",
+        "--secret-key",
+        TEST_SECRET_KEY,
+        "--public-key",
+        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+    ])
+    .expect_err("--public-key is plan-only");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+}
+
+#[test]
 fn read_command_rejects_credentials() {
     // Reads don't flatten the signer, so credentials are an unexpected argument.
     let error = Cli::try_parse_from([
@@ -249,7 +344,7 @@ fn read_command_rejects_credentials() {
 #[test]
 fn invalid_secret_key_error_does_not_echo_input() {
     let secret = "not-a-real-secret-key";
-    let cli = Cli::try_parse_from([
+    let error = Cli::try_parse_from([
         "tmplrmgr",
         "write",
         "registry.removeVersion",
@@ -260,19 +355,11 @@ fn invalid_secret_key_error_does_not_echo_input() {
         "--secret-key",
         secret,
     ])
-    .expect("secret key should parse as an opaque string at the clap boundary");
-
-    let error = match cli.command {
-        super::cli::Command::Write(call) => call
-            .signer
-            .resolve()
-            .expect_err("invalid secret key should be rejected"),
-        _ => panic!("expected Write variant"),
-    };
+    .expect_err("invalid secret key should fail at the clap boundary");
 
     let message = error.to_string();
-    assert_eq!(message, "invalid --secret-key");
-    assert!(!message.contains(secret));
+    assert!(message.contains("invalid --secret-key"), "{message}");
+    assert!(!message.contains(secret), "secret leaked: {message}");
 }
 
 #[test]

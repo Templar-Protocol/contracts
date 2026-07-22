@@ -64,7 +64,7 @@ impl Create {
             check_owner_id_is_honored(&self.version_key, owner_id)?;
         }
 
-        let full_access_keys = self.full_access_keys.resolve(self.signer.public_key()?);
+        let full_access_keys = self.full_access_keys.resolve(|| self.signer.public_key())?;
 
         Ok(spec::Create {
             registry_id: self.registry_id,

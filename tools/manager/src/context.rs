@@ -4,11 +4,17 @@
 //! context's whole surface lives together rather than scattered across dispatch.
 
 use anyhow::Context as _;
-use near_api::{NetworkConfig, SecretKey};
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use near_account_id::AccountId;
+use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
+use near_sdk::json_types::{U128, U64};
+use serde::{Serialize, Serializer};
 use std::io::Write as _;
 use templar_gateway_client::{Client, NetworkConfigBuilder};
-use templar_gateway_core::{DispatchRead, GatewayContext, GatewayContextBuilder, PlanWrite};
+use templar_gateway_core::{
+    DispatchRead, GatewayContext, GatewayContextBuilder, OperationPlan, PlanWrite,
+    PlannedTransaction,
+};
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_oracle_updates_dispatch::{
     build_oracle_updates_context, Dispatch as OracleUpdatesDispatch,
@@ -16,12 +22,13 @@ use templar_gateway_oracle_updates_dispatch::{
     RedStoneSourceArgs, WithLazerSource, WithRedStoneSource,
 };
 use templar_gateway_types::{
-    common::WriteOperationResult, operation::ReceiptStatus, ManagedAccountId, MethodSpec,
-    OperationStatus,
+    common::{WriteOperationResult, WriteRequest},
+    operation::ReceiptStatus,
+    ManagedAccountId, MethodSpec, OperationStatus,
 };
 
 use crate::cli::Cli;
-use crate::commands::signer::SignerArgs;
+use crate::commands::signer::{PrintFormat, SignerArgs};
 
 pub(crate) struct CliContext {
     /// An unsigned client for reads. Writes build a per-operation signing client
@@ -57,25 +64,33 @@ impl CliContext {
         print_json(&output)
     }
 
-    /// Execute a write signed by `signer`, report the tx link, print the JSON
-    /// result, then fail unless the operation succeeded on chain.
+    /// Plan and print a write when `signer` selects a format; otherwise execute
+    /// it, report the tx link, print the result, and require on-chain success.
     pub(crate) async fn write<S>(&self, signer: SignerArgs, body: S) -> anyhow::Result<()>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         Dispatch: PlanWrite<S, GatewayContext>,
     {
+        if let Some(format) = signer.print() {
+            let plan = self
+                .client
+                .plan_request(WriteRequest {
+                    signer_account_id: signer.account_id(),
+                    idempotency_key: None,
+                    body,
+                })
+                .await?;
+            return print_plan(format, &plan);
+        }
+
         let (account_id, secret_key) = signer.resolve()?;
         let client = self.signing_client(account_id.clone(), secret_key)?;
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
 
-    /// Execute an `oracle.*` write through [`OracleUpdatesDispatch`], whose context must
-    /// carry the in-process payload sources that method fetches from. `layer_sources`
-    /// builds that context from the base one, so each method constructs only the sources
-    /// its `PlanWrite` bound names — `oracle.updateRedStone` needs no Lazer token, and
-    /// `oracle.updatePyth`, whose VAA arrives in the request body, passes `Ok` to plan
-    /// against the bare [`GatewayContext`].
+    /// Plan or execute an `oracle.*` write through [`OracleUpdatesDispatch`],
+    /// whose context carries the in-process payload sources the method fetches.
     pub(crate) async fn oracle_write<S, Ctx>(
         &self,
         signer: SignerArgs,
@@ -87,13 +102,31 @@ impl CliContext {
         Ctx: Clone,
         OracleUpdatesDispatch: PlanWrite<S, Ctx>,
     {
-        let (account_id, secret_key) = signer.resolve()?;
-        let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
-            .secret_key(account_id.clone(), secret_key)?
-            .build_parts()
-            .context("build oracle-updates client")?;
+        let account_id = signer.account_id();
+        let builder = Client::builder(self.network.clone());
+        let (base_context, driver, signer_account_ids) = if signer.print().is_some() {
+            builder.build_parts()
+        } else {
+            let (_, secret_key) = signer.resolve()?;
+            builder
+                .secret_key(account_id.clone(), secret_key)?
+                .build_parts()
+        }
+        .context("build oracle-updates client")?;
         let client: Client<OracleUpdatesDispatch, Ctx> =
             Client::from_parts(layer_sources(base_context)?, driver, signer_account_ids);
+
+        if let Some(format) = signer.print() {
+            let plan = client
+                .plan_request(WriteRequest {
+                    signer_account_id: account_id,
+                    idempotency_key: None,
+                    body,
+                })
+                .await?;
+            return print_plan(format, &plan);
+        }
+
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
@@ -196,6 +229,77 @@ pub(crate) fn check_operation_status(result: &WriteOperationResult) -> anyhow::R
     }
 }
 
+fn print_plan(format: PrintFormat, plan: &OperationPlan) -> anyhow::Result<()> {
+    let transaction = single_transaction(plan)?;
+    match format {
+        PrintFormat::Json => print_json(transaction),
+        PrintFormat::Sputnik => print_json(&sputnik_function_call(transaction)?),
+    }
+}
+
+fn single_transaction(plan: &OperationPlan) -> anyhow::Result<&PlannedTransaction> {
+    match plan.steps.as_slice() {
+        [transaction] => Ok(transaction),
+        steps => anyhow::bail!(
+            "--print requires exactly one planned transaction; planned {}",
+            steps.len()
+        ),
+    }
+}
+
+#[derive(Serialize)]
+enum SputnikProposalKind<'a> {
+    FunctionCall {
+        receiver_id: &'a AccountId,
+        actions: Vec<SputnikAction<'a>>,
+    },
+}
+
+#[derive(Serialize)]
+struct SputnikAction<'a> {
+    method_name: &'a str,
+    args: Base64<'a>,
+    deposit: U128,
+    gas: U64,
+}
+
+#[derive(Clone, Copy)]
+struct Base64<'a>(&'a [u8]);
+
+impl Serialize for Base64<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&BASE64_STANDARD.encode(self.0))
+    }
+}
+
+fn sputnik_function_call(
+    transaction: &PlannedTransaction,
+) -> anyhow::Result<SputnikProposalKind<'_>> {
+    let actions = transaction
+        .actions
+        .iter()
+        .map(|action| {
+            let Action::FunctionCall(action) = action else {
+                anyhow::bail!("--print sputnik supports FunctionCall actions only");
+            };
+            Ok(SputnikAction {
+                method_name: &action.method_name,
+                args: Base64(&action.args),
+                deposit: U128(action.deposit.as_yoctonear()),
+                gas: U64(action.gas.as_gas()),
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(SputnikProposalKind::FunctionCall {
+        receiver_id: &transaction.receiver_id,
+        actions,
+    })
+}
+
 /// Serialize `output` as a single line of JSON to stdout — the machine-readable
 /// result channel (diagnostics go to stderr via tracing).
 pub(crate) fn print_json(output: &impl Serialize) -> anyhow::Result<()> {
@@ -225,9 +329,14 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
 
 #[cfg(test)]
 mod tests {
-    use super::check_operation_status;
+    use super::{check_operation_status, single_transaction, sputnik_function_call};
+    use near_account_id::AccountId;
+    use near_api::types::transaction::actions::{Action, FunctionCallAction, TransferAction};
     use serde_json::json;
-    use templar_gateway_types::common::WriteOperationResult;
+    use templar_gateway_core::{OperationPlan, PlannedTransaction};
+    use templar_gateway_types::{
+        common::WriteOperationResult, ManagedAccountId, NearGas, NearToken,
+    };
 
     /// A single-step write result with the given operation status and a reverted
     /// step whose first receipt has `receipt_status`.
@@ -255,6 +364,97 @@ mod tests {
             }
         }))
         .expect("valid WriteOperationResult json")
+    }
+
+    fn function_call_transaction() -> PlannedTransaction {
+        PlannedTransaction::single_action(
+            ManagedAccountId::from("dao.near".parse::<AccountId>().expect("valid signer")),
+            "governance.testnet".parse().expect("valid receiver"),
+            Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: "execute_proposal".to_owned(),
+                args: br#"{"id":4}"#.to_vec(),
+                gas: NearGas::from_tgas(300),
+                deposit: NearToken::from_yoctonear(1),
+            })),
+        )
+    }
+
+    #[test]
+    fn sputnik_renders_paste_ready_function_call_kind() {
+        let transaction = function_call_transaction();
+        let value = serde_json::to_value(
+            sputnik_function_call(&transaction).expect("FunctionCall plan should render"),
+        )
+        .expect("Sputnik kind should serialize");
+
+        assert_eq!(
+            value,
+            json!({
+                "FunctionCall": {
+                    "receiver_id": "governance.testnet",
+                    "actions": [{
+                        "method_name": "execute_proposal",
+                        "args": "eyJpZCI6NH0=",
+                        "deposit": "1",
+                        "gas": "300000000000000"
+                    }]
+                }
+            })
+        );
+        assert!(
+            value.get("signer_account_id").is_none(),
+            "Sputnik kind must discard the planning signer"
+        );
+    }
+
+    #[test]
+    fn sputnik_rejects_non_function_call_actions() {
+        let transaction = PlannedTransaction::single_action(
+            ManagedAccountId::from("dao.near".parse::<AccountId>().expect("valid signer")),
+            "receiver.testnet".parse().expect("valid receiver"),
+            Action::Transfer(TransferAction {
+                deposit: NearToken::from_yoctonear(1),
+            }),
+        );
+
+        let error = sputnik_function_call(&transaction)
+            .err()
+            .expect("Sputnik FunctionCall cannot represent a transfer");
+        assert_eq!(
+            error.to_string(),
+            "--print sputnik supports FunctionCall actions only"
+        );
+        assert!(
+            serde_json::to_value(&transaction).is_ok(),
+            "the same transaction remains valid JSON output"
+        );
+    }
+
+    #[test]
+    fn print_requires_exactly_one_planned_transaction() {
+        let transaction = function_call_transaction();
+        assert_eq!(
+            single_transaction(&OperationPlan::single(transaction.clone()))
+                .expect("single step")
+                .receiver_id,
+            transaction.receiver_id
+        );
+
+        for plan in [
+            OperationPlan { steps: vec![] },
+            OperationPlan {
+                steps: vec![transaction.clone(), transaction.clone()],
+            },
+        ] {
+            let error =
+                single_transaction(&plan).expect_err("non-single plan must not be rendered");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("--print requires exactly one planned transaction"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -33,7 +33,6 @@ pub struct Deploy {
 
 impl Deploy {
     pub fn try_into_spec(self) -> anyhow::Result<spec::Deploy> {
-        let signer_public_key = self.signer.public_key()?;
         // clap's required, mutually-exclusive `init` group guarantees exactly one
         // source is present.
         let init_bytes = match (self.init_args, self.init_args_file) {
@@ -46,6 +45,7 @@ impl Deploy {
                 .with_context(|| format!("read init args from {}", path.display()))?,
             (None, None) => unreachable!("clap requires one of --init-args / --init-args-file"),
         };
-        Ok(self.common.into_deploy(signer_public_key, init_bytes))
+        let signer = self.signer;
+        self.common.into_deploy(|| signer.public_key(), init_bytes)
     }
 }

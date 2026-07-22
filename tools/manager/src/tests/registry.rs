@@ -4,7 +4,7 @@ use clap::Parser;
 use serde_json::json;
 use templar_common::registry::DeployMode;
 
-use super::{CREDS, TEST_SECRET_KEY};
+use super::{clear_credential_env, CREDS, ENV_LOCK, TEST_SECRET_KEY};
 use crate::cli::{Cli, Command};
 use crate::commands::registry::RegistryNs;
 
@@ -364,6 +364,91 @@ fn add_version_requires_a_contract_source() {
 }
 
 #[test]
+fn deploy_plan_uses_explicit_public_key() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+    let public_key = "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w";
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "deploy",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "market",
+        "--version-key",
+        "market@1",
+        "--deposit",
+        "1 NEAR",
+        "--init-args",
+        "null",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "--public-key",
+        public_key,
+    ]);
+    restore();
+    let cli = result.expect("plan-only deploy should parse");
+    let Command::Registry {
+        command: RegistryNs::Deploy(cmd),
+    } = cli.command
+    else {
+        panic!("expected registry deploy");
+    };
+
+    let spec = cmd
+        .try_into_spec()
+        .expect("explicit public key builds spec");
+    let keys = spec.full_access_keys.expect("full-access keys");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].0.to_string(), public_key);
+}
+
+#[test]
+fn deploy_plan_without_signer_grant_needs_no_public_key() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "deploy",
+        "--registry-id",
+        "registry.testnet",
+        "--name",
+        "market",
+        "--version-key",
+        "market@1",
+        "--deposit",
+        "1 NEAR",
+        "--init-args",
+        "null",
+        "--no-signer-full-access-key",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    restore();
+    let cli = result.expect("plan-only deploy should parse");
+    let Command::Registry {
+        command: RegistryNs::Deploy(cmd),
+    } = cli.command
+    else {
+        panic!("expected registry deploy");
+    };
+
+    let spec = cmd
+        .try_into_spec()
+        .expect("suppressed signer grant must not resolve a key");
+    assert!(
+        spec.full_access_keys.expect("full-access keys").is_empty(),
+        "no signer key should be embedded"
+    );
+}
+
+#[test]
 fn remove_version_single_builds_spec() {
     let cli = Cli::try_parse_from(
         [
@@ -414,6 +499,39 @@ fn remove_version_all_has_no_single_spec() {
         panic!("expected remove-version");
     };
     assert!(cmd.single().is_none());
+}
+#[test]
+fn remove_version_all_rejects_print_credentials() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+    let result = Cli::try_parse_from([
+        "tmplrmgr",
+        "registry",
+        "remove-version",
+        "--registry-id",
+        "registry.testnet",
+        "--all",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    restore();
+    let cli = result.expect("print mode should parse before orchestration rejects it");
+    let Command::Registry {
+        command: RegistryNs::RemoveVersion(cmd),
+    } = cli.command
+    else {
+        panic!("expected remove-version");
+    };
+
+    assert_eq!(
+        cmd.signer
+            .resolve()
+            .expect_err("multi-version removal is orchestrated")
+            .to_string(),
+        "--print is not supported for this orchestrated write"
+    );
 }
 
 #[test]

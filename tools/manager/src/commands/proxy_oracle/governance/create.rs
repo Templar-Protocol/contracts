@@ -50,7 +50,6 @@ struct GovernanceInit {
 
 impl GovernanceCreate {
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
-        let signer_public_key = self.signer.public_key()?;
         let ttls = match self.ttls_file {
             Some(path) => load_json_file(&path).context("parse TtlConfig")?,
             None => uniform_ttls(self.ttl_default),
@@ -63,6 +62,7 @@ impl GovernanceCreate {
         };
         let init_args = serde_json::to_vec(&init).context("encode governance init args")?;
 
-        Ok(self.common.into_deploy(signer_public_key, init_args))
+        let signer = self.signer;
+        self.common.into_deploy(|| signer.public_key(), init_args)
     }
 }

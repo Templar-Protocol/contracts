@@ -6,9 +6,15 @@ use serde_json::{json, Value};
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 
-use super::{parse_create_proposal, parse_governance, CREDS};
+use super::{
+    clear_credential_env, parse_create_proposal, parse_governance, try_parse_governance, CREDS,
+    ENV_LOCK,
+};
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
+use crate::commands::{
+    proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
+    signer::PrintFormat,
+};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_primitives::Decimal;
@@ -40,8 +46,8 @@ fn create_proposal(
 }
 
 #[test]
-fn governance_and_gov_parse_into_the_nested_command() {
-    for alias in ["governance", "gov"] {
+fn governance_aliases_parse_into_the_nested_command() {
+    for alias in ["governance", "gov", "g"] {
         let cli = Cli::try_parse_from([
             "tmplrmgr",
             "proxy-oracle",
@@ -59,10 +65,6 @@ fn governance_and_gov_parse_into_the_nested_command() {
             _ => panic!("expected nested governance command"),
         }
     }
-
-    let error = Cli::try_parse_from(["tmplrmgr", "proxy-oracle", "g"])
-        .expect_err("removed single-letter alias should be rejected");
-    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
 /// The typed `operation` a `create-proposal` invocation parses into.
@@ -484,6 +486,106 @@ fn execute_proposal_when_ready_flag() {
             _ => panic!("expected execute-proposal"),
         }
     }
+}
+
+#[test]
+fn governance_write_commands_accept_print_mode() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+    let execute = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "sputnik",
+    ]);
+    let create = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "admin-function-call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ]);
+    restore();
+
+    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
+        execute.expect("immediate execution should support planning")
+    else {
+        panic!("expected execute-proposal");
+    };
+    assert_eq!(execute.signer.print(), Some(PrintFormat::Sputnik));
+
+    let ProxyOracleGovernanceNs::CreateProposal(create) =
+        create.expect("single-write proposal creation should support planning")
+    else {
+        panic!("expected create-proposal");
+    };
+    assert_eq!(create.signer.print(), Some(PrintFormat::Json));
+}
+
+#[test]
+fn proposal_orchestration_flags_parse_with_print_for_runtime_rejection() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let restore = clear_credential_env();
+    let execute = try_parse_governance([
+        "execute-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "2",
+        "--when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+    ]);
+    let create = try_parse_governance([
+        "create-proposal",
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--execute-when-ready",
+        "--signer-id",
+        "dao.near",
+        "--print",
+        "json",
+        "admin-function-call",
+        "--method",
+        "own_accept_owner",
+        "--deposit",
+        "1 yoctoNEAR",
+    ]);
+    restore();
+
+    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
+        execute.expect("runtime guard should own the orchestration diagnostic")
+    else {
+        panic!("expected execute-proposal");
+    };
+    assert!(execute.when_ready());
+    assert_eq!(execute.signer.print(), Some(PrintFormat::Json));
+
+    let ProxyOracleGovernanceNs::CreateProposal(create) =
+        create.expect("runtime guard should own the orchestration diagnostic")
+    else {
+        panic!("expected create-proposal");
+    };
+    assert!(create.execute_when_ready());
+    assert_eq!(create.signer.print(), Some(PrintFormat::Json));
 }
 
 #[test]

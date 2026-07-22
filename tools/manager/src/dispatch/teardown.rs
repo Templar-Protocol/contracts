@@ -141,7 +141,7 @@ pub(super) async fn clear_deployments(
     let beneficiary = args.beneficiary_id();
     let force = args.force();
     // One authorized key signs every discovered market's self-removal.
-    let secret_key = args.signer.secret()?;
+    let secret_key = args.signer.secret();
     // Only markets are torn down here (removal reads a market configuration), so
     // filter by kind rather than trying `remove_market` on every deployment.
     let accounts = ctx

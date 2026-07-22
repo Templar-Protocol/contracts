@@ -19,10 +19,12 @@ use crate::context::{print_json, CliContext};
 /// id. Always emits the resolved proposal id so scripts can learn it. With
 /// `--execute-when-ready`, waits for the proposal's TTL to elapse and executes.
 pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow::Result<()> {
-    let (signer, secret_key) = args.signer.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
-    let governance_id = args.target.resolve(&ctx).await?;
     let execute_when_ready = args.execute_when_ready();
+    if execute_when_ready && args.signer.print().is_some() {
+        anyhow::bail!("--print is not supported with --execute-when-ready");
+    }
+    let signer_args = args.signer.clone();
+    let governance_id = args.target.resolve(&ctx).await?;
 
     // Auto-fill the next breaker id for add-circuit-breaker, resolving the proxy
     // oracle (whose set holds the breakers) through the governance contract. This
@@ -46,12 +48,14 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         }
     };
 
-    let create = client
-        .execute_as(
-            signer.clone(),
-            args.try_into_spec(governance_id.clone(), id)?,
-        )
-        .await?;
+    let create_spec = args.try_into_spec(governance_id.clone(), id)?;
+    if signer_args.print().is_some() {
+        return ctx.write(signer_args, create_spec).await;
+    }
+
+    let (signer, secret_key) = signer_args.resolve()?;
+    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let create = client.execute_as(signer.clone(), create_spec).await?;
     // Fail fast if the create reverted, before waiting on / executing a proposal
     // that was never created.
     ctx.report_checked(&create)?;
@@ -77,6 +81,9 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
 /// elapse first, so an early call blocks instead of failing on an immature
 /// proposal.
 pub(super) async fn execute(ctx: CliContext, args: ExecuteProposalArgs) -> anyhow::Result<()> {
+    if args.when_ready() && args.signer.print().is_some() {
+        anyhow::bail!("--print is not supported with --when-ready");
+    }
     let governance_id = args.target.resolve(&ctx).await?;
     if args.when_ready() {
         wait_for_maturity(&ctx, &governance_id, args.id()).await?;
