@@ -291,15 +291,48 @@ WASM. Stable assignments are recovery `0x01`, external sync `0x02`, fee refresh 
 lifecycle `0x08`, refresh lifecycle `0x10`, and pause `0x20`. The default production mask is
 `0x1f`; pause remains disabled.
 
-The curator proxy exposes the same information through `vault_version()`. When the configured
-vault has no `version` export, the proxy returns the known v1 fallback `("1.0.0", 0x1f)`. It does
-not treat malformed responses or generic versionless contracts as legacy: because Soroban narrows
-recoverable host errors, the fallback also requires the configured contract to answer the typed v1
-`proxy_view`. This is a compatibility signal, not code-identity attestation; proxy configuration
-must remain restricted to approved vault artifacts. The runtime `version` entrypoint is additive
-and storage-free, so deployed v1 vaults do not need a runtime upgrade or state migration. Existing
-curator proxy deployments are non-upgradeable; consumers that need the query must use a replacement
-proxy pointed at the same vault and governance contracts.
+The curator proxy exposes the same information through `vault_version()`. Use its existing
+`initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,
+versionless v1 deployment, use
+`initialize_legacy_v1(vault, governance, legacy_v1_wasm_hash)`. Initialization requires the supplied
+hash to equal the vault's current Wasm executable. The proxy returns the approved v1 semantics
+`("1.0.0", 0x1f)` directly while that exact artifact remains installed; it does not invoke
+`version`, inspect vault state, or infer v1 from a Soroban host error. After an upgrade changes the
+artifact hash, the proxy queries `version` and fails closed on any invocation or decoding error.
+
+The legacy initializer is an explicit operator assertion that the pinned artifact is a known v1
+runtime. Verify the hash against the approved deployment manifest or release record; the absence of
+a `version` export alone is insufficient because older pre-v1 artifacts can have different action
+capabilities. The runtime `version` entrypoint is additive and storage-free, so deployed v1 vaults
+do not need a runtime upgrade or state migration. Existing curator proxy deployments are
+non-upgradeable; consumers that need the query must use a replacement proxy pointed at the same
+vault and governance contracts.
+
+The targeted CLI flow verifies the vault's current on-chain Wasm hash before deploying a fresh
+proxy and invokes `initialize_legacy_v1`. It checkpoints the successful initialization and pinned
+hash before checking `vault_version`, then marks the proxy version-discovery-capable only after that
+query succeeds:
+
+```sh
+tmplr-soroban-vault deploy curator-proxy \
+  --vault <vault-address> \
+  --governance <governance-address> \
+  --legacy-v1-wasm-hash <approved-v1-wasm-hash>
+```
+
+The equivalent targeted just recipe builds the proxy, lets the contract validate the supplied
+32-byte hash, and checks `vault_version` before recording the new proxy ID:
+
+```sh
+just -f contract/vault/soroban/justfile deploy-curator-proxy-legacy-v1 \
+  <vault-address> <governance-address> <approved-v1-wasm-hash>
+```
+
+Proxy deployment and initialization are separate transactions under the existing deployment model,
+so operators must coordinate the first initialization and verify the emitted proxy address. The
+approved tTUSDC mainnet runtime hash is recorded in
+`contract/vault/deployments/tTUSDC/mainnet/manifest.json`; do not substitute a hash solely because
+its artifact lacks `version`.
 
 ## Blend Adapter
 

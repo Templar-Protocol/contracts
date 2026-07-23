@@ -51,23 +51,25 @@ const fn feature_flag(enabled: bool, flag: u64) -> u64 {
 }
 
 /// Action-handler capabilities compiled into this runtime artifact.
-pub const RUNTIME_FEATURE_FLAGS: u64 =
-    feature_flag(
-        cfg!(feature = "action-recovery"),
-        RUNTIME_FEATURE_ACTION_RECOVERY,
-    ) | feature_flag(
-        cfg!(feature = "action-sync-external"),
-        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
-    ) | feature_flag(
-        cfg!(feature = "action-refresh-fees"),
-        RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-    ) | feature_flag(
-        cfg!(feature = "action-allocation-lifecycle"),
-        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
-    ) | feature_flag(
-        cfg!(feature = "action-refresh-lifecycle"),
-        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
-    ) | feature_flag(cfg!(feature = "action-pause"), RUNTIME_FEATURE_ACTION_PAUSE);
+pub const RUNTIME_FEATURE_FLAGS: u64 = feature_flag(
+    templar_vault_kernel::ACTION_RECOVERY_ENABLED,
+    RUNTIME_FEATURE_ACTION_RECOVERY,
+) | feature_flag(
+    templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED,
+    RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+) | feature_flag(
+    templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED,
+    RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+) | feature_flag(
+    templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED,
+    RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+) | feature_flag(
+    templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
+    RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+) | feature_flag(
+    templar_vault_kernel::ACTION_PAUSE_ENABLED,
+    RUNTIME_FEATURE_ACTION_PAUSE,
+);
 
 pub mod auth;
 pub mod contract;

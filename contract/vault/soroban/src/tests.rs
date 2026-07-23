@@ -576,41 +576,44 @@ mod contract_tests {
         for (flag, enabled) in [
             (
                 RUNTIME_FEATURE_ACTION_RECOVERY,
-                cfg!(feature = "action-recovery"),
+                templar_vault_kernel::ACTION_RECOVERY_ENABLED,
             ),
             (
                 RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
-                cfg!(feature = "action-sync-external"),
+                templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED,
             ),
             (
                 RUNTIME_FEATURE_ACTION_REFRESH_FEES,
-                cfg!(feature = "action-refresh-fees"),
+                templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED,
             ),
             (
                 RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
-                cfg!(feature = "action-allocation-lifecycle"),
+                templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED,
             ),
             (
                 RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
-                cfg!(feature = "action-refresh-lifecycle"),
+                templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
             ),
-            (RUNTIME_FEATURE_ACTION_PAUSE, cfg!(feature = "action-pause")),
+            (
+                RUNTIME_FEATURE_ACTION_PAUSE,
+                templar_vault_kernel::ACTION_PAUSE_ENABLED,
+            ),
         ] {
             assert_eq!(feature_flags & flag != 0, enabled);
         }
 
-        #[cfg(all(
-            feature = "action-recovery",
-            feature = "action-sync-external",
-            feature = "action-refresh-fees",
-            feature = "action-allocation-lifecycle",
-            feature = "action-refresh-lifecycle",
-            not(feature = "action-pause")
-        ))]
-        assert_eq!(
-            feature_flags,
-            templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
-        );
+        if templar_vault_kernel::ACTION_RECOVERY_ENABLED
+            && templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED
+            && templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED
+            && templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED
+            && templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED
+            && !templar_vault_kernel::ACTION_PAUSE_ENABLED
+        {
+            assert_eq!(
+                feature_flags,
+                templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
+            );
+        }
     }
 
     #[test]

@@ -20,6 +20,19 @@ pub mod transitions;
 pub mod types;
 pub mod utils;
 
+/// Whether the `action-recovery` feature is enabled in this resolved kernel build.
+pub const ACTION_RECOVERY_ENABLED: bool = cfg!(feature = "action-recovery");
+/// Whether the `action-sync-external` feature is enabled in this resolved kernel build.
+pub const ACTION_SYNC_EXTERNAL_ENABLED: bool = cfg!(feature = "action-sync-external");
+/// Whether the `action-refresh-fees` feature is enabled in this resolved kernel build.
+pub const ACTION_REFRESH_FEES_ENABLED: bool = cfg!(feature = "action-refresh-fees");
+/// Whether the `action-allocation-lifecycle` feature is enabled in this resolved kernel build.
+pub const ACTION_ALLOCATION_LIFECYCLE_ENABLED: bool = cfg!(feature = "action-allocation-lifecycle");
+/// Whether the `action-refresh-lifecycle` feature is enabled in this resolved kernel build.
+pub const ACTION_REFRESH_LIFECYCLE_ENABLED: bool = cfg!(feature = "action-refresh-lifecycle");
+/// Whether the `action-pause` feature is enabled in this resolved kernel build.
+pub const ACTION_PAUSE_ENABLED: bool = cfg!(feature = "action-pause");
+
 pub use actions::{
     apply_action, convert_to_assets, convert_to_assets_bounded, convert_to_assets_ceil,
     convert_to_assets_ceil_bounded, convert_to_shares, convert_to_shares_bounded,

@@ -275,6 +275,9 @@ jobs:
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
 
+      - name: Verify ENG-484 Soroban release ABIs
+        run: just -f contract/vault/soroban/justfile verify-release-wasm-abi
+
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
 

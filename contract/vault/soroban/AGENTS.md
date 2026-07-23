@@ -59,6 +59,7 @@ Use these commands:
 
 - `just -f contract/vault/soroban/justfile build`
 - `just -f contract/vault/soroban/justfile size-budget-check`
+- `just -f contract/vault/soroban/justfile verify-release-wasm-abi`
 - `just -f contract/vault/soroban/justfile wasm-analyze 250 120`
 - `just -f contract/vault/soroban/justfile wasm-analyze-print all 120`
 
@@ -295,6 +296,14 @@ Size verification:
 
 - `just -f contract/vault/soroban/justfile build`
 - `just -f contract/vault/soroban/justfile size-budget-check`
+
+Release ABI and capability-mask verification:
+
+- `just -f contract/vault/soroban/justfile verify-release-wasm-abi`
+
+This gate checks the isolated runtime feature matrix, exact optimized contract interfaces for
+`version`, `vault_version`, `initialize_legacy_v1`, and `reported_at`, plus the real-WASM proxy
+transition from pinned v1 semantics to the upgraded runtime response.
 
 When relevant, also run:
 

@@ -1,8 +1,7 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype,
-    xdr::{ScErrorCode, ScErrorType},
-    Address, Bytes, Env, Error as SorobanError, InvokeError, String, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, Executable,
+    InvokeError, String, Vec,
 };
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyViewResponse, RuntimeVersionResponse,
@@ -11,8 +10,8 @@ use templar_soroban_shared_types::{
 
 use crate::{
     contract::{
-        is_legacy_version_candidate, map_vault_invoke_error, timelocks_from_kind_values,
-        AllocationDelta, ProxyDataKey, SorobanCuratorProxyContract,
+        map_vault_invoke_error, timelocks_from_kind_values, AllocationDelta, ProxyDataKey,
+        SorobanCuratorProxyContract,
     },
     error::ContractError,
     governance_abi::{
@@ -75,6 +74,16 @@ impl MockVaultContract {
 }
 
 #[contract]
+struct MockVersionlessVaultContract;
+
+#[contractimpl]
+impl MockVersionlessVaultContract {
+    pub fn ping() -> u32 {
+        1
+    }
+}
+
+#[contract]
 struct MockVersionedVaultContract;
 
 #[contractimpl]
@@ -91,6 +100,16 @@ struct MockMalformedVersionVaultContract;
 impl MockMalformedVersionVaultContract {
     pub fn version(_env: Env) -> u64 {
         7
+    }
+}
+
+#[contract]
+struct MockWrongArityVersionVaultContract;
+
+#[contractimpl]
+impl MockWrongArityVersionVaultContract {
+    pub fn version(env: Env, _nonce: u64) -> RuntimeVersionResponse {
+        (String::from_str(&env, "9.9.9"), u64::MAX)
     }
 }
 
@@ -502,6 +521,19 @@ impl Fixture {
         })
     }
 
+    fn initialize_legacy_v1_for(&self, vault: &Address) -> Result<BytesN<32>, ContractError> {
+        let wasm_hash = contract_wasm_hash(vault);
+        self.env.as_contract(&self.proxy, || {
+            SorobanCuratorProxyContract::initialize_legacy_v1(
+                self.env.clone(),
+                vault.clone(),
+                self.governance.clone(),
+                wasm_hash.clone(),
+            )
+        })?;
+        Ok(wasm_hash)
+    }
+
     fn recorded_payloads(&self) -> Vec<Bytes> {
         self.env.as_contract(&self.vault, || {
             MockVaultContract::recorded_payloads(self.env.clone())
@@ -512,6 +544,15 @@ impl Fixture {
         self.env.as_contract(&self.governance, || {
             MockGovernanceContract::set_pending(self.env.clone(), proposal)
         });
+    }
+}
+
+fn contract_wasm_hash(address: &Address) -> BytesN<32> {
+    match address.executable() {
+        Some(Executable::Wasm(wasm_hash)) => wasm_hash,
+        Some(Executable::StellarAsset) | Some(Executable::Account) | None => {
+            panic!("test contract must have a Wasm executable")
+        }
     }
 }
 
@@ -540,6 +581,10 @@ fn initialize_stores_target_contracts() {
             storage.get(&ProxyDataKey::GovernanceAddress),
             Some(fixture.governance.clone())
         );
+        assert_eq!(
+            storage.get::<_, BytesN<32>>(&ProxyDataKey::LegacyV1WasmHash),
+            None
+        );
         assert_eq!(storage.get(&ProxyDataKey::Initialized), Some(true));
     });
 }
@@ -547,7 +592,10 @@ fn initialize_stores_target_contracts() {
 #[test]
 fn vault_version_falls_back_for_legacy_vault() {
     let fixture = Fixture::new();
-    fixture.initialize().expect("initialize succeeds");
+    let legacy_vault = fixture.env.register(MockVersionlessVaultContract, ());
+    let wasm_hash = fixture
+        .initialize_legacy_v1_for(&legacy_vault)
+        .expect("legacy initialization succeeds");
 
     let result = fixture.env.as_contract(&fixture.proxy, || {
         SorobanCuratorProxyContract::vault_version(fixture.env.clone())
@@ -560,23 +608,49 @@ fn vault_version_falls_back_for_legacy_vault() {
             RUNTIME_V1_FEATURE_FLAGS,
         ))
     );
+    fixture.env.as_contract(&fixture.proxy, || {
+        assert_eq!(
+            fixture
+                .env
+                .storage()
+                .instance()
+                .get(&ProxyDataKey::LegacyV1WasmHash),
+            Some(wasm_hash)
+        );
+    });
 }
 
 #[test]
-fn vault_version_rejects_versionless_non_vault() {
+fn legacy_initialization_rejects_a_mismatched_wasm_hash() {
     let fixture = Fixture::new();
-    fixture.env.as_contract(&fixture.proxy, || {
-        SorobanCuratorProxyContract::initialize(
+    let wrong_hash = BytesN::from_array(&fixture.env, &[7; 32]);
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize_legacy_v1(
             fixture.env.clone(),
+            fixture.vault.clone(),
             fixture.governance.clone(),
-            fixture.governance.clone(),
+            wrong_hash,
         )
-        .expect("initialize succeeds");
-        assert_eq!(
-            SorobanCuratorProxyContract::vault_version(fixture.env.clone()),
-            Err(ContractError::VaultError)
-        );
     });
+
+    assert_eq!(result, Err(ContractError::InvalidInput));
+    fixture.env.as_contract(&fixture.proxy, || {
+        assert!(!super::contract::is_initialized(&fixture.env));
+    });
+}
+
+#[test]
+fn vault_version_rejects_an_unpinned_versionless_vault() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+        }),
+        Err(ContractError::VaultError)
+    );
 }
 
 #[test]
@@ -597,6 +671,56 @@ fn vault_version_forwards_current_response() {
     });
 
     assert_eq!(result, Ok((String::from_str(&fixture.env, "2.4.6"), 0x2a)));
+}
+
+#[test]
+fn vault_version_uses_the_artifact_pin_before_calling_version() {
+    let fixture = Fixture::new();
+    let vault = fixture.env.register(MockVersionedVaultContract, ());
+    fixture
+        .initialize_legacy_v1_for(&vault)
+        .expect("legacy initialization succeeds");
+
+    // A query-first implementation would return the mock's 2.4.6/0x2a
+    // response. The explicit artifact assertion must take precedence.
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+        }),
+        Ok((
+            String::from_str(&fixture.env, RUNTIME_V1_VERSION),
+            RUNTIME_V1_FEATURE_FLAGS,
+        ))
+    );
+}
+
+#[test]
+fn vault_version_queries_version_when_the_current_hash_does_not_match_the_pin() {
+    let fixture = Fixture::new();
+    let vault = fixture.env.register(MockVersionlessVaultContract, ());
+    fixture
+        .initialize_legacy_v1_for(&vault)
+        .expect("legacy initialization succeeds");
+
+    let stale_hash = BytesN::from_array(&fixture.env, &[7; 32]);
+    assert_ne!(contract_wasm_hash(&vault), stale_hash);
+    fixture.env.as_contract(&fixture.proxy, || {
+        fixture
+            .env
+            .storage()
+            .instance()
+            .set(&ProxyDataKey::LegacyV1WasmHash, &stale_hash);
+    });
+    fixture
+        .env
+        .register_at(&vault, MockVersionedVaultContract, ());
+
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+        }),
+        Ok((String::from_str(&fixture.env, "2.4.6"), 0x2a))
+    );
 }
 
 #[test]
@@ -635,20 +759,24 @@ fn vault_version_rejects_malformed_response_and_contract_failure() {
 }
 
 #[test]
-fn legacy_version_candidate_classifier_is_narrow() {
-    assert!(is_legacy_version_candidate(
-        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::InvalidAction,)
-    ));
+fn vault_version_rejects_wrong_arity_without_an_explicit_legacy_pin() {
+    let fixture = Fixture::new();
+    let wrong_arity_vault = fixture.env.register(MockWrongArityVersionVaultContract, ());
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            wrong_arity_vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+    });
 
-    for error in [
-        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::MissingValue),
-        SorobanError::from_type_and_code(ScErrorType::WasmVm, ScErrorCode::InvalidAction),
-        SorobanError::from_type_and_code(ScErrorType::Storage, ScErrorCode::MissingValue),
-        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::UnexpectedType),
-        SorobanError::from_contract_error(1),
-    ] {
-        assert!(!is_legacy_version_candidate(error));
-    }
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+        }),
+        Err(ContractError::VaultError)
+    );
 }
 
 #[test]
