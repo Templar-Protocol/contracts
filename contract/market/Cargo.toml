@@ -4,6 +4,7 @@ license.workspace = true
 name = "templar-market-contract"
 repository.workspace = true
 version = "1.4.0"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -2,8 +2,9 @@
 name = "templar-curator-primitives"
 version = "1.0.0"
 edition = "2021"
-license = "GPL-3.0-only"
+license.workspace = true
 description = "Chain-agnostic curator policy and recovery primitives for Templar Protocol vaults"
+repository.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -23,7 +24,7 @@ recovery = []
 
 [dependencies]
 # Core dependency - vault kernel types
-templar-vault-kernel = { path = "../kernel" }
+templar-vault-kernel = { path = "../kernel", version = "1.0.0" }
 templar-vault-macros.workspace = true
 derive_more.workspace = true
 typed-builder = "0.20"

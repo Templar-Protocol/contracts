@@ -2,8 +2,9 @@
 name = "templar-soroban-custodial-adapter"
 version = "1.0.0"
 edition = "2021"
-license = "GPL-3.0-only"
+license.workspace = true
 description = "Soroban custodial market adapter for offchain-managed vault allocations"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

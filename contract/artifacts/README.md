@@ -34,111 +34,92 @@ This crate deliberately does **not** compile contracts in a build script.
 Contract compilation is performed by `./script/prebuild-test-contracts.sh`
 or by `cargo near build`. The crate only *reads* the resulting artifacts.
 
-## Embedded WASM and staleness
+## Versioned release blobs
 
-When the `embedded-wasm` feature is active, every `include_bytes!` call
-reads from **checked-in files** under `contract/artifacts/res/near/`.
-These blobs are pinned in version control and treated as versioned, immutable
-release artifacts: source is free to move ahead of a shipped blob, and a blob is
-only replaced when you deliberately cut new bytes (see below).
+Contract bytes live under:
+
+```
+res/near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+```
+
+One directory per **released** version. Releases are **immutable**: cutting a
+new one *adds* a directory and a catalog entry, and never rewrites an existing
+one. Historical blobs are what the migration and upgrade tests deploy — e.g.
+`contract/universal-account/tests/migration.rs` upgrades from the real `0.2.0`
+and `0.4.0` binaries — so rewriting one silently invalidates those tests.
+
+Each entry in `ArtifactId::metadata().releases` (oldest first) pins a version and
+the SHA-256 of its blob. `ArtifactMetadata::current()` is the newest release —
+what the gateway deploys, and what `version()` / `expected_sha256()` /
+`version_key()` refer to.
+
+```rust
+// Newest released bytes.
+let bytes = ArtifactId::Market.embedded_bytes();
+
+// A specific historical release, for upgrade tests.
+let old = ArtifactId::UniversalAccount.embedded_bytes_for_version("0.2.0");
+```
 
 ### The prebuild helper (test artifacts)
 
 `./script/prebuild-test-contracts.sh` builds contracts into Cargo's
 `target/near/` for the **test suite** (via `TEST_CONTRACTS_PREBUILT=1`). It uses
-fast, non-reproducible `cargo near build` and never touches the checked-in
-`res/near/` blobs.
+fast, non-reproducible `cargo near build` and never touches `res/near/`.
 
-Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds run
-concurrently. If unset, it uses a bounded default based on available CPU
-parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass
-`--timeout-secs <n>` to override the per-contract build timeout; the default is
-30 minutes. Pass `--artifact <name>` to build a subset (repeatable or
-comma-separated). Pass `--check` to report which artifacts are missing from
-`target/near` and exit non-zero, without building anything.
+Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control build concurrency. Set
+`PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass `--timeout-secs <n>` to
+override the per-contract timeout (default 30 minutes). Pass `--artifact <name>`
+to build a subset (repeatable or comma-separated). Pass `--check` to report which
+artifacts are missing from `target/near` and exit non-zero without building.
 
 ```bash
 ./script/prebuild-test-contracts.sh --artifact market
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
 ```
 
-All catalogued artifacts (production and mock) have embedded bytes available.
+## Cutting a release
 
-### ⚠️ Refreshing a checked-in blob — READ THIS
+Source is *allowed* to move ahead of the newest released blob — unreleased
+work-in-progress is meant to lag it. The tripwire is the crate version:
 
-**The embedded blobs do NOT track your source automatically.** They are pinned,
-versioned *release* artifacts: the bytes the gateway will deploy on-chain. The
-contract source is free to move ahead of them, and **CI will not tell you a blob
-is stale**:
+**Bump a contract's `Cargo.toml` version when you intend to ship it.** The drift
+check then fails (newest catalogued release ≠ `Cargo.toml` version) until you cut
+the blob:
 
-- The **hash-pin check** only verifies `sha256(blob) == expected_sha256`. It
-  never looks at source.
-- The **version-drift check** only verifies the catalog `version` matches the
-  contract's `Cargo.toml` version. It never looks at the blob's bytes.
+```bash
+just artifact-release proxy-oracle
+```
 
-So a contract source change at the **same version** passes CI with a stale blob.
-Keeping blobs fresh is a **deliberate, manual step** — this section is the only
-thing standing between you and shipping outdated contract bytes.
+That script requires a **clean, committed tree** (`cargo near build
+reproducible-wasm` builds from committed git state), builds the contract
+reproducibly, installs it at `res/near/<target>/<version>/`, and prints the
+catalog entry to add to `ids.rs`. Add the entry *and* a matching
+`embedded_bytes_for_version` arm, then commit the blob together with the catalog
+edit so bytes and pin always land in one reviewable diff.
 
-#### WHEN to refresh
+It refuses to overwrite an existing version — to ship new bytes, bump the
+version.
 
-Refresh an artifact's blob **whenever you want that contract's current source to
-become what the gateway deploys** — i.e. you are promoting a source change to a
-shipped/deployed release. Do **not** refresh for every source edit; unreleased
-work-in-progress is *meant* to lag the blob.
-
-Enforced tripwire: **bump the contract's `Cargo.toml` `version` whenever you make
-a change you intend to ship.** That bump fails the version-drift check (catalog
-`version` ≠ `Cargo.toml` version) and forces you back to this catalog — which is
-exactly when you should do the full refresh below. Note the check only forces the
-`version` *string* to line up; it does not verify you rebuilt the blob, so when
-it fires, do the **whole** procedure, not just the version edit.
-
-#### HOW to refresh (exact steps, per affected artifact)
-
-1. **Commit your source change first — the git tree must be clean.**
-   `cargo near build reproducible-wasm` builds from the committed git state; on a
-   dirty tree it either hard-errors or embeds the wrong state and produces
-   non-reproducible bytes. (For a merge: commit the merge, *then* refresh.)
-2. Build reproducibly (`<source_path>` and `<target>` are the entry's
-   `source_path` and `cargo_target_name` in `ids.rs`):
-   ```bash
-   cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
-   ```
-3. Copy the output into `res/near/`:
-   ```bash
-   cp target/near/<target>/<target>.wasm \
-      contract/artifacts/res/near/<target>/<target>.wasm
-   ```
-4. In `contract/artifacts/src/ids.rs`, set that entry's `expected_sha256` to the
-   new hash (printed by the build, or `sha256sum` the copied file) — and its
-   `version` if the crate version changed.
-5. Verify: `./script/check-artifact-drift.sh` (must be green).
-6. Commit the blob **and** the `ids.rs` change together, so the bytes and their
-   pinned hash always land in one reviewable diff.
-
-### Checking for stale bytes
-
-Run the drift check — pure, in-memory, no builds:
+## Checking consistency
 
 ```bash
 ./script/check-artifact-drift.sh
 ```
 
-It runs:
+Pure, in-memory, no builds, seconds. Four guarantees:
 
-```bash
-cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --include-ignored --nocapture
-```
+| Check | Catches |
+|---|---|
+| `embedded_drift_check` | a release's bytes no longer hash to its pinned `sha256` (including historical releases, which must never change) |
+| `embedded_version_drift_check` | the newest release does not match the crate's `Cargo.toml` version — i.e. a version bump whose blob was never cut |
+| `catalog_releases_are_well_formed` | empty release lists, duplicate versions, malformed digests |
+| `catalog_matches_disk` | a directory on disk nobody catalogued, or a catalog entry whose blob was never committed |
 
-which covers both the **blob hash-pin check** (every embedded blob hashes to its
-catalog `expected_sha256`) and the **version drift check** (catalog versions
-match `Cargo.toml`), since `drift_check` is a substring filter matching
-`embedded_drift_check` and `embedded_version_drift_check`.
-
-If either fails, update the offending catalog entry: for a blob change, refresh
-the bytes and `expected_sha256` as above; for a version mismatch, update the
-`version` field.
+What this does **not** check is whether the bytes match what the source actually
+compiles to — that requires a reproducible rebuild, which runs on release tags
+in `.github/workflows/release-artifacts.yml` and fails unless the rebuild is
+byte-for-byte identical.
 
 ## Usage examples
 

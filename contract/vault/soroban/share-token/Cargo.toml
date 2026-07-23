@@ -2,8 +2,9 @@
 name = "templar-soroban-share-token"
 version = "1.0.0"
 edition = "2021"
-license = "GPL-3.0-only"
+license.workspace = true
 description = "Soroban vault share token with vault-controlled mint/burn and user-authorized transfers"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

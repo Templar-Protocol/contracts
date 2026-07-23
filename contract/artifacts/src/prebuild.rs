@@ -43,11 +43,24 @@ struct Args {
     /// Report whether the selected artifacts are already built, without building them.
     #[arg(long)]
     check: bool,
+
+    /// Print `<source_path> <cargo_target_name>` for each selected artifact and
+    /// exit, without building. Lets shell tooling (`script/artifact-release.sh`)
+    /// read the catalog instead of re-deriving paths and drifting from it.
+    #[arg(long)]
+    print_metadata: bool,
 }
 
 pub fn main() -> ExitCode {
     let args = Args::parse();
     let artifacts = selected_artifacts(&args.artifacts);
+
+    if args.print_metadata {
+        for artifact in &artifacts {
+            println!("{} {}", artifact.source_path, artifact.cargo_target_name);
+        }
+        return ExitCode::SUCCESS;
+    }
 
     let result = if args.check {
         check_all(&args.workspace_root, &artifacts)

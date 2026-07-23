@@ -1,0 +1,103 @@
+# Releasing
+
+Every crate in this workspace versions itself independently, from its own commit
+history. Releases are automated by [release-plz](https://release-plz.dev);
+configuration lives in [`release-plz.toml`](release-plz.toml).
+
+## How to cut a release
+
+1. Land work on `dev` as normal. Each merge updates a standing pull request
+   titled **"chore: release"**, which accumulates the pending version bumps,
+   `Cargo.toml` edits, `Cargo.lock` updates, and `CHANGELOG.md` entries for every
+   affected crate.
+2. When you want to ship, review that PR and **merge it**. That is the release
+   trigger — nothing is released by an ordinary merge to `dev`.
+3. On merge, CI tags each released crate (`templar-gateway-client-v0.2.0`) and
+   cuts its GitHub Release.
+
+If you never merge the Release PR, nothing is ever released.
+
+### Choosing version numbers
+
+Bumps are proposed automatically from the commit messages since each crate's
+last tag (`fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE` → major; see
+[Commit And PR Titles](AGENTS.md#commit-and-pr-titles)). Pre-1.0 crates follow
+Cargo's semver rules, so a breaking change goes `0.1.0` → `0.2.0`.
+
+To override a proposed version, either comment on the Release PR:
+
+```
+release-plz set-version templar-gateway-core@2.0.0
+```
+
+…or edit the version directly in the PR branch.
+
+### Editing the Release PR
+
+The Release PR is an ordinary PR: change versions, rewrite changelog prose, or
+drop a crate from the batch. It runs the full `test.yml` gate.
+
+One behaviour to know: while the branch contains **only** bot commits, release-plz
+force-pushes to keep it current. As soon as you push a **human** commit it stops
+force-pushing — if more work lands on `dev`, it closes that PR and opens a fresh
+one rather than overwrite your edits. So make hand-edits shortly before merging,
+not days ahead.
+
+## Release tiers
+
+Which crates get what is set per-package in `release-plz.toml`.
+
+| Tier | Crates | Tag | CHANGELOG | GitHub Release | Registry |
+|---|---|---|---|---|---|
+| **A — published** | the 17-crate closure external consumers import | ✅ | ✅ | ✅ | ⏸ *deferred* |
+| **B — tagged only** | contracts (NEAR and Soroban), `service/*`, `tools/*`, `client/vault` | ✅ | ✅ | ✅ | ❌ |
+| **C — internal** | `mock/*`, `fuzz`, `test-utils`, `contract/artifacts`, soroban integration-tests | ❌ | ❌ | ❌ | ❌ |
+
+Tier B crates are real deliverables that ship somewhere other than a Rust build —
+a deployed service, an on-chain WASM blob, a CLI image. They get a citable
+version even though nobody `cargo add`s them. Tier C is build and test
+scaffolding, where a version number would be noise.
+
+## ⚠️ Publishing to crates.io is currently blocked
+
+Tier A is configured but **not publishing yet**. `templar-common` depends on the
+RedStone Rust SDK as a git dependency (`redstone`, tag `3.1.0-pre1`), which is not
+on crates.io. Cargo refuses to publish any crate that has a git dependency — on
+crates.io *or* a private registry — and every Tier A crate reaches
+`templar-common`, so the whole closure is blocked.
+
+Feature-gating does not help: `gateway/core/src/client/redstone_oracle.rs` and
+`gateway/methods-dispatch/src/oracle_impl.rs` use
+`templar_common::oracle::redstone` types directly.
+
+**Until it is resolved, consumers pin per-crate git tags** — a real improvement
+over pinning a raw commit:
+
+```toml
+templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts", tag = "templar-gateway-client-v0.1.0" }
+```
+
+**To unblock**, once RedStone publishes the SDK (or we depend on a published
+fork): set `redstone`'s workspace dependency to a registry version, then on each
+Tier A block in `release-plz.toml` set `git_only = false` and `publish = true`,
+and enable `semver_check` at the workspace level. No code changes are required.
+Verify with `cargo publish --dry-run -p <crate>` bottom-up through the closure.
+
+## Contract WASM artifacts
+
+Releasing a contract also means cutting its canonical WASM blob. Blobs are
+immutable and versioned under `contract/artifacts/res/near/<target>/<version>/`;
+a release *adds* a directory and never overwrites one. See
+[`contract/artifacts/README.md`](contract/artifacts/README.md).
+
+## First-time setup
+
+- **Baseline tags.** Before the first release-plz run, tag current reality so it
+  has a starting point for each crate (`templar-common-v1.4.0`,
+  `templar-market-contract-v1.4.0`, …) from each crate's present `Cargo.toml`
+  version. Without this, release-plz treats every crate as brand new and replays
+  the entire history into the first changelog.
+- **`RELEASE_PLZ_TOKEN`** (optional but recommended). A PR opened with the
+  default `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the
+  Release PR never runs `test.yml` and you would merge an unverified release.
+- **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A leaves `git_only` mode.

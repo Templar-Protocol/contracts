@@ -549,7 +549,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            crate::wasm::PROXY_ORACLE_V0.to_vec(),
+            crate::wasm::released(crate::ArtifactId::ProxyOracle, "0.1.0").to_vec(),
             "new",
             serde_json::json!({}),
         )

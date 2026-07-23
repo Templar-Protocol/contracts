@@ -69,17 +69,26 @@ wasm_fns! {
     vault => Vault,
 }
 
-/// Legacy `0.2.0` universal-account WASM (pinned blob), for migration tests.
-pub const UNIVERSAL_ACCOUNT_0_2_0: &[u8] = include_bytes!("wasm/uac_0_2_0.wasm");
-/// Legacy `0.4.0` universal-account WASM (pinned blob), for migration tests.
-pub const UNIVERSAL_ACCOUNT_0_4_0: &[u8] = include_bytes!("wasm/uac_0_4_0.wasm");
-/// Legacy (`0.1.0`, pre-kernelization) proxy-oracle WASM (pinned blob).
-pub const PROXY_ORACLE_V0: &[u8] = include_bytes!("wasm/proxy_oracle_v0.wasm");
-/// Currently-deployed proxy-oracle WASM (`0.3.0`, on-chain state version 1), pinned from
-/// `proxy-oracle-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob, for
-/// cross-version upgrade tests.
-pub const PROXY_ORACLE_0_3_0: &[u8] = include_bytes!("wasm/proxy_oracle_0_3_0.wasm");
-/// Currently-deployed proxy-oracle-governance WASM (`0.1.0`, no versioned state / no `migrate`),
-/// pinned from `proxy-gov-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob,
-/// for cross-version upgrade tests.
-pub const PROXY_GOVERNANCE_0_1_0: &[u8] = include_bytes!("wasm/proxy_governance_0_1_0.wasm");
+/// Bytes of a specific *released* version of a contract, for migration and
+/// upgrade tests that must deploy the real historical binary.
+///
+/// Backed by the immutable release list in
+/// [`templar_contract_artifacts`] — see `contract/artifacts/README.md`. These
+/// blobs used to be hand-maintained `include_bytes!` consts in this module,
+/// outside the catalog and outside the drift check; they are now catalogued
+/// releases like any other, so a corrupted or silently-swapped historical blob
+/// fails `embedded_drift_check`.
+///
+/// # Panics
+/// If `version` is not a catalogued release of `artifact`. That is a test bug:
+/// the available versions are listed in `contract/artifacts/src/ids.rs`.
+pub fn released(artifact: ArtifactId, version: &str) -> &'static [u8] {
+    artifact
+        .embedded_bytes_for_version(version)
+        .unwrap_or_else(|| {
+            panic!(
+                "{artifact}@{version} is not a catalogued release; \
+                 see contract/artifacts/src/ids.rs",
+            )
+        })
+}

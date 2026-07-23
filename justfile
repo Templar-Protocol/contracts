@@ -152,3 +152,17 @@ coverage-lcov:
 # Build the docs.
 docs:
     ./script/build-docs.sh
+
+# Cut a new release blob for a contract artifact.
+#
+# Builds <artifact> reproducibly from the CURRENT COMMIT and installs the bytes
+# as a new immutable release under contract/artifacts/res/near/. Requires a
+# clean tree: `cargo near build reproducible-wasm` builds from committed git
+# state, so uncommitted work would silently not be in the blob.
+#
+# Afterwards, add the printed release entry to contract/artifacts/src/ids.rs and
+# commit the blob together with that entry.
+#
+#   just artifact-release proxy-oracle
+artifact-release artifact:
+    ./script/artifact-release.sh "$1"

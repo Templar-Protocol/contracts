@@ -1,0 +1,59 @@
+name: PR Title
+
+# PRs land on `dev` as squash merges, so the PR title becomes the commit message
+# on the default branch. release-plz reads those messages to decide each crate's
+# next version, which makes the title load-bearing: an unconventional title means
+# the touched crates get no version bump and no changelog entry.
+#
+# Only the *type* is enforced. Scope is conventional but free-form on purpose —
+# release-plz selects which crate to bump from the files a commit touches, not
+# from the scope, so an allowlist would add friction without affecting releases.
+#
+# See the "Commit and PR titles" section of AGENTS.md for the full convention.
+
+# `pull_request`, not `pull_request_target`: the title is already in the event
+# payload, so there is no reason to run in the base-repo context with secrets on
+# a public repo. Nothing here checks out PR code.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate conventional commit title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with the `commit_parsers` in `release-plz.toml`.
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            ci
+            build
+            chore
+            deploy
+          requireScope: false
+          # Guard the two mistakes that actually break version inference:
+          # a Linear ID used as the summary, or an empty/placeholder subject.
+          # (`ENG-504: Nest governance...` as a *title prefix* is not a valid
+          # type, so it is already rejected — the ID belongs in the PR body.)
+          subjectPattern: ^(?![A-Z]{2,}-\d+).+$
+          subjectPatternError: |
+            The subject "{subject}" of PR title "{title}" is invalid.
+            Put the Linear issue ID in the PR description, not the title —
+            a title like "ENG-123: do the thing" breaks release version
+            inference. Write "feat(gateway): do the thing" instead.

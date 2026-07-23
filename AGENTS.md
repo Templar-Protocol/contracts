@@ -71,6 +71,20 @@ Use this section as an execution checklist: read the local docs first, preserve 
 - Preserve existing crate structure and naming patterns unless there is a strong reason to change them.
 - This codebase is security-sensitive. Review changes with an auditor mindset, especially in smart contracts and cross-contract flows.
 
+## Commit And PR Titles
+
+PRs are squash-merged, so **the PR title becomes the commit message on `dev`**, and `release-plz` reads those messages to decide each crate's next version. A title that does not parse means the crates you touched get **no version bump and no changelog entry**. `.github/workflows/pr-title.yml` enforces this on every PR.
+
+Format: `type(scope): summary`
+
+- **Allowed types** — `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`, `deploy`. Keep this list in sync with `commit_parsers` in `release-plz.toml` and `types` in `.github/workflows/pr-title.yml`.
+- **Version impact** — `fix` bumps patch, `feat` bumps minor, and a breaking change bumps major. Everything else is recorded but does not itself force a bump.
+- **Breaking changes** — mark with `!` after the scope (`feat(gateway)!: drop the legacy read path`) or a `BREAKING CHANGE:` footer in the PR body. This is the only signal that produces a major bump; forgetting it ships a breaking change as a minor.
+- **Scope is optional and free-form.** It is conventional to name the crate or area (`gateway`, `market`, `vault`, `relayer`, `proxy-oracle`, `manager`), but nothing enforces a fixed list: release-plz determines *which* crate to bump from the files a commit touches, not from the scope.
+- **Linear IDs go in the PR description, never the title.** `ENG-504: Nest governance under proxy-oracle` is not a valid type and will be rejected — write `refactor(proxy-oracle): nest governance` and reference `ENG-504` in the body.
+
+Releases themselves are cut by merging the standing "chore: release" PR. See `RELEASING.md`.
+
 ## Build And Test
 
 - Format: `cargo fmt`
@@ -87,8 +101,10 @@ Notes:
 - The sandbox gate derives test selection and Cargo package narrowing from one package classification. See "Cross-Cutting Lists To Keep In Sync" below before adding a node-backed crate. If these tests fail because no neard is available, say that clearly instead of silently skipping them.
 - `cargo test -p templar-common --lib` is a good fast regression check for logic changes in `common`.
 - Node-backed tests need the contract Wasms prebuilt; rebuilding WASM inside each run is much slower. `just test-sandbox` sources `script/sandbox-up.sh`, which prebuilds them and exports `TEST_CONTRACTS_PREBUILT=1`. If you run a node test by hand outside that recipe (e.g. a plain `cargo test` in owned mode), do the same first. `--stale` works by setting that same variable on the way in: the script then only verifies the artifacts exist (`prebuild-test-contracts --check`) and fails before booting nodes if any are missing.
-- Run `./script/check-artifact-drift.sh` when validating checked-in embedded WASM blobs; it is a pure hash/version check (no builds) that verifies each blob matches its pinned `expected_sha256` and catalog version.
-- Embedded contract blobs under `contract/artifacts/res/near/` are pinned _release_ artifacts, NOT a mirror of source. **A contract source change does NOT refresh its blob, and no CI check will flag the blob as stale** (the drift check compares blob-vs-pin and version-vs-`Cargo.toml`, never blob-vs-source). When — and only when — you intend a contract source change to become what the gateway deploys, refresh its blob by following `contract/artifacts/README.md` ("⚠️ Refreshing a checked-in blob"): on a clean committed tree, `cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml`, copy the output into `res/near/`, update that entry's `expected_sha256` (+ `version`) in `contract/artifacts/src/ids.rs`, and commit them together. Unreleased work-in-progress is meant to lag the blob — do not refresh reflexively.
+- Run `./script/check-artifact-drift.sh` when validating checked-in WASM blobs; it is a pure, build-free check (seconds) covering per-release hash pins, newest-release-vs-`Cargo.toml`, release-list well-formedness, and catalog-vs-disk agreement.
+- Contract blobs under `contract/artifacts/res/near/<target>/<version>/` are **immutable released artifacts**, one directory per released version. Shipping new bytes means *adding* a release, never editing one — historical blobs back the migration and upgrade tests, so changing one silently invalidates them.
+- Source is allowed to move ahead of the newest released blob; unreleased work-in-progress is *meant* to lag it. The tripwire is the crate version: bump a contract's `Cargo.toml` version and the drift check fails until you cut the matching blob with `just artifact-release <id>` (reproducible build from the committed tree → new `res/near/` directory → new entry in `contract/artifacts/src/ids.rs`). Commit the blob and its catalog entry together.
+- Reproducibility (do the bytes match what the source actually compiles to?) is verified on release tags by `.github/workflows/release-artifacts.yml`, which rebuilds and requires a byte-for-byte match.
 
 ## Cross-Cutting Lists To Keep In Sync
 

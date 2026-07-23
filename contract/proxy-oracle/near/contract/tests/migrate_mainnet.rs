@@ -151,7 +151,11 @@ async fn failed_migration_reverts_contract_code() -> Result<()> {
     common::deploy_code(
         network,
         &account_id,
-        templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
+        templar_gateway_testing::wasm::released(
+            templar_gateway_testing::ArtifactId::ProxyOracle,
+            "0.1.0",
+        )
+        .to_vec(),
     )
     .await?;
     harness.patch_state(&account_id, patch()).await?;

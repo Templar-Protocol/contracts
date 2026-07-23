@@ -4,6 +4,7 @@ license.workspace = true
 name = "templar-proxy-oracle-near-contract"
 repository.workspace = true
 version = "0.3.0"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

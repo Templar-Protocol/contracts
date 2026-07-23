@@ -25,7 +25,9 @@ mod workspace_loader;
 
 #[cfg(feature = "embedded-wasm")]
 pub use embedded::embedded_sizes;
-pub use ids::{artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError};
+pub use ids::{
+    artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError, ArtifactRelease,
+};
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
     build_artifact, load_artifact, load_artifact_bytes, BuildContractError, LoadError,
@@ -120,7 +122,7 @@ mod tests {
         let meta = ArtifactId::Vault.metadata();
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
-        assert_eq!(meta.version, "1.2.1");
+        assert_eq!(meta.version(), "1.2.1");
     }
 
     #[test]
@@ -255,6 +257,9 @@ mod tests {
         assert_eq!(parsed["package_name"], "templar-market-contract");
         assert_eq!(parsed["cargo_target_name"], "templar_market_contract");
         assert_eq!(parsed["source_path"], "contract/market");
-        assert_eq!(parsed["version"], "1.4.0");
+        // Versions live in the release list; `version` is a derived accessor,
+        // not a serialized field.
+        assert_eq!(parsed["releases"][0]["version"], "1.4.0");
+        assert_eq!(meta.version(), "1.4.0");
     }
 }

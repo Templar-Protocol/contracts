@@ -1,9 +1,10 @@
 [package]
 edition.workspace = true
-license = "GPL-3.0-only"
+license.workspace = true
 name = "templar-vault-contract"
 repository.workspace = true
 version.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

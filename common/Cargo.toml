@@ -4,6 +4,7 @@ license.workspace = true
 name = "templar-common"
 repository.workspace = true
 version = "1.4.0"
+description = "Shared contract types, events, assets, and math for Templar Protocol"
 
 [dependencies]
 borsh = { workspace = true, features = ["rc"] }
@@ -17,7 +18,7 @@ near-sdk = { workspace = true, default-features = false }
 primitive-types.workspace = true
 redstone = { workspace = true, default-features = false, features = [] }
 schemars.workspace = true
-templar-curator-primitives = { path = "../contract/vault/curator-primitives", features = ["borsh", "serde", "std", "borsh-schema", "schemars"] }
+templar-curator-primitives = { path = "../contract/vault/curator-primitives", version = "1.0.0", features = ["borsh", "serde", "std", "borsh-schema", "schemars"] }
 templar-primitives = { workspace = true, features = ["near", "redstone"] }
 templar-vault-kernel.workspace = true
 thiserror.workspace = true

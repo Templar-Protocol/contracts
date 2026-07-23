@@ -9,6 +9,9 @@ pub mod wasm;
 pub use controller::TestController;
 pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
 pub use sandbox::{test_secret_key, test_signer, SandboxHarness};
+/// Re-exported so tests can name a historical release for [`wasm::released`]
+/// without taking their own dependency on the artifacts catalog.
+pub use templar_contract_artifacts::ArtifactId;
 pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;
 

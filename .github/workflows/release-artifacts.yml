@@ -1,0 +1,124 @@
+name: Release Artifacts
+
+# Proves that a released contract blob is genuinely reproducible: rebuilds the
+# contract from the tagged commit in the pinned NEP-330 Docker image and fails
+# unless the result is byte-for-byte identical to the blob checked in under
+# `contract/artifacts/res/near/<target>/<version>/`.
+#
+# This is what makes a checked-in blob *canonical* rather than "whatever some
+# laptop produced", and it is what lets anyone verify the on-chain code against
+# this source tree. The fast, build-free catalog checks run on every PR via
+# `test.yml` → `artifact-drift-check`; this one is heavy (Docker + a full
+# optimized WASM build), so it is reserved for release tags.
+#
+# Also uploads each verified blob plus a `checksums.txt` to the GitHub Release,
+# so ops and auditors can fetch bytes without cloning the repo.
+
+on:
+  push:
+    tags:
+      # Contract crates whose artifacts are catalogued. release-plz creates
+      # these as `<package>-v<version>`.
+      - "templar-registry-contract-v*"
+      - "templar-market-contract-v*"
+      - "templar-vault-contract-v*"
+      - "templar-universal-account-contract-v*"
+      - "templar-proxy-oracle-near-contract-v*"
+      - "templar-proxy-oracle-near-governance-contract-v*"
+      - "templar-lst-oracle-contract-v*"
+      - "templar-redstone-adapter-contract-v*"
+      - "templar-pyth-lazer-adapter-contract-v*"
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: "Artifact id to verify (e.g. proxy-oracle)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  verify:
+    name: Verify reproducible build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # attach assets to the GitHub Release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          # `cargo near build reproducible-wasm` builds from committed git
+          # state and reads the repository, so the full checkout must be intact.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: ./.github/actions/rust
+
+      - name: Resolve artifact from tag
+        id: resolve
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_ARTIFACT: ${{ inputs.artifact }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_ARTIFACT:-}" ]]; then
+            echo "artifact=${INPUT_ARTIFACT}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `templar-market-contract-v1.4.0` -> package `templar-market-contract`, version `1.4.0`
+          package="${REF_NAME%-v*}"
+          version="${REF_NAME##*-v}"
+          {
+            echo "package=${package}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild and compare against the checked-in blob
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Ask the catalog for this package's source path and target name
+          # rather than re-deriving them here and drifting from ids.rs.
+          read -r source_path target < <(
+            cargo run --quiet -p templar-contract-artifacts \
+              --features workspace-loader,clap --bin prebuild-test-contracts -- \
+              --print-metadata --artifact "$PACKAGE"
+          )
+
+          committed="contract/artifacts/res/near/${target}/${VERSION}/${target}.wasm"
+          if [[ ! -f "$committed" ]]; then
+            echo "::error::${PACKAGE} ${VERSION} was tagged but no blob is checked in at ${committed}." >&2
+            echo "Run 'just artifact-release' and commit the blob with its ids.rs entry." >&2
+            exit 1
+          fi
+
+          cargo near build reproducible-wasm --manifest-path "${source_path}/Cargo.toml"
+
+          rebuilt="target/near/${target}/${target}.wasm"
+          if ! cmp -s "$rebuilt" "$committed"; then
+            echo "::error::Reproducible build does not match the checked-in blob." >&2
+            echo "  committed: $(sha256sum "$committed" | cut -d' ' -f1)" >&2
+            echo "  rebuilt:   $(sha256sum "$rebuilt"  | cut -d' ' -f1)" >&2
+            exit 1
+          fi
+          echo "Reproducible: ${target} ${VERSION} matches byte-for-byte."
+
+          mkdir -p dist
+          cp "$committed" "dist/${target}-${VERSION}.wasm"
+          (cd dist && sha256sum ./*.wasm > checksums.txt)
+
+      - name: Attach artifacts to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release upload "$REF_NAME" dist/* --clobber

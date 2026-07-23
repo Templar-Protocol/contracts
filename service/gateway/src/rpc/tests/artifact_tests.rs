@@ -79,7 +79,7 @@ async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
     let mock_ft = templar_contract_artifacts::ArtifactId::MockFt.metadata();
-    let expected_version_prefix = format!("{}@{}#", mock_ft.package_name, mock_ft.version);
+    let expected_version_prefix = format!("{}@{}#", mock_ft.package_name, mock_ft.version());
 
     let write_result = stack
         .controller

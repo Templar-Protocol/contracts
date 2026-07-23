@@ -24,7 +24,7 @@ mod tests {
         // Then: metadata matches the catalog
         let meta = ArtifactId::Market.metadata();
         assert_eq!(result.metadata.package_name, meta.package_name);
-        assert_eq!(result.metadata.version, meta.version);
+        assert_eq!(result.metadata.version, meta.version());
     }
 
     #[tokio::test]
@@ -39,7 +39,7 @@ mod tests {
             .unwrap();
         let market_catalog = ArtifactId::Market.metadata();
         assert_eq!(market.package_name, "templar-market-contract");
-        assert_eq!(market.version, market_catalog.version);
+        assert_eq!(market.version, market_catalog.version());
 
         let json = serde_json::to_value(&result).unwrap();
         let first_artifact = json["artifacts"].as_array().unwrap().first().unwrap();
@@ -104,10 +104,12 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(result.metadata.version, meta.version);
-            assert!(result
-                .version_key
-                .starts_with(&format!("{}@{}#", meta.package_name, meta.version)));
+            assert_eq!(result.metadata.version, meta.version());
+            assert!(result.version_key.starts_with(&format!(
+                "{}@{}#",
+                meta.package_name,
+                meta.version()
+            )));
         }
     }
 }

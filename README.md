@@ -3,7 +3,7 @@
 [![Test](https://github.com/Templar-Protocol/contracts/actions/workflows/test.yml/badge.svg)](https://github.com/Templar-Protocol/contracts/actions/workflows/test.yml)
 [![Kani](https://github.com/Templar-Protocol/contracts/actions/workflows/kani.yml/badge.svg)](https://github.com/Templar-Protocol/contracts/actions/workflows/kani.yml)
 [![Coverage](https://codecov.io/gh/Templar-Protocol/contracts/branch/dev/graph/badge.svg)](https://codecov.io/gh/Templar-Protocol/contracts)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 Templar Protocol is an overcollateralized lending protocol. This repository contains the core smart contracts, shared protocol logic, operator services, client libraries, test utilities, and supporting tooling used across the protocol.
 
@@ -39,6 +39,10 @@ Templar Protocol is an overcollateralized lending protocol. This repository cont
 ```bash
 just test
 ```
+
+## Contributing
+
+PRs are squash-merged, so the PR title becomes the commit message and drives automated versioning. Titles must follow `type(scope): summary` — see [Commit And PR Titles](AGENTS.md#commit-and-pr-titles). Releases are cut by merging the standing "chore: release" PR; see [RELEASING.md](RELEASING.md).
 
 ## Links
 

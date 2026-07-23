@@ -48,7 +48,7 @@ impl From<&templar_contract_artifacts::ArtifactMetadata> for ArtifactMetadata {
             package_name: metadata.package_name.to_owned(),
             cargo_target_name: metadata.cargo_target_name.to_owned(),
             source_path: metadata.source_path.to_owned(),
-            version: metadata.version.to_owned(),
+            version: metadata.version().to_owned(),
         }
     }
 }
