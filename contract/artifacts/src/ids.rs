@@ -237,6 +237,15 @@ impl ArtifactId {
                 "templar_proxy_oracle_near_governance_contract",
                 ".wasm"
             )),
+            (Self::ProxyGovernance, "0.2.0") => include_bytes!(concat!(
+                "../res/near/",
+                "templar_proxy_oracle_near_governance_contract",
+                "/",
+                "0.2.0",
+                "/",
+                "templar_proxy_oracle_near_governance_contract",
+                ".wasm"
+            )),
             (Self::LstOracle, "1.2.1") => include_bytes!(concat!(
                 "../res/near/",
                 "templar_lst_oracle_contract",
@@ -518,10 +527,16 @@ static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     "templar-proxy-oracle-near-governance-contract",
     "templar_proxy_oracle_near_governance_contract",
     "contract/proxy-oracle/near/governance-contract",
-    [(
-        "0.1.0",
-        "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
-    ),]
+    [
+        (
+            "0.1.0",
+            "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
+        ),
+        (
+            "0.2.0",
+            "8de3b54494ef3601172543596aa91ec10a264da1093e6d413cbebddab4edb104"
+        ),
+    ]
 );
 static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     LstOracle,
