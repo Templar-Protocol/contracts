@@ -78,7 +78,7 @@ fn check_all(workspace_root: &Path, artifacts: &[&'static ArtifactMetadata]) -> 
             target_dir,
             artifact.cargo_target_name,
         );
-        if !path.exists() {
+        if !path.is_file() {
             eprintln!("missing prebuilt artifact: {}", path.display());
             missing = true;
         }
