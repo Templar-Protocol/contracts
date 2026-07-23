@@ -219,6 +219,15 @@ impl ArtifactId {
                 "templar_proxy_oracle_near_contract",
                 ".wasm"
             )),
+            (Self::ProxyOracle, "0.4.0") => include_bytes!(concat!(
+                "../res/near/",
+                "templar_proxy_oracle_near_contract",
+                "/",
+                "0.4.0",
+                "/",
+                "templar_proxy_oracle_near_contract",
+                ".wasm"
+            )),
             (Self::ProxyGovernance, "0.1.0") => include_bytes!(concat!(
                 "../res/near/",
                 "templar_proxy_oracle_near_governance_contract",
@@ -497,6 +506,10 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
         (
             "0.3.0",
             "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e"
+        ),
+        (
+            "0.4.0",
+            "f03b159e9132a59ab929463866c672b734a5950fb41520ec33ad7a97030d5770"
         ),
     ]
 );
