@@ -1,9 +1,15 @@
 name: Release Artifacts
 
 # Proves that a released contract blob is genuinely reproducible: rebuilds the
-# contract from the tagged commit in the pinned NEP-330 Docker image and fails
-# unless the result is byte-for-byte identical to the blob checked in under
+# contract in the pinned NEP-330 Docker image and fails unless the result is
+# byte-for-byte identical to the blob checked in under
 # `contract/artifacts/res/near/<target>/<version>/`.
+#
+# The rebuild happens at the release's recorded `source_commit`, NOT at the tag.
+# `cargo near build reproducible-wasm` embeds the source commit into the WASM
+# (NEP-330), so the same source built at two different commits produces
+# different bytes — and a blob is necessarily committed *before* the tag that
+# releases it exists. Verifying at the tag would therefore fail every time.
 #
 # This is what makes a checked-in blob *canonical* rather than "whatever some
 # laptop produced", and it is what lets anyone verify the on-chain code against
@@ -101,16 +107,37 @@ jobs:
             exit 1
           fi
 
-          cargo near build reproducible-wasm --manifest-path "${source_path}/Cargo.toml"
+          read -r pinned_sha source_commit < <(
+            cargo run --quiet -p templar-contract-artifacts \
+              --features workspace-loader,clap --bin prebuild-test-contracts -- \
+              --print-release "$VERSION" --artifact "$PACKAGE"
+          )
 
-          rebuilt="target/near/${target}/${target}.wasm"
-          if ! cmp -s "$rebuilt" "$committed"; then
-            echo "::error::Reproducible build does not match the checked-in blob." >&2
-            echo "  committed: $(sha256sum "$committed" | cut -d' ' -f1)" >&2
-            echo "  rebuilt:   $(sha256sum "$rebuilt"  | cut -d' ' -f1)" >&2
+          if [[ "$(sha256sum "$committed" | cut -d' ' -f1)" != "$pinned_sha" ]]; then
+            echo "::error::Checked-in blob does not match its pinned sha256." >&2
             exit 1
           fi
-          echo "Reproducible: ${target} ${VERSION} matches byte-for-byte."
+
+          if [[ -z "$source_commit" ]]; then
+            echo "::notice::${PACKAGE} ${VERSION} is a legacy blob with no recorded" \
+                 "source_commit (e.g. bytes recovered from chain), so it cannot be" \
+                 "reproducibly rebuilt. Hash pin verified; skipping rebuild."
+            exit 0
+          fi
+
+          # Rebuild at the commit the blob was actually built from. The tag
+          # commit would embed a different NEP-330 snapshot and never match.
+          git worktree add ../verify "$source_commit"
+          (cd ../verify && cargo near build reproducible-wasm --manifest-path "${source_path}/Cargo.toml")
+
+          rebuilt="../verify/target/near/${target}/${target}.wasm"
+          if ! cmp -s "$rebuilt" "$committed"; then
+            echo "::error::Reproducible build at ${source_commit} does not match the checked-in blob." >&2
+            echo "  committed: $pinned_sha" >&2
+            echo "  rebuilt:   $(sha256sum "$rebuilt" | cut -d' ' -f1)" >&2
+            exit 1
+          fi
+          echo "Reproducible: ${target} ${VERSION} matches byte-for-byte at ${source_commit}."
 
           mkdir -p dist
           cp "$committed" "dist/${target}-${VERSION}.wasm"

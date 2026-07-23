@@ -5,15 +5,18 @@
 //! the single source of truth for artifact names, paths, and how they map
 //! to `target/near` directories.
 //!
-//! ⚠️ The `expected_sha256` / `version` in each entry pin a *release* blob under
-//! `res/near/`, NOT a mirror of current source. Changing a contract's source
-//! does NOT refresh its blob, and CI will NOT catch a stale blob (the hash-pin
-//! check compares blob vs pin, never blob vs source). When you want a source
-//! change to become what the gateway deploys, follow the refresh procedure in
-//! `contract/artifacts/README.md` ("Refreshing a checked-in blob") and update
-//! the blob + `expected_sha256` (+ `version`) together. Bumping a contract's
-//! `Cargo.toml` version fails the version-drift check until this catalog's
-//! `version` is updated — treat that as your cue to do the full refresh.
+//! ⚠️ Each entry's `releases` list pins *released* blobs under
+//! `res/near/<target>/<version>/`, NOT a mirror of current source. Source is
+//! allowed to move ahead of the newest release — unreleased work-in-progress is
+//! meant to lag it.
+//!
+//! Releases are **immutable**: ship new bytes by bumping the contract's
+//! `Cargo.toml` version and *adding* a release, never by editing one. Historical
+//! blobs are what the migration and upgrade tests deploy, so rewriting one
+//! silently invalidates them.
+//!
+//! Bumping the version fails the version-drift check until the matching blob is
+//! cut with `just artifact-release <id>`. See `contract/artifacts/README.md`.
 
 use std::{fmt, path::Path, str::FromStr};
 
@@ -360,6 +363,16 @@ pub struct ArtifactRelease {
     /// opaque binary diff: any change to the bytes must land with a matching
     /// update here, or the drift check fails.
     pub sha256: &'static str,
+    /// Full git commit the blob was reproducibly built from, or `""` for legacy
+    /// blobs whose provenance predates this field (e.g. bytes scraped off
+    /// mainnet).
+    ///
+    /// Required for verification: `cargo near build reproducible-wasm` embeds
+    /// the source commit in the WASM per NEP-330, so a rebuild is byte-identical
+    /// **only at the same commit**. Rebuilding the same source at any other
+    /// commit yields different bytes, which is why the release tag alone is not
+    /// enough to verify a blob.
+    pub source_commit: &'static str,
 }
 
 /// Canonical metadata for a single contract artifact.
@@ -441,13 +454,13 @@ pub fn artifact_catalog() -> impl ExactSizeIterator<Item = &'static ArtifactMeta
 // ---------------------------------------------------------------------------
 
 macro_rules! entry {
-    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr)),+ $(,)?]) => {
+    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr, $commit:expr)),+ $(,)?]) => {
         ArtifactMetadata {
             id: ArtifactId::$id,
             package_name: $pkg,
             cargo_target_name: $target,
             source_path: $src,
-            releases: &[$(ArtifactRelease { version: $ver, sha256: $sha }),+],
+            releases: &[$(ArtifactRelease { version: $ver, sha256: $sha, source_commit: $commit }),+],
         }
     };
 }
@@ -459,7 +472,8 @@ static REGISTRY_METADATA: ArtifactMetadata = entry!(
     "contract/registry",
     [(
         "1.2.1",
-        "2512b842e31f8427fb0a47df4f1592de6babf6b13171af60069e3cf450423aa2"
+        "2512b842e31f8427fb0a47df4f1592de6babf6b13171af60069e3cf450423aa2",
+        ""
     ),]
 );
 static MARKET_METADATA: ArtifactMetadata = entry!(
@@ -469,7 +483,8 @@ static MARKET_METADATA: ArtifactMetadata = entry!(
     "contract/market",
     [(
         "1.4.0",
-        "8f2c487ebc873e3d6de7e8d2dc4d20b142ab22073e04ae89687746ebaca6ca52"
+        "8f2c487ebc873e3d6de7e8d2dc4d20b142ab22073e04ae89687746ebaca6ca52",
+        ""
     ),]
 );
 static VAULT_METADATA: ArtifactMetadata = entry!(
@@ -479,7 +494,8 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
     "contract/vault/near",
     [(
         "1.2.1",
-        "fc605cd4a3e09fdef3620ed9c6a4610bb639d7a5f625d648780a96b7d452ef18"
+        "fc605cd4a3e09fdef3620ed9c6a4610bb639d7a5f625d648780a96b7d452ef18",
+        ""
     ),]
 );
 static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
@@ -490,15 +506,18 @@ static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
     [
         (
             "0.2.0",
-            "25ae83a0ee7d31542bd7b6039549f200cdd96f7bcaef56dd6763dd143ef00c2d"
+            "25ae83a0ee7d31542bd7b6039549f200cdd96f7bcaef56dd6763dd143ef00c2d",
+            ""
         ),
         (
             "0.4.0",
-            "007d0a4643f63b3b2f543b0033f059ebc38b07365ff86aff1aa4476f6d73f9ae"
+            "007d0a4643f63b3b2f543b0033f059ebc38b07365ff86aff1aa4476f6d73f9ae",
+            ""
         ),
         (
             "0.5.0",
-            "7dae78aaf868844af5655d530c50f72a4a74baed92d1592c89c704989e4589c7"
+            "7dae78aaf868844af5655d530c50f72a4a74baed92d1592c89c704989e4589c7",
+            ""
         ),
     ]
 );
@@ -510,15 +529,18 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
     [
         (
             "0.1.0",
-            "fb697b18f30cc19d4fc43768eae04ae94967663c4744ab052c7119c6d869d53b"
+            "fb697b18f30cc19d4fc43768eae04ae94967663c4744ab052c7119c6d869d53b",
+            ""
         ),
         (
             "0.3.0",
-            "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e"
+            "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e",
+            ""
         ),
         (
             "0.4.0",
-            "f03b159e9132a59ab929463866c672b734a5950fb41520ec33ad7a97030d5770"
+            "f03b159e9132a59ab929463866c672b734a5950fb41520ec33ad7a97030d5770",
+            "ea0a6357c89748e64b43036b776cd9459078af00"
         ),
     ]
 );
@@ -530,11 +552,13 @@ static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     [
         (
             "0.1.0",
-            "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
+            "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0",
+            ""
         ),
         (
             "0.2.0",
-            "8de3b54494ef3601172543596aa91ec10a264da1093e6d413cbebddab4edb104"
+            "8de3b54494ef3601172543596aa91ec10a264da1093e6d413cbebddab4edb104",
+            "9d4477416f9b8d7bf1dc103ed5a9d788d13d9be2"
         ),
     ]
 );
@@ -545,7 +569,8 @@ static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     "contract/proxy-oracle/near/lst-contract",
     [(
         "1.2.1",
-        "5ef7bedf78f3a3ecc9747b8aa3bb25ef6bd508d3c17ec166571f76f53ce8ee50"
+        "5ef7bedf78f3a3ecc9747b8aa3bb25ef6bd508d3c17ec166571f76f53ce8ee50",
+        ""
     ),]
 );
 static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -555,7 +580,8 @@ static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "contract/redstone-adapter",
     [(
         "0.2.0",
-        "b513b2e839ce1ea59ef4c57519ef9482b133f47c81db0d3a54517b2cd251511a"
+        "b513b2e839ce1ea59ef4c57519ef9482b133f47c81db0d3a54517b2cd251511a",
+        ""
     ),]
 );
 static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -565,7 +591,8 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "contract/pyth-lazer/contract",
     [(
         "0.1.0",
-        "c993256a8b42313b2b0b024c783b4eb5a7be1c8b9f792789cb4f207f7007060b"
+        "c993256a8b42313b2b0b024c783b4eb5a7be1c8b9f792789cb4f207f7007060b",
+        ""
     ),]
 );
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(
@@ -575,7 +602,8 @@ static MOCK_FT_METADATA: ArtifactMetadata = entry!(
     "mock/ft",
     [(
         "0.0.0",
-        "c43561acd98e1a8d93ba85955f23847bcccd738f85703e914c3d4218471c262d"
+        "c43561acd98e1a8d93ba85955f23847bcccd738f85703e914c3d4218471c262d",
+        ""
     ),]
 );
 static MOCK_MT_METADATA: ArtifactMetadata = entry!(
@@ -585,7 +613,8 @@ static MOCK_MT_METADATA: ArtifactMetadata = entry!(
     "mock/mt",
     [(
         "0.0.0",
-        "cd125c142722e48e5e1b6f350c751ed0691221d065c540dad02804dbaf55b453"
+        "cd125c142722e48e5e1b6f350c751ed0691221d065c540dad02804dbaf55b453",
+        ""
     ),]
 );
 static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
@@ -595,7 +624,8 @@ static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
     "mock/oracle",
     [(
         "0.0.0",
-        "76f76816cf4d0ccaf4b4e181ee1104ec8e6cbd13084f311b87a86087099a749c"
+        "76f76816cf4d0ccaf4b4e181ee1104ec8e6cbd13084f311b87a86087099a749c",
+        ""
     ),]
 );
 static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
@@ -605,7 +635,8 @@ static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
     "mock/ref",
     [(
         "1.2.1",
-        "d2be82aa462f55baa2333bae898bee424560e7bf7342b606f6bd40c1aa8369c4"
+        "d2be82aa462f55baa2333bae898bee424560e7bf7342b606f6bd40c1aa8369c4",
+        ""
     ),]
 );
 static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
@@ -615,6 +646,7 @@ static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
     "mock/receiver",
     [(
         "1.2.1",
-        "bf814164155b927b4e703d8e870137b7f8ab39cd2a69666a0b900bfe0c8a8ec5"
+        "bf814164155b927b4e703d8e870137b7f8ab39cd2a69666a0b900bfe0c8a8ec5",
+        ""
     ),]
 );

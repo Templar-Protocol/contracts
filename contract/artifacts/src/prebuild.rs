@@ -49,6 +49,12 @@ struct Args {
     /// read the catalog instead of re-deriving paths and drifting from it.
     #[arg(long)]
     print_metadata: bool,
+
+    /// Print `<sha256> <source_commit>` for the given released version of the
+    /// single selected artifact and exit. `source_commit` is empty for legacy
+    /// blobs, which cannot be reproducibly verified.
+    #[arg(long, value_name = "VERSION")]
+    print_release: Option<String>,
 }
 
 pub fn main() -> ExitCode {
@@ -59,6 +65,28 @@ pub fn main() -> ExitCode {
         for artifact in &artifacts {
             println!("{} {}", artifact.source_path, artifact.cargo_target_name);
         }
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(version) = &args.print_release {
+        let Some(artifact) = artifacts.first() else {
+            eprintln!("--print-release needs exactly one --artifact");
+            return ExitCode::FAILURE;
+        };
+        let Some(release) = artifact.release(version) else {
+            eprintln!(
+                "{} has no release {version}; catalogued: {}",
+                artifact.package_name,
+                artifact
+                    .releases
+                    .iter()
+                    .map(|r| r.version)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            return ExitCode::FAILURE;
+        };
+        println!("{} {}", release.sha256, release.source_commit);
         return ExitCode::SUCCESS;
     }
 

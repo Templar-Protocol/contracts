@@ -53,7 +53,8 @@ if [[ -e "$DEST_DIR/$TARGET.wasm" ]]; then
     exit 1
 fi
 
-echo ">> building $ARTIFACT ($TARGET) $VERSION reproducibly from $(git rev-parse --short HEAD)"
+COMMIT=$(git rev-parse HEAD)
+echo ">> building $ARTIFACT ($TARGET) $VERSION reproducibly from $COMMIT"
 cargo near build reproducible-wasm --manifest-path "$SOURCE_PATH/Cargo.toml"
 
 mkdir -p "$DEST_DIR"
@@ -68,7 +69,11 @@ Add this release to the $ARTIFACT entry in contract/artifacts/src/ids.rs
 (append to the release list — newest last — and add a matching
 \`embedded_bytes_for_version\` arm):
 
-        ("$VERSION", "$SHA"),
+        ("$VERSION", "$SHA", "$COMMIT"),
+
+The commit matters: reproducible builds embed the source commit (NEP-330), so
+the blob is only byte-reproducible at $COMMIT. release-artifacts.yml rebuilds
+there to verify it.
 
 Then verify and commit the blob together with the catalog edit:
 

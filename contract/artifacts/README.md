@@ -121,6 +121,22 @@ compiles to — that requires a reproducible rebuild, which runs on release tags
 in `.github/workflows/release-artifacts.yml` and fails unless the rebuild is
 byte-for-byte identical.
 
+### Why each release records a `source_commit`
+
+`cargo near build reproducible-wasm` embeds the source commit into the WASM
+(NEP-330), so **the same source built at two different commits produces
+different bytes**. Reproducibility is only meaningful *at a specific commit*.
+
+That is why `ArtifactRelease` carries `source_commit` and the verification
+workflow rebuilds there rather than at the release tag: a blob is necessarily
+committed *before* the tag that releases it exists, so verifying at the tag
+could never match.
+
+Legacy releases — blobs whose provenance predates this field, such as bytes
+recovered from a deployed mainnet contract — carry an empty `source_commit`.
+Their hash pin is still enforced, but they cannot be rebuilt, and the workflow
+reports that explicitly instead of pretending to verify them.
+
 ## Usage examples
 
 ### Just metadata (default features)
