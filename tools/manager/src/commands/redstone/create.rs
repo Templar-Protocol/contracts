@@ -89,7 +89,6 @@ impl Create {
     }
 
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
-        let signer_public_key = self.signer.public_key()?;
         let init_args = if let Some(preset) = self.preset {
             let config = match preset {
                 Preset::Prod => config::prod(),
@@ -105,7 +104,8 @@ impl Create {
         } else {
             bail!("provide --preset, --init-args, or --init-args-file");
         };
-        let deploy = self.common.into_deploy(signer_public_key, init_args);
+        let signer = self.signer;
+        let deploy = self.common.into_deploy(|| signer.public_key(), init_args)?;
 
         check_new_requires_admin_id(&deploy.version_key)?;
 

@@ -6,9 +6,15 @@ use serde_json::{json, Value};
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 
-use super::{parse_create_proposal, parse_governance, CREDS};
+use super::{
+    parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
+    CREDS,
+};
 use crate::cli::{Cli, Command};
-use crate::commands::proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs};
+use crate::commands::{
+    proxy_oracle::{ProxyOracleGovernanceNs, ProxyOracleNs},
+    signer::PrintFormat,
+};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_primitives::Decimal;
@@ -59,9 +65,12 @@ fn governance_and_gov_parse_into_the_nested_command() {
             _ => panic!("expected nested governance command"),
         }
     }
+}
 
+#[test]
+fn g_alias_is_rejected() {
     let error = Cli::try_parse_from(["tmplrmgr", "proxy-oracle", "g"])
-        .expect_err("removed single-letter alias should be rejected");
+        .expect_err("single-letter governance alias must stay unsupported");
     assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
 }
 
@@ -484,6 +493,105 @@ fn execute_proposal_when_ready_flag() {
             _ => panic!("expected execute-proposal"),
         }
     }
+}
+
+#[test]
+fn governance_write_commands_accept_print_mode() {
+    let (execute, create) = with_cleared_credential_env(|| {
+        (
+            try_parse_governance([
+                "execute-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "2",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "sputnik",
+            ]),
+            try_parse_governance([
+                "create-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "0",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+                "admin-function-call",
+                "--method",
+                "own_accept_owner",
+                "--deposit",
+                "1 yoctoNEAR",
+            ]),
+        )
+    });
+
+    let ProxyOracleGovernanceNs::ExecuteProposal(execute) =
+        execute.expect("immediate execution should support planning")
+    else {
+        panic!("expected execute-proposal");
+    };
+    assert_eq!(execute.signer.print(), Some(PrintFormat::Sputnik));
+
+    let ProxyOracleGovernanceNs::CreateProposal(create) =
+        create.expect("single-write proposal creation should support planning")
+    else {
+        panic!("expected create-proposal");
+    };
+    assert_eq!(create.signer.print(), Some(PrintFormat::Json));
+}
+
+#[test]
+fn proposal_orchestration_flags_conflict_with_print() {
+    let (execute, create) = with_cleared_credential_env(|| {
+        (
+            try_parse_governance([
+                "execute-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "2",
+                "--when-ready",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+            ]),
+            try_parse_governance([
+                "create-proposal",
+                "--governance-id",
+                "gov.testnet",
+                "--id",
+                "0",
+                "--execute-when-ready",
+                "--signer-id",
+                "dao.near",
+                "--print",
+                "json",
+                "admin-function-call",
+                "--method",
+                "own_accept_owner",
+                "--deposit",
+                "1 yoctoNEAR",
+            ]),
+        )
+    });
+
+    assert_eq!(
+        execute
+            .expect_err("--when-ready must conflict with --print")
+            .kind(),
+        clap::error::ErrorKind::ArgumentConflict
+    );
+    assert_eq!(
+        create
+            .expect_err("--execute-when-ready must conflict with --print")
+            .kind(),
+        clap::error::ErrorKind::ArgumentConflict
+    );
 }
 
 #[test]

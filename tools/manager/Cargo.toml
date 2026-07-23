@@ -25,6 +25,7 @@ near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
 serde.workspace = true
 serde_json.workspace = true
+sputnikdao2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
 templar-gateway-client = { workspace = true, features = ["clap"] }

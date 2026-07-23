@@ -12186,6 +12186,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sputnikdao2"
+version = "2.3.1"
+source = "git+https://github.com/near-daos/sputnik-dao-contract?rev=5434a59dec23ee0c49df8c8c4350c208a7e75b0b#5434a59dec23ee0c49df8c8c4350c208a7e75b0b"
+dependencies = [
+ "hex",
+ "near-contract-standards",
+ "near-sdk",
+]
+
+[[package]]
 name = "sqlx"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13408,6 +13418,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "sputnikdao2",
  "templar-common",
  "templar-contract-artifacts",
  "templar-gateway-client",

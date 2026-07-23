@@ -127,6 +127,7 @@ sqlx = { version = "0.8", features = [
 ] }
 sha2 = "0.10.9"
 solana-sdk = "3.0.0"
+sputnikdao2 = { git = "https://github.com/near-daos/sputnik-dao-contract", rev = "5434a59dec23ee0c49df8c8c4350c208a7e75b0b" }
 stellar-strkey = { version = "0.0.16", default-features = false }
 strum = { version = "0.27", features = ["derive"] }
 templar-common = { path = "./common" }

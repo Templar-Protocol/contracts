@@ -30,15 +30,19 @@ impl DeployCommonArgs {
     /// Build the registry deploy spec from these shared flags and the caller's
     /// init-args bytes, granting the operator's full access keys (the signer's
     /// `signer_public_key` by default) so it retains control of the new account.
-    pub fn into_deploy(self, signer_public_key: PublicKey, init_args: Vec<u8>) -> spec::Deploy {
-        let full_access_keys = self.full_access_keys.resolve(signer_public_key);
-        spec::Deploy {
+    pub fn into_deploy(
+        self,
+        signer_public_key: impl FnOnce() -> anyhow::Result<PublicKey>,
+        init_args: Vec<u8>,
+    ) -> anyhow::Result<spec::Deploy> {
+        let full_access_keys = self.full_access_keys.resolve(signer_public_key)?;
+        Ok(spec::Deploy {
             registry_id: self.registry_id,
             name: self.name,
             version_key: self.version_key,
             init_args: Base64Bytes(init_args),
             full_access_keys: Some(full_access_keys),
             deposit: self.deposit,
-        }
+        })
     }
 }

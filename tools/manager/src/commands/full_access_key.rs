@@ -17,12 +17,15 @@ pub struct FullAccessKeyArgs {
 }
 
 impl FullAccessKeyArgs {
-    /// Resolve the keys granted to the new account: `signer_public_key` by default
-    /// (unless suppressed), plus the explicit extras, de-duplicated.
-    pub fn resolve(&self, signer_public_key: PublicKey) -> Vec<PublicKey> {
+    /// Resolve the keys granted to the new account: the lazily-provided signer
+    /// key by default (unless suppressed), plus explicit extras, de-duplicated.
+    pub fn resolve(
+        &self,
+        signer_public_key: impl FnOnce() -> anyhow::Result<PublicKey>,
+    ) -> anyhow::Result<Vec<PublicKey>> {
         let mut keys = Vec::with_capacity(self.with_full_access_key.len() + 1);
         if !self.no_signer_full_access_key {
-            keys.push(signer_public_key);
+            keys.push(signer_public_key()?);
         }
         for key in &self.with_full_access_key {
             let key = PublicKey::from(*key);
@@ -30,7 +33,7 @@ impl FullAccessKeyArgs {
                 keys.push(key);
             }
         }
-        keys
+        Ok(keys)
     }
 }
 
@@ -62,15 +65,24 @@ mod tests {
         // The signer's key is granted on every deploy — the operator must retain
         // control of the new account.
         let signer = signer_key();
-        assert_eq!(args(false, &[]).resolve(signer.clone()), vec![signer]);
+        assert_eq!(
+            args(false, &[])
+                .resolve(|| Ok(signer.clone()))
+                .expect("signer key"),
+            vec![signer]
+        );
     }
 
     #[test]
-    fn no_signer_flag_drops_signer_key() {
-        assert!(args(true, &[]).resolve(signer_key()).is_empty());
+    fn no_signer_flag_drops_signer_key_without_resolving_it() {
         // With extras and --no-signer, only the extras are granted.
         let key_b = PublicKey::from(KEY_B.parse::<CliPublicKey>().unwrap());
-        assert_eq!(args(true, &[KEY_B]).resolve(signer_key()), vec![key_b]);
+        assert_eq!(
+            args(true, &[KEY_B])
+                .resolve(|| unreachable!("signer key must stay lazy"))
+                .expect("no signer key needed"),
+            vec![key_b]
+        );
     }
 
     #[test]
@@ -78,7 +90,9 @@ mod tests {
         let signer = signer_key();
         let signer_str = signer.0.to_string();
         // Extras that repeat the signer key or each other are dropped.
-        let keys = args(false, &[&signer_str, KEY_B, KEY_B]).resolve(signer.clone());
+        let keys = args(false, &[&signer_str, KEY_B, KEY_B])
+            .resolve(|| Ok(signer.clone()))
+            .expect("signer key");
         let key_b = PublicKey::from(KEY_B.parse::<CliPublicKey>().unwrap());
         assert_eq!(keys, vec![signer, key_b]);
     }

@@ -16,7 +16,7 @@ pub struct RemoveVersion {
     #[arg(long, value_name = "KEY")]
     version_key: Option<String>,
     /// Remove every version currently in the registry.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "print")]
     all: bool,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,

@@ -42,7 +42,7 @@ struct MarketInitArgs {
 
 impl Create {
     pub fn try_into_spec(self) -> anyhow::Result<spec::Create> {
-        let full_access_keys = self.full_access_keys.resolve(self.signer.public_key()?);
+        let full_access_keys = self.full_access_keys.resolve(|| self.signer.public_key())?;
         let file = std::fs::File::open(&self.init_args_file).with_context(|| {
             format!(
                 "open market init args from {}",
