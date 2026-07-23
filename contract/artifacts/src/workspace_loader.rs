@@ -225,6 +225,13 @@ fn build_command(
         .args(["near", "build", build_mode, "--manifest-path"])
         .arg(manifest_path)
         .current_dir(workspace_dir);
+    // Test artifacts (non-reproducible, `target/near`) are only deployed and
+    // called by the suite, which never reads the embedded ABI. Skipping ABI
+    // generation drops cargo-near's separate ABI build pass — ~35% of the
+    // prebuild's compile time. Release blobs (reproducible, `res/near`) keep it.
+    if !reproducible {
+        command.arg("--no-abi");
+    }
     command
 }
 

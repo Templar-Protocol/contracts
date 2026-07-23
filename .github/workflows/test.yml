@@ -41,6 +41,16 @@ permissions:
   contents: read # Required to checkout repository contents
   pull-requests: read # Required for path filtering on PR events
 
+# Defaults shared by every Rust job. Job-/step-level env still overrides these.
+# `_DEBUG: line-tables-only` keeps backtraces line-accurate while shrinking the
+# target dir (and therefore the cache) vs full debuginfo.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  SQLX_OFFLINE: "true"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+
 jobs:
   changes:
     name: Change Detection
@@ -205,8 +215,6 @@ jobs:
         with:
           components: clippy
       - name: Run cargo clippy
-        env:
-          SQLX_OFFLINE: true
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
@@ -214,19 +222,13 @@ jobs:
     name: Binary Build
     runs-on: ubuntu-latest
     steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          sudo apt-get clean
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
 
@@ -235,8 +237,6 @@ jobs:
         # so a binary that only fails at link time (e.g. an undefined native
         # symbol pulled in from a contract crate) slips through. Linking the bins
         # is the one thing that catches it.
-        env:
-          SQLX_OFFLINE: true
         run: cargo build --workspace --bins
 
   soroban:
@@ -417,23 +417,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          sudo apt-get clean
-          echo "Disk space after cleanup:"
-          df -h
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
 
@@ -444,18 +434,16 @@ jobs:
 
       - name: Run fast tests
         env:
-          SQLX_OFFLINE: true
           DATABASE_URL: &postgres_url postgres://relayeruser:password@localhost:5432/relayer
           NEXTEST_PROFILE: ci
-          CARGO_TERM_COLOR: always
-          CARGO_INCREMENTAL: 0
-          CARGO_PROFILE_DEV_DEBUG: line-tables-only
-          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: just test-fast
 
   near-integration-tests:
     name: NEAR Integration Tests
-    timeout-minutes: 40
+    # Ceiling only (billing is actual runtime): ~35 min cold, less once the
+    # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
+    # over 40 avoids a cold-run variance kill wasting a whole run.
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
@@ -463,23 +451,13 @@ jobs:
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' }}
     steps:
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          sudo apt-get clean
-          echo "Disk space after cleanup:"
-          df -h
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
 
       - uses: ./.github/actions/rust
 
@@ -493,12 +471,7 @@ jobs:
 
       - name: Run node-backed tests on a pooled neard sandbox
         env:
-          SQLX_OFFLINE: true
           DATABASE_URL: *postgres_url
-          CARGO_TERM_COLOR: always
-          CARGO_INCREMENTAL: 0
-          CARGO_PROFILE_DEV_DEBUG: line-tables-only
-          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: just test-sandbox
 
       - name: Cleanup Docker resources
@@ -522,8 +495,6 @@ jobs:
       - uses: ./.github/actions/rust
 
       - name: Check artifact drift
-        env:
-          CARGO_TERM_COLOR: always
         run: ./script/check-artifact-drift.sh
 
   coverage:
@@ -540,28 +511,15 @@ jobs:
       # database per test, so they need a reachable postgres at runtime.
       postgres: *postgres_service
     steps:
-      - name: Free up disk space
-        run: |
-          echo "Disk space before cleanup:"
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell mono-devel || true
-          sudo apt-get autoremove -y
-          sudo apt-get clean
-          sudo docker image prune --all --force
-          sudo docker system prune --all --volumes --force
-          echo "Disk space after cleanup:"
-          df -h
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+        with:
+          aggressive: "true"
 
       - uses: ./.github/actions/rust
         with:
@@ -577,7 +535,6 @@ jobs:
           DATABASE_URL: *postgres_url
           CARGO_BUILD_JOBS: 2
           NEXTEST_PROFILE: ci
-          CARGO_TERM_COLOR: always
         run: |
           just coverage-lcov
 
