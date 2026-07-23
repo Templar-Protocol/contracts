@@ -19,7 +19,9 @@ use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_primitives::Decimal;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
-use templar_proxy_oracle_near_governance_common::{Operation, OperationKind, Role};
+use templar_proxy_oracle_near_governance_common::{
+    FunctionCall, LegacyOperation, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation, Role,
+};
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 struct RemoveFileOnDrop<'a>(&'a std::path::Path);
@@ -219,11 +221,11 @@ fn set_role_operation_grants_and_revokes() {
     ]);
     assert_eq!(
         granted,
-        Operation::SetRole {
+        Operation::Reflexive(ReflexiveOperation::SetRole {
             account_id: "op.testnet".parse().unwrap(),
             role: Role::Admin,
             set: true,
-        }
+        })
     );
 
     let revoked = operation(&[
@@ -240,11 +242,11 @@ fn set_role_operation_grants_and_revokes() {
     ]);
     assert_eq!(
         revoked,
-        Operation::SetRole {
+        Operation::Reflexive(ReflexiveOperation::SetRole {
             account_id: "op.testnet".parse().unwrap(),
             role: Role::CircuitBreakerOperator,
             set: false,
-        }
+        })
     );
 }
 
@@ -261,36 +263,106 @@ fn admin_function_call_operation_defaults_and_encodes_args() {
         "--deposit",
         "1 yoctoNEAR",
     ]);
+    // An arbitrary method call maps to the generic target form (identity on method/args/gas).
     assert_eq!(
         op,
-        Operation::AdminFunctionCall {
+        Operation::TargetFunctionCall(FunctionCall {
             method_name: "own_accept_owner".to_string(),
             args: Base64VecU8(b"{}".to_vec()),
             attached_deposit: U128(1),
             gas: Gas::from_tgas(30),
-        }
+        })
     );
 }
 
 #[test]
-fn set_action_ttl_operation_builds_kind_and_ttl() {
+fn set_reflexive_ttl_operation_builds_kind_and_ttl() {
     let op = operation(&[
         "--governance-id",
         "gov.testnet",
         "--id",
         "5",
-        "set-action-ttl",
+        "set-reflexive-ttl",
         "--kind",
-        "admin-upgrade",
-        "--new-ttl",
+        "self-upgrade",
+        "--ttl",
         "1d",
     ]);
     assert_eq!(
         op,
-        Operation::SetActionTtl {
-            kind: OperationKind::AdminUpgrade,
-            new_ttl: Nanoseconds::from_secs(24 * 60 * 60),
-        }
+        Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+            kind: ReflexiveKind::SelfUpgrade,
+            ttl: Nanoseconds::from_secs(24 * 60 * 60),
+        })
+    );
+}
+
+#[test]
+fn set_target_default_operation_builds_policy() {
+    let op = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "5",
+        "set-target-default",
+        "--ttl",
+        "1d",
+        "--role",
+        "admin",
+    ]);
+    assert_eq!(
+        op,
+        Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+            policy: MethodPolicy {
+                ttl: Nanoseconds::from_secs(24 * 60 * 60),
+                role: Role::Admin,
+            },
+        })
+    );
+}
+
+#[test]
+fn set_method_policy_operation_sets_and_resets() {
+    let set = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "5",
+        "set-method-policy",
+        "--method",
+        "admin_set_proxy",
+        "--ttl",
+        "1h",
+        "--role",
+        "proxy-configuration-manager",
+    ]);
+    assert_eq!(
+        set,
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: "admin_set_proxy".to_string(),
+            policy: Some(MethodPolicy {
+                ttl: Nanoseconds::from_secs(60 * 60),
+                role: Role::ProxyConfigurationManager,
+            }),
+        })
+    );
+
+    let reset = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "5",
+        "set-method-policy",
+        "--method",
+        "admin_set_proxy",
+        "--reset",
+    ]);
+    assert_eq!(
+        reset,
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: "admin_set_proxy".to_string(),
+            policy: None,
+        })
     );
 }
 
@@ -309,12 +381,17 @@ fn configure_circuit_breakers_operation_builds_config() {
         "--history-len",
         "8",
     ]);
+    // The typed subcommand builds a generic call to the matching admin_* method.
     match op {
-        Operation::ConfigureCircuitBreakers { config, .. } => {
-            assert_eq!(config.history_len, 8);
-            assert_eq!(config.sample_interval_ns, Nanoseconds::from_ns(1000));
+        Operation::TargetFunctionCall(FunctionCall {
+            method_name, args, ..
+        }) => {
+            assert_eq!(method_name, "admin_configure_circuit_breakers");
+            let decoded: Value = serde_json::from_slice(&args.0).expect("valid json args");
+            assert_eq!(decoded["config"]["history_len"], json!(8));
+            assert_eq!(decoded["config"]["sample_interval_ns"], json!("1000"));
         }
-        other => panic!("expected ConfigureCircuitBreakers, got {other:?}"),
+        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
     }
 }
 
@@ -341,10 +418,11 @@ fn admin_upgrade_operation_reads_code_file() {
 
     assert_eq!(
         op,
-        Operation::AdminUpgrade {
+        Operation::try_from(LegacyOperation::AdminUpgrade {
             code: UpgradeSource::Code(Base64VecU8(wasm.to_vec())),
             migrate_args: Base64VecU8(Vec::new()),
-        }
+        })
+        .unwrap()
     );
 }
 
@@ -362,10 +440,11 @@ fn admin_upgrade_accepts_a_global_hash() {
     ]);
     assert_eq!(
         by_hash,
-        Operation::AdminUpgrade {
+        Operation::try_from(LegacyOperation::AdminUpgrade {
             code: UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
             migrate_args: Base64VecU8(Vec::new()),
-        }
+        })
+        .unwrap()
     );
 }
 
@@ -382,10 +461,10 @@ fn self_upgrade_operation_targets_the_governance_contract() {
     ]);
     assert_eq!(
         op,
-        Operation::SelfUpgrade {
+        Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
             code: UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
             migrate_args: Base64VecU8(Vec::new()),
-        }
+        })
     );
 }
 
@@ -408,10 +487,14 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
     .expect("into spec");
     let json = serde_json::to_value(&spec).unwrap();
     assert_eq!(json["requested_ttl"], json!("42"));
-    assert_eq!(
-        json["operation"]["RemoveCircuitBreaker"]["breaker_id"],
-        json!(0)
-    );
+    match &spec.operation {
+        Operation::TargetFunctionCall(call) => {
+            assert_eq!(call.method_name, "admin_remove_circuit_breaker");
+            let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
+            assert_eq!(args["breaker_id"], json!(0));
+        }
+        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
+    }
 
     // Omitting --requested-ttl defaults it to zero.
     let defaulted = create_proposal(&[
@@ -629,13 +712,21 @@ fn governance_create_builds_init_args() {
         "proxy-oracle-market.registry.testnet"
     );
     assert_eq!(init["admin_id"], "operator.testnet");
-    // All 12 operation-kind TTL fields present and uniform.
-    let ttls = init["ttls"].as_object().expect("ttls object");
-    assert_eq!(ttls.len(), 12);
-    let zero = &ttls["set_proxy"];
-    for (_, v) in ttls {
-        assert_eq!(v, zero);
+    // A uniform policy: every reflexive lock and the target default at the same (zero) TTL, no
+    // per-method overrides.
+    let policy = init["policy"].as_object().expect("policy object");
+    let reflexive = policy["reflexive_ttls"]
+        .as_object()
+        .expect("reflexive_ttls");
+    for (_, v) in reflexive {
+        assert_eq!(v, &json!("0"));
     }
+    assert_eq!(policy["default_target"]["ttl"], json!("0"));
+    assert_eq!(policy["default_target"]["role"], json!("Admin"));
+    assert!(policy["method_policies"]
+        .as_object()
+        .expect("method_policies")
+        .is_empty());
 }
 
 #[test]
@@ -743,9 +834,14 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
     let spec = resolved
         .try_into_spec(gov_account(), 0)
         .expect("resolved breaker id should build");
-    let operation =
-        serde_json::to_value(spec).expect("serialize proposal spec")["operation"].clone();
-    assert_eq!(operation["AddCircuitBreaker"]["breaker_id"], json!(4));
+    match &spec.operation {
+        Operation::TargetFunctionCall(call) => {
+            assert_eq!(call.method_name, "admin_add_circuit_breaker");
+            let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
+            assert_eq!(args["breaker_id"], json!(4));
+        }
+        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
+    }
 
     // An explicit --breaker-id needs no resolution.
     let explicit = parse_create_proposal([

@@ -5,9 +5,9 @@ use clap::Args;
 use near_account_id::AccountId;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::registry as registry_spec;
-use templar_proxy_oracle_near_governance_common::TtlConfig;
+use templar_proxy_oracle_near_governance_common::GovernancePolicy;
 
-use super::{load_json_file, uniform_ttls};
+use super::{load_json_file, uniform_policy};
 use crate::commands::deploy_common::DeployCommonArgs;
 use crate::commands::duration::parse_duration;
 use crate::commands::signer::SignerArgs;
@@ -30,35 +30,35 @@ pub struct GovernanceCreate {
     /// The account granted the Admin role
     #[arg(long, value_name = "ACCOUNT_ID")]
     admin_id: AccountId,
-    /// Default proposal TTL applied to every operation kind (e.g. `10s`, `100ns`).
-    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration, conflicts_with = "ttls_file")]
+    /// Default proposal TTL applied to every reflexive kind and the target default (e.g. `10s`, `100ns`).
+    #[arg(long, value_name = "DURATION", default_value = "0ns", value_parser = parse_duration, conflicts_with = "policy_file")]
     ttl_default: Nanoseconds,
-    /// Full TtlConfig JSON, overriding --ttl-default with per-operation TTLs
+    /// Full `GovernancePolicy` JSON, overriding --ttl-default with an explicit policy table.
     #[arg(long, value_name = "PATH")]
-    ttls_file: Option<PathBuf>,
+    policy_file: Option<PathBuf>,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }
 
-/// Init args for the governance contract's `new(proxy_oracle_id, admin_id, ttls)`.
+/// Init args for the governance contract's `new(proxy_oracle_id, admin_id, policy)`.
 #[derive(serde::Serialize)]
 struct GovernanceInit {
     proxy_oracle_id: AccountId,
     admin_id: AccountId,
-    ttls: TtlConfig,
+    policy: GovernancePolicy,
 }
 
 impl GovernanceCreate {
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
-        let ttls = match self.ttls_file {
-            Some(path) => load_json_file(&path).context("parse TtlConfig")?,
-            None => uniform_ttls(self.ttl_default),
+        let policy = match self.policy_file {
+            Some(path) => load_json_file(&path).context("parse GovernancePolicy")?,
+            None => uniform_policy(self.ttl_default),
         };
 
         let init = GovernanceInit {
             proxy_oracle_id: self.proxy_oracle_id,
             admin_id: self.admin_id,
-            ttls,
+            policy,
         };
         let init_args = serde_json::to_vec(&init).context("encode governance init args")?;
 

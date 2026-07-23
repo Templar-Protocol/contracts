@@ -67,11 +67,6 @@ pub struct Governance<TtlConfig> {
 }
 }
 
-pub trait TtlConfig<Kind: Copy> {
-    fn get(&self, kind: Kind) -> Nanoseconds;
-    fn set(&mut self, kind: Kind, ttl: Nanoseconds);
-}
-
 /// The runtime-defined policy for an operation type. The kernel uses this to
 /// compute the minimum timelock for an operation and to run the operation's
 /// own create/execute validation. Role mapping (`required_role`) stays an
@@ -433,18 +428,11 @@ mod tests {
         fast: Nanoseconds,
     }
 
-    impl TtlConfig<Kind> for Ttls {
+    impl Ttls {
         fn get(&self, kind: Kind) -> Nanoseconds {
             match kind {
                 Kind::Slow => self.slow,
                 Kind::Fast => self.fast,
-            }
-        }
-
-        fn set(&mut self, kind: Kind, ttl: Nanoseconds) {
-            match kind {
-                Kind::Slow => self.slow = ttl,
-                Kind::Fast => self.fast = ttl,
             }
         }
     }

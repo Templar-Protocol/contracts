@@ -31,7 +31,7 @@ use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
 };
-use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
+use templar_proxy_oracle_near_governance_common::{GovernancePolicy, LegacyOperation, Operation};
 use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
@@ -810,7 +810,7 @@ impl SandboxHarness {
             serde_json::json!({
                 "proxy_oracle_id": oracle_id,
                 "admin_id": admin_id,
-                "ttls": zero_ttl_config(),
+                "policy": zero_governance_policy(),
             }),
         )
         .await?;
@@ -843,12 +843,14 @@ impl SandboxHarness {
         proposal_id: u32,
         method_name: &str,
     ) -> Result<()> {
-        let operation = Operation::AdminFunctionCall {
+        let operation: Operation = LegacyOperation::AdminFunctionCall {
             method_name: method_name.to_string(),
             args: near_sdk::json_types::Base64VecU8(b"{}".to_vec()),
             attached_deposit: near_sdk::json_types::U128(1),
             gas: near_sdk::Gas::from_tgas(50),
-        };
+        }
+        .try_into()
+        .expect("build admin function call operation");
 
         self.call_contract(
             governance_id,
@@ -931,21 +933,19 @@ impl SandboxHarness {
     }
 }
 
-fn zero_ttl_config() -> TtlConfig {
+fn zero_governance_policy() -> GovernancePolicy {
     let zero = Nanoseconds::zero();
-    TtlConfig {
-        set_proxy: zero,
-        configure_circuit_breakers: zero,
-        add_circuit_breaker: zero,
-        remove_circuit_breaker: zero,
-        set_manual_trip: zero,
-        rearm: zero,
-        set_enforced: zero,
-        set_action_ttl: zero,
-        set_role: zero,
-        admin_upgrade: zero,
-        admin_function_call: zero,
-        self_upgrade: zero,
+    GovernancePolicy {
+        reflexive_ttls: templar_proxy_oracle_near_governance_common::ReflexiveTtls {
+            set_policy: zero,
+            set_role: zero,
+            self_upgrade: zero,
+        },
+        default_target: templar_proxy_oracle_near_governance_common::MethodPolicy {
+            ttl: zero,
+            role: templar_proxy_oracle_near_governance_common::Role::Admin,
+        },
+        method_policies: std::collections::BTreeMap::new(),
     }
 }
 

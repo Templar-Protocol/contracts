@@ -29,20 +29,21 @@ use serde_json::{json, Value};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_gateway_testing::{wasm, SandboxHarness, TEST_FINALITY_POLICY};
-use templar_proxy_oracle_near_governance_common::{Operation, Proposal};
+use templar_proxy_oracle_near_governance_common::{LegacyOperation, Operation, Proposal};
 
 use common::{call, code_hash, deploy_code, signer, view};
 
 /// The raw blob (`0xDEADBEEF`) of the pending `AdminUpgrade` proposal seeded on the old gov, whose
-/// stored body the v0→v1 migrate must reshape into `UpgradeSource::Code`.
+/// stored body the v0→v1 migrate must reshape into a generic `admin_upgrade` target call.
 const PENDING_UPGRADE_CODE: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
-/// `create_proposal` named args (no typed struct is exported by the contract's ABI).
+/// `create_proposal` named args (no typed struct is exported by the contract's ABI). Seeded with the
+/// pre-restructure `LegacyOperation` wire, which is what the immutable deployed v0 gov accepts.
 #[derive(Serialize)]
 #[serde(crate = "near_sdk::serde")]
 struct CreateProposalArgs {
     id: u32,
-    operation: Operation,
+    operation: LegacyOperation,
     requested_ttl: Nanoseconds,
 }
 
@@ -53,10 +54,10 @@ struct ProposalIdArgs {
     id: u32,
 }
 
-/// The `AdminUpgrade` seeded before migration, in the current (v1) typed form. Serializing it for the
-/// old gov also guards that the wire shape stays compatible with the immutable deployed contract.
-fn seeded_upgrade() -> Operation {
-    Operation::AdminUpgrade {
+/// The `AdminUpgrade` seeded before migration, in the pre-restructure typed form. Serializing it for
+/// the old gov also guards that the wire shape stays compatible with the immutable deployed contract.
+fn seeded_upgrade() -> LegacyOperation {
+    LegacyOperation::AdminUpgrade {
         code: UpgradeSource::Code(Base64VecU8(PENDING_UPGRADE_CODE.to_vec())),
         migrate_args: Base64VecU8(Vec::new()),
     }
@@ -201,8 +202,8 @@ async fn upgrade_gov(network: &NetworkConfig, gov: &AccountId) -> Result<()> {
         .operation;
     assert_eq!(
         operation,
-        seeded_upgrade(),
-        "migrated proposal should reshape the raw code into UpgradeSource::Code"
+        Operation::try_from(seeded_upgrade()).unwrap(),
+        "migrated proposal should reshape the raw code into an admin_upgrade target call"
     );
     Ok(())
 }

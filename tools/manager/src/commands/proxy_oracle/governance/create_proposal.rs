@@ -15,9 +15,11 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_governance_common::Operation;
+use templar_proxy_oracle_near_governance_common::{
+    LegacyOperation, MethodPolicy, Operation, ReflexiveOperation,
+};
 
-use super::{decode_base64, load_json_file, OperationKind, Role};
+use super::{decode_base64, load_json_file, ReflexiveKind, Role};
 use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::commands::signer::SignerArgs;
@@ -86,9 +88,11 @@ impl CreateProposal {
     }
 }
 
-/// One variant per `templar_proxy_oracle_near_governance_common::Operation`.
-/// Complex nested payloads (circuit breakers, history sources) are supplied as
-/// JSON files that deserialize into the real kernel types.
+/// The typed proposal subcommands. Target ops build the pre-restructure [`LegacyOperation`] and map it
+/// to the generic `TargetFunctionCall` form (baking in the correct `admin_*` method name and a sane
+/// gas default); reflexive policy edits construct the [`ReflexiveOperation`] directly. Complex nested
+/// payloads (circuit breakers, history sources) are supplied as JSON files that deserialize into the
+/// real kernel types.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
 pub enum ProposalOperation {
@@ -106,8 +110,12 @@ pub enum ProposalOperation {
     Rearm(RearmArgs),
     /// Enable or disable enforcement of a circuit breaker.
     SetEnforced(SetEnforcedArgs),
-    /// Set the TTL for an operation kind.
-    SetActionTtl(SetActionTtlArgs),
+    /// Set a reflexive operation kind's timelock.
+    SetReflexiveTtl(SetReflexiveTtlArgs),
+    /// Set the conservative default policy for unlisted target methods.
+    SetTargetDefault(SetTargetDefaultArgs),
+    /// Add, update, or reset a per-method policy override.
+    SetMethodPolicy(SetMethodPolicyArgs),
     /// Grant or revoke a governance role.
     SetRole(SetRoleArgs),
     /// Upgrade the proxy oracle's contract code.
@@ -119,8 +127,10 @@ pub enum ProposalOperation {
 }
 
 impl ProposalOperation {
+    #[allow(clippy::too_many_lines)]
     fn into_operation(self) -> anyhow::Result<Operation> {
-        Ok(match self {
+        // Target and role/self-upgrade ops route through the shared legacy → generic mapping.
+        let legacy = match self {
             Self::SetProxy(a) => {
                 let proxy: Option<Proxy<Source>> = match a.proxy_file {
                     Some(path) => Some(
@@ -129,12 +139,12 @@ impl ProposalOperation {
                     ),
                     None => None,
                 };
-                Operation::SetProxy {
+                LegacyOperation::SetProxy {
                     id: a.price_id,
                     proxy,
                 }
             }
-            Self::ConfigureCircuitBreakers(a) => Operation::ConfigureCircuitBreakers {
+            Self::ConfigureCircuitBreakers(a) => LegacyOperation::ConfigureCircuitBreakers {
                 id: a.price_id,
                 config: CircuitBreakerSetConfig {
                     sample_interval_ns: a.sample_interval,
@@ -145,23 +155,23 @@ impl ProposalOperation {
                 let breaker_id = a.breaker_id.context(
                     "breaker id must be resolved before building an add-circuit-breaker proposal",
                 )?;
-                Operation::AddCircuitBreaker {
+                LegacyOperation::AddCircuitBreaker {
                     id: a.price_id,
                     breaker_id,
                     breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
                         .context("parse circuit breaker")?,
                 }
             }
-            Self::RemoveCircuitBreaker(a) => Operation::RemoveCircuitBreaker {
+            Self::RemoveCircuitBreaker(a) => LegacyOperation::RemoveCircuitBreaker {
                 id: a.price_id,
                 breaker_id: a.breaker_id,
             },
-            Self::SetManualTrip(a) => Operation::SetManualTrip {
+            Self::SetManualTrip(a) => LegacyOperation::SetManualTrip {
                 id: a.price_id,
                 is_manually_tripped: a.tripped,
                 metadata: a.metadata_base64.map(decode_base64).transpose()?,
             },
-            Self::Rearm(a) => Operation::Rearm {
+            Self::Rearm(a) => LegacyOperation::Rearm {
                 id: a.price_id,
                 breaker_id: a.breaker_id,
                 armed_after_ns: a.armed_after,
@@ -170,40 +180,66 @@ impl ProposalOperation {
                 )
                 .context("parse accepted history source")?,
             },
-            Self::SetEnforced(a) => Operation::SetEnforced {
+            Self::SetEnforced(a) => LegacyOperation::SetEnforced {
                 id: a.price_id,
                 breaker_id: a.breaker_id,
                 is_enforced: a.enforced,
             },
-            Self::SetActionTtl(a) => Operation::SetActionTtl {
-                kind: a.kind,
-                new_ttl: a.new_ttl,
-            },
-            Self::SetRole(a) => Operation::SetRole {
+            Self::SetRole(a) => LegacyOperation::SetRole {
                 account_id: a.account_id,
                 role: a.role,
                 set: !a.revoke,
             },
             Self::AdminUpgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                Operation::AdminUpgrade { code, migrate_args }
+                LegacyOperation::AdminUpgrade { code, migrate_args }
             }
             Self::SelfUpgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                Operation::SelfUpgrade { code, migrate_args }
+                LegacyOperation::SelfUpgrade { code, migrate_args }
             }
             Self::AdminFunctionCall(a) => {
                 // Fail early on malformed args rather than sending garbage bytes.
                 serde_json::from_str::<serde_json::Value>(&a.args)
                     .context("admin-function-call --args must be valid JSON")?;
-                Operation::AdminFunctionCall {
+                LegacyOperation::AdminFunctionCall {
                     method_name: a.method,
                     args: Base64VecU8(a.args.into_bytes()),
                     attached_deposit: U128(a.deposit.as_yoctonear()),
                     gas: a.gas,
                 }
             }
-        })
+            // Reflexive policy edits construct the new operation directly.
+            Self::SetReflexiveTtl(a) => {
+                return Ok(Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+                    kind: a.kind,
+                    ttl: a.ttl,
+                }))
+            }
+            Self::SetTargetDefault(a) => {
+                return Ok(Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+                    policy: MethodPolicy {
+                        ttl: a.ttl,
+                        role: a.role,
+                    },
+                }))
+            }
+            Self::SetMethodPolicy(a) => {
+                let policy = if a.reset {
+                    None
+                } else {
+                    let role = a
+                        .role
+                        .context("--role is required unless --reset is given")?;
+                    Some(MethodPolicy { ttl: a.ttl, role })
+                };
+                return Ok(Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+                    method: a.method,
+                    policy,
+                }));
+            }
+        };
+        Operation::try_from(legacy).context("build target operation from typed subcommand")
     }
 }
 
@@ -297,13 +333,39 @@ pub struct SetEnforcedArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct SetActionTtlArgs {
-    /// Operation kind to set the TTL for.
+pub struct SetReflexiveTtlArgs {
+    /// Reflexive kind to set the timelock for.
     #[arg(long, value_enum)]
-    kind: OperationKind,
-    /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
+    kind: ReflexiveKind,
+    /// New timelock (e.g. `1h`, `86400000000000ns`).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
-    new_ttl: Nanoseconds,
+    ttl: Nanoseconds,
+}
+
+#[derive(Args, Debug)]
+pub struct SetTargetDefaultArgs {
+    /// Conservative default timelock for unlisted target methods.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    ttl: Nanoseconds,
+    /// Role required to invoke an unlisted target method.
+    #[arg(long, value_enum)]
+    role: Role,
+}
+
+#[derive(Args, Debug)]
+pub struct SetMethodPolicyArgs {
+    /// Target method name (e.g. `admin_set_proxy`).
+    #[arg(long, value_name = "NAME")]
+    method: String,
+    /// Timelock for this method (ignored with `--reset`). Must be `<=` the target default.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration, default_value = "0ns")]
+    ttl: Nanoseconds,
+    /// Role required to invoke this method. Required unless `--reset`.
+    #[arg(long, value_enum, required_unless_present = "reset")]
+    role: Option<Role>,
+    /// Remove the override, resetting the method to the target default.
+    #[arg(long, conflicts_with = "role")]
+    reset: bool,
 }
 
 #[derive(Args, Debug)]

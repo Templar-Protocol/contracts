@@ -267,11 +267,20 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
 
     std::fs::remove_file(&proxy_file).expect("remove proxy fixture");
 
-    let params_json = serde_json::to_value(&params).unwrap();
-    let proxy = &params_json["operation"]["SetProxy"]["proxy"];
+    // The set-proxy subcommand now builds a generic admin_set_proxy target call; the reshaped proxy
+    // lives in the (base64) call args.
+    let proxy = match &params.operation {
+        templar_proxy_oracle_near_governance_common::Operation::TargetFunctionCall(call) => {
+            assert_eq!(call.method_name, "admin_set_proxy");
+            let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
+            args["proxy"].clone()
+        }
+        reflexive @ templar_proxy_oracle_near_governance_common::Operation::Reflexive(_) => panic!("expected admin_set_proxy target call, got {reflexive:?}"),
+    };
     assert_eq!(proxy["aggregator"]["MedianLow"]["sources"], legacy_entries);
     assert_eq!(proxy["aggregator"]["MedianLow"]["min_sources"], json!(1));
 
+    let params_json = serde_json::to_value(&params).unwrap();
     serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_governance::CreateProposal>(
         params_json,
     )

@@ -2,7 +2,9 @@ use super::*;
 
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
-use templar_proxy_oracle_near_governance_common::{Operation, OperationKind};
+use templar_proxy_oracle_near_governance_common::{
+    LegacyOperation, LegacyOperationKind, Operation,
+};
 
 #[tokio::test]
 async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> {
@@ -36,16 +38,18 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         .await?;
     assert_eq!(count, 0);
 
-    let ttl = stack
+    let policy = stack
         .controller
-        .request::<proxy_oracle_governance::GetOperationTtl>(
-            &proxy_oracle_governance::GetOperationTtl {
+        .request::<proxy_oracle_governance::GetGovernancePolicy>(
+            &proxy_oracle_governance::GetGovernancePolicy {
                 governance_id: governance_id.clone(),
-                kind: OperationKind::SetProxy,
             },
         )
         .await?;
-    assert_eq!(ttl.ttl_ns, Nanoseconds::zero());
+    assert_eq!(
+        policy.policy.resolve("admin_set_proxy").ttl,
+        Nanoseconds::zero()
+    );
 
     // Create a SetProxy proposal (id 1).
     let price_id = PriceIdentifier([0xaa; 32]);
@@ -65,10 +69,11 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
-                operation: Operation::SetProxy {
+                operation: Operation::try_from(LegacyOperation::SetProxy {
                     id: price_id,
                     proxy: Some(proxy.clone()),
-                },
+                })
+                .expect("build set-proxy operation"),
                 requested_ttl: Nanoseconds::zero(),
             },
         })
@@ -134,10 +139,11 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 2,
-                operation: Operation::SetActionTtl {
-                    kind: OperationKind::SetProxy,
+                operation: Operation::try_from(LegacyOperation::SetActionTtl {
+                    kind: LegacyOperationKind::SetProxy,
                     new_ttl: Nanoseconds::from_secs(1),
-                },
+                })
+                .expect("build set-action-ttl operation"),
                 requested_ttl: Nanoseconds::zero(),
             },
         })
