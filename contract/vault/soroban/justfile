@@ -52,10 +52,12 @@ soroban_rust_toolchain := env_var_or_default("SOROBAN_RUST_TOOLCHAIN", "1.89.0")
 default_wasm := optimized_wasm
 blend_adapter_wasm := wasm_dir + "/templar_soroban_blend_adapter.wasm"
 custodial_adapter_wasm := wasm_dir + "/templar_soroban_custodial_adapter.wasm"
+curator_proxy_wasm := wasm_dir + "/templar_curator_proxy_soroban.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
 custodial_adapter_abi_script := justfile_directory() + "/scripts/check_custodial_adapter_release_abi.py"
+release_abi_script := justfile_directory() + "/scripts/check_release_abi.py"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -162,6 +164,43 @@ verify-custodial-adapter-release-abi: build-custodial-adapter
 		-- --nocapture
 	@echo "✓ Custodial adapter release ABI and behavior verified"
 
+# Build and optimize the curator proxy WASM.
+build-curator-proxy:
+	@echo "Building curator proxy WASM..."
+	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-curator-proxy-soroban "{{curator_proxy_wasm}}"
+	@echo "✓ Built: {{curator_proxy_wasm}}"
+
+# Verify the runtime mask in isolated, selective, and deliberately unified builds.
+verify-runtime-feature-matrix:
+	@cargo test --manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-runtime \
+		test_version_is_available_before_initialization_and_matches_compiled_features
+	@cargo test --manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-runtime \
+		--no-default-features \
+		test_version_is_available_before_initialization_and_matches_compiled_features
+	@cargo test --manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-runtime \
+		--no-default-features \
+		--features action-pause \
+		test_version_is_available_before_initialization_and_matches_compiled_features
+	@cargo test --manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-runtime \
+		-p templar-common \
+		test_version_is_available_before_initialization_and_matches_compiled_features
+	@echo "✓ Runtime feature matrix verified"
+
+# Build release artifacts and verify exact version ABIs plus artifact behavior.
+verify-release-wasm-abi: verify-runtime-feature-matrix build build-curator-proxy verify-custodial-adapter-release-abi
+	@stellar contract info interface --wasm "{{deploy_wasm}}" --output json | python3 "{{release_abi_script}}" --contract runtime
+	@stellar contract info interface --wasm "{{curator_proxy_wasm}}" --output json | python3 "{{release_abi_script}}" --contract curator-proxy
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg artifact_wasm" cargo test \
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-curator-proxy-soroban \
+		--test artifact_version \
+		-- --nocapture
+	@echo "✓ Release WASM ABIs and behavior verified"
+
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
 	@echo "Checking Soroban ERC-4626 proxy crate..."
@@ -171,8 +210,8 @@ check-4626-proxy:
 		-p templar-4626-proxy-soroban
 	@echo "✓ Checked: templar-4626-proxy-soroban"
 
-# Build all WASMs (vault + governance + share token + adapters).
-build-all: build build-blend-adapter build-custodial-adapter
+# Build all WASMs (vault + governance + share token + adapters + curator proxy).
+build-all: build build-blend-adapter build-custodial-adapter build-curator-proxy
 	@echo "✓ All contracts built"
 
 # Build debug WASM, emit twiggy reports, and print them.
@@ -501,6 +540,55 @@ init:
 		exit 1; \
 	fi; \
 	echo "✓ Vault initialized"
+
+# Deploy a replacement curator proxy for an approved versionless-v1 vault artifact.
+# Deployment and initialization are separate transactions; coordinate this operation accordingly.
+deploy-curator-proxy-legacy-v1 vault_address governance_address legacy_v1_wasm_hash: build-curator-proxy
+	@if ! python3 -c 'import re, sys; sys.exit(0 if re.fullmatch(r"[0-9a-fA-F]{64}", sys.argv[1]) else 1)' "{{legacy_v1_wasm_hash}}"; then \
+		echo "Error: legacy_v1_wasm_hash must be exactly 64 hexadecimal characters."; \
+		exit 1; \
+	fi
+	@network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+	echo "Deploying replacement curator proxy..."; \
+	echo "  Vault:       {{vault_address}}"; \
+	echo "  Governance:  {{governance_address}}"; \
+	echo "  Legacy hash: {{legacy_v1_wasm_hash}}"; \
+	proxy_id=$(stellar contract deploy \
+		--wasm "{{curator_proxy_wasm}}" \
+		--network "$network" \
+		--source-account "$source"); \
+	if [ -z "$proxy_id" ]; then \
+		echo "Error: curator proxy deploy failed — no contract ID returned"; \
+		exit 1; \
+	fi; \
+	if ! stellar contract invoke \
+		--id "$proxy_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- initialize_legacy_v1 \
+		--vault_address "{{vault_address}}" \
+		--governance_address "{{governance_address}}" \
+		--legacy_v1_wasm_hash "{{legacy_v1_wasm_hash}}"; then \
+		echo "Error: curator proxy legacy initialization failed for $proxy_id"; \
+		exit 1; \
+	fi; \
+	if ! version=$(stellar contract invoke \
+		--id "$proxy_id" \
+		--network "$network" \
+		--source-account "$source" \
+		-- vault_version); then \
+		echo "Error: curator proxy vault_version verification failed for $proxy_id"; \
+		exit 1; \
+	fi; \
+	if [ -z "$version" ]; then \
+		echo "Error: curator proxy vault_version returned an empty response for $proxy_id"; \
+		exit 1; \
+	fi; \
+	mkdir -p "{{state_dir}}"; \
+	echo "$proxy_id" > "{{state_dir}}/curator_proxy_id"; \
+	echo "✓ Curator proxy deployed and verified: $proxy_id"; \
+	echo "  Vault version: $version"
 
 # Extend contract TTL (prevent expiration).
 extend-ttl ledgers="100000":
@@ -1245,6 +1333,7 @@ status:
 	@echo "Blend Pool:    $(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo 'not set')"
 	@echo "Custodial Adapter: $(cat {{state_dir}}/custodial_adapter_id 2>/dev/null || echo 'not deployed')"
 	@echo "Custodian:     $(cat {{state_dir}}/custodial_address 2>/dev/null || echo 'not set')"
+	@echo "Curator Proxy: $(cat {{state_dir}}/curator_proxy_id 2>/dev/null || echo 'not deployed')"
 	@echo ""
 	@if [ -f "{{state_dir}}/vault_id" ]; then \
 		echo "Vault state:"; \
@@ -1279,6 +1368,7 @@ export-env:
 	@echo "BLEND_POOL_ID=$(cat {{state_dir}}/blend_pool_id 2>/dev/null || echo '')"
 	@echo "CUSTODIAL_ADAPTER_ID=$(cat {{state_dir}}/custodial_adapter_id 2>/dev/null || echo '')"
 	@echo "CUSTODIAL_ADDRESS=$(cat {{state_dir}}/custodial_address 2>/dev/null || echo '')"
+	@echo "SOROBAN_CURATOR_PROXY=$(cat {{state_dir}}/curator_proxy_id 2>/dev/null || echo '')"
 
 # Internal: Ensure setup is complete.
 _ensure-setup:
@@ -1311,6 +1401,9 @@ help:
 	@echo "  just build-blend-adapter      Build Blend adapter WASM"
 	@echo "  just build-custodial-adapter  Build custodial adapter WASM"
 	@echo "  just verify-custodial-adapter-release-abi  Verify optimized custodial adapter ABI"
+	@echo "  just build-curator-proxy      Build curator proxy WASM"
+	@echo "  just verify-runtime-feature-matrix  Verify runtime capability masks"
+	@echo "  just verify-release-wasm-abi  Verify ENG-484 release ABIs and artifact behavior"
 	@echo "  just build-all                Build all WASMs"
 	@echo "  just wasm-analyze [rows]      Generate twiggy analysis reports"
 	@echo "  just wasm-analyze-print [report] [lines]  Print analysis reports"
@@ -1326,6 +1419,7 @@ help:
 	@echo "  just deploy                   Deploy vault contract"
 	@echo "  just deploy-share-token       Deploy standalone share token contract"
 	@echo "  just deploy-governance        Deploy governance contract"
+	@echo "  just deploy-curator-proxy-legacy-v1 <vault> <governance> <wasm-hash>"
 	@echo "  just init                     Initialize vault"
 	@echo "  just extend-ttl               Extend contract TTL"
 	@echo ""
