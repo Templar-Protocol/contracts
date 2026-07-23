@@ -279,9 +279,27 @@ Use recipes from [contract/vault/soroban/justfile](./justfile):
 
 From repo root: `just -f contract/vault/soroban/justfile <recipe>`.
 
-The build step compiles the runtime, governance, and share-token WASMs, runs the Stellar optimizer,
-and strips runtime contractspec metadata into a deploy artifact. The runtime deploy artifact is
-budgeted separately from the optimizer output because it is the artifact used for size gating.
+The build step compiles the runtime, governance, and share-token WASMs and runs the Stellar
+optimizer while retaining contractspec metadata. The optimized runtime output is both the deploy
+artifact and the artifact enforced by the size gate.
+
+## Runtime Version Discovery
+
+New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
+compiled by Cargo, and the bitmask reports the kernel action handlers compiled into that exact
+WASM. Stable assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation
+lifecycle `0x08`, refresh lifecycle `0x10`, and pause `0x20`. The default production mask is
+`0x1f`; pause remains disabled.
+
+The curator proxy exposes the same information through `vault_version()`. When the configured
+vault has no `version` export, the proxy returns the known v1 fallback `("1.0.0", 0x1f)`. It does
+not treat malformed responses or generic versionless contracts as legacy: because Soroban narrows
+recoverable host errors, the fallback also requires the configured contract to answer the typed v1
+`proxy_view`. This is a compatibility signal, not code-identity attestation; proxy configuration
+must remain restricted to approved vault artifacts. The runtime `version` entrypoint is additive
+and storage-free, so deployed v1 vaults do not need a runtime upgrade or state migration. Existing
+curator proxy deployments are non-upgradeable; consumers that need the query must use a replacement
+proxy pointed at the same vault and governance contracts.
 
 ## Blend Adapter
 
@@ -327,7 +345,10 @@ The custodial adapter's `extend_ttl()` entrypoint is permissionless because it o
 instance storage liveness and the transaction caller pays the Soroban resource cost.
 
 Existing adapter storage needs no migration: an absent timestamp key is returned as `None` until
-the next successful explicit report.
+the next successful explicit report. Rollout still requires upgrade authority over the adapter
+WASM. Adapters
+whose admin is the governance contract cannot currently be upgraded through the shipped governance
+actions; adding that authority or migrating those routes to replacement adapters is separate work.
 
 ### Custodial Runbook Checks
 

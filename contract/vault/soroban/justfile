@@ -1141,6 +1141,10 @@ vault-state:
 proxy-view owner assets="0" shares="0":
 	@just invoke proxy_view --owner "{{owner}}" --assets "{{assets}}" --shares "{{shares}}"
 
+# Get the installed runtime package version and compiled action-feature mask.
+vault-version:
+	@just invoke version
+
 # Get admin address.
 admin:
 	@echo "Curator/governance addresses are returned by proxy-view."
@@ -1367,6 +1371,7 @@ help:
 	@echo ""
 	@echo "VIEW:"
 	@echo "  just vault-state              Show vault summary"
+	@echo "  just vault-version            Show runtime version and feature mask"
 	@echo "  just proxy-view <owner> [assets] [shares]"
 	@echo "  just supply-queue             Show configured supply queue"
 	@echo "  just my-balance               Show share balance"

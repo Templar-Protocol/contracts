@@ -19,6 +19,12 @@
 //!
 //! # Feature Flags
 //!
+//! The default runtime forwards the five production kernel action gates:
+//! recovery, external synchronization, fee refresh, allocation lifecycle, and
+//! refresh lifecycle. `action-pause` is available as an opt-in build feature.
+//! The callable `version()` entrypoint reports the package version and exact
+//! compiled action-feature mask.
+//!
 //! - `std` - Enable std library support (for testing)
 
 #![no_std]
@@ -26,6 +32,42 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
+
+use templar_soroban_shared_types::{
+    RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
+    RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+    RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+};
+
+/// Package version compiled into this runtime artifact.
+pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const fn feature_flag(enabled: bool, flag: u64) -> u64 {
+    if enabled {
+        flag
+    } else {
+        0
+    }
+}
+
+/// Action-handler capabilities compiled into this runtime artifact.
+pub const RUNTIME_FEATURE_FLAGS: u64 =
+    feature_flag(
+        cfg!(feature = "action-recovery"),
+        RUNTIME_FEATURE_ACTION_RECOVERY,
+    ) | feature_flag(
+        cfg!(feature = "action-sync-external"),
+        RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+    ) | feature_flag(
+        cfg!(feature = "action-refresh-fees"),
+        RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+    ) | feature_flag(
+        cfg!(feature = "action-allocation-lifecycle"),
+        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+    ) | feature_flag(
+        cfg!(feature = "action-refresh-lifecycle"),
+        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+    ) | feature_flag(cfg!(feature = "action-pause"), RUNTIME_FEATURE_ACTION_PAUSE);
 
 pub mod auth;
 pub mod contract;

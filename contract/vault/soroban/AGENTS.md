@@ -69,8 +69,8 @@ Important details:
 - `build` emits the optimized runtime WASM and uses that same artifact for deployment. It keeps
   contractspec metadata so standard Stellar CLI invocation and explorer source-attestation tooling
   can inspect the deployed WASM.
-- Recent local evidence records the unstripped deploy artifact at `128955` bytes (`125.9 KiB`),
-  leaving roughly `2.1 KiB` of headroom under the `131072` byte gate.
+- Current local evidence records the optimized deploy artifact at `129507` bytes (`126.47 KiB`),
+  leaving `1565` bytes of headroom under the `131072` byte gate.
 
 Common growth pitfalls:
 

@@ -1,10 +1,11 @@
 use soroban_sdk::{
     testutils::{Address as _, MockAuth, MockAuthInvoke},
-    Address, Env, IntoVal, Symbol,
+    Address, Env, IntoVal, String as SdkString, Symbol,
 };
 use templar_curator_proxy_soroban::{ContractError, SorobanCuratorProxyContract};
 use templar_soroban_governance::SorobanVaultGovernanceContract;
 use templar_soroban_runtime::{SorobanVaultContract, VaultDataKey};
+use templar_soroban_shared_types::RuntimeVersionResponse;
 
 struct Harness {
     env: Env,
@@ -108,6 +109,26 @@ fn proxy_exposes_governance_views() {
 
     assert_eq!(governance, harness.governance);
     assert_eq!(admin, harness.admin);
+}
+
+#[test]
+fn proxy_forwards_real_runtime_version() {
+    let harness = setup_harness();
+
+    let (version, feature_flags) = harness.env.invoke_contract::<RuntimeVersionResponse>(
+        &harness.proxy,
+        &Symbol::new(&harness.env, "vault_version"),
+        soroban_sdk::vec![&harness.env],
+    );
+
+    assert_eq!(
+        version,
+        SdkString::from_str(&harness.env, templar_soroban_runtime::RUNTIME_VERSION)
+    );
+    assert_eq!(
+        feature_flags,
+        templar_soroban_runtime::RUNTIME_FEATURE_FLAGS
+    );
 }
 
 #[test]
