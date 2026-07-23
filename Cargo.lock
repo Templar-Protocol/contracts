@@ -13302,6 +13302,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "futures",
  "near-api",
  "near-crypto",
  "near-jsonrpc-client",

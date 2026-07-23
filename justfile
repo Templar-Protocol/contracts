@@ -118,6 +118,16 @@ _test-sandbox *args:
 sandbox-up:
     SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
 
+# Benchmark the sandbox harness primitives on a dedicated neard (never a pooled
+# node) — block-latency floor, per-tx and per-patch costs, fixture setup.
+bench-sandbox *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source ./script/prebuild-test-contracts.sh
+    # Debug profile, like the test gate itself: the numbers must be comparable
+    # with what tests actually pay, and the work being timed is node I/O.
+    cargo run -p templar-gateway-testing --bin sandbox-bench -- "$@"
+
 # Stop the out-of-band sandbox neard.
 sandbox-down:
     ./script/sandbox-down.sh

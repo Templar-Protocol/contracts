@@ -34,15 +34,21 @@ async fn snapshot_captures_borrow_and_collateral_state(
         .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
         .await?;
 
+    // A snapshot finalizes only when the next operation runs in a later time
+    // chunk, so each state we want to observe needs its own chunk: `fast_forward`
+    // before every operation rather than relying on incidental per-transaction
+    // time, which varies with block cadence. The trailing operation's own state
+    // stays the (unfinalized) current snapshot, so a final one triggers the
+    // finalization of the collateral `+1` we check.
+    harness.fast_forward(100).await?;
     harness
         .collateralize(&borrow_user, &market, 1_000_000)
         .await?;
-    harness.borrow(&borrow_user, &market, 500_000).await?;
-
     harness.fast_forward(100).await?;
-    // Snapshot updating occurs before the collateral deposit is recorded, so do
-    // it twice to observe the preceding state in a finalized snapshot.
+    harness.borrow(&borrow_user, &market, 500_000).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
 
     let snapshots = harness.list_finalized_snapshots(&market).await?;
@@ -175,6 +181,11 @@ async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness
     let final_len = harness.list_finalized_snapshots(&market).await?.len();
     assert!(final_len > initial);
 
+    // Cross a chunk boundary so the harvest that follows finalizes the snapshot
+    // holding the activated `+1` — otherwise it lands in the same chunk as the
+    // activation and stays the (unfinalized) current snapshot. Not relying on
+    // incidental per-transaction time keeps this independent of block cadence.
+    harness.fast_forward(100).await?;
     harness
         .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
         .await?;
@@ -253,24 +264,29 @@ async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Re
     harness.fund_user(&supply_user, &market).await?;
     harness.fund_user(&borrow_user, &market).await?;
 
+    // Every state below must land in its own time chunk to be finalized
+    // separately, so `fast_forward` before each operation instead of relying on
+    // incidental per-transaction time (which varies with block cadence). The
+    // final operation only triggers finalization of the preceding one; its own
+    // state stays the unfinalized current snapshot and is not checked.
     harness
         .supply_and_harvest_until_activation(&supply_user, &market, 1_500_000)
         .await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
+    harness.fast_forward(100).await?;
     harness
         .collateralize(&borrow_user, &market, 800_000)
         .await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
+    harness.fast_forward(100).await?;
     harness.borrow(&borrow_user, &market, 400_000).await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
 
     let snapshots = harness.list_finalized_snapshots(&market).await?;
@@ -337,10 +353,12 @@ async fn many_users_different_snapshots(#[future(awt)] harness: SandboxHarness) 
         harness.fund_user(user, &market).await?;
     }
 
-    // Two suppliers, each activating in its own snapshot.
+    // Two suppliers, each activating in its own snapshot — so a chunk boundary
+    // must fall between them rather than being left to incidental timing.
     harness
         .supply_and_harvest_until_activation(&supply_1, &market, 2_000_000)
         .await?;
+    harness.fast_forward(100).await?;
     harness
         .supply_and_harvest_until_activation(&supply_2, &market, 1_500_000)
         .await?;
