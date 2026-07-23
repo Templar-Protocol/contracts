@@ -205,6 +205,8 @@ pub enum DeployCommand {
     Repair(ReconcileArgs),
     /// Add Blend or custodial adapters to an existing or imported vault deployment
     Adapters(DeployAdaptersArgs),
+    /// Deploy a fresh curator proxy for an existing or imported vault deployment
+    CuratorProxy(DeployCuratorProxyArgs),
     /// Upload or verify a single WASM artifact
     Wasm(DeployWasmArgs),
 }
@@ -313,6 +315,25 @@ pub struct DeployAdaptersArgs {
     /// Deploy a fresh adapter even if an adapter for the same pool already exists
     #[arg(long)]
     pub force_new: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct DeployCuratorProxyArgs {
+    /// Existing vault contract address. Required when the manifest does not already contain `vault`.
+    #[arg(long, env = "SOROBAN_VAULT")]
+    pub vault: Option<AddressStr>,
+
+    /// Existing governance contract address. Required when the manifest does not already contain `governance`.
+    #[arg(long, env = "SOROBAN_GOVERNANCE")]
+    pub governance: Option<AddressStr>,
+
+    /// Verified current vault WASM hash for an approved versionless v1 runtime.
+    #[arg(long, env = "SOROBAN_LEGACY_V1_WASM_HASH")]
+    pub legacy_v1_wasm_hash: Option<WasmHash>,
+
+    /// Rebuild the curator-proxy artifact before upload/deploy.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub build: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1141,6 +1162,7 @@ mod tests {
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
+                | DeployCommand::CuratorProxy(_)
                 | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
             },
             _ => panic!("expected deploy command"),
@@ -1174,6 +1196,7 @@ mod tests {
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
+                | DeployCommand::CuratorProxy(_)
                 | DeployCommand::Wasm(_) => panic!("expected deploy stack"),
             },
             _ => panic!("expected deploy command"),
@@ -1213,6 +1236,7 @@ mod tests {
                 | DeployCommand::Stack(_)
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
+                | DeployCommand::CuratorProxy(_)
                 | DeployCommand::Wasm(_) => panic!("expected deploy adapters"),
             },
             _ => panic!("expected deploy command"),
@@ -1248,6 +1272,7 @@ mod tests {
                 | DeployCommand::Resume(_)
                 | DeployCommand::Repair(_)
                 | DeployCommand::Adapters(_)
+                | DeployCommand::CuratorProxy(_)
                 | DeployCommand::Wasm(_) => panic!("expected deploy plan"),
             },
             _ => panic!("expected deploy command"),
@@ -1269,6 +1294,55 @@ mod tests {
             legacy.command,
             Commands::ExtendTtl(ExtendTtlArgs { caller: Some(_) })
         ));
+    }
+
+    #[test]
+    fn parses_targeted_legacy_curator_proxy_deploy() {
+        let legacy_hash = "11".repeat(32);
+        let cli = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "curator-proxy",
+            "--vault",
+            POOL,
+            "--governance",
+            POOL,
+            "--legacy-v1-wasm-hash",
+            &legacy_hash,
+            "--build",
+            "false",
+        ])
+        .expect("parse targeted curator proxy deploy");
+
+        match cli.command {
+            Commands::Deploy(args) => match args.command {
+                DeployCommand::CuratorProxy(args) => {
+                    assert_eq!(
+                        args.vault.as_ref().map(ToString::to_string).as_deref(),
+                        Some(POOL)
+                    );
+                    assert_eq!(
+                        args.governance.as_ref().map(ToString::to_string).as_deref(),
+                        Some(POOL)
+                    );
+                    assert_eq!(
+                        args.legacy_v1_wasm_hash
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .as_deref(),
+                        Some(legacy_hash.as_str())
+                    );
+                    assert!(!args.build);
+                }
+                DeployCommand::Plan(_)
+                | DeployCommand::Stack(_)
+                | DeployCommand::Resume(_)
+                | DeployCommand::Repair(_)
+                | DeployCommand::Adapters(_)
+                | DeployCommand::Wasm(_) => panic!("expected deploy curator-proxy"),
+            },
+            _ => panic!("expected deploy command"),
+        }
     }
 
     #[test]
