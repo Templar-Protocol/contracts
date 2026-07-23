@@ -639,6 +639,10 @@ custodial-adapter-custodian:
 custodial-adapter-total-assets asset_address:
 	@just custodial-invoke total_assets --asset "{{asset_address}}"
 
+# Get the timestamp of the latest explicit NAV report for an asset.
+custodial-adapter-reported-at asset_address:
+	@just custodial-invoke reported_at --asset "{{asset_address}}"
+
 # Set reported assets for an offchain-managed position.
 # caller must be the configured admin, vault, or custodian and must authorize the call.
 custodial-adapter-set-reported-assets caller asset_address expected_current amount report_nonce:
@@ -661,6 +665,7 @@ custodial-adapter-status:
 		asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 		if [ -n "$asset" ]; then \
 			echo "Reported:  $(just custodial-invoke total_assets --asset "$asset" 2>/dev/null || echo 'error')"; \
+			echo "Reported at: $(just custodial-invoke reported_at --asset "$asset" 2>/dev/null || echo 'error')"; \
 		fi; \
 	fi
 
@@ -1125,6 +1130,10 @@ vault-state:
 proxy-view owner assets="0" shares="0":
 	@just invoke proxy_view --owner "{{owner}}" --assets "{{assets}}" --shares "{{shares}}"
 
+# Get the installed runtime package version and compiled action-feature mask.
+vault-version:
+	@just invoke version
+
 # Get admin address.
 admin:
 	@echo "Curator/governance addresses are returned by proxy-view."
@@ -1322,6 +1331,7 @@ help:
 	@echo "  just deploy-custodial-adapter <custodian>  Deploy adapter for offchain custody route"
 	@echo "  just custodial-adapter-status              Show adapter status"
 	@echo "  just custodial-adapter-total-assets <asset>  Query reported position"
+	@echo "  just custodial-adapter-reported-at <asset>   Query latest explicit report timestamp"
 	@echo "  just custodial-adapter-set-reported-assets <caller> <asset> <expected_current> <amount> <report_nonce>"
 	@echo ""
 	@echo "DEPOSITS:"
@@ -1349,6 +1359,7 @@ help:
 	@echo ""
 	@echo "VIEW:"
 	@echo "  just vault-state              Show vault summary"
+	@echo "  just vault-version            Show runtime version and feature mask"
 	@echo "  just proxy-view <owner> [assets] [shares]"
 	@echo "  just supply-queue             Show configured supply queue"
 	@echo "  just my-balance               Show share balance"

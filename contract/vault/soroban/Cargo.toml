@@ -1,6 +1,6 @@
 [package]
 name = "templar-soroban-runtime"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
@@ -10,13 +10,25 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [features]
-default = []
+default = [
+    "action-recovery",
+    "action-sync-external",
+    "action-refresh-fees",
+    "action-allocation-lifecycle",
+    "action-refresh-lifecycle",
+]
 std = []
 testutils = ["soroban-sdk/testutils"]
+action-recovery = ["templar-vault-kernel/action-recovery"]
+action-sync-external = ["templar-vault-kernel/action-sync-external"]
+action-refresh-fees = ["templar-vault-kernel/action-refresh-fees"]
+action-allocation-lifecycle = ["templar-vault-kernel/action-allocation-lifecycle"]
+action-refresh-lifecycle = ["templar-vault-kernel/action-refresh-lifecycle"]
+action-pause = ["templar-vault-kernel/action-pause"]
 
 [dependencies]
 # Core dependency - vault kernel types
-templar-vault-kernel = { path = "../kernel", features = ["postcard", "soroban", "action-refresh-fees", "action-allocation-lifecycle", "action-refresh-lifecycle", "action-sync-external", "action-recovery"] }
+templar-vault-kernel = { path = "../kernel", default-features = false, features = ["postcard", "soroban"] }
 
 templar-curator-primitives = { path = "../curator-primitives", features = ["postcard"] }
 templar-soroban-shared-types = { path = "./shared-types" }
@@ -33,5 +45,5 @@ soroban-sdk = { version = "25.3.0", features = ["testutils", "alloc", "experimen
 rstest.workspace = true
 blend-contract-sdk = { version = "2.25.0", features = ["testutils"] }
 templar-soroban-blend-adapter = { path = "./blend-adapter" }
-templar-soroban-runtime = { path = ".", features = ["testutils"] }
+templar-soroban-runtime = { path = ".", default-features = false, features = ["testutils"] }
 templar-soroban-governance = { path = "./governance" }

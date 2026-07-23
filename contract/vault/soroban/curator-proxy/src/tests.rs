@@ -1,15 +1,18 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, InvokeError, Vec,
+    contract, contracterror, contractimpl, contracttype,
+    xdr::{ScErrorCode, ScErrorType},
+    Address, Bytes, Env, Error as SorobanError, InvokeError, String, Vec,
 };
 use templar_soroban_shared_types::{
-    EmptyReceipt, I128Receipt, ProxyViewResponse, VaultCommand as WireVaultCommand,
+    EmptyReceipt, I128Receipt, ProxyViewResponse, RuntimeVersionResponse,
+    VaultCommand as WireVaultCommand, RUNTIME_V1_FEATURE_FLAGS, RUNTIME_V1_VERSION,
 };
 
 use crate::{
     contract::{
-        map_vault_invoke_error, timelocks_from_kind_values, AllocationDelta, ProxyDataKey,
-        SorobanCuratorProxyContract,
+        is_legacy_version_candidate, map_vault_invoke_error, timelocks_from_kind_values,
+        AllocationDelta, ProxyDataKey, SorobanCuratorProxyContract,
     },
     error::ContractError,
     governance_abi::{
@@ -56,6 +59,39 @@ impl MockVaultContract {
 
         Bytes::from_slice(&env, &receipt)
     }
+
+    pub fn proxy_view(env: Env, owner: Address, _assets: i128, _shares: i128) -> ProxyViewResponse {
+        (
+            (
+                (owner.clone(), owner.clone(), owner.clone(), owner),
+                (0, 0, false),
+                (0, 0, 0, 0),
+                (0, 0, 0, 0, 0),
+            ),
+            (Vec::new(&env), Vec::new(&env)),
+            (0, 0, 0, 0, 0, 0, 0, 0),
+        )
+    }
+}
+
+#[contract]
+struct MockVersionedVaultContract;
+
+#[contractimpl]
+impl MockVersionedVaultContract {
+    pub fn version(env: Env) -> RuntimeVersionResponse {
+        (String::from_str(&env, "2.4.6"), 0x2a)
+    }
+}
+
+#[contract]
+struct MockMalformedVersionVaultContract;
+
+#[contractimpl]
+impl MockMalformedVersionVaultContract {
+    pub fn version(_env: Env) -> u64 {
+        7
+    }
 }
 
 #[contracterror]
@@ -71,6 +107,10 @@ struct MockFailingVaultContract;
 
 #[contractimpl]
 impl MockFailingVaultContract {
+    pub fn version(_env: Env) -> Result<RuntimeVersionResponse, MockForeignVaultError> {
+        Err(MockForeignVaultError::CollidesWithNotImplemented)
+    }
+
     pub fn execute(_env: Env, _payload: Bytes) -> Result<Bytes, MockForeignVaultError> {
         Err(MockForeignVaultError::CollidesWithNotImplemented)
     }
@@ -502,6 +542,113 @@ fn initialize_stores_target_contracts() {
         );
         assert_eq!(storage.get(&ProxyDataKey::Initialized), Some(true));
     });
+}
+
+#[test]
+fn vault_version_falls_back_for_legacy_vault() {
+    let fixture = Fixture::new();
+    fixture.initialize().expect("initialize succeeds");
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+    });
+
+    assert_eq!(
+        result,
+        Ok((
+            String::from_str(&fixture.env, RUNTIME_V1_VERSION),
+            RUNTIME_V1_FEATURE_FLAGS,
+        ))
+    );
+}
+
+#[test]
+fn vault_version_rejects_versionless_non_vault() {
+    let fixture = Fixture::new();
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            fixture.governance.clone(),
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+        assert_eq!(
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone()),
+            Err(ContractError::VaultError)
+        );
+    });
+}
+
+#[test]
+fn vault_version_forwards_current_response() {
+    let fixture = Fixture::new();
+    let vault = fixture.env.register(MockVersionedVaultContract, ());
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+    });
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+    });
+
+    assert_eq!(result, Ok((String::from_str(&fixture.env, "2.4.6"), 0x2a)));
+}
+
+#[test]
+fn vault_version_rejects_malformed_response_and_contract_failure() {
+    let fixture = Fixture::new();
+    let malformed_vault = fixture.env.register(MockMalformedVersionVaultContract, ());
+    fixture.env.as_contract(&fixture.proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            malformed_vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+    });
+    assert_eq!(
+        fixture.env.as_contract(&fixture.proxy, || {
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone())
+        }),
+        Err(ContractError::VaultError)
+    );
+
+    let failing_proxy = fixture.env.register(SorobanCuratorProxyContract, ());
+    let failing_vault = fixture.env.register(MockFailingVaultContract, ());
+    fixture.env.as_contract(&failing_proxy, || {
+        SorobanCuratorProxyContract::initialize(
+            fixture.env.clone(),
+            failing_vault,
+            fixture.governance.clone(),
+        )
+        .expect("initialize succeeds");
+        assert_eq!(
+            SorobanCuratorProxyContract::vault_version(fixture.env.clone()),
+            Err(ContractError::VaultError)
+        );
+    });
+}
+
+#[test]
+fn legacy_version_candidate_classifier_is_narrow() {
+    assert!(is_legacy_version_candidate(
+        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::InvalidAction,)
+    ));
+
+    for error in [
+        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::MissingValue),
+        SorobanError::from_type_and_code(ScErrorType::WasmVm, ScErrorCode::InvalidAction),
+        SorobanError::from_type_and_code(ScErrorType::Storage, ScErrorCode::MissingValue),
+        SorobanError::from_type_and_code(ScErrorType::Context, ScErrorCode::UnexpectedType),
+        SorobanError::from_contract_error(1),
+    ] {
+        assert!(!is_legacy_version_candidate(error));
+    }
 }
 
 #[test]

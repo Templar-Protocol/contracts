@@ -19,6 +19,35 @@ pub enum CodecError {
 pub const VAULT_ERR_INVALID_INPUT: u32 = 3;
 pub const VAULT_ERR_ALREADY_INITIALIZED: u32 = 8;
 
+/// Runtime includes recovery action handlers.
+pub const RUNTIME_FEATURE_ACTION_RECOVERY: u64 = 1 << 0;
+/// Runtime includes external-asset synchronization action handlers.
+pub const RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL: u64 = 1 << 1;
+/// Runtime includes fee-refresh action handlers.
+pub const RUNTIME_FEATURE_ACTION_REFRESH_FEES: u64 = 1 << 2;
+/// Runtime includes allocation lifecycle action handlers.
+pub const RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE: u64 = 1 << 3;
+/// Runtime includes refresh lifecycle action handlers.
+pub const RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE: u64 = 1 << 4;
+/// Runtime includes pause action handlers.
+pub const RUNTIME_FEATURE_ACTION_PAUSE: u64 = 1 << 5;
+
+/// Package version returned for deployed runtimes without a version entrypoint.
+pub const RUNTIME_V1_VERSION: &str = "1.0.0";
+
+/// Feature mask shipped by the original v1 runtime.
+pub const RUNTIME_V1_FEATURE_FLAGS: u64 = RUNTIME_FEATURE_ACTION_RECOVERY
+    | RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL
+    | RUNTIME_FEATURE_ACTION_REFRESH_FEES
+    | RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE
+    | RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE;
+
+/// Feature mask enabled by the current default runtime build.
+pub const RUNTIME_DEFAULT_FEATURE_FLAGS: u64 = RUNTIME_V1_FEATURE_FLAGS;
+
+/// Compact callable runtime version response.
+pub type RuntimeVersionResponse = (soroban_sdk::String, u64);
+
 pub mod strkey {
     use super::CodecError;
 
@@ -1102,6 +1131,23 @@ mod tests {
     fn receipt_address() -> ReceiptAddress {
         ReceiptAddress::from_str("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
             .expect("valid receipt address")
+    }
+
+    #[test]
+    fn runtime_feature_bits_are_stable_and_default_mask_excludes_pause() {
+        assert_eq!(RUNTIME_FEATURE_ACTION_RECOVERY, 0x01);
+        assert_eq!(RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, 0x02);
+        assert_eq!(RUNTIME_FEATURE_ACTION_REFRESH_FEES, 0x04);
+        assert_eq!(RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, 0x08);
+        assert_eq!(RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, 0x10);
+        assert_eq!(RUNTIME_FEATURE_ACTION_PAUSE, 0x20);
+        assert_eq!(RUNTIME_V1_VERSION, "1.0.0");
+        assert_eq!(RUNTIME_V1_FEATURE_FLAGS, 0x1f);
+        assert_eq!(RUNTIME_DEFAULT_FEATURE_FLAGS, 0x1f);
+        assert_eq!(
+            RUNTIME_DEFAULT_FEATURE_FLAGS & RUNTIME_FEATURE_ACTION_PAUSE,
+            0
+        );
     }
 
     #[test]

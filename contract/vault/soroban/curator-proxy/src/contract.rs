@@ -7,12 +7,15 @@ use crate::governance_abi::{
     SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal,
-    InvokeError, String, Symbol, TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, symbol_short,
+    xdr::{ScErrorCode, ScErrorType},
+    Address, Bytes, BytesN, Env, Error as SorobanError, IntoVal, InvokeError, String, Symbol,
+    TryFromVal, Val, Vec,
 };
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
-    VaultCommand as WireVaultCommand,
+    RuntimeVersionResponse, VaultCommand as WireVaultCommand, RUNTIME_V1_FEATURE_FLAGS,
+    RUNTIME_V1_VERSION,
 };
 
 use crate::error::ContractError;
@@ -199,6 +202,15 @@ impl SorobanCuratorProxyContract {
 
     pub fn vault(env: Env) -> Result<Address, ContractError> {
         read_vault_address(&env)
+    }
+
+    /// Return the configured vault runtime version and compiled action capabilities.
+    ///
+    /// Vaults without the additive `version` entrypoint are treated as the known
+    /// v1 deployment after the typed v1 view is confirmed. Contract errors and
+    /// malformed return values remain errors.
+    pub fn vault_version(env: Env) -> Result<(String, u64), ContractError> {
+        call_vault_version(&env)
     }
 
     pub fn governance(env: Env) -> Result<Address, ContractError> {
@@ -771,6 +783,35 @@ fn call_proxy_view_full(
         Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
         Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
     }
+}
+
+fn call_vault_version(env: &Env) -> Result<RuntimeVersionResponse, ContractError> {
+    let vault_address = read_vault_address(env)?;
+    let result = env.try_invoke_contract::<RuntimeVersionResponse, SorobanError>(
+        &vault_address,
+        &symbol_short!("version"),
+        ().into_val(env),
+    );
+
+    match result {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) => Err(ContractError::VaultError),
+        Err(Ok(error)) if is_legacy_version_candidate(error) => {
+            // Soroban narrows recoverable host errors from `try_call` to
+            // Context/InvalidAction. Require the established typed v1 view as
+            // a second signal before treating the missing export as legacy.
+            call_proxy_view_full(env, &env.current_contract_address(), 0, 0)?;
+            Ok((
+                String::from_str(env, RUNTIME_V1_VERSION),
+                RUNTIME_V1_FEATURE_FLAGS,
+            ))
+        }
+        Err(Ok(_)) | Err(Err(_)) => Err(ContractError::VaultError),
+    }
+}
+
+pub(crate) fn is_legacy_version_candidate(error: SorobanError) -> bool {
+    error.is_type(ScErrorType::Context) && error.is_code(ScErrorCode::InvalidAction)
 }
 
 pub(crate) fn map_vault_invoke_error(error: InvokeError) -> ContractError {

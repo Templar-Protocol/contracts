@@ -356,15 +356,18 @@ mod contract_tests {
     use alloc::vec::Vec;
     use proptest::prelude::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Address as SdkAddress, Bytes, Env};
+    use soroban_sdk::{Address as SdkAddress, Bytes, Env, String as SdkString, Symbol};
     use templar_curator_primitives::policy::state::MarketConfig;
     use templar_curator_primitives::PolicyState;
     use templar_soroban_governance::SorobanVaultGovernanceContract;
     use templar_soroban_shared_types::{
         DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus,
-        GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt, VaultCommand,
-        GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN, GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS,
-        GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+        GovernanceCommand, I128Receipt, ReceiptAddress, RequestWithdrawReceipt,
+        RuntimeVersionResponse, VaultCommand, GOVERNANCE_CONFIG_KIND_IDLE_RESYNC_COOLDOWN,
+        GOVERNANCE_CONFIG_KIND_VIRTUAL_OFFSETS, GOVERNANCE_CONFIG_KIND_WITHDRAWAL_COOLDOWN,
+        RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
+        RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+        RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -555,6 +558,59 @@ mod contract_tests {
         );
         vault.load_state().unwrap();
         vault
+    }
+
+    #[test]
+    fn test_version_is_available_before_initialization_and_matches_compiled_features() {
+        let env = Env::default();
+        let contract_id = env.register(SorobanVaultContract, ());
+
+        let (version, feature_flags) = env.invoke_contract::<RuntimeVersionResponse>(
+            &contract_id,
+            &Symbol::new(&env, "version"),
+            soroban_sdk::vec![&env],
+        );
+
+        assert_eq!(version, SdkString::from_str(&env, crate::RUNTIME_VERSION));
+        assert_eq!(feature_flags, crate::RUNTIME_FEATURE_FLAGS);
+        for (flag, enabled) in [
+            (
+                RUNTIME_FEATURE_ACTION_RECOVERY,
+                cfg!(feature = "action-recovery"),
+            ),
+            (
+                RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+                cfg!(feature = "action-sync-external"),
+            ),
+            (
+                RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+                cfg!(feature = "action-refresh-fees"),
+            ),
+            (
+                RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+                cfg!(feature = "action-allocation-lifecycle"),
+            ),
+            (
+                RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+                cfg!(feature = "action-refresh-lifecycle"),
+            ),
+            (RUNTIME_FEATURE_ACTION_PAUSE, cfg!(feature = "action-pause")),
+        ] {
+            assert_eq!(feature_flags & flag != 0, enabled);
+        }
+
+        #[cfg(all(
+            feature = "action-recovery",
+            feature = "action-sync-external",
+            feature = "action-refresh-fees",
+            feature = "action-allocation-lifecycle",
+            feature = "action-refresh-lifecycle",
+            not(feature = "action-pause")
+        ))]
+        assert_eq!(
+            feature_flags,
+            templar_soroban_shared_types::RUNTIME_DEFAULT_FEATURE_FLAGS
+        );
     }
 
     #[test]
