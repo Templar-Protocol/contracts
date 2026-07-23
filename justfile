@@ -39,12 +39,15 @@ sql-fmt:
 fmt: sql-fmt
     cargo fmt
 
-# Run the complete local suite with shared prerequisites established once.
+# Run the complete local suite with shared prerequisites established once. `--stale` reuses built Wasms.
 test *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source ./script/postgres-up.sh
-    just -- _test-fast "$@"
+    # --stale is the sandbox leg's alone; the fast leg forwards its args to nextest.
+    fast_args=()
+    for arg in "$@"; do [[ "$arg" == --stale ]] || fast_args+=("$arg"); done
+    just -- _test-fast "${fast_args[@]}"
     just -- _test-sandbox "$@"
 
 # Run the complete non-node gate.
@@ -61,7 +64,7 @@ _test-fast *args:
     cargo nextest run --ignore-default-filter \
         -E '{{ fast_filter }}' "$@"
 
-# Run the node-backed gate against a pooled neard sandbox.
+# Run the node-backed gate against a pooled neard sandbox. `--stale` reuses the Wasms in target/near.
 test-sandbox *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -93,6 +96,9 @@ _test-sandbox *args:
             --test-threads=*)
                 sandbox_test_threads="${1#*=}"
                 ;;
+            --stale)
+                export TEST_CONTRACTS_PREBUILT=1
+                ;;
             *)
                 nextest_args+=("$1")
                 ;;
@@ -114,8 +120,21 @@ _test-sandbox *args:
         "${sandbox_package_args[@]}" \
         -E '{{ sandbox_test_filter }}' "${nextest_args[@]}"
 
-# Start the out-of-band sandbox neard (prints its RPC url).
-sandbox-up:
+# Start the out-of-band sandbox neard (prints its RPC url). `--stale` skips the Wasm prebuild.
+sandbox-up *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for arg in "$@"; do
+        case "$arg" in
+            --stale)
+                export TEST_CONTRACTS_PREBUILT=1
+                ;;
+            *)
+                echo "error: sandbox-up accepts only --stale" >&2
+                exit 2
+                ;;
+        esac
+    done
     SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
 
 # Stop the out-of-band sandbox neard.

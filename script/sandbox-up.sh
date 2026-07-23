@@ -2,7 +2,8 @@
 # Start a pool of out-of-band `neard` instances for attach-mode tests and export:
 #   NEAR_SANDBOX_RPC_URL_<i>  - the i-th node's RPC url (i in 0..count-1)
 #   NEAR_SANDBOX_RPC_URL      - node 0 (fallback for manual runs)
-#   TEST_CONTRACTS_PREBUILT    - confirms contract Wasms were built
+#   TEST_CONTRACTS_PREBUILT    - confirms contract Wasms were built; set it on the
+#                                way in to verify the existing ones instead of rebuilding
 #
 # Source this script so the exports remain available to the test process.
 #
@@ -24,7 +25,13 @@ NODE_COUNT="${SANDBOX_NODE_COUNT:?SANDBOX_NODE_COUNT must be set by test orchest
 bash "${SCRIPT_DIR}/sandbox-down.sh" >/dev/null
 
 # Prebuild the contract wasms once so tests don't each recompile them.
-bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
+if [ -n "${TEST_CONTRACTS_PREBUILT:-}" ]; then
+  echo "TEST_CONTRACTS_PREBUILT set: verifying prebuilt contract wasms instead of building them"
+  bash "${SCRIPT_DIR}/prebuild-test-contracts.sh" --check ||
+    { echo "unset TEST_CONTRACTS_PREBUILT to build them here" >&2; exit 1; }
+else
+  bash "${SCRIPT_DIR}/prebuild-test-contracts.sh"
+fi
 
 cargo build -q -p templar-gateway-testing --bin sandbox-host
 
