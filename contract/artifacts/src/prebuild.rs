@@ -1,4 +1,9 @@
-use std::{collections::HashSet, path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
 use clap::Parser;
 
@@ -34,17 +39,55 @@ struct Args {
         value_delimiter = ','
     )]
     artifacts: Vec<ArtifactId>,
+
+    /// Report whether the selected artifacts are already built, without building them.
+    #[arg(long)]
+    check: bool,
 }
 
 pub fn main() -> ExitCode {
     let args = Args::parse();
-    let jobs = args.jobs.max(1);
-    let timeout = Duration::from_secs(args.timeout_secs);
     let artifacts = selected_artifacts(&args.artifacts);
 
-    match prebuild_all(&args.workspace_root, jobs, timeout, artifacts) {
+    let result = if args.check {
+        check_all(&args.workspace_root, &artifacts)
+    } else {
+        prebuild_all(
+            &args.workspace_root,
+            args.jobs.max(1),
+            Duration::from_secs(args.timeout_secs),
+            artifacts,
+        )
+    };
+
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(()) => ExitCode::FAILURE,
+    }
+}
+
+/// Report every selected artifact missing from `target/near`.
+fn check_all(workspace_root: &Path, artifacts: &[&'static ArtifactMetadata]) -> Result<(), ()> {
+    let metadata = workspace_loader::get_metadata(workspace_root)
+        .map_err(|error| eprintln!("failed to read cargo metadata: {error}"))?;
+    let target_dir = metadata.target_directory.as_std_path();
+    let mut missing = false;
+
+    for artifact in artifacts {
+        let path = workspace_loader::target_near_wasm_path_from_meta(
+            target_dir,
+            artifact.cargo_target_name,
+        );
+        if !path.is_file() {
+            eprintln!("missing prebuilt artifact: {}", path.display());
+            missing = true;
+        }
+    }
+
+    if missing {
+        Err(())
+    } else {
+        Ok(())
     }
 }
 
