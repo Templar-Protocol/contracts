@@ -21,6 +21,18 @@ impl From<V0ToV1> for Migration {
 }
 
 impl Migrator for Migration {
+    fn input_version(&self) -> u32 {
+        match self {
+            Migration::V0(v0) => v0.input_version(),
+        }
+    }
+
+    fn output_version(&self) -> u32 {
+        match self {
+            Migration::V0(v0) => v0.output_version(),
+        }
+    }
+
     fn run(self) {
         match self {
             Migration::V0(v0) => {
