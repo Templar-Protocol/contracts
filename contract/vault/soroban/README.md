@@ -286,10 +286,10 @@ artifact and the artifact enforced by the size gate.
 ## Runtime Version Discovery
 
 New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
-compiled by Cargo, and the bitmask reports the kernel action handlers compiled into that exact
-WASM. Stable assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation
-lifecycle `0x08`, refresh lifecycle `0x10`, and pause `0x20`. The default production mask is
-`0x1f`; pause remains disabled.
+compiled by Cargo, and the bitmask reports the capabilities compiled into that exact WASM. Stable
+assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation lifecycle
+`0x08`, refresh lifecycle `0x10`, pause `0x20`, and companion-contract upgrade routing `0x40`.
+The default production mask is `0x1f`; pause and companion upgrades remain disabled.
 
 The curator proxy exposes the same information through `vault_version()`. Use its existing
 `initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,
@@ -340,8 +340,14 @@ Blend integration lives in the dedicated crate `contract/vault/soroban/blend-ada
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`
-- `just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
-- `just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+
+**Breaking change:** adapter deployment no longer defaults the admin to governance. Set
+`SOROBAN_ADAPTER_ADMIN` to an explicit Soroban account or contract address. The literal value
+`vault` is accepted only when the deployed vault's `version()` response advertises
+companion-contract upgrade routing (`0x40`). The current default runtime mask is `0x1f`, so it
+rejects `SOROBAN_ADAPTER_ADMIN=vault`.
 
 After deployment, register the adapter as a vault market before allocation.
 
@@ -368,8 +374,8 @@ NAV revision and must increase by one from the current value.
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-custodial-adapter`
-- `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
-- `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
 - `just custodial-adapter-reported-at <ASSET_ADDRESS>`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
@@ -381,6 +387,8 @@ Existing adapter storage needs no migration: an absent timestamp key is returned
 the next explicit report. Rollout still requires upgrade authority over the adapter WASM. Adapters
 whose admin is the governance contract cannot currently be upgraded through the shipped governance
 actions; adding that authority or migrating those routes to replacement adapters is separate work.
+The vault CLI and justfile recipes therefore require an explicit adapter admin and apply the same
+`0x40` capability gate before accepting the vault itself.
 
 ### Custodial Runbook Checks
 
