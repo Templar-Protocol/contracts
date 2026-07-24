@@ -12,7 +12,9 @@ use clap::CommandFactory;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
 use templar_curator_proxy_soroban::AllocationDelta;
-use templar_soroban_shared_types::VaultCommand as WireVaultCommand;
+use templar_soroban_shared_types::{
+    VaultCommand as WireVaultCommand, RUNTIME_FEATURE_COMPANION_UPGRADE,
+};
 use tracing::{debug, info};
 
 use crate::{
@@ -27,7 +29,7 @@ use crate::{
     profile,
     stellar::{CommandExecutor, CommandOutput, Stellar},
     types::{
-        AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SourceAccount,
+        AdapterAdminArg, AddressStr, DecimalAmount, FeeParamsArg, ShareDecimalsArg, SourceAccount,
         SupplyQueueEntryArg,
     },
 };
@@ -632,13 +634,17 @@ fn deploy_stack<E: CommandExecutor>(
         anyhow::bail!("zero governance timelock requires --allow-zero-timelock");
     }
 
+    let include_blend = !args.blend_pools.is_empty();
+    let include_custodial = !args.custodians.is_empty();
+    let requested_adapter_admin = if include_blend || include_custodial {
+        Some(require_adapter_admin(args.adapter_admin.as_ref())?)
+    } else {
+        None
+    };
     let admin = match &args.admin {
         Some(admin) => admin.to_string(),
         None => stellar.keys_address_source_account()?,
     };
-
-    let include_blend = !args.blend_pools.is_empty();
-    let include_custodial = !args.custodians.is_empty();
     let progress = DeploymentProgress::stack(
         cli,
         stack_progress_steps(
@@ -873,7 +879,8 @@ fn deploy_stack<E: CommandExecutor>(
                 stellar,
                 manifest,
                 &wasm_hashes["blend_adapter"],
-                &governance,
+                requested_adapter_admin
+                    .context("adapter deployment requires --adapter-admin <address|vault>")?,
                 &vault,
                 &args.blend_pools,
                 args.force_new,
@@ -889,7 +896,8 @@ fn deploy_stack<E: CommandExecutor>(
                 stellar,
                 manifest,
                 &wasm_hashes["custodial_adapter"],
-                &governance,
+                requested_adapter_admin
+                    .context("adapter deployment requires --adapter-admin <address|vault>")?,
                 &vault,
                 &asset_token,
                 &args.custodians,
@@ -1731,6 +1739,44 @@ fn verify_curator_proxy_version<E: CommandExecutor>(
     Ok(output.stdout)
 }
 
+fn require_adapter_admin(admin: Option<&AdapterAdminArg>) -> anyhow::Result<&AdapterAdminArg> {
+    admin.context(
+        "adapter deployment requires an explicit --adapter-admin <address|vault>; governance is not an implicit adapter admin",
+    )
+}
+
+fn verify_vault_companion_upgrade<E: CommandExecutor>(
+    cli: &Cli,
+    stellar: &Stellar<'_, E>,
+    vault: &str,
+) -> anyhow::Result<()> {
+    let output = stellar
+        .invoke_view(vault, "version", Vec::new())
+        .with_context(|| {
+            format!(
+                "cannot use vault {vault} as adapter admin: runtime capability detection via version() failed"
+            )
+        })?;
+    if cli.dry_run {
+        return Ok(());
+    }
+    let (version, feature_flags) = parse_runtime_version(&output.stdout).with_context(|| {
+        format!(
+            "cannot use vault {vault} as adapter admin: decode runtime version() capability response"
+        )
+    })?;
+    anyhow::ensure!(
+        feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE != 0,
+        "cannot use vault {vault} version {version} as adapter admin: companion-upgrade capability {RUNTIME_FEATURE_COMPANION_UPGRADE:#x} is not advertised (feature mask {feature_flags:#x})"
+    );
+    Ok(())
+}
+
+fn parse_runtime_version(raw: &str) -> anyhow::Result<(String, u64)> {
+    serde_json::from_str(raw.trim())
+        .context("expected runtime version response as [version, feature_flags]")
+}
+
 fn deploy_adapters<E: CommandExecutor>(
     cli: &Cli,
     stellar: &Stellar<'_, E>,
@@ -1741,6 +1787,7 @@ fn deploy_adapters<E: CommandExecutor>(
         !args.blend_pools.is_empty() || !args.custodians.is_empty(),
         "deploy adapters requires at least one --blend-pool or --custodian"
     );
+    let requested_adapter_admin = &args.adapter_admin;
 
     record_imported_contract_if_provided(cli, manifest, "vault", args.vault.as_ref())?;
     checkpoint_manifest(cli, manifest)?;
@@ -1774,7 +1821,7 @@ fn deploy_adapters<E: CommandExecutor>(
             stellar,
             manifest,
             &wasm_hash,
-            &governance,
+            requested_adapter_admin,
             &vault,
             &args.blend_pools,
             args.force_new,
@@ -1796,7 +1843,7 @@ fn deploy_adapters<E: CommandExecutor>(
             stellar,
             manifest,
             &wasm_hash,
-            &governance,
+            requested_adapter_admin,
             &vault,
             asset_token
                 .as_deref()
@@ -1850,6 +1897,18 @@ fn deploy_stack_plan(
 
     let include_blend = !args.blend_pools.is_empty();
     let include_custodial = !args.custodians.is_empty();
+    let adapter_admin = if include_blend || include_custodial {
+        let vault = (!args.force_new)
+            .then(|| contract_id(manifest, "vault"))
+            .flatten();
+        Some(plan_adapter_admin(
+            &mut plan,
+            require_adapter_admin(args.adapter_admin.as_ref())?,
+            vault,
+        ))
+    } else {
+        None
+    };
     for spec in ArtifactSpec::stack_artifacts(include_blend, include_custodial) {
         plan.wasm.push(wasm_plan(cli, manifest, spec, args.build)?);
     }
@@ -1905,12 +1964,23 @@ fn deploy_stack_plan(
             plan.manifest_mutations
                 .push(format!("record new Blend adapter for pool {pool}"));
             plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <blend_adapter_hash> -- --admin <governance> --vault <vault> --pool <pool>",
+                &format!(
+                    "contract deploy --wasm-hash <blend_adapter_hash> -- --admin {} --vault <vault> --pool <pool>",
+                    adapter_admin
+                        .as_deref()
+                        .context("adapter deployment requires --adapter-admin <address|vault>")?
+                ),
                 true,
             ));
         }
     }
-    plan_custodial_adapters(&mut plan, manifest, &args.custodians, args.force_new);
+    plan_custodial_adapters(
+        &mut plan,
+        manifest,
+        &args.custodians,
+        adapter_admin.as_deref(),
+        args.force_new,
+    )?;
     plan.manifest_mutations
         .push("mark initialized contracts after successful initialize calls".to_string());
     Ok(plan)
@@ -1922,6 +1992,13 @@ fn deploy_adapters_plan(
     args: &crate::cli::DeployAdaptersArgs,
 ) -> anyhow::Result<PlanResponse> {
     let mut plan = PlanResponse::new("deploy adapters", &cli.network);
+    anyhow::ensure!(
+        !args.blend_pools.is_empty() || !args.custodians.is_empty(),
+        "deploy adapters requires at least one --blend-pool or --custodian"
+    );
+    let vault =
+        contract_id(manifest, "vault").or_else(|| args.vault.as_ref().map(AddressStr::as_str));
+    let adapter_admin = plan_adapter_admin(&mut plan, &args.adapter_admin, vault);
     plan.required_signers.push(default_source_label());
     if !args.blend_pools.is_empty() {
         plan.wasm.push(wasm_plan(
@@ -1982,21 +2059,48 @@ fn deploy_adapters_plan(
             plan.manifest_mutations
                 .push(format!("record new Blend adapter for pool {pool}"));
             plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <blend_adapter_hash> -- --admin <governance> --vault <vault> --pool <pool>",
+                &format!(
+                    "contract deploy --wasm-hash <blend_adapter_hash> -- --admin {adapter_admin} --vault <vault> --pool <pool>"
+                ),
                 true,
             ));
         }
     }
-    plan_custodial_adapters(&mut plan, manifest, &args.custodians, args.force_new);
+    plan_custodial_adapters(
+        &mut plan,
+        manifest,
+        &args.custodians,
+        Some(&adapter_admin),
+        args.force_new,
+    )?;
     Ok(plan)
+}
+
+fn plan_adapter_admin(
+    plan: &mut PlanResponse,
+    admin: &AdapterAdminArg,
+    vault: Option<&str>,
+) -> String {
+    let resolved = admin.resolve(vault.unwrap_or("<vault>"));
+    if admin.targets_vault(vault.unwrap_or("<vault>")) {
+        plan.stellar_commands.push(stellar_command_shape(
+            &format!("contract invoke --id {resolved} --send no -- version"),
+            false,
+        ));
+        plan.warnings.push(format!(
+            "using the vault as adapter admin requires version() to advertise companion-upgrade capability {RUNTIME_FEATURE_COMPANION_UPGRADE:#x}"
+        ));
+    }
+    resolved.to_string()
 }
 
 fn plan_custodial_adapters(
     plan: &mut PlanResponse,
     manifest: &Manifest,
     custodians: &[AddressStr],
+    adapter_admin: Option<&str>,
     force_new: bool,
-) {
+) -> anyhow::Result<()> {
     let mut next_custodial_index = next_custodial_adapter_index(manifest);
     let mut planned_custodians = BTreeSet::new();
     for custodian in custodians {
@@ -2021,11 +2125,16 @@ fn plan_custodial_adapters(
                 "record new custodial adapter for custodian {custodian}"
             ));
             plan.stellar_commands.push(stellar_command_shape(
-                "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin <governance> --vault <vault> --custodian <custodian> --asset <asset_token>",
+                &format!(
+                    "contract deploy --wasm-hash <custodial_adapter_hash> -- --admin {} --vault <vault> --custodian <custodian> --asset <asset_token>",
+                    adapter_admin
+                        .context("adapter deployment requires --adapter-admin <address|vault>")?
+                ),
                 true,
             ));
         }
     }
+    Ok(())
 }
 
 fn push_contract_plan(plan: &mut PlanResponse, manifest: &Manifest, key: &str, force_new: bool) {
@@ -2194,7 +2303,7 @@ fn append_blend_adapters<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     wasm_hash: &str,
-    governance: &str,
+    adapter_admin: &AdapterAdminArg,
     vault: &str,
     pools: &[AddressStr],
     force_new: bool,
@@ -2203,6 +2312,10 @@ fn append_blend_adapters<E: CommandExecutor>(
         if !force_new && blend_adapter_by_pool(manifest, pool).is_some() {
             continue;
         }
+        if adapter_admin.targets_vault(vault) {
+            verify_vault_companion_upgrade(cli, stellar, vault)?;
+        }
+        let adapter_admin = adapter_admin.resolve(vault);
         let key = next_blend_adapter_key(manifest);
         let adapter = deploy_contract_if_needed(
             cli,
@@ -2212,14 +2325,14 @@ fn append_blend_adapters<E: CommandExecutor>(
             wasm_hash,
             vec![
                 "--admin".to_string(),
-                governance.to_string(),
+                adapter_admin.to_string(),
                 "--vault".to_string(),
                 vault.to_string(),
                 "--pool".to_string(),
                 pool.to_string(),
             ],
             map_args([
-                ("admin", governance),
+                ("admin", adapter_admin),
                 ("vault", vault),
                 ("pool", pool.as_str()),
             ]),
@@ -2242,7 +2355,7 @@ fn append_custodial_adapters<E: CommandExecutor>(
     stellar: &Stellar<'_, E>,
     manifest: &mut Manifest,
     wasm_hash: &str,
-    governance: &str,
+    adapter_admin: &AdapterAdminArg,
     vault: &str,
     asset_token: &str,
     custodians: &[AddressStr],
@@ -2256,6 +2369,10 @@ fn append_custodial_adapters<E: CommandExecutor>(
         if !force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
             continue;
         }
+        if adapter_admin.targets_vault(vault) {
+            verify_vault_companion_upgrade(cli, stellar, vault)?;
+        }
+        let adapter_admin = adapter_admin.resolve(vault);
         let key = next_custodial_adapter_key(manifest);
         let adapter = deploy_contract_if_needed(
             cli,
@@ -2265,7 +2382,7 @@ fn append_custodial_adapters<E: CommandExecutor>(
             wasm_hash,
             vec![
                 "--admin".to_string(),
-                governance.to_string(),
+                adapter_admin.to_string(),
                 "--vault".to_string(),
                 vault.to_string(),
                 "--custodian".to_string(),
@@ -2274,7 +2391,7 @@ fn append_custodial_adapters<E: CommandExecutor>(
                 asset_token.to_string(),
             ],
             map_args([
-                ("admin", governance),
+                ("admin", adapter_admin),
                 ("vault", vault),
                 ("custodian", custodian.as_str()),
                 ("asset", asset_token),
@@ -4884,12 +5001,18 @@ mod tests {
 
     struct RecordingExecutor {
         calls: Mutex<Vec<(String, Vec<String>)>>,
+        runtime_feature_flags: u64,
     }
 
     impl RecordingExecutor {
         fn new() -> Self {
+            Self::with_runtime_feature_flags(0x1f)
+        }
+
+        fn with_runtime_feature_flags(runtime_feature_flags: u64) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
+                runtime_feature_flags,
             }
         }
 
@@ -4913,6 +5036,12 @@ mod tests {
             if args.iter().any(|arg| arg == "pending_ids") {
                 return Ok(CommandOutput {
                     stdout: "[1, 2]".to_string(),
+                    stderr: String::new(),
+                });
+            }
+            if args.iter().any(|arg| arg == "version") {
+                return Ok(CommandOutput {
+                    stdout: format!("[\"1.1.0\",{}]", self.runtime_feature_flags),
                     stderr: String::new(),
                 });
             }
@@ -5736,6 +5865,7 @@ mod tests {
                         ACCOUNT.parse().expect("new pool"),
                     ],
                     custodians: Vec::new(),
+                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -5755,6 +5885,16 @@ mod tests {
                 .expect("appended adapter")
                 .constructor_args
                 .get("pool")
+                .map(String::as_str),
+            Some(ACCOUNT)
+        );
+        assert_eq!(
+            loaded
+                .contracts
+                .get("blend_adapter_1")
+                .expect("appended adapter")
+                .constructor_args
+                .get("admin")
                 .map(String::as_str),
             Some(ACCOUNT)
         );
@@ -5793,6 +5933,7 @@ mod tests {
                         ACCOUNT.parse().expect("custodian"),
                         ACCOUNT.parse().expect("duplicate custodian"),
                     ],
+                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -5822,7 +5963,7 @@ mod tests {
         );
         assert_eq!(
             adapter.constructor_args.get("admin").map(String::as_str),
-            Some(CONTRACT)
+            Some(ACCOUNT)
         );
         assert_eq!(
             adapter.constructor_args.get("asset").map(String::as_str),
@@ -5856,6 +5997,7 @@ mod tests {
                     asset_token: None,
                     blend_pools: vec![CONTRACT.parse().expect("pool")],
                     custodians: Vec::new(),
+                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -5869,6 +6011,164 @@ mod tests {
         assert!(executor.calls().is_empty());
         let after = fs::read_to_string(&state).expect("read manifest");
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn deploy_stack_requires_explicit_admin_when_adapters_are_requested() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(DeployStackArgs {
+                    admin: Some(ACCOUNT.parse().expect("admin")),
+                    asset_token: Some(CONTRACT.parse().expect("asset token")),
+                    governance_timelock_ns: Some(1_000),
+                    virtual_shares: 0,
+                    virtual_assets: 0,
+                    share_name: "Templar Vault Share".to_string(),
+                    share_symbol: "tvSHARE".to_string(),
+                    share_decimals: 7,
+                    blend_pools: vec![CONTRACT.parse().expect("pool")],
+                    custodians: Vec::new(),
+                    adapter_admin: None,
+                    build: false,
+                    force_new: false,
+                })),
+            }),
+            ..base_cli(state, Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("adapter admin must be explicit");
+
+        assert!(error.to_string().contains("explicit --adapter-admin"));
+        assert!(executor.calls().is_empty());
+    }
+
+    #[test]
+    fn deploy_adapters_rejects_vault_admin_without_companion_upgrade_capability() {
+        for adapter_admin in ["vault", CONTRACT] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_fake_blend_wasm(dir.path());
+            write_fake_custodial_wasm(dir.path());
+            let state = dir.path().join("manifest.json");
+            let mut manifest = Manifest::new("testnet", None);
+            for key in ["vault", "governance", "asset_token"] {
+                manifest
+                    .contracts
+                    .insert(key.to_string(), imported_record(CONTRACT));
+            }
+            manifest.save(&state).expect("save manifest");
+            let cli = Cli {
+                workspace_path: dir.path().into(),
+                command: Commands::Deploy(DeployArgs {
+                    command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
+                        vault: None,
+                        governance: None,
+                        asset_token: None,
+                        blend_pools: vec![CONTRACT.parse().expect("pool")],
+                        custodians: vec![ACCOUNT.parse().expect("custodian")],
+                        adapter_admin: adapter_admin.parse().expect("adapter admin"),
+                        build: false,
+                        force_new: false,
+                    }),
+                }),
+                ..base_cli(state, Commands::Status)
+            };
+            let executor = RecordingExecutor::new();
+
+            let error = run(&cli, &executor).expect_err("vault admin must be capability-gated");
+
+            assert!(error.to_string().contains("companion-upgrade capability"));
+            let calls = executor.calls();
+            assert!(calls.iter().any(|(_, args)| {
+                args.iter().any(|arg| arg == "version")
+                    && args.windows(2).any(|pair| pair == ["--send", "no"])
+            }));
+            assert!(!calls.iter().any(|(_, args)| {
+                args.iter()
+                    .any(|arg| arg == "--pool" || arg == "--custodian")
+            }));
+        }
+    }
+
+    #[test]
+    fn deploy_adapters_allows_vault_admin_after_companion_upgrade_detection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_blend_wasm(dir.path());
+        write_fake_custodial_wasm(dir.path());
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        for key in ["vault", "governance", "asset_token"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
+        manifest.save(&state).expect("save manifest");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
+                    vault: None,
+                    governance: None,
+                    asset_token: None,
+                    blend_pools: vec![CONTRACT.parse().expect("pool")],
+                    custodians: vec![ACCOUNT.parse().expect("custodian")],
+                    adapter_admin: "vault".parse().expect("vault adapter admin"),
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor =
+            RecordingExecutor::with_runtime_feature_flags(0x1f | RUNTIME_FEATURE_COMPANION_UPGRADE);
+
+        run(&cli, &executor).expect("deploy adapters with vault admin");
+
+        let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        for key in ["blend_adapter_0", "custodial_adapter_0"] {
+            assert_eq!(
+                loaded
+                    .contracts
+                    .get(key)
+                    .expect("adapter record")
+                    .constructor_args
+                    .get("admin")
+                    .map(String::as_str),
+                Some(CONTRACT)
+            );
+        }
+        let calls = executor.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(_, args)| args.iter().any(|arg| arg == "version"))
+                .count(),
+            2
+        );
+        let version_index = calls
+            .iter()
+            .position(|(_, args)| args.iter().any(|arg| arg == "version"))
+            .expect("runtime version query");
+        for constructor_flag in ["--pool", "--custodian"] {
+            let deploy_index = calls
+                .iter()
+                .position(|(_, args)| args.iter().any(|arg| arg == constructor_flag))
+                .expect("adapter deployment");
+            assert!(version_index < deploy_index);
+        }
+    }
+
+    #[test]
+    fn runtime_version_parser_requires_typed_version_and_feature_mask() {
+        assert_eq!(
+            parse_runtime_version("[\"1.2.3\",64]").expect("runtime version"),
+            ("1.2.3".to_string(), 64)
+        );
+        assert!(parse_runtime_version(CONTRACT).is_err());
+        assert!(parse_runtime_version("[\"1.2.3\"]").is_err());
     }
 
     #[test]
@@ -5893,6 +6193,7 @@ mod tests {
                         share_decimals: 7,
                         blend_pools: vec![CONTRACT.parse().expect("pool")],
                         custodians: Vec::new(),
+                        adapter_admin: Some(ACCOUNT.parse().expect("adapter admin")),
                         build: false,
                         force_new: false,
                     })),
@@ -5937,6 +6238,7 @@ mod tests {
                     ACCOUNT.parse().expect("duplicate custodian"),
                     CONTRACT.parse().expect("second custodian"),
                 ],
+                adapter_admin: ACCOUNT.parse().expect("adapter admin"),
                 build: false,
                 force_new: false,
             },
@@ -5957,6 +6259,48 @@ mod tests {
             custodial_keys,
             vec!["custodial_adapter_0", "custodial_adapter_1"]
         );
+    }
+
+    #[test]
+    fn deploy_plan_records_companion_upgrade_check_for_vault_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        for key in ["vault", "governance"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
+        let cli = base_cli(state, Commands::Status);
+
+        let plan = deploy_adapters_plan(
+            &cli,
+            &manifest,
+            &crate::cli::DeployAdaptersArgs {
+                vault: None,
+                governance: None,
+                asset_token: None,
+                blend_pools: vec![ACCOUNT.parse().expect("pool")],
+                custodians: Vec::new(),
+                adapter_admin: "vault".parse().expect("vault adapter admin"),
+                build: false,
+                force_new: false,
+            },
+        )
+        .expect("plan adapters");
+
+        assert!(plan
+            .stellar_commands
+            .iter()
+            .any(|command| command.contains("--send no -- version")));
+        assert!(plan
+            .stellar_commands
+            .iter()
+            .any(|command| command.contains(&format!("--admin {CONTRACT}"))));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("companion-upgrade capability 0x40")));
     }
 
     #[test]
@@ -6349,6 +6693,7 @@ mod tests {
                         ACCOUNT.parse().expect("second pool"),
                     ],
                     custodians: Vec::new(),
+                    adapter_admin: Some(ACCOUNT.parse().expect("adapter admin")),
                     build: false,
                     force_new: false,
                 })),
@@ -6391,6 +6736,7 @@ mod tests {
                     share_decimals: 7,
                     blend_pools: Vec::new(),
                     custodians: vec![ACCOUNT.parse().expect("custodian")],
+                    adapter_admin: Some(ACCOUNT.parse().expect("adapter admin")),
                     build: false,
                     force_new: false,
                 })),
@@ -6453,6 +6799,7 @@ mod tests {
                     share_decimals: 7,
                     blend_pools: Vec::new(),
                     custodians: Vec::new(),
+                    adapter_admin: None,
                     build: false,
                     force_new: false,
                 })),
@@ -7052,6 +7399,7 @@ mod tests {
                     share_decimals: 7,
                     blend_pools: Vec::new(),
                     custodians: Vec::new(),
+                    adapter_admin: None,
                     build: false,
                     force_new: false,
                 })),

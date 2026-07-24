@@ -4,8 +4,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use crate::types::{
-    AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg, ShareDecimalsArg,
-    SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
+    AdapterAdminArg, AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg,
+    ShareDecimalsArg, SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
 };
 
 pub const DEFAULT_CONTRACT_SOURCE_REPO: &str = "github:Templar-Protocol/contracts";
@@ -277,6 +277,10 @@ pub struct DeployStackArgs {
     #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
     pub custodians: Vec<AddressStr>,
 
+    /// Admin for every newly deployed Blend or custodial adapter. Required when adapters are requested. Use `vault` only when the runtime advertises companion-upgrade support.
+    #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
+    pub adapter_admin: Option<AdapterAdminArg>,
+
     /// Rebuild missing artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub build: bool,
@@ -307,6 +311,10 @@ pub struct DeployAdaptersArgs {
     /// Custodian or multisig address. Repeat the flag, or provide comma-separated CUSTODIAL_ADDRESS values, to append multiple custodial adapters.
     #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
     pub custodians: Vec<AddressStr>,
+
+    /// Admin for every newly deployed Blend or custodial adapter. Required for this command. Use `vault` only when the runtime advertises companion-upgrade support.
+    #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
+    pub adapter_admin: AdapterAdminArg,
 
     /// Rebuild adapter artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
@@ -1148,6 +1156,8 @@ mod tests {
             POOL,
             "--custodian",
             ADMIN,
+            "--adapter-admin",
+            ADMIN,
         ])
         .expect("parse cli");
 
@@ -1161,6 +1171,14 @@ mod tests {
                     assert_eq!(stack.governance_timelock_ns, Some(1000));
                     assert_eq!(stack.blend_pools.len(), 2);
                     assert_eq!(stack.custodians.len(), 1);
+                    assert_eq!(
+                        stack
+                            .adapter_admin
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .as_deref(),
+                        Some(ADMIN)
+                    );
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Resume(_)
@@ -1183,6 +1201,8 @@ mod tests {
             ADMIN,
             "--custodian",
             &format!("{ADMIN},{POOL}"),
+            "--adapter-admin",
+            "vault",
         ])
         .expect("parse cli");
 
@@ -1195,6 +1215,10 @@ mod tests {
                         .map(ToString::to_string)
                         .collect::<Vec<_>>();
                     assert_eq!(custodians, vec![ADMIN, POOL]);
+                    assert_eq!(
+                        stack.adapter_admin.as_ref().map(ToString::to_string),
+                        Some("vault".to_string())
+                    );
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Resume(_)
@@ -1223,6 +1247,8 @@ mod tests {
             POOL,
             "--custodian",
             ADMIN,
+            "--adapter-admin",
+            ADMIN,
         ])
         .expect("parse cli");
 
@@ -1235,6 +1261,7 @@ mod tests {
                     );
                     assert_eq!(args.blend_pools.len(), 1);
                     assert_eq!(args.custodians.len(), 1);
+                    assert_eq!(args.adapter_admin.to_string(), ADMIN);
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Stack(_)
@@ -1245,6 +1272,24 @@ mod tests {
             },
             _ => panic!("expected deploy command"),
         }
+    }
+
+    #[test]
+    fn deploy_adapters_rejects_missing_explicit_admin() {
+        let error = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "adapters",
+            "--vault",
+            POOL,
+            "--governance",
+            POOL,
+            "--blend-pool",
+            POOL,
+        ])
+        .expect_err("adapter admin must be required");
+
+        assert!(error.to_string().contains("--adapter-admin"));
     }
 
     #[test]

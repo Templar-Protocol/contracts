@@ -345,8 +345,14 @@ Blend integration lives in the dedicated crate `contract/vault/soroban/blend-ada
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`
-- `just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
-- `just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+
+**Breaking change:** adapter deployment no longer defaults the admin to governance. Set
+`SOROBAN_ADAPTER_ADMIN` to an explicit Soroban account or contract address. The literal value
+`vault` is accepted only when the deployed vault's `version()` response advertises
+companion-contract upgrade routing (`0x40`). The current default runtime mask is `0x1f`, so it
+rejects `SOROBAN_ADAPTER_ADMIN=vault`.
 
 After deployment, register the adapter as a vault market before allocation.
 
@@ -373,8 +379,8 @@ NAV revision and must increase by one from the current value.
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-custodial-adapter`
-- `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
-- `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
 - `just custodial-adapter-reported-at <ASSET_ADDRESS>`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
@@ -387,6 +393,8 @@ the next successful explicit report. Rollout still requires upgrade authority ov
 WASM. Adapters
 whose admin is the governance contract cannot currently be upgraded through the shipped governance
 actions; adding that authority or migrating those routes to replacement adapters is separate work.
+The vault CLI and justfile recipes therefore require an explicit adapter admin and apply the same
+`0x40` capability gate before accepting the vault itself.
 
 ### Custodial Runbook Checks
 
