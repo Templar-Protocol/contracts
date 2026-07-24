@@ -11,6 +11,7 @@ Soroban-side companion contracts:
 - `templar-soroban-governance` in `contract/vault/soroban/governance`
 - `templar-soroban-share-token` in `contract/vault/soroban/share-token`
 - `templar-soroban-blend-adapter` in `contract/vault/soroban/blend-adapter`
+- `templar-soroban-custodial-adapter` in `contract/vault/soroban/custodial-adapter`
 - shared ABI/types in `contract/vault/soroban/shared-types`
 
 Read these first before making non-trivial changes:
@@ -290,6 +291,14 @@ Minimum runtime verification:
 - `cargo test -p templar-soroban-runtime -- --nocapture`
 - `cargo test -p templar-soroban-runtime --test integration_tests -- --nocapture`
 - `cargo test -p templar-soroban-runtime --test property_tests -- --nocapture`
+
+Custodial adapter ABI changes:
+
+- `cargo test -p templar-soroban-custodial-adapter -- --nocapture`
+- `just -f contract/vault/soroban/justfile verify-custodial-adapter-release-abi`
+
+The release-ABI gate builds the optimized adapter, checks the exact contract interface, and invokes
+the real Wasm artifact to ensure the exported method decodes and executes as expected.
 
 Size verification:
 
