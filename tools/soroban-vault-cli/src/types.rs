@@ -244,6 +244,50 @@ impl fmt::Display for AddressStr {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdapterAdminArg {
+    Vault,
+    Address(AddressStr),
+}
+
+impl AdapterAdminArg {
+    #[must_use]
+    pub fn resolve<'a>(&'a self, vault: &'a str) -> &'a str {
+        match self {
+            Self::Vault => vault,
+            Self::Address(address) => address.as_str(),
+        }
+    }
+
+    #[must_use]
+    pub fn targets_vault(&self, vault: &str) -> bool {
+        matches!(self, Self::Vault)
+            || matches!(self, Self::Address(address) if address.as_str() == vault)
+    }
+}
+
+impl FromStr for AdapterAdminArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == "vault" {
+            return Ok(Self::Vault);
+        }
+        value.parse::<AddressStr>().map(Self::Address).map_err(|_| {
+            format!("expected `vault` or a valid Soroban account/contract address: {value}")
+        })
+    }
+}
+
+impl fmt::Display for AdapterAdminArg {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vault => formatter.write_str("vault"),
+            Self::Address(address) => address.fmt(formatter),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct WasmHash(String);
 
@@ -522,6 +566,22 @@ mod tests {
         assert!(ACCOUNT.parse::<AddressStr>().is_ok());
         assert!(CONTRACT.parse::<AddressStr>().is_ok());
         assert!("not-an-address".parse::<AddressStr>().is_err());
+    }
+
+    #[test]
+    fn adapter_admin_parses_explicit_address_or_vault_alias() {
+        let address = ACCOUNT
+            .parse::<AdapterAdminArg>()
+            .expect("explicit adapter admin");
+        let vault = "vault"
+            .parse::<AdapterAdminArg>()
+            .expect("vault adapter admin");
+
+        assert_eq!(address.resolve(CONTRACT), ACCOUNT);
+        assert!(!address.targets_vault(CONTRACT));
+        assert_eq!(vault.resolve(CONTRACT), CONTRACT);
+        assert!(vault.targets_vault(CONTRACT));
+        assert!("governance".parse::<AdapterAdminArg>().is_err());
     }
 
     #[test]

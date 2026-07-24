@@ -70,13 +70,20 @@ flow. The manifest stores these as `custodial_adapter_0`, `custodial_adapter_1`,
 the `admin`, `vault`, `custodian`, and bound `asset` constructor args recorded for reconciliation
 and status. Custodial adapters are single-asset; `deploy adapters --custodian ...` requires
 `asset_token` in the manifest or `--asset-token`.
+Every deployment that requests a Blend or custodial adapter must also pass
+`--adapter-admin <address|vault>` (or `SOROBAN_ADAPTER_ADMIN`). Governance is never selected
+implicitly. The `vault` alias, and an explicit address equal to the vault, are accepted only after
+the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`. The current default
+runtime does not advertise that capability, so use an independently controlled account or contract
+until companion upgrades are implemented.
 
 ```sh
 tmplr-soroban-vault deploy stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --blend-pool CPOOL2... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To add adapters later without redeploying the stack, use `deploy adapters`. If the manifest already
@@ -90,7 +97,8 @@ tmplr-soroban-vault deploy adapters \
   --governance CGOV... \
   --asset-token CASSET... \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
@@ -132,13 +140,15 @@ manifest changes:
 tmplr-soroban-vault deploy plan stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault deploy plan adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
@@ -151,7 +161,8 @@ tmplr-soroban-vault deploy repair --json
 tmplr-soroban-vault deploy resume \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
@@ -319,7 +330,8 @@ the simplest testnet or custodial setup.
 tmplr-soroban-vault deploy stack \
   --admin GCURATOR... \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --adapter-admin GCURATOR...
 
 tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR... \
@@ -381,7 +393,8 @@ governance caller, while the Stellar source account supplies the transaction env
 tmplr-soroban-vault deploy stack \
   --admin CMULTISIG... \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --adapter-admin CMULTISIG...
 
 tmplr-soroban-vault governance plan-submit-set-supply-queue \
   --admin CMULTISIG... \
@@ -499,7 +512,8 @@ tmplr-soroban-vault deploy stack \
   --admin GCURATOR_OR_MULTISIG... \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian GCUSTODIAN...
+  --custodian GCUSTODIAN... \
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault governance submit-set-sentinel \
   --admin GCURATOR_OR_MULTISIG... \
@@ -549,7 +563,8 @@ accounting views. `curator allocate-supply` observes adapter `total_assets` afte
 `curator allocate-withdraw` verifies the realized token balance delta and subtracts that amount from
 stored principal; it does not refresh route NAV.
 
-For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
+For custodial adapters, use
+`deploy adapters --custodian <address> --adapter-admin <address|vault>` to append custodial routes,
 then allow the deployed adapter, set a nonzero market cap, refresh reported NAV, and add it to the
 supply queue before allocating to it. Each custodial adapter is bound to the manifest asset token at
 deployment and rejects calls for any other asset. The custodian, adapter admin, or vault can
@@ -573,6 +588,7 @@ stellar contract invoke \
 
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
+- Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.
