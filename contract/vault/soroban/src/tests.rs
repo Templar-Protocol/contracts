@@ -368,6 +368,7 @@ mod contract_tests {
         RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
         RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
         RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+        RUNTIME_FEATURE_COMPANION_UPGRADE,
     };
     use templar_vault_kernel::effects::KernelEffect;
     use templar_vault_kernel::fee::FeeSlot;
@@ -601,6 +602,7 @@ mod contract_tests {
         ] {
             assert_eq!(feature_flags & flag != 0, enabled);
         }
+        assert_eq!(feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE, 0);
 
         if templar_vault_kernel::ACTION_RECOVERY_ENABLED
             && templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED

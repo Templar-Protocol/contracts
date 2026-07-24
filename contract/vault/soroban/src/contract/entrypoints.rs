@@ -1432,7 +1432,7 @@ fn initialize_impl(
 
 #[contractimpl]
 impl SorobanVaultContract {
-    /// Return the package version and action capabilities compiled into this runtime.
+    /// Return the package version and capabilities compiled into this runtime.
     pub fn version(env: Env) -> (soroban_sdk::String, u64) {
         (
             soroban_sdk::String::from_str(&env, crate::RUNTIME_VERSION),

@@ -23,7 +23,8 @@
 //! recovery, external synchronization, fee refresh, allocation lifecycle, and
 //! refresh lifecycle. `action-pause` is available as an opt-in build feature.
 //! The callable `version()` entrypoint reports the package version and exact
-//! compiled action-feature mask.
+//! compiled runtime-capability mask. The reserved companion-upgrade capability
+//! remains unset until the runtime can authorize companion-contract upgrades.
 //!
 //! - `std` - Enable std library support (for testing)
 
@@ -50,7 +51,7 @@ const fn feature_flag(enabled: bool, flag: u64) -> u64 {
     }
 }
 
-/// Action-handler capabilities compiled into this runtime artifact.
+/// Runtime capabilities compiled into this artifact.
 pub const RUNTIME_FEATURE_FLAGS: u64 = feature_flag(
     templar_vault_kernel::ACTION_RECOVERY_ENABLED,
     RUNTIME_FEATURE_ACTION_RECOVERY,

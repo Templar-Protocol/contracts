@@ -286,10 +286,10 @@ artifact and the artifact enforced by the size gate.
 ## Runtime Version Discovery
 
 New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
-compiled by Cargo, and the bitmask reports the kernel action handlers compiled into that exact
-WASM. Stable assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation
-lifecycle `0x08`, refresh lifecycle `0x10`, and pause `0x20`. The default production mask is
-`0x1f`; pause remains disabled.
+compiled by Cargo, and the bitmask reports the capabilities compiled into that exact WASM. Stable
+assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation lifecycle
+`0x08`, refresh lifecycle `0x10`, pause `0x20`, and companion-contract upgrade routing `0x40`.
+The default production mask is `0x1f`; pause and companion upgrades remain disabled.
 
 The curator proxy exposes the same information through `vault_version()`. Use its existing
 `initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,
