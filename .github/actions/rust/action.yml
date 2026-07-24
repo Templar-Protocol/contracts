@@ -1,5 +1,5 @@
 name: Setup Rust
-description: Install Rust version and setup caching
+description: Install the Rust toolchain and wire up compilation + dependency caching.
 inputs:
   targets:
     description: Rust targets to install
@@ -20,11 +20,16 @@ runs:
 
     - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       with:
+        # Save on same-repo pushes and PRs (fork PRs can't, for security), so a
+        # PR's later runs restore what its earlier runs compiled. Per-job keys
+        # (the rust-cache default) keep each cache matched to its artifact kind:
+        # clippy caches dep `.rmeta`, a build caches dep `.rlib`, and sharing one
+        # key across them would make the build restore check-artifacts and
+        # recompile.
         save-if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        # Cache target directory but with smart cleanup
-        cache-on-failure: false
-        # Keep caches reusable inside a job class. Do not include raw target or
-        # component input strings here: rust-cache rejects keys containing
-        # commas, and comma-separated target lists are common in this repo.
-        shared-key: "rust-${{ runner.os }}-${{ github.job }}"
+        # Save even on failure/timeout. The node suite historically timed out
+        # before this post-step ran, so it never seeded a cache: cold build ->
+        # timeout -> still cold. CI runs CARGO_INCREMENTAL=0, so there is no
+        # incremental state to corrupt.
+        cache-on-failure: true
         workspaces: ". -> target"

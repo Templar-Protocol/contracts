@@ -54,7 +54,8 @@ concurrently. If unset, it uses a bounded default based on available CPU
 parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass
 `--timeout-secs <n>` to override the per-contract build timeout; the default is
 30 minutes. Pass `--artifact <name>` to build a subset (repeatable or
-comma-separated).
+comma-separated). Pass `--check` to report which artifacts are missing from
+`target/near` and exit non-zero, without building anything.
 
 ```bash
 ./script/prebuild-test-contracts.sh --artifact market

@@ -110,6 +110,18 @@ fn rejects_unknown_artifact() {
     assert!(error.is_err());
 }
 
+#[test]
+fn check_flag_defaults_off_and_opts_in() {
+    assert!(!parse_args([OsString::from("prebuild-test-contracts")]).check);
+
+    let args = parse_args([
+        OsString::from("prebuild-test-contracts"),
+        OsString::from("--check"),
+    ]);
+
+    assert!(args.check);
+}
+
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Args {
     match Args::try_parse_from(args) {
         Ok(args) => args,
