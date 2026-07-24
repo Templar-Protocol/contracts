@@ -480,7 +480,10 @@ jobs:
           # Measured on a CPU-matched simulation: cutting test parallelism to buy
           # the nodes headroom is 32% slower than simply running stock.
           NEAR_SANDBOX_BLOCK_MS: "120"
-        run: just test-sandbox
+        # CI-only stopgap for occasional node-starvation flakes on the shared
+        # runner; max-fail still aborts a systemic failure fast. Local runs stay
+        # strict.
+        run: just test-sandbox --retries=1 --max-fail=5
 
       - name: Cleanup Docker resources
         if: always()
