@@ -114,8 +114,9 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
   - `justfile` — add the package to `sandbox_full_packages`; the sandbox filter and Cargo package boundary are both derived from that list. (`templar-gateway-service`'s node tests live in `src/` and are matched separately by module path.)
   - `.github/workflows/test.yml` — add the crate's `src/**` and `tests/**` under the `changes` job's `near_integration` paths filter, or the test job won't trigger on changes to it.
 - **Adding or removing a contract / mock WASM**:
-  - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum and its embedded `res/near/...` blob (see `contract/artifacts/README.md`). This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
+  - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum, the catalog entry's `releases` list, an `embedded_bytes_for_version` arm per release, and the `embedded_bytes` arm for the newest one (see `contract/artifacts/README.md`). This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
   - `gateway/testing/src/wasm.rs` — the `wasm_fns!` list, so the harness can load it.
+- **Releasing a new version of an existing contract**: bump its `Cargo.toml` version, then `just artifact-release <id>` — the drift check stays red until the blob and its catalog entry land together. See `RELEASING.md`.
 - **Adding a new top-level source area / crate**:
   - `.github/workflows/test.yml` paths groups (`near_integration`, `soroban`, `feature_matrix`, `artifact_manifests`) and `.github/workflows/gas-report.yml` paths — add it to the right group so the relevant jobs fire.
   - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.

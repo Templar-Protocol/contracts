@@ -38,14 +38,7 @@ METADATA=$(cargo run --quiet -p templar-contract-artifacts \
     echo "error: unknown artifact '$ARTIFACT'" >&2
     exit 1
 }
-read -r SOURCE_PATH TARGET <<<"$METADATA"
-VERSION=$(cargo metadata --no-deps --format-version 1 |
-    python3 -c "
-import json,sys
-m=json.load(sys.stdin)
-print(next(p['version'] for p in m['packages'] if p['manifest_path'].endswith('$SOURCE_PATH/Cargo.toml')))
-")
-
+read -r SOURCE_PATH TARGET VERSION <<<"$METADATA"
 DEST_DIR="contract/artifacts/res/near/$TARGET/$VERSION"
 if [[ -e "$DEST_DIR/$TARGET.wasm" ]]; then
     echo "error: $TARGET $VERSION is already released ($DEST_DIR/$TARGET.wasm)." >&2
@@ -69,11 +62,11 @@ Add this release to the $ARTIFACT entry in contract/artifacts/src/ids.rs
 (append to the release list — newest last — and add a matching
 \`embedded_bytes_for_version\` arm):
 
-        ("$VERSION", "$SHA", "$COMMIT"),
+        ("$VERSION", "$SHA", Some("$COMMIT")),
 
-The commit matters: reproducible builds embed the source commit (NEP-330), so
-the blob is only byte-reproducible at $COMMIT. release-artifacts.yml rebuilds
-there to verify it.
+…and a matching arm in \`embedded_bytes_for_version\`:
+
+        (Self::<Variant>, "$VERSION") => include_bytes!("../res/near/$TARGET/$VERSION/$TARGET.wasm"),
 
 Then verify and commit the blob together with the catalog edit:
 

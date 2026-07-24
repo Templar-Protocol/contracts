@@ -132,10 +132,9 @@ workflow rebuilds there rather than at the release tag: a blob is necessarily
 committed *before* the tag that releases it exists, so verifying at the tag
 could never match.
 
-Legacy releases — blobs whose provenance predates this field, such as bytes
-recovered from a deployed mainnet contract — carry an empty `source_commit`.
-Their hash pin is still enforced, but they cannot be rebuilt, and the workflow
-reports that explicitly instead of pretending to verify them.
+Legacy releases — bytes recovered from a deployed mainnet contract — carry
+`source_commit: None`. Their hash pin is still enforced, but they cannot be
+rebuilt, and the workflow says so rather than pretending to verify them.
 
 ## Usage examples
 
@@ -190,19 +189,5 @@ artifact: templar_contract_artifacts::ArtifactId,
 
 ## Artifact list
 
-| Artifact ID         | Cargo package                          | `target/near` directory             |
-|---------------------|----------------------------------------|-------------------------------------|
-| registry            | templar-registry-contract              | templar_registry_contract           |
-| market              | templar-market-contract                | templar_market_contract             |
-| vault               | templar-vault-contract                 | templar_vault_contract              |
-| universal-account   | templar-universal-account-contract      | templar_universal_account_contract  |
-| proxy-oracle        | templar-proxy-oracle-near-contract     | templar_proxy_oracle_near_contract  |
-| proxy-governance    | templar-proxy-oracle-near-governance-contract | templar_proxy_oracle_near_governance_contract |
-| lst-oracle          | templar-lst-oracle-contract            | templar_lst_oracle_contract         |
-| redstone-adapter    | templar-redstone-adapter-contract      | templar_redstone_adapter_contract   |
-| pyth-lazer-adapter  | templar-pyth-lazer-adapter-contract     | templar_pyth_lazer_adapter_contract |
-| mock-ft             | mock-ft                                | mock_ft                             |
-| mock-mt             | mock-mt                                | mock_mt                             |
-| mock-oracle         | mock-oracle                            | mock_oracle                         |
-| mock-ref-finance    | mock-ref                               | mock_ref                            |
-| mock-receiver       | mock-receiver                          | mock_receiver                       |
+See `ArtifactId::ALL` in `src/ids.rs` — the catalog is the single source of
+truth, and a table here would have no drift check behind it.

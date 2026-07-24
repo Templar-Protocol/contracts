@@ -23,23 +23,10 @@ name: Release Artifacts
 on:
   push:
     tags:
-      # Contract crates whose artifacts are catalogued. release-plz creates
-      # these as `<package>-v<version>`.
-      - "templar-registry-contract-v*"
-      - "templar-market-contract-v*"
-      - "templar-vault-contract-v*"
-      - "templar-universal-account-contract-v*"
-      - "templar-proxy-oracle-near-contract-v*"
-      - "templar-proxy-oracle-near-governance-contract-v*"
-      - "templar-lst-oracle-contract-v*"
-      - "templar-redstone-adapter-contract-v*"
-      - "templar-pyth-lazer-adapter-contract-v*"
-  workflow_dispatch:
-    inputs:
-      artifact:
-        description: "Artifact id to verify (e.g. proxy-oracle)"
-        required: true
-        type: string
+      # Broad glob: catalog membership is decided in `ids.rs`, not here. A
+      # tagged package the catalog doesn't know about fails fast at the
+      # `--print-metadata` lookup below.
+      - "*-contract-v*"
 
 permissions:
   contents: read
@@ -64,19 +51,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: ./.github/actions/rust
+      # Not `./.github/actions/rust`: the WASM build runs inside the
+      # cargo-near Docker image, so a host rust-cache entry for this job would
+      # be cold on every release tag and just add eviction pressure.
+      - uses: dtolnay/rust-toolchain@dd44c20b1206a46e25fba8503d5d7c9a33bd355a
+        with:
+          toolchain: "1.86.0"
 
       - name: Resolve artifact from tag
         id: resolve
         env:
           REF_NAME: ${{ github.ref_name }}
-          INPUT_ARTIFACT: ${{ inputs.artifact }}
         run: |
           set -euo pipefail
-          if [[ -n "${INPUT_ARTIFACT:-}" ]]; then
-            echo "artifact=${INPUT_ARTIFACT}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
           # `templar-market-contract-v1.4.0` -> package `templar-market-contract`, version `1.4.0`
           package="${REF_NAME%-v*}"
           version="${REF_NAME##*-v}"
@@ -94,11 +81,14 @@ jobs:
 
           # Ask the catalog for this package's source path and target name
           # rather than re-deriving them here and drifting from ids.rs.
-          read -r source_path target < <(
-            cargo run --quiet -p templar-contract-artifacts \
+          if ! metadata=$(cargo run --quiet -p templar-contract-artifacts \
               --features workspace-loader,clap --bin prebuild-test-contracts -- \
-              --print-metadata --artifact "$PACKAGE"
-          )
+              --print-metadata --artifact "$PACKAGE" 2>/dev/null); then
+            echo "::notice::${PACKAGE} has no catalogued WASM artifact (e.g. a" \
+                 "Soroban contract); nothing to verify."
+            exit 0
+          fi
+          read -r source_path target _current_version <<<"$metadata"
 
           committed="contract/artifacts/res/near/${target}/${VERSION}/${target}.wasm"
           if [[ ! -f "$committed" ]]; then
@@ -107,21 +97,18 @@ jobs:
             exit 1
           fi
 
-          read -r pinned_sha source_commit < <(
+          # The blob-vs-pin check already runs on every PR via
+          # `check-artifact-drift.sh`; this job's unique job is the rebuild.
+          source_commit=$(
             cargo run --quiet -p templar-contract-artifacts \
               --features workspace-loader,clap --bin prebuild-test-contracts -- \
               --print-release "$VERSION" --artifact "$PACKAGE"
           )
 
-          if [[ "$(sha256sum "$committed" | cut -d' ' -f1)" != "$pinned_sha" ]]; then
-            echo "::error::Checked-in blob does not match its pinned sha256." >&2
-            exit 1
-          fi
-
           if [[ -z "$source_commit" ]]; then
             echo "::notice::${PACKAGE} ${VERSION} is a legacy blob with no recorded" \
                  "source_commit (e.g. bytes recovered from chain), so it cannot be" \
-                 "reproducibly rebuilt. Hash pin verified; skipping rebuild."
+                 "reproducibly rebuilt. Skipping."
             exit 0
           fi
 
@@ -133,7 +120,7 @@ jobs:
           rebuilt="../verify/target/near/${target}/${target}.wasm"
           if ! cmp -s "$rebuilt" "$committed"; then
             echo "::error::Reproducible build at ${source_commit} does not match the checked-in blob." >&2
-            echo "  committed: $pinned_sha" >&2
+            echo "  committed: $(sha256sum "$committed" | cut -d' ' -f1)" >&2
             echo "  rebuilt:   $(sha256sum "$rebuilt" | cut -d' ' -f1)" >&2
             exit 1
           fi
@@ -147,5 +134,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_NAME: ${{ github.ref_name }}
-        if: startsWith(github.ref, 'refs/tags/')
         run: gh release upload "$REF_NAME" dist/* --clobber

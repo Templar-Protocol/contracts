@@ -44,15 +44,16 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Print `<source_path> <cargo_target_name>` for each selected artifact and
-    /// exit, without building. Lets shell tooling (`script/artifact-release.sh`)
-    /// read the catalog instead of re-deriving paths and drifting from it.
+    /// Print `<source_path> <cargo_target_name> <version>` for each selected
+    /// artifact and exit, without building. Lets shell tooling
+    /// (`script/artifact-release.sh`, `release-artifacts.yml`) read the catalog
+    /// instead of re-deriving paths and drifting from it.
     #[arg(long)]
     print_metadata: bool,
 
-    /// Print `<sha256> <source_commit>` for the given released version of the
-    /// single selected artifact and exit. `source_commit` is empty for legacy
-    /// blobs, which cannot be reproducibly verified.
+    /// Print the `source_commit` of the given released version of the single
+    /// selected artifact and exit, or an empty line for a legacy blob that
+    /// cannot be reproducibly rebuilt.
     #[arg(long, value_name = "VERSION")]
     print_release: Option<String>,
 }
@@ -62,14 +63,34 @@ pub fn main() -> ExitCode {
     let artifacts = selected_artifacts(&args.artifacts);
 
     if args.print_metadata {
+        let metadata = match workspace_loader::get_metadata(&args.workspace_root) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                eprintln!("failed to read cargo metadata: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
         for artifact in &artifacts {
-            println!("{} {}", artifact.source_path, artifact.cargo_target_name);
+            // Version comes from the crate's own Cargo.toml, so callers never
+            // re-derive it (and cannot disagree with the drift check).
+            let Some(package) = workspace_loader::find_package(&metadata, artifact.package_name)
+            else {
+                eprintln!(
+                    "package {} not in workspace metadata",
+                    artifact.package_name
+                );
+                return ExitCode::FAILURE;
+            };
+            println!(
+                "{} {} {}",
+                artifact.source_path, artifact.cargo_target_name, package.version,
+            );
         }
         return ExitCode::SUCCESS;
     }
 
     if let Some(version) = &args.print_release {
-        let Some(artifact) = artifacts.first() else {
+        let [artifact] = artifacts[..] else {
             eprintln!("--print-release needs exactly one --artifact");
             return ExitCode::FAILURE;
         };
@@ -86,7 +107,8 @@ pub fn main() -> ExitCode {
             );
             return ExitCode::FAILURE;
         };
-        println!("{} {}", release.sha256, release.source_commit);
+        // Empty line = legacy blob that cannot be rebuilt.
+        println!("{}", release.source_commit.unwrap_or_default());
         return ExitCode::SUCCESS;
     }
 

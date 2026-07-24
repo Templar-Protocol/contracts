@@ -177,6 +177,32 @@ mod tests {
             .is_none());
     }
 
+    /// `embedded_bytes` is a separate direct match (so the linker can drop
+    /// historical blobs from production binaries), which means its arms could
+    /// drift from the catalog's newest release. This is what stops that.
+    #[test]
+    fn embedded_bytes_matches_current_release() {
+        for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
+            let via_version = artifact
+                .id
+                .embedded_bytes_for_version(artifact.version())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} has no blob for its current version {}",
+                        artifact.package_name,
+                        artifact.version(),
+                    )
+                });
+            assert!(
+                std::ptr::eq(artifact.id.embedded_bytes(), via_version),
+                "{}: `embedded_bytes` does not point at the current release ({}). \
+                 Update its arm in `ArtifactId::embedded_bytes`.",
+                artifact.package_name,
+                artifact.version(),
+            );
+        }
+    }
+
     /// Structural invariants of each artifact's release list.
     #[test]
     fn catalog_releases_are_well_formed() {
@@ -204,6 +230,17 @@ mod tests {
                     artifact.package_name,
                     release.version,
                 );
+                // A malformed commit would silently disable reproducible
+                // verification for this release, so hold it to the same bar.
+                if let Some(commit) = release.source_commit {
+                    assert_eq!(
+                        commit.len(),
+                        40,
+                        "{}@{} source_commit is not a full 40-char git sha",
+                        artifact.package_name,
+                        release.version,
+                    );
+                }
             }
 
             // `current()` is defined as "newest", and the rest of the crate

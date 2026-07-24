@@ -1,25 +1,5 @@
-## Release automation for the contracts workspace.
-##
-## Model: release-plz keeps one standing "chore: release" PR that accumulates
-## version bumps and CHANGELOG entries as work merges into `dev`. Merging that
-## PR is the release trigger (`release_always = false`). Nothing ships on an
-## ordinary merge.
-##
-## Crates fall into three tiers:
-##
-##   A — published    the closure external consumers import (see below)
-##   B — tagged only  contracts, services, tools: real versions, no registry
-##   C — internal     build/test scaffolding: no tag, no changelog, no release
-##
-## ⚠️ Tier A is currently configured IDENTICALLY to Tier B (`git_only = true`).
-## Publishing to crates.io is blocked: `templar-common` depends on the RedStone
-## Rust SDK as a git dependency (`redstone`, tag 3.1.0-pre1), which is not on
-## crates.io, and Cargo refuses to publish any crate with a git dependency. The
-## Tier A blocks below are written out explicitly so that unblocking is a
-## mechanical flip of `git_only = false` + `publish = true` on each — no code
-## changes. See ENG-522. Until then, consumers pin per-crate git tags:
-##
-##   templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts", tag = "templar-gateway-client-v0.1.0" }
+## Release automation. Policy, tiers, and why crates.io publishing is currently
+## blocked are documented in RELEASING.md — this file only encodes the settings.
 
 [workspace]
 # Tier B defaults. Versions come from git tags rather than a registry lookup,
@@ -52,91 +32,9 @@ semver_check = false
 # the actual changes being released.
 dependencies_update = false
 
-# ---------------------------------------------------------------------------
-# Tier A — published crates (currently git_only; see the note above)
-#
-# This is the transitive normal-dependency closure of what external consumers
-# import, computed from `cargo metadata`. Adding a crate here is a commitment to
-# its public API, so keep the set demand-driven.
-# ---------------------------------------------------------------------------
-
-[[package]]
-name = "templar-common"
-git_only = true # → false + publish = true once redstone is resolved
-
-[[package]]
-name = "templar-primitives"
-git_only = true
-
-[[package]]
-name = "templar-universal-account"
-git_only = true
-
-[[package]]
-name = "templar-curator-primitives"
-git_only = true
-
-[[package]]
-name = "templar-vault-kernel"
-git_only = true
-
-[[package]]
-name = "templar-vault-macros"
-git_only = true
-
-[[package]]
-name = "templar-gateway-client"
-git_only = true
-
-[[package]]
-name = "templar-gateway-core"
-git_only = true
-
-[[package]]
-name = "templar-gateway-macros"
-git_only = true
-
-[[package]]
-name = "templar-gateway-methods-dispatch"
-git_only = true
-
-[[package]]
-name = "templar-gateway-methods-spec"
-git_only = true
-
-[[package]]
-name = "templar-gateway-store"
-git_only = true
-
-[[package]]
-name = "templar-gateway-types"
-git_only = true
-
-[[package]]
-name = "templar-proxy-oracle-kernel"
-git_only = true
-
-[[package]]
-name = "templar-proxy-oracle-governance-kernel"
-git_only = true
-
-[[package]]
-name = "templar-proxy-oracle-near-common"
-git_only = true
-
-[[package]]
-name = "templar-proxy-oracle-near-governance-common"
-git_only = true
-
-# ---------------------------------------------------------------------------
-# Tier C — internal scaffolding. No tag, no changelog, no GitHub Release.
-#
-# These exist to make the build and test suite work. They have no consumer whose
-# expectations a version could violate, so a version number would be noise.
-# `templar-contract-artifacts` is here deliberately: it changes on *every*
-# contract release, so its own version says nothing — the meaningful versions
-# live in the per-artifact release list in `contract/artifacts/src/ids.rs`.
-# ---------------------------------------------------------------------------
+# Internal scaffolding: no tag, no changelog, no release. `release` defaults to
+# true, so these blocks are load-bearing — without them, mocks and test helpers
+# would get tags and changelog entries.
 
 [[package]]
 name = "templar-contract-artifacts"

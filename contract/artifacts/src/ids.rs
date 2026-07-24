@@ -129,13 +129,31 @@ impl ArtifactId {
     }
 
     /// Bytes of the **newest** released version — what the gateway deploys.
+    ///
+    /// A direct `match self`, deliberately NOT routed through
+    /// [`Self::embedded_bytes_for_version`]: that takes a runtime `&str`, so
+    /// every historical blob would be reachable and the linker could not drop
+    /// them. Going through it put ~2 MB of test-only historical bytes into the
+    /// shipped gateway binary. `embedded_bytes_matches_current_release` keeps
+    /// these arms honest.
     #[cfg(feature = "embedded-wasm")]
-    // Infallible: `current()` names a catalogued release, and
-    // `catalog_releases_have_embedded_bytes` fails if any release lacks an arm.
-    #[allow(clippy::expect_used)]
     pub fn embedded_bytes(self) -> &'static [u8] {
-        self.embedded_bytes_for_version(self.metadata().version())
-            .expect("catalog `current` release has no embedded blob")
+        match self {
+            Self::Registry => include_bytes!("../res/near/templar_registry_contract/1.2.1/templar_registry_contract.wasm"),
+            Self::Market => include_bytes!("../res/near/templar_market_contract/1.4.0/templar_market_contract.wasm"),
+            Self::Vault => include_bytes!("../res/near/templar_vault_contract/1.2.1/templar_vault_contract.wasm"),
+            Self::UniversalAccount => include_bytes!("../res/near/templar_universal_account_contract/0.5.0/templar_universal_account_contract.wasm"),
+            Self::ProxyOracle => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.4.0/templar_proxy_oracle_near_contract.wasm"),
+            Self::ProxyGovernance => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.2.0/templar_proxy_oracle_near_governance_contract.wasm"),
+            Self::LstOracle => include_bytes!("../res/near/templar_lst_oracle_contract/1.2.1/templar_lst_oracle_contract.wasm"),
+            Self::RedstoneAdapter => include_bytes!("../res/near/templar_redstone_adapter_contract/0.2.0/templar_redstone_adapter_contract.wasm"),
+            Self::PythLazerAdapter => include_bytes!("../res/near/templar_pyth_lazer_adapter_contract/0.1.0/templar_pyth_lazer_adapter_contract.wasm"),
+            Self::MockFt => include_bytes!("../res/near/mock_ft/0.0.0/mock_ft.wasm"),
+            Self::MockMt => include_bytes!("../res/near/mock_mt/0.0.0/mock_mt.wasm"),
+            Self::MockOracle => include_bytes!("../res/near/mock_oracle/0.0.0/mock_oracle.wasm"),
+            Self::MockRefFinance => include_bytes!("../res/near/mock_ref/1.2.1/mock_ref.wasm"),
+            Self::MockReceiver => include_bytes!("../res/near/mock_receiver/1.2.1/mock_receiver.wasm"),
+        }
     }
 
     /// Bytes of a specific released version, or `None` if that version was never
@@ -150,177 +168,25 @@ impl ArtifactId {
         // Every arm mirrors one `ArtifactRelease` in the catalog below;
         // `catalog_releases_have_embedded_bytes` fails if the two drift apart.
         let bytes: &'static [u8] = match (self, version) {
-            (Self::Registry, "1.2.1") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_registry_contract",
-                "/",
-                "1.2.1",
-                "/",
-                "templar_registry_contract",
-                ".wasm"
-            )),
-            (Self::Market, "1.4.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_market_contract",
-                "/",
-                "1.4.0",
-                "/",
-                "templar_market_contract",
-                ".wasm"
-            )),
-            (Self::Vault, "1.2.1") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_vault_contract",
-                "/",
-                "1.2.1",
-                "/",
-                "templar_vault_contract",
-                ".wasm"
-            )),
-            (Self::UniversalAccount, "0.2.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_universal_account_contract",
-                "/",
-                "0.2.0",
-                "/",
-                "templar_universal_account_contract",
-                ".wasm"
-            )),
-            (Self::UniversalAccount, "0.4.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_universal_account_contract",
-                "/",
-                "0.4.0",
-                "/",
-                "templar_universal_account_contract",
-                ".wasm"
-            )),
-            (Self::UniversalAccount, "0.5.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_universal_account_contract",
-                "/",
-                "0.5.0",
-                "/",
-                "templar_universal_account_contract",
-                ".wasm"
-            )),
-            (Self::ProxyOracle, "0.1.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_proxy_oracle_near_contract",
-                "/",
-                "0.1.0",
-                "/",
-                "templar_proxy_oracle_near_contract",
-                ".wasm"
-            )),
-            (Self::ProxyOracle, "0.3.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_proxy_oracle_near_contract",
-                "/",
-                "0.3.0",
-                "/",
-                "templar_proxy_oracle_near_contract",
-                ".wasm"
-            )),
-            (Self::ProxyOracle, "0.4.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_proxy_oracle_near_contract",
-                "/",
-                "0.4.0",
-                "/",
-                "templar_proxy_oracle_near_contract",
-                ".wasm"
-            )),
-            (Self::ProxyGovernance, "0.1.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_proxy_oracle_near_governance_contract",
-                "/",
-                "0.1.0",
-                "/",
-                "templar_proxy_oracle_near_governance_contract",
-                ".wasm"
-            )),
-            (Self::ProxyGovernance, "0.2.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_proxy_oracle_near_governance_contract",
-                "/",
-                "0.2.0",
-                "/",
-                "templar_proxy_oracle_near_governance_contract",
-                ".wasm"
-            )),
-            (Self::LstOracle, "1.2.1") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_lst_oracle_contract",
-                "/",
-                "1.2.1",
-                "/",
-                "templar_lst_oracle_contract",
-                ".wasm"
-            )),
-            (Self::RedstoneAdapter, "0.2.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_redstone_adapter_contract",
-                "/",
-                "0.2.0",
-                "/",
-                "templar_redstone_adapter_contract",
-                ".wasm"
-            )),
-            (Self::PythLazerAdapter, "0.1.0") => include_bytes!(concat!(
-                "../res/near/",
-                "templar_pyth_lazer_adapter_contract",
-                "/",
-                "0.1.0",
-                "/",
-                "templar_pyth_lazer_adapter_contract",
-                ".wasm"
-            )),
-            (Self::MockFt, "0.0.0") => include_bytes!(concat!(
-                "../res/near/",
-                "mock_ft",
-                "/",
-                "0.0.0",
-                "/",
-                "mock_ft",
-                ".wasm"
-            )),
-            (Self::MockMt, "0.0.0") => include_bytes!(concat!(
-                "../res/near/",
-                "mock_mt",
-                "/",
-                "0.0.0",
-                "/",
-                "mock_mt",
-                ".wasm"
-            )),
-            (Self::MockOracle, "0.0.0") => include_bytes!(concat!(
-                "../res/near/",
-                "mock_oracle",
-                "/",
-                "0.0.0",
-                "/",
-                "mock_oracle",
-                ".wasm"
-            )),
-            (Self::MockRefFinance, "1.2.1") => include_bytes!(concat!(
-                "../res/near/",
-                "mock_ref",
-                "/",
-                "1.2.1",
-                "/",
-                "mock_ref",
-                ".wasm"
-            )),
-            (Self::MockReceiver, "1.2.1") => include_bytes!(concat!(
-                "../res/near/",
-                "mock_receiver",
-                "/",
-                "1.2.1",
-                "/",
-                "mock_receiver",
-                ".wasm"
-            )),
+            (Self::Registry, "1.2.1") => include_bytes!("../res/near/templar_registry_contract/1.2.1/templar_registry_contract.wasm"),
+            (Self::Market, "1.4.0") => include_bytes!("../res/near/templar_market_contract/1.4.0/templar_market_contract.wasm"),
+            (Self::Vault, "1.2.1") => include_bytes!("../res/near/templar_vault_contract/1.2.1/templar_vault_contract.wasm"),
+            (Self::UniversalAccount, "0.2.0") => include_bytes!("../res/near/templar_universal_account_contract/0.2.0/templar_universal_account_contract.wasm"),
+            (Self::UniversalAccount, "0.4.0") => include_bytes!("../res/near/templar_universal_account_contract/0.4.0/templar_universal_account_contract.wasm"),
+            (Self::UniversalAccount, "0.5.0") => include_bytes!("../res/near/templar_universal_account_contract/0.5.0/templar_universal_account_contract.wasm"),
+            (Self::ProxyOracle, "0.1.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.1.0/templar_proxy_oracle_near_contract.wasm"),
+            (Self::ProxyOracle, "0.3.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.3.0/templar_proxy_oracle_near_contract.wasm"),
+            (Self::ProxyOracle, "0.4.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.4.0/templar_proxy_oracle_near_contract.wasm"),
+            (Self::ProxyGovernance, "0.1.0") => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.1.0/templar_proxy_oracle_near_governance_contract.wasm"),
+            (Self::ProxyGovernance, "0.2.0") => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.2.0/templar_proxy_oracle_near_governance_contract.wasm"),
+            (Self::LstOracle, "1.2.1") => include_bytes!("../res/near/templar_lst_oracle_contract/1.2.1/templar_lst_oracle_contract.wasm"),
+            (Self::RedstoneAdapter, "0.2.0") => include_bytes!("../res/near/templar_redstone_adapter_contract/0.2.0/templar_redstone_adapter_contract.wasm"),
+            (Self::PythLazerAdapter, "0.1.0") => include_bytes!("../res/near/templar_pyth_lazer_adapter_contract/0.1.0/templar_pyth_lazer_adapter_contract.wasm"),
+            (Self::MockFt, "0.0.0") => include_bytes!("../res/near/mock_ft/0.0.0/mock_ft.wasm"),
+            (Self::MockMt, "0.0.0") => include_bytes!("../res/near/mock_mt/0.0.0/mock_mt.wasm"),
+            (Self::MockOracle, "0.0.0") => include_bytes!("../res/near/mock_oracle/0.0.0/mock_oracle.wasm"),
+            (Self::MockRefFinance, "1.2.1") => include_bytes!("../res/near/mock_ref/1.2.1/mock_ref.wasm"),
+            (Self::MockReceiver, "1.2.1") => include_bytes!("../res/near/mock_receiver/1.2.1/mock_receiver.wasm"),
             _ => return None,
         };
         Some(bytes)
@@ -363,16 +229,13 @@ pub struct ArtifactRelease {
     /// opaque binary diff: any change to the bytes must land with a matching
     /// update here, or the drift check fails.
     pub sha256: &'static str,
-    /// Full git commit the blob was reproducibly built from, or `""` for legacy
-    /// blobs whose provenance predates this field (e.g. bytes scraped off
-    /// mainnet).
+    /// Git commit the blob was reproducibly built from; `None` for legacy blobs
+    /// recovered from a deployed contract, which cannot be rebuilt.
     ///
-    /// Required for verification: `cargo near build reproducible-wasm` embeds
-    /// the source commit in the WASM per NEP-330, so a rebuild is byte-identical
-    /// **only at the same commit**. Rebuilding the same source at any other
-    /// commit yields different bytes, which is why the release tag alone is not
-    /// enough to verify a blob.
-    pub source_commit: &'static str,
+    /// `cargo near build reproducible-wasm` embeds the source commit per
+    /// NEP-330, so a rebuild is byte-identical **only at the same commit** —
+    /// which is why the release tag alone cannot verify a blob.
+    pub source_commit: Option<&'static str>,
 }
 
 /// Canonical metadata for a single contract artifact.
@@ -430,13 +293,6 @@ impl ArtifactMetadata {
         self.releases.iter().find(|r| r.version == version)
     }
 
-    /// Workspace-relative directory holding the blob for `version`.
-    pub fn release_dir(&self, version: &str) -> std::path::PathBuf {
-        Path::new("contract/artifacts/res/near")
-            .join(self.cargo_target_name)
-            .join(version)
-    }
-
     pub fn version_key(&self, wasm_bytes: &[u8]) -> String {
         crate::format_version_key(self.package_name, self.version(), wasm_bytes)
     }
@@ -473,7 +329,7 @@ static REGISTRY_METADATA: ArtifactMetadata = entry!(
     [(
         "1.2.1",
         "2512b842e31f8427fb0a47df4f1592de6babf6b13171af60069e3cf450423aa2",
-        ""
+        None
     ),]
 );
 static MARKET_METADATA: ArtifactMetadata = entry!(
@@ -484,7 +340,7 @@ static MARKET_METADATA: ArtifactMetadata = entry!(
     [(
         "1.4.0",
         "8f2c487ebc873e3d6de7e8d2dc4d20b142ab22073e04ae89687746ebaca6ca52",
-        ""
+        None
     ),]
 );
 static VAULT_METADATA: ArtifactMetadata = entry!(
@@ -495,7 +351,7 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
     [(
         "1.2.1",
         "fc605cd4a3e09fdef3620ed9c6a4610bb639d7a5f625d648780a96b7d452ef18",
-        ""
+        None
     ),]
 );
 static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
@@ -507,17 +363,17 @@ static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
         (
             "0.2.0",
             "25ae83a0ee7d31542bd7b6039549f200cdd96f7bcaef56dd6763dd143ef00c2d",
-            ""
+            None
         ),
         (
             "0.4.0",
             "007d0a4643f63b3b2f543b0033f059ebc38b07365ff86aff1aa4476f6d73f9ae",
-            ""
+            None
         ),
         (
             "0.5.0",
             "7dae78aaf868844af5655d530c50f72a4a74baed92d1592c89c704989e4589c7",
-            ""
+            None
         ),
     ]
 );
@@ -530,17 +386,17 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
         (
             "0.1.0",
             "fb697b18f30cc19d4fc43768eae04ae94967663c4744ab052c7119c6d869d53b",
-            ""
+            None
         ),
         (
             "0.3.0",
             "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e",
-            ""
+            None
         ),
         (
             "0.4.0",
             "f03b159e9132a59ab929463866c672b734a5950fb41520ec33ad7a97030d5770",
-            "ea0a6357c89748e64b43036b776cd9459078af00"
+            Some("ea0a6357c89748e64b43036b776cd9459078af00")
         ),
     ]
 );
@@ -553,12 +409,12 @@ static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
         (
             "0.1.0",
             "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0",
-            ""
+            None
         ),
         (
             "0.2.0",
             "8de3b54494ef3601172543596aa91ec10a264da1093e6d413cbebddab4edb104",
-            "9d4477416f9b8d7bf1dc103ed5a9d788d13d9be2"
+            Some("9d4477416f9b8d7bf1dc103ed5a9d788d13d9be2")
         ),
     ]
 );
@@ -570,7 +426,7 @@ static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     [(
         "1.2.1",
         "5ef7bedf78f3a3ecc9747b8aa3bb25ef6bd508d3c17ec166571f76f53ce8ee50",
-        ""
+        None
     ),]
 );
 static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -581,7 +437,7 @@ static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     [(
         "0.2.0",
         "b513b2e839ce1ea59ef4c57519ef9482b133f47c81db0d3a54517b2cd251511a",
-        ""
+        None
     ),]
 );
 static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -592,7 +448,7 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     [(
         "0.1.0",
         "c993256a8b42313b2b0b024c783b4eb5a7be1c8b9f792789cb4f207f7007060b",
-        ""
+        None
     ),]
 );
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(
@@ -603,7 +459,7 @@ static MOCK_FT_METADATA: ArtifactMetadata = entry!(
     [(
         "0.0.0",
         "c43561acd98e1a8d93ba85955f23847bcccd738f85703e914c3d4218471c262d",
-        ""
+        None
     ),]
 );
 static MOCK_MT_METADATA: ArtifactMetadata = entry!(
@@ -614,7 +470,7 @@ static MOCK_MT_METADATA: ArtifactMetadata = entry!(
     [(
         "0.0.0",
         "cd125c142722e48e5e1b6f350c751ed0691221d065c540dad02804dbaf55b453",
-        ""
+        None
     ),]
 );
 static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
@@ -625,7 +481,7 @@ static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
     [(
         "0.0.0",
         "76f76816cf4d0ccaf4b4e181ee1104ec8e6cbd13084f311b87a86087099a749c",
-        ""
+        None
     ),]
 );
 static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
@@ -636,7 +492,7 @@ static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
     [(
         "1.2.1",
         "d2be82aa462f55baa2333bae898bee424560e7bf7342b606f6bd40c1aa8369c4",
-        ""
+        None
     ),]
 );
 static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
@@ -647,6 +503,6 @@ static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
     [(
         "1.2.1",
         "bf814164155b927b4e703d8e870137b7f8ab39cd2a69666a0b900bfe0c8a8ec5",
-        ""
+        None
     ),]
 );
