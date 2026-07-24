@@ -384,6 +384,51 @@ fn shortening_a_reflexive_lock_matures_under_that_lock() {
 }
 
 #[test]
+fn shortening_a_method_lock_matures_under_that_lock() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    // A long lock on admin_upgrade (which upgrades the proxy oracle) and a short policy-edit lock.
+    let long = Nanoseconds::from_secs(72 * 60 * 60);
+    contract
+        .header
+        .ttls
+        .set_target_default(MethodPolicy {
+            ttl: long,
+            role: Role::Admin,
+        })
+        .unwrap();
+    contract
+        .header
+        .ttls
+        .set_method_policy(
+            "admin_upgrade".to_owned(),
+            Some(MethodPolicy {
+                ttl: long,
+                role: Role::Admin,
+            }),
+        )
+        .unwrap();
+    contract
+        .header
+        .ttls
+        .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::from_secs(60 * 60))
+        .unwrap();
+
+    // Dropping admin_upgrade's lock to zero must mature under the full admin_upgrade lock, not the
+    // short policy-edit lock — the proxy-oracle upgrade path can't be sped up out from under itself.
+    let shorten = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+        method: "admin_upgrade".to_owned(),
+        policy: Some(MethodPolicy {
+            ttl: Nanoseconds::zero(),
+            role: Role::Admin,
+        }),
+    });
+    let proposal = contract.create_proposal(0, shorten, Nanoseconds::zero());
+    assert_eq!(proposal.ttl, long);
+    assert!(panics(|| contract.execute_proposal(0)));
+}
+
+#[test]
 fn set_role_cannot_remove_last_admin() {
     testing_env!(context_with_admin());
     let mut contract = contract();
@@ -575,10 +620,12 @@ fn set_method_policy_execution_updates_resolution() {
         .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
         .unwrap();
 
+    // Override a previously-unlisted method at the default ttl (so it isn't a shortening, which would
+    // gate it) with a non-default role, and confirm resolution picks it up after execution.
     let operation = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
         method: "admin_new_method".to_owned(),
         policy: Some(MethodPolicy {
-            ttl: Nanoseconds::from_secs(5),
+            ttl: DAY,
             role: Role::CircuitBreakerOperator,
         }),
     });
@@ -586,7 +633,7 @@ fn set_method_policy_execution_updates_resolution() {
     contract.execute_proposal(0);
 
     let resolved = contract.get_governance_policy().resolve("admin_new_method");
-    assert_eq!(resolved.ttl, Nanoseconds::from_secs(5));
+    assert_eq!(resolved.ttl, DAY);
     assert_eq!(resolved.role, Role::CircuitBreakerOperator);
 }
 

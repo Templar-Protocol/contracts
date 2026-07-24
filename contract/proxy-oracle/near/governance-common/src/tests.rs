@@ -248,6 +248,60 @@ fn set_reflexive_ttl_cannot_outrun_the_bucket_it_shortens() {
 }
 
 #[test]
+fn lowering_a_method_or_default_lock_matures_under_that_lock() {
+    let mut policy = policy(100); // default_target ttl = 100
+    policy
+        .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::from_secs(1))
+        .unwrap();
+    policy
+        .set_method_policy(
+            "admin_upgrade".to_owned(),
+            Some(method_policy(90, Role::Admin)),
+        )
+        .unwrap();
+
+    let set_method = |ttl_secs| {
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: "admin_upgrade".to_owned(),
+            policy: Some(method_policy(ttl_secs, Role::Admin)),
+        })
+    };
+    // Shortening admin_upgrade's 90s lock matures under max(edit = 1, 90) = 90.
+    assert_eq!(
+        set_method(0).minimum_ttl(&policy),
+        Nanoseconds::from_secs(90)
+    );
+    // Holding it (or raising) needs only the policy-edit lock.
+    assert_eq!(
+        set_method(90).minimum_ttl(&policy),
+        Nanoseconds::from_secs(1)
+    );
+
+    // Adding a shorter override for a previously-unlisted method shortens it from the default (100).
+    let list_short = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+        method: "admin_brand_new".to_owned(),
+        policy: Some(method_policy(3, Role::Admin)),
+    });
+    assert_eq!(list_short.minimum_ttl(&policy), Nanoseconds::from_secs(100));
+
+    // Lowering the target default (100) matures under max(1, 100) = 100; raising needs only the lock.
+    let lower_default = Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+        policy: method_policy(95, Role::Admin),
+    });
+    assert_eq!(
+        lower_default.minimum_ttl(&policy),
+        Nanoseconds::from_secs(100)
+    );
+    let raise_default = Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+        policy: method_policy(200, Role::Admin),
+    });
+    assert_eq!(
+        raise_default.minimum_ttl(&policy),
+        Nanoseconds::from_secs(1)
+    );
+}
+
+#[test]
 fn function_call_validation() {
     assert_eq!(
         Operation::TargetFunctionCall(FunctionCall {
