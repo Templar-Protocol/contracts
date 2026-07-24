@@ -370,6 +370,34 @@ fn operation_borsh_and_json_round_trip() {
 }
 
 #[test]
+fn json_round_trips_through_every_top_level_variant() {
+    // Deserialization routes through `compat::OperationWire`, whose `OperationNew` twin is a
+    // hand-maintained mirror of `Operation`. Round-trip a sample of each top-level variant so an
+    // out-of-sync twin fails here rather than silently dropping the variant.
+    let samples = [
+        Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: "op.near".parse().unwrap(),
+            role: Role::Admin,
+            set: true,
+        }),
+        target("admin_set_proxy", 30),
+    ];
+    for operation in &samples {
+        let json = near_sdk::serde_json::to_value(operation).unwrap();
+        assert_eq!(
+            &near_sdk::serde_json::from_value::<Operation>(json).unwrap(),
+            operation,
+            "compat round-trip must preserve every Operation variant"
+        );
+    }
+    // Exhaustiveness guard: a new top-level `Operation` variant breaks this match, forcing a matching
+    // `compat::OperationNew`/`OperationWire` update and a new sample above.
+    match &samples[0] {
+        Operation::Reflexive(_) | Operation::TargetFunctionCall(_) => {}
+    }
+}
+
+#[test]
 fn governance_policy_round_trip() {
     let mut policy = policy(100);
     policy
@@ -400,6 +428,39 @@ fn legacy_admin_upgrade_maps_to_target_call_with_upgrade_gas() {
     let args: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&call.args.0).unwrap();
     assert_eq!(args["code"], near_sdk::serde_json::json!("3q0="));
     assert_eq!(args["migrate_args"], near_sdk::serde_json::json!("vu8="));
+}
+
+#[test]
+fn into_operation_applies_the_gas_override() {
+    let set_proxy = || LegacyOperation::SetProxy {
+        id: templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
+        proxy: None,
+    };
+    // No override → the method default (30 Tgas).
+    let Operation::TargetFunctionCall(default) = set_proxy().into_operation(None).unwrap() else {
+        panic!("expected target call");
+    };
+    assert_eq!(default.gas, Gas::from_tgas(30));
+
+    // An override lands on the dispatched call.
+    let Operation::TargetFunctionCall(overridden) = set_proxy()
+        .into_operation(Some(Gas::from_tgas(120)))
+        .unwrap()
+    else {
+        panic!("expected target call");
+    };
+    assert_eq!(overridden.gas, Gas::from_tgas(120));
+
+    // `admin_upgrade` keeps its 280 Tgas default when no override is given.
+    let Operation::TargetFunctionCall(upgrade) = LegacyOperation::AdminUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
+        migrate_args: Base64VecU8(vec![]),
+    }
+    .into_operation(None)
+    .unwrap() else {
+        panic!("expected target call");
+    };
+    assert_eq!(upgrade.gas, GAS_FOR_ADMIN_UPGRADE);
 }
 
 #[test]

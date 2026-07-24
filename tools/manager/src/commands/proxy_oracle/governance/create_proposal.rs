@@ -129,8 +129,9 @@ pub enum ProposalOperation {
 impl ProposalOperation {
     #[allow(clippy::too_many_lines)]
     fn into_operation(self) -> anyhow::Result<Operation> {
-        // Target and role/self-upgrade ops route through the shared legacy → generic mapping.
-        let legacy = match self {
+        // Target and role/self-upgrade ops route through the shared legacy → generic mapping; the
+        // config target subcommands carry an optional `--gas` override (`None` = method default).
+        let (legacy, gas_override): (LegacyOperation, Option<Gas>) = match self {
             Self::SetProxy(a) => {
                 let proxy: Option<Proxy<Source>> = match a.proxy_file {
                     Some(path) => Some(
@@ -139,75 +140,102 @@ impl ProposalOperation {
                     ),
                     None => None,
                 };
-                LegacyOperation::SetProxy {
-                    id: a.price_id,
-                    proxy,
-                }
+                (
+                    LegacyOperation::SetProxy {
+                        id: a.price_id,
+                        proxy,
+                    },
+                    a.gas,
+                )
             }
-            Self::ConfigureCircuitBreakers(a) => LegacyOperation::ConfigureCircuitBreakers {
-                id: a.price_id,
-                config: CircuitBreakerSetConfig {
-                    sample_interval_ns: a.sample_interval,
-                    history_len: a.history_len,
+            Self::ConfigureCircuitBreakers(a) => (
+                LegacyOperation::ConfigureCircuitBreakers {
+                    id: a.price_id,
+                    config: CircuitBreakerSetConfig {
+                        sample_interval_ns: a.sample_interval,
+                        history_len: a.history_len,
+                    },
                 },
-            },
+                a.gas,
+            ),
             Self::AddCircuitBreaker(a) => {
                 let breaker_id = a.breaker_id.context(
                     "breaker id must be resolved before building an add-circuit-breaker proposal",
                 )?;
-                LegacyOperation::AddCircuitBreaker {
-                    id: a.price_id,
-                    breaker_id,
-                    breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
-                        .context("parse circuit breaker")?,
-                }
-            }
-            Self::RemoveCircuitBreaker(a) => LegacyOperation::RemoveCircuitBreaker {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-            },
-            Self::SetManualTrip(a) => LegacyOperation::SetManualTrip {
-                id: a.price_id,
-                is_manually_tripped: a.tripped,
-                metadata: a.metadata_base64.map(decode_base64).transpose()?,
-            },
-            Self::Rearm(a) => LegacyOperation::Rearm {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-                armed_after_ns: a.armed_after,
-                accepted_history_source: load_json_file::<AcceptedHistorySource>(
-                    &a.history_source_file,
+                (
+                    LegacyOperation::AddCircuitBreaker {
+                        id: a.price_id,
+                        breaker_id,
+                        breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
+                            .context("parse circuit breaker")?,
+                    },
+                    a.gas,
                 )
-                .context("parse accepted history source")?,
-            },
-            Self::SetEnforced(a) => LegacyOperation::SetEnforced {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-                is_enforced: a.enforced,
-            },
-            Self::SetRole(a) => LegacyOperation::SetRole {
-                account_id: a.account_id,
-                role: a.role,
-                set: !a.revoke,
-            },
+            }
+            Self::RemoveCircuitBreaker(a) => (
+                LegacyOperation::RemoveCircuitBreaker {
+                    id: a.price_id,
+                    breaker_id: a.breaker_id,
+                },
+                a.gas,
+            ),
+            Self::SetManualTrip(a) => (
+                LegacyOperation::SetManualTrip {
+                    id: a.price_id,
+                    is_manually_tripped: a.tripped,
+                    metadata: a.metadata_base64.map(decode_base64).transpose()?,
+                },
+                a.gas,
+            ),
+            Self::Rearm(a) => (
+                LegacyOperation::Rearm {
+                    id: a.price_id,
+                    breaker_id: a.breaker_id,
+                    armed_after_ns: a.armed_after,
+                    accepted_history_source: load_json_file::<AcceptedHistorySource>(
+                        &a.history_source_file,
+                    )
+                    .context("parse accepted history source")?,
+                },
+                a.gas,
+            ),
+            Self::SetEnforced(a) => (
+                LegacyOperation::SetEnforced {
+                    id: a.price_id,
+                    breaker_id: a.breaker_id,
+                    is_enforced: a.enforced,
+                },
+                a.gas,
+            ),
+            Self::SetRole(a) => (
+                LegacyOperation::SetRole {
+                    account_id: a.account_id,
+                    role: a.role,
+                    set: !a.revoke,
+                },
+                None,
+            ),
             Self::AdminUpgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                LegacyOperation::AdminUpgrade { code, migrate_args }
+                (LegacyOperation::AdminUpgrade { code, migrate_args }, None)
             }
             Self::SelfUpgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                LegacyOperation::SelfUpgrade { code, migrate_args }
+                (LegacyOperation::SelfUpgrade { code, migrate_args }, None)
             }
             Self::AdminFunctionCall(a) => {
                 // Fail early on malformed args rather than sending garbage bytes.
                 serde_json::from_str::<serde_json::Value>(&a.args)
                     .context("admin-function-call --args must be valid JSON")?;
-                LegacyOperation::AdminFunctionCall {
-                    method_name: a.method,
-                    args: Base64VecU8(a.args.into_bytes()),
-                    attached_deposit: U128(a.deposit.as_yoctonear()),
-                    gas: a.gas,
-                }
+                (
+                    LegacyOperation::AdminFunctionCall {
+                        method_name: a.method,
+                        args: Base64VecU8(a.args.into_bytes()),
+                        attached_deposit: U128(a.deposit.as_yoctonear()),
+                        gas: a.gas,
+                    },
+                    None,
+                )
             }
             // Reflexive policy edits construct the new operation directly.
             Self::SetReflexiveTtl(a) => {
@@ -240,7 +268,9 @@ impl ProposalOperation {
                 }));
             }
         };
-        Operation::try_from(legacy).context("build target operation from typed subcommand")
+        legacy
+            .into_operation(gas_override)
+            .context("build target operation from typed subcommand")
     }
 }
 
@@ -252,6 +282,9 @@ pub struct SetProxyArgs {
     /// Proxy definition JSON; omit to clear the feed
     #[arg(long, value_name = "PATH")]
     proxy_file: Option<PathBuf>,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -265,6 +298,9 @@ pub struct ConfigureCircuitBreakersArgs {
     /// Number of samples to retain in the breaker's history.
     #[arg(long, value_name = "N")]
     history_len: u32,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -279,6 +315,9 @@ pub struct AddCircuitBreakerArgs {
     /// CircuitBreaker definition JSON
     #[arg(long, value_name = "PATH")]
     breaker_file: PathBuf,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -289,6 +328,9 @@ pub struct RemoveCircuitBreakerArgs {
     /// Breaker id to remove.
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -302,6 +344,9 @@ pub struct SetManualTripArgs {
     /// Optional base64 metadata recorded with the trip.
     #[arg(long, value_name = "BASE64")]
     metadata_base64: Option<String>,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -318,6 +363,9 @@ pub struct RearmArgs {
     /// AcceptedHistorySource definition JSON
     #[arg(long, value_name = "PATH")]
     history_source_file: PathBuf,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -331,6 +379,9 @@ pub struct SetEnforcedArgs {
     /// Whether the breaker is enforced.
     #[arg(long)]
     enforced: bool,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]

@@ -417,6 +417,41 @@ fn configure_circuit_breakers_operation_builds_config() {
 }
 
 #[test]
+fn set_proxy_gas_override_flows_through() {
+    let with_gas = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "1",
+        "set-proxy",
+        "--price-id",
+        PRICE_ID,
+        "--gas",
+        "120 Tgas",
+    ]);
+    let Operation::TargetFunctionCall(call) = with_gas else {
+        panic!("expected target function call");
+    };
+    assert_eq!(call.method_name, "admin_set_proxy");
+    assert_eq!(call.gas, Gas::from_tgas(120));
+
+    // Omitting --gas falls back to the 30 Tgas default.
+    let default = operation(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "1",
+        "set-proxy",
+        "--price-id",
+        PRICE_ID,
+    ]);
+    let Operation::TargetFunctionCall(call) = default else {
+        panic!("expected target function call");
+    };
+    assert_eq!(call.gas, Gas::from_tgas(30));
+}
+
+#[test]
 fn admin_upgrade_operation_reads_code_file() {
     let wasm = b"\0asm\x01\0\0\0upgrade";
     let path = std::env::temp_dir().join(format!(

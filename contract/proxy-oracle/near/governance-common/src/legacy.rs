@@ -311,20 +311,27 @@ fn map_set_action_ttl(kind: LegacyOperationKind, ttl: Nanoseconds) -> Operation 
     }
 }
 
-impl TryFrom<LegacyOperation> for Operation {
-    type Error = near_sdk::serde_json::Error;
-
-    fn try_from(operation: LegacyOperation) -> Result<Self, Self::Error> {
-        Ok(match operation {
-            LegacyOperation::SetProxy { id, proxy } => target_call(
-                "admin_set_proxy",
-                &args::SetProxy { id, proxy },
-                GAS_FOR_TARGET_DEFAULT,
-            )?,
+impl LegacyOperation {
+    /// Map to the generic [`Operation`], attaching `gas_override` to the dispatched target call when
+    /// given (otherwise the method's default). The migration and legacy-JSON paths pass `None`; the CLI
+    /// passes an operator-supplied override for the target subcommands that expose `--gas`.
+    ///
+    /// # Errors
+    ///
+    /// If serializing a target method's args to JSON fails.
+    pub fn into_operation(
+        self,
+        gas_override: Option<Gas>,
+    ) -> Result<Operation, near_sdk::serde_json::Error> {
+        let target_gas = gas_override.unwrap_or(GAS_FOR_TARGET_DEFAULT);
+        Ok(match self {
+            LegacyOperation::SetProxy { id, proxy } => {
+                target_call("admin_set_proxy", &args::SetProxy { id, proxy }, target_gas)?
+            }
             LegacyOperation::ConfigureCircuitBreakers { id, config } => target_call(
                 "admin_configure_circuit_breakers",
                 &args::ConfigureCircuitBreakers { id, config },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::AddCircuitBreaker {
                 id,
@@ -337,12 +344,12 @@ impl TryFrom<LegacyOperation> for Operation {
                     breaker_id,
                     breaker,
                 },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::RemoveCircuitBreaker { id, breaker_id } => target_call(
                 "admin_remove_circuit_breaker",
                 &args::RemoveCircuitBreaker { id, breaker_id },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::SetManualTrip {
                 id,
@@ -355,7 +362,7 @@ impl TryFrom<LegacyOperation> for Operation {
                     is_manually_tripped,
                     metadata: metadata.map(Base64VecU8),
                 },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::Rearm {
                 id,
@@ -370,7 +377,7 @@ impl TryFrom<LegacyOperation> for Operation {
                     armed_after_ns,
                     accepted_history_source,
                 },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::SetEnforced {
                 id,
@@ -383,12 +390,12 @@ impl TryFrom<LegacyOperation> for Operation {
                     breaker_id,
                     is_enforced,
                 },
-                GAS_FOR_TARGET_DEFAULT,
+                target_gas,
             )?,
             LegacyOperation::AdminUpgrade { code, migrate_args } => target_call(
                 "admin_upgrade",
                 &args::AdminUpgrade { code, migrate_args },
-                GAS_FOR_ADMIN_UPGRADE,
+                gas_override.unwrap_or(GAS_FOR_ADMIN_UPGRADE),
             )?,
             LegacyOperation::AdminFunctionCall {
                 method_name,
@@ -415,5 +422,15 @@ impl TryFrom<LegacyOperation> for Operation {
                 Operation::Reflexive(ReflexiveOperation::SelfUpgrade { code, migrate_args })
             }
         })
+    }
+}
+
+impl TryFrom<LegacyOperation> for Operation {
+    type Error = near_sdk::serde_json::Error;
+
+    /// Maps with each target method's default gas. Callers that want an override use
+    /// [`LegacyOperation::into_operation`].
+    fn try_from(operation: LegacyOperation) -> Result<Self, Self::Error> {
+        operation.into_operation(None)
     }
 }

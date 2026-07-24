@@ -934,19 +934,7 @@ impl SandboxHarness {
 }
 
 fn zero_governance_policy() -> GovernancePolicy {
-    let zero = Nanoseconds::zero();
-    GovernancePolicy {
-        reflexive_ttls: templar_proxy_oracle_near_governance_common::ReflexiveTtls {
-            set_policy: zero,
-            set_role: zero,
-            self_upgrade: zero,
-        },
-        default_target: templar_proxy_oracle_near_governance_common::MethodPolicy {
-            ttl: zero,
-            role: templar_proxy_oracle_near_governance_common::Role::Admin,
-        },
-        method_policies: std::collections::BTreeMap::new(),
-    }
+    GovernancePolicy::uniform(Nanoseconds::zero())
 }
 
 /// Choose the harness mode from the environment. `NEAR_SANDBOX_RPC_URL` set →

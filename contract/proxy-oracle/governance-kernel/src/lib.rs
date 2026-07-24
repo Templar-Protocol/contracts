@@ -49,7 +49,7 @@ impl<Operation, AccountId> Proposal<Operation, AccountId> {
 serialize! {
 /// The governance proposal ledger: a small, owned index over the pending
 /// proposal queue. It tracks only `next_id`, the set of pending ids, the
-/// per-operation TTL table, and the pending cap — it does **not** own the
+/// runtime's timelock policy (`ttls`), and the pending cap — it does **not** own the
 /// proposal bodies. Each runtime stores the bodies at whatever granularity is
 /// efficient for it (one storage key per proposal) and hands the relevant body
 /// back to the kernel when it needs to validate a transition. This keeps the

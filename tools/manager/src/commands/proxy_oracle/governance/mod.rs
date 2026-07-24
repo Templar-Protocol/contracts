@@ -20,12 +20,9 @@ use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use near_account_id::AccountId;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
 
-use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::Base64Bytes;
-use templar_proxy_oracle_near_governance_common::{GovernancePolicy, MethodPolicy, ReflexiveTtls};
 // Re-exported so the leaf command modules parse them directly as `clap::ValueEnum`
 // (derived upstream behind the crate's `clap` feature), avoiding a local mirror.
 pub use templar_proxy_oracle_near_governance_common::{ReflexiveKind, Role};
@@ -101,23 +98,6 @@ impl CancelProposal {
             governance_id,
             id: self.proposal.id,
         }
-    }
-}
-
-/// A [`GovernancePolicy`] with every reflexive timelock and the target default set to `ttl`, and no
-/// per-method overrides. Unlisted methods (the initial state of every method) then require `Admin`.
-fn uniform_policy(ttl: Nanoseconds) -> GovernancePolicy {
-    GovernancePolicy {
-        reflexive_ttls: ReflexiveTtls {
-            set_policy: ttl,
-            set_role: ttl,
-            self_upgrade: ttl,
-        },
-        default_target: MethodPolicy {
-            ttl,
-            role: Role::Admin,
-        },
-        method_policies: BTreeMap::new(),
     }
 }
 

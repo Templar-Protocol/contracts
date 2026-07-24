@@ -85,9 +85,9 @@ impl ReflexiveTtls {
     }
 }
 
-/// Operations that mutate governance's own state. `required_role` for these is hardcoded (never
-/// resolved through the policy table): policy edits need `ProxyConfigurationManager`, role changes
-/// and self-upgrade need `Admin`.
+/// Operations that mutate governance's own state (the policy table, roles, self-upgrade). These all
+/// govern governance itself and require `Admin`, so `required_role` never resolves them through the
+/// policy table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub enum ReflexiveOperation {
@@ -244,6 +244,24 @@ pub struct GovernancePolicy {
 }
 
 impl GovernancePolicy {
+    /// A uniform policy: every reflexive timelock and the target default set to `ttl`, `Admin` as the
+    /// default target role, and no per-method overrides.
+    #[must_use]
+    pub fn uniform(ttl: Nanoseconds) -> Self {
+        Self {
+            reflexive_ttls: ReflexiveTtls {
+                set_policy: ttl,
+                set_role: ttl,
+                self_upgrade: ttl,
+            },
+            default_target: MethodPolicy {
+                ttl,
+                role: Role::Admin,
+            },
+            method_policies: BTreeMap::new(),
+        }
+    }
+
     /// The policy governing `method`: its override if listed, otherwise [`Self::default_target`].
     #[must_use]
     pub fn resolve(&self, method: &str) -> MethodPolicy {

@@ -7,7 +7,7 @@ use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::registry as registry_spec;
 use templar_proxy_oracle_near_governance_common::GovernancePolicy;
 
-use super::{load_json_file, uniform_policy};
+use super::load_json_file;
 use crate::commands::deploy_common::DeployCommonArgs;
 use crate::commands::duration::parse_duration;
 use crate::commands::signer::SignerArgs;
@@ -52,7 +52,7 @@ impl GovernanceCreate {
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
         let policy = match self.policy_file {
             Some(path) => load_json_file(&path).context("parse GovernancePolicy")?,
-            None => uniform_policy(self.ttl_default),
+            None => GovernancePolicy::uniform(self.ttl_default),
         };
 
         let init = GovernanceInit {
