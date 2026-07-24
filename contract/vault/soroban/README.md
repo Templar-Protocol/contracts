@@ -306,6 +306,9 @@ returned to the adapter on Stellar. It does not initiate or prove a market exit.
 `total_assets(asset)` value is explicit reported accounting, updated by vault allocation flow or by
 `set_reported_assets(caller, asset, expected_current, amount, report_nonce)` from the configured
 admin, vault, or custodian.
+The additive `reported_at(asset)` query returns the ledger timestamp of the latest successful
+explicit report, or `None` for adapters/assets that have never received one. Allocation and
+withdrawal lifecycle updates intentionally do not refresh that timestamp.
 Returned idle balances are not auto-counted as NAV because the adapter cannot prove their offchain
 source. When the adapter is paused, vault and custodian reports are blocked, but the adapter admin
 can still submit reported-NAV corrections for incident recovery. The `report_nonce` is an exact
@@ -317,10 +320,14 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 - `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
+- `just custodial-adapter-reported-at <ASSET_ADDRESS>`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
 
 The custodial adapter's `extend_ttl()` entrypoint is permissionless because it only refreshes
 instance storage liveness and the transaction caller pays the Soroban resource cost.
+
+Existing adapter storage needs no migration: an absent timestamp key is returned as `None` until
+the next successful explicit report.
 
 ### Custodial Runbook Checks
 

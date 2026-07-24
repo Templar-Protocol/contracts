@@ -55,6 +55,7 @@ custodial_adapter_wasm := wasm_dir + "/templar_soroban_custodial_adapter.wasm"
 governance_wasm := wasm_dir + "/templar_soroban_governance.wasm"
 share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
+custodial_adapter_abi_script := justfile_directory() + "/scripts/check_custodial_adapter_release_abi.py"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -150,6 +151,16 @@ build-custodial-adapter:
 	@echo "Building custodial adapter WASM..."
 	@just -f "{{justfile_directory()}}/justfile" _optimize-wasm templar-soroban-custodial-adapter "{{wasm_dir}}/templar_soroban_custodial_adapter.wasm"
 	@echo "✓ Built: {{custodial_adapter_wasm}}"
+
+# Verify the optimized custodial adapter exports and executes reported_at.
+verify-custodial-adapter-release-abi: build-custodial-adapter
+	@stellar contract info interface --wasm "{{custodial_adapter_wasm}}" --output json | python3 "{{custodial_adapter_abi_script}}"
+	@RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--cfg artifact_wasm" cargo test \
+		--manifest-path "{{root}}/Cargo.toml" \
+		-p templar-soroban-custodial-adapter \
+		--test artifact_reported_at \
+		-- --nocapture
+	@echo "✓ Custodial adapter release ABI and behavior verified"
 
 # Check the Soroban ERC-4626 proxy crate.
 check-4626-proxy:
@@ -639,6 +650,10 @@ custodial-adapter-custodian:
 custodial-adapter-total-assets asset_address:
 	@just custodial-invoke total_assets --asset "{{asset_address}}"
 
+# Get the timestamp of the latest explicit NAV report for an asset.
+custodial-adapter-reported-at asset_address:
+	@just custodial-invoke reported_at --asset "{{asset_address}}"
+
 # Set reported assets for an offchain-managed position.
 # caller must be the configured admin, vault, or custodian and must authorize the call.
 custodial-adapter-set-reported-assets caller asset_address expected_current amount report_nonce:
@@ -661,6 +676,7 @@ custodial-adapter-status:
 		asset="${SOROBAN_ASSET_TOKEN:-$(cat {{state_dir}}/asset_token_id 2>/dev/null)}"; \
 		if [ -n "$asset" ]; then \
 			echo "Reported:  $(just custodial-invoke total_assets --asset "$asset" 2>/dev/null || echo 'error')"; \
+			echo "Reported at: $(just custodial-invoke reported_at --asset "$asset" 2>/dev/null || echo 'error')"; \
 		fi; \
 	fi
 
@@ -1290,6 +1306,7 @@ help:
 	@echo "  just build                    Build vault WASM"
 	@echo "  just build-blend-adapter      Build Blend adapter WASM"
 	@echo "  just build-custodial-adapter  Build custodial adapter WASM"
+	@echo "  just verify-custodial-adapter-release-abi  Verify optimized custodial adapter ABI"
 	@echo "  just build-all                Build all WASMs"
 	@echo "  just wasm-analyze [rows]      Generate twiggy analysis reports"
 	@echo "  just wasm-analyze-print [report] [lines]  Print analysis reports"
@@ -1322,6 +1339,7 @@ help:
 	@echo "  just deploy-custodial-adapter <custodian>  Deploy adapter for offchain custody route"
 	@echo "  just custodial-adapter-status              Show adapter status"
 	@echo "  just custodial-adapter-total-assets <asset>  Query reported position"
+	@echo "  just custodial-adapter-reported-at <asset>   Query latest explicit report timestamp"
 	@echo "  just custodial-adapter-set-reported-assets <caller> <asset> <expected_current> <amount> <report_nonce>"
 	@echo ""
 	@echo "DEPOSITS:"

@@ -275,6 +275,9 @@ jobs:
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
 
+      - name: Verify custodial adapter release ABI
+        run: just -f contract/vault/soroban/justfile verify-custodial-adapter-release-abi
+
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
 
