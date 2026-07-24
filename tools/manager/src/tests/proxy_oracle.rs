@@ -367,6 +367,25 @@ fn set_method_policy_operation_sets_and_resets() {
 }
 
 #[test]
+fn set_method_policy_requires_ttl_unless_reset() {
+    // Omitting --ttl on a real (non-reset) edit must fail to parse, not silently default to a
+    // zero-timelock policy for that method.
+    let err = try_parse_governance(["create-proposal"].into_iter().chain(CREDS).chain([
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "5",
+        "set-method-policy",
+        "--method",
+        "admin_set_proxy",
+        "--role",
+        "admin",
+    ]))
+    .expect_err("missing --ttl should fail to parse");
+    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+}
+
+#[test]
 fn configure_circuit_breakers_operation_builds_config() {
     let op = operation(&[
         "--governance-id",
@@ -391,7 +410,9 @@ fn configure_circuit_breakers_operation_builds_config() {
             assert_eq!(decoded["config"]["history_len"], json!(8));
             assert_eq!(decoded["config"]["sample_interval_ns"], json!("1000"));
         }
-        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
+        reflexive @ Operation::Reflexive(_) => {
+            panic!("expected target function call, got {reflexive:?}")
+        }
     }
 }
 
@@ -493,7 +514,9 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
             let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
             assert_eq!(args["breaker_id"], json!(0));
         }
-        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
+        reflexive @ Operation::Reflexive(_) => {
+            panic!("expected target function call, got {reflexive:?}")
+        }
     }
 
     // Omitting --requested-ttl defaults it to zero.
@@ -840,7 +863,9 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
             let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
             assert_eq!(args["breaker_id"], json!(4));
         }
-        reflexive @ Operation::Reflexive(_) => panic!("expected target function call, got {reflexive:?}"),
+        reflexive @ Operation::Reflexive(_) => {
+            panic!("expected target function call, got {reflexive:?}")
+        }
     }
 
     // An explicit --breaker-id needs no resolution.

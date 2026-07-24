@@ -217,15 +217,13 @@ impl Operation {
         }
     }
 
-    /// The role a caller must hold to create/execute this operation. Reflexive roles are hardcoded;
-    /// target roles are resolved through the policy table.
+    /// The role a caller must hold to create/execute this operation. Every reflexive op governs
+    /// governance itself (the policy table, roles, self-upgrade) and requires `Admin`; target roles
+    /// are resolved through the policy table.
     #[must_use]
     pub fn required_role(&self, policy: &GovernancePolicy) -> Role {
         match self {
-            Operation::Reflexive(
-                ReflexiveOperation::SetRole { .. } | ReflexiveOperation::SelfUpgrade { .. },
-            ) => Role::Admin,
-            Operation::Reflexive(_) => Role::ProxyConfigurationManager,
+            Operation::Reflexive(_) => Role::Admin,
             Operation::TargetFunctionCall(call) => policy.resolve(&call.method_name).role,
         }
     }
@@ -450,6 +448,13 @@ impl OperationPolicy<GovernancePolicy> for Operation {
 
     fn minimum_ttl(&self, policy: &GovernancePolicy) -> Nanoseconds {
         match self {
+            // Shortening a reflexive timelock must itself wait at least as long as the bucket being
+            // edited, so a lock (e.g. `self_upgrade`) protects its own shortening and stays an
+            // effective ceiling.
+            Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl { kind, .. }) => policy
+                .reflexive_ttls
+                .get(ReflexiveKind::SetPolicy)
+                .max(policy.reflexive_ttls.get(*kind)),
             Operation::Reflexive(reflexive) => policy.reflexive_ttls.get(reflexive.kind()),
             Operation::TargetFunctionCall(call) => policy.resolve(&call.method_name).ttl,
         }

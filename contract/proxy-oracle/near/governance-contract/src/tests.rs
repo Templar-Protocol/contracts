@@ -362,6 +362,28 @@ fn reflexive_timelocks_are_independent() {
 }
 
 #[test]
+fn shortening_a_reflexive_lock_matures_under_that_lock() {
+    testing_env!(context_with_admin());
+    let mut contract = contract();
+    // self_upgrade longer than the policy-edit lock; shortening it must still wait the full
+    // self_upgrade lock, so the ceiling can't be weakened out from under itself.
+    let long = Nanoseconds::from_secs(72 * 60 * 60);
+    contract
+        .header
+        .ttls
+        .set_reflexive_ttl(ReflexiveKind::SelfUpgrade, long)
+        .unwrap();
+
+    let shorten = Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+        kind: ReflexiveKind::SelfUpgrade,
+        ttl: Nanoseconds::zero(),
+    });
+    let proposal = contract.create_proposal(0, shorten, Nanoseconds::zero());
+    assert_eq!(proposal.ttl, long);
+    assert!(panics(|| contract.execute_proposal(0)));
+}
+
+#[test]
 fn set_role_cannot_remove_last_admin() {
     testing_env!(context_with_admin());
     let mut contract = contract();

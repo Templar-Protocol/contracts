@@ -10,6 +10,13 @@ use templar_proxy_oracle_near_governance_common::LegacyOperation;
 /// v0 → v1: seed a `GovernancePolicy` from the old flat TTL table and rewrite every pending proposal
 /// body to the new generic form (target ops become `TargetFunctionCall`s dispatching the matching
 /// `admin_*` method).
+///
+/// Pending proposal bodies are translated verbatim, never rewritten to fit the new invariants — an
+/// in-flight proposal is left exactly as its creator queued it. The one consequence: a pending legacy
+/// `SetActionTtl` that raises one method above the seeded `default_target` maps to a `SetMethodPolicy`
+/// whose `ttl` exceeds the default, so `execute_proposal` reverts it (the `ttl <= default_target.ttl`
+/// invariant). That is a clean, atomic revert — the proposal stays queued and becomes executable once
+/// governance raises `default_target` first; the migration and the rest of the queue are unaffected.
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct V0ToV1;

@@ -169,7 +169,7 @@ fn target_minimum_ttl_uses_resolved_method_policy() {
 }
 
 #[test]
-fn required_role_is_hardcoded_for_reflexive_and_resolved_for_target() {
+fn every_reflexive_op_requires_admin_and_target_roles_resolve() {
     let mut policy = policy(100);
     policy
         .set_method_policy(
@@ -178,19 +178,30 @@ fn required_role_is_hardcoded_for_reflexive_and_resolved_for_target() {
         )
         .unwrap();
 
-    let set_policy = Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
-        policy: method_policy(1, Role::Admin),
-    });
-    let set_role = Operation::Reflexive(ReflexiveOperation::SetRole {
-        account_id: "op.near".parse().unwrap(),
-        role: Role::Admin,
-        set: true,
-    });
-    assert_eq!(
-        set_policy.required_role(&policy),
-        Role::ProxyConfigurationManager
-    );
-    assert_eq!(set_role.required_role(&policy), Role::Admin);
+    // Every reflexive op governs governance itself and requires Admin.
+    let reflexive = [
+        Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+            policy: method_policy(1, Role::Admin),
+        }),
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: "admin_upgrade".to_owned(),
+            policy: None,
+        }),
+        Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+            kind: ReflexiveKind::SetRole,
+            ttl: Nanoseconds::zero(),
+        }),
+        Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: "op.near".parse().unwrap(),
+            role: Role::Admin,
+            set: true,
+        }),
+    ];
+    for operation in reflexive {
+        assert_eq!(operation.required_role(&policy), Role::Admin);
+    }
+
+    // Target roles come from the resolved policy (override, else conservative default).
     assert_eq!(
         target("admin_rearm", 30).required_role(&policy),
         Role::CircuitBreakerOperator
@@ -198,6 +209,41 @@ fn required_role_is_hardcoded_for_reflexive_and_resolved_for_target() {
     assert_eq!(
         target("admin_unknown", 30).required_role(&policy),
         Role::Admin
+    );
+}
+
+#[test]
+fn set_reflexive_ttl_cannot_outrun_the_bucket_it_shortens() {
+    let mut policy = policy(1);
+    policy
+        .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::from_secs(1))
+        .unwrap();
+    policy
+        .set_reflexive_ttl(ReflexiveKind::SelfUpgrade, Nanoseconds::from_secs(100))
+        .unwrap();
+
+    // Shortening self_upgrade must mature under max(set_policy = 1, self_upgrade = 100) = 100, so the
+    // long self-upgrade lock protects its own shortening.
+    let shorten_self_upgrade = Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+        kind: ReflexiveKind::SelfUpgrade,
+        ttl: Nanoseconds::zero(),
+    });
+    assert_eq!(
+        shorten_self_upgrade.minimum_ttl(&policy),
+        Nanoseconds::from_secs(100)
+    );
+
+    // Editing a bucket shorter than the policy-edit lock still waits at least that lock.
+    policy
+        .set_reflexive_ttl(ReflexiveKind::SetRole, Nanoseconds::zero())
+        .unwrap();
+    let edit_set_role = Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+        kind: ReflexiveKind::SetRole,
+        ttl: Nanoseconds::from_secs(50),
+    });
+    assert_eq!(
+        edit_set_role.minimum_ttl(&policy),
+        Nanoseconds::from_secs(1)
     );
 }
 

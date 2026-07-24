@@ -231,7 +231,8 @@ impl ProposalOperation {
                     let role = a
                         .role
                         .context("--role is required unless --reset is given")?;
-                    Some(MethodPolicy { ttl: a.ttl, role })
+                    let ttl = a.ttl.context("--ttl is required unless --reset is given")?;
+                    Some(MethodPolicy { ttl, role })
                 };
                 return Ok(Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
                     method: a.method,
@@ -357,14 +358,14 @@ pub struct SetMethodPolicyArgs {
     /// Target method name (e.g. `admin_set_proxy`).
     #[arg(long, value_name = "NAME")]
     method: String,
-    /// Timelock for this method (ignored with `--reset`). Must be `<=` the target default.
-    #[arg(long, value_name = "DURATION", value_parser = parse_duration, default_value = "0ns")]
-    ttl: Nanoseconds,
+    /// Timelock for this method. Must be `<=` the target default. Required unless `--reset`.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration, required_unless_present = "reset")]
+    ttl: Option<Nanoseconds>,
     /// Role required to invoke this method. Required unless `--reset`.
     #[arg(long, value_enum, required_unless_present = "reset")]
     role: Option<Role>,
     /// Remove the override, resetting the method to the target default.
-    #[arg(long, conflicts_with = "role")]
+    #[arg(long, conflicts_with_all = ["role", "ttl"])]
     reset: bool,
 }
 

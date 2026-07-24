@@ -275,7 +275,9 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
             let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
             args["proxy"].clone()
         }
-        reflexive @ templar_proxy_oracle_near_governance_common::Operation::Reflexive(_) => panic!("expected admin_set_proxy target call, got {reflexive:?}"),
+        reflexive @ templar_proxy_oracle_near_governance_common::Operation::Reflexive(_) => {
+            panic!("expected admin_set_proxy target call, got {reflexive:?}")
+        }
     };
     assert_eq!(proxy["aggregator"]["MedianLow"]["sources"], legacy_entries);
     assert_eq!(proxy["aggregator"]["MedianLow"]["min_sources"], json!(1));
