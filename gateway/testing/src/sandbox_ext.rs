@@ -10,7 +10,7 @@ use near_api::{types::AccountId, NetworkConfig, SecretKey};
 use near_jsonrpc_client::{
     methods::{
         query::RpcQueryRequest, sandbox_fast_forward::RpcSandboxFastForwardRequest,
-        sandbox_patch_state::RpcSandboxPatchStateRequest,
+        sandbox_patch_state::RpcSandboxPatchStateRequest, status::RpcStatusRequest,
     },
     JsonRpcClient,
 };
@@ -29,21 +29,37 @@ const ACCOUNT_STORAGE_USAGE: u64 = 182;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The custom client is what carries [`RPC_TIMEOUT`] — `connect`'s default sets
-/// none — and so must also set the content-type header it would have: the node
-/// answers 415 without it.
-fn client(network: &NetworkConfig) -> JsonRpcClient {
+/// A JSON-RPC client for `rpc_url` carrying `timeout` — `connect`'s default sets
+/// none — with the content-type header the node needs (it answers 415 without
+/// it).
+fn build_client(rpc_url: &str, timeout: Duration) -> JsonRpcClient {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),
     );
     let http = reqwest::Client::builder()
-        .timeout(RPC_TIMEOUT)
+        .timeout(timeout)
         .default_headers(headers)
         .build()
         .expect("reqwest client builds");
-    JsonRpcClient::with(http).connect(network.rpc_endpoints[0].url.as_str())
+    JsonRpcClient::with(http).connect(rpc_url)
+}
+
+fn client(network: &NetworkConfig) -> JsonRpcClient {
+    build_client(network.rpc_endpoints[0].url.as_str(), RPC_TIMEOUT)
+}
+
+/// Whether the sandbox node at `rpc_url` answers a `status` query within
+/// `timeout`. The single home for raw node RPC (see the module docs), so the
+/// out-of-band host's health probe goes through the typed client here rather
+/// than hand-rolling a request. A short `timeout` is what lets a hung node be
+/// noticed promptly, unlike [`RPC_TIMEOUT`].
+pub async fn node_is_serving(rpc_url: &str, timeout: Duration) -> bool {
+    build_client(rpc_url, timeout)
+        .call(RpcStatusRequest)
+        .await
+        .is_ok()
 }
 
 /// Mint each account with its balance and a full-access key over `secret_key` by

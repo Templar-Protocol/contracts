@@ -348,21 +348,26 @@ impl SandboxHarness {
         customize_market: impl FnOnce(&mut MarketConfiguration),
         customize_vault: impl FnOnce(&mut VaultConfiguration),
     ) -> Result<DeployedVault> {
-        let market = self.deploy_full_market_with(customize_market).await?;
-
+        // The market and the vault's six accounts are independent — only the
+        // configuration built below needs both — so deploy the market and mint
+        // the accounts concurrently rather than one after the other.
         let operator = NearToken::from_near(100);
+        let vault_accounts = [
+            ("vault-owner", operator),
+            ("vault-curator", operator),
+            ("vault-sentinel", operator),
+            ("vault-skim", operator),
+            ("vault-fee", operator),
+            ("vault", operator),
+        ];
+        let (market, accounts) = futures::try_join!(
+            self.deploy_full_market_with(customize_market),
+            self.create_accounts(&vault_accounts),
+        )?;
         let [(owner_id, _), (curator_id, _), (sentinel_id, _), (skim_id, _), (fee_id, _), (vault_id, vault_signer)] =
-            self.create_accounts(&[
-                ("vault-owner", operator),
-                ("vault-curator", operator),
-                ("vault-sentinel", operator),
-                ("vault-skim", operator),
-                ("vault-fee", operator),
-                ("vault", operator),
-            ])
-            .await?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("create_accounts returned the wrong number of accounts"))?;
+            accounts.try_into().map_err(|_| {
+                anyhow::anyhow!("create_accounts returned the wrong number of accounts")
+            })?;
 
         // The vault's underlying MUST be the market's borrow asset for the two to
         // integrate. Guardian is unused by the ported tests, so reuse `owner`.

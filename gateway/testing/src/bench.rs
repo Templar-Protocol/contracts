@@ -41,8 +41,7 @@ const BATCH_SIZE: usize = 8;
 const FAST_FORWARD_BLOCKS: u64 = 100;
 
 pub async fn run() -> Result<()> {
-    let rounds = rounds();
-    let mut report = Report::default();
+    let mut report = Report::new(rounds());
 
     let start = Instant::now();
     let harness = SandboxHarness::start_owned().await?;
@@ -51,58 +50,46 @@ pub async fn run() -> Result<()> {
         start.elapsed(),
     );
 
-    bench_account_creation(&harness, rounds, &mut report).await?;
-    bench_transactions(&harness, rounds, &mut report).await?;
-    bench_fixtures(&harness, rounds, &mut report).await?;
+    bench_account_creation(&harness, &mut report).await?;
+    bench_transactions(&harness, &mut report).await?;
+    bench_fixtures(&harness, &mut report).await?;
 
     report.print();
     report_fast_forward(&harness).await
 }
 
 /// The three ways the harness can mint an account, including the batched patch.
-async fn bench_account_creation(
-    harness: &SandboxHarness,
-    rounds: u32,
-    report: &mut Report,
-) -> Result<()> {
-    report.push(
-        "create_account (patch)",
-        average(rounds, || async {
+async fn bench_account_creation(harness: &SandboxHarness, report: &mut Report) -> Result<()> {
+    report
+        .measure("create_account (patch)", || async {
             harness
                 .create_account("bench", NearToken::from_near(100))
                 .await?;
             Ok(())
         })
-        .await?,
-    );
-    report.push(
-        "create_account_via_tx",
-        average(rounds, || async {
+        .await?;
+    report
+        .measure("create_account_via_tx", || async {
             harness
                 .create_account_via_tx("bench-tx", NearToken::from_near(10))
                 .await?;
             Ok(())
         })
-        .await?,
-    );
+        .await?;
     let batch_labels = vec![("bench-batch", NearToken::from_near(10)); BATCH_SIZE];
-    report.push(
-        &format!("create {BATCH_SIZE} accounts (one patch)"),
-        average(rounds, || async {
-            harness.create_accounts(&batch_labels).await?;
-            Ok(())
-        })
-        .await?,
-    );
-    Ok(())
+    report
+        .measure(
+            &format!("create {BATCH_SIZE} accounts (one patch)"),
+            || async {
+                harness.create_accounts(&batch_labels).await?;
+                Ok(())
+            },
+        )
+        .await
 }
 
 /// The transaction floor, and what the WASM payload adds on top of it.
-async fn bench_transactions(
-    harness: &SandboxHarness,
-    rounds: u32,
-    report: &mut Report,
-) -> Result<()> {
+async fn bench_transactions(harness: &SandboxHarness, report: &mut Report) -> Result<()> {
     // The floor every node-backed interaction pays: one transaction, minimal
     // payload, waiting only for optimistic execution.
     let (ft_id, _) = harness
@@ -117,9 +104,8 @@ async fn bench_transactions(
         serde_json::json!({ "name": "Bench FT", "symbol": "BFT" }),
     )
     .await?;
-    report.push(
-        "minimal fn-call tx",
-        average(rounds, || async {
+    report
+        .measure("minimal fn-call tx", || async {
             harness
                 .call_contract(
                     &ft_id,
@@ -131,8 +117,7 @@ async fn bench_transactions(
                 )
                 .await
         })
-        .await?,
-    );
+        .await?;
 
     for (name, code) in [
         ("mock_ft", crate::wasm::ft().await.to_vec()),
@@ -140,31 +125,28 @@ async fn bench_transactions(
         ("vault", crate::wasm::vault().await.to_vec()),
     ] {
         let label = format!("create + deploy: {name} ({} KB)", code.len() / 1024);
-        report.push(
-            &label,
-            average(rounds, || async {
+        report
+            .measure(&label, || async {
                 let (id, signer) = harness
                     .create_account("bench-deploy", NearToken::from_near(100))
                     .await?;
                 deploy_code(&harness.network, id, signer, code.clone()).await
             })
-            .await?,
-        );
+            .await?;
     }
     Ok(())
 }
 
 /// Setup as tests actually pay for it: several deploys, then the real fixtures.
-async fn bench_fixtures(harness: &SandboxHarness, rounds: u32, report: &mut Report) -> Result<()> {
+async fn bench_fixtures(harness: &SandboxHarness, report: &mut Report) -> Result<()> {
     let codes = [
         crate::wasm::ft().await.to_vec(),
         crate::wasm::ft().await.to_vec(),
         crate::wasm::mock_oracle().await.to_vec(),
         crate::wasm::market().await.to_vec(),
     ];
-    report.push(
-        "4 x (create + deploy), serial",
-        average(rounds, || async {
+    report
+        .measure("4 x (create + deploy), serial", || async {
             for code in &codes {
                 let (id, signer) = harness
                     .create_account("bench-seq", NearToken::from_near(100))
@@ -173,11 +155,9 @@ async fn bench_fixtures(harness: &SandboxHarness, rounds: u32, report: &mut Repo
             }
             Ok(())
         })
-        .await?,
-    );
-    report.push(
-        "batched create + 4 deploys concurrent",
-        average(rounds, || async {
+        .await?;
+    report
+        .measure("batched create + 4 deploys concurrent", || async {
             let accounts = harness
                 .create_accounts(&[("bench-par", NearToken::from_near(100)); 4])
                 .await?;
@@ -192,26 +172,20 @@ async fn bench_fixtures(harness: &SandboxHarness, rounds: u32, report: &mut Repo
             }
             Ok(())
         })
-        .await?,
-    );
+        .await?;
 
-    report.push(
-        "deploy_market fixture (2 FT + oracle + market)",
-        average(rounds, || async {
+    report
+        .measure("deploy_market fixture (2 FT + oracle + market)", || async {
             harness.deploy_market().await?;
             Ok(())
         })
-        .await?,
-    );
-    report.push(
-        "deploy_vault_with_market fixture",
-        average(rounds, || async {
+        .await?;
+    report
+        .measure("deploy_vault_with_market fixture", || async {
             harness.deploy_vault_with_market().await?;
             Ok(())
         })
-        .await?,
-    );
-    Ok(())
+        .await
 }
 
 /// `sandbox_fast_forward` advances the chain clock by
@@ -250,33 +224,44 @@ async fn deploy_code(
     Ok(())
 }
 
-/// Mean wall time of `rounds` runs of `operation`.
-async fn average<F, Fut>(rounds: u32, mut operation: F) -> Result<Duration>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
-    let mut total = Duration::ZERO;
-    for _ in 0..rounds {
-        let start = Instant::now();
-        operation().await?;
-        total += start.elapsed();
-    }
-    Ok(total / rounds.max(1))
+struct Report {
+    rows: Vec<(String, Duration)>,
+    rounds: u32,
 }
 
-#[derive(Default)]
-struct Report(Vec<(String, Duration)>);
-
 impl Report {
+    fn new(rounds: u32) -> Self {
+        Self {
+            rows: Vec::new(),
+            rounds: rounds.max(1),
+        }
+    }
+
+    /// Record an already-measured one-shot duration (e.g. harness start).
     fn push(&mut self, label: &str, elapsed: Duration) {
         println!("  measured {label}: {elapsed:?}");
-        self.0.push((label.to_owned(), elapsed));
+        self.rows.push((label.to_owned(), elapsed));
+    }
+
+    /// Run `op` [`rounds`](Self::rounds) times and record its mean wall time.
+    async fn measure<F, Fut>(&mut self, label: &str, mut op: F) -> Result<()>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let mut total = Duration::ZERO;
+        for _ in 0..self.rounds {
+            let start = Instant::now();
+            op().await?;
+            total += start.elapsed();
+        }
+        self.push(label, total / self.rounds);
+        Ok(())
     }
 
     fn print(&self) {
         let width = self
-            .0
+            .rows
             .iter()
             .map(|(label, _)| label.len())
             .max()
@@ -284,7 +269,7 @@ impl Report {
         println!();
         println!("{:width$}   mean", "operation");
         println!("{}", "-".repeat(width + 12));
-        for (label, elapsed) in &self.0 {
+        for (label, elapsed) in &self.rows {
             println!(
                 "{label:width$}   {:>7.1} ms",
                 elapsed.as_secs_f64() * 1000.0

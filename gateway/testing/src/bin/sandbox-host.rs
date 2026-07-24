@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use near_sandbox::Sandbox;
-use templar_gateway_testing::sandbox::sandbox_config;
+use templar_gateway_testing::{node_is_serving, sandbox::sandbox_config};
 use tokio::signal::unix::{signal, SignalKind};
 
 /// How often the node is asked whether it is still serving.
@@ -21,6 +21,7 @@ const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
 /// miss a probe or two under CPU pressure, so only a sustained outage counts.
 const HEALTH_FAILURES_BEFORE_DEAD: u32 = 5;
 
+/// Per-probe RPC timeout — short, so a hung node is caught within a few probes.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
@@ -40,14 +41,10 @@ async fn main() -> Result<()> {
     // kills the child `neard`).
     let mut terminate = signal(SignalKind::terminate()).context("failed to hook SIGTERM")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("failed to hook SIGINT")?;
-    let health_client = reqwest::Client::builder()
-        .timeout(HEALTH_TIMEOUT)
-        .build()
-        .context("failed to build health-probe client")?;
     let outcome = tokio::select! {
         _ = terminate.recv() => Ok(()),
         _ = interrupt.recv() => Ok(()),
-        () = supervise(&health_client, &url) => Err(anyhow::anyhow!(
+        () = supervise(&url) => Err(anyhow::anyhow!(
             "sandbox node at {url} stopped responding — the node died or hung. \
              Tests routed to it would otherwise fail with confusing transport errors."
         )),
@@ -64,13 +61,13 @@ async fn main() -> Result<()> {
 /// was dead, leaving the pool advertising a slot that answers nothing — every
 /// test landing there fails with a bare transport error that looks like
 /// flakiness rather than a downed node.
-async fn supervise(client: &reqwest::Client, url: &str) {
+async fn supervise(url: &str) {
     let mut consecutive_failures = 0;
 
     loop {
         tokio::time::sleep(HEALTH_INTERVAL).await;
 
-        if is_serving(client, url).await {
+        if node_is_serving(url, HEALTH_TIMEOUT).await {
             consecutive_failures = 0;
             continue;
         }
@@ -84,19 +81,4 @@ async fn supervise(client: &reqwest::Client, url: &str) {
             return;
         }
     }
-}
-
-async fn is_serving(client: &reqwest::Client, url: &str) -> bool {
-    let request = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "health",
-        "method": "status",
-        "params": [],
-    });
-    client
-        .post(url)
-        .json(&request)
-        .send()
-        .await
-        .is_ok_and(|response| response.status().is_success())
 }

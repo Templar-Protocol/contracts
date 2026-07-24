@@ -448,18 +448,17 @@ impl SandboxHarness {
                 .next()
                 .with_context(|| format!("no minted account for the market's {what}"))
         };
-        let fresh_oracle = match oracle_id {
-            Some(_) => None,
-            None => Some(next("oracle")?),
+        // A caller-supplied oracle is used as-is; otherwise the first minted
+        // account becomes a fresh mock oracle, deployed alongside the rest below.
+        let (oracle_id, fresh_oracle) = if let Some(oracle_id) = oracle_id {
+            (oracle_id, None)
+        } else {
+            let (oracle_id, signer) = next("oracle")?;
+            (oracle_id.clone(), Some((oracle_id, signer)))
         };
         let (borrow_asset_id, borrow_signer) = next("borrow asset")?;
         let (collateral_asset_id, collateral_signer) = next("collateral asset")?;
         let (market_id, market_signer) = next("market")?;
-        let oracle_id = match (oracle_id, &fresh_oracle) {
-            (Some(oracle_id), _) => oracle_id,
-            (None, Some((oracle_id, _))) => oracle_id.clone(),
-            (None, None) => anyhow::bail!("no oracle for the market"),
-        };
 
         let mut configuration = market_configuration(
             oracle_id,
