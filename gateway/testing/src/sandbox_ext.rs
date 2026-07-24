@@ -131,6 +131,21 @@ pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> 
     Ok(())
 }
 
+/// How long a patched key gets to reach `Final`.
+///
+/// Finality is a couple of blocks on an idle node, but this has to hold on a
+/// CPU-starved CI runner where several nodes compete for a core and block
+/// production stretches far past its target. Erring long costs nothing on a
+/// healthy node — the wait ends as soon as the key is visible — while erring
+/// short turns load into a spurious, confusing test failure.
+const FINALITY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Poll backoff bounds. Starts tight so an idle node is not slowed down, then
+/// backs off: a flat fast poll from every test process piles RPC load onto the
+/// very node that is already struggling.
+const FINALITY_POLL_MIN: Duration = Duration::from_millis(25);
+const FINALITY_POLL_MAX: Duration = Duration::from_millis(500);
+
 /// Block until the patched key is visible at `Final`.
 ///
 /// A patch lands at optimistic finality, but near-api's signer reads the nonce at
@@ -151,11 +166,18 @@ async fn wait_until_final(
     };
     // Every error retries: not-yet-final, node backpressure and transport blips all
     // clear on a later block.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(FINALITY_TIMEOUT, async {
+        let mut backoff = FINALITY_POLL_MIN;
         while client.call(&request).await.is_err() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(FINALITY_POLL_MAX);
         }
     })
     .await
-    .with_context(|| format!("patched account {account_id} never reached final finality"))
+    .with_context(|| {
+        format!(
+            "patched account {account_id} never reached final finality within \
+             {FINALITY_TIMEOUT:?} — the sandbox node is likely overloaded or down"
+        )
+    })
 }

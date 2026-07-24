@@ -36,8 +36,14 @@ async fn activates_in_next_snapshot(#[future(awt)] harness: SandboxHarness) -> R
         .collateralize(&borrow_user, &market, 2_000_000)
         .await?;
 
-    let snapshots_before = harness.get_finalized_snapshots_len(&market).await?;
     harness.supply(&supply_user, &market, 1_000_000).await?;
+
+    // Count *after* the supply, not before: the supply itself finalizes whatever
+    // chunks have elapsed, and reading beforehand assumes no boundary is crossed
+    // between the read and the supply — which under load is not true at any chunk
+    // length. Views never finalize a snapshot, so once the supply has landed this
+    // count is stable.
+    let snapshots_now = harness.get_finalized_snapshots_len(&market).await?;
 
     // The fresh deposit is scheduled for the next snapshot, not active now.
     let position = harness
@@ -47,7 +53,7 @@ async fn activates_in_next_snapshot(#[future(awt)] harness: SandboxHarness) -> R
     let activate_at = position.get_deposit().incoming[0].activate_at_snapshot_index;
     assert_eq!(
         activate_at,
-        snapshots_before + 1,
+        snapshots_now + 1,
         "funds should activate in the next snapshot",
     );
 
