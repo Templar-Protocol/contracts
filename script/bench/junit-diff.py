@@ -22,11 +22,16 @@ def load(path):
     for suite in root.iter("testsuite"):
         suite_name = suite.get("name", "")
         for case in suite.iter("testcase"):
-            # A retried case appears more than once; keep the longest attempt,
-            # which is what a run actually waited on.
+            # Count every attempt: nextest records a retried test as one
+            # <testcase> for the final result plus a timed <flakyFailure> /
+            # <rerunFailure> child per earlier attempt, and the run waited on all
+            # of them in sequence.
             seconds = float(case.get("time", "0") or 0)
+            for attempt in case:
+                if attempt.tag in ("flakyFailure", "flakyError", "rerunFailure", "rerunError"):
+                    seconds += float(attempt.get("time", "0") or 0)
             key = (suite_name, case.get("name", ""))
-            tests[key] = max(tests.get(key, 0.0), seconds)
+            tests[key] = tests.get(key, 0.0) + seconds
     for (suite_name, _), seconds in tests.items():
         suites[suite_name] += seconds
     return tests, suites
@@ -52,6 +57,9 @@ def main():
     print(f"  delta  {fmt(delta)}  ({pct:+.1f}%)")
 
     print("\n== per suite (after − before) ==")
+    # Signed, biggest speedup first: at suite level the net direction is the
+    # point. (The per-test movers below rank by magnitude instead, to surface
+    # regressions alongside speedups.)
     suites = sorted(
         set(before_suites) | set(after_suites),
         key=lambda s: after_suites.get(s, 0) - before_suites.get(s, 0),
@@ -63,7 +71,10 @@ def main():
 
     print("\n== 25 largest per-test movers (after − before) ==")
     shared = set(before_tests) & set(after_tests)
-    movers = sorted(shared, key=lambda k: after_tests[k] - before_tests[k])
+    # By absolute delta so the biggest regressions show alongside the speedups.
+    movers = sorted(
+        shared, key=lambda k: abs(after_tests[k] - before_tests[k]), reverse=True
+    )
     for key in movers[:25]:
         b, a = before_tests[key], after_tests[key]
         print(f"  {a - b:+8.2f}s  {fmt(b)} -> {fmt(a)}  {key[0]} {key[1]}")

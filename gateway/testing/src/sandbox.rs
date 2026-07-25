@@ -1115,11 +1115,22 @@ const MIN_BLOCK_MS: u64 = 40;
 /// and hence [`FAST_FORWARD_BLOCK_MS`], fixed: lowering the real cadence must not
 /// quietly shorten what a `fast_forward(N)` simulates.
 fn block_delays_ms() -> (u64, u64) {
-    let min = std::env::var("NEAR_SANDBOX_BLOCK_MS")
-        .ok()
-        .and_then(|ms| ms.parse().ok())
-        .unwrap_or(MIN_BLOCK_MS)
-        .clamp(1, FAST_FORWARD_BLOCK_MS);
+    let min = match std::env::var("NEAR_SANDBOX_BLOCK_MS") {
+        // A malformed override must fail loudly, not silently fall back to the
+        // fast default: CI pins this precisely because the fast cadence is
+        // unreliable on a contended runner, so a typo'd value quietly restoring
+        // it would resurface as flaky finality errors rather than a config error.
+        Ok(value) => value
+            .trim()
+            .parse::<u64>()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "NEAR_SANDBOX_BLOCK_MS must be a whole number of milliseconds, got `{value}`"
+                )
+            })
+            .clamp(1, FAST_FORWARD_BLOCK_MS),
+        Err(_) => MIN_BLOCK_MS,
+    };
     (min, 2 * FAST_FORWARD_BLOCK_MS - min)
 }
 

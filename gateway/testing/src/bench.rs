@@ -193,7 +193,8 @@ async fn bench_fixtures(harness: &SandboxHarness, report: &mut Report) -> Result
 /// nearcore's `Client::sandbox_delta_time`), so a change to either delay changes
 /// how much simulated time a `fast_forward` buys — which is what time-sensitive
 /// tests (snapshots, interest, TTLs) actually assert on. Print it so any config
-/// change can be checked against the stock 310ms/block.
+/// change can be checked against the ~310ms/block the min/max average is
+/// deliberately held at (unchanged whatever the real cadence).
 async fn report_fast_forward(harness: &SandboxHarness) -> Result<()> {
     let before = harness.chain_timestamp().await?;
     harness.fast_forward(FAST_FORWARD_BLOCKS).await?;
