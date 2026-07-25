@@ -1,9 +1,9 @@
-//! The original sleeps real
-//! wall-clock to cross time-chunk boundaries; here we advance with `fast_forward`.
-//! Generous advances are safe: `partial::check` skips snapshots that match the
-//! previous expected state, so the extra (no-op) snapshots a large advance
-//! produces are ignored — only the ordered sequence of *state changes* matters.
-//! The `partial::check` / `states!` DSL is reused from `test-utils`.
+//! Snapshot tests. A snapshot finalizes only when an operation runs in a later
+//! time chunk, so each state we want observed gets its own chunk: `fast_forward`
+//! before the operation rather than relying on incidental per-transaction time,
+//! which varies with block cadence. Generous advances are safe — `partial::check`
+//! skips snapshots matching the previous expected state, so only the ordered
+//! sequence of *state changes* matters. `check` / `states!` come from `test-utils`.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -34,12 +34,8 @@ async fn snapshot_captures_borrow_and_collateral_state(
         .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
         .await?;
 
-    // A snapshot finalizes only when the next operation runs in a later time
-    // chunk, so each state we want to observe needs its own chunk: `fast_forward`
-    // before every operation rather than relying on incidental per-transaction
-    // time, which varies with block cadence. The trailing operation's own state
-    // stays the (unfinalized) current snapshot, so a final one triggers the
-    // finalization of the collateral `+1` we check.
+    // The final collateralize only triggers finalization of the prior one; its
+    // own state stays the unfinalized current snapshot and isn't checked.
     harness.fast_forward(100).await?;
     harness
         .collateralize(&borrow_user, &market, 1_000_000)
@@ -181,10 +177,8 @@ async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness
     let final_len = harness.list_finalized_snapshots(&market).await?.len();
     assert!(final_len > initial);
 
-    // Cross a chunk boundary so the harvest that follows finalizes the snapshot
-    // holding the activated `+1` — otherwise it lands in the same chunk as the
-    // activation and stays the (unfinalized) current snapshot. Not relying on
-    // incidental per-transaction time keeps this independent of block cadence.
+    // Cross a chunk boundary so the following harvest finalizes the activated
+    // `+1` rather than merging into its chunk.
     harness.fast_forward(100).await?;
     harness
         .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
@@ -264,11 +258,8 @@ async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Re
     harness.fund_user(&supply_user, &market).await?;
     harness.fund_user(&borrow_user, &market).await?;
 
-    // Every state below must land in its own time chunk to be finalized
-    // separately, so `fast_forward` before each operation instead of relying on
-    // incidental per-transaction time (which varies with block cadence). The
-    // final operation only triggers finalization of the preceding one; its own
-    // state stays the unfinalized current snapshot and is not checked.
+    // Each op in its own chunk (see module docs); the final op only triggers the
+    // previous one's finalization and is not itself checked.
     harness
         .supply_and_harvest_until_activation(&supply_user, &market, 1_500_000)
         .await?;

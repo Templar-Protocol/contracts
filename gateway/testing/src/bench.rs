@@ -3,10 +3,9 @@
 //! Run through `just bench-sandbox` (which drives `bin/sandbox-bench.rs`). This
 //! is a binary, not a test, so no test-gate filter picks it up.
 //!
-//! It answers "where does a node-backed test's wall time actually go" — the
-//! block-latency floor, per-transaction and per-patch costs, and the fixture
-//! setup built from them — so a change to the harness or the node config can be
-//! shown to help rather than assumed to.
+//! It answers where a node-backed test's wall time goes — the block-latency
+//! floor, per-transaction and per-patch costs, and the fixture setup built from
+//! them — so a harness or node-config change can be measured, not guessed.
 //!
 //! Every measurement runs on a dedicated node ([`SandboxHarness::start_owned`]),
 //! never a pooled one, so a concurrent test cannot skew it.

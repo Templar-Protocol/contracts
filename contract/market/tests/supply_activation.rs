@@ -38,11 +38,9 @@ async fn activates_in_next_snapshot(#[future(awt)] harness: SandboxHarness) -> R
 
     harness.supply(&supply_user, &market, 1_000_000).await?;
 
-    // Count *after* the supply, not before: the supply itself finalizes whatever
-    // chunks have elapsed, and reading beforehand assumes no boundary is crossed
-    // between the read and the supply — which under load is not true at any chunk
-    // length. Views never finalize a snapshot, so once the supply has landed this
-    // count is stable.
+    // Count *after* the supply: reading before assumes no chunk boundary falls
+    // between the read and the supply, which isn't true under load. Views never
+    // finalize a snapshot, so the post-supply count is stable.
     let snapshots_now = harness.get_finalized_snapshots_len(&market).await?;
 
     // The fresh deposit is scheduled for the next snapshot, not active now.

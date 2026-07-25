@@ -113,12 +113,10 @@ _test-sandbox *args:
         while IFS= read -r package; do
             sandbox_package_args+=(-p "$package")
         done <<< '{{ sandbox_packages }}'
-        # Compile the test binaries BEFORE the pool starts. Every node produces
-        # blocks continuously from the moment it boots, so starting them first
-        # means a whole cargo build spent competing with them for CPU — which on
-        # a CI runner is minutes of contention that slows the build and starves
-        # the nodes. Only for the default (whole-gate) set: a narrowed `-p` run
-        # carries its package flags in nextest_args, which cargo build can't take.
+        # Build test binaries BEFORE starting the pool: nodes produce blocks from
+        # boot, so starting them first spends the whole cargo build competing for
+        # CPU (minutes of contention on CI). Default set only — a narrowed `-p`
+        # run keeps its package flags in nextest_args, which cargo build can't take.
         cargo build --tests "${sandbox_package_args[@]}"
     fi
     SANDBOX_NODE_COUNT="$sandbox_test_threads" source ./script/sandbox-up.sh

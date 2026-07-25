@@ -472,13 +472,9 @@ jobs:
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           DATABASE_URL: *postgres_url
-          # Stock block cadence. The harness defaults to a faster one, which is a
-          # large win on a developer machine but not here: a runner has 4 vCPUs
-          # shared by the node pool and the test threads, and at the faster
-          # cadence the nodes cannot keep up — block production falls behind,
-          # finality waits time out, and the gate both slows down and fails.
-          # Measured on a CPU-matched simulation: cutting test parallelism to buy
-          # the nodes headroom is 32% slower than simply running stock.
+          # Stock cadence: the harness default is faster (a big local win) but a
+          # shared 4-vCPU runner can't sustain it — block production falls behind
+          # and finality waits time out.
           NEAR_SANDBOX_BLOCK_MS: "120"
         # CI-only stopgap for occasional node-starvation flakes on the shared
         # runner; max-fail still aborts a systemic failure fast. Local runs stay
