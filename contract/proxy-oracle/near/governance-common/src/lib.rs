@@ -1,5 +1,6 @@
 pub mod interface;
 pub mod legacy;
+pub mod target;
 
 use std::collections::BTreeMap;
 

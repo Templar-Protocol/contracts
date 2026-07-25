@@ -20,7 +20,7 @@ use templar_common::Nanoseconds;
 use templar_primitives::Decimal;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, StepwiseChange};
 use templar_proxy_oracle_near_governance_common::{
-    FunctionCall, LegacyOperation, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation, Role,
+    target, FunctionCall, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation, Role,
 };
 
 const PRICE_ID: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
@@ -213,6 +213,7 @@ fn set_role_operation_grants_and_revokes() {
         "gov.testnet",
         "--id",
         "1",
+        "self",
         "set-role",
         "--account-id",
         "op.testnet",
@@ -233,6 +234,7 @@ fn set_role_operation_grants_and_revokes() {
         "gov.testnet",
         "--id",
         "1",
+        "self",
         "set-role",
         "--account-id",
         "op.testnet",
@@ -257,7 +259,8 @@ fn admin_function_call_operation_defaults_and_encodes_args() {
         "gov.testnet",
         "--id",
         "0",
-        "admin-function-call",
+        "oracle",
+        "call",
         "--method",
         "own_accept_owner",
         "--deposit",
@@ -282,6 +285,7 @@ fn set_reflexive_ttl_operation_builds_kind_and_ttl() {
         "gov.testnet",
         "--id",
         "5",
+        "self",
         "set-reflexive-ttl",
         "--kind",
         "self-upgrade",
@@ -304,6 +308,7 @@ fn set_target_default_operation_builds_policy() {
         "gov.testnet",
         "--id",
         "5",
+        "self",
         "set-target-default",
         "--ttl",
         "1d",
@@ -328,6 +333,7 @@ fn set_method_policy_operation_sets_and_resets() {
         "gov.testnet",
         "--id",
         "5",
+        "self",
         "set-method-policy",
         "--method",
         "admin_set_proxy",
@@ -352,6 +358,7 @@ fn set_method_policy_operation_sets_and_resets() {
         "gov.testnet",
         "--id",
         "5",
+        "self",
         "set-method-policy",
         "--method",
         "admin_set_proxy",
@@ -375,6 +382,7 @@ fn set_method_policy_requires_ttl_unless_reset() {
         "gov.testnet",
         "--id",
         "5",
+        "self",
         "set-method-policy",
         "--method",
         "admin_set_proxy",
@@ -392,6 +400,7 @@ fn configure_circuit_breakers_operation_builds_config() {
         "gov.testnet",
         "--id",
         "2",
+        "oracle",
         "configure-circuit-breakers",
         "--price-id",
         PRICE_ID,
@@ -423,6 +432,7 @@ fn set_proxy_gas_override_flows_through() {
         "gov.testnet",
         "--id",
         "1",
+        "oracle",
         "set-proxy",
         "--price-id",
         PRICE_ID,
@@ -441,6 +451,7 @@ fn set_proxy_gas_override_flows_through() {
         "gov.testnet",
         "--id",
         "1",
+        "oracle",
         "set-proxy",
         "--price-id",
         PRICE_ID,
@@ -466,7 +477,8 @@ fn admin_upgrade_operation_reads_code_file() {
         "gov.testnet",
         "--id",
         "9",
-        "admin-upgrade",
+        "oracle",
+        "upgrade",
         "--code-file",
         path.to_str().unwrap(),
     ]);
@@ -474,11 +486,14 @@ fn admin_upgrade_operation_reads_code_file() {
 
     assert_eq!(
         op,
-        Operation::try_from(LegacyOperation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(wasm.to_vec())),
-            migrate_args: Base64VecU8(Vec::new()),
-        })
-        .unwrap()
+        Operation::TargetFunctionCall(
+            target::admin_upgrade(
+                UpgradeSource::Code(Base64VecU8(wasm.to_vec())),
+                Base64VecU8(Vec::new()),
+                None,
+            )
+            .unwrap()
+        )
     );
 }
 
@@ -490,17 +505,21 @@ fn admin_upgrade_accepts_a_global_hash() {
         "gov.testnet",
         "--id",
         "9",
-        "admin-upgrade",
+        "oracle",
+        "upgrade",
         "--global-hash",
         "11111111111111111111111111111111",
     ]);
     assert_eq!(
         by_hash,
-        Operation::try_from(LegacyOperation::AdminUpgrade {
-            code: UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
-            migrate_args: Base64VecU8(Vec::new()),
-        })
-        .unwrap()
+        Operation::TargetFunctionCall(
+            target::admin_upgrade(
+                UpgradeSource::GlobalHash(Base58CryptoHash::from([0u8; 32])),
+                Base64VecU8(Vec::new()),
+                None,
+            )
+            .unwrap()
+        )
     );
 }
 
@@ -511,7 +530,8 @@ fn self_upgrade_operation_targets_the_governance_contract() {
         "gov.testnet",
         "--id",
         "9",
-        "self-upgrade",
+        "self",
+        "upgrade",
         "--global-hash",
         "11111111111111111111111111111111",
     ]);
@@ -534,6 +554,7 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
         "3",
         "--requested-ttl",
         "42ns",
+        "oracle",
         "remove-circuit-breaker",
         "--price-id",
         PRICE_ID,
@@ -560,6 +581,7 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
         "gov.testnet",
         "--id",
         "3",
+        "oracle",
         "remove-circuit-breaker",
         "--price-id",
         PRICE_ID,
@@ -580,6 +602,7 @@ fn create_proposal_id_is_optional_for_auto_fetch() {
     let cmd = parse_create_proposal([
         "--governance-id",
         "gov.testnet",
+        "oracle",
         "set-proxy",
         "--price-id",
         PRICE_ID,
@@ -601,7 +624,8 @@ fn create_proposal_execute_when_ready_flag() {
         "--id",
         "0",
         "--execute-when-ready",
-        "admin-function-call",
+        "oracle",
+        "call",
         "--method",
         "own_accept_owner",
         "--deposit",
@@ -661,7 +685,8 @@ fn governance_write_commands_accept_print_mode() {
                 "dao.near",
                 "--print",
                 "json",
-                "admin-function-call",
+                "oracle",
+                "call",
                 "--method",
                 "own_accept_owner",
                 "--deposit",
@@ -712,7 +737,8 @@ fn proposal_orchestration_flags_conflict_with_print() {
                 "dao.near",
                 "--print",
                 "json",
-                "admin-function-call",
+                "oracle",
+                "call",
                 "--method",
                 "own_accept_owner",
                 "--deposit",
@@ -867,6 +893,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
             "gov.testnet",
             "--id",
             "0",
+            "oracle",
             "add-circuit-breaker",
             "--price-id",
             PRICE_ID,
@@ -909,6 +936,7 @@ fn add_circuit_breaker_breaker_id_is_optional_and_resolvable() {
         "gov.testnet",
         "--id",
         "0",
+        "oracle",
         "add-circuit-breaker",
         "--price-id",
         PRICE_ID,

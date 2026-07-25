@@ -1,6 +1,7 @@
 //! The pre-restructure operation set (12 typed variants) and its mapping to the new generic
-//! [`Operation`]. Single source of truth shared by the borsh state migration, the manager CLI's typed
-//! subcommands, and legacy-JSON acceptance on `create_proposal`.
+//! [`Operation`]. Consumed by the borsh state migration and legacy-JSON acceptance on
+//! `create_proposal`; the manager CLI builds current-format operations directly via [`crate::target`].
+//! Target-call serialization is shared with the CLI through that module.
 //!
 //! The old create-time payload checks (`EmptyProxyDefinition`, `CircuitBreakerHistoryTooLong`) are not
 //! reproduced here — the generic form is opaque to governance, so they move to the proxy oracle
@@ -18,12 +19,9 @@ use templar_proxy_oracle_kernel::proxy::{
 use templar_proxy_oracle_near_common::input::Source;
 
 use crate::{
-    FunctionCall, GovernancePolicy, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation,
-    Role, GAS_FOR_ADMIN_UPGRADE,
+    target, FunctionCall, GovernancePolicy, MethodPolicy, Operation, ReflexiveKind,
+    ReflexiveOperation, Role,
 };
-
-/// Default gas for a migrated/compat target call to the proxy/circuit-breaker admin methods.
-pub const GAS_FOR_TARGET_DEFAULT: Gas = Gas::from_tgas(30);
 
 /// The old per-operation kind tag, retained so a legacy `SetActionTtl { kind, .. }` still resolves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,75 +199,6 @@ impl LegacyTtlConfig {
     }
 }
 
-/// Arg structs mirroring the proxy-oracle `admin_*` method signatures, so a legacy typed variant
-/// serializes to exactly the JSON the target expects.
-mod args {
-    use super::{
-        AcceptedHistorySource, Base64VecU8, CircuitBreaker, CircuitBreakerSetConfig, Nanoseconds,
-        PriceIdentifier, Proxy, Source, UpgradeSource,
-    };
-    use near_sdk::near;
-
-    #[near(serializers = [json])]
-    pub struct SetProxy {
-        pub id: PriceIdentifier,
-        pub proxy: Option<Proxy<Source>>,
-    }
-    #[near(serializers = [json])]
-    pub struct ConfigureCircuitBreakers {
-        pub id: PriceIdentifier,
-        pub config: CircuitBreakerSetConfig,
-    }
-    #[near(serializers = [json])]
-    pub struct AddCircuitBreaker {
-        pub id: PriceIdentifier,
-        pub breaker_id: u32,
-        pub breaker: CircuitBreaker,
-    }
-    #[near(serializers = [json])]
-    pub struct RemoveCircuitBreaker {
-        pub id: PriceIdentifier,
-        pub breaker_id: u32,
-    }
-    #[near(serializers = [json])]
-    pub struct SetManualTrip {
-        pub id: PriceIdentifier,
-        pub is_manually_tripped: bool,
-        pub metadata: Option<Base64VecU8>,
-    }
-    #[near(serializers = [json])]
-    pub struct Rearm {
-        pub id: PriceIdentifier,
-        pub breaker_id: u32,
-        pub armed_after_ns: Nanoseconds,
-        pub accepted_history_source: AcceptedHistorySource,
-    }
-    #[near(serializers = [json])]
-    pub struct SetEnforced {
-        pub id: PriceIdentifier,
-        pub breaker_id: u32,
-        pub is_enforced: bool,
-    }
-    #[near(serializers = [json])]
-    pub struct AdminUpgrade {
-        pub code: UpgradeSource,
-        pub migrate_args: Base64VecU8,
-    }
-}
-
-fn target_call<A: near_sdk::serde::Serialize>(
-    method: &str,
-    args: &A,
-    gas: Gas,
-) -> Result<Operation, near_sdk::serde_json::Error> {
-    Ok(Operation::TargetFunctionCall(FunctionCall {
-        method_name: method.to_owned(),
-        args: Base64VecU8(near_sdk::serde_json::to_vec(args)?),
-        attached_deposit: U128(0),
-        gas,
-    }))
-}
-
 /// Map a legacy per-kind TTL edit to the equivalent new reflexive policy edit.
 fn map_set_action_ttl(kind: LegacyOperationKind, ttl: Nanoseconds) -> Operation {
     use LegacyOperationKind as K;
@@ -323,80 +252,69 @@ impl LegacyOperation {
         self,
         gas_override: Option<Gas>,
     ) -> Result<Operation, near_sdk::serde_json::Error> {
-        let target_gas = gas_override.unwrap_or(GAS_FOR_TARGET_DEFAULT);
         Ok(match self {
             LegacyOperation::SetProxy { id, proxy } => {
-                target_call("admin_set_proxy", &args::SetProxy { id, proxy }, target_gas)?
+                Operation::TargetFunctionCall(target::admin_set_proxy(id, proxy, gas_override)?)
             }
-            LegacyOperation::ConfigureCircuitBreakers { id, config } => target_call(
-                "admin_configure_circuit_breakers",
-                &args::ConfigureCircuitBreakers { id, config },
-                target_gas,
-            )?,
+            LegacyOperation::ConfigureCircuitBreakers { id, config } => {
+                Operation::TargetFunctionCall(target::admin_configure_circuit_breakers(
+                    id,
+                    config,
+                    gas_override,
+                )?)
+            }
             LegacyOperation::AddCircuitBreaker {
                 id,
                 breaker_id,
                 breaker,
-            } => target_call(
-                "admin_add_circuit_breaker",
-                &args::AddCircuitBreaker {
+            } => Operation::TargetFunctionCall(target::admin_add_circuit_breaker(
+                id,
+                breaker_id,
+                breaker,
+                gas_override,
+            )?),
+            LegacyOperation::RemoveCircuitBreaker { id, breaker_id } => {
+                Operation::TargetFunctionCall(target::admin_remove_circuit_breaker(
                     id,
                     breaker_id,
-                    breaker,
-                },
-                target_gas,
-            )?,
-            LegacyOperation::RemoveCircuitBreaker { id, breaker_id } => target_call(
-                "admin_remove_circuit_breaker",
-                &args::RemoveCircuitBreaker { id, breaker_id },
-                target_gas,
-            )?,
+                    gas_override,
+                )?)
+            }
             LegacyOperation::SetManualTrip {
                 id,
                 is_manually_tripped,
                 metadata,
-            } => target_call(
-                "admin_set_manual_trip",
-                &args::SetManualTrip {
-                    id,
-                    is_manually_tripped,
-                    metadata: metadata.map(Base64VecU8),
-                },
-                target_gas,
-            )?,
+            } => Operation::TargetFunctionCall(target::admin_set_manual_trip(
+                id,
+                is_manually_tripped,
+                metadata,
+                gas_override,
+            )?),
             LegacyOperation::Rearm {
                 id,
                 breaker_id,
                 armed_after_ns,
                 accepted_history_source,
-            } => target_call(
-                "admin_rearm",
-                &args::Rearm {
-                    id,
-                    breaker_id,
-                    armed_after_ns,
-                    accepted_history_source,
-                },
-                target_gas,
-            )?,
+            } => Operation::TargetFunctionCall(target::admin_rearm(
+                id,
+                breaker_id,
+                armed_after_ns,
+                accepted_history_source,
+                gas_override,
+            )?),
             LegacyOperation::SetEnforced {
                 id,
                 breaker_id,
                 is_enforced,
-            } => target_call(
-                "admin_set_enforced",
-                &args::SetEnforced {
-                    id,
-                    breaker_id,
-                    is_enforced,
-                },
-                target_gas,
-            )?,
-            LegacyOperation::AdminUpgrade { code, migrate_args } => target_call(
-                "admin_upgrade",
-                &args::AdminUpgrade { code, migrate_args },
-                gas_override.unwrap_or(GAS_FOR_ADMIN_UPGRADE),
-            )?,
+            } => Operation::TargetFunctionCall(target::admin_set_enforced(
+                id,
+                breaker_id,
+                is_enforced,
+                gas_override,
+            )?),
+            LegacyOperation::AdminUpgrade { code, migrate_args } => Operation::TargetFunctionCall(
+                target::admin_upgrade(code, migrate_args, gas_override)?,
+            ),
             LegacyOperation::AdminFunctionCall {
                 method_name,
                 args,

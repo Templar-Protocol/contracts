@@ -111,7 +111,7 @@ echo "Configuring collateral proxy..."
 operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
-    set-proxy \
+    oracle set-proxy \
     --price-id "$COLLATERAL_PRICE_ID" \
     --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
 
@@ -119,7 +119,7 @@ echo "Configuring borrow proxy..."
 operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
-    set-proxy \
+    oracle set-proxy \
     --price-id "$BORROW_PRICE_ID" \
     --proxy-file "$PROXY_BORROW_ARGS_FILE"
 

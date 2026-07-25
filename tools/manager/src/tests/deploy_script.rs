@@ -252,6 +252,7 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
         "proxy.registry.testnet",
         "--id",
         "0",
+        "oracle",
         "set-proxy",
         "--price-id",
         COLLATERAL_PRICE_ID,
@@ -326,7 +327,7 @@ fn create_proposal_set_proxy_requires_price_id() {
         ]
         .into_iter()
         .chain(CREDS)
-        .chain(["set-proxy"]),
+        .chain(["oracle", "set-proxy"]),
     )
     .expect_err("set-proxy should require --price-id");
 

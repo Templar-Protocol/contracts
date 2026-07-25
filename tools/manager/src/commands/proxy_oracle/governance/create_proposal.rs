@@ -16,7 +16,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{
-    LegacyOperation, MethodPolicy, Operation, ReflexiveOperation,
+    target, FunctionCall, MethodPolicy, Operation, ReflexiveOperation,
 };
 
 use super::{decode_base64, load_json_file, ReflexiveKind, Role};
@@ -57,18 +57,23 @@ impl CreateProposal {
         self.execute_when_ready
     }
 
-    /// When this is an `add-circuit-breaker` proposal with no explicit
+    /// When this is an `oracle add-circuit-breaker` proposal with no explicit
     /// `--breaker-id`, the price id whose next breaker id must be fetched.
     pub fn unresolved_breaker_price_id(&self) -> Option<PriceIdentifier> {
         match &self.operation {
-            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => Some(a.price_id),
+            ProposalOperation::Oracle {
+                op: OracleOp::AddCircuitBreaker(a),
+            } if a.breaker_id.is_none() => Some(a.price_id),
             _ => None,
         }
     }
 
-    /// Fill in an auto-fetched breaker id for an `add-circuit-breaker` proposal.
+    /// Fill in an auto-fetched breaker id for an `oracle add-circuit-breaker` proposal.
     pub fn set_breaker_id(&mut self, id: u32) {
-        if let ProposalOperation::AddCircuitBreaker(a) = &mut self.operation {
+        if let ProposalOperation::Oracle {
+            op: OracleOp::AddCircuitBreaker(a),
+        } = &mut self.operation
+        {
             a.breaker_id.get_or_insert(id);
         }
     }
@@ -88,14 +93,39 @@ impl CreateProposal {
     }
 }
 
-/// The typed proposal subcommands. Target ops build the pre-restructure [`LegacyOperation`] and map it
-/// to the generic `TargetFunctionCall` form (baking in the correct `admin_*` method name and a sane
-/// gas default); reflexive policy edits construct the [`ReflexiveOperation`] directly. Complex nested
-/// payloads (circuit breakers, history sources) are supplied as JSON files that deserialize into the
-/// real kernel types.
+/// The proposal target: an operation dispatched to the governed proxy `oracle`, or one that changes
+/// governance itself (`self`). The two groups make the final target of a proposal explicit.
+#[derive(Subcommand, Debug)]
+pub enum ProposalOperation {
+    /// Operation dispatched to the governed proxy oracle (a `TargetFunctionCall`).
+    Oracle {
+        #[command(subcommand)]
+        op: OracleOp,
+    },
+    /// Operation that changes the governance contract itself (a reflexive operation).
+    #[command(name = "self")]
+    Governance {
+        #[command(subcommand)]
+        op: SelfOp,
+    },
+}
+
+impl ProposalOperation {
+    fn into_operation(self) -> anyhow::Result<Operation> {
+        match self {
+            ProposalOperation::Oracle { op } => op.into_operation(),
+            ProposalOperation::Governance { op } => op.into_operation(),
+        }
+    }
+}
+
+/// Operations dispatched to the governed proxy oracle. Each builds the generic `TargetFunctionCall`
+/// directly via the shared `target::admin_*` builders (correct `admin_*` method name + gas default).
+/// Complex nested payloads (circuit breakers, history sources) are supplied as JSON files that
+/// deserialize into the real kernel types.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
-pub enum ProposalOperation {
+pub enum OracleOp {
     /// Set or clear a feed's proxy configuration.
     SetProxy(SetProxyArgs),
     /// Configure a feed's circuit-breaker sampling.
@@ -110,28 +140,15 @@ pub enum ProposalOperation {
     Rearm(RearmArgs),
     /// Enable or disable enforcement of a circuit breaker.
     SetEnforced(SetEnforcedArgs),
-    /// Set a reflexive operation kind's timelock.
-    SetReflexiveTtl(SetReflexiveTtlArgs),
-    /// Set the conservative default policy for unlisted target methods.
-    SetTargetDefault(SetTargetDefaultArgs),
-    /// Add, update, or reset a per-method policy override.
-    SetMethodPolicy(SetMethodPolicyArgs),
-    /// Grant or revoke a governance role.
-    SetRole(SetRoleArgs),
     /// Upgrade the proxy oracle's contract code.
-    AdminUpgrade(UpgradeArgs),
+    Upgrade(UpgradeArgs),
     /// Call an arbitrary method on the proxy oracle.
-    AdminFunctionCall(AdminFunctionCallArgs),
-    /// Upgrade the governance contract itself.
-    SelfUpgrade(UpgradeArgs),
+    Call(OracleCallArgs),
 }
 
-impl ProposalOperation {
-    #[allow(clippy::too_many_lines)]
+impl OracleOp {
     fn into_operation(self) -> anyhow::Result<Operation> {
-        // Target and role/self-upgrade ops route through the shared legacy → generic mapping; the
-        // config target subcommands carry an optional `--gas` override (`None` = method default).
-        let (legacy, gas_override): (LegacyOperation, Option<Gas>) = match self {
+        Ok(Operation::TargetFunctionCall(match self {
             Self::SetProxy(a) => {
                 let proxy: Option<Proxy<Source>> = match a.proxy_file {
                     Some(path) => Some(
@@ -140,118 +157,95 @@ impl ProposalOperation {
                     ),
                     None => None,
                 };
-                (
-                    LegacyOperation::SetProxy {
-                        id: a.price_id,
-                        proxy,
-                    },
-                    a.gas,
-                )
+                target::admin_set_proxy(a.price_id, proxy, a.gas)?
             }
-            Self::ConfigureCircuitBreakers(a) => (
-                LegacyOperation::ConfigureCircuitBreakers {
-                    id: a.price_id,
-                    config: CircuitBreakerSetConfig {
-                        sample_interval_ns: a.sample_interval,
-                        history_len: a.history_len,
-                    },
+            Self::ConfigureCircuitBreakers(a) => target::admin_configure_circuit_breakers(
+                a.price_id,
+                CircuitBreakerSetConfig {
+                    sample_interval_ns: a.sample_interval,
+                    history_len: a.history_len,
                 },
                 a.gas,
-            ),
+            )?,
             Self::AddCircuitBreaker(a) => {
                 let breaker_id = a.breaker_id.context(
                     "breaker id must be resolved before building an add-circuit-breaker proposal",
                 )?;
-                (
-                    LegacyOperation::AddCircuitBreaker {
-                        id: a.price_id,
-                        breaker_id,
-                        breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
-                            .context("parse circuit breaker")?,
-                    },
+                let breaker = load_json_file::<CircuitBreaker>(&a.breaker_file)
+                    .context("parse circuit breaker")?;
+                target::admin_add_circuit_breaker(a.price_id, breaker_id, breaker, a.gas)?
+            }
+            Self::RemoveCircuitBreaker(a) => {
+                target::admin_remove_circuit_breaker(a.price_id, a.breaker_id, a.gas)?
+            }
+            Self::SetManualTrip(a) => {
+                let metadata = a.metadata_base64.map(decode_base64).transpose()?;
+                target::admin_set_manual_trip(a.price_id, a.tripped, metadata, a.gas)?
+            }
+            Self::Rearm(a) => {
+                let accepted_history_source =
+                    load_json_file::<AcceptedHistorySource>(&a.history_source_file)
+                        .context("parse accepted history source")?;
+                target::admin_rearm(
+                    a.price_id,
+                    a.breaker_id,
+                    a.armed_after,
+                    accepted_history_source,
                     a.gas,
-                )
+                )?
             }
-            Self::RemoveCircuitBreaker(a) => (
-                LegacyOperation::RemoveCircuitBreaker {
-                    id: a.price_id,
-                    breaker_id: a.breaker_id,
-                },
-                a.gas,
-            ),
-            Self::SetManualTrip(a) => (
-                LegacyOperation::SetManualTrip {
-                    id: a.price_id,
-                    is_manually_tripped: a.tripped,
-                    metadata: a.metadata_base64.map(decode_base64).transpose()?,
-                },
-                a.gas,
-            ),
-            Self::Rearm(a) => (
-                LegacyOperation::Rearm {
-                    id: a.price_id,
-                    breaker_id: a.breaker_id,
-                    armed_after_ns: a.armed_after,
-                    accepted_history_source: load_json_file::<AcceptedHistorySource>(
-                        &a.history_source_file,
-                    )
-                    .context("parse accepted history source")?,
-                },
-                a.gas,
-            ),
-            Self::SetEnforced(a) => (
-                LegacyOperation::SetEnforced {
-                    id: a.price_id,
-                    breaker_id: a.breaker_id,
-                    is_enforced: a.enforced,
-                },
-                a.gas,
-            ),
-            Self::SetRole(a) => (
-                LegacyOperation::SetRole {
-                    account_id: a.account_id,
-                    role: a.role,
-                    set: !a.revoke,
-                },
-                None,
-            ),
-            Self::AdminUpgrade(a) => {
+            Self::SetEnforced(a) => {
+                target::admin_set_enforced(a.price_id, a.breaker_id, a.enforced, a.gas)?
+            }
+            Self::Upgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                (LegacyOperation::AdminUpgrade { code, migrate_args }, None)
+                target::admin_upgrade(code, migrate_args, None)?
             }
-            Self::SelfUpgrade(a) => {
-                let (code, migrate_args) = a.parts()?;
-                (LegacyOperation::SelfUpgrade { code, migrate_args }, None)
-            }
-            Self::AdminFunctionCall(a) => {
+            Self::Call(a) => {
                 // Fail early on malformed args rather than sending garbage bytes.
                 serde_json::from_str::<serde_json::Value>(&a.args)
-                    .context("admin-function-call --args must be valid JSON")?;
-                (
-                    LegacyOperation::AdminFunctionCall {
-                        method_name: a.method,
-                        args: Base64VecU8(a.args.into_bytes()),
-                        attached_deposit: U128(a.deposit.as_yoctonear()),
-                        gas: a.gas,
-                    },
-                    None,
-                )
+                    .context("oracle call --args must be valid JSON")?;
+                FunctionCall {
+                    method_name: a.method,
+                    args: Base64VecU8(a.args.into_bytes()),
+                    attached_deposit: U128(a.deposit.as_yoctonear()),
+                    gas: a.gas,
+                }
             }
-            // Reflexive policy edits construct the new operation directly.
-            Self::SetReflexiveTtl(a) => {
-                return Ok(Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
-                    kind: a.kind,
+        }))
+    }
+}
+
+/// Reflexive operations that mutate the governance contract itself — the policy table, roles, and its
+/// own upgrade.
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+pub enum SelfOp {
+    /// Set a reflexive operation kind's timelock.
+    SetReflexiveTtl(SetReflexiveTtlArgs),
+    /// Set the conservative default policy for unlisted target methods.
+    SetTargetDefault(SetTargetDefaultArgs),
+    /// Add, update, or reset a per-method policy override.
+    SetMethodPolicy(SetMethodPolicyArgs),
+    /// Grant or revoke a governance role.
+    SetRole(SetRoleArgs),
+    /// Upgrade the governance contract itself.
+    Upgrade(UpgradeArgs),
+}
+
+impl SelfOp {
+    fn into_operation(self) -> anyhow::Result<Operation> {
+        Ok(Operation::Reflexive(match self {
+            Self::SetReflexiveTtl(a) => ReflexiveOperation::SetReflexiveTtl {
+                kind: a.kind,
+                ttl: a.ttl,
+            },
+            Self::SetTargetDefault(a) => ReflexiveOperation::SetTargetDefault {
+                policy: MethodPolicy {
                     ttl: a.ttl,
-                }))
-            }
-            Self::SetTargetDefault(a) => {
-                return Ok(Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
-                    policy: MethodPolicy {
-                        ttl: a.ttl,
-                        role: a.role,
-                    },
-                }))
-            }
+                    role: a.role,
+                },
+            },
             Self::SetMethodPolicy(a) => {
                 let policy = if a.reset {
                     None
@@ -262,15 +256,21 @@ impl ProposalOperation {
                     let ttl = a.ttl.context("--ttl is required unless --reset is given")?;
                     Some(MethodPolicy { ttl, role })
                 };
-                return Ok(Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+                ReflexiveOperation::SetMethodPolicy {
                     method: a.method,
                     policy,
-                }));
+                }
             }
-        };
-        legacy
-            .into_operation(gas_override)
-            .context("build target operation from typed subcommand")
+            Self::SetRole(a) => ReflexiveOperation::SetRole {
+                account_id: a.account_id,
+                role: a.role,
+                set: !a.revoke,
+            },
+            Self::Upgrade(a) => {
+                let (code, migrate_args) = a.parts()?;
+                ReflexiveOperation::SelfUpgrade { code, migrate_args }
+            }
+        }))
     }
 }
 
@@ -485,7 +485,7 @@ impl UpgradeArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct AdminFunctionCallArgs {
+pub struct OracleCallArgs {
     /// Method to call on the proxy oracle (e.g. `own_accept_owner`)
     #[arg(long, value_name = "NAME")]
     method: String,

@@ -13,12 +13,12 @@ use crate::commands::duration::parse_duration;
 use crate::commands::signer::SignerArgs;
 
 /// Create (deploy-from-registry) a governance contract, building its
-/// `new(proxy_oracle_id, admin_id, ttls)` init args from typed flags.
+/// `new(proxy_oracle_id, admin_id, policy)` init args from typed flags.
 ///
 /// A governance contract administers exactly one proxy oracle and must be that
 /// oracle's owner. Prefer naming it as the oracle's `owner_id` at deploy time;
 /// an oracle that is already owned by someone else has to hand ownership over
-/// instead (propose-owner to it, then have it execute an `admin-function-call
+/// instead (propose-owner to it, then have it execute an `oracle call --method
 /// own_accept_owner` proposal).
 #[derive(Args, Debug)]
 pub struct GovernanceCreate {
