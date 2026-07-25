@@ -30,6 +30,10 @@ async fn fast_borrow_is_not_free(#[future(awt)] harness: SandboxHarness) -> Resu
     harness.fund_user(&supply_user, &market).await?;
     harness.fund_user(&borrow_user, &market).await?;
 
+    // Slowest sandbox test at the faster local block cadence (~37s vs ~14s
+    // stock): the 60s chunk above makes this helper grind ~3x more harvests to
+    // cross one boundary and activate. Accepted — CI runs stock, unaffected.
+    // The fix, if it ever matters, is for the helper to fast_forward to activate.
     harness
         .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
         .await?;
