@@ -3,10 +3,13 @@
 
 Usage: junit-diff.py BEFORE.xml AFTER.xml
 
-Prints total wall time, per-suite totals, and the largest per-test deltas, so a
+Prints total test time, per-suite totals, and the largest per-test deltas, so a
 change to the sandbox harness or node config can be shown to help (or not).
 `just test-sandbox` writes the report to `target/nextest/sandbox/junit.xml`; copy
 it aside before and after a change and pass both here.
+
+Every total here sums per-test durations. The gate runs several tests at once, so
+those intervals overlap: the totals measure work done, not gate wall clock.
 """
 
 import sys
@@ -49,7 +52,7 @@ def main():
 
     before_total = sum(before_tests.values())
     after_total = sum(after_tests.values())
-    print("== total ==")
+    print("== total test time (summed; the gate runs concurrently) ==")
     print(f"  before {fmt(before_total)}")
     print(f"  after  {fmt(after_total)}")
     delta = after_total - before_total
