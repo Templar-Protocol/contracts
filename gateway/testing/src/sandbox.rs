@@ -224,10 +224,10 @@ impl SandboxHarness {
             .collect())
     }
 
-    /// Like [`create_account`](Self::create_account) but mints the account with a
+    /// Like `create_account` but mints the account with a
     /// real `create_account` transaction funded and signed by the per-process
     /// tenant root (not the genesis key). Kept for tests that assert on
-    /// account-creation behavior; the patch-based [`create_account`] is the
+    /// account-creation behavior; the patch-based `create_account` is the
     /// default and is far faster.
     pub async fn create_account_via_tx(
         &self,
@@ -1134,8 +1134,8 @@ fn block_delays_ms() -> (u64, u64) {
     (min, 2 * FAST_FORWARD_BLOCK_MS - min)
 }
 
-/// Sandbox launch config shared by owned mode ([`connect`]) and the out-of-band
-/// host (`bin/sandbox-host.rs`), so both nodes seed the [`FUNDER_ACCOUNT_ID`]
+/// Sandbox launch config shared by owned mode ([`SandboxHarness::start_owned`]) and the out-of-band
+/// host (`bin/sandbox-host.rs`), so both nodes seed the `FUNDER_ACCOUNT_ID`
 /// account identically and run the same block cadence.
 #[must_use]
 pub fn sandbox_config() -> SandboxConfig {

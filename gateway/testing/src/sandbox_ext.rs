@@ -52,7 +52,7 @@ fn client(network: &NetworkConfig) -> JsonRpcClient {
 
 /// Whether the sandbox node at `rpc_url` answers a `status` query within
 /// `timeout`. A short `timeout` lets the out-of-band host's supervisor notice a
-/// hung node promptly, unlike [`RPC_TIMEOUT`].
+/// hung node promptly, unlike `RPC_TIMEOUT`.
 pub async fn node_is_serving(rpc_url: &str, timeout: Duration) -> bool {
     build_client(rpc_url, timeout)
         .call(RpcStatusRequest)

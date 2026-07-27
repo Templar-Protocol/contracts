@@ -218,6 +218,20 @@ jobs:
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
   binary-build:
     name: Binary Build
     runs-on: ubuntu-latest
@@ -572,6 +586,7 @@ jobs:
       - changes
       - code-formatting
       - code-linter
+      - documentation
       - binary-build
       - soroban
       - feature-matrix
@@ -589,6 +604,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FORMAT_RESULT: ${{ needs['code-formatting'].result }}
           LINTER_RESULT: ${{ needs['code-linter'].result }}
+          DOCUMENTATION_RESULT: ${{ needs.documentation.result }}
           BINARY_BUILD_RESULT: ${{ needs['binary-build'].result }}
           FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
           NEAR_TEST_RESULT: ${{ needs['near-integration-tests'].result }}
@@ -620,6 +636,7 @@ jobs:
           require_success "Change Detection" "$CHANGES_RESULT"
           require_success "Code Formatting" "$FORMAT_RESULT"
           require_success "Code Linter" "$LINTER_RESULT"
+          require_success "Documentation" "$DOCUMENTATION_RESULT"
           require_success "Binary Build" "$BINARY_BUILD_RESULT"
           require_success "Fast Tests" "$FAST_TEST_RESULT"
 

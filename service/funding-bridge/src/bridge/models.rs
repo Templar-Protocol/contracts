@@ -1,7 +1,7 @@
 //! NEAR Intents Bridge API models
 //!
 //! Type definitions for Bridge API requests and responses matching the real
-//! NEAR Intents Bridge at https://bridge.chaindefuser.com/rpc
+//! NEAR Intents Bridge at <https://bridge.chaindefuser.com/rpc>
 
 use serde::{Deserialize, Serialize};
 

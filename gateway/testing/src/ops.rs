@@ -1810,7 +1810,8 @@ impl SandboxHarness {
 
     /// Total gas burnt across every transaction an operation produced (each
     /// transaction plus its receipts), summed over the operation's steps. Read
-    /// directly from each step's inline [`ExecutionOutcome`], whose
+    /// directly from each step's inline
+    /// [`ExecutionOutcome`](templar_gateway_types::operation::ExecutionOutcome), whose
     /// `total_gas_burnt` already covers the transaction and all its receipts — no
     /// follow-up `tx` query needed. Used by the gas-regression tests.
     pub fn operation_gas_burnt(&self, result: &WriteOperationResult) -> u64 {
@@ -2004,7 +2005,8 @@ impl SandboxHarness {
 
 /// Every receipt in the operation that failed.
 ///
-/// Top-level success is not receipt-level success (see [`ExecutionOutcome`] and
+/// Top-level success is not receipt-level success (see
+/// [`ExecutionOutcome`](templar_gateway_types::operation::ExecutionOutcome) and
 /// `OperationStatus`): a rejected inner receipt can be refunded by the token
 /// while the transaction still reports success. Tests asserting that a call was
 /// *rejected* should check this rather than the operation status, which would be

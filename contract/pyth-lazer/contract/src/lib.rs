@@ -493,7 +493,7 @@ impl Contract {
 
     /// Atomically deploy new contract code and run its `migrate` in a single receipt: a failed
     /// migration reverts the code deployment too. `migrate_args` is the JSON-encoded
-    /// [`state::migration::Migration`] selecting the state transform to apply (none exist at v1, so
+    /// `state::migration::Migration` selecting the state transform to apply (none exist at v1, so
     /// this is the seam for future upgrades). The batched `migrate` is private — the runtime calls
     /// it as this account, so only the owner-gated path here can trigger it.
     #[payable]

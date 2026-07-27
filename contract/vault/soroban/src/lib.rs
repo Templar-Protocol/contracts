@@ -14,7 +14,7 @@
 //! 1. Receives user actions (deposit, withdraw, etc.)
 //! 2. Validates authorization via [`AuthAdapter`]
 //! 3. Dispatches to kernel transitions
-//! 4. Interprets returned [`KernelEffect`]s via [`EffectInterpreter`]
+//! 4. Interprets returned [`KernelEffect`](templar_vault_kernel::effects::KernelEffect)s via [`EffectInterpreter`]
 //! 5. Persists state via [`Storage`]
 //!
 //! # Feature Flags
