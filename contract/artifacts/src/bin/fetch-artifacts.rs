@@ -1,32 +1,51 @@
 //! Manage the shared cache of released contract WASM.
 //!
 //! Run via `just artifacts-fetch` / `artifacts-cache-path` / `artifacts-clean`.
-//! CI warms the cache before the sandbox tests so a network failure surfaces as
-//! one clear step rather than scattered test failures.
+//! CI warms the cache before the test gates so a network failure surfaces as one
+//! clear step rather than scattered test failures.
 //!
-//! Every mode resolves the cache location through [`fetch`] rather than
+//! The cache-touching modes resolve its location through [`fetch`] rather than
 //! re-deriving it, so shell callers cannot drift from the crate.
 
 use std::process::ExitCode;
 
+use clap::Parser;
 use templar_contract_artifacts::{fetch, ArtifactId};
 
-const USAGE: &str = "usage: fetch-artifacts [--print-assets | --print-path | --clean]";
+/// Manage the shared cache of released contract WASM.
+///
+/// With no flags, downloads every pinned release in the catalog.
+#[derive(Debug, Parser)]
+struct Args {
+    /// Print `<tag> <asset> <target> <version>` for every pinned release and
+    /// exit. Lets release tooling enumerate the catalog instead of re-deriving
+    /// the tag and asset naming convention. Touches no network and no cache.
+    #[arg(long)]
+    print_assets: bool,
+
+    /// Print the resolved cache directory and exit.
+    #[arg(long, conflicts_with = "print_assets")]
+    print_path: bool,
+
+    /// Delete every cached artifact. Entries are immutable release assets, so
+    /// the only cost is a re-download.
+    #[arg(long, conflicts_with_all = ["print_assets", "print_path"])]
+    clean: bool,
+}
 
 fn main() -> ExitCode {
-    match std::env::args().nth(1).as_deref() {
-        None => prefetch(),
-        // Lets shell tooling (the backfill script) enumerate the tag and asset
-        // name of every pinned release without re-deriving the naming
-        // convention and drifting from `fetch::asset_url`.
-        Some("--print-assets") => print_assets(),
-        Some("--print-path") => print_path(),
-        Some("--clean") => clean(),
-        Some(other) => {
-            eprintln!("unrecognized argument `{other}`\n{USAGE}");
-            ExitCode::FAILURE
-        }
+    let args = Args::parse();
+
+    if args.print_assets {
+        return print_assets();
     }
+    if args.print_path {
+        return print_path();
+    }
+    if args.clean {
+        return clean();
+    }
+    prefetch()
 }
 
 fn prefetch() -> ExitCode {
@@ -58,10 +77,9 @@ fn print_assets() -> ExitCode {
         let metadata = artifact.metadata();
         for release in metadata.releases {
             println!(
-                "{} {}-{}.wasm {} {}",
+                "{} {} {} {}",
                 fetch::release_tag(artifact, release.version),
-                metadata.cargo_target_name,
-                release.version,
+                fetch::asset_name(artifact, release.version),
                 metadata.cargo_target_name,
                 release.version,
             );
@@ -129,5 +147,45 @@ fn human_bytes(bytes: u64) -> String {
         format!("{:.1} KiB", bytes / KIB)
     } else {
         format!("{bytes:.0} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modes_are_mutually_exclusive_and_trailing_arguments_are_rejected() {
+        // Hand-rolled `args().nth(1)` dispatch silently ignored everything past
+        // the first argument, so `--clean --print-path` cleaned the cache.
+        for argv in [
+            vec!["fetch-artifacts", "--clean", "--print-path"],
+            vec!["fetch-artifacts", "--print-assets", "--clean"],
+            vec!["fetch-artifacts", "--clean", "stray"],
+            vec!["fetch-artifacts", "--unknown"],
+        ] {
+            assert!(
+                Args::try_parse_from(&argv).is_err(),
+                "{argv:?} should have been rejected",
+            );
+        }
+    }
+
+    #[test]
+    fn no_arguments_means_prefetch() {
+        let args = Args::try_parse_from(["fetch-artifacts"]).expect("no arguments is valid");
+        assert!(!args.print_assets && !args.print_path && !args.clean);
+    }
+
+    #[test]
+    fn human_bytes_switches_unit_at_each_boundary() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1023), "1023 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1024 * 1024 - 1), "1024.0 KiB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(human_bytes(6_710_886), "6.4 MiB");
+        // Far past any plausible cache, but the formatter must not wrap or panic.
+        assert_eq!(human_bytes(u64::MAX), "17592186044416.0 MiB");
     }
 }

@@ -41,7 +41,7 @@ required-features = ["workspace-loader", "clap"]
 [[bin]]
 name = "fetch-artifacts"
 path = "src/bin/fetch-artifacts.rs"
-required-features = ["fetch"]
+required-features = ["fetch", "clap"]
 
 [[bin]]
 name = "record-release"

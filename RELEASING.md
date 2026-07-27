@@ -134,32 +134,26 @@ that commit, and therefore the hash.
 
 Releases predating this workflow were recovered from the chain — the bytes read
 back off the accounts running them, each tagged at the commit its WASM names in
-NEP-330 metadata — so they reproduce on the same terms. See
-`script/backfill/released-versions.tsv`.
+NEP-330 metadata — so they reproduce on the same terms. Each one's GitHub
+Release names the account its bytes came from.
 
-## First-time setup
+## Setup
 
-- **Baseline tags.** Before the first release-plz run, tag current reality so it
-  has a starting point for each crate (`templar-common-v1.4.0`,
-  `templar-market-contract-v1.4.0`, …) from each crate's present `Cargo.toml`
-  version. Without this, release-plz treats every crate as brand new and replays
-  the entire history into the first changelog.
+Both one-time steps are already done; they are recorded here because they are
+what makes the rest work, not because anyone needs to repeat them.
+
+- **Baseline tags.** Every crate was tagged at its then-current `Cargo.toml`
+  version (`templar-common-v1.4.0`, …) so release-plz has a starting point.
+  Without them it treats every crate as brand new and replays the entire history
+  into one changelog.
+- **Historical releases.** The 17 versions genuinely deployed to mainnet were
+  published as GitHub Releases, tagged at their build commits. Nothing can fetch
+  a released artifact that has no Release to fetch it from.
+
+Two secrets must be present:
+
 - **`RELEASE_PLZ_TOKEN`** (required). A PR opened with the default
   `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the Release
   PR never runs `test.yml` and the release tags never run the artifact/CLI
   workflows. Both release-plz jobs fail fast if it is unset.
 - **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A leaves `git_only` mode.
-- **Backfill the historical releases.** `./script/backfill-release-artifacts.sh`
-  (try `DRY_RUN=1` first) reads `script/backfill/released-versions.tsv`, pulls
-  each version's bytes from the account running it, tags the commit that WASM
-  was built from, and publishes a Release. Nothing can fetch a released artifact
-  until this has run. It pushes tags and publishes releases, so run it once,
-  deliberately.
-- **Delete the four mis-anchored baseline tags first.** The initial baseline
-  pass tagged every crate at one `dev` commit. For four contracts that collides
-  with a real release whose build commit is elsewhere, and the backfill refuses
-  to repoint them silently:
-  `templar-proxy-oracle-near-contract-v0.3.0`,
-  `templar-proxy-oracle-near-governance-contract-v0.1.0`,
-  `templar-pyth-lazer-adapter-contract-v0.1.0`,
-  `templar-universal-account-contract-v0.5.0`.

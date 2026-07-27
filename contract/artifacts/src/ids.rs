@@ -259,7 +259,7 @@ macro_rules! entry {
 // Every release below was recovered from code actually deployed on NEAR
 // mainnet, and its tag points at the commit that deployed WASM names in its
 // NEP-330 metadata — so each one rebuilds byte-for-byte from a fresh clone.
-// script/backfill/released-versions.tsv records the accounts they came from.
+// Each release's GitHub Release names the account its bytes were read from.
 //
 // `source_path` is where the contract lives *today*. Older releases were built
 // from different paths (proxy-oracle from `contract/proxy-oracle`, the LST

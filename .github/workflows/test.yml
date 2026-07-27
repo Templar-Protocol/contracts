@@ -431,6 +431,13 @@ jobs:
         with:
           tool: nextest,just
 
+      # The artifacts-dispatch tests serve real released bytes, so this
+      # partition needs the cache warm even though it runs no node. Fetching up
+      # front turns a network failure into one clear red step instead of a
+      # scattering of test failures.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
+
       - name: Run fast tests
         env:
           DATABASE_URL: &postgres_url postgres://relayeruser:password@localhost:5432/relayer

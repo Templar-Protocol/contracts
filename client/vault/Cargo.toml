@@ -3,7 +3,9 @@ name = "templar-vault-client"
 license.workspace = true
 repository.workspace = true
 edition.workspace = true
-version.workspace = true
+# Explicit, not inherited: this crate is released on its own tag, and sharing
+# `[workspace.package].version` would drag every other inheritor along with it.
+version = "1.2.1"
 publish = false
 
 [lib]

@@ -91,19 +91,23 @@ jobs:
           VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          catalog() {
-            cargo run --quiet -p templar-contract-artifacts \
-              --features workspace-loader,clap --bin prebuild-test-contracts -- \
-              "$@" --artifact "$PACKAGE"
-          }
+          # Dump the whole catalog and select the row here, rather than filtering
+          # with `--artifact`: that conflates "this package is not catalogued"
+          # with "the command failed", so a compile or metadata error would look
+          # like an intentional skip and this job would report success after
+          # cutting a release with no WASM.
+          catalog=$(cargo run --quiet -p templar-contract-artifacts \
+            --features workspace-loader,clap --bin prebuild-test-contracts -- \
+            --print-metadata)
 
           # Soroban contracts and anything else outside the NEAR catalog have no
           # WASM artifact to cut.
-          if ! metadata=$(catalog --print-metadata 2>/dev/null); then
+          metadata=$(awk -v pkg="$PACKAGE" '$1 == pkg { print; exit }' <<<"$catalog")
+          if [[ -z "$metadata" ]]; then
             echo "::notice::${PACKAGE} has no catalogued WASM artifact; nothing to build."
             exit 0
           fi
-          read -r source_path target _crate_version <<<"$metadata"
+          read -r _package source_path target _crate_version <<<"$metadata"
 
           {
             echo "source_path=${source_path}"

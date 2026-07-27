@@ -18,8 +18,9 @@ mod tests {
     }
 
     /// Serving bytes means downloading them, so these tests need a warm
-    /// artifact cache (`just artifacts-fetch`, which CI runs before the suite)
-    /// or network access.
+    /// artifact cache or network access. `just artifacts-fetch` warms it; CI
+    /// runs that step before both the fast and the node-backed gate, since this
+    /// crate is in the fast partition.
     #[tokio::test]
     async fn test_dispatch_get_artifact_returns_wasm_bytes() {
         // Given: a GetArtifact request for the market artifact

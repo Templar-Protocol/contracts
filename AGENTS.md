@@ -88,7 +88,7 @@ Releases themselves are cut by merging the standing "chore: release" PR. See `RE
 ## Build And Test
 
 - Format: `cargo fmt`
-- Fast gate (everyday inner loop): `just test-fast`. Complete non-node, non-network partition, including integration targets. The recipe provisions Postgres when needed; `fast_filter` in the root `justfile` owns the test selection.
+- Fast gate (everyday inner loop): `just test-fast`. Complete non-node partition, including integration targets. The recipe provisions Postgres when needed; `fast_filter` in the root `justfile` owns the test selection. It makes no network calls of its own, but a few tests deploy released contract WASM — run `just artifacts-fetch` once (CI does) and a warm cache keeps the gate offline thereafter.
 - Node gate: `just test-sandbox`. The recipe provisions Postgres, narrows Cargo to the node-backed packages, prebuilds test Wasms, and manages a pooled out-of-band `neard`. Pass `--stale` (also accepted by `just test` and `just sandbox-up`) to reuse the Wasms already in `target/near` instead of rebuilding them.
 - Full local gate: `just test`, which runs the same fast and sandbox entrypoints used by CI.
 - Common crate: `cargo test -p templar-common --lib -- --nocapture`

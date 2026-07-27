@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use templar_contract_artifacts::ArtifactId;
 
 fn main() -> ExitCode {
-    match run() {
+    match run(std::env::args().skip(1)) {
         Ok(message) => {
             println!("{message}");
             ExitCode::SUCCESS
@@ -31,8 +31,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<String, String> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+fn run(args: impl IntoIterator<Item = impl Into<String>>) -> Result<String, String> {
+    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
     let [artifact, version, sha] = args.as_slice() else {
         return Err("usage: record-release <artifact> <version> <sha256>".to_owned());
     };
@@ -41,6 +41,20 @@ fn run() -> Result<String, String> {
         return Err(format!("{sha} is not a 64-char hex SHA-256"));
     }
     let sha = sha.to_ascii_lowercase();
+
+    // `version` is spliced verbatim into a string literal in generated Rust
+    // source. CI derives it from a release tag, but this binary is documented
+    // as hand-runnable, so a quote or backslash must not reach `append`.
+    if version.is_empty()
+        || !version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+    {
+        return Err(format!(
+            "{version} is not a version string: expected only alphanumerics, \
+             `.`, `-` and `+`"
+        ));
+    }
 
     let artifact = artifact
         .parse::<ArtifactId>()
@@ -179,5 +193,19 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
         let error =
             append(SOURCE, "templar-nope-contract", "1.0.0", "ff").expect_err("not in the catalog");
         assert!(error.contains("exactly once"), "{error}");
+    }
+
+    #[test]
+    fn a_version_cannot_smuggle_source_into_the_catalog() {
+        // `version` reaches `append` as a string literal's contents, so a quote
+        // would close it and splice arbitrary Rust into ids.rs.
+        for version in ["", "1.0.0\", evil!(\"", "1.0.0\\", "1.0.0 "] {
+            let error = run(["proxy-oracle", version, &"a".repeat(64)])
+                .expect_err("should be rejected before touching ids.rs");
+            assert!(
+                error.contains("not a version string"),
+                "{version:?}: {error}"
+            );
+        }
     }
 }

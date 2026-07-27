@@ -44,10 +44,12 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Print `<source_path> <cargo_target_name> <version>` for each selected
-    /// artifact and exit, without building. Lets shell tooling
+    /// Print `<package_name> <source_path> <cargo_target_name> <version>` for
+    /// each selected artifact and exit, without building. Lets shell tooling
     /// (`release-artifacts.yml`) read the catalog instead of re-deriving paths
-    /// and drifting from it.
+    /// and drifting from it. The package name leads so a caller can select a row
+    /// without passing `--artifact`, which cannot distinguish "not catalogued"
+    /// from "the command failed".
     #[arg(long, conflicts_with = "check")]
     print_metadata: bool,
 }
@@ -76,8 +78,11 @@ pub fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             println!(
-                "{} {} {}",
-                artifact.source_path, artifact.cargo_target_name, package.version,
+                "{} {} {} {}",
+                artifact.package_name,
+                artifact.source_path,
+                artifact.cargo_target_name,
+                package.version,
             );
         }
         return ExitCode::SUCCESS;

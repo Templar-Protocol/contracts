@@ -104,16 +104,19 @@ pub async fn released(artifact: ArtifactId, version: &str) -> &'static [u8] {
     // Deliberately not holding the lock across the download: a duplicate fetch
     // of a few hundred KB is cheaper than serialising every test that needs a
     // different historical version.
-    let bytes: &'static [u8] = Box::leak(
-        templar_contract_artifacts::fetch::released_bytes(artifact, version)
-            .await
-            .unwrap_or_else(|error| panic!("could not load {artifact}@{version}: {error}"))
-            .into_boxed_slice(),
-    );
+    let fetched = templar_contract_artifacts::fetch::released_bytes(artifact, version)
+        .await
+        .unwrap_or_else(|error| panic!("could not load {artifact}@{version}: {error}"))
+        .into_boxed_slice();
 
-    cache
-        .lock()
-        .expect("released() cache poisoned")
-        .insert(key, bytes);
+    // Re-check under the lock: a racing caller may have won while we downloaded.
+    // Leaking is permanent, so only the winner's buffer may be leaked — the
+    // loser's is simply dropped.
+    let mut cache = cache.lock().expect("released() cache poisoned");
+    if let Some(bytes) = cache.get(&key) {
+        return bytes;
+    }
+    let bytes: &'static [u8] = Box::leak(fetched);
+    cache.insert(key, bytes);
     bytes
 }

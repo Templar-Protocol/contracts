@@ -166,15 +166,15 @@ docs:
 # Cutting a release is NOT a manual step: merging the release PR tags the
 # version and CI builds, uploads, and pins the WASM. See RELEASING.md.
 artifacts-fetch:
-    cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts
+    cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts
 
 # Print the resolved artifact cache directory.
 artifacts-cache-path:
-    @cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts -- --print-path
+    @cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts -- --print-path
 
 # Empty the artifact cache.
 #
 # Safe to run at any time: entries are immutable release assets, so this only
 # costs the next `just artifacts-fetch` a re-download.
 artifacts-clean:
-    cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts -- --clean
+    cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts -- --clean

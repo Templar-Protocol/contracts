@@ -42,8 +42,13 @@
 //! a global immutable fact keyed by `(package, version, sha256)`, not a property
 //! of a working tree — and because entries are verified against the in-repo pin
 //! on every *read*, so a branch whose catalog disagrees re-downloads rather than
-//! reusing the wrong bytes. Set `TEMPLAR_ARTIFACT_CACHE` to scope it to one
-//! checkout anyway.
+//! reusing the wrong bytes. Offline, that same mismatch is an error instead: a
+//! cache entry is only ever used when it matches the pin exactly. Set
+//! `TEMPLAR_ARTIFACT_CACHE` to scope the cache to one checkout anyway.
+//!
+//! Cleaning is not synchronized against concurrent fetches. It does not need to
+//! be: an entry deleted mid-fetch is simply re-downloaded and re-verified, and
+//! the reported usage is a snapshot, not a guarantee.
 
 use std::{
     path::{Path, PathBuf},
@@ -63,6 +68,11 @@ const RELEASE_REPO: &str = "Templar-Protocol/contracts";
 const DOWNLOAD_ATTEMPTS: u32 = 3;
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Per-request ceiling. `reqwest`'s async client has no default timeout, so
+/// without this a stalled connection hangs a CI job for its whole budget
+/// instead of failing into the retry loop.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Simultaneous downloads during a prefetch. Enough to hide per-request
 /// latency, low enough to stay well clear of GitHub's rate limiting.
@@ -155,11 +165,17 @@ pub fn release_tag(artifact: ArtifactId, version: &str) -> String {
 pub fn asset_url(artifact: ArtifactId, version: &str) -> String {
     let base = std::env::var("TEMPLAR_ARTIFACT_BASE_URL")
         .unwrap_or_else(|_| format!("https://github.com/{RELEASE_REPO}/releases/download"));
-    let target = artifact.metadata().cargo_target_name;
     format!(
-        "{base}/{tag}/{target}-{version}.wasm",
+        "{base}/{tag}/{asset}",
         tag = release_tag(artifact, version),
+        asset = asset_name(artifact, version),
     )
+}
+
+/// The asset filename carried by a release: matches what `release-artifacts.yml`
+/// uploads. Release tooling reads this rather than re-deriving the convention.
+pub fn asset_name(artifact: ArtifactId, version: &str) -> String {
+    format!("{}-{version}.wasm", artifact.metadata().cargo_target_name)
 }
 
 /// Bytes of a released contract version, from the cache or the GitHub Release.
@@ -332,16 +348,29 @@ fn usage_of(dir: &Path) -> Result<CacheUsage, FetchError> {
     Ok(total)
 }
 
+/// Statuses worth another attempt: rate limiting and server-side faults. Every
+/// other status is the server's settled answer and retrying only wastes time.
+fn is_retryable(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
 async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
     let mut last = None;
+    let mut last_status = None;
     for attempt in 0..DOWNLOAD_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(RETRY_BACKOFF * 2u32.pow(attempt - 1)).await;
         }
         match try_download(url).await {
             Ok(bytes) => return Ok(bytes),
-            // A 404 is not transient: the asset genuinely is not there.
-            Err(error @ FetchError::Status { status: 404, .. }) => return Err(error),
+            // Rate limiting and server faults are exactly what backoff is for;
+            // every other status (404 above all) is a settled answer.
+            Err(error @ FetchError::Status { status, .. }) => {
+                if !is_retryable(status) {
+                    return Err(error);
+                }
+                last_status = Some(status);
+            }
             Err(FetchError::Download { source, .. }) => last = Some(source),
             Err(other) => return Err(other),
         }
@@ -352,23 +381,30 @@ async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
             attempts: DOWNLOAD_ATTEMPTS,
             source,
         },
-        // Unreachable: the loop only exits here after recording a transport
-        // error, but a panic would be a worse failure mode than a plain status.
+        // Every attempt returned a retryable status rather than a transport
+        // error; report the last one the server actually gave us.
         None => FetchError::Status {
             url: url.to_owned(),
-            status: 0,
+            status: last_status.unwrap_or(0),
         },
     })
 }
 
 async fn try_download(url: &str) -> Result<Vec<u8>, FetchError> {
-    let response = reqwest::get(url)
+    let transport = |source| FetchError::Download {
+        url: url.to_owned(),
+        attempts: 1,
+        source,
+    };
+
+    let response = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(transport)?
+        .get(url)
+        .send()
         .await
-        .map_err(|source| FetchError::Download {
-            url: url.to_owned(),
-            attempts: 1,
-            source,
-        })?;
+        .map_err(transport)?;
 
     let status = response.status();
     if !status.is_success() {
@@ -382,11 +418,7 @@ async fn try_download(url: &str) -> Result<Vec<u8>, FetchError> {
         .bytes()
         .await
         .map(|bytes| bytes.to_vec())
-        .map_err(|source| FetchError::Download {
-            url: url.to_owned(),
-            attempts: 1,
-            source,
-        })
+        .map_err(transport)
 }
 
 /// Write via a unique temporary file and rename, so concurrent test binaries

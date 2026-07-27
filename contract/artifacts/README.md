@@ -70,7 +70,7 @@ let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
 
 Bytes are cached outside the repository so every worktree shares one copy:
 
-```
+```text
 ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artifacts}
   └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 ```
@@ -92,8 +92,9 @@ cannot take unrelated files with it.
 
 Sharing one cache across worktrees is safe because entries are verified against
 the in-repo pin on **every read**, not just on download. A branch whose `ids.rs`
-disagrees with a cached entry discards it and re-downloads, so the cache can
-never serve bytes the current checkout did not ask for.
+disagrees with a cached entry discards it and re-downloads — or, under
+`TEMPLAR_ARTIFACT_OFFLINE=1`, fails. Either way the cache can never serve bytes
+the current checkout did not ask for.
 
 ### Trust
 
@@ -157,8 +158,8 @@ cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
 The releases that predate this workflow were recovered from the chain: their
 bytes were read back off the accounts running them, and each tag was created at
 the commit that WASM names in its own NEP-330 metadata. So they are reproducible
-on exactly the same terms as new ones — `script/backfill/released-versions.tsv`
-records which account each came from. Note that several were built from paths
+on exactly the same terms as new ones — each one's GitHub Release names the
+account its bytes came from. Note that several were built from paths
 that have since moved (proxy-oracle from `contract/proxy-oracle`, the LST oracle
 from `contract/lst-oracle`); the historical path is in the WASM's own
 `build_info`, which is what a verifier reads.
