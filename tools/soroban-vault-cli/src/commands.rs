@@ -1395,9 +1395,6 @@ fn deploy_curator_proxy<E: CommandExecutor>(
 
     let vault = required_contract(manifest, "vault")?.to_string();
     let governance = required_contract(manifest, "governance")?.to_string();
-    if let Some(expected_hash) = args.legacy_v1_wasm_hash.as_ref() {
-        verify_current_contract_wasm_hash(cli, stellar, &vault, expected_hash.as_str())?;
-    }
 
     let wasm_hash = ensure_uploaded(
         stellar,
@@ -1412,6 +1409,16 @@ fn deploy_curator_proxy<E: CommandExecutor>(
         curator_proxy_initializer(args, &vault, &governance);
     let (reuse_checkpoint, constructor_args, constructor_summary) =
         curator_proxy_deployment_args(args, stellar, manifest, &wasm_hash)?;
+    let already_initialized = reuse_checkpoint
+        && manifest
+            .contracts
+            .get("curator_proxy")
+            .is_some_and(|record| record.initialized);
+    if !already_initialized {
+        if let Some(expected_hash) = args.legacy_v1_wasm_hash.as_ref() {
+            verify_current_contract_wasm_hash(cli, stellar, &vault, expected_hash.as_str())?;
+        }
+    }
     let curator_proxy = deploy_contract_if_needed_with_initialized_state(
         cli,
         stellar,
@@ -1424,10 +1431,6 @@ fn deploy_curator_proxy<E: CommandExecutor>(
         false,
     )?;
 
-    let already_initialized = manifest
-        .contracts
-        .get("curator_proxy")
-        .is_some_and(|record| record.initialized);
     if already_initialized {
         let has_provenance = manifest
             .contracts
@@ -6723,7 +6726,7 @@ mod tests {
         proxy.constructor_args.clear();
         imported.save(&state).expect("save imported manifest");
 
-        let legacy_hash = format!("{:x}", Sha256::digest(CONTRACT.as_bytes()));
+        let legacy_hash = "11".repeat(32);
         let retry_cli = Cli {
             workspace_path: dir.path().into(),
             command: Commands::Deploy(DeployArgs {
