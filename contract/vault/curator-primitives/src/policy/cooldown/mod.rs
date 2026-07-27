@@ -2,7 +2,7 @@
 //!
 //! This module provides a reusable [`Cooldown`] type for tracking time-based
 //! rate limits. It's used by both [`RefreshPlan`](super::refresh_plan::RefreshPlan)
-//! and [`MarketLock`](super::market_lock::MarketLock) for expiry semantics.
+//! and [`MarketLease`](super::market_lock::MarketLease) for expiry semantics.
 
 use core::num::NonZeroU64;
 

@@ -32,7 +32,7 @@ pub async fn harness() -> SandboxHarness {
         .expect("failed to start sandbox harness")
 }
 
-/// Like [`harness`], but always on a dedicated `neard`. Use only when the suite
+/// Like [`harness()`], but always on a dedicated `neard`. Use only when the suite
 /// genuinely cannot share a pooled node — see [`SandboxHarness::start_owned`]
 /// for the one situation that requires it. It costs a node boot per test.
 #[rstest::fixture]

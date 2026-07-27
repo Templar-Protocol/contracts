@@ -180,7 +180,7 @@ fn is_terminal(operation: &StoredOperation) -> bool {
 }
 
 impl PostgresStore {
-    /// Connect using [`DEFAULT_SCHEMA`].
+    /// Connect using `DEFAULT_SCHEMA` (`"gateway"`).
     pub fn new(database_url: &str) -> Result<Self, sqlx::Error> {
         Self::with_schema(database_url, DEFAULT_SCHEMA)
     }

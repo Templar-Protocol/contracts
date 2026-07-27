@@ -4,8 +4,8 @@
 //!
 //! All NEAR reads and writes go through the in-process gateway library
 //! ([`templar_gateway_client`]); this crate carries no bespoke RPC/transaction
-//! plumbing. Reads use [`SigningClient::read`]; writes use
-//! [`SigningClient::execute`], which signs and submits through the gateway's
+//! plumbing. Reads use [`SigningClient::read`](templar_gateway_client::Client::read);
+//! writes use [`SigningClient::execute`], which signs and submits through the gateway's
 //! operation driver (nonce sequencing, idempotency, and replay come for free).
 
 use std::collections::HashMap;
