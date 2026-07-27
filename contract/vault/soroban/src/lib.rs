@@ -19,6 +19,14 @@
 //!
 //! # Feature Flags
 //!
+//! The default runtime forwards the five production kernel action gates:
+//! recovery, external synchronization, fee refresh, allocation lifecycle, and
+//! refresh lifecycle. The public governance pause path is always available;
+//! `action-pause` separately controls the kernel action variant.
+//! The callable `version()` entrypoint reports the package version and exact
+//! compiled runtime-capability mask. The reserved companion-upgrade capability
+//! remains unset until the runtime can authorize companion-contract upgrades.
+//!
 //! - `std` - Enable std library support (for testing)
 
 #![no_std]
@@ -26,6 +34,41 @@
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
+
+use templar_soroban_shared_types::{
+    RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE, RUNTIME_FEATURE_ACTION_PAUSE,
+    RUNTIME_FEATURE_ACTION_RECOVERY, RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+    RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE, RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+};
+
+/// Package version compiled into this runtime artifact.
+pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const fn feature_flag(enabled: bool, flag: u64) -> u64 {
+    if enabled {
+        flag
+    } else {
+        0
+    }
+}
+
+/// Runtime capabilities compiled into this artifact.
+pub const RUNTIME_FEATURE_FLAGS: u64 = feature_flag(
+    templar_vault_kernel::ACTION_RECOVERY_ENABLED,
+    RUNTIME_FEATURE_ACTION_RECOVERY,
+) | feature_flag(
+    templar_vault_kernel::ACTION_SYNC_EXTERNAL_ENABLED,
+    RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL,
+) | feature_flag(
+    templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED,
+    RUNTIME_FEATURE_ACTION_REFRESH_FEES,
+) | feature_flag(
+    templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED,
+    RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE,
+) | feature_flag(
+    templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
+    RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
+) | RUNTIME_FEATURE_ACTION_PAUSE;
 
 pub mod auth;
 pub mod contract;
