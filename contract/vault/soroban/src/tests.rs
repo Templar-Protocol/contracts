@@ -595,13 +595,10 @@ mod contract_tests {
                 RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
                 templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
             ),
-            (
-                RUNTIME_FEATURE_ACTION_PAUSE,
-                templar_vault_kernel::ACTION_PAUSE_ENABLED,
-            ),
         ] {
             assert_eq!(feature_flags & flag != 0, enabled);
         }
+        assert_ne!(feature_flags & RUNTIME_FEATURE_ACTION_PAUSE, 0);
         assert_eq!(feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE, 0);
 
         if templar_vault_kernel::ACTION_RECOVERY_ENABLED
@@ -609,7 +606,6 @@ mod contract_tests {
             && templar_vault_kernel::ACTION_REFRESH_FEES_ENABLED
             && templar_vault_kernel::ACTION_ALLOCATION_LIFECYCLE_ENABLED
             && templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED
-            && !templar_vault_kernel::ACTION_PAUSE_ENABLED
         {
             assert_eq!(
                 feature_flags,

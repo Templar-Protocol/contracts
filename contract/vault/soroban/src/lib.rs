@@ -21,7 +21,8 @@
 //!
 //! The default runtime forwards the five production kernel action gates:
 //! recovery, external synchronization, fee refresh, allocation lifecycle, and
-//! refresh lifecycle. `action-pause` is available as an opt-in build feature.
+//! refresh lifecycle. The public governance pause path is always available;
+//! `action-pause` separately controls the kernel action variant.
 //! The callable `version()` entrypoint reports the package version and exact
 //! compiled runtime-capability mask. The reserved companion-upgrade capability
 //! remains unset until the runtime can authorize companion-contract upgrades.
@@ -67,10 +68,7 @@ pub const RUNTIME_FEATURE_FLAGS: u64 = feature_flag(
 ) | feature_flag(
     templar_vault_kernel::ACTION_REFRESH_LIFECYCLE_ENABLED,
     RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE,
-) | feature_flag(
-    templar_vault_kernel::ACTION_PAUSE_ENABLED,
-    RUNTIME_FEATURE_ACTION_PAUSE,
-);
+) | RUNTIME_FEATURE_ACTION_PAUSE;
 
 pub mod auth;
 pub mod contract;

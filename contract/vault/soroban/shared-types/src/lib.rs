@@ -42,7 +42,8 @@ pub const RUNTIME_V1_FEATURE_FLAGS: u64 = RUNTIME_FEATURE_ACTION_RECOVERY
     | RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL
     | RUNTIME_FEATURE_ACTION_REFRESH_FEES
     | RUNTIME_FEATURE_ACTION_ALLOCATION_LIFECYCLE
-    | RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE;
+    | RUNTIME_FEATURE_ACTION_REFRESH_LIFECYCLE
+    | RUNTIME_FEATURE_ACTION_PAUSE;
 
 /// Feature mask enabled by the current default runtime build.
 pub const RUNTIME_DEFAULT_FEATURE_FLAGS: u64 = RUNTIME_V1_FEATURE_FLAGS;
@@ -1136,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_feature_bits_are_stable_and_default_mask_excludes_optional_capabilities() {
+    fn runtime_feature_bits_are_stable_and_default_mask_matches_public_capabilities() {
         assert_eq!(RUNTIME_FEATURE_ACTION_RECOVERY, 0x01);
         assert_eq!(RUNTIME_FEATURE_ACTION_SYNC_EXTERNAL, 0x02);
         assert_eq!(RUNTIME_FEATURE_ACTION_REFRESH_FEES, 0x04);
@@ -1145,11 +1146,11 @@ mod tests {
         assert_eq!(RUNTIME_FEATURE_ACTION_PAUSE, 0x20);
         assert_eq!(RUNTIME_FEATURE_COMPANION_UPGRADE, 0x40);
         assert_eq!(RUNTIME_V1_VERSION, "1.0.0");
-        assert_eq!(RUNTIME_V1_FEATURE_FLAGS, 0x1f);
-        assert_eq!(RUNTIME_DEFAULT_FEATURE_FLAGS, 0x1f);
+        assert_eq!(RUNTIME_V1_FEATURE_FLAGS, 0x3f);
+        assert_eq!(RUNTIME_DEFAULT_FEATURE_FLAGS, 0x3f);
         assert_eq!(
             RUNTIME_DEFAULT_FEATURE_FLAGS & RUNTIME_FEATURE_ACTION_PAUSE,
-            0
+            RUNTIME_FEATURE_ACTION_PAUSE
         );
         assert_eq!(
             RUNTIME_DEFAULT_FEATURE_FLAGS & RUNTIME_FEATURE_COMPANION_UPGRADE,

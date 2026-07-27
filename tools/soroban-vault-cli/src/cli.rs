@@ -334,6 +334,10 @@ pub struct DeployCuratorProxyArgs {
     /// Rebuild the curator-proxy artifact before upload/deploy.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub build: bool,
+
+    /// Abandon a matching checkpointed proxy and deploy a fresh instance.
+    #[arg(long)]
+    pub force_new: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1311,6 +1315,7 @@ mod tests {
             &legacy_hash,
             "--build",
             "false",
+            "--force-new",
         ])
         .expect("parse targeted curator proxy deploy");
 
@@ -1333,6 +1338,7 @@ mod tests {
                         Some(legacy_hash.as_str())
                     );
                     assert!(!args.build);
+                    assert!(args.force_new);
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Stack(_)
