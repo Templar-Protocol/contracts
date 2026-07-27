@@ -1637,6 +1637,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -13872,10 +13873,13 @@ name = "templar-soroban-vault-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bip39",
  "clap",
  "clap_complete",
  "clap_mangen",
  "dirs 6.0.0",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
  "hex",
  "indicatif",
  "secrecy",

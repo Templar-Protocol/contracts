@@ -11,10 +11,13 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+bip39.workspace = true
 clap.workspace = true
 clap_complete = "4.5"
 clap_mangen = "0.2"
 dirs.workspace = true
+ed25519-dalek.workspace = true
+ed25519-dalek-bip32.workspace = true
 hex.workspace = true
 indicatif = "0.18.4"
 secrecy.workspace = true
