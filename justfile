@@ -113,6 +113,11 @@ _test-sandbox *args:
         while IFS= read -r package; do
             sandbox_package_args+=(-p "$package")
         done <<< '{{ sandbox_packages }}'
+        # Build test binaries BEFORE starting the pool: nodes produce blocks from
+        # boot, so starting them first spends the whole cargo build competing for
+        # CPU (minutes of contention on CI). Default set only — a narrowed `-p`
+        # run keeps its package flags in nextest_args, which cargo build can't take.
+        cargo build --tests "${sandbox_package_args[@]}"
     fi
     SANDBOX_NODE_COUNT="$sandbox_test_threads" source ./script/sandbox-up.sh
     cargo nextest run --profile sandbox --ignore-default-filter \
@@ -136,6 +141,16 @@ sandbox-up *args:
         esac
     done
     SANDBOX_NODE_COUNT='{{ sandbox_test_threads }}' ./script/sandbox-up.sh
+
+# Benchmark the sandbox harness primitives on a dedicated neard (never a pooled
+# node) — block-latency floor, per-tx and per-patch costs, fixture setup.
+bench-sandbox *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source ./script/prebuild-test-contracts.sh
+    # Debug profile, like the test gate itself: the numbers must be comparable
+    # with what tests actually pay, and the work being timed is node I/O.
+    cargo run -p templar-gateway-testing --bin sandbox-bench -- "$@"
 
 # Stop the out-of-band sandbox neard.
 sandbox-down:

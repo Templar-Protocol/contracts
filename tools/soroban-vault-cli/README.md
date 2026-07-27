@@ -93,6 +93,38 @@ tmplr-soroban-vault deploy adapters \
   --custodian G...
 ```
 
+To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
+governance addresses are read from the manifest unless supplied explicitly. The command uploads or
+reuses the current curator-proxy WASM and deploys a new proxy instance whose constructor atomically
+pins the resolved source-account address as its one-time initialization authority. Deployment and
+initialization remain separate transactions, but the deployed contract ID and authority are
+checkpointed before `initialize` runs. Only that same source account can complete or retry
+initialization. Rerunning the command reuses a matching checkpoint for initialization or
+`vault_version` verification; pass `--force-new` only to abandon it and deploy a replacement. The
+command checkpoints successful initialization provenance before querying `vault_version` and marks
+the replacement version-discovery-capable only after that query succeeds.
+
+```sh
+tmplr-soroban-vault deploy curator-proxy \
+  --vault CVAULT... \
+  --governance CGOV...
+```
+
+For an approved versionless v1 vault, pass its verified current on-chain WASM hash. The CLI checks
+the supplied hash against the vault before deploying the proxy, then invokes
+`initialize_legacy_v1` instead of `initialize`.
+
+```sh
+tmplr-soroban-vault deploy curator-proxy \
+  --vault CVAULT... \
+  --governance CGOV... \
+  --legacy-v1-wasm-hash cd8ad034fd37e246ca578b1cfd1dc3d95fb532a6591ecf491ee01d2db03f5244
+```
+
+Reconciliation calls `vault_version` for curator proxies recorded by this flow. Older manifests and
+older curator proxies remain backward compatible: without the capability marker, reconciliation
+continues to verify only their existing vault and governance wiring.
+
 Use `deploy plan` to inspect reuse, upload, deploy, and manifest decisions without network writes or
 manifest changes:
 

@@ -9,8 +9,11 @@ use std::{
 };
 
 use anyhow::Context;
+use ed25519_dalek::SigningKey;
+use ed25519_dalek_bip32::{ChildIndex, ExtendedSigningKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use stellar_strkey::Strkey;
 use tracing::{debug, info, warn};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
@@ -166,10 +169,29 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
     }
 
     pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
-        let (args, redacted_args) = keys_address_source_account_args(
-            self.cli.source_account.as_ref(),
-            std::env::var_os("STELLAR_ACCOUNT").is_some(),
-        )?;
+        let stellar_account = if self.cli.source_account.is_none() {
+            match std::env::var("STELLAR_ACCOUNT") {
+                Ok(value) => Some(Zeroizing::new(value)),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    anyhow::bail!("STELLAR_ACCOUNT must be valid UTF-8")
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(account) = stellar_account.as_ref() {
+            if let Some(address) = public_address_from_stellar_account(account.as_str())? {
+                return Ok(address);
+            }
+        }
+        let source = self
+            .cli
+            .source_account
+            .as_ref()
+            .map(SourceAccount::as_secret_str)
+            .or_else(|| stellar_account.as_ref().map(|account| account.as_str()));
+        let (args, redacted_args) = keys_address_source_account_args(source);
         let out = self.run(args, &redacted_args, Vec::new())?;
         if self.cli.dry_run {
             return Ok("GDRYRUNSOURCEACCOUNT".to_string());
@@ -789,21 +811,70 @@ fn shell_escape(value: &str) -> String {
     }
 }
 
-fn keys_address_source_account_args(
-    source_account: Option<&SourceAccount>,
-    stellar_account_env_is_set: bool,
-) -> anyhow::Result<(Vec<String>, Vec<usize>)> {
+fn keys_address_source_account_args(source_account: Option<&str>) -> (Vec<String>, Vec<usize>) {
     let mut args = vec!["keys".to_string(), "address".to_string()];
     let mut redacted_args = Vec::new();
     if let Some(source) = source_account {
         redacted_args.push(args.len());
-        args.push(source.clone_secret());
-    } else if stellar_account_env_is_set {
-        anyhow::bail!(
-            "cannot derive a public address from STELLAR_ACCOUNT without exposing it to child argv; pass --admin/--caller explicitly or use a Stellar keystore/default identity"
-        );
+        args.push(source.to_string());
     }
-    Ok((args, redacted_args))
+    (args, redacted_args)
+}
+
+fn public_address_from_stellar_account(value: &str) -> anyhow::Result<Option<String>> {
+    match Strkey::from_string(value) {
+        Ok(Strkey::PrivateKeyEd25519(mut private_key)) => {
+            let signing_key = SigningKey::from_bytes(&private_key.0);
+            private_key.0.zeroize();
+            Ok(Some(stellar_public_key(
+                signing_key.verifying_key().to_bytes(),
+            )))
+        }
+        Ok(Strkey::PublicKeyEd25519(public_key)) => Ok(Some(public_key.to_string().to_string())),
+        Ok(Strkey::MuxedAccountEd25519(muxed_account)) => {
+            Ok(Some(stellar_public_key(muxed_account.ed25519)))
+        }
+        Ok(_) => anyhow::bail!("STELLAR_ACCOUNT is not a supported account source"),
+        Err(_) if value.split_whitespace().count() > 1 => {
+            let mnemonic = bip39::Mnemonic::parse(value)
+                .context("STELLAR_ACCOUNT contains an invalid seed phrase")?;
+            let seed = Zeroizing::new(mnemonic.to_seed(""));
+            let mut root = ExtendedSigningKey::from_seed(seed.as_ref())
+                .context("derive STELLAR_ACCOUNT seed phrase root key")?;
+            let path = [
+                ChildIndex::Hardened(44),
+                ChildIndex::Hardened(148),
+                ChildIndex::Hardened(0),
+            ];
+            let mut derived = root
+                .derive(&path)
+                .context("derive STELLAR_ACCOUNT default Stellar account")?;
+            root.chain_code.zeroize();
+            drop(root);
+            let public_key = derived.verifying_key().to_bytes();
+            derived.chain_code.zeroize();
+            drop(derived);
+            Ok(Some(stellar_public_key(public_key)))
+        }
+        Err(_) => {
+            anyhow::ensure!(
+                !value.is_empty()
+                    && value.len() < 56
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric()
+                            || "-_.".contains(character)),
+                "STELLAR_ACCOUNT is neither a valid account key nor a safe Stellar identity name"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn stellar_public_key(bytes: [u8; 32]) -> String {
+    stellar_strkey::ed25519::PublicKey(bytes)
+        .to_string()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -867,13 +938,56 @@ mod tests {
     }
 
     #[test]
-    fn refuses_env_secret_for_source_address_derivation() {
-        let err = keys_address_source_account_args(None, true)
-            .expect_err("STELLAR_ACCOUNT should not be converted into argv");
+    fn derives_env_secret_for_source_address_without_argv() {
+        let address = public_address_from_stellar_account(
+            "SBU2RRGLXH3E5CQHTD3ODLDF2BWDCYUSSBLLZ5GNW7JXHDIYKXZWHOKR",
+        )
+        .expect("derive secret key")
+        .expect("public address");
 
-        assert!(err
-            .to_string()
-            .contains("without exposing it to child argv"));
+        assert_eq!(
+            address,
+            "GA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQHES5"
+        );
+    }
+
+    #[test]
+    fn derives_env_seed_phrase_for_source_address_without_argv() {
+        let address = public_address_from_stellar_account(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("derive seed phrase")
+        .expect("public address");
+
+        assert_eq!(
+            address,
+            "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX"
+        );
+    }
+
+    #[test]
+    fn derives_underlying_account_from_env_muxed_address() {
+        let address = public_address_from_stellar_account(
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ",
+        )
+        .expect("derive muxed account")
+        .expect("public address");
+
+        assert_eq!(
+            address,
+            "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+        );
+    }
+
+    #[test]
+    fn accepts_env_keystore_identity_for_redacted_lookup() {
+        assert_eq!(
+            public_address_from_stellar_account("operator").expect("accept identity name"),
+            None
+        );
+        let (args, redacted_args) = keys_address_source_account_args(Some("operator"));
+        assert_eq!(args, vec!["keys", "address", "operator"]);
+        assert_eq!(redacted_args, vec![2]);
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub enum ArbitraryAccountId {
     Named(NamedAccount),
 }
 
-/// A named account. The mandatory [`HeadSegment`] start is what guarantees the
+/// A named account. The mandatory `HeadSegment` start is what guarantees the
 /// rendered id meets NEAR's 2-char minimum without any runtime padding.
 #[derive(Arbitrary, Debug)]
 pub struct NamedAccount {

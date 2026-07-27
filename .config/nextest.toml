@@ -37,6 +37,12 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 # run, not an abort on the first failure.
 fail-fast = false
 
+# Per-test timings, written to `target/nextest/sandbox/junit.xml`. The node gate
+# is the slow one, so this is what `script/bench/junit-diff.py` compares across
+# runs to show where a harness or node-config change actually landed.
+[profile.sandbox.junit]
+path = "junit.xml"
+
 [store]
 # Location of nextest's run store (metadata + archived test outputs).
 dir = "target/nextest"

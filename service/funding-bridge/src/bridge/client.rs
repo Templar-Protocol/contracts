@@ -1,7 +1,7 @@
 //! NEAR Intents Bridge API client
 //!
 //! HTTP client for interacting with NEAR Intents Bridge JSON-RPC API
-//! at https://bridge.chaindefuser.com/rpc
+//! at <https://bridge.chaindefuser.com/rpc>
 
 use reqwest::Client;
 use std::collections::HashMap;

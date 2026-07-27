@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+futures.workspace = true
 near-api.workspace = true
 near-crypto.workspace = true
 near-jsonrpc-client = { workspace = true, features = ["sandbox"] }

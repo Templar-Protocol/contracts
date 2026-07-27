@@ -279,9 +279,65 @@ Use recipes from [contract/vault/soroban/justfile](./justfile):
 
 From repo root: `just -f contract/vault/soroban/justfile <recipe>`.
 
-The build step compiles the runtime, governance, and share-token WASMs, runs the Stellar optimizer,
-and strips runtime contractspec metadata into a deploy artifact. The runtime deploy artifact is
-budgeted separately from the optimizer output because it is the artifact used for size gating.
+The build step compiles the runtime, governance, and share-token WASMs and runs the Stellar
+optimizer while retaining contractspec metadata. The optimized runtime output is both the deploy
+artifact and the artifact enforced by the size gate.
+
+## Runtime Version Discovery
+
+New runtime artifacts expose `version() -> (String, u64)`. The string is the package version
+compiled by Cargo, and the bitmask reports the capabilities compiled into that exact WASM. Stable
+assignments are recovery `0x01`, external sync `0x02`, fee refresh `0x04`, allocation lifecycle
+`0x08`, refresh lifecycle `0x10`, pause `0x20`, and companion-contract upgrade routing `0x40`.
+The default production mask is `0x3f`: the governance pause path is public in every runtime build,
+while companion upgrades remain disabled.
+
+The curator proxy exposes the same information through `vault_version()`. Use its existing
+`initialize(vault, governance)` entrypoint for runtimes that expose `version`. For an approved,
+versionless v1 deployment, use
+`initialize_legacy_v1(vault, governance, legacy_v1_wasm_hash)`. Initialization requires the supplied
+hash to equal the vault's current Wasm executable. The proxy returns the approved v1 semantics
+`("1.0.0", 0x3f)` directly while that exact artifact remains installed; it does not invoke
+`version`, inspect vault state, or infer v1 from a Soroban host error. After an upgrade changes the
+artifact hash, the proxy queries `version` and fails closed on any invocation or decoding error.
+
+The legacy initializer is an explicit operator assertion that the pinned artifact is a known v1
+runtime. Verify the hash against the approved deployment manifest or release record; the absence of
+a `version` export alone is insufficient because older pre-v1 artifacts can have different action
+capabilities. The runtime `version` entrypoint is additive and storage-free, so deployed v1 vaults
+do not need a runtime upgrade or state migration. Existing curator proxy deployments are
+non-upgradeable; consumers that need the query must use a replacement proxy pointed at the same
+vault and governance contracts.
+
+The targeted CLI flow verifies the vault's current on-chain Wasm hash before deploying a fresh
+proxy. Its constructor atomically pins the resolved source-account address as the one-time
+initialization authority, and the CLI checkpoints that deployed-but-uninitialized proxy before
+invoking `initialize_legacy_v1`. It checkpoints the successful initialization and pinned hash before
+checking `vault_version`, then marks the proxy version-discovery-capable only after that query
+succeeds:
+
+```sh
+tmplr-soroban-vault deploy curator-proxy \
+  --vault <vault-address> \
+  --governance <governance-address> \
+  --legacy-v1-wasm-hash <approved-v1-wasm-hash>
+```
+
+The equivalent targeted just recipe builds the proxy, records the new proxy ID immediately after
+deployment, lets the contract validate the supplied 32-byte hash, and then checks `vault_version`:
+
+```sh
+just -f contract/vault/soroban/justfile deploy-curator-proxy-legacy-v1 \
+  <vault-address> <governance-address> <approved-v1-wasm-hash>
+```
+
+Proxy deployment and initialization are separate transactions, but initialization is no longer
+claimable by an observer: only the source identity pinned by the constructor can complete or retry
+it. The CLI reuses a matching incomplete checkpoint by default; use `--force-new` only when the
+pinned identity is unavailable and the recorded instance must be replaced. The approved tTUSDC
+mainnet runtime hash is recorded in
+`contract/vault/deployments/tTUSDC/mainnet/manifest.json`; do not substitute a hash solely because
+its artifact lacks `version`.
 
 ## Blend Adapter
 
@@ -306,6 +362,9 @@ returned to the adapter on Stellar. It does not initiate or prove a market exit.
 `total_assets(asset)` value is explicit reported accounting, updated by vault allocation flow or by
 `set_reported_assets(caller, asset, expected_current, amount, report_nonce)` from the configured
 admin, vault, or custodian.
+The additive `reported_at(asset)` query returns the ledger timestamp of the latest successful
+explicit report, or `None` for adapters/assets that have never received one. Allocation and
+withdrawal lifecycle updates intentionally do not refresh that timestamp.
 Returned idle balances are not auto-counted as NAV because the adapter cannot prove their offchain
 source. When the adapter is paused, vault and custodian reports are blocked, but the adapter admin
 can still submit reported-NAV corrections for incident recovery. The `report_nonce` is an exact
@@ -317,10 +376,17 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 - `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
+- `just custodial-adapter-reported-at <ASSET_ADDRESS>`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
 
 The custodial adapter's `extend_ttl()` entrypoint is permissionless because it only refreshes
 instance storage liveness and the transaction caller pays the Soroban resource cost.
+
+Existing adapter storage needs no migration: an absent timestamp key is returned as `None` until
+the next successful explicit report. Rollout still requires upgrade authority over the adapter
+WASM. Adapters
+whose admin is the governance contract cannot currently be upgraded through the shipped governance
+actions; adding that authority or migrating those routes to replacement adapters is separate work.
 
 ### Custodial Runbook Checks
 
