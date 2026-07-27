@@ -75,7 +75,10 @@ Every deployment that requests a Blend or custodial adapter must also pass
 implicitly. The `vault` alias, and an explicit address equal to the vault, are accepted only after
 the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`. The current default
 runtime does not advertise that capability, so use an independently controlled account or contract
-until companion upgrades are implemented.
+until companion upgrades are implemented. The configured governance contract is rejected as an
+adapter admin because it cannot invoke companion-contract administration methods. Reusing an
+adapter requires its recorded admin, vault, pool or custodian, and asset constructor values to
+match the current request exactly; otherwise use `--force-new` or a different manifest.
 
 For a new stack, `--admin` is passed explicitly to the governance contract, the initial vault
 curator configuration, and the share-token constructor. The share token keeps a separate immutable
@@ -84,11 +87,16 @@ curator configuration, and the share-token constructor. The share token keeps a 
 the recorded constructor value. For a replacement stack, pass a new `--state` path that does not
 contain the old deployment. If a recorded share token's constructor arguments do not match the new
 admin, vault, or metadata request, the CLI refuses to reuse it and directs the operator to a fresh
-manifest.
+manifest. Replacement deployments should also pass global `--fresh-state`; this rejects an existing
+manifest path before any network call. Existing manifests are rejected when their recorded network
+does not match `--network`. Reconciliation treats missing admin provenance as unknown, rejects a
+share-token admin equal to the vault or governance, rejects an adapter admin equal to governance,
+and requires capability `0x40` when an adapter admin is the vault.
 
 ```sh
 tmplr-soroban-vault \
   --state contract/vault/soroban/.deploy-state/new-vault.manifest.json \
+  --fresh-state \
   deploy stack \
   --admin GADMIN... \
   --governance-timelock-ns 86400000000000 \
@@ -104,7 +112,9 @@ touched. For imported deployments, pass the existing contract ids once and the C
 the manifest before appending adapters.
 
 ```sh
-tmplr-soroban-vault deploy adapters \
+tmplr-soroban-vault \
+  --state contract/vault/soroban/.deploy-state/existing-vault.manifest.json \
+  deploy adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --asset-token CASSET... \
@@ -606,7 +616,9 @@ stellar contract invoke \
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
+- Adapter deployment rejects the configured governance contract as admin and refuses to reuse an adapter whose recorded constructor authority differs from the request.
 - Share-token deployment rejects `admin == vault`; deployment and reconciliation retain the explicit admin and immutable vault as separate authority fields.
+- `--fresh-state deploy stack` requires an unused manifest path before any upload, deployment, or manifest mutation; existing manifests must match the selected network.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.

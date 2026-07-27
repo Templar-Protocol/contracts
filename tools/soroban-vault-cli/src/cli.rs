@@ -57,6 +57,10 @@ pub struct Cli {
     )]
     pub state: PathBuf,
 
+    /// Require the deployment manifest path to be absent before planning or deploying a new stack
+    #[arg(long)]
+    pub fresh_state: bool,
+
     /// Path to the workspace root
     #[arg(long, env = "WORKSPACE_PATH", default_value = ".")]
     pub workspace_path: PathBuf,
@@ -1144,6 +1148,7 @@ mod tests {
             "tmplr-soroban-vault",
             "--source-account",
             "alice",
+            "--fresh-state",
             "deploy",
             "stack",
             "--admin",
@@ -1160,6 +1165,8 @@ mod tests {
             ADMIN,
         ])
         .expect("parse cli");
+
+        assert!(cli.fresh_state);
 
         match cli.command {
             Commands::Deploy(args) => match args.command {
