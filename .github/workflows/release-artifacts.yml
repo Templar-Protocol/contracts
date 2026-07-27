@@ -1,31 +1,43 @@
 name: Release Artifacts
 
-# Proves that a released contract blob is genuinely reproducible: rebuilds the
-# contract in the pinned NEP-330 Docker image and fails unless the result is
-# byte-for-byte identical to the blob checked in under
-# `contract/artifacts/res/near/<target>/<version>/`.
+# Cuts a contract's canonical WASM. This is the *only* way a release blob is
+# produced — there is no manual step to forget.
 #
-# The rebuild happens at the release's recorded `source_commit`, NOT at the tag.
-# `cargo near build reproducible-wasm` embeds the source commit into the WASM
-# (NEP-330), so the same source built at two different commits produces
-# different bytes — and a blob is necessarily committed *before* the tag that
-# releases it exists. Verifying at the tag would therefore fail every time.
+# On a contract release tag: build the contract in the pinned NEP-330 Docker
+# image at that tag's own commit, upload the WASM plus a `checksums.txt` to the
+# GitHub Release, then open a PR recording the release and its SHA-256 in
+# `ids.rs`.
 #
-# This is what makes a checked-in blob *canonical* rather than "whatever some
-# laptop produced", and it is what lets anyone verify the on-chain code against
-# this source tree. The fast, build-free catalog checks run on every PR via
-# `test.yml` → `artifact-drift-check`; this one is heavy (Docker + a full
-# optimized WASM build), so it is reserved for release tags.
+# ## Why the build happens here and not on a laptop
 #
-# Also uploads each verified blob plus a `checksums.txt` to the GitHub Release,
-# so ops and auditors can fetch bytes without cloning the repo.
+# `cargo near build reproducible-wasm` embeds its source commit into the WASM
+# (NEP-330 `source_code_snapshot`). Verifiers such as nearblocks.io read that
+# commit back out, clone the repo at it, and rebuild. So the commit has to stay
+# permanently reachable — and a squash-merged feature branch does not: it never
+# becomes an ancestor of `dev` and is eventually garbage-collected.
+#
+# A tag is reachable from a fresh `git clone` forever. Building here means the
+# embedded commit *is* the release tag's commit, so anyone can reproduce with:
+#
+#   git clone <repo> && git checkout <tag>
+#   cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
+#
+# ## Why the catalog entry lands in a follow-up PR
+#
+# The catalog records what was *released*, and nothing a developer writes before
+# the fact can assert that — contract versions have repeatedly been bumped
+# during development and never deployed. So CI appends the entry afterwards,
+# with the hash of the bytes it just built. (It could not be written earlier
+# anyway: the hash of a reproducible build cannot be known inside the commit
+# that produces it, since writing it in would change that commit.)
+#
+# Nothing is left for a developer to remember.
 
 on:
   push:
     tags:
       # Broad glob: catalog membership is decided in `ids.rs`, not here. A
-      # tagged package the catalog doesn't know about fails fast at the
-      # `--print-metadata` lookup below.
+      # tagged package the catalog doesn't know about exits cleanly below.
       - "*-contract-v*"
 
 permissions:
@@ -36,102 +48,169 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
-  verify:
-    name: Verify reproducible build
+  release-artifact:
+    name: Build and publish the release WASM
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: write # attach assets to the GitHub Release
+      pull-requests: write # open the catalog PR
     steps:
-      - name: Checkout repository
+      - name: Checkout the tag
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          # `cargo near build reproducible-wasm` builds from committed git
-          # state and reads the repository, so the full checkout must be intact.
+          # The reproducible build reads committed git state, and the catalog
+          # PR needs `dev` present to branch from.
           fetch-depth: 0
           persist-credentials: false
 
-      # Not `./.github/actions/rust`: the WASM build runs inside the
-      # cargo-near Docker image, so a host rust-cache entry for this job would
-      # be cold on every release tag and just add eviction pressure.
+      # Not `./.github/actions/rust`: the WASM build runs inside the cargo-near
+      # Docker image, so a host rust-cache entry for this job would be cold on
+      # every release tag and just add eviction pressure.
       - uses: dtolnay/rust-toolchain@dd44c20b1206a46e25fba8503d5d7c9a33bd355a
         with:
           toolchain: "1.86.0"
+          components: rustfmt
 
-      - name: Resolve artifact from tag
+      - name: Resolve the artifact from the tag
         id: resolve
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           # `templar-market-contract-v1.4.0` -> package `templar-market-contract`, version `1.4.0`
-          package="${REF_NAME%-v*}"
-          version="${REF_NAME##*-v}"
           {
-            echo "package=${package}"
-            echo "version=${version}"
+            echo "package=${REF_NAME%-v*}"
+            echo "version=${REF_NAME##*-v}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Rebuild and compare against the checked-in blob
+      - name: Locate the contract
+        id: catalog
         env:
           PACKAGE: ${{ steps.resolve.outputs.package }}
           VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-
-          # Ask the catalog for this package's source path and target name
-          # rather than re-deriving them here and drifting from ids.rs.
-          if ! metadata=$(cargo run --quiet -p templar-contract-artifacts \
-              --features workspace-loader,clap --bin prebuild-test-contracts -- \
-              --print-metadata --artifact "$PACKAGE" 2>/dev/null); then
-            echo "::notice::${PACKAGE} has no catalogued WASM artifact (e.g. a" \
-                 "Soroban contract); nothing to verify."
-            exit 0
-          fi
-          read -r source_path target _current_version <<<"$metadata"
-
-          committed="contract/artifacts/res/near/${target}/${VERSION}/${target}.wasm"
-          if [[ ! -f "$committed" ]]; then
-            echo "::error::${PACKAGE} ${VERSION} was tagged but no blob is checked in at ${committed}." >&2
-            echo "Run 'just artifact-release' and commit the blob with its ids.rs entry." >&2
-            exit 1
-          fi
-
-          # The blob-vs-pin check already runs on every PR via
-          # `check-artifact-drift.sh`; this job's unique job is the rebuild.
-          source_commit=$(
+          catalog() {
             cargo run --quiet -p templar-contract-artifacts \
               --features workspace-loader,clap --bin prebuild-test-contracts -- \
-              --print-release "$VERSION" --artifact "$PACKAGE"
-          )
+              "$@" --artifact "$PACKAGE"
+          }
 
-          if [[ -z "$source_commit" ]]; then
-            echo "::notice::${PACKAGE} ${VERSION} is a legacy blob with no recorded" \
-                 "source_commit (e.g. bytes recovered from chain), so it cannot be" \
-                 "reproducibly rebuilt. Skipping."
+          # Soroban contracts and anything else outside the NEAR catalog have no
+          # WASM artifact to cut.
+          if ! metadata=$(catalog --print-metadata 2>/dev/null); then
+            echo "::notice::${PACKAGE} has no catalogued WASM artifact; nothing to build."
             exit 0
           fi
+          read -r source_path target _crate_version <<<"$metadata"
 
-          # Rebuild at the commit the blob was actually built from. The tag
-          # commit would embed a different NEP-330 snapshot and never match.
-          git worktree add ../verify "$source_commit"
-          (cd ../verify && cargo near build reproducible-wasm --manifest-path "${source_path}/Cargo.toml")
+          {
+            echo "source_path=${source_path}"
+            echo "target=${target}"
+            echo "build=true"
+          } >> "$GITHUB_OUTPUT"
 
-          rebuilt="../verify/target/near/${target}/${target}.wasm"
-          if ! cmp -s "$rebuilt" "$committed"; then
-            echo "::error::Reproducible build at ${source_commit} does not match the checked-in blob." >&2
-            echo "  committed: $(sha256sum "$committed" | cut -d' ' -f1)" >&2
-            echo "  rebuilt:   $(sha256sum "$rebuilt" | cut -d' ' -f1)" >&2
-            exit 1
-          fi
-          echo "Reproducible: ${target} ${VERSION} matches byte-for-byte at ${source_commit}."
+      - name: Install cargo-near
+        if: steps.catalog.outputs.build == 'true'
+        uses: taiki-e/install-action@6af0d6c4a3ce4ba036c2b1234f2b8ee15ee08cae
+        with:
+          tool: cargo-near
 
+      - name: Build reproducibly at the tag
+        id: build
+        if: steps.catalog.outputs.build == 'true'
+        env:
+          SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
+          TARGET: ${{ steps.catalog.outputs.target }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo near build reproducible-wasm --manifest-path "${SOURCE_PATH}/Cargo.toml"
+
+          built="target/near/${TARGET}/${TARGET}.wasm"
           mkdir -p dist
-          cp "$committed" "dist/${target}-${VERSION}.wasm"
+          cp "$built" "dist/${TARGET}-${VERSION}.wasm"
           (cd dist && sha256sum ./*.wasm > checksums.txt)
 
-      - name: Attach artifacts to the release
+          sha=$(sha256sum "$built" | cut -d' ' -f1)
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Built ${TARGET} ${VERSION} at $(git rev-parse HEAD): ${sha}"
+
+      - name: Attach the WASM to the release
+        if: steps.catalog.outputs.build == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_NAME: ${{ github.ref_name }}
-        run: gh release upload "$REF_NAME" dist/* --clobber
+        run: |
+          set -euo pipefail
+          # release-plz creates the tag and the GitHub Release moments apart, and
+          # this job races the tag push. Wait for the release rather than failing
+          # a build that succeeded.
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$REF_NAME" >/dev/null 2>&1; then
+              gh release upload "$REF_NAME" dist/* --clobber
+              exit 0
+            fi
+            echo "Release $REF_NAME not published yet (attempt ${attempt}); waiting."
+            sleep 15
+          done
+          echo "::error::Release $REF_NAME never appeared; cannot attach the WASM." >&2
+          exit 1
+
+      # The hash is taken from the bytes this job just built, so the catalog
+      # entry attests the CI build output rather than a re-download.
+      - name: Open the catalog PR
+        if: steps.catalog.outputs.build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+          SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
+          SHA256: ${{ steps.build.outputs.sha256 }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          branch="record/${REF_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch" origin/dev
+
+          cargo run --quiet -p templar-contract-artifacts --bin record-release -- \
+            "$PACKAGE" "$VERSION" "$SHA256"
+          cargo fmt -p templar-contract-artifacts
+
+          if git diff --quiet; then
+            echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
+            exit 0
+          fi
+
+          git add contract/artifacts/src/ids.rs
+          git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
+          # `persist-credentials: false` above, so authenticate the push here
+          # instead of leaving a credential in the runner's git config.
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$branch"
+
+          body=$(printf '%s\n' \
+            "Records the release of \`${PACKAGE}\` ${VERSION}, built for" \
+            "\`${REF_NAME}\`:" \
+            "" \
+            "    ${SHA256}" \
+            "" \
+            "Until this merges, \`templar-contract-artifacts\` will not serve" \
+            "${PACKAGE} ${VERSION} — an unrecorded version has no reviewed hash to" \
+            "check downloaded bytes against." \
+            "" \
+            "Reproduce the bytes from a fresh clone:" \
+            "" \
+            "    git checkout ${REF_NAME}" \
+            "    cargo near build reproducible-wasm --manifest-path ${SOURCE_PATH}/Cargo.toml")
+
+          gh pr create \
+            --base dev \
+            --head "$branch" \
+            --title "chore(artifacts): record ${PACKAGE} ${VERSION} release" \
+            --body "$body"

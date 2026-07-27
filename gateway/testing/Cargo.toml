@@ -21,11 +21,12 @@ rstest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
-# `embedded-wasm` backs `wasm::released()`: migration and upgrade tests deploy
-# the real historical blobs, which live in the artifacts catalog.
+# `fetch` backs `wasm::released()`: migration and upgrade tests deploy the real
+# historical bytes, downloaded from each version's GitHub Release and verified
+# against the catalog's SHA-256 pin.
 templar-contract-artifacts = { workspace = true, features = [
     "workspace-loader",
-    "embedded-wasm",
+    "fetch",
 ] }
 templar-gateway-client.workspace = true
 templar-gateway-core.workspace = true

@@ -85,10 +85,57 @@ Verify with `cargo publish --dry-run -p <crate>` bottom-up through the closure.
 
 ## Contract WASM artifacts
 
-Releasing a contract also means cutting its canonical WASM blob. Blobs are
-immutable and versioned under `contract/artifacts/res/near/<target>/<version>/`;
-a release *adds* a directory and never overwrites one. See
+Releasing a contract also produces its canonical WASM — **automatically**. There
+is no manual step to forget.
+
+1. Merge your work as normal, then merge the Release PR. That tags the version.
+
+2. The tag fires
+   [`release-artifacts.yml`](.github/workflows/release-artifacts.yml), which
+   builds the contract in the pinned NEP-330 Docker image **at that tag's
+   commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
+   GitHub Release, and opens a PR appending the release to
+   `contract/artifacts/src/ids.rs`.
+
+3. Merge that PR. Until you do, the artifacts crate will not serve the version —
+   an unrecorded release has no reviewed hash to check downloaded bytes against.
+
+Note what is *not* in that list: nothing asks a developer to declare a release
+up front. A `Cargo.toml` bump cannot assert one, because bumps and deployments
+routinely diverge — market's crate version reached 1.4.0 while 1.3.0 was the
+newest deployment, and registry reached 1.2.1 against a deployed 1.1.0. The
+catalog records what actually shipped, so only CI, after the fact, can write it.
+
+Bytes are Release assets, not repository content. Tests download them into a
+shared cache (`just artifacts-fetch`); the pinned SHA-256 in `ids.rs` is what
+makes a downloaded asset trustworthy. See
 [`contract/artifacts/README.md`](contract/artifacts/README.md).
+
+### Why the build happens in CI, at the tag
+
+`cargo near build reproducible-wasm` embeds its source commit into the WASM
+(NEP-330). Verifiers such as nearblocks.io read that commit back out of a
+deployed contract, clone the repo at it, and rebuild — so the commit has to stay
+permanently reachable. A squash-merged feature branch never becomes an ancestor
+of `dev` and is eventually garbage-collected; a **tag** is reachable from a
+fresh clone forever.
+
+Building at the tag therefore makes verification trivial for anyone:
+
+```bash
+git clone https://github.com/Templar-Protocol/contracts && cd contracts
+git checkout templar-proxy-oracle-near-contract-v0.4.0
+cargo near build reproducible-wasm --manifest-path contract/proxy-oracle/near/contract/Cargo.toml
+```
+
+The same property is why the catalog entry lands a commit later: a reproducible
+build's hash cannot be written into the commit that produces it without changing
+that commit, and therefore the hash.
+
+Releases predating this workflow were recovered from the chain — the bytes read
+back off the accounts running them, each tagged at the commit its WASM names in
+NEP-330 metadata — so they reproduce on the same terms. See
+`script/backfill/released-versions.tsv`.
 
 ## First-time setup
 
@@ -97,7 +144,22 @@ a release *adds* a directory and never overwrites one. See
   `templar-market-contract-v1.4.0`, …) from each crate's present `Cargo.toml`
   version. Without this, release-plz treats every crate as brand new and replays
   the entire history into the first changelog.
-- **`RELEASE_PLZ_TOKEN`** (optional but recommended). A PR opened with the
-  default `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the
-  Release PR never runs `test.yml` and you would merge an unverified release.
+- **`RELEASE_PLZ_TOKEN`** (required). A PR opened with the default
+  `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the Release
+  PR never runs `test.yml` and the release tags never run the artifact/CLI
+  workflows. Both release-plz jobs fail fast if it is unset.
 - **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A leaves `git_only` mode.
+- **Backfill the historical releases.** `./script/backfill-release-artifacts.sh`
+  (try `DRY_RUN=1` first) reads `script/backfill/released-versions.tsv`, pulls
+  each version's bytes from the account running it, tags the commit that WASM
+  was built from, and publishes a Release. Nothing can fetch a released artifact
+  until this has run. It pushes tags and publishes releases, so run it once,
+  deliberately.
+- **Delete the four mis-anchored baseline tags first.** The initial baseline
+  pass tagged every crate at one `dev` commit. For four contracts that collides
+  with a real release whose build commit is elsewhere, and the backfill refuses
+  to repoint them silently:
+  `templar-proxy-oracle-near-contract-v0.3.0`,
+  `templar-proxy-oracle-near-governance-contract-v0.1.0`,
+  `templar-pyth-lazer-adapter-contract-v0.1.0`,
+  `templar-universal-account-contract-v0.5.0`.

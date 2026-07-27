@@ -113,14 +113,18 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
         deploy_with_init(
             network,
             &oracle,
-            wasm::released(ArtifactId::ProxyOracle, "0.3.0").to_vec(),
+            wasm::released(ArtifactId::ProxyOracle, "0.3.0")
+                .await
+                .to_vec(),
             "new",
             json!({ "owner_id": gov }),
         ),
         deploy_with_init(
             network,
             &gov,
-            wasm::released(ArtifactId::ProxyGovernance, "0.1.0").to_vec(),
+            wasm::released(ArtifactId::ProxyGovernance, "0.1.0")
+                .await
+                .to_vec(),
             "new",
             json!({ "proxy_oracle_id": oracle, "admin_id": admin, "ttls": old_ttls() }),
         ),

@@ -38,7 +38,10 @@ pub struct ArtifactMetadata {
     pub package_name: String,
     pub cargo_target_name: String,
     pub source_path: String,
-    pub version: String,
+    /// Newest released version, or `null` for an artifact that has never been
+    /// released. Mock contracts are test scaffolding — never tagged, never
+    /// deployed — so they have no canonical version or bytes.
+    pub version: Option<String>,
 }
 
 impl From<&templar_contract_artifacts::ArtifactMetadata> for ArtifactMetadata {
@@ -48,7 +51,7 @@ impl From<&templar_contract_artifacts::ArtifactMetadata> for ArtifactMetadata {
             package_name: metadata.package_name.to_owned(),
             cargo_target_name: metadata.cargo_target_name.to_owned(),
             source_path: metadata.source_path.to_owned(),
-            version: metadata.version().to_owned(),
+            version: metadata.version().map(ToOwned::to_owned),
         }
     }
 }

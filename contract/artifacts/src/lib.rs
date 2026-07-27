@@ -6,7 +6,10 @@
 //! - **default** — Metadata and artifact IDs only; no WASM bytes.
 //! - **workspace-loader** — Read WASM bytes at runtime from
 //!   `target/near/{name}/{name}.wasm` and provide a `cargo near build` helper.
-//! - **embedded-wasm** — Compile-time WASM blobs via `include_bytes!`.
+//!   This is the *work-in-progress* source: whatever the tree currently builds.
+//! - **fetch** — Download *released* WASM from its GitHub Release into a shared
+//!   local cache, verified against the catalog's SHA-256 pin. This is the
+//!   *canonical* source: the exact bytes a version shipped as.
 //! - **clap** — Optional parsing helpers for command-line argument handling.
 //!
 //! # Version keys
@@ -15,16 +18,16 @@
 //! defined by `templar-tools-common`. This crate provides formatting and
 //! hashing helpers that produce the same output.
 
-#[cfg(feature = "embedded-wasm")]
-pub(crate) mod embedded;
+#[cfg(test)]
+mod catalog;
+#[cfg(feature = "fetch")]
+pub mod fetch;
 mod ids;
 #[cfg(all(feature = "workspace-loader", feature = "clap"))]
 pub mod prebuild;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 
-#[cfg(feature = "embedded-wasm")]
-pub use embedded::embedded_sizes;
 pub use ids::{
     artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError, ArtifactRelease,
 };
@@ -43,12 +46,9 @@ use thiserror::Error;
 /// Errors returned by artifact operations in the default configuration.
 #[derive(Error, Debug)]
 pub enum ArtifactError {
-    /// There is no WASM bytes source available — neither `embedded-wasm` nor
+    /// There is no WASM bytes source available — neither `fetch` nor
     /// `workspace-loader` is enabled.
-    #[error(
-        "No WASM byte source available. Enable the `embedded-wasm` or \
-         `workspace-loader` feature."
-    )]
+    #[error("No WASM byte source available. Enable the `fetch` or `workspace-loader` feature.")]
     NoWasmSource,
 }
 
@@ -122,7 +122,8 @@ mod tests {
         let meta = ArtifactId::Vault.metadata();
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
-        assert_eq!(meta.version(), "1.2.1");
+        // No NEAR vault has shipped yet, so there is no released version.
+        assert_eq!(meta.version(), None);
     }
 
     #[test]
@@ -259,7 +260,8 @@ mod tests {
         assert_eq!(parsed["source_path"], "contract/market");
         // Versions live in the release list; `version` is a derived accessor,
         // not a serialized field.
-        assert_eq!(parsed["releases"][0]["version"], "1.4.0");
-        assert_eq!(meta.version(), "1.4.0");
+        assert_eq!(parsed["releases"][0]["version"], "1.0.0");
+        // Newest *released* version — the crate's Cargo.toml is further ahead.
+        assert_eq!(meta.version(), Some("1.3.0"));
     }
 }

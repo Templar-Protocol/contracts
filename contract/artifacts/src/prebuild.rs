@@ -46,16 +46,10 @@ struct Args {
 
     /// Print `<source_path> <cargo_target_name> <version>` for each selected
     /// artifact and exit, without building. Lets shell tooling
-    /// (`script/artifact-release.sh`, `release-artifacts.yml`) read the catalog
-    /// instead of re-deriving paths and drifting from it.
-    #[arg(long)]
+    /// (`release-artifacts.yml`) read the catalog instead of re-deriving paths
+    /// and drifting from it.
+    #[arg(long, conflicts_with = "check")]
     print_metadata: bool,
-
-    /// Print the `source_commit` of the given released version of the single
-    /// selected artifact and exit, or an empty line for a legacy blob that
-    /// cannot be reproducibly rebuilt.
-    #[arg(long, value_name = "VERSION")]
-    print_release: Option<String>,
 }
 
 pub fn main() -> ExitCode {
@@ -86,29 +80,6 @@ pub fn main() -> ExitCode {
                 artifact.source_path, artifact.cargo_target_name, package.version,
             );
         }
-        return ExitCode::SUCCESS;
-    }
-
-    if let Some(version) = &args.print_release {
-        let [artifact] = artifacts[..] else {
-            eprintln!("--print-release needs exactly one --artifact");
-            return ExitCode::FAILURE;
-        };
-        let Some(release) = artifact.release(version) else {
-            eprintln!(
-                "{} has no release {version}; catalogued: {}",
-                artifact.package_name,
-                artifact
-                    .releases
-                    .iter()
-                    .map(|r| r.version)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            return ExitCode::FAILURE;
-        };
-        // Empty line = legacy blob that cannot be rebuilt.
-        println!("{}", release.source_commit.unwrap_or_default());
         return ExitCode::SUCCESS;
     }
 

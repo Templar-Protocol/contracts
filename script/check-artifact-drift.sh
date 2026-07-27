@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Verify the checked-in contract artifact catalog is self-consistent:
-#   - every release blob in res/near/<target>/<version>/ hashes to the `sha256`
-#     pinned for that release in ids.rs (historical releases included — they are
-#     immutable, so any change to one is a mistake)
+# Verify the contract artifact catalog is self-consistent:
 #   - the NEWEST catalogued release of each artifact matches its Cargo.toml
-#     version (a bump with no cut blob fails here — run `just artifact-release`)
-#   - each artifact's release list is well-formed: non-empty, no duplicate
-#     versions, 64-char digests
-#   - res/near and the catalog agree: no orphaned directories, no phantom entries
+#     version. Bumping a contract's version is a release claim, so a bump with
+#     no release entry fails here — in the developer's own PR, before merge.
+#   - each artifact's release list is well-formed: no duplicate versions,
+#     64-char digests, and at most one pin-pending release (which must be the
+#     newest, and must not be a legacy one).
+#   - mocks have no releases; real contracts have at least one.
 #
-# These are pure, in-memory checks — no contract builds, no Docker, seconds.
-# Reproducibility (do the bytes match what the source actually compiles to?) is
-# verified separately, on release tags, by .github/workflows/release-artifacts.yml.
+# Plus, while contract/artifacts/res/ still exists (see the burn-in note in
+# src/catalog.rs), that the bytes the fetch path returns are byte-identical to
+# the blobs checked in. That comparison needs a warm artifact cache or network
+# access; everything else is pure and in-memory.
+#
+# Whether a release's bytes match what the source actually compiles to is a
+# different question, answered on release tags by
+# .github/workflows/release-artifacts.yml.
 set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
@@ -20,5 +24,5 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 # The whole suite, not a name filter: the catalog invariants live in several
 # tests and a filter silently skips any newly added one.
-cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader \
+cargo test -p templar-contract-artifacts --features fetch,workspace-loader \
     -- --include-ignored --nocapture

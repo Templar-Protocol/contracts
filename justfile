@@ -153,16 +153,17 @@ coverage-lcov:
 docs:
     ./script/build-docs.sh
 
-# Cut a new release blob for a contract artifact.
+# Warm the shared cache of released contract WASM.
 #
-# Builds <artifact> reproducibly from the CURRENT COMMIT and installs the bytes
-# as a new immutable release under contract/artifacts/res/near/. Requires a
-# clean tree: `cargo near build reproducible-wasm` builds from committed git
-# state, so uncommitted work would silently not be in the blob.
+# Downloads every pinned release from its GitHub Release and verifies it against
+# the SHA-256 in contract/artifacts/src/ids.rs. Migration and upgrade tests
+# deploy these bytes, so they need the cache warm (or network access).
 #
-# Afterwards, add the printed release entry to contract/artifacts/src/ids.rs and
-# commit the blob together with that entry.
+# The cache lives outside the repository — ~/.cache/templar-contract-artifacts by
+# default — so every worktree shares one copy. Override with
+# TEMPLAR_ARTIFACT_CACHE; set TEMPLAR_ARTIFACT_OFFLINE=1 to forbid downloads.
 #
-#   just artifact-release proxy-oracle
-artifact-release artifact:
-    ./script/artifact-release.sh "$1"
+# Cutting a release is NOT a manual step: merging the release PR tags the
+# version and CI builds, uploads, and pins the WASM. See RELEASING.md.
+artifacts-fetch:
+    cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts

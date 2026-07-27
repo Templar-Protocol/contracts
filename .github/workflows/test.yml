@@ -81,7 +81,6 @@ jobs:
               - 'justfile'
               - 'common/src/**'
               - 'contract/artifacts/Cargo.toml'
-              - 'contract/artifacts/res/**'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
               - 'contract/market/tests/**'
@@ -468,6 +467,15 @@ jobs:
 
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
+
+      # Migration and upgrade tests deploy the real historical bytes, which are
+      # GitHub Release assets rather than repository content. Fetching them up
+      # front turns a network failure into one clear red step instead of a
+      # scattering of test failures. Deliberately not an `actions/cache` entry:
+      # the whole corpus is a couple of MB from GitHub's own CDN, and the repo
+      # cache is already under eviction pressure at the 10 GB cap.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
 
       - name: Run node-backed tests on a pooled neard sandbox
         env:

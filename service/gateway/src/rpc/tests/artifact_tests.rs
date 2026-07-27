@@ -47,7 +47,14 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
     assert_eq!(result.metadata.package_name, "templar-market-contract");
     assert!(!result.metadata.cargo_target_name.is_empty());
     assert!(!result.metadata.source_path.is_empty());
-    assert!(!result.metadata.version.is_empty());
+    // Newest *released* market version. The crate's Cargo.toml runs ahead of
+    // this: versions get bumped in development without ever being deployed.
+    assert_eq!(
+        result.metadata.version.as_deref(),
+        templar_contract_artifacts::ArtifactId::Market
+            .metadata()
+            .version(),
+    );
 
     // Check WASM bytes are valid.
     assert!(!result.code.0.is_empty());
@@ -56,19 +63,14 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
     // Check SHA-256 and version key are present.
     assert!(!result.sha256.is_empty());
     assert_eq!(result.sha256.len(), 64);
-    assert!(result.version_key.starts_with(&format!(
-        "{}@{}#",
-        result.metadata.package_name, result.metadata.version
-    )));
-    assert_eq!(
-        result.version_key.len(),
-        format!(
-            "{}@{}#",
-            result.metadata.package_name, result.metadata.version
-        )
-        .len()
-            + 64
-    );
+    let version = result
+        .metadata
+        .version
+        .as_deref()
+        .expect("market is a released artifact");
+    let prefix = format!("{}@{version}#", result.metadata.package_name);
+    assert!(result.version_key.starts_with(&prefix));
+    assert_eq!(result.version_key.len(), prefix.len() + 64);
 
     stack.shutdown().await;
     Ok(())
@@ -78,8 +80,15 @@ async fn artifact_get_endpoint_works_against_sandbox() -> Result<()> {
 async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
     let stack = TestStack::start().await?;
     let registry_id = stack.harness.deploy_registry().await?;
-    let mock_ft = templar_contract_artifacts::ArtifactId::MockFt.metadata();
-    let expected_version_prefix = format!("{}@{}#", mock_ft.package_name, mock_ft.version());
+    // A released artifact, not a mock: mocks are never tagged, so the gateway
+    // has no canonical bytes to add. Registry is the smallest one.
+    let artifact = templar_contract_artifacts::ArtifactId::Registry;
+    let metadata = artifact.metadata();
+    let expected_version_prefix = format!(
+        "{}@{}#",
+        metadata.package_name,
+        metadata.version().expect("registry is released"),
+    );
 
     let write_result = stack
         .controller
@@ -88,7 +97,7 @@ async fn artifact_add_endpoint_works_against_sandbox() -> Result<()> {
             idempotency_key: None,
             body: artifact::AddArtifactVersion {
                 registry_id: registry_id.clone(),
-                artifact: templar_contract_artifacts::ArtifactId::MockFt,
+                artifact,
                 deploy_mode: templar_common::registry::DeployMode::Normal,
                 deposit: NearToken::from_yoctonear(1),
             },

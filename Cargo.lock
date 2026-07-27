@@ -12907,6 +12907,7 @@ dependencies = [
  "cargo_metadata 0.23.1",
  "clap",
  "hex",
+ "reqwest 0.12.28",
  "rstest",
  "schemars 0.8.22",
  "serde",
@@ -12914,6 +12915,7 @@ dependencies = [
  "sha2 0.10.9",
  "strum 0.27.2",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

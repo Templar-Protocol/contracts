@@ -5,18 +5,23 @@
 //! the single source of truth for artifact names, paths, and how they map
 //! to `target/near` directories.
 //!
-//! ⚠️ Each entry's `releases` list pins *released* blobs under
-//! `res/near/<target>/<version>/`, NOT a mirror of current source. Source is
-//! allowed to move ahead of the newest release — unreleased work-in-progress is
-//! meant to lag it.
+//! ⚠️ Each entry's `releases` list is the *released* history of a contract, NOT
+//! a mirror of current source. Source is allowed to move ahead of the newest
+//! release — unreleased work-in-progress is meant to lag it.
+//!
+//! Bytes live on the GitHub Release for each version's tag, not in this repo;
+//! [`crate::fetch`] downloads and caches them. Each release pins the SHA-256 of
+//! its bytes, so a swapped asset is caught locally rather than trusted.
 //!
 //! Releases are **immutable**: ship new bytes by bumping the contract's
 //! `Cargo.toml` version and *adding* a release, never by editing one. Historical
-//! blobs are what the migration and upgrade tests deploy, so rewriting one
+//! releases are what the migration and upgrade tests deploy, so rewriting one
 //! silently invalidates them.
 //!
-//! Bumping the version fails the version-drift check until the matching blob is
-//! cut with `just artifact-release <id>`. See `contract/artifacts/README.md`.
+//! Cutting a release is not a manual step: merging the release PR tags the
+//! version, and `.github/workflows/release-artifacts.yml` builds the WASM
+//! reproducibly at that tag, uploads it, and opens the PR that fills in the
+//! pin. See `RELEASING.md`.
 
 use std::{fmt, path::Path, str::FromStr};
 
@@ -127,70 +132,6 @@ impl ArtifactId {
             .copied()
             .find(|id| id.metadata().package_name == package_name)
     }
-
-    /// Bytes of the **newest** released version — what the gateway deploys.
-    ///
-    /// A direct `match self`, deliberately NOT routed through
-    /// [`Self::embedded_bytes_for_version`]: that takes a runtime `&str`, so
-    /// every historical blob would be reachable and the linker could not drop
-    /// them. Going through it put ~2 MB of test-only historical bytes into the
-    /// shipped gateway binary. `embedded_bytes_matches_current_release` keeps
-    /// these arms honest.
-    #[cfg(feature = "embedded-wasm")]
-    pub fn embedded_bytes(self) -> &'static [u8] {
-        match self {
-            Self::Registry => include_bytes!("../res/near/templar_registry_contract/1.2.1/templar_registry_contract.wasm"),
-            Self::Market => include_bytes!("../res/near/templar_market_contract/1.4.0/templar_market_contract.wasm"),
-            Self::Vault => include_bytes!("../res/near/templar_vault_contract/1.2.1/templar_vault_contract.wasm"),
-            Self::UniversalAccount => include_bytes!("../res/near/templar_universal_account_contract/0.5.0/templar_universal_account_contract.wasm"),
-            Self::ProxyOracle => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.4.0/templar_proxy_oracle_near_contract.wasm"),
-            Self::ProxyGovernance => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.2.0/templar_proxy_oracle_near_governance_contract.wasm"),
-            Self::LstOracle => include_bytes!("../res/near/templar_lst_oracle_contract/1.2.1/templar_lst_oracle_contract.wasm"),
-            Self::RedstoneAdapter => include_bytes!("../res/near/templar_redstone_adapter_contract/0.2.0/templar_redstone_adapter_contract.wasm"),
-            Self::PythLazerAdapter => include_bytes!("../res/near/templar_pyth_lazer_adapter_contract/0.1.0/templar_pyth_lazer_adapter_contract.wasm"),
-            Self::MockFt => include_bytes!("../res/near/mock_ft/0.0.0/mock_ft.wasm"),
-            Self::MockMt => include_bytes!("../res/near/mock_mt/0.0.0/mock_mt.wasm"),
-            Self::MockOracle => include_bytes!("../res/near/mock_oracle/0.0.0/mock_oracle.wasm"),
-            Self::MockRefFinance => include_bytes!("../res/near/mock_ref/1.2.1/mock_ref.wasm"),
-            Self::MockReceiver => include_bytes!("../res/near/mock_receiver/1.2.1/mock_receiver.wasm"),
-        }
-    }
-
-    /// Bytes of a specific released version, or `None` if that version was never
-    /// released. Used by migration and upgrade tests to deploy the real
-    /// historical binary rather than an approximation of it.
-    #[cfg(feature = "embedded-wasm")]
-    // An exhaustive (artifact, version) → blob table, one arm per catalogued
-    // release. It grows by one arm per release and has no branching logic to
-    // factor out; splitting it would only scatter the mapping.
-    #[allow(clippy::too_many_lines)]
-    pub fn embedded_bytes_for_version(self, version: &str) -> Option<&'static [u8]> {
-        // Every arm mirrors one `ArtifactRelease` in the catalog below;
-        // `catalog_releases_have_embedded_bytes` fails if the two drift apart.
-        let bytes: &'static [u8] = match (self, version) {
-            (Self::Registry, "1.2.1") => include_bytes!("../res/near/templar_registry_contract/1.2.1/templar_registry_contract.wasm"),
-            (Self::Market, "1.4.0") => include_bytes!("../res/near/templar_market_contract/1.4.0/templar_market_contract.wasm"),
-            (Self::Vault, "1.2.1") => include_bytes!("../res/near/templar_vault_contract/1.2.1/templar_vault_contract.wasm"),
-            (Self::UniversalAccount, "0.2.0") => include_bytes!("../res/near/templar_universal_account_contract/0.2.0/templar_universal_account_contract.wasm"),
-            (Self::UniversalAccount, "0.4.0") => include_bytes!("../res/near/templar_universal_account_contract/0.4.0/templar_universal_account_contract.wasm"),
-            (Self::UniversalAccount, "0.5.0") => include_bytes!("../res/near/templar_universal_account_contract/0.5.0/templar_universal_account_contract.wasm"),
-            (Self::ProxyOracle, "0.1.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.1.0/templar_proxy_oracle_near_contract.wasm"),
-            (Self::ProxyOracle, "0.3.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.3.0/templar_proxy_oracle_near_contract.wasm"),
-            (Self::ProxyOracle, "0.4.0") => include_bytes!("../res/near/templar_proxy_oracle_near_contract/0.4.0/templar_proxy_oracle_near_contract.wasm"),
-            (Self::ProxyGovernance, "0.1.0") => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.1.0/templar_proxy_oracle_near_governance_contract.wasm"),
-            (Self::ProxyGovernance, "0.2.0") => include_bytes!("../res/near/templar_proxy_oracle_near_governance_contract/0.2.0/templar_proxy_oracle_near_governance_contract.wasm"),
-            (Self::LstOracle, "1.2.1") => include_bytes!("../res/near/templar_lst_oracle_contract/1.2.1/templar_lst_oracle_contract.wasm"),
-            (Self::RedstoneAdapter, "0.2.0") => include_bytes!("../res/near/templar_redstone_adapter_contract/0.2.0/templar_redstone_adapter_contract.wasm"),
-            (Self::PythLazerAdapter, "0.1.0") => include_bytes!("../res/near/templar_pyth_lazer_adapter_contract/0.1.0/templar_pyth_lazer_adapter_contract.wasm"),
-            (Self::MockFt, "0.0.0") => include_bytes!("../res/near/mock_ft/0.0.0/mock_ft.wasm"),
-            (Self::MockMt, "0.0.0") => include_bytes!("../res/near/mock_mt/0.0.0/mock_mt.wasm"),
-            (Self::MockOracle, "0.0.0") => include_bytes!("../res/near/mock_oracle/0.0.0/mock_oracle.wasm"),
-            (Self::MockRefFinance, "1.2.1") => include_bytes!("../res/near/mock_ref/1.2.1/mock_ref.wasm"),
-            (Self::MockReceiver, "1.2.1") => include_bytes!("../res/near/mock_receiver/1.2.1/mock_receiver.wasm"),
-            _ => return None,
-        };
-        Some(bytes)
-    }
 }
 impl fmt::Display for ArtifactId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -212,30 +153,26 @@ impl FromStr for ArtifactId {
     }
 }
 
-/// One released version of a contract, and the SHA-256 of the exact bytes that
-/// were shipped for it.
+/// One released version of a contract.
 ///
-/// Releases are immutable. Cutting a new release *adds* an entry and a directory
-/// under `res/near/{cargo_target_name}/{version}/`; it never rewrites an
-/// existing one. That is what lets migration and upgrade tests deploy the real
-/// historical bytes rather than an approximation of them.
+/// A release exists because the bytes were *deployed*, not because a version
+/// number was bumped: those diverge, and this catalog tracks the former. It is
+/// appended to by CI when a release tag is cut, never by hand.
+///
+/// Releases are immutable — cutting a new one *adds* an entry. Historical
+/// entries are what the migration and upgrade tests deploy, so rewriting one
+/// silently invalidates them.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactRelease {
-    /// Crate version this blob was released as.
+    /// Crate version this was released as.
     pub version: &'static str,
-    /// SHA-256 (lowercase hex) of the checked-in blob for this version.
+    /// SHA-256 (lowercase hex) of the released bytes.
     ///
-    /// Pinned so a blob change is a reviewable, greppable edit rather than an
-    /// opaque binary diff: any change to the bytes must land with a matching
-    /// update here, or the drift check fails.
+    /// The root of trust for a downloaded asset: [`crate::fetch`] verifies
+    /// against it and refuses bytes that do not match, so artifact integrity
+    /// rests on this reviewed, in-repo value rather than on GitHub serving us
+    /// the right file.
     pub sha256: &'static str,
-    /// Git commit the blob was reproducibly built from; `None` for legacy blobs
-    /// recovered from a deployed contract, which cannot be rebuilt.
-    ///
-    /// `cargo near build reproducible-wasm` embeds the source commit per
-    /// NEP-330, so a rebuild is byte-identical **only at the same commit** —
-    /// which is why the release tag alone cannot verify a blob.
-    pub source_commit: Option<&'static str>,
 }
 
 /// Canonical metadata for a single contract artifact.
@@ -254,7 +191,9 @@ pub struct ArtifactMetadata {
     pub source_path: &'static str,
     /// Every released version of this contract, **oldest first**.
     ///
-    /// Never empty: an artifact with no release has no bytes to deploy.
+    /// Empty for mock contracts: they are test scaffolding, never tagged and
+    /// never deployed, so "the canonical bytes of mock-ft" is not a thing that
+    /// exists. Tests build them from source instead.
     pub releases: &'static [ArtifactRelease],
 }
 
@@ -264,28 +203,20 @@ impl ArtifactMetadata {
     }
 
     /// The newest release — what the gateway deploys and what `version_key`
-    /// and `embedded_bytes` refer to by default.
-    ///
-    /// # Panics
-    /// Never in practice: `releases` is non-empty for every catalog entry, and
-    /// `catalog_releases_are_well_formed` enforces it.
-    // Infallible: every catalog entry ships at least one release, enforced by
-    // `catalog_releases_are_well_formed`.
-    #[allow(clippy::expect_used)]
-    pub fn current(&self) -> &'static ArtifactRelease {
-        self.releases
-            .last()
-            .expect("catalog entry has no releases; see catalog_releases_are_well_formed")
+    /// refers to by default. `None` for an artifact that has never been
+    /// released (mocks).
+    pub fn current(&self) -> Option<&'static ArtifactRelease> {
+        self.releases.last()
     }
 
     /// Version of the newest release.
-    pub fn version(&self) -> &'static str {
-        self.current().version
+    pub fn version(&self) -> Option<&'static str> {
+        self.current().map(|release| release.version)
     }
 
-    /// Pinned SHA-256 of the newest release's blob.
-    pub fn expected_sha256(&self) -> &'static str {
-        self.current().sha256
+    /// Pinned SHA-256 of the newest release; `None` if never released.
+    pub fn expected_sha256(&self) -> Option<&'static str> {
+        Some(self.current()?.sha256)
     }
 
     /// Look up a specific released version.
@@ -293,8 +224,12 @@ impl ArtifactMetadata {
         self.releases.iter().find(|r| r.version == version)
     }
 
-    pub fn version_key(&self, wasm_bytes: &[u8]) -> String {
-        crate::format_version_key(self.package_name, self.version(), wasm_bytes)
+    pub fn version_key(&self, wasm_bytes: &[u8]) -> Option<String> {
+        Some(crate::format_version_key(
+            self.package_name,
+            self.version()?,
+            wasm_bytes,
+        ))
     }
 }
 
@@ -310,50 +245,85 @@ pub fn artifact_catalog() -> impl ExactSizeIterator<Item = &'static ArtifactMeta
 // ---------------------------------------------------------------------------
 
 macro_rules! entry {
-    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr, $commit:expr)),+ $(,)?]) => {
+    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr)),* $(,)?]) => {
         ArtifactMetadata {
             id: ArtifactId::$id,
             package_name: $pkg,
             cargo_target_name: $target,
             source_path: $src,
-            releases: &[$(ArtifactRelease { version: $ver, sha256: $sha, source_commit: $commit }),+],
+            releases: &[$(ArtifactRelease { version: $ver, sha256: $sha }),*],
         }
     };
 }
+
+// Every release below was recovered from code actually deployed on NEAR
+// mainnet, and its tag points at the commit that deployed WASM names in its
+// NEP-330 metadata — so each one rebuilds byte-for-byte from a fresh clone.
+// script/backfill/released-versions.tsv records the accounts they came from.
+//
+// `source_path` is where the contract lives *today*. Older releases were built
+// from different paths (proxy-oracle from `contract/proxy-oracle`, the LST
+// oracle from `contract/lst-oracle`); a verifier reads the historical path out
+// of the WASM's own build_info, so this field only describes current work.
 
 static REGISTRY_METADATA: ArtifactMetadata = entry!(
     Registry,
     "templar-registry-contract",
     "templar_registry_contract",
     "contract/registry",
-    [(
-        "1.2.1",
-        "2512b842e31f8427fb0a47df4f1592de6babf6b13171af60069e3cf450423aa2",
-        None
-    ),]
+    [
+        (
+            "0.1.0",
+            "c07b38a29202da247da12515d3b2e7a93855619209a76d73e5ae12b2facc6255"
+        ),
+        (
+            "1.0.0",
+            "bafbec54bff4f07147c5e317966ec34c500331f02c64eefd5da1aa5dc778e339"
+        ),
+        (
+            "1.1.0",
+            "0f315a008969013f44575b16374c115e972f421d1061fd6cafc8b4f63e5c65f3"
+        ),
+    ]
 );
 static MARKET_METADATA: ArtifactMetadata = entry!(
     Market,
     "templar-market-contract",
     "templar_market_contract",
     "contract/market",
-    [(
-        "1.4.0",
-        "8f2c487ebc873e3d6de7e8d2dc4d20b142ab22073e04ae89687746ebaca6ca52",
-        None
-    ),]
+    [
+        (
+            "1.0.0",
+            "0b78aefdae1bb76148602252dd6b7db2014d99ef3b7f93a764c54d7ebe97a392"
+        ),
+        (
+            "1.1.0",
+            "2bc028a722ccacd8aa23fe50a83c395716c920bf724b0d054a1ede3f2e4fae77"
+        ),
+        (
+            "1.2.1",
+            "c9752de38ed140645e9a8d4a55dc89835b113609e27bb63ce134b5e598bc69b8"
+        ),
+        (
+            "1.3.0",
+            "40e56aaf3627f1cb13656e696d382e64d7bb3e97420a049c20ae294d4f64fe97"
+        ),
+    ]
 );
+
+// No NEAR vault has been deployed yet; the Soroban vault is a separate
+// artifact. CI appends the first NEAR release here when one ships.
 static VAULT_METADATA: ArtifactMetadata = entry!(
     Vault,
     "templar-vault-contract",
     "templar_vault_contract",
     "contract/vault/near",
-    [(
-        "1.2.1",
-        "fc605cd4a3e09fdef3620ed9c6a4610bb639d7a5f625d648780a96b7d452ef18",
-        None
-    ),]
+    []
 );
+
+// 0.4.0 is deliberately absent: it was built and used as a migration-test
+// fixture but never deployed, so it is not a release. Those bytes live beside
+// the state patch they pair with, in contract/universal-account/tests/migration/.
 static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
     UniversalAccount,
     "templar-universal-account-contract",
@@ -362,18 +332,19 @@ static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
     [
         (
             "0.2.0",
-            "25ae83a0ee7d31542bd7b6039549f200cdd96f7bcaef56dd6763dd143ef00c2d",
-            None
+            "30e8baf1bd5de0308c510c0e5ff77b9aeb25306bf6ab922e5e25f8a24d6f3efd"
         ),
         (
-            "0.4.0",
-            "007d0a4643f63b3b2f543b0033f059ebc38b07365ff86aff1aa4476f6d73f9ae",
-            None
+            "0.3.0",
+            "99e7ee1e559b2a0e966ef91e572007d71a6998b6a8d8ca0330e6c308652de505"
+        ),
+        (
+            "0.3.1",
+            "1b470283a0393f083463c95086de3046a94b626de45270fc108c1658fc7679a0"
         ),
         (
             "0.5.0",
-            "7dae78aaf868844af5655d530c50f72a4a74baed92d1592c89c704989e4589c7",
-            None
+            "22d1efca17929ef7148f62b9a32f1dcf9a5aa6bf1646df2190817e8cb9e961ef"
         ),
     ]
 );
@@ -385,18 +356,11 @@ static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
     [
         (
             "0.1.0",
-            "fb697b18f30cc19d4fc43768eae04ae94967663c4744ab052c7119c6d869d53b",
-            None
+            "e877687e2d6f51db824bde12348938b3374f526301811df3ee118af38b856f35"
         ),
         (
             "0.3.0",
-            "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e",
-            None
-        ),
-        (
-            "0.4.0",
-            "f03b159e9132a59ab929463866c672b734a5950fb41520ec33ad7a97030d5770",
-            Some("ea0a6357c89748e64b43036b776cd9459078af00")
+            "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e"
         ),
     ]
 );
@@ -405,18 +369,10 @@ static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     "templar-proxy-oracle-near-governance-contract",
     "templar_proxy_oracle_near_governance_contract",
     "contract/proxy-oracle/near/governance-contract",
-    [
-        (
-            "0.1.0",
-            "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0",
-            None
-        ),
-        (
-            "0.2.0",
-            "8de3b54494ef3601172543596aa91ec10a264da1093e6d413cbebddab4edb104",
-            Some("9d4477416f9b8d7bf1dc103ed5a9d788d13d9be2")
-        ),
-    ]
+    [(
+        "0.1.0",
+        "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
+    ),]
 );
 static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     LstOracle,
@@ -424,9 +380,8 @@ static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     "templar_lst_oracle_contract",
     "contract/proxy-oracle/near/lst-contract",
     [(
-        "1.2.1",
-        "5ef7bedf78f3a3ecc9747b8aa3bb25ef6bd508d3c17ec166571f76f53ce8ee50",
-        None
+        "1.0.0",
+        "4d650b07ec9ccc3aaafc765f6970e2c60dde1ba23f25ef05d23ddd2178a157a3"
     ),]
 );
 static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -435,9 +390,8 @@ static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "templar_redstone_adapter_contract",
     "contract/redstone-adapter",
     [(
-        "0.2.0",
-        "b513b2e839ce1ea59ef4c57519ef9482b133f47c81db0d3a54517b2cd251511a",
-        None
+        "0.1.0",
+        "debbf6f631422ad44fb3bf323503f378cdaff1cd6c63661846cb56828e23c461"
     ),]
 );
 static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
@@ -447,62 +401,22 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "contract/pyth-lazer/contract",
     [(
         "0.1.0",
-        "c993256a8b42313b2b0b024c783b4eb5a7be1c8b9f792789cb4f207f7007060b",
-        None
+        "ff51847ea292271775db9bf8207e7f30c5a6a426b277a71ebe78f8c4850a451f"
     ),]
 );
-static MOCK_FT_METADATA: ArtifactMetadata = entry!(
-    MockFt,
-    "mock-ft",
-    "mock_ft",
-    "mock/ft",
-    [(
-        "0.0.0",
-        "c43561acd98e1a8d93ba85955f23847bcccd738f85703e914c3d4218471c262d",
-        None
-    ),]
-);
-static MOCK_MT_METADATA: ArtifactMetadata = entry!(
-    MockMt,
-    "mock-mt",
-    "mock_mt",
-    "mock/mt",
-    [(
-        "0.0.0",
-        "cd125c142722e48e5e1b6f350c751ed0691221d065c540dad02804dbaf55b453",
-        None
-    ),]
-);
-static MOCK_ORACLE_METADATA: ArtifactMetadata = entry!(
-    MockOracle,
-    "mock-oracle",
-    "mock_oracle",
-    "mock/oracle",
-    [(
-        "0.0.0",
-        "76f76816cf4d0ccaf4b4e181ee1104ec8e6cbd13084f311b87a86087099a749c",
-        None
-    ),]
-);
-static MOCK_REF_FINANCE_METADATA: ArtifactMetadata = entry!(
-    MockRefFinance,
-    "mock-ref",
-    "mock_ref",
-    "mock/ref",
-    [(
-        "1.2.1",
-        "d2be82aa462f55baa2333bae898bee424560e7bf7342b606f6bd40c1aa8369c4",
-        None
-    ),]
-);
+
+// Mocks are test scaffolding: Tier C in `release-plz.toml`, never tagged, never
+// deployed. Tests build them from source.
+static MOCK_FT_METADATA: ArtifactMetadata = entry!(MockFt, "mock-ft", "mock_ft", "mock/ft", []);
+static MOCK_MT_METADATA: ArtifactMetadata = entry!(MockMt, "mock-mt", "mock_mt", "mock/mt", []);
+static MOCK_ORACLE_METADATA: ArtifactMetadata =
+    entry!(MockOracle, "mock-oracle", "mock_oracle", "mock/oracle", []);
+static MOCK_REF_FINANCE_METADATA: ArtifactMetadata =
+    entry!(MockRefFinance, "mock-ref", "mock_ref", "mock/ref", []);
 static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
     MockReceiver,
     "mock-receiver",
     "mock_receiver",
     "mock/receiver",
-    [(
-        "1.2.1",
-        "bf814164155b927b4e703d8e870137b7f8ab39cd2a69666a0b900bfe0c8a8ec5",
-        None
-    ),]
+    []
 );

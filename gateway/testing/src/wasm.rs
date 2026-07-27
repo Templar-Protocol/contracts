@@ -2,11 +2,16 @@
 //!
 //! Each helper yields the bytes of a workspace contract, either read from a
 //! prebuilt artifact (when `TEST_CONTRACTS_PREBUILT` is set) or freshly built
-//! via `cargo near build`. Bytes are cached per-artifact for the process. The
-//! three legacy blobs (embedded `include_bytes!`) are exposed as consts for
-//! migration tests.
+//! via `cargo near build`. Bytes are cached per-artifact for the process.
+//!
+//! [`released`] is the other source: the exact bytes a *past* version shipped
+//! as, downloaded from that version's GitHub Release rather than built here.
 
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{Mutex, OnceLock},
+};
 
 use serde::{Deserialize, Serialize};
 use templar_contract_artifacts::{build_artifact, load_artifact_bytes, ArtifactId};
@@ -72,23 +77,43 @@ wasm_fns! {
 /// Bytes of a specific *released* version of a contract, for migration and
 /// upgrade tests that must deploy the real historical binary.
 ///
-/// Backed by the immutable release list in
-/// [`templar_contract_artifacts`] — see `contract/artifacts/README.md`. These
-/// blobs used to be hand-maintained `include_bytes!` consts in this module,
-/// outside the catalog and outside the drift check; they are now catalogued
-/// releases like any other, so a corrupted or silently-swapped historical blob
-/// fails `embedded_drift_check`.
+/// Downloaded from that version's GitHub Release into a shared on-disk cache
+/// and verified against the SHA-256 pinned in the catalog, so a swapped asset
+/// fails here rather than silently changing what a migration test deploys.
+/// Bytes are leaked once per version: the set is small, immutable, and lives
+/// for the whole test process anyway.
+///
+/// A cold cache needs network. `just artifacts-fetch` warms it; CI does this
+/// before the sandbox tests so a network failure is one clear step rather than
+/// scattered test failures.
 ///
 /// # Panics
-/// If `version` is not a catalogued release of `artifact`. That is a test bug:
-/// the available versions are listed in `contract/artifacts/src/ids.rs`.
-pub fn released(artifact: ArtifactId, version: &str) -> &'static [u8] {
-    artifact
-        .embedded_bytes_for_version(version)
-        .unwrap_or_else(|| {
-            panic!(
-                "{artifact}@{version} is not a catalogued release; \
-                 see contract/artifacts/src/ids.rs",
-            )
-        })
+/// If `version` is not a catalogued release of `artifact` (a test bug — the
+/// available versions are in `contract/artifacts/src/ids.rs`), or if the bytes
+/// can be neither found in the cache nor downloaded.
+pub async fn released(artifact: ArtifactId, version: &str) -> &'static [u8] {
+    type ReleaseCache = Mutex<HashMap<(ArtifactId, String), &'static [u8]>>;
+    static CACHE: OnceLock<ReleaseCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(ReleaseCache::default);
+
+    let key = (artifact, version.to_owned());
+    if let Some(bytes) = cache.lock().expect("released() cache poisoned").get(&key) {
+        return bytes;
+    }
+
+    // Deliberately not holding the lock across the download: a duplicate fetch
+    // of a few hundred KB is cheaper than serialising every test that needs a
+    // different historical version.
+    let bytes: &'static [u8] = Box::leak(
+        templar_contract_artifacts::fetch::released_bytes(artifact, version)
+            .await
+            .unwrap_or_else(|error| panic!("could not load {artifact}@{version}: {error}"))
+            .into_boxed_slice(),
+    );
+
+    cache
+        .lock()
+        .expect("released() cache poisoned")
+        .insert(key, bytes);
+    bytes
 }

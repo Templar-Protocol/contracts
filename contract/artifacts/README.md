@@ -22,7 +22,7 @@ Templar Protocol smart contracts.
 |----------------------|-------------------------------------------------------------------|
 | *(default)*          | Artifact IDs and metadata only. No dependencies beyond `sha2`, `hex`, `thiserror`. No WASM bytes. |
 | `workspace-loader`   | Read WASM from `target/near/{name}/{name}.wasm` at runtime. Provides `cargo near build` helper. |
-| `embedded-wasm`      | Compile-time WASM blobs via `include_bytes!`. Blobs are pinned at build time. |
+| `fetch`              | Download *released* WASM from its GitHub Release into a shared local cache, verified against the catalog's SHA-256 pin. |
 | `clap`               | CLI-friendly `ValueEnum` parsing for artifact IDs and package-name aliases. |
 
 Default features do **not** embed WASM bytes or depend on heavy build
@@ -34,32 +34,58 @@ This crate deliberately does **not** compile contracts in a build script.
 Contract compilation is performed by `./script/prebuild-test-contracts.sh`
 or by `cargo near build`. The crate only *reads* the resulting artifacts.
 
-## Versioned release blobs
+## Versioned releases
 
-Contract bytes live under:
+Released bytes are **GitHub Release assets, not repository content**. Each
+release's tag (`{package}-v{version}`) carries one asset,
+`{cargo_target_name}-{version}.wasm`.
 
-```
-res/near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
-```
+Releases are **immutable**: cutting a new one *adds* a catalog entry and never
+rewrites an existing one. Historical bytes are what the migration and upgrade
+tests deploy — `contract/universal-account/tests/migration.rs` upgrades from the
+exact `0.2.0` binary that ran on mainnet — so rewriting one silently invalidates
+those tests.
 
-One directory per **released** version. Releases are **immutable**: cutting a
-new one *adds* a directory and a catalog entry, and never rewrites an existing
-one. Historical blobs are what the migration and upgrade tests deploy — e.g.
-`contract/universal-account/tests/migration.rs` upgrades from the real `0.2.0`
-and `0.4.0` binaries — so rewriting one silently invalidates those tests.
+Each entry in `ArtifactId::metadata().releases` (oldest first) records a version
+and the SHA-256 of its bytes. `ArtifactMetadata::current()` is the newest
+release — what the gateway deploys, and what `version()` / `expected_sha256()` /
+`version_key()` refer to. It is `None` for an artifact that has never shipped:
+mocks, and (today) the NEAR vault.
 
-Each entry in `ArtifactId::metadata().releases` (oldest first) pins a version and
-the SHA-256 of its blob. `ArtifactMetadata::current()` is the newest release —
-what the gateway deploys, and what `version()` / `expected_sha256()` /
-`version_key()` refer to.
+**A release means the bytes were deployed, not that a version was bumped.**
+Those diverge, routinely — market's crate version reached 1.4.0 while 1.3.0 was
+the newest thing on mainnet, and registry reached 1.2.1 against a deployed
+1.1.0. So source is *expected* to run ahead of the newest release, and the
+catalog is appended to by CI when a release tag is cut, never by hand.
 
 ```rust
-// Newest released bytes.
-let bytes = ArtifactId::Market.embedded_bytes();
+// Requires: features = ["fetch"]
+use templar_contract_artifacts::{fetch, ArtifactId};
 
 // A specific historical release, for upgrade tests.
-let old = ArtifactId::UniversalAccount.embedded_bytes_for_version("0.2.0");
+let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
 ```
+
+Bytes are cached outside the repository so every worktree shares one copy:
+
+```
+${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artifacts}
+  └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+```
+
+Warm it with `just artifacts-fetch`; `TEMPLAR_ARTIFACT_OFFLINE=1` forbids
+downloads and restricts lookups to the cache.
+
+### Trust
+
+Downloaded bytes are verified against the SHA-256 pinned in the catalog and
+discarded on mismatch. That pin is a reviewed, in-repo value, so artifact
+integrity does **not** rest on GitHub serving the right file — the same standard
+git already gives the source, whose objects are content-addressed and mirrored
+by every clone.
+
+A version that has not been recorded as a release cannot be fetched at all:
+there is no reviewed hash to check it against.
 
 ### The prebuild helper (test artifacts)
 
@@ -80,26 +106,43 @@ artifacts are missing from `target/near` and exit non-zero without building.
 
 ## Cutting a release
 
-Source is *allowed* to move ahead of the newest released blob — unreleased
-work-in-progress is meant to lag it. The tripwire is the crate version:
+**There is nothing to do by hand.** Merging the release PR tags the version;
+`.github/workflows/release-artifacts.yml` then builds the WASM reproducibly at
+that tag, uploads it, and opens a PR appending the release to `ids.rs`. Until
+that PR merges, `fetch` will not serve the version — an unrecorded release has
+no reviewed hash to check downloaded bytes against.
 
-**Bump a contract's `Cargo.toml` version when you intend to ship it.** The drift
-check then fails (newest catalogued release ≠ `Cargo.toml` version) until you cut
-the blob:
+### Why the catalog entry lags by one commit
+
+`cargo near build reproducible-wasm` embeds the source commit into the WASM
+(NEP-330), so **the same source built at two different commits produces
+different bytes**. Writing the hash into the commit that produces it would
+change the tree, the commit, and therefore the hash. The pin is necessarily one
+commit behind.
+
+### Why CI builds at the tag
+
+Verifiers such as nearblocks.io read the embedded commit back out of a deployed
+contract, clone the repository at it, and rebuild. So that commit must stay
+permanently reachable — and a squash-merged feature branch does not: it never
+becomes an ancestor of `dev` and is eventually garbage-collected.
+
+A tag is reachable from a fresh clone forever. Building at the tag makes the
+embedded commit the tag's own commit, so anyone can reproduce:
 
 ```bash
-just artifact-release proxy-oracle
+git checkout <package>-v<version>
+cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
 ```
 
-That script requires a **clean, committed tree** (`cargo near build
-reproducible-wasm` builds from committed git state), builds the contract
-reproducibly, installs it at `res/near/<target>/<version>/`, and prints the
-catalog entry to add to `ids.rs`. Add the entry *and* a matching
-`embedded_bytes_for_version` arm, then commit the blob together with the catalog
-edit so bytes and pin always land in one reviewable diff.
-
-It refuses to overwrite an existing version — to ship new bytes, bump the
-version.
+The releases that predate this workflow were recovered from the chain: their
+bytes were read back off the accounts running them, and each tag was created at
+the commit that WASM names in its own NEP-330 metadata. So they are reproducible
+on exactly the same terms as new ones — `script/backfill/released-versions.tsv`
+records which account each came from. Note that several were built from paths
+that have since moved (proxy-oracle from `contract/proxy-oracle`, the LST oracle
+from `contract/lst-oracle`); the historical path is in the WASM's own
+`build_info`, which is what a verifier reads.
 
 ## Checking consistency
 
@@ -107,34 +150,18 @@ version.
 ./script/check-artifact-drift.sh
 ```
 
-Pure, in-memory, no builds, seconds. Four guarantees:
+Seconds, no contract builds:
 
 | Check | Catches |
 |---|---|
-| `embedded_drift_check` | a release's bytes no longer hash to its pinned `sha256` (including historical releases, which must never change) |
-| `embedded_version_drift_check` | the newest release does not match the crate's `Cargo.toml` version — i.e. a version bump whose blob was never cut |
-| `catalog_releases_are_well_formed` | empty release lists, duplicate versions, malformed digests |
-| `catalog_matches_disk` | a directory on disk nobody catalogued, or a catalog entry whose blob was never committed |
+| `no_release_is_ahead_of_its_source` | a release claiming a version the crate never reached (the reverse — source ahead of the newest release — is normal) |
+| `catalog_releases_are_well_formed` | duplicate versions, malformed digests, releases listed out of order |
+| `mocks_are_never_released` | a mock that acquired a release |
 
 What this does **not** check is whether the bytes match what the source actually
-compiles to — that requires a reproducible rebuild, which runs on release tags
-in `.github/workflows/release-artifacts.yml` and fails unless the rebuild is
-byte-for-byte identical.
+compiles to. That needs a reproducible rebuild, which runs on release tags in
+`.github/workflows/release-artifacts.yml`.
 
-### Why each release records a `source_commit`
-
-`cargo near build reproducible-wasm` embeds the source commit into the WASM
-(NEP-330), so **the same source built at two different commits produces
-different bytes**. Reproducibility is only meaningful *at a specific commit*.
-
-That is why `ArtifactRelease` carries `source_commit` and the verification
-workflow rebuilds there rather than at the release tag: a blob is necessarily
-committed *before* the tag that releases it exists, so verifying at the tag
-could never match.
-
-Legacy releases — bytes recovered from a deployed mainnet contract — carry
-`source_commit: None`. Their hash pin is still enforced, but they cannot be
-rebuilt, and the workflow says so rather than pretending to verify them.
 
 ## Usage examples
 

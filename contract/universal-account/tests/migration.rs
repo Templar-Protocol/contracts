@@ -32,6 +32,12 @@ use test_utils::test_signer::TestSigner;
 static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_patch.borsh");
 static WASM_0_4_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_4_0_state_patch.borsh");
 
+/// 0.4.0 was built but never deployed to production, so it is not a release and
+/// has no GitHub Release to fetch from — it is test data, and lives here beside
+/// the state patch it pairs with. 0.2.0 by contrast really did ship, so it comes
+/// from the catalog as the exact bytes that ran on mainnet.
+static WASM_0_4_0: &[u8] = include_bytes!("./migration/0_4_0.wasm");
+
 struct PatchKeys {
     passkey: TestSigner,
     ed25519_raw: TestSigner,
@@ -137,18 +143,13 @@ async fn deploy_for_sequence(
         MigrationSequenceStart::From0_2_0 => {
             deploy_patched(
                 harness,
-                wasm::released(ArtifactId::UniversalAccount, "0.2.0"),
+                wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
                 WASM_0_2_0_STATE_PATCH,
             )
             .await
         }
         MigrationSequenceStart::From0_4_0 => {
-            deploy_patched(
-                harness,
-                wasm::released(ArtifactId::UniversalAccount, "0.4.0"),
-                WASM_0_4_0_STATE_PATCH,
-            )
-            .await
+            deploy_patched(harness, WASM_0_4_0, WASM_0_4_0_STATE_PATCH).await
         }
     }
 }
@@ -259,12 +260,7 @@ async fn migrate_accepts_legacy_direct_payload(
 ) -> Result<()> {
     // The legacy single-object (non-array) `migrate_args` shape must still be accepted. 0.4.0's
     // unbrick migration reaches the target version in one step, so a bare object completes it.
-    let ua = deploy_patched(
-        &harness,
-        wasm::released(ArtifactId::UniversalAccount, "0.4.0"),
-        WASM_0_4_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, WASM_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
     let network = &harness.network;
 
     migrate(
@@ -285,7 +281,7 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let passkey = patch_keys().passkey;
     let ua = deploy_patched(
         &harness,
-        wasm::released(ArtifactId::UniversalAccount, "0.2.0"),
+        wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
         WASM_0_2_0_STATE_PATCH,
     )
     .await?;
@@ -327,12 +323,7 @@ async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
 #[tokio::test]
 async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let expected_keys = patch_keys();
-    let ua = deploy_patched(
-        &harness,
-        wasm::released(ArtifactId::UniversalAccount, "0.4.0"),
-        WASM_0_4_0_STATE_PATCH,
-    )
-    .await?;
+    let ua = deploy_patched(&harness, WASM_0_4_0, WASM_0_4_0_STATE_PATCH).await?;
     let network = &harness.network;
     let ft = common::ft_id(&harness);
 
@@ -395,13 +386,8 @@ async fn from_0_4_0_unbrick_v1(#[future(awt)] harness: SandboxHarness) -> Result
 async fn from_0_4_0_with_stored_v1_migrates_via_v1(
     #[future(awt)] harness: SandboxHarness,
 ) -> Result<()> {
-    let ua = deploy_patched_with_version(
-        &harness,
-        wasm::released(ArtifactId::UniversalAccount, "0.4.0"),
-        WASM_0_4_0_STATE_PATCH,
-        Some(1),
-    )
-    .await?;
+    let ua =
+        deploy_patched_with_version(&harness, WASM_0_4_0, WASM_0_4_0_STATE_PATCH, Some(1)).await?;
     let network = &harness.network;
 
     assert_eq!(stored_state_version(network, &ua).await?, 1);

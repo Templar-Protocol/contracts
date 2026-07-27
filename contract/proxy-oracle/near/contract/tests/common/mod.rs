@@ -188,6 +188,7 @@ pub async fn deploy_from_patch(
             templar_gateway_testing::ArtifactId::ProxyOracle,
             "0.1.0",
         )
+        .await
         .to_vec(),
     )
     .await?;
