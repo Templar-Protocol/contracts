@@ -36,18 +36,15 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
-  release-plz-release:
-    name: Release
+  # The whole design leans on this PAT: a release PR opened with the default
+  # GITHUB_TOKEN cannot trigger test.yml or the tag workflows, so a release
+  # would ship past its gates. Fail loudly rather than degrade silently — once,
+  # for both jobs, so the guard cannot be fixed in one copy and not the other.
+  require-token:
+    name: Require RELEASE_PLZ_TOKEN
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # create tags and GitHub Releases
-      pull-requests: read
     steps:
-      # The whole design leans on this PAT: a release PR opened with the default
-      # GITHUB_TOKEN cannot trigger test.yml or the tag workflows, so a release
-      # would ship past its gates. Fail loudly rather than degrade silently.
-      - name: Require RELEASE_PLZ_TOKEN
-        env:
+      - env:
           TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
@@ -55,6 +52,14 @@ jobs:
             exit 1
           fi
 
+  release-plz-release:
+    name: Release
+    needs: require-token
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create tags and GitHub Releases
+      pull-requests: read
+    steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -78,6 +83,7 @@ jobs:
 
   release-plz-pr:
     name: Release PR
+    needs: require-token
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -89,18 +95,6 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      # The whole design leans on this PAT: a release PR opened with the default
-      # GITHUB_TOKEN cannot trigger test.yml or the tag workflows, so a release
-      # would ship past its gates. Fail loudly rather than degrade silently.
-      - name: Require RELEASE_PLZ_TOKEN
-        env:
-          TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::error::RELEASE_PLZ_TOKEN is required (a PAT so the release PR and tags trigger CI). See RELEASING.md." >&2
-            exit 1
-          fi
-
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:

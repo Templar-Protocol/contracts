@@ -192,8 +192,8 @@ pub fn spawn_artifact_build(
     artifact: &ArtifactMetadata,
 ) -> std::io::Result<std::process::Child> {
     let manifest_path = artifact.manifest_path();
-    // Prebuilt test artifacts land in `target/near` for the test suite, not the
-    // checked-in `res/near` release blobs, so a fast non-reproducible build is
+    // Prebuilt test artifacts land in `target/near` for the test suite; they are
+    // never published as releases, so a fast non-reproducible build is
     // sufficient here.
     let mut command = build_command(workspace_dir, manifest_path, false);
     configure_build_process_group(&mut command);
@@ -228,7 +228,7 @@ fn build_command(
     // Test artifacts (non-reproducible, `target/near`) are only deployed and
     // called by the suite, which never reads the embedded ABI. Skipping ABI
     // generation drops cargo-near's separate ABI build pass — ~35% of the
-    // prebuild's compile time. Release blobs (reproducible, `res/near`) keep it.
+    // prebuild's compile time. Reproducible release builds keep it.
     if !reproducible {
         command.arg("--no-abi");
     }

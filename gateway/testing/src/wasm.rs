@@ -7,11 +7,7 @@
 //! [`released`] is the other source: the exact bytes a *past* version shipped
 //! as, downloaded from that version's GitHub Release rather than built here.
 
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::{Mutex, OnceLock},
-};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use templar_contract_artifacts::{build_artifact, load_artifact_bytes, ArtifactId};
@@ -80,8 +76,10 @@ wasm_fns! {
 /// Downloaded from that version's GitHub Release into a shared on-disk cache
 /// and verified against the SHA-256 pinned in the catalog, so a swapped asset
 /// fails here rather than silently changing what a migration test deploys.
-/// Bytes are leaked once per version: the set is small, immutable, and lives
-/// for the whole test process anyway.
+///
+/// No in-process memo: `released_bytes` already caches on disk, nextest gives
+/// each test its own process, and every caller wants owned bytes to hand to a
+/// deploy anyway.
 ///
 /// A cold cache needs network. `just artifacts-fetch` warms it; CI does this
 /// before the sandbox tests so a network failure is one clear step rather than
@@ -91,32 +89,8 @@ wasm_fns! {
 /// If `version` is not a catalogued release of `artifact` (a test bug — the
 /// available versions are in `contract/artifacts/src/ids.rs`), or if the bytes
 /// can be neither found in the cache nor downloaded.
-pub async fn released(artifact: ArtifactId, version: &str) -> &'static [u8] {
-    type ReleaseCache = Mutex<HashMap<(ArtifactId, String), &'static [u8]>>;
-    static CACHE: OnceLock<ReleaseCache> = OnceLock::new();
-    let cache = CACHE.get_or_init(ReleaseCache::default);
-
-    let key = (artifact, version.to_owned());
-    if let Some(bytes) = cache.lock().expect("released() cache poisoned").get(&key) {
-        return bytes;
-    }
-
-    // Deliberately not holding the lock across the download: a duplicate fetch
-    // of a few hundred KB is cheaper than serialising every test that needs a
-    // different historical version.
-    let fetched = templar_contract_artifacts::fetch::released_bytes(artifact, version)
+pub async fn released(artifact: ArtifactId, version: &str) -> Vec<u8> {
+    templar_contract_artifacts::fetch::released_bytes(artifact, version)
         .await
         .unwrap_or_else(|error| panic!("could not load {artifact}@{version}: {error}"))
-        .into_boxed_slice();
-
-    // Re-check under the lock: a racing caller may have won while we downloaded.
-    // Leaking is permanent, so only the winner's buffer may be leaked — the
-    // loser's is simply dropped.
-    let mut cache = cache.lock().expect("released() cache poisoned");
-    if let Some(bytes) = cache.get(&key) {
-        return bytes;
-    }
-    let bytes: &'static [u8] = Box::leak(fetched);
-    cache.insert(key, bytes);
-    bytes
 }

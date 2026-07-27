@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Verify the contract artifact catalog is self-consistent:
-#   - the NEWEST catalogued release of each artifact matches its Cargo.toml
-#     version. Bumping a contract's version is a release claim, so a bump with
-#     no release entry fails here — in the developer's own PR, before merge.
+#   - no artifact claims a release for a version its crate never reached. The
+#     reverse — source ahead of the newest release — is normal: unreleased work
+#     is *meant* to run ahead, and a bump alone asserts nothing.
 #   - each artifact's release list is well-formed: no duplicate versions,
 #     64-char digests, and strictly increasing version numbers.
 #   - mocks have no releases.

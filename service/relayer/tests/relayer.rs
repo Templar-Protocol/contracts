@@ -982,9 +982,7 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
     common::deploy_code(
         &harness.network,
         &ua,
-        wasm::released(ArtifactId::UniversalAccount, "0.2.0")
-            .await
-            .to_vec(),
+        wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
     )
     .await
     .unwrap();

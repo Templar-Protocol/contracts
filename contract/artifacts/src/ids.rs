@@ -157,11 +157,8 @@ impl FromStr for ArtifactId {
 ///
 /// A release exists because the bytes were *deployed*, not because a version
 /// number was bumped: those diverge, and this catalog tracks the former. It is
-/// appended to by CI when a release tag is cut, never by hand.
-///
-/// Releases are immutable — cutting a new one *adds* an entry. Historical
-/// entries are what the migration and upgrade tests deploy, so rewriting one
-/// silently invalidates them.
+/// appended to by CI when a release tag is cut, never by hand — see the module
+/// docs for why immutability matters here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactRelease {
     /// Crate version this was released as.
@@ -214,22 +211,9 @@ impl ArtifactMetadata {
         self.current().map(|release| release.version)
     }
 
-    /// Pinned SHA-256 of the newest release; `None` if never released.
-    pub fn expected_sha256(&self) -> Option<&'static str> {
-        Some(self.current()?.sha256)
-    }
-
     /// Look up a specific released version.
     pub fn release(&self, version: &str) -> Option<&'static ArtifactRelease> {
         self.releases.iter().find(|r| r.version == version)
-    }
-
-    pub fn version_key(&self, wasm_bytes: &[u8]) -> Option<String> {
-        Some(crate::format_version_key(
-            self.package_name,
-            self.version()?,
-            wasm_bytes,
-        ))
     }
 }
 

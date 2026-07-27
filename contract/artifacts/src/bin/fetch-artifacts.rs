@@ -10,35 +10,26 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use templar_contract_artifacts::{fetch, ArtifactId};
+use templar_contract_artifacts::fetch;
 
 /// Manage the shared cache of released contract WASM.
 ///
 /// With no flags, downloads every pinned release in the catalog.
 #[derive(Debug, Parser)]
 struct Args {
-    /// Print `<tag> <asset> <target> <version>` for every pinned release and
-    /// exit. Lets release tooling enumerate the catalog instead of re-deriving
-    /// the tag and asset naming convention. Touches no network and no cache.
-    #[arg(long)]
-    print_assets: bool,
-
     /// Print the resolved cache directory and exit.
-    #[arg(long, conflicts_with = "print_assets")]
+    #[arg(long)]
     print_path: bool,
 
     /// Delete every cached artifact. Entries are immutable release assets, so
     /// the only cost is a re-download.
-    #[arg(long, conflicts_with_all = ["print_assets", "print_path"])]
+    #[arg(long, conflicts_with = "print_path")]
     clean: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
 
-    if args.print_assets {
-        return print_assets();
-    }
     if args.print_path {
         return print_path();
     }
@@ -70,22 +61,6 @@ fn prefetch() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn print_assets() -> ExitCode {
-    for artifact in ArtifactId::ALL {
-        let metadata = artifact.metadata();
-        for release in metadata.releases {
-            println!(
-                "{} {} {} {}",
-                fetch::release_tag(artifact, release.version),
-                fetch::asset_name(artifact, release.version),
-                metadata.cargo_target_name,
-                release.version,
-            );
-        }
-    }
-    ExitCode::SUCCESS
 }
 
 fn print_path() -> ExitCode {
@@ -160,7 +135,6 @@ mod tests {
         // the first argument, so `--clean --print-path` cleaned the cache.
         for argv in [
             vec!["fetch-artifacts", "--clean", "--print-path"],
-            vec!["fetch-artifacts", "--print-assets", "--clean"],
             vec!["fetch-artifacts", "--clean", "stray"],
             vec!["fetch-artifacts", "--unknown"],
         ] {
@@ -174,7 +148,7 @@ mod tests {
     #[test]
     fn no_arguments_means_prefetch() {
         let args = Args::try_parse_from(["fetch-artifacts"]).expect("no arguments is valid");
-        assert!(!args.print_assets && !args.print_path && !args.clean);
+        assert!(!args.print_path && !args.clean);
     }
 
     #[test]

@@ -115,10 +115,20 @@ fn no_release_is_ahead_of_its_source() {
                 artifact.package_name,
             )
         });
-        let source = package.version.to_string();
+        // `package.version` is already a `semver::Version`; parse the catalog
+        // side to match rather than stringifying a typed value and comparing
+        // both through the lossy `parts` fallback.
+        let source = &package.version;
+        let newest_semver =
+            cargo_metadata::semver::Version::parse(newest).unwrap_or_else(|error| {
+                panic!(
+                    "{} has a catalogued release {newest} that is not valid semver: {error}",
+                    artifact.package_name,
+                )
+            });
 
         assert!(
-            parts(newest) <= parts(&source),
+            newest_semver <= *source,
             "{} has a catalogued release {} but its Cargo.toml is only at {}. \
              A release cannot exist for a version the source never reached — \
              either the entry is wrong, or the version was reverted after \

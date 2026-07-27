@@ -51,7 +51,7 @@ Which crates get what is set per-package in `release-plz.toml`.
 |---|---|---|---|---|---|
 | **A — published** | the 17-crate closure external consumers import | ✅ | ✅ | ✅ | ⏸ *deferred* |
 | **B — tagged only** | contracts (NEAR and Soroban), `service/*`, `tools/*`, `client/vault` | ✅ | ✅ | ✅ | ❌ |
-| **C — internal** | `mock/*`, `fuzz`, `test-utils`, `contract/artifacts`, soroban integration-tests | ❌ | ❌ | ❌ | ❌ |
+| **C — internal** | `mock/*`, `fuzz`, `test-utils`, `gateway/testing`, `contract/artifacts`, soroban integration-tests | ❌ | ❌ | ❌ | ❌ |
 
 Tier B crates are real deliverables that ship somewhere other than a Rust build —
 a deployed service, an on-chain WASM blob, a CLI image. They get a citable

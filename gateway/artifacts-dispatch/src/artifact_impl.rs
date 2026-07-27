@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use templar_contract_artifacts::{fetch, format_version_key, sha256_hex, ArtifactId};
+use templar_contract_artifacts::{fetch, version_key_from_digest, ArtifactId};
 use templar_gateway_artifacts_spec::artifact::{
     AddArtifactVersion, ArtifactMetadata, GetArtifact, GetArtifactResult, ListArtifacts,
     ListArtifactsResult,
@@ -42,8 +42,11 @@ async fn load_artifact(artifact: ArtifactId) -> GatewayResult<LoadedArtifact> {
             other => GatewayError::ExternalService(other.to_string()),
         })?;
 
-    let sha256 = sha256_hex(&code);
-    let version_key = format_version_key(metadata.package_name, release.version, &code);
+    // `released_bytes` only returns bytes whose digest equals the pin, so the
+    // pin *is* this blob's SHA-256. Re-hashing 400 KB on every served request
+    // would compute a value we already have.
+    let sha256 = release.sha256.to_owned();
+    let version_key = version_key_from_digest(metadata.package_name, release.version, &sha256);
 
     Ok(LoadedArtifact {
         metadata,

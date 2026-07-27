@@ -73,17 +73,13 @@ fn patch_keys() -> PatchKeys {
 
 /// Deploy a legacy wasm, patch in its borsh state snapshot, then redeploy the
 /// current wasm on top — the same staging the `near-workspaces` tests used.
-async fn deploy_patched(
-    harness: &SandboxHarness,
-    wasm: &'static [u8],
-    patch: &[u8],
-) -> Result<AccountId> {
+async fn deploy_patched(harness: &SandboxHarness, wasm: &[u8], patch: &[u8]) -> Result<AccountId> {
     deploy_patched_with_version(harness, wasm, patch, None).await
 }
 
 async fn deploy_patched_with_version(
     harness: &SandboxHarness,
-    wasm: &'static [u8],
+    wasm: &[u8],
     patch: &[u8],
     version: Option<u32>,
 ) -> Result<AccountId> {
@@ -141,12 +137,8 @@ async fn deploy_for_sequence(
             deploy_current(harness, TestSigner::fixed_passkey([0x44_u8; 32]).id()).await
         }
         MigrationSequenceStart::From0_2_0 => {
-            deploy_patched(
-                harness,
-                wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
-                WASM_0_2_0_STATE_PATCH,
-            )
-            .await
+            let wasm_0_2_0 = wasm::released(ArtifactId::UniversalAccount, "0.2.0").await;
+            deploy_patched(harness, &wasm_0_2_0, WASM_0_2_0_STATE_PATCH).await
         }
         MigrationSequenceStart::From0_4_0 => {
             deploy_patched(harness, WASM_0_4_0, WASM_0_4_0_STATE_PATCH).await
@@ -279,12 +271,8 @@ async fn migrate_accepts_legacy_direct_payload(
 #[tokio::test]
 async fn from_0_2_0(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let passkey = patch_keys().passkey;
-    let ua = deploy_patched(
-        &harness,
-        wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
-        WASM_0_2_0_STATE_PATCH,
-    )
-    .await?;
+    let wasm_0_2_0 = wasm::released(ArtifactId::UniversalAccount, "0.2.0").await;
+    let ua = deploy_patched(&harness, &wasm_0_2_0, WASM_0_2_0_STATE_PATCH).await?;
     let network = &harness.network;
 
     assert_eq!(stored_state_version(network, &ua).await?, 0);

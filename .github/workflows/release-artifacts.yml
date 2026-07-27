@@ -117,7 +117,7 @@ jobs:
 
       - name: Install cargo-near
         if: steps.catalog.outputs.build == 'true'
-        uses: taiki-e/install-action@6af0d6c4a3ce4ba036c2b1234f2b8ee15ee08cae
+        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
           tool: cargo-near
 
@@ -181,7 +181,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch" origin/dev
 
-          cargo run --quiet -p templar-contract-artifacts --bin record-release -- \
+          # Same feature set as the catalog lookup above: a different one is a
+          # different compilation unit, and this job has no rust-cache, so it
+          # would recompile the crate from cold rather than relink.
+          cargo run --quiet -p templar-contract-artifacts \
+            --features workspace-loader,clap --bin record-release -- \
             "$PACKAGE" "$VERSION" "$SHA256"
           cargo fmt -p templar-contract-artifacts
 

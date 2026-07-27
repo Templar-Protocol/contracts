@@ -48,9 +48,8 @@ those tests.
 
 Each entry in `ArtifactId::metadata().releases` (oldest first) records a version
 and the SHA-256 of its bytes. `ArtifactMetadata::current()` is the newest
-release — what the gateway deploys, and what `version()` / `expected_sha256()` /
-`version_key()` refer to. It is `None` for an artifact that has never shipped:
-mocks, and (today) the NEAR vault.
+release — what the gateway deploys, and what `version()` refers to. It is `None`
+for an artifact that has never shipped: mocks, and (today) the NEAR vault.
 
 **A release means the bytes were deployed, not that a version was bumped.**
 Those diverge, routinely — market's crate version reached 1.4.0 while 1.3.0 was
@@ -111,7 +110,7 @@ there is no reviewed hash to check it against.
 
 `./script/prebuild-test-contracts.sh` builds contracts into Cargo's
 `target/near/` for the **test suite** (via `TEST_CONTRACTS_PREBUILT=1`). It uses
-fast, non-reproducible `cargo near build` and never touches `res/near/`.
+fast, non-reproducible `cargo near build`; these artifacts are never released.
 
 Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control build concurrency. Set
 `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass `--timeout-secs <n>` to

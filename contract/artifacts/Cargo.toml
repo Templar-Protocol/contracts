@@ -46,6 +46,7 @@ required-features = ["fetch", "clap"]
 [[bin]]
 name = "record-release"
 path = "src/bin/record-release.rs"
+required-features = ["clap"]
 
 [lints]
 workspace = true

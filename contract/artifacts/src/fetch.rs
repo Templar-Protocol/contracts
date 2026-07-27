@@ -52,7 +52,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
     time::Duration,
 };
 
@@ -132,6 +135,9 @@ pub enum FetchError {
 
     #[error("a prefetch task failed to complete: {0}")]
     Join(String),
+
+    #[error("could not build the HTTP client: {0}")]
+    Client(String),
 }
 
 /// Root of the shared artifact cache.
@@ -173,8 +179,8 @@ pub fn asset_url(artifact: ArtifactId, version: &str) -> String {
 }
 
 /// The asset filename carried by a release: matches what `release-artifacts.yml`
-/// uploads. Release tooling reads this rather than re-deriving the convention.
-pub fn asset_name(artifact: ArtifactId, version: &str) -> String {
+/// uploads.
+fn asset_name(artifact: ArtifactId, version: &str) -> String {
     format!("{}-{version}.wasm", artifact.metadata().cargo_target_name)
 }
 
@@ -390,6 +396,22 @@ async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
     })
 }
 
+/// One client for the process: a prefetch pulls 17 assets from a single host, so
+/// building one per attempt would mean 17 TLS handshakes and 17 connection pools
+/// where keep-alive gets it down to the concurrency cap.
+fn client() -> Result<&'static reqwest::Client, FetchError> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| FetchError::Client(error.clone()))
+}
+
 async fn try_download(url: &str) -> Result<Vec<u8>, FetchError> {
     let transport = |source| FetchError::Download {
         url: url.to_owned(),
@@ -397,14 +419,7 @@ async fn try_download(url: &str) -> Result<Vec<u8>, FetchError> {
         source,
     };
 
-    let response = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(transport)?
-        .get(url)
-        .send()
-        .await
-        .map_err(transport)?;
+    let response = client()?.get(url).send().await.map_err(transport)?;
 
     let status = response.status();
     if !status.is_success() {

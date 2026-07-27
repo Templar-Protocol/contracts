@@ -60,7 +60,15 @@ pub enum ArtifactError {
 ///
 /// This matches the format produced by `templar-tools-common::build`.
 pub fn format_version_key(name: &str, version: &str, wasm_bytes: &[u8]) -> String {
-    format!("{name}@{version}#{}", sha256_hex(wasm_bytes))
+    version_key_from_digest(name, version, &sha256_hex(wasm_bytes))
+}
+
+/// The same key when the digest is already known.
+///
+/// A released artifact's catalog pin *is* its digest, so callers holding
+/// verified bytes would only be rediscovering a value they already have.
+pub fn version_key_from_digest(name: &str, version: &str, sha256_hex: &str) -> String {
+    format!("{name}@{version}#{sha256_hex}")
 }
 
 /// Compute the SHA-256 hex digest of a WASM blob.

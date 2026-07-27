@@ -49,6 +49,10 @@ name = "test-utils"
 release = false
 
 [[package]]
+name = "templar-gateway-testing"
+release = false
+
+[[package]]
 name = "templar-proxy-oracle-soroban-integration-tests"
 release = false
 

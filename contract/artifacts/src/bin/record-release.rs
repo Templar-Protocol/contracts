@@ -16,10 +16,24 @@
 
 use std::process::ExitCode;
 
+use clap::Parser;
 use templar_contract_artifacts::ArtifactId;
 
+/// Append a release to the artifact catalog.
+#[derive(Debug, Parser)]
+struct Args {
+    /// Catalogued artifact the release belongs to.
+    artifact: ArtifactId,
+
+    /// Version released, as it appears in the release tag.
+    version: String,
+
+    /// SHA-256 of the released bytes, as 64 hex characters.
+    sha256: String,
+}
+
 fn main() -> ExitCode {
-    match run(std::env::args().skip(1)) {
+    match record(&Args::parse()) {
         Ok(message) => {
             println!("{message}");
             ExitCode::SUCCESS
@@ -31,11 +45,12 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(args: impl IntoIterator<Item = impl Into<String>>) -> Result<String, String> {
-    let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    let [artifact, version, sha] = args.as_slice() else {
-        return Err("usage: record-release <artifact> <version> <sha256>".to_owned());
-    };
+fn record(args: &Args) -> Result<String, String> {
+    let Args {
+        artifact,
+        version,
+        sha256: sha,
+    } = args;
 
     if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("{sha} is not a 64-char hex SHA-256"));
@@ -56,9 +71,6 @@ fn run(args: impl IntoIterator<Item = impl Into<String>>) -> Result<String, Stri
         ));
     }
 
-    let artifact = artifact
-        .parse::<ArtifactId>()
-        .map_err(|error| error.to_string())?;
     let metadata = artifact.metadata();
 
     // Releases are immutable, so re-recording one is either a no-op replay of
@@ -200,8 +212,10 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
         // `version` reaches `append` as a string literal's contents, so a quote
         // would close it and splice arbitrary Rust into ids.rs.
         for version in ["", "1.0.0\", evil!(\"", "1.0.0\\", "1.0.0 "] {
-            let error = run(["proxy-oracle", version, &"a".repeat(64)])
-                .expect_err("should be rejected before touching ids.rs");
+            let args =
+                Args::try_parse_from(["record-release", "proxy-oracle", version, &"a".repeat(64)])
+                    .expect("clap takes the version as an opaque string");
+            let error = record(&args).expect_err("should be rejected before touching ids.rs");
             assert!(
                 error.contains("not a version string"),
                 "{version:?}: {error}"
