@@ -211,7 +211,6 @@ mod compat {
 
 /// Coarse operation classification carried on governance events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[near(serializers = [json, borsh])]
 pub enum OperationKind {
     SetPolicy,
@@ -265,17 +264,24 @@ impl Operation {
 ///
 /// A policy arriving from outside — contract init args, `--policy-file` — is parsed from
 /// [`GovernancePolicyWire`] rather than deserialized directly, so a value of this type is already
-/// within bounds and needs no separate validation step. Init is otherwise the one path that writes a
-/// whole policy without the mutators, and an out-of-range one bricks governance: `create_proposal`
-/// rejects any effective TTL above [`MAX_PROPOSAL_TTL`], so a `set_policy` lock seeded above it makes
-/// every policy-repair proposal unopenable.
+/// within bounds and needs no separate validation step. That matters because an out-of-range policy
+/// bricks governance rather than merely being wrong: `create_proposal` rejects any effective TTL above
+/// [`MAX_PROPOSAL_TTL`], so a `set_policy` lock seeded above it makes every policy-repair proposal
+/// unopenable.
+///
+/// The fields are private so that parsing is the only way in from outside this crate: a
+/// `GovernancePolicy` in hand always satisfies the invariants, and the code that trusts them
+/// ([`Self::resolve`], the TTL/role checks) cannot be handed a struct literal that skips the checks.
+/// The two in-crate paths that build one whole — [`Self::uniform`] and
+/// [`LegacyTtlConfig::into_policy`] (the v0 migration) — satisfy the invariants by construction
+/// instead; see the latter for why the migration is not routed through the wire form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 #[serde(try_from = "GovernancePolicyWire")]
 pub struct GovernancePolicy {
-    pub reflexive_ttls: ReflexiveTtls,
-    pub default_target: MethodPolicy,
-    pub method_policies: BTreeMap<String, MethodPolicy>,
+    reflexive_ttls: ReflexiveTtls,
+    default_target: MethodPolicy,
+    method_policies: BTreeMap<String, MethodPolicy>,
 }
 
 /// The wire form of [`GovernancePolicy`]: the same fields carrying no invariants. Every policy
@@ -364,6 +370,21 @@ impl GovernancePolicy {
             },
             method_policies: BTreeMap::new(),
         }
+    }
+
+    #[must_use]
+    pub fn reflexive_ttls(&self) -> ReflexiveTtls {
+        self.reflexive_ttls
+    }
+
+    #[must_use]
+    pub fn default_target(&self) -> MethodPolicy {
+        self.default_target
+    }
+
+    #[must_use]
+    pub fn method_policies(&self) -> &BTreeMap<String, MethodPolicy> {
+        &self.method_policies
     }
 
     /// The policy governing `method`: its override if listed, otherwise [`Self::default_target`].

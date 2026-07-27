@@ -9,8 +9,9 @@ use near_sdk::{
 use near_sdk_contract_tools::rbac::Rbac;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicy, LegacyOperation, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation,
-    ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE, MAX_PROPOSAL_TTL,
+    GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy, Operation,
+    ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
+    MAX_PROPOSAL_TTL,
 };
 
 use crate::{Contract, ProxyGovernanceInterface};
@@ -40,7 +41,7 @@ fn default_policy() -> GovernancePolicy {
     ] {
         method_policies.insert(method.to_owned(), MethodPolicy { ttl, role });
     }
-    GovernancePolicy {
+    GovernancePolicyWire {
         reflexive_ttls: ReflexiveTtls {
             set_policy: Nanoseconds::from_secs(48 * 60 * 60),
             set_role: DAY,
@@ -52,6 +53,8 @@ fn default_policy() -> GovernancePolicy {
         },
         method_policies,
     }
+    .try_into()
+    .expect("default test policy is within bounds")
 }
 
 fn contract() -> Contract {
@@ -185,7 +188,7 @@ fn get_governance_policy_returns_configured_policy() {
     let policy = contract.get_governance_policy();
     assert_eq!(policy.resolve("admin_set_proxy").ttl, DAY);
     assert_eq!(policy.resolve("admin_rearm").ttl, Nanoseconds::zero());
-    assert_eq!(policy.reflexive_ttls.set_role, DAY);
+    assert_eq!(policy.reflexive_ttls().set_role, DAY);
     // an unlisted method resolves to the conservative default.
     assert_eq!(policy.resolve("admin_unknown").role, Role::Admin);
 }

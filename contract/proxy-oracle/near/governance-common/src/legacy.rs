@@ -129,6 +129,11 @@ impl LegacyTtlConfig {
     /// * `method_policies` seed each `admin_*` method with its old TTL and natural role.
     /// * `reflexive_ttls` carry over from the reflexive fields; `self_upgrade` defaults to
     ///   `admin_upgrade` (the v0 table had no independent self-upgrade lock).
+    ///
+    /// Built directly rather than parsed through [`crate::GovernancePolicyWire`]: the ceiling and
+    /// count invariants hold by construction here, and the one input this cannot bound — a v0 TTL
+    /// above [`crate::MAX_PROPOSAL_TTL`] — is better left alone than rejected (failing an upgrade against
+    /// state the operator cannot edit first) or clamped (silently shortening a live timelock).
     #[must_use]
     pub fn into_policy(self) -> GovernancePolicy {
         let default_ttl = [

@@ -3,7 +3,7 @@ use super::*;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
 use templar_proxy_oracle_near_governance_common::{
-    LegacyOperation, LegacyOperationKind, Operation,
+    target, MethodPolicy, Operation, ReflexiveOperation, Role,
 };
 
 #[tokio::test]
@@ -69,11 +69,10 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 1,
-                operation: Operation::try_from(LegacyOperation::SetProxy {
-                    id: price_id,
-                    proxy: Some(proxy.clone()),
-                })
-                .expect("build set-proxy operation"),
+                operation: Operation::TargetFunctionCall(
+                    target::admin_set_proxy(price_id, Some(proxy.clone()), None)
+                        .expect("build set-proxy call"),
+                ),
                 requested_ttl: Nanoseconds::zero(),
             },
         })
@@ -139,11 +138,13 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             body: proxy_oracle_governance::CreateProposal {
                 governance_id: governance_id.clone(),
                 id: 2,
-                operation: Operation::try_from(LegacyOperation::SetActionTtl {
-                    kind: LegacyOperationKind::SetProxy,
-                    new_ttl: Nanoseconds::from_secs(1),
-                })
-                .expect("build set-action-ttl operation"),
+                operation: Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+                    method: "admin_set_proxy".to_owned(),
+                    policy: Some(MethodPolicy {
+                        ttl: Nanoseconds::from_secs(1),
+                        role: Role::ProxyConfigurationManager,
+                    }),
+                }),
                 requested_ttl: Nanoseconds::zero(),
             },
         })

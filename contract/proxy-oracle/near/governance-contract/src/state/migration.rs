@@ -194,14 +194,14 @@ mod tests {
         // default_target = max target ttl (42s, Admin); reflexive carried over; self_upgrade
         // defaults to admin_upgrade's lock.
         let policy = &new.header.ttls;
-        assert_eq!(policy.default_target.ttl, Nanoseconds::from_secs(42));
-        assert_eq!(policy.default_target.role, Role::Admin);
+        assert_eq!(policy.default_target().ttl, Nanoseconds::from_secs(42));
+        assert_eq!(policy.default_target().role, Role::Admin);
         assert_eq!(
             policy.resolve("admin_set_proxy").ttl,
             Nanoseconds::from_secs(1)
         );
         assert_eq!(
-            policy.reflexive_ttls.self_upgrade,
+            policy.reflexive_ttls().self_upgrade,
             Nanoseconds::from_secs(42)
         );
 

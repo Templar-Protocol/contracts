@@ -31,7 +31,7 @@ use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
 };
-use templar_proxy_oracle_near_governance_common::{GovernancePolicy, LegacyOperation, Operation};
+use templar_proxy_oracle_near_governance_common::{FunctionCall, GovernancePolicy, Operation};
 use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
@@ -843,14 +843,12 @@ impl SandboxHarness {
         proposal_id: u32,
         method_name: &str,
     ) -> Result<()> {
-        let operation: Operation = LegacyOperation::AdminFunctionCall {
+        let operation = Operation::TargetFunctionCall(FunctionCall {
             method_name: method_name.to_string(),
             args: near_sdk::json_types::Base64VecU8(b"{}".to_vec()),
             attached_deposit: near_sdk::json_types::U128(1),
             gas: near_sdk::Gas::from_tgas(50),
-        }
-        .try_into()
-        .expect("build admin function call operation");
+        });
 
         self.call_contract(
             governance_id,
