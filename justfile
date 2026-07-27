@@ -156,7 +156,7 @@ docs:
 # Warm the shared cache of released contract WASM.
 #
 # Downloads every pinned release from its GitHub Release and verifies it against
-# the SHA-256 in contract/artifacts/src/ids.rs. Migration and upgrade tests
+# the SHA-256 in contract/artifacts/releases.tsv. Migration and upgrade tests
 # deploy these bytes, so they need the cache warm (or network access).
 #
 # The cache lives outside the repository — ~/.cache/templar-contract-artifacts by

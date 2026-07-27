@@ -87,7 +87,7 @@ wasm_fns! {
 ///
 /// # Panics
 /// If `version` is not a catalogued release of `artifact` (a test bug — the
-/// available versions are in `contract/artifacts/src/ids.rs`), or if the bytes
+/// available versions are in `contract/artifacts/releases.tsv`), or if the bytes
 /// can be neither found in the cache nor downloaded.
 pub async fn released(artifact: ArtifactId, version: &str) -> Vec<u8> {
     templar_contract_artifacts::fetch::released_bytes(artifact, version)

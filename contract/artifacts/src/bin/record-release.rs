@@ -1,8 +1,8 @@
-//! Append a release to the artifact catalog.
+//! Append a release to `contract/artifacts/releases.tsv`.
 //!
 //! Run by `.github/workflows/release-artifacts.yml` after it has built and
 //! uploaded a release's WASM, against the hash of the bytes it just built. The
-//! resulting diff goes up as a PR for a human to merge.
+//! resulting one-line diff goes up as a PR for a human to merge.
 //!
 //! Nobody edits the release list by hand. The catalog records what was
 //! *deployed*, and deployment is not something a `Cargo.toml` bump can assert:
@@ -10,11 +10,16 @@
 //! shipped. Letting CI append after the fact is what keeps the catalog honest —
 //! and it means there is no step for a developer to forget.
 //!
+//! Every field is *observed*, not derived: the tag and asset name objects that
+//! already exist on GitHub, and the digest is of bytes already built.
+//!
 //! ```bash
-//! cargo run -p templar-contract-artifacts --bin record-release -- proxy-oracle 0.4.0 <sha256>
+//! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
+//!   proxy-oracle 0.4.0 templar-proxy-oracle-near-contract-v0.4.0 \
+//!   templar_proxy_oracle_near_contract-0.4.0.wasm <sha256>
 //! ```
 
-use std::process::ExitCode;
+use std::{fmt::Write as _, process::ExitCode};
 
 use clap::Parser;
 use templar_contract_artifacts::ArtifactId;
@@ -25,12 +30,21 @@ struct Args {
     /// Catalogued artifact the release belongs to.
     artifact: ArtifactId,
 
-    /// Version released, as it appears in the release tag.
+    /// Version released, as the crate's Cargo.toml states it.
     version: String,
+
+    /// Git tag carrying the release, verbatim.
+    tag: String,
+
+    /// Filename of the WASM asset uploaded to that release.
+    asset: String,
 
     /// SHA-256 of the released bytes, as 64 hex characters.
     sha256: String,
 }
+
+/// Relative to this crate's manifest directory.
+const RELEASES: &str = "releases.tsv";
 
 fn main() -> ExitCode {
     match record(&Args::parse()) {
@@ -49,6 +63,8 @@ fn record(args: &Args) -> Result<String, String> {
     let Args {
         artifact,
         version,
+        tag,
+        asset,
         sha256: sha,
     } = args;
 
@@ -57,25 +73,20 @@ fn record(args: &Args) -> Result<String, String> {
     }
     let sha = sha.to_ascii_lowercase();
 
-    // `version` is spliced verbatim into a string literal in generated Rust
-    // source. CI derives it from a release tag, but this binary is documented
-    // as hand-runnable, so a quote or backslash must not reach `append`.
-    if version.is_empty()
-        || !version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
-    {
-        return Err(format!(
-            "{version} is not a version string: expected only alphanumerics, \
-             `.`, `-` and `+`"
-        ));
+    // A tab would split one field into two and silently shift every column
+    // after it. Nothing else about these values needs policing: they land in a
+    // data file, not in generated source.
+    for (name, value) in [("version", version), ("tag", tag), ("asset", asset)] {
+        if value.is_empty() || value.contains('\t') || value.contains('\n') {
+            return Err(format!(
+                "{name} `{value}` is empty or contains a tab/newline"
+            ));
+        }
     }
-
-    let metadata = artifact.metadata();
 
     // Releases are immutable, so re-recording one is either a no-op replay of
     // the same job or a genuine conflict. Never a rewrite.
-    if let Some(existing) = metadata.release(version) {
+    if let Some(existing) = artifact.metadata().release(version) {
         return if existing.sha256 == sha {
             Ok(format!("{artifact}@{version} is already recorded as {sha}"))
         } else {
@@ -87,139 +98,79 @@ fn record(args: &Args) -> Result<String, String> {
         };
     }
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ids.rs");
-    let source = std::fs::read_to_string(&path).map_err(|error| format!("{path:?}: {error}"))?;
-    let patched = append(&source, metadata.package_name, version, &sha)?;
-    std::fs::write(&path, patched).map_err(|error| format!("{path:?}: {error}"))?;
-
-    Ok(format!("recorded {artifact}@{version} as {sha}"))
-}
-
-/// Marks the start of the catalog. Package names also appear above it, in the
-/// `clap` value aliases on `ArtifactId`, so the search has to start here or the
-/// uniqueness check below never holds.
-const CATALOG_MARKER: &str = "macro_rules! entry {";
-
-/// Append `("<version>", "<sha>"),` to one artifact's release list.
-///
-/// Scoped to the artifact's own catalog block, located by its package name —
-/// unique within the catalog — so artifacts sharing a version number cannot be
-/// confused. A surprising shape fails loudly rather than corrupting the
-/// catalog; `cargo fmt` tidies the result afterwards.
-fn append(source: &str, package_name: &str, version: &str, sha: &str) -> Result<String, String> {
-    let catalog_at = source
-        .find(CATALOG_MARKER)
-        .ok_or_else(|| format!("ids.rs has no `{CATALOG_MARKER}`; catalog layout changed"))?;
-    let catalog = &source[catalog_at..];
-
-    let package_literal = format!("\"{package_name}\"");
-    let block_start = find_unique(catalog, &package_literal)
-        .map(|offset| catalog_at + offset)
-        .ok_or_else(|| {
-            format!("{package_literal} does not appear exactly once in the ids.rs catalog")
-        })?;
-    let block_end = source[block_start..]
-        .find(");")
-        .map(|offset| block_start + offset)
-        .ok_or_else(|| format!("no end of catalog block for {package_name}"))?;
-
-    // The release list is the last `]` inside the entry! invocation.
-    let close = source[block_start..block_end]
-        .rfind(']')
-        .map(|offset| block_start + offset)
-        .ok_or_else(|| format!("no release list in the {package_name} block"))?;
-
-    let mut patched = String::with_capacity(source.len() + sha.len() + 32);
-    patched.push_str(&source[..close]);
-    patched.push_str("(\"");
-    patched.push_str(version);
-    patched.push_str("\", \"");
-    patched.push_str(sha);
-    patched.push_str("\"),");
-    patched.push_str(&source[close..]);
-    Ok(patched)
-}
-
-fn find_unique(haystack: &str, needle: &str) -> Option<usize> {
-    let first = haystack.find(needle)?;
-    if haystack[first + needle.len()..].contains(needle) {
-        return None;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(RELEASES);
+    let mut table = std::fs::read_to_string(&path).map_err(|e| format!("{path:?}: {e}"))?;
+    if !table.ends_with('\n') {
+        table.push('\n');
     }
-    Some(first)
+    writeln!(table, "{artifact}\t{version}\t{tag}\t{asset}\t{sha}")
+        .map_err(|e| format!("building the release row: {e}"))?;
+    std::fs::write(&path, table).map_err(|e| format!("{path:?}: {e}"))?;
+
+    Ok(format!("recorded {artifact}@{version} as {sha} ({tag})"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Mirrors the real file closely enough to matter: the `clap` alias above
-    /// the catalog repeats the package name, which is what makes a whole-file
-    /// uniqueness check wrong.
-    const SOURCE: &str = r#"
-pub enum ArtifactId {
-    #[cfg_attr(feature = "clap", value(alias = "templar-proxy-oracle-near-contract"))]
-    ProxyOracle,
-}
-
-macro_rules! entry {
-    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr)),* $(,)?]) => {};
-}
-
-static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
-    ProxyOracle,
-    "templar-proxy-oracle-near-contract",
-    "templar_proxy_oracle_near_contract",
-    "contract/proxy-oracle/near/contract",
-    [("0.3.0", "aa"),]
-);
-static VAULT_METADATA: ArtifactMetadata = entry!(
-    Vault,
-    "templar-vault-contract",
-    "templar_vault_contract",
-    "contract/vault/near",
-    []
-);
-"#;
-
-    #[test]
-    fn appends_to_the_named_artifacts_release_list() {
-        let patched = append(SOURCE, "templar-proxy-oracle-near-contract", "0.4.0", "ff").unwrap();
-        assert!(
-            patched.contains(r#"[("0.3.0", "aa"),("0.4.0", "ff"),]"#),
-            "{patched}"
-        );
-        // The other artifact must be untouched.
-        assert!(patched.contains("\"contract/vault/near\",\n    []"));
+    fn args(version: &str, tag: &str, asset: &str) -> Args {
+        Args::try_parse_from([
+            "record-release",
+            "proxy-oracle",
+            version,
+            tag,
+            asset,
+            &"a".repeat(64),
+        ])
+        .expect("clap takes these as opaque strings")
     }
 
     #[test]
-    fn seeds_an_empty_release_list() {
-        let patched = append(SOURCE, "templar-vault-contract", "1.0.0", "ff").unwrap();
-        assert!(patched.contains(r#"[("1.0.0", "ff"),]"#), "{patched}");
-        // proxy-oracle keeps exactly its one release.
-        assert!(patched.contains(r#"[("0.3.0", "aa"),]"#));
-    }
-
-    #[test]
-    fn refuses_an_unknown_package() {
-        let error =
-            append(SOURCE, "templar-nope-contract", "1.0.0", "ff").expect_err("not in the catalog");
-        assert!(error.contains("exactly once"), "{error}");
-    }
-
-    #[test]
-    fn a_version_cannot_smuggle_source_into_the_catalog() {
-        // `version` reaches `append` as a string literal's contents, so a quote
-        // would close it and splice arbitrary Rust into ids.rs.
-        for version in ["", "1.0.0\", evil!(\"", "1.0.0\\", "1.0.0 "] {
-            let args =
-                Args::try_parse_from(["record-release", "proxy-oracle", version, &"a".repeat(64)])
-                    .expect("clap takes the version as an opaque string");
-            let error = record(&args).expect_err("should be rejected before touching ids.rs");
+    fn a_field_cannot_break_the_column_layout() {
+        for (label, version, tag, asset) in [
+            ("tab in version", "1.0.0\tevil", "t", "a.wasm"),
+            ("newline in tag", "1.0.0", "t\nevil", "a.wasm"),
+            ("empty asset", "1.0.0", "t", ""),
+        ] {
+            let error = record(&args(version, tag, asset))
+                .expect_err("should be rejected before touching releases.tsv");
             assert!(
-                error.contains("not a version string"),
-                "{version:?}: {error}"
+                error.contains("empty or contains a tab/newline"),
+                "{label}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn a_bad_digest_is_rejected() {
+        let mut bad = args("1.0.0", "t", "a.wasm");
+        bad.sha256 = "not-a-digest".to_owned();
+        let error = record(&bad).expect_err("should be rejected");
+        assert!(error.contains("64-char hex"), "{error}");
+    }
+
+    #[test]
+    fn replaying_an_identical_release_is_a_no_op() {
+        let release = ArtifactId::ProxyOracle
+            .metadata()
+            .release("0.3.0")
+            .expect("0.3.0 is catalogued");
+        let mut replay = args("0.3.0", release.tag, release.asset);
+        replay.sha256 = release.sha256.to_owned();
+
+        let message = record(&replay).expect("a replay is not an error");
+        assert!(message.contains("already recorded"), "{message}");
+    }
+
+    #[test]
+    fn recording_different_bytes_for_a_recorded_version_is_refused() {
+        let release = ArtifactId::ProxyOracle
+            .metadata()
+            .release("0.3.0")
+            .expect("0.3.0 is catalogued");
+        let error = record(&args("0.3.0", release.tag, release.asset))
+            .expect_err("released bytes are immutable");
+        assert!(error.contains("refusing to rewrite"), "{error}");
     }
 }

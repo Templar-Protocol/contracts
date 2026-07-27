@@ -65,20 +65,39 @@ pub fn main() -> ExitCode {
     let artifacts = selected_artifacts(&args.artifacts);
 
     if let Some(tag) = &args.resolve {
-        // Purely a catalog lookup: no `cargo metadata`, because the version is
-        // in the tag. The tag is parsed by `artifact_from_release_tag`, the
-        // tested inverse of the function that builds it, rather than by pulling
-        // the string apart in shell.
-        let Some((artifact, version)) = crate::artifact_from_release_tag(tag) else {
+        let Some(artifact) = crate::artifact_from_release_tag(tag) else {
             eprintln!("{tag} names no catalogued NEAR artifact");
             return ExitCode::from(EXIT_NOT_CATALOGUED);
         };
         let metadata = artifact.metadata();
+
+        // The version comes from the crate's own Cargo.toml at this tag, which
+        // release-plz set immediately before creating the tag. That makes it
+        // observed rather than guessed — splitting it back out of the tag string
+        // would only re-derive what the manifest already states.
+        let version = match workspace_loader::get_metadata(&args.workspace_root).map(|workspace| {
+            workspace_loader::find_package(&workspace, metadata.package_name)
+                .map(|package| package.version.to_string())
+        }) {
+            Ok(Some(version)) => version,
+            Ok(None) => {
+                eprintln!("{} is not in the workspace", metadata.package_name);
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("failed to read cargo metadata: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+
         println!("package={}", metadata.package_name);
         println!("version={version}");
         println!("source_path={}", metadata.source_path);
         println!("target={}", metadata.cargo_target_name);
-        println!("asset={}", crate::asset_name(artifact, version));
+        // The one place a new release's asset gets its name. Existing releases
+        // do not consult this: theirs is recorded in `releases.tsv`.
+        println!("asset={}-{version}.wasm", metadata.cargo_target_name);
+        println!("tag={tag}");
         return ExitCode::SUCCESS;
     }
 

@@ -28,17 +28,18 @@ Templar Protocol smart contracts.
 Default features do **not** embed WASM bytes or depend on heavy build
 tooling. Consumers opt into the byte source they need.
 
-## Why no `build.rs`
+## What the build script does — and does not
 
-This crate deliberately does **not** compile contracts in a build script.
-Contract compilation is performed by `./script/prebuild-test-contracts.sh`
-or by `cargo near build`. The crate only *reads* the resulting artifacts.
+`build.rs` compiles `releases.tsv` into the release lists and validates every
+row, so a malformed record fails the build rather than a download. It does
+**not** compile contracts: that is `./script/prebuild-test-contracts.sh` or
+`cargo near build`. This crate only *reads* the resulting artifacts.
 
 ## Versioned releases
 
 Released bytes are **GitHub Release assets, not repository content**. Each
-release's tag (`{package}-v{version}`) carries one asset,
-`{cargo_target_name}-{version}.wasm`.
+release records the tag that carries it and the asset on that tag, in
+[`releases.tsv`](releases.tsv) — one row per release, appended by CI.
 
 Releases are **immutable**: cutting a new one *adds* a catalog entry and never
 rewrites an existing one. Historical bytes are what the migration and upgrade
@@ -46,10 +47,16 @@ tests deploy — `contract/universal-account/tests/migration.rs` upgrades from t
 exact `0.2.0` binary that ran on mainnet — so rewriting one silently invalidates
 those tests.
 
-Each entry in `ArtifactId::metadata().releases` (oldest first) records a version
-and the SHA-256 of its bytes. `ArtifactMetadata::current()` is the newest
-release — what the gateway deploys, and what `version()` refers to. It is `None`
-for an artifact that has never shipped: mocks, and (today) the NEAR vault.
+`ArtifactMetadata::releases()` returns them oldest first;
+`ArtifactMetadata::current()` is the newest — what the gateway deploys, and what
+`version()` refers to. It is `None` for an artifact that has never shipped:
+mocks, and (today) the NEAR vault.
+
+The tag and asset are **recorded, not derived**. They name objects that already
+exist on GitHub, and this repo has used three tag schemes over its life, so
+reconstructing them from a template would assume a uniformity that has never
+held. Changing release-plz's `git_tag_name` governs the *next* tag and cannot
+strand the ones already cut.
 
 **A release means the bytes were deployed, not that a version was bumped.**
 Those diverge, routinely — market's crate version reached 1.4.0 while 1.3.0 was
@@ -90,7 +97,7 @@ the root only if that leaves it empty, so a misaimed `TEMPLAR_ARTIFACT_CACHE`
 cannot take unrelated files with it.
 
 Sharing one cache across worktrees is safe because entries are verified against
-the in-repo pin on **every read**, not just on download. A branch whose `ids.rs`
+the in-repo pin on **every read**, not just on download. A branch whose catalog
 disagrees with a cached entry discards it and re-downloads — or, under
 `TEMPLAR_ARTIFACT_OFFLINE=1`, fails. Either way the cache can never serve bytes
 the current checkout did not ask for.
@@ -127,7 +134,7 @@ artifacts are missing from `target/near` and exit non-zero without building.
 
 **There is nothing to do by hand.** Merging the release PR tags the version;
 `.github/workflows/release-artifacts.yml` then builds the WASM reproducibly at
-that tag, uploads it, and opens a PR appending the release to `ids.rs`. Until
+that tag, uploads it, and opens a PR appending one row to `releases.tsv`. Until
 that PR merges, `fetch` will not serve the version — an unrecorded release has
 no reviewed hash to check downloaded bytes against.
 

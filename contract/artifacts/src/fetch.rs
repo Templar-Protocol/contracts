@@ -5,10 +5,10 @@
 //! # Where the bytes live
 //!
 //! Released bytes are GitHub Release assets, not repository content. Each
-//! release's tag (`{package}-v{version}`) carries one asset,
-//! `{cargo_target_name}-{version}.wasm`, built by
-//! `.github/workflows/release-artifacts.yml` in the pinned NEP-330 Docker image
-//! **at that tag's own commit**.
+//! release records the tag that carries it and the asset on that tag, both as
+//! observed when it was cut — see `contract/artifacts/releases.tsv`. The bytes
+//! are built by `.github/workflows/release-artifacts.yml` in the pinned NEP-330
+//! Docker image **at that tag's own commit**.
 //!
 //! Building at the tag is the whole point. `cargo near build reproducible-wasm`
 //! embeds its source commit into the WASM, so a rebuild only matches at the
@@ -61,7 +61,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{sha256_hex, ArtifactId};
+use crate::{sha256_hex, ArtifactId, ArtifactRelease};
 
 /// Repository whose GitHub Releases host the artifact assets.
 const RELEASE_REPO: &str = "Templar-Protocol/contracts";
@@ -85,7 +85,7 @@ const PREFETCH_CONCURRENCY: usize = 8;
 pub enum FetchError {
     #[error(
         "{artifact} has no release {version}; catalogued releases: [{catalogued}]. \
-         Historical versions live in contract/artifacts/src/ids.rs."
+         Historical versions live in contract/artifacts/releases.tsv."
     )]
     UnknownRelease {
         artifact: ArtifactId,
@@ -164,17 +164,13 @@ pub fn cache_path(artifact: ArtifactId, version: &str) -> Result<PathBuf, FetchE
 
 /// Download URL for a release's WASM asset.
 ///
-/// The tag and asset names come from [`crate::release_tag`] /
-/// [`crate::asset_name`] rather than being spelled out here — that convention
-/// has exactly one home.
-pub fn asset_url(artifact: ArtifactId, version: &str) -> String {
+/// Both path segments are read off the release record rather than rebuilt from
+/// a naming convention: they name objects that already exist, so there is
+/// nothing to derive and no template for them to fall out of step with.
+pub fn asset_url(release: &ArtifactRelease) -> String {
     let base = std::env::var("TEMPLAR_ARTIFACT_BASE_URL")
         .unwrap_or_else(|_| format!("https://github.com/{RELEASE_REPO}/releases/download"));
-    format!(
-        "{base}/{tag}/{asset}",
-        tag = crate::release_tag(artifact, version),
-        asset = crate::asset_name(artifact, version),
-    )
+    format!("{base}/{}/{}", release.tag, release.asset)
 }
 
 /// Bytes of a released contract version, from the cache or the GitHub Release.
@@ -187,7 +183,7 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
             artifact,
             version: version.to_owned(),
             catalogued: metadata
-                .releases
+                .releases()
                 .iter()
                 .map(|release| release.version)
                 .collect::<Vec<_>>()
@@ -213,7 +209,7 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
         });
     }
 
-    let url = asset_url(artifact, version);
+    let url = asset_url(release);
     let bytes = download(&url).await?;
 
     let actual = sha256_hex(&bytes);
@@ -244,7 +240,7 @@ pub async fn prefetch_all() -> Result<usize, FetchError> {
         .flat_map(|artifact| {
             artifact
                 .metadata()
-                .releases
+                .releases()
                 .iter()
                 .map(move |release| (artifact, release.version))
         })
@@ -517,10 +513,12 @@ mod tests {
     }
 
     #[test]
-    fn asset_url_is_the_tag_and_asset_name_under_the_release_base() {
-        assert!(asset_url(ArtifactId::ProxyOracle, "0.3.0").ends_with(
-            "/templar-proxy-oracle-near-contract-v0.3.0/templar_proxy_oracle_near_contract-0.3.0.wasm"
-        ));
+    fn asset_url_is_the_recorded_tag_and_asset_under_the_release_base() {
+        let release = ArtifactId::ProxyOracle
+            .metadata()
+            .release("0.3.0")
+            .expect("0.3.0 is catalogued");
+        assert!(asset_url(release).ends_with(&format!("/{}/{}", release.tag, release.asset)));
     }
 
     #[tokio::test]

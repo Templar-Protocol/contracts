@@ -163,6 +163,17 @@ impl FromStr for ArtifactId {
 pub struct ArtifactRelease {
     /// Crate version this was released as.
     pub version: &'static str,
+    /// Git tag carrying the release, exactly as it exists.
+    ///
+    /// Recorded when the release is cut, not derived from a naming template.
+    /// The tag names an object that already exists on GitHub, and this repo has
+    /// used three schemes over its life (`v1.2.1`, `uac-v0.2.0`,
+    /// `templar-market-contract-v1.3.0`), so reconstructing it would assume a
+    /// uniformity that has never held. Changing release-plz's `git_tag_name`
+    /// governs the *next* tag and cannot strand these.
+    pub tag: &'static str,
+    /// Filename of the WASM asset on that release, likewise as it exists.
+    pub asset: &'static str,
     /// SHA-256 (lowercase hex) of the released bytes.
     ///
     /// The root of trust for a downloaded asset: [`crate::fetch`] verifies
@@ -186,12 +197,6 @@ pub struct ArtifactMetadata {
     pub cargo_target_name: &'static str,
     /// Source path relative to the workspace root (e.g. `contract/market`).
     pub source_path: &'static str,
-    /// Every released version of this contract, **oldest first**.
-    ///
-    /// Empty for mock contracts: they are test scaffolding, never tagged and
-    /// never deployed, so "the canonical bytes of mock-ft" is not a thing that
-    /// exists. Tests build them from source instead.
-    pub releases: &'static [ArtifactRelease],
 }
 
 impl ArtifactMetadata {
@@ -199,11 +204,21 @@ impl ArtifactMetadata {
         Path::new(self.source_path).join("Cargo.toml")
     }
 
+    /// Every released version of this contract, **oldest first**.
+    ///
+    /// Read from `releases.tsv` at build time, keyed by [`Self::id`] so there is
+    /// no name to mistype. Empty for mock contracts: they are test scaffolding,
+    /// never tagged and never deployed, so "the canonical bytes of mock-ft" is
+    /// not a thing that exists. Tests build them from source instead.
+    pub fn releases(&self) -> &'static [ArtifactRelease] {
+        releases_for(self.id)
+    }
+
     /// The newest release — what the gateway deploys and what `version_key`
     /// refers to by default. `None` for an artifact that has never been
     /// released (mocks).
     pub fn current(&self) -> Option<&'static ArtifactRelease> {
-        self.releases.last()
+        self.releases().last()
     }
 
     /// Version of the newest release.
@@ -213,51 +228,35 @@ impl ArtifactMetadata {
 
     /// Look up a specific released version.
     pub fn release(&self, version: &str) -> Option<&'static ArtifactRelease> {
-        self.releases.iter().find(|r| r.version == version)
+        self.releases().iter().find(|r| r.version == version)
     }
 }
 
 // ---------------------------------------------------------------------------
 // Release naming
 // ---------------------------------------------------------------------------
-//
-// One home for the tag and asset conventions, and their inverse. release-plz
-// *produces* these tags (`git_tag_name` in release-plz.toml) and the fetch path
-// *consumes* them, so the two must agree or every download 404s at runtime with
-// nothing red. `catalog.rs` asserts the agreement against release-plz.toml, and
-// asserts this module's own round trip.
 
-/// Separates the package name from the version in a release tag.
-const TAG_VERSION_SEPARATOR: &str = "-v";
-
-/// The tag carrying a release: `templar-market-contract-v1.3.0`.
-pub fn release_tag(artifact: ArtifactId, version: &str) -> String {
-    format!(
-        "{}{TAG_VERSION_SEPARATOR}{version}",
-        artifact.metadata().package_name
-    )
-}
-
-/// The WASM asset on that release: `templar_market_contract-1.3.0.wasm`.
-pub fn asset_name(artifact: ArtifactId, version: &str) -> String {
-    format!("{}-{version}.wasm", artifact.metadata().cargo_target_name)
-}
-
-/// Inverse of [`release_tag`]: which artifact and version a tag names.
+/// Which catalogued artifact a release tag belongs to.
+///
+/// Only ever asked of a tag release-plz has just created, to decide which
+/// contract to build — the tag of an *existing* release is recorded in
+/// `releases.tsv`, never reconstructed. So this is a deliberately lenient
+/// prefix match rather than an exact inverse of any naming template: it needs
+/// to identify the package, not to round-trip.
 ///
 /// `None` for a tag outside the NEAR catalog — a Soroban package, a library.
 /// That is a distinct answer from "this failed", which is why release CI reads
 /// it through an exit code rather than an empty string.
-///
-/// Package names are matched whole, so a name that is a prefix of another
-/// cannot claim its tags: the separator must follow immediately.
-pub fn artifact_from_release_tag(tag: &str) -> Option<(ArtifactId, &str)> {
-    ArtifactId::ALL.into_iter().find_map(|artifact| {
-        let version = tag
-            .strip_prefix(artifact.metadata().package_name)?
-            .strip_prefix(TAG_VERSION_SEPARATOR)?;
-        (!version.is_empty()).then_some((artifact, version))
-    })
+pub fn artifact_from_release_tag(tag: &str) -> Option<ArtifactId> {
+    ArtifactId::ALL
+        .into_iter()
+        .filter(|artifact| {
+            tag.strip_prefix(artifact.metadata().package_name)
+                .is_some_and(|rest| rest.starts_with(|c: char| !c.is_ascii_alphanumeric()))
+        })
+        // Longest package name wins, so a name that prefixes another cannot
+        // claim its tags.
+        .max_by_key(|artifact| artifact.metadata().package_name.len())
 }
 
 /// Return the full catalog of every known contract artifact.
@@ -272,16 +271,18 @@ pub fn artifact_catalog() -> impl ExactSizeIterator<Item = &'static ArtifactMeta
 // ---------------------------------------------------------------------------
 
 macro_rules! entry {
-    ($id:ident, $pkg:expr, $target:expr, $src:expr, [$(($ver:expr, $sha:expr)),* $(,)?]) => {
+    ($id:ident, $pkg:expr, $target:expr, $src:expr) => {
         ArtifactMetadata {
             id: ArtifactId::$id,
             package_name: $pkg,
             cargo_target_name: $target,
             source_path: $src,
-            releases: &[$(ArtifactRelease { version: $ver, sha256: $sha }),*],
         }
     };
 }
+
+// Release lists come from `releases.tsv`, compiled in by `build.rs`.
+include!(concat!(env!("OUT_DIR"), "/releases.rs"));
 
 // Every release below was recovered from code actually deployed on NEAR
 // mainnet, and its tag points at the commit that deployed WASM names in its
@@ -297,45 +298,13 @@ static REGISTRY_METADATA: ArtifactMetadata = entry!(
     Registry,
     "templar-registry-contract",
     "templar_registry_contract",
-    "contract/registry",
-    [
-        (
-            "0.1.0",
-            "c07b38a29202da247da12515d3b2e7a93855619209a76d73e5ae12b2facc6255"
-        ),
-        (
-            "1.0.0",
-            "bafbec54bff4f07147c5e317966ec34c500331f02c64eefd5da1aa5dc778e339"
-        ),
-        (
-            "1.1.0",
-            "0f315a008969013f44575b16374c115e972f421d1061fd6cafc8b4f63e5c65f3"
-        ),
-    ]
+    "contract/registry"
 );
 static MARKET_METADATA: ArtifactMetadata = entry!(
     Market,
     "templar-market-contract",
     "templar_market_contract",
-    "contract/market",
-    [
-        (
-            "1.0.0",
-            "0b78aefdae1bb76148602252dd6b7db2014d99ef3b7f93a764c54d7ebe97a392"
-        ),
-        (
-            "1.1.0",
-            "2bc028a722ccacd8aa23fe50a83c395716c920bf724b0d054a1ede3f2e4fae77"
-        ),
-        (
-            "1.2.1",
-            "c9752de38ed140645e9a8d4a55dc89835b113609e27bb63ce134b5e598bc69b8"
-        ),
-        (
-            "1.3.0",
-            "40e56aaf3627f1cb13656e696d382e64d7bb3e97420a049c20ae294d4f64fe97"
-        ),
-    ]
+    "contract/market"
 );
 
 // No NEAR vault has been deployed yet; the Soroban vault is a separate
@@ -344,8 +313,7 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
     Vault,
     "templar-vault-contract",
     "templar_vault_contract",
-    "contract/vault/near",
-    []
+    "contract/vault/near"
 );
 
 // 0.4.0 is deliberately absent: it was built and used as a migration-test
@@ -355,95 +323,50 @@ static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
     UniversalAccount,
     "templar-universal-account-contract",
     "templar_universal_account_contract",
-    "contract/universal-account",
-    [
-        (
-            "0.2.0",
-            "30e8baf1bd5de0308c510c0e5ff77b9aeb25306bf6ab922e5e25f8a24d6f3efd"
-        ),
-        (
-            "0.3.0",
-            "99e7ee1e559b2a0e966ef91e572007d71a6998b6a8d8ca0330e6c308652de505"
-        ),
-        (
-            "0.3.1",
-            "1b470283a0393f083463c95086de3046a94b626de45270fc108c1658fc7679a0"
-        ),
-        (
-            "0.5.0",
-            "22d1efca17929ef7148f62b9a32f1dcf9a5aa6bf1646df2190817e8cb9e961ef"
-        ),
-    ]
+    "contract/universal-account"
 );
 static PROXY_ORACLE_METADATA: ArtifactMetadata = entry!(
     ProxyOracle,
     "templar-proxy-oracle-near-contract",
     "templar_proxy_oracle_near_contract",
-    "contract/proxy-oracle/near/contract",
-    [
-        (
-            "0.1.0",
-            "e877687e2d6f51db824bde12348938b3374f526301811df3ee118af38b856f35"
-        ),
-        (
-            "0.3.0",
-            "d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e"
-        ),
-    ]
+    "contract/proxy-oracle/near/contract"
 );
 static PROXY_GOVERNANCE_METADATA: ArtifactMetadata = entry!(
     ProxyGovernance,
     "templar-proxy-oracle-near-governance-contract",
     "templar_proxy_oracle_near_governance_contract",
-    "contract/proxy-oracle/near/governance-contract",
-    [(
-        "0.1.0",
-        "09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
-    ),]
+    "contract/proxy-oracle/near/governance-contract"
 );
 static LST_ORACLE_METADATA: ArtifactMetadata = entry!(
     LstOracle,
     "templar-lst-oracle-contract",
     "templar_lst_oracle_contract",
-    "contract/proxy-oracle/near/lst-contract",
-    [(
-        "1.0.0",
-        "4d650b07ec9ccc3aaafc765f6970e2c60dde1ba23f25ef05d23ddd2178a157a3"
-    ),]
+    "contract/proxy-oracle/near/lst-contract"
 );
 static REDSTONE_ADAPTER_METADATA: ArtifactMetadata = entry!(
     RedstoneAdapter,
     "templar-redstone-adapter-contract",
     "templar_redstone_adapter_contract",
-    "contract/redstone-adapter",
-    [(
-        "0.1.0",
-        "debbf6f631422ad44fb3bf323503f378cdaff1cd6c63661846cb56828e23c461"
-    ),]
+    "contract/redstone-adapter"
 );
 static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     PythLazerAdapter,
     "templar-pyth-lazer-adapter-contract",
     "templar_pyth_lazer_adapter_contract",
-    "contract/pyth-lazer/contract",
-    [(
-        "0.1.0",
-        "ff51847ea292271775db9bf8207e7f30c5a6a426b277a71ebe78f8c4850a451f"
-    ),]
+    "contract/pyth-lazer/contract"
 );
 
 // Mocks are test scaffolding: Tier C in `release-plz.toml`, never tagged, never
 // deployed. Tests build them from source.
-static MOCK_FT_METADATA: ArtifactMetadata = entry!(MockFt, "mock-ft", "mock_ft", "mock/ft", []);
-static MOCK_MT_METADATA: ArtifactMetadata = entry!(MockMt, "mock-mt", "mock_mt", "mock/mt", []);
+static MOCK_FT_METADATA: ArtifactMetadata = entry!(MockFt, "mock-ft", "mock_ft", "mock/ft");
+static MOCK_MT_METADATA: ArtifactMetadata = entry!(MockMt, "mock-mt", "mock_mt", "mock/mt");
 static MOCK_ORACLE_METADATA: ArtifactMetadata =
-    entry!(MockOracle, "mock-oracle", "mock_oracle", "mock/oracle", []);
+    entry!(MockOracle, "mock-oracle", "mock_oracle", "mock/oracle");
 static MOCK_REF_FINANCE_METADATA: ArtifactMetadata =
-    entry!(MockRefFinance, "mock-ref", "mock_ref", "mock/ref", []);
+    entry!(MockRefFinance, "mock-ref", "mock_ref", "mock/ref");
 static MOCK_RECEIVER_METADATA: ArtifactMetadata = entry!(
     MockReceiver,
     "mock-receiver",
     "mock_receiver",
-    "mock/receiver",
-    []
+    "mock/receiver"
 );

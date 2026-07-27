@@ -15,7 +15,7 @@
 //!
 //! Fixtures are the real on-chain blobs (proxy-oracle `0.3.0`, state v1;
 //! proxy-governance `0.1.0`, pre-versioned-state), pinned from mainnet and
-//! catalogued as releases in `contract/artifacts/src/ids.rs`.
+//! catalogued as releases in `contract/artifacts/releases.tsv`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

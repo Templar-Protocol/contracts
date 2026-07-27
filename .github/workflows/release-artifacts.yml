@@ -5,8 +5,8 @@ name: Release Artifacts
 #
 # On a contract release tag: build the contract in the pinned NEP-330 Docker
 # image at that tag's own commit, upload the WASM plus a `checksums.txt` to the
-# GitHub Release, then open a PR recording the release and its SHA-256 in
-# `ids.rs`.
+# GitHub Release, then open a PR recording the release — its tag, asset and
+# SHA-256 — in `contract/artifacts/releases.tsv`.
 #
 # ## Why the build happens here and not on a laptop
 #
@@ -36,8 +36,8 @@ name: Release Artifacts
 on:
   push:
     tags:
-      # Broad glob: catalog membership is decided in `ids.rs`, not here. A
-      # tagged package the catalog doesn't know about exits cleanly below.
+      # Broad glob: which packages are catalogued is decided in `ids.rs`, not
+      # here. A tagged package the catalog doesn't know about exits cleanly below.
       - "*-contract-v*"
 
 permissions:
@@ -78,9 +78,11 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # The tag is parsed in Rust, by the tested inverse of the function that
-          # builds it — not pulled apart with parameter expansion here, which
-          # nothing checks against the catalog or against release-plz's template.
+          # Which contract this tag is about is decided in Rust against the
+          # catalog, not by pulling the string apart with parameter expansion
+          # here. The tag itself is passed through verbatim and recorded as-is,
+          # so no naming template has to stay stable for old releases to keep
+          # resolving.
           #
           # Exit code 2 means "not a catalogued NEAR artifact" (a Soroban tag,
           # say) as opposed to a genuine failure. Distinguishing them is the
@@ -117,8 +119,8 @@ jobs:
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           TARGET: ${{ steps.catalog.outputs.target }}
           VERSION: ${{ steps.catalog.outputs.version }}
-          # From the catalog, not rebuilt here: the asset name is the same
-          # convention the downloader resolves, so it has one home.
+          # Named once, here, and recorded alongside the release; the downloader
+          # reads it back rather than reconstructing it.
           ASSET: ${{ steps.catalog.outputs.asset }}
         run: |
           set -euo pipefail
@@ -163,6 +165,7 @@ jobs:
           PACKAGE: ${{ steps.catalog.outputs.package }}
           VERSION: ${{ steps.catalog.outputs.version }}
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
+          ASSET: ${{ steps.catalog.outputs.asset }}
           SHA256: ${{ steps.build.outputs.sha256 }}
           REF_NAME: ${{ github.ref_name }}
         run: |
@@ -176,17 +179,20 @@ jobs:
           # Same feature set as the catalog lookup above: a different one is a
           # different compilation unit, and this job has no rust-cache, so it
           # would recompile the crate from cold rather than relink.
+          #
+          # The tag and asset are passed through as observed rather than
+          # recomputed, so a later change to release-plz's `git_tag_name` cannot
+          # strand this release. Appending a row needs no `cargo fmt` afterwards.
           cargo run --quiet -p templar-contract-artifacts \
             --features workspace-loader,clap --bin record-release -- \
-            "$PACKAGE" "$VERSION" "$SHA256"
-          cargo fmt -p templar-contract-artifacts
+            "$PACKAGE" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
 
           if git diff --quiet; then
             echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
             exit 0
           fi
 
-          git add contract/artifacts/src/ids.rs
+          git add contract/artifacts/releases.tsv
           git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
           # `persist-credentials: false` above, so authenticate the push here
           # instead of leaving a credential in the runner's git config.

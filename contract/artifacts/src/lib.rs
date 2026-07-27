@@ -29,8 +29,8 @@ pub mod prebuild;
 mod workspace_loader;
 
 pub use ids::{
-    artifact_catalog, artifact_from_release_tag, asset_name, release_tag, ArtifactId,
-    ArtifactMetadata, ArtifactParseError, ArtifactRelease,
+    artifact_catalog, artifact_from_release_tag, ArtifactId, ArtifactMetadata, ArtifactParseError,
+    ArtifactRelease,
 };
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
@@ -267,9 +267,11 @@ mod tests {
         assert_eq!(parsed["package_name"], "templar-market-contract");
         assert_eq!(parsed["cargo_target_name"], "templar_market_contract");
         assert_eq!(parsed["source_path"], "contract/market");
-        // Versions live in the release list; `version` is a derived accessor,
-        // not a serialized field.
-        assert_eq!(parsed["releases"][0]["version"], "1.0.0");
+        // The release history is compiled in from `releases.tsv` and reached
+        // through `releases()`, so it is not part of this struct's serialized
+        // shape — the gateway's DTO projects what it needs.
+        assert!(parsed.get("releases").is_none());
+        assert_eq!(meta.releases()[0].version, "1.0.0");
         // Newest *released* version — the crate's Cargo.toml is further ahead.
         assert_eq!(meta.version(), Some("1.3.0"));
     }

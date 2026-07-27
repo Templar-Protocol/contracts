@@ -35,7 +35,7 @@ fn catalog_releases_are_well_formed() {
         let mut seen = HashSet::new();
         let mut previous: Option<&str> = None;
 
-        for release in artifact.releases {
+        for release in artifact.releases() {
             assert!(
                 seen.insert(release.version),
                 "{} lists version {} more than once — two different builds cannot \
@@ -53,6 +53,15 @@ fn catalog_releases_are_well_formed() {
             assert!(
                 release.sha256.chars().all(|c| c.is_ascii_hexdigit()),
                 "{}@{} sha256 is not hex",
+                artifact.package_name,
+                release.version,
+            );
+            // Recorded, not derived — so their absence is a real possibility
+            // worth asserting rather than a shape the code guarantees.
+            assert!(
+                !release.tag.is_empty() && !release.asset.is_empty(),
+                "{}@{} is missing its tag or asset; the download URL is built \
+                 from both",
                 artifact.package_name,
                 release.version,
             );
@@ -83,7 +92,7 @@ fn mocks_are_never_released() {
     for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
         if artifact.package_name.starts_with("mock-") {
             assert!(
-                artifact.releases.is_empty(),
+                artifact.releases().is_empty(),
                 "{} is a mock but lists releases",
                 artifact.package_name,
             );
@@ -96,77 +105,6 @@ fn mocks_are_never_released() {
 fn release_plz_toml() -> String {
     let path = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("release-plz.toml");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
-
-/// The tag we *build* must be the tag release-plz *creates*.
-///
-/// These live in different languages in different files: `git_tag_name` is a
-/// template in `release-plz.toml`, and `release_tag` is Rust. Nothing but this
-/// test connects them, and a disagreement is invisible until every artifact
-/// download 404s at runtime.
-#[test]
-fn release_tag_matches_the_template_release_plz_creates() {
-    let manifest = release_plz_toml();
-    let template = manifest
-        .lines()
-        .map(str::trim)
-        .find_map(|line| line.strip_prefix("git_tag_name")?.split('"').nth(1))
-        .map(str::to_owned)
-        .expect("release-plz.toml declares git_tag_name");
-
-    for artifact in ArtifactId::ALL {
-        let metadata = artifact.metadata();
-        // Every artifact, not just released ones: the agreement has to hold for
-        // the *next* release too, which is the one that has no entry yet.
-        let version = metadata.version().unwrap_or("9.9.9");
-
-        let rendered = template
-            .replace("{{ package }}", metadata.package_name)
-            .replace("{{package}}", metadata.package_name)
-            .replace("{{ version }}", version)
-            .replace("{{version}}", version);
-
-        assert_eq!(
-            rendered,
-            crate::release_tag(artifact, version),
-            "release-plz would tag {} as `{rendered}`, but the fetch path looks \
-             for `{}`. Reconcile `git_tag_name` in release-plz.toml with \
-             `release_tag` in ids.rs.",
-            metadata.package_name,
-            crate::release_tag(artifact, version),
-        );
-    }
-}
-
-/// Parsing a tag must recover exactly what produced it.
-#[test]
-fn every_release_tag_round_trips() {
-    for artifact in ArtifactId::ALL {
-        for version in artifact
-            .metadata()
-            .releases
-            .iter()
-            .map(|release| release.version)
-            .chain(["9.9.9"])
-        {
-            let tag = crate::release_tag(artifact, version);
-            assert_eq!(
-                crate::artifact_from_release_tag(&tag),
-                Some((artifact, version)),
-                "`{tag}` did not parse back to the artifact that produced it",
-            );
-        }
-    }
-
-    // A tag outside the NEAR catalog is a distinct answer, not a failure.
-    assert_eq!(
-        crate::artifact_from_release_tag("templar-soroban-vault-cli-v1.0.0"),
-        None,
-    );
-    assert_eq!(
-        crate::artifact_from_release_tag("templar-market-contract"),
-        None
-    );
 }
 
 /// Test scaffolding must never be released.
