@@ -1410,26 +1410,8 @@ fn deploy_curator_proxy<E: CommandExecutor>(
 
     let (initializer, initializer_args, legacy_hash) =
         curator_proxy_initializer(args, &vault, &governance);
-    let reuse_checkpoint = !args.force_new
-        && manifest
-            .contracts
-            .get("curator_proxy")
-            .is_some_and(|record| curator_proxy_needs_version_verification(record, &wasm_hash));
-    let (constructor_args, constructor_summary) = if reuse_checkpoint {
-        (Vec::new(), BTreeMap::new())
-    } else {
-        let initialization_authority = stellar.keys_address_source_account()?;
-        (
-            vec![
-                "--initialization_authority".to_string(),
-                initialization_authority.clone(),
-            ],
-            map_args([(
-                CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG,
-                initialization_authority.as_str(),
-            )]),
-        )
-    };
+    let (reuse_checkpoint, constructor_args, constructor_summary) =
+        curator_proxy_deployment_args(args, stellar, manifest, &wasm_hash)?;
     let curator_proxy = deploy_contract_if_needed_with_initialized_state(
         cli,
         stellar,
@@ -1447,13 +1429,35 @@ fn deploy_curator_proxy<E: CommandExecutor>(
         .get("curator_proxy")
         .is_some_and(|record| record.initialized);
     if already_initialized {
-        ensure_curator_proxy_initialization_matches(
-            manifest,
-            &vault,
-            &governance,
-            initializer,
-            legacy_hash,
-        )?;
+        let has_provenance = manifest
+            .contracts
+            .get("curator_proxy")
+            .is_some_and(|record| {
+                record
+                    .constructor_args
+                    .contains_key(CURATOR_PROXY_INITIALIZER_ARG)
+            });
+        if has_provenance {
+            ensure_curator_proxy_initialization_matches(
+                manifest,
+                &vault,
+                &governance,
+                initializer,
+                legacy_hash,
+            )?;
+        } else {
+            if !cli.dry_run {
+                verify_curator_proxy_targets(stellar, &curator_proxy, &vault, &governance)?;
+            }
+            record_curator_proxy_initialization(
+                manifest,
+                &vault,
+                &governance,
+                initializer,
+                legacy_hash,
+            )?;
+            checkpoint_manifest(cli, manifest)?;
+        }
     } else {
         stellar.invoke(&curator_proxy, initializer, initializer_args)?;
         if let Some(record) = manifest.contracts.get_mut("curator_proxy") {
@@ -1506,6 +1510,35 @@ fn curator_proxy_initializer<'a>(
             None,
         )
     }
+}
+
+fn curator_proxy_deployment_args<E: CommandExecutor>(
+    args: &DeployCuratorProxyArgs,
+    stellar: &Stellar<'_, E>,
+    manifest: &Manifest,
+    wasm_hash: &str,
+) -> anyhow::Result<(bool, Vec<String>, BTreeMap<String, String>)> {
+    let reuse_checkpoint = !args.force_new
+        && manifest
+            .contracts
+            .get("curator_proxy")
+            .is_some_and(|record| curator_proxy_needs_version_verification(record, wasm_hash));
+    if reuse_checkpoint {
+        return Ok((true, Vec::new(), BTreeMap::new()));
+    }
+
+    let initialization_authority = stellar.keys_address_source_account()?;
+    Ok((
+        false,
+        vec![
+            "--initialization_authority".to_string(),
+            initialization_authority.clone(),
+        ],
+        map_args([(
+            CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG,
+            initialization_authority.as_str(),
+        )]),
+    ))
 }
 
 fn verify_current_contract_wasm_hash<E: CommandExecutor>(
@@ -1609,6 +1642,23 @@ fn ensure_curator_proxy_initialization_matches(
             == legacy_v1_wasm_hash,
         "checkpointed curator proxy used a different legacy-v1 hash; pass --force-new to replace it"
     );
+    Ok(())
+}
+
+fn verify_curator_proxy_targets<E: CommandExecutor>(
+    stellar: &Stellar<'_, E>,
+    curator_proxy: &str,
+    vault: &str,
+    governance: &str,
+) -> anyhow::Result<()> {
+    for (function, expected) in [("vault", vault), ("governance", governance)] {
+        let output = stellar.invoke_view(curator_proxy, function, Vec::new())?;
+        anyhow::ensure!(
+            output.stdout.contains(expected),
+            "checkpointed curator proxy {function} mismatch: expected {expected}, observed {}",
+            output.stdout
+        );
+    }
     Ok(())
 }
 
@@ -6587,6 +6637,70 @@ mod tests {
         assert!(!proxy
             .constructor_args
             .contains_key(CURATOR_PROXY_LEGACY_V1_HASH_ARG));
+    }
+
+    #[test]
+    fn targeted_curator_proxy_backfills_verified_imported_provenance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_curator_proxy_wasm(dir.path());
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::CuratorProxy(DeployCuratorProxyArgs {
+                    vault: None,
+                    governance: None,
+                    legacy_v1_wasm_hash: None,
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        run(&cli, &RecordingExecutor::new()).expect("seed initialized curator proxy");
+
+        let mut imported = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let proxy = imported
+            .contracts
+            .get_mut("curator_proxy")
+            .expect("curator proxy record");
+        proxy.constructor_args.clear();
+        imported.save(&state).expect("save imported manifest");
+
+        let retry_executor = RecordingExecutor::new();
+        run(&cli, &retry_executor).expect("backfill imported curator proxy");
+
+        let retry_calls = retry_executor.calls();
+        assert!(!retry_calls.iter().any(|(_, args)| {
+            matches!(args.as_slice(), [contract, deploy, ..] if contract == "contract" && deploy == "deploy")
+        }));
+        assert!(!retry_calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "initialize")));
+        for function in ["vault", "governance", "vault_version"] {
+            assert!(retry_calls
+                .iter()
+                .any(|(_, args)| args.iter().any(|arg| arg == function)));
+        }
+        let backfilled = Manifest::load_or_new(&state, "testnet", None).expect("load backfill");
+        let proxy = backfilled
+            .contracts
+            .get("curator_proxy")
+            .expect("backfilled curator proxy");
+        assert_eq!(
+            proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
+            Some(&"initialize".to_string())
+        );
+        assert_eq!(
+            proxy.constructor_args.get(CURATOR_PROXY_VAULT_ARG),
+            Some(&CONTRACT.to_string())
+        );
+        assert_eq!(
+            proxy.constructor_args.get(CURATOR_PROXY_GOVERNANCE_ARG),
+            Some(&CONTRACT.to_string())
+        );
+        assert!(curator_proxy_supports_version_discovery(proxy));
     }
 
     #[test]
