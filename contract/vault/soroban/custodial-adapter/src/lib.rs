@@ -1336,6 +1336,7 @@ mod tests {
 
         env.ledger().set_timestamp(100);
         set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 10);
+        let accepted_nonce = report_nonce(&env, &contract_id, &asset);
 
         env.ledger().set_timestamp(200);
         env.as_contract(&contract_id, || {
@@ -1344,9 +1345,9 @@ mod tests {
                     env.clone(),
                     vault,
                     asset.clone(),
-                    9,
+                    10,
                     11,
-                    2,
+                    accepted_nonce,
                 ),
                 Err(AdapterError::InvalidInput)
             );
