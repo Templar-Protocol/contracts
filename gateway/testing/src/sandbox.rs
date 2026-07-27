@@ -134,18 +134,31 @@ impl SandboxHarness {
             account_seq,
         };
 
+        // Every account this harness starts with, minted in one patch: the cost
+        // is per `sandbox_patch_state` call, not per account.
         let operator = NearToken::from_near(100);
-        let gateway_signer_account_id = harness.create_managed_account("gateway", operator).await?;
-        let cleanup_signer_account_id = harness.create_managed_account("cleanup", operator).await?;
-        let registry_signer_account_id =
-            harness.create_managed_account("registry", operator).await?;
-        let universal_account_signer_account_id =
-            harness.create_managed_account("ua", operator).await?;
-        let proxy_oracle_signer_account_id = harness
-            .create_managed_account("proxy-oracle", operator)
-            .await?;
+        let [gateway, cleanup, registry, universal_account, proxy_oracle, (ft_contract_id, ft_signer), (beneficiary_account_id, _)] =
+            harness
+                .create_accounts(&[
+                    ("gateway", operator),
+                    ("cleanup", operator),
+                    ("registry", operator),
+                    ("ua", operator),
+                    ("proxy-oracle", operator),
+                    ("mock-ft", operator),
+                    ("beneficiary", NearToken::from_near(25)),
+                ])
+                .await?
+                .try_into()
+                .map_err(|_| {
+                    anyhow::anyhow!("create_accounts returned the wrong number of accounts")
+                })?;
+        let gateway_signer_account_id = ManagedAccountId(gateway.0);
+        let cleanup_signer_account_id = ManagedAccountId(cleanup.0);
+        let registry_signer_account_id = ManagedAccountId(registry.0);
+        let universal_account_signer_account_id = ManagedAccountId(universal_account.0);
+        let proxy_oracle_signer_account_id = ManagedAccountId(proxy_oracle.0);
 
-        let (ft_contract_id, ft_signer) = harness.create_account("mock-ft", operator).await?;
         deploy_contract(
             &harness.network,
             ft_contract_id.clone(),
@@ -158,10 +171,6 @@ impl SandboxHarness {
             }),
         )
         .await?;
-
-        let (beneficiary_account_id, _) = harness
-            .create_account("beneficiary", NearToken::from_near(25))
-            .await?;
 
         Ok(Self {
             gateway_signer_account_id,
@@ -188,11 +197,31 @@ impl SandboxHarness {
         label: &str,
         balance: NearToken,
     ) -> Result<(AccountId, Arc<Signer>)> {
-        let account_id = self.unique_account_id(label)?;
-        let secret_key = test_secret_key()?;
-        crate::sandbox_ext::create_account(&self.network, &account_id, &secret_key, balance)
-            .await?;
-        Ok(self.register_account(account_id))
+        let mut accounts = self.create_accounts(&[(label, balance)]).await?;
+        accounts
+            .pop()
+            .context("create_accounts returned no account")
+    }
+
+    /// [`create_account`](Self::create_account) for several accounts at once,
+    /// returning them in the order they were requested.
+    ///
+    /// One `sandbox_patch_state` call costs the same whether it carries one
+    /// account or twenty, so every fixture that needs a set of accounts should
+    /// mint them together rather than in a loop.
+    pub(crate) async fn create_accounts(
+        &self,
+        accounts: &[(&str, NearToken)],
+    ) -> Result<Vec<(AccountId, Arc<Signer>)>> {
+        let accounts = accounts
+            .iter()
+            .map(|(label, balance)| Ok((self.unique_account_id(label)?, *balance)))
+            .collect::<Result<Vec<_>>>()?;
+        crate::sandbox_ext::create_accounts(&self.network, &accounts, &test_secret_key()?).await?;
+        Ok(accounts
+            .into_iter()
+            .map(|(account_id, _)| self.register_account(account_id))
+            .collect())
     }
 
     /// Like [`create_account`](Self::create_account) but mints the account with a
@@ -231,17 +260,6 @@ impl SandboxHarness {
         };
         self.register_signer(ManagedAccountId(account_id.clone()), managed);
         (account_id, signer)
-    }
-
-    /// Like [`create_account`](Self::create_account) but returns the
-    /// [`ManagedAccountId`] for operator accounts stored on the harness.
-    async fn create_managed_account(
-        &self,
-        label: &str,
-        balance: NearToken,
-    ) -> Result<ManagedAccountId> {
-        let (account_id, _) = self.create_account(label, balance).await?;
-        Ok(ManagedAccountId(account_id))
     }
 
     /// A unique `{label}-{seq}.{tenant_root}` id. The per-harness `seq` keeps
@@ -369,20 +387,7 @@ impl SandboxHarness {
         collateral_mt: bool,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
-        let (oracle_id, oracle_signer) = self
-            .create_account("oracle", NearToken::from_near(100))
-            .await?;
-        deploy_contract(
-            &self.network,
-            oracle_id.clone(),
-            oracle_signer,
-            crate::wasm::mock_oracle().await.to_vec(),
-            "new",
-            serde_json::json!({}),
-        )
-        .await?;
-
-        self.deploy_market_with_oracle_std(oracle_id, borrow_mt, collateral_mt, customize)
+        self.deploy_market_parts(None, borrow_mt, collateral_mt, customize)
             .await
     }
 
@@ -409,12 +414,51 @@ impl SandboxHarness {
         collateral_mt: bool,
         customize: impl FnOnce(&mut MarketConfiguration),
     ) -> Result<(AccountId, MarketConfiguration)> {
-        let borrow_asset_id = self
-            .deploy_market_asset("borrow-ft", "Borrow FT", "BFT", borrow_mt)
-            .await?;
-        let collateral_asset_id = self
-            .deploy_market_asset("collateral-ft", "Collateral FT", "CFT", collateral_mt)
-            .await?;
+        self.deploy_market_parts(Some(oracle_id), borrow_mt, collateral_mt, customize)
+            .await
+    }
+
+    /// The market fixture: every account it needs minted in one patch, then all
+    /// of its contracts deployed at once.
+    ///
+    /// The mock oracle (minted here unless `oracle_id` names an existing one),
+    /// the borrow/collateral asset pair and the market are independent deploys —
+    /// the market's `new` only records the asset and oracle *ids*, it never calls
+    /// them — so nothing here has to wait on anything else.
+    async fn deploy_market_parts(
+        &self,
+        oracle_id: Option<AccountId>,
+        borrow_mt: bool,
+        collateral_mt: bool,
+        customize: impl FnOnce(&mut MarketConfiguration),
+    ) -> Result<(AccountId, MarketConfiguration)> {
+        let operator = NearToken::from_near(100);
+        let mut labels = Vec::with_capacity(4);
+        if oracle_id.is_none() {
+            labels.push(("oracle", operator));
+        }
+        labels.extend([
+            ("borrow-ft", operator),
+            ("collateral-ft", operator),
+            ("market", operator),
+        ]);
+        let mut minted = self.create_accounts(&labels).await?.into_iter();
+        let mut next = |what: &str| {
+            minted
+                .next()
+                .with_context(|| format!("no minted account for the market's {what}"))
+        };
+        // A caller-supplied oracle is used as-is; otherwise the first minted
+        // account becomes a fresh mock oracle, deployed alongside the rest below.
+        let (oracle_id, fresh_oracle) = if let Some(oracle_id) = oracle_id {
+            (oracle_id, None)
+        } else {
+            let (oracle_id, signer) = next("oracle")?;
+            (oracle_id.clone(), Some((oracle_id, signer)))
+        };
+        let (borrow_asset_id, borrow_signer) = next("borrow asset")?;
+        let (collateral_asset_id, collateral_signer) = next("collateral asset")?;
+        let (market_id, market_signer) = next("market")?;
 
         let mut configuration = market_configuration(
             oracle_id,
@@ -427,46 +471,81 @@ impl SandboxHarness {
         // as NEP-245 referencing the mock's pre-created token ids.
         if borrow_mt {
             configuration.borrow_asset =
-                FungibleAsset::nep245(borrow_asset_id, MT_BORROW_TOKEN_ID.to_owned());
+                FungibleAsset::nep245(borrow_asset_id.clone(), MT_BORROW_TOKEN_ID.to_owned());
         }
         if collateral_mt {
-            configuration.collateral_asset =
-                FungibleAsset::nep245(collateral_asset_id, MT_COLLATERAL_TOKEN_ID.to_owned());
+            configuration.collateral_asset = FungibleAsset::nep245(
+                collateral_asset_id.clone(),
+                MT_COLLATERAL_TOKEN_ID.to_owned(),
+            );
         }
         customize(&mut configuration);
 
-        let (market_id, market_signer) = self
-            .create_account("market", NearToken::from_near(100))
-            .await?;
-        deploy_contract(
-            &self.network,
-            market_id.clone(),
-            market_signer,
-            crate::wasm::market().await.to_vec(),
-            "new",
-            serde_json::json!({
-                "configuration": configuration.clone(),
-            }),
-        )
-        .await?;
+        futures::try_join!(
+            async {
+                match fresh_oracle {
+                    Some((oracle_id, oracle_signer)) => {
+                        deploy_contract(
+                            &self.network,
+                            oracle_id,
+                            oracle_signer,
+                            crate::wasm::mock_oracle().await.to_vec(),
+                            "new",
+                            serde_json::json!({}),
+                        )
+                        .await
+                    }
+                    None => Ok(()),
+                }
+            },
+            self.deploy_market_asset(
+                borrow_asset_id,
+                borrow_signer,
+                "Borrow FT",
+                "BFT",
+                borrow_mt,
+            ),
+            self.deploy_market_asset(
+                collateral_asset_id,
+                collateral_signer,
+                "Collateral FT",
+                "CFT",
+                collateral_mt,
+            ),
+            deploy_contract(
+                &self.network,
+                market_id.clone(),
+                market_signer,
+                crate::wasm::market().await.to_vec(),
+                "new",
+                serde_json::json!({
+                    "configuration": configuration.clone(),
+                }),
+            ),
+        )?;
 
         Ok((market_id, configuration))
     }
 
-    /// Deploy a single market asset account: a NEP-245 multi-token when `mt`,
-    /// else a NEP-141 fungible token.
+    /// Deploy a market asset onto an already-minted account: a NEP-245
+    /// multi-token when `mt`, else a NEP-141 fungible token.
     async fn deploy_market_asset(
         &self,
-        label: &str,
+        account_id: AccountId,
+        signer: Arc<Signer>,
         name: &str,
         symbol: &str,
         mt: bool,
-    ) -> Result<AccountId> {
-        if mt {
-            self.deploy_mt(label).await
+    ) -> Result<()> {
+        let (code, init_args) = if mt {
+            (crate::wasm::mt().await.to_vec(), serde_json::json!({}))
         } else {
-            self.deploy_ft(label, name, symbol).await
-        }
+            (
+                crate::wasm::ft().await.to_vec(),
+                serde_json::json!({ "name": name, "symbol": symbol }),
+            )
+        };
+        deploy_contract(&self.network, account_id, signer, code, "new", init_args).await
     }
 
     pub async fn deploy_vault(&self) -> Result<(AccountId, VaultConfiguration)> {
@@ -908,7 +987,7 @@ impl SandboxHarness {
         .await
     }
     /// Submit a successful sandbox contract call under the shared test policy.
-    async fn call_contract(
+    pub(crate) async fn call_contract(
         &self,
         contract_id: &AccountId,
         method_name: &str,
@@ -1008,12 +1087,66 @@ fn attach_rpc_url() -> Result<Option<String>> {
 /// existing genesis signer can sign for it.
 pub(crate) const FUNDER_ACCOUNT_ID: &str = "funder";
 
+/// `neard init --fast` block production delays, which every measurement of the
+/// stock configuration was taken against.
+const STOCK_MIN_BLOCK_MS: u64 = 120;
+const STOCK_MAX_BLOCK_MS: u64 = 500;
+
+/// Simulated time `sandbox_fast_forward` credits per block: nearcore's
+/// `Client::sandbox_delta_time` advances the chain clock by
+/// `delta_height × avg(min_block_production_delay, max_block_production_delay)`.
+/// Every `fast_forward`-driven test was written against the stock average, so it
+/// is held fixed while the real cadence changes.
+const FAST_FORWARD_BLOCK_MS: u64 = (STOCK_MIN_BLOCK_MS + STOCK_MAX_BLOCK_MS) / 2;
+
+/// Real block cadence. A sandbox is a single validator, so it approves its own
+/// blocks immediately and produces the next one as soon as this delay elapses —
+/// which makes it the floor under every node-backed test (a transaction awaited
+/// at optimistic finality costs two blocks, a wait for final costs three).
+const MIN_BLOCK_MS: u64 = 40;
+
+/// Block cadence for launched nodes as `(min, max)` production delays in
+/// milliseconds.
+///
+/// `min` is the real cadence (above); `NEAR_SANDBOX_BLOCK_MS` overrides it so a
+/// constrained runner can be tuned without a code change. `max` is the timeout
+/// for waiting on approvals from *other* validators — there are none, so it
+/// never fires and costs no wall-clock time. It is derived to hold the average,
+/// and hence [`FAST_FORWARD_BLOCK_MS`], fixed: lowering the real cadence must not
+/// quietly shorten what a `fast_forward(N)` simulates.
+fn block_delays_ms() -> (u64, u64) {
+    let min = match std::env::var("NEAR_SANDBOX_BLOCK_MS") {
+        // A malformed override must fail loudly, not silently fall back to the
+        // fast default: CI pins this precisely because the fast cadence is
+        // unreliable on a contended runner, so a typo'd value quietly restoring
+        // it would resurface as flaky finality errors rather than a config error.
+        Ok(value) => value
+            .trim()
+            .parse::<u64>()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "NEAR_SANDBOX_BLOCK_MS must be a whole number of milliseconds, got `{value}`"
+                )
+            })
+            .clamp(1, FAST_FORWARD_BLOCK_MS),
+        Err(_) => MIN_BLOCK_MS,
+    };
+    (min, 2 * FAST_FORWARD_BLOCK_MS - min)
+}
+
 /// Sandbox launch config shared by owned mode ([`connect`]) and the out-of-band
 /// host (`bin/sandbox-host.rs`), so both nodes seed the [`FUNDER_ACCOUNT_ID`]
-/// account identically.
+/// account identically and run the same block cadence.
 #[must_use]
 pub fn sandbox_config() -> SandboxConfig {
+    let (min_block_ms, max_block_ms) = block_delays_ms();
     SandboxConfig {
+        additional_config: Some(serde_json::json!({
+            "consensus": {
+                "min_block_production_delay": duration_json(min_block_ms),
+                "max_block_production_delay": duration_json(max_block_ms),
+            }
+        })),
         additional_accounts: vec![GenesisAccount {
             account_id: FUNDER_ACCOUNT_ID
                 .parse()
@@ -1024,6 +1157,14 @@ pub fn sandbox_config() -> SandboxConfig {
         }],
         ..SandboxConfig::default()
     }
+}
+
+/// A `neard` config duration, which is serialized as seconds plus nanoseconds.
+fn duration_json(ms: u64) -> serde_json::Value {
+    serde_json::json!({
+        "secs": ms / 1_000,
+        "nanos": (ms % 1_000) * 1_000_000,
+    })
 }
 
 /// Create `account_id` as a sub-account of `funder_id`, funded with `balance`

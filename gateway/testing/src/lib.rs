@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+pub mod bench;
 pub mod controller;
 pub mod ops;
 pub mod sandbox;
@@ -8,7 +9,8 @@ pub mod wasm;
 
 pub use controller::TestController;
 pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
-pub use sandbox::{test_secret_key, test_signer, SandboxHarness};
+pub use sandbox::{sandbox_config, test_secret_key, test_signer, SandboxHarness};
+pub use sandbox_ext::node_is_serving;
 pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;
 

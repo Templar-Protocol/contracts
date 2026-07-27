@@ -17,7 +17,11 @@ use templar_gateway_types::{
 
 #[tokio::test]
 async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> {
-    let sandbox = near_sandbox::Sandbox::start_sandbox().await?;
+    // Share the harness's launch config so this owned node runs the same block
+    // cadence as the rest of the gate rather than the near-sandbox default.
+    let sandbox =
+        near_sandbox::Sandbox::start_sandbox_with_config(templar_gateway_testing::sandbox_config())
+            .await?;
     let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
     let signer_account_id = ManagedAccountId("library-user.near".parse()?);

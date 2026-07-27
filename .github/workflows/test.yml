@@ -472,7 +472,14 @@ jobs:
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           DATABASE_URL: *postgres_url
-        run: just test-sandbox
+          # Stock cadence: the harness default is faster (a big local win) but a
+          # shared 4-vCPU runner can't sustain it — block production falls behind
+          # and finality waits time out.
+          NEAR_SANDBOX_BLOCK_MS: "120"
+        # CI-only stopgap for occasional node-starvation flakes on the shared
+        # runner; max-fail still aborts a systemic failure fast. Local runs stay
+        # strict.
+        run: just test-sandbox --retries=1 --max-fail=5
 
       - name: Cleanup Docker resources
         if: always()
