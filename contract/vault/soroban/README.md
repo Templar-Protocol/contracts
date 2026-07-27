@@ -478,6 +478,11 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
 ## Share Token TTL and Archival Recovery
 
 - Share-token instance storage is refreshed by every public share-token entrypoint, including SEP-41 read-only methods (`total_supply`, `balance`, `allowance`, `decimals`, `name`, and `symbol`) and the custom `admin` / `vault` getters.
+- Share-token authority is split deliberately: the immutable vault address alone authorizes mint
+  and burn, while a separately configured admin controls pause, restrictions, upgrades, TTL
+  maintenance, and two-step admin rotation. New deployments and admin rotations reject
+  `admin == vault` so those controls cannot be assigned to a runtime that lacks the corresponding
+  dispatcher.
 - The admin-only `extend_ttl(caller)` entrypoint is the explicit keeper path for proactive instance maintenance. Operators should schedule it well before the instance reaches the TTL threshold; if the instance is archived, restore the contract instance through the Stellar/Soroban archival restore flow first, then call `extend_ttl` as the configured admin.
 - Per-holder balances are persistent entries owned by the upstream `stellar-tokens` implementation. Balance reads and balance-changing writes refresh the specific holder balance that is touched; the share token intentionally does not maintain an enumerable holder index or perform unbounded global balance refreshes from `extend_ttl`.
 - Allowances are temporary entries bounded by their explicit `live_until_ledger`. They are not extended beyond that caller-selected expiry by the share-token keeper path; owners should renew approvals when continued delegated spending is desired.

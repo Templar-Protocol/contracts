@@ -413,14 +413,21 @@ deploy-share-token:
 		echo "Run: just build"; \
 		exit 1; \
 	fi; \
-	admin="$vault_id"; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}})"; \
+	fi; \
+	if [ "$admin" = "$vault_id" ]; then \
+		echo "Error: share-token admin must be separate from the vault; set SOROBAN_ADMIN to a reachable account or contract."; \
+		exit 1; \
+	fi; \
 	name="${SOROBAN_SHARE_NAME:-Templar Vault Share}"; \
 	symbol="${SOROBAN_SHARE_SYMBOL:-tvSHARE}"; \
 	decimals="${SOROBAN_SHARE_DECIMALS:-7}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying share token contract..."; \
-	echo "  Admin: $admin (vault-bound)"; \
+	echo "  Admin: $admin"; \
 	echo "  Vault: $vault_id"; \
 	share_id=$(stellar contract deploy \
 		--wasm "$wasm" \

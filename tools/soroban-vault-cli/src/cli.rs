@@ -233,7 +233,7 @@ pub enum DeployPlanCommand {
 
 #[derive(Args, Debug)]
 pub struct DeployStackArgs {
-    /// Admin/curator Soroban address. Defaults to `stellar keys address <source-account>`.
+    /// Governance admin, initial vault curator, and share-token admin. Defaults to `stellar keys address <source-account>`.
     #[arg(long, env = "SOROBAN_ADMIN")]
     pub admin: Option<AddressStr>,
 
