@@ -99,7 +99,7 @@ reuses the current curator-proxy WASM and deploys a new proxy instance whose con
 pins the resolved source-account address as its one-time initialization authority. Deployment and
 initialization remain separate transactions, but the deployed contract ID and authority are
 checkpointed before `initialize` runs. Only that same source account can complete or retry
-initialization. Rerunning the command reuses a matching incomplete checkpoint for initialization or
+initialization. Rerunning the command reuses a matching checkpoint for initialization or
 `vault_version` verification; pass `--force-new` only to abandon it and deploy a replacement. The
 command checkpoints successful initialization provenance before querying `vault_version` and marks
 the replacement version-discovery-capable only after that query succeeds.

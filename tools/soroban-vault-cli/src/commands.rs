@@ -1449,13 +1449,7 @@ fn deploy_curator_proxy<E: CommandExecutor>(
             if !cli.dry_run {
                 verify_curator_proxy_targets(stellar, &curator_proxy, &vault, &governance)?;
             }
-            record_curator_proxy_initialization(
-                manifest,
-                &vault,
-                &governance,
-                initializer,
-                legacy_hash,
-            )?;
+            record_verified_curator_proxy_targets(manifest, &vault, &governance)?;
             checkpoint_manifest(cli, manifest)?;
         }
     } else {
@@ -1522,7 +1516,7 @@ fn curator_proxy_deployment_args<E: CommandExecutor>(
         && manifest
             .contracts
             .get("curator_proxy")
-            .is_some_and(|record| curator_proxy_needs_version_verification(record, wasm_hash));
+            .is_some_and(|record| record.wasm_hash == wasm_hash);
     if reuse_checkpoint {
         return Ok((true, Vec::new(), BTreeMap::new()));
     }
@@ -1596,6 +1590,31 @@ fn record_curator_proxy_initialization(
                 .remove(CURATOR_PROXY_LEGACY_V1_HASH_ARG);
         }
     }
+    Ok(())
+}
+
+fn record_verified_curator_proxy_targets(
+    manifest: &mut Manifest,
+    vault: &str,
+    governance: &str,
+) -> anyhow::Result<()> {
+    let record = manifest
+        .contracts
+        .get_mut("curator_proxy")
+        .context("curator proxy deployment was not recorded in manifest")?;
+    record
+        .constructor_args
+        .remove(CURATOR_PROXY_INITIALIZER_ARG);
+    record
+        .constructor_args
+        .remove(CURATOR_PROXY_LEGACY_V1_HASH_ARG);
+    record
+        .constructor_args
+        .insert(CURATOR_PROXY_VAULT_ARG.to_string(), vault.to_string());
+    record.constructor_args.insert(
+        CURATOR_PROXY_GOVERNANCE_ARG.to_string(),
+        governance.to_string(),
+    );
     Ok(())
 }
 
@@ -6640,7 +6659,43 @@ mod tests {
     }
 
     #[test]
-    fn targeted_curator_proxy_backfills_verified_imported_provenance() {
+    fn targeted_curator_proxy_reuses_fully_verified_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_curator_proxy_wasm(dir.path());
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::CuratorProxy(DeployCuratorProxyArgs {
+                    vault: None,
+                    governance: None,
+                    legacy_v1_wasm_hash: None,
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state, Commands::Status)
+        };
+        run(&cli, &RecordingExecutor::new()).expect("deploy curator proxy");
+
+        let retry_executor = RecordingExecutor::new();
+        run(&cli, &retry_executor).expect("reuse verified curator proxy");
+
+        let retry_calls = retry_executor.calls();
+        assert!(!retry_calls.iter().any(|(_, args)| {
+            matches!(args.as_slice(), [contract, deploy, ..] if contract == "contract" && deploy == "deploy")
+        }));
+        assert!(!retry_calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "initialize")));
+        assert!(retry_calls
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "vault_version")));
+    }
+
+    #[test]
+    fn targeted_curator_proxy_records_verified_imported_targets_without_provenance() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_curator_proxy_wasm(dir.path());
         let state = dir.path().join("manifest.json");
@@ -6658,7 +6713,7 @@ mod tests {
             }),
             ..base_cli(state.clone(), Commands::Status)
         };
-        run(&cli, &RecordingExecutor::new()).expect("seed initialized curator proxy");
+        run(&cli, &TtlRecordingExecutor::new()).expect("seed initialized curator proxy");
 
         let mut imported = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
         let proxy = imported
@@ -6668,8 +6723,22 @@ mod tests {
         proxy.constructor_args.clear();
         imported.save(&state).expect("save imported manifest");
 
-        let retry_executor = RecordingExecutor::new();
-        run(&cli, &retry_executor).expect("backfill imported curator proxy");
+        let legacy_hash = format!("{:x}", Sha256::digest(CONTRACT.as_bytes()));
+        let retry_cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::CuratorProxy(DeployCuratorProxyArgs {
+                    vault: None,
+                    governance: None,
+                    legacy_v1_wasm_hash: Some(legacy_hash.parse().expect("legacy v1 Wasm hash")),
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let retry_executor = TtlRecordingExecutor::new();
+        run(&retry_cli, &retry_executor).expect("record imported curator proxy targets");
 
         let retry_calls = retry_executor.calls();
         assert!(!retry_calls.iter().any(|(_, args)| {
@@ -6688,10 +6757,12 @@ mod tests {
             .contracts
             .get("curator_proxy")
             .expect("backfilled curator proxy");
-        assert_eq!(
-            proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
-            Some(&"initialize".to_string())
-        );
+        assert!(!proxy
+            .constructor_args
+            .contains_key(CURATOR_PROXY_INITIALIZER_ARG));
+        assert!(!proxy
+            .constructor_args
+            .contains_key(CURATOR_PROXY_LEGACY_V1_HASH_ARG));
         assert_eq!(
             proxy.constructor_args.get(CURATOR_PROXY_VAULT_ARG),
             Some(&CONTRACT.to_string())
