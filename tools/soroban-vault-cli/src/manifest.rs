@@ -57,6 +57,12 @@ impl Manifest {
         );
         if manifest.network.is_empty() {
             manifest.network = network.to_string();
+        } else {
+            anyhow::ensure!(
+                manifest.network == network,
+                "manifest network {} does not match requested network {network}",
+                manifest.network
+            );
         }
         // Scrub legacy or hand-edited source account data; signing identity
         // must stay in env/keystore.
@@ -145,5 +151,21 @@ mod tests {
         assert_eq!(loaded.version, MANIFEST_VERSION);
         assert!(loaded.artifacts.contains_key("vault"));
         assert_eq!(loaded.source_account, None);
+    }
+
+    #[test]
+    fn manifest_rejects_cross_network_reuse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("manifest.json");
+        Manifest::new("testnet", None)
+            .save(&path)
+            .expect("save manifest");
+
+        let error = Manifest::load_or_new(&path, "mainnet", None)
+            .expect_err("cross-network manifest reuse must fail");
+
+        assert!(error
+            .to_string()
+            .contains("manifest network testnet does not match requested network mainnet"));
     }
 }
