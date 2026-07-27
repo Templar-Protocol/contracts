@@ -77,8 +77,20 @@ the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`.
 runtime does not advertise that capability, so use an independently controlled account or contract
 until companion upgrades are implemented.
 
+For a new stack, `--admin` is passed explicitly to the governance contract, the initial vault
+curator configuration, and the share-token constructor. The share token keeps a separate immutable
+`vault` binding for mint and burn; it rejects deployments or later admin rotations that set
+`admin == vault`. The manifest records both addresses and reconciliation checks each getter against
+the recorded constructor value. For a replacement stack, pass a new `--state` path that does not
+contain the old deployment. If a recorded share token's constructor arguments do not match the new
+admin, vault, or metadata request, the CLI refuses to reuse it and directs the operator to a fresh
+manifest.
+
 ```sh
-tmplr-soroban-vault deploy stack \
+tmplr-soroban-vault \
+  --state contract/vault/soroban/.deploy-state/new-vault.manifest.json \
+  deploy stack \
+  --admin GADMIN... \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --blend-pool CPOOL2... \
@@ -174,7 +186,9 @@ The CLI uses the contract name `governance admin` for the address that controls 
 contract, but operationally that address can represent several curator models. It can be a single
 operator key, a multisig contract, or a governance contract controlled by an external process. A new
 stack uses `--admin` as both the governance admin and the initial vault curator. After deployment,
-governance proposals can split that into separate curator, sentinel, and allocator identities.
+the same address is also the share-token administrator, while the immutable vault binding remains
+the sole mint/burn authority. Governance proposals can split the runtime roles into separate
+curator, sentinel, and allocator identities.
 
 Common role terms:
 
@@ -182,6 +196,9 @@ Common role terms:
   governance proposals. For multisig governance, this is the multisig contract address.
 - `vault curator`: the runtime curator address. It starts as the deployment `--admin` and can be
   changed with `governance submit-set-curator`.
+- `share-token admin`: the deployment `--admin`. It controls token pause, restrictions, upgrades,
+  TTL maintenance, and two-step admin rotation. It is deliberately separate from the immutable
+  vault address, which alone controls mint and burn.
 - `sentinel`: an emergency backstop configured with `governance submit-set-sentinel`. It can only
   take protective actions such as pausing or tightening restrictions; governance admin is still
   required to relax or unpause.
@@ -589,6 +606,7 @@ stellar contract invoke \
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
+- Share-token deployment rejects `admin == vault`; deployment and reconciliation retain the explicit admin and immutable vault as separate authority fields.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.

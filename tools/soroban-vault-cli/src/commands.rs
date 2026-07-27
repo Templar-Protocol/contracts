@@ -645,6 +645,11 @@ fn deploy_stack<E: CommandExecutor>(
         Some(admin) => admin.to_string(),
         None => stellar.keys_address_source_account()?,
     };
+    if !args.force_new {
+        if let Some(existing_vault) = contract_id(manifest, "vault") {
+            validated_share_token_constructor_summary(manifest, args, &admin, existing_vault)?;
+        }
+    }
     let progress = DeploymentProgress::stack(
         cli,
         stack_progress_steps(
@@ -693,6 +698,8 @@ fn deploy_stack<E: CommandExecutor>(
         Ok(vault)
     })?;
     let share_token = progress.step("share token deploy/reuse", || {
+        let constructor_summary =
+            validated_share_token_constructor_summary(manifest, args, &admin, &vault)?;
         let share_token = deploy_contract_if_needed(
             cli,
             stellar,
@@ -701,7 +708,7 @@ fn deploy_stack<E: CommandExecutor>(
             &wasm_hashes["share_token"],
             vec![
                 "--admin".to_string(),
-                vault.clone(),
+                admin.clone(),
                 "--vault".to_string(),
                 vault.clone(),
                 "--name".to_string(),
@@ -711,13 +718,7 @@ fn deploy_stack<E: CommandExecutor>(
                 "--decimals".to_string(),
                 args.share_decimals.to_string(),
             ],
-            map_args([
-                ("admin", vault.as_str()),
-                ("vault", vault.as_str()),
-                ("name", args.share_name.as_str()),
-                ("symbol", args.share_symbol.as_str()),
-                ("decimals", &args.share_decimals.to_string()),
-            ]),
+            constructor_summary,
             args.force_new,
         )?;
         checkpoint_manifest(cli, manifest)?;
@@ -1222,12 +1223,14 @@ fn verify_component_wiring<E: CommandExecutor>(
                 "vault",
                 contract_id(manifest, "vault"),
             )?);
-            checks.push(view_equals_check(
-                stellar,
-                &record.contract_id,
-                "admin",
-                contract_id(manifest, "vault"),
-            )?);
+            if let Some(admin) = record.constructor_args.get("admin") {
+                checks.push(view_equals_check(
+                    stellar,
+                    &record.contract_id,
+                    "admin",
+                    Some(admin),
+                )?);
+            }
         }
         "proxy_4626" => {
             checks.push(view_equals_check(
@@ -1897,6 +1900,18 @@ fn deploy_stack_plan(
 
     let include_blend = !args.blend_pools.is_empty();
     let include_custodial = !args.custodians.is_empty();
+    if !args.force_new {
+        if let (Some(admin), Some(existing_vault)) =
+            (args.admin.as_ref(), contract_id(manifest, "vault"))
+        {
+            validated_share_token_constructor_summary(
+                manifest,
+                args,
+                admin.as_str(),
+                existing_vault,
+            )?;
+        }
+    }
     let adapter_admin = if include_blend || include_custodial {
         let vault = (!args.force_new)
             .then(|| contract_id(manifest, "vault"))
@@ -2214,6 +2229,60 @@ fn stellar_command_shape(command: &str, uses_source: bool) -> String {
 
 fn default_source_label() -> String {
     "Stellar default identity/keystore or STELLAR_ACCOUNT".to_string()
+}
+
+fn validated_share_token_constructor_summary(
+    manifest: &Manifest,
+    args: &crate::cli::DeployStackArgs,
+    admin: &str,
+    vault: &str,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    anyhow::ensure!(
+        admin != vault,
+        "share-token admin must differ from the vault; choose a separately reachable admin"
+    );
+    let constructor_summary = map_args([
+        ("admin", admin),
+        ("vault", vault),
+        ("name", args.share_name.as_str()),
+        ("symbol", args.share_symbol.as_str()),
+        ("decimals", &args.share_decimals.to_string()),
+    ]);
+    ensure_reused_constructor_args_match(
+        manifest,
+        "share_token",
+        &constructor_summary,
+        args.force_new,
+    )?;
+    Ok(constructor_summary)
+}
+
+fn ensure_reused_constructor_args_match(
+    manifest: &Manifest,
+    key: &str,
+    requested: &BTreeMap<String, String>,
+    force_new: bool,
+) -> anyhow::Result<()> {
+    if force_new {
+        return Ok(());
+    }
+    let Some(record) = manifest.contracts.get(key) else {
+        return Ok(());
+    };
+    for (name, requested_value) in requested {
+        let recorded_value = record.constructor_args.get(name).with_context(|| {
+            format!(
+                "refusing to reuse {key} {} because the manifest does not record constructor argument {name}; use a fresh --state path",
+                record.contract_id
+            )
+        })?;
+        anyhow::ensure!(
+            recorded_value == requested_value,
+            "refusing to reuse {key} {} because recorded constructor argument {name} differs from the requested value; use a fresh --state path",
+            record.contract_id
+        );
+    }
+    Ok(())
 }
 
 #[allow(
@@ -6713,6 +6782,182 @@ mod tests {
     }
 
     #[test]
+    fn deploy_stack_records_explicit_admin_for_share_token() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        run(&cli, &executor).expect("deploy stack");
+
+        let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let share_token = manifest
+            .contracts
+            .get("share_token")
+            .expect("share token record");
+        assert_eq!(
+            share_token
+                .constructor_args
+                .get("admin")
+                .map(String::as_str),
+            Some(ACCOUNT)
+        );
+        assert_eq!(
+            share_token
+                .constructor_args
+                .get("vault")
+                .map(String::as_str),
+            Some(CONTRACT)
+        );
+        let calls = submitted_calls(&executor.calls());
+        let share_token_deploy = calls
+            .iter()
+            .find(|(_, args)| args.iter().any(|arg| arg == "--name"))
+            .expect("share token deploy call");
+        assert!(share_token_deploy
+            .1
+            .windows(2)
+            .any(|pair| pair == ["--admin", ACCOUNT]));
+        assert!(share_token_deploy
+            .1
+            .windows(2)
+            .any(|pair| pair == ["--vault", CONTRACT]));
+    }
+
+    #[test]
+    fn share_token_reconciliation_checks_recorded_admin_and_vault() {
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        let mut share_token = imported_record(CONTRACT);
+        share_token.constructor_args = map_args([("admin", ACCOUNT), ("vault", CONTRACT)]);
+        manifest
+            .contracts
+            .insert("share_token".to_string(), share_token.clone());
+        let cli = base_cli("manifest.json".into(), Commands::Status);
+        let executor = RecordingExecutor::new();
+        let stellar = Stellar::new(&cli, &executor);
+
+        let checks = verify_component_wiring(&stellar, &manifest, "share_token", &share_token)
+            .expect("verify share-token wiring");
+
+        assert!(checks
+            .iter()
+            .any(|check| { check.field == "vault" && check.status == WiringStatus::Match }));
+        assert!(checks.iter().any(|check| {
+            check.field == "admin"
+                && check.expected.as_deref() == Some(ACCOUNT)
+                && check.status == WiringStatus::Mismatch
+        }));
+    }
+
+    #[test]
+    fn deploy_stack_rejects_reusing_share_token_with_different_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        let mut share_token = imported_record(CONTRACT);
+        share_token.constructor_args = map_args([
+            ("admin", CONTRACT),
+            ("vault", CONTRACT),
+            ("name", "Templar Vault Share"),
+            ("symbol", "tvSHARE"),
+            ("decimals", "7"),
+        ]);
+        manifest
+            .contracts
+            .insert("share_token".to_string(), share_token);
+        manifest.save(&state).expect("save manifest");
+        let before = fs::read_to_string(&state).expect("read manifest before failure");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("mismatched manifest must fail");
+
+        assert!(error.to_string().contains(
+            "recorded constructor argument admin differs from the requested value; use a fresh --state path"
+        ));
+        let after = fs::read_to_string(&state).expect("read manifest after failure");
+        assert_eq!(after, before);
+        assert!(executor.calls().is_empty());
+    }
+
+    #[test]
+    fn deploy_plan_rejects_reusing_share_token_with_different_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        let mut share_token = imported_record(CONTRACT);
+        share_token.constructor_args = map_args([
+            ("admin", CONTRACT),
+            ("vault", CONTRACT),
+            ("name", "Templar Vault Share"),
+            ("symbol", "tvSHARE"),
+            ("decimals", "7"),
+        ]);
+        manifest
+            .contracts
+            .insert("share_token".to_string(), share_token);
+        let args = test_deploy_stack_args(ACCOUNT);
+        let cli = base_cli(state, Commands::Status);
+
+        let error = deploy_stack_plan(&cli, &manifest, &args)
+            .expect_err("mismatched manifest must fail during planning");
+
+        assert!(error.to_string().contains(
+            "recorded constructor argument admin differs from the requested value; use a fresh --state path"
+        ));
+    }
+
+    #[test]
+    fn deploy_stack_rejects_vault_as_share_token_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Stack(Box::new(test_deploy_stack_args(CONTRACT))),
+            }),
+            ..base_cli(state, Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("vault-as-admin must fail");
+
+        assert!(error
+            .to_string()
+            .contains("share-token admin must differ from the vault"));
+        assert!(!executor.calls().iter().any(|(_, args)| {
+            args.windows(2).any(|pair| {
+                pair == ["contract", "deploy"]
+                    && args.windows(2).any(|window| window[0] == "--admin")
+            })
+        }));
+    }
+
+    #[test]
     fn deploy_stack_deploys_one_custodial_adapter_per_custodian() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_stack_wasms(dir.path());
@@ -7511,6 +7756,24 @@ mod tests {
         ContractRecord {
             initialized: false,
             ..imported_record(contract_id)
+        }
+    }
+
+    fn test_deploy_stack_args(admin: &str) -> DeployStackArgs {
+        DeployStackArgs {
+            admin: Some(admin.parse().expect("admin")),
+            asset_token: Some(CONTRACT.parse().expect("asset token")),
+            governance_timelock_ns: Some(1_000),
+            virtual_shares: 0,
+            virtual_assets: 0,
+            share_name: "Templar Vault Share".to_string(),
+            share_symbol: "tvSHARE".to_string(),
+            share_decimals: 7,
+            blend_pools: Vec::new(),
+            custodians: Vec::new(),
+            adapter_admin: None,
+            build: false,
+            force_new: false,
         }
     }
 
