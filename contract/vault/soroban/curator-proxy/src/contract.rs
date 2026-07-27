@@ -169,6 +169,7 @@ impl ProxyDataKey {
     pub const VaultAddress: Symbol = symbol_short!("vault");
     pub const GovernanceAddress: Symbol = symbol_short!("gov");
     pub const LegacyV1WasmHash: Symbol = symbol_short!("v1_hash");
+    pub const InitializationAuthority: Symbol = symbol_short!("init_auth");
     pub const Initialized: Symbol = symbol_short!("init");
 }
 
@@ -177,6 +178,18 @@ pub struct SorobanCuratorProxyContract;
 
 #[contractimpl]
 impl SorobanCuratorProxyContract {
+    /// Pin the only address allowed to complete one-time proxy initialization.
+    ///
+    /// The constructor runs atomically with deployment, closing the first-claim
+    /// gap while preserving retryability for the intended deployer.
+    pub fn __constructor(env: Env, initialization_authority: Address) {
+        env.storage().instance().set(
+            &ProxyDataKey::InitializationAuthority,
+            &initialization_authority,
+        );
+        extend_instance_ttl(&env);
+    }
+
     pub fn initialize(
         env: Env,
         vault_address: Address,
@@ -722,6 +735,12 @@ fn initialize_proxy(
     if is_initialized(env) {
         return Err(ContractError::AlreadyInitialized);
     }
+    let initialization_authority: Address = env
+        .storage()
+        .instance()
+        .get(&ProxyDataKey::InitializationAuthority)
+        .ok_or(ContractError::NotInitialized)?;
+    initialization_authority.require_auth();
     if let Some(expected_hash) = legacy_v1_wasm_hash.as_ref() {
         require_matching_wasm_hash(&vault_address, expected_hash)?;
     }
@@ -732,6 +751,9 @@ fn initialize_proxy(
     env.storage()
         .instance()
         .set(&ProxyDataKey::GovernanceAddress, &governance_address);
+    env.storage()
+        .instance()
+        .remove(&ProxyDataKey::InitializationAuthority);
     if let Some(legacy_v1_wasm_hash) = legacy_v1_wasm_hash {
         env.storage()
             .instance()

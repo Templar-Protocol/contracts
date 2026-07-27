@@ -45,7 +45,19 @@ fn setup_harness_with_auth_mock(mock_auth: bool) -> Harness {
         (&governance, &governance, &asset, &share, &0i128, &0i128).into_val(&env),
     );
 
-    let proxy = env.register(SorobanCuratorProxyContract, ());
+    let proxy = env.register(SorobanCuratorProxyContract, (&admin,));
+    if !mock_auth {
+        let initialize_auth = MockAuthInvoke {
+            contract: &proxy,
+            fn_name: "initialize",
+            args: (&vault, &governance).into_val(&env),
+            sub_invokes: &[],
+        };
+        env.mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &initialize_auth,
+        }]);
+    }
     env.invoke_contract::<()>(
         &proxy,
         &Symbol::new(&env, "initialize"),
@@ -59,6 +71,70 @@ fn setup_harness_with_auth_mock(mock_auth: bool) -> Harness {
         governance,
         proxy,
     }
+}
+
+#[test]
+fn proxy_initialization_rejects_unauthorized_first_claim() {
+    let env = Env::default();
+    let initialization_authority = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let vault = Address::generate(&env);
+    let governance = Address::generate(&env);
+    let proxy = env.register(SorobanCuratorProxyContract, (&initialization_authority,));
+    let initialize_args: soroban_sdk::Vec<soroban_sdk::Val> = (&vault, &governance).into_val(&env);
+    let attacker_invoke = MockAuthInvoke {
+        contract: &proxy,
+        fn_name: "initialize",
+        args: initialize_args.clone(),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &attacker_invoke,
+    }]);
+
+    let unauthorized = env.try_invoke_contract::<(), ContractError>(
+        &proxy,
+        &Symbol::new(&env, "initialize"),
+        initialize_args.clone(),
+    );
+
+    assert!(unauthorized.is_err());
+    assert_eq!(
+        env.try_invoke_contract::<Address, ContractError>(
+            &proxy,
+            &Symbol::new(&env, "vault"),
+            soroban_sdk::vec![&env],
+        ),
+        Err(Ok(ContractError::NotInitialized))
+    );
+
+    let authority_invoke = MockAuthInvoke {
+        contract: &proxy,
+        fn_name: "initialize",
+        args: initialize_args.clone(),
+        sub_invokes: &[],
+    };
+    env.mock_auths(&[MockAuth {
+        address: &initialization_authority,
+        invoke: &authority_invoke,
+    }]);
+    assert_eq!(
+        env.try_invoke_contract::<(), ContractError>(
+            &proxy,
+            &Symbol::new(&env, "initialize"),
+            initialize_args,
+        ),
+        Ok(Ok(()))
+    );
+    assert_eq!(
+        env.invoke_contract::<Address>(
+            &proxy,
+            &Symbol::new(&env, "vault"),
+            soroban_sdk::vec![&env],
+        ),
+        vault
+    );
 }
 
 #[test]

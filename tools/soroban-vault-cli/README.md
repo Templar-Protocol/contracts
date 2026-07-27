@@ -95,8 +95,12 @@ tmplr-soroban-vault deploy adapters \
 
 To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
 governance addresses are read from the manifest unless supplied explicitly. The command uploads or
-reuses the current curator-proxy WASM, deploys a new proxy instance, and checkpoints its successful
-initialization provenance before querying `vault_version`. It marks the replacement
+reuses the current curator-proxy WASM and deploys a new proxy instance whose constructor atomically
+pins the resolved source-account address as its one-time initialization authority. Deployment and
+initialization remain separate transactions, but the deployed contract ID and authority are
+checkpointed before `initialize` runs. Only that same source account can complete or retry
+initialization; a different operator must deploy a fresh proxy. The command checkpoints successful
+initialization provenance before querying `vault_version` and marks the replacement
 version-discovery-capable only after that query succeeds.
 
 ```sh

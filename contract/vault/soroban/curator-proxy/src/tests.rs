@@ -492,6 +492,7 @@ impl MockGovernanceContract {
 struct Fixture {
     env: Env,
     proxy: Address,
+    initialization_authority: Address,
     vault: Address,
     governance: Address,
 }
@@ -500,12 +501,14 @@ impl Fixture {
     fn new() -> Self {
         let env = Env::default();
         env.mock_all_auths();
-        let proxy = env.register(SorobanCuratorProxyContract, ());
+        let initialization_authority = Address::generate(&env);
+        let proxy = env.register(SorobanCuratorProxyContract, (&initialization_authority,));
         let vault = env.register(MockVaultContract, ());
         let governance = env.register(MockGovernanceContract, ());
         Self {
             env,
             proxy,
+            initialization_authority,
             vault,
             governance,
         }
@@ -569,6 +572,17 @@ fn address_wire(address: &Address) -> alloc::string::String {
 fn initialize_stores_target_contracts() {
     let fixture = Fixture::new();
 
+    fixture.env.as_contract(&fixture.proxy, || {
+        assert_eq!(
+            fixture
+                .env
+                .storage()
+                .instance()
+                .get(&ProxyDataKey::InitializationAuthority),
+            Some(fixture.initialization_authority.clone())
+        );
+    });
+
     fixture.initialize().expect("initialize succeeds");
 
     fixture.env.as_contract(&fixture.proxy, || {
@@ -583,6 +597,10 @@ fn initialize_stores_target_contracts() {
         );
         assert_eq!(
             storage.get::<_, BytesN<32>>(&ProxyDataKey::LegacyV1WasmHash),
+            None
+        );
+        assert_eq!(
+            storage.get::<_, Address>(&ProxyDataKey::InitializationAuthority),
             None
         );
         assert_eq!(storage.get(&ProxyDataKey::Initialized), Some(true));
@@ -742,7 +760,10 @@ fn vault_version_rejects_malformed_response_and_contract_failure() {
         Err(ContractError::VaultError)
     );
 
-    let failing_proxy = fixture.env.register(SorobanCuratorProxyContract, ());
+    let failing_proxy = fixture.env.register(
+        SorobanCuratorProxyContract,
+        (&fixture.initialization_authority,),
+    );
     let failing_vault = fixture.env.register(MockFailingVaultContract, ());
     fixture.env.as_contract(&failing_proxy, || {
         SorobanCuratorProxyContract::initialize(

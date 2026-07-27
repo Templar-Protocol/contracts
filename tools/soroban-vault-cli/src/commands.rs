@@ -33,6 +33,7 @@ use crate::{
 };
 
 const CONTRACT_TTL_EXTEND_LEDGERS: u32 = 3_110_400;
+const CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG: &str = "initialization_authority";
 const CURATOR_PROXY_INITIALIZER_ARG: &str = "initializer";
 const CURATOR_PROXY_VERSION_DISCOVERY_ARG: &str = "version_discovery";
 const CURATOR_PROXY_VAULT_ARG: &str = "vault_address";
@@ -802,15 +803,32 @@ fn deploy_stack<E: CommandExecutor>(
     })?;
 
     let curator_proxy = progress.step("curator proxy deploy/reuse", || {
-        let curator_proxy = deploy_contract_if_needed(
+        let (constructor_args, constructor_summary) =
+            if !args.force_new && manifest.contracts.contains_key("curator_proxy") {
+                (Vec::new(), BTreeMap::new())
+            } else {
+                let initialization_authority = stellar.keys_address_source_account()?;
+                (
+                    vec![
+                        "--initialization_authority".to_string(),
+                        initialization_authority.clone(),
+                    ],
+                    map_args([(
+                        CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG,
+                        initialization_authority.as_str(),
+                    )]),
+                )
+            };
+        let curator_proxy = deploy_contract_if_needed_with_initialized_state(
             cli,
             stellar,
             manifest,
             "curator_proxy",
             &wasm_hashes["curator_proxy"],
-            Vec::new(),
-            BTreeMap::new(),
+            constructor_args,
+            constructor_summary,
             args.force_new,
+            false,
         )?;
         checkpoint_manifest(cli, manifest)?;
         Ok(curator_proxy)
@@ -1390,15 +1408,23 @@ fn deploy_curator_proxy<E: CommandExecutor>(
     )?;
     checkpoint_manifest(cli, manifest)?;
 
-    let curator_proxy = deploy_contract_if_needed(
+    let initialization_authority = stellar.keys_address_source_account()?;
+    let curator_proxy = deploy_contract_if_needed_with_initialized_state(
         cli,
         stellar,
         manifest,
         "curator_proxy",
         &wasm_hash,
-        Vec::new(),
-        BTreeMap::new(),
+        vec![
+            "--initialization_authority".to_string(),
+            initialization_authority.clone(),
+        ],
+        map_args([(
+            CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG,
+            initialization_authority.as_str(),
+        )]),
         true,
+        false,
     )?;
 
     let (initializer, initializer_args, legacy_hash) =
@@ -1866,10 +1892,15 @@ fn push_contract_plan(plan: &mut PlanResponse, manifest: &Manifest, key: &str, f
     });
     plan.manifest_mutations
         .push(format!("record deployed {key} contract id"));
-    plan.stellar_commands.push(stellar_command_shape(
-        &format!("contract deploy --wasm-hash <{key}_hash>"),
-        true,
-    ));
+    let command = if key == "curator_proxy" {
+        format!(
+            "contract deploy --wasm-hash <{key}_hash> -- --initialization_authority <source-account-address>"
+        )
+    } else {
+        format!("contract deploy --wasm-hash <{key}_hash>")
+    };
+    plan.stellar_commands
+        .push(stellar_command_shape(&command, true));
 }
 
 fn wasm_plan(
@@ -1932,6 +1963,35 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
     constructor_summary: BTreeMap<String, String>,
     force_new: bool,
 ) -> anyhow::Result<String> {
+    let initialized = !constructor_args.is_empty();
+    deploy_contract_if_needed_with_initialized_state(
+        cli,
+        stellar,
+        manifest,
+        key,
+        wasm_hash,
+        constructor_args,
+        constructor_summary,
+        force_new,
+        initialized,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "partial-constructor deployments must record their initialization state explicitly"
+)]
+fn deploy_contract_if_needed_with_initialized_state<E: CommandExecutor>(
+    cli: &Cli,
+    stellar: &Stellar<'_, E>,
+    manifest: &mut Manifest,
+    key: &str,
+    wasm_hash: &str,
+    constructor_args: Vec<String>,
+    constructor_summary: BTreeMap<String, String>,
+    force_new: bool,
+    initialized: bool,
+) -> anyhow::Result<String> {
     if !force_new {
         if let Some(record) = manifest.contracts.get(key) {
             info!(
@@ -1946,7 +2006,6 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
         contract_key = key,
         wasm_hash, force_new, "deploying contract"
     );
-    let has_constructor_args = !constructor_args.is_empty();
     let contract_id = stellar.deploy(wasm_hash, constructor_args)?;
     manifest.contracts.insert(
         key.to_string(),
@@ -1956,7 +2015,7 @@ fn deploy_contract_if_needed<E: CommandExecutor>(
             salt: None,
             constructor_args: constructor_summary,
             deploy_tx: None,
-            initialized: has_constructor_args,
+            initialized,
         },
     );
     checkpoint_manifest(cli, manifest)?;
@@ -3413,7 +3472,7 @@ fn command_artifact_hash(command: &Commands, manifest: &Manifest) -> Option<Stri
             .and_then(|record| record.remote_wasm_hash.clone()),
         DeployCommand::CuratorProxy(_) => manifest
             .artifacts
-            .get("curator_proxy")
+            .get(ArtifactSpec::from_name(crate::cli::ArtifactName::CuratorProxy).key)
             .and_then(|record| record.remote_wasm_hash.clone()),
         DeployCommand::Stack(_)
         | DeployCommand::Resume(_)
@@ -6397,6 +6456,12 @@ mod tests {
 
         let calls = executor.calls();
         assert!(calls.iter().any(|(_, args)| {
+            matches!(args.as_slice(), [contract, deploy, ..] if contract == "contract" && deploy == "deploy")
+                && args.windows(2).any(|pair| {
+                    pair == ["--initialization_authority", CONTRACT]
+                })
+        }));
+        assert!(calls.iter().any(|(_, args)| {
             args.iter().any(|arg| arg == "initialize")
                 && args
                     .windows(2)
@@ -6416,6 +6481,12 @@ mod tests {
             .get("curator_proxy")
             .expect("curator proxy record");
         assert!(proxy.initialized);
+        assert_eq!(
+            proxy
+                .constructor_args
+                .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
+            Some(&CONTRACT.to_string())
+        );
         assert_eq!(
             proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
             Some(&"initialize".to_string())
@@ -6472,6 +6543,12 @@ mod tests {
             .get("curator_proxy")
             .expect("curator proxy record");
         assert_eq!(
+            proxy
+                .constructor_args
+                .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
+            Some(&CONTRACT.to_string())
+        );
+        assert_eq!(
             proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
             Some(&"initialize_legacy_v1".to_string())
         );
@@ -6507,6 +6584,49 @@ mod tests {
         assert!(!executor.calls().iter().any(|(_, args)| {
             matches!(args.as_slice(), [contract, deploy, ..] if contract == "contract" && deploy == "deploy")
         }));
+    }
+
+    #[test]
+    fn targeted_curator_proxy_checkpoint_stays_uninitialized_when_initialize_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_curator_proxy_wasm(dir.path());
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::CuratorProxy(DeployCuratorProxyArgs {
+                    vault: None,
+                    governance: None,
+                    legacy_v1_wasm_hash: None,
+                    build: false,
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = FailingInitializeExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("initialize must fail");
+
+        assert!(
+            error.to_string().contains("forced initialize failure")
+                || error.to_string().contains("preflight simulation failed")
+        );
+        let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        let proxy = manifest
+            .contracts
+            .get("curator_proxy")
+            .expect("deployed proxy must be checkpointed");
+        assert!(!proxy.initialized);
+        assert_eq!(
+            proxy
+                .constructor_args
+                .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
+            Some(&CONTRACT.to_string())
+        );
+        assert!(!proxy
+            .constructor_args
+            .contains_key(CURATOR_PROXY_INITIALIZER_ARG));
     }
 
     #[test]

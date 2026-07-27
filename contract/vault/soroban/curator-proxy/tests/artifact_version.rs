@@ -29,8 +29,10 @@ fn wasm_hash(address: &Address) -> soroban_sdk::BytesN<32> {
 fn optimized_proxy_tracks_the_runtime_artifact_transition() {
     let env = Env::default();
     env.cost_estimate().budget().reset_unlimited();
-    let legacy_target = env.register(CURATOR_PROXY_WASM, ());
-    let proxy = env.register(CURATOR_PROXY_WASM, ());
+    env.mock_all_auths();
+    let initialization_authority = Address::generate(&env);
+    let legacy_target = env.register(CURATOR_PROXY_WASM, (&initialization_authority,));
+    let proxy = env.register(CURATOR_PROXY_WASM, (&initialization_authority,));
     let governance = Address::generate(&env);
     let legacy_hash = wasm_hash(&legacy_target);
 

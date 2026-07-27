@@ -309,9 +309,11 @@ non-upgradeable; consumers that need the query must use a replacement proxy poin
 vault and governance contracts.
 
 The targeted CLI flow verifies the vault's current on-chain Wasm hash before deploying a fresh
-proxy and invokes `initialize_legacy_v1`. It checkpoints the successful initialization and pinned
-hash before checking `vault_version`, then marks the proxy version-discovery-capable only after that
-query succeeds:
+proxy. Its constructor atomically pins the resolved source-account address as the one-time
+initialization authority, and the CLI checkpoints that deployed-but-uninitialized proxy before
+invoking `initialize_legacy_v1`. It checkpoints the successful initialization and pinned hash before
+checking `vault_version`, then marks the proxy version-discovery-capable only after that query
+succeeds:
 
 ```sh
 tmplr-soroban-vault deploy curator-proxy \
@@ -320,17 +322,18 @@ tmplr-soroban-vault deploy curator-proxy \
   --legacy-v1-wasm-hash <approved-v1-wasm-hash>
 ```
 
-The equivalent targeted just recipe builds the proxy, lets the contract validate the supplied
-32-byte hash, and checks `vault_version` before recording the new proxy ID:
+The equivalent targeted just recipe builds the proxy, records the new proxy ID immediately after
+deployment, lets the contract validate the supplied 32-byte hash, and then checks `vault_version`:
 
 ```sh
 just -f contract/vault/soroban/justfile deploy-curator-proxy-legacy-v1 \
   <vault-address> <governance-address> <approved-v1-wasm-hash>
 ```
 
-Proxy deployment and initialization are separate transactions under the existing deployment model,
-so operators must coordinate the first initialization and verify the emitted proxy address. The
-approved tTUSDC mainnet runtime hash is recorded in
+Proxy deployment and initialization are separate transactions, but initialization is no longer
+claimable by an observer: only the source identity pinned by the constructor can complete or retry
+it. If that identity is unavailable, deploy a fresh proxy with a new authority instead of attempting
+to claim the recorded instance. The approved tTUSDC mainnet runtime hash is recorded in
 `contract/vault/deployments/tTUSDC/mainnet/manifest.json`; do not substitute a hash solely because
 its artifact lacks `version`.
 

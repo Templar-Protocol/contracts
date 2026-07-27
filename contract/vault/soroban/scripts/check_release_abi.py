@@ -25,6 +25,13 @@ EXPECTED: dict[str, dict[str, dict[str, Any]]] = {
         }
     },
     "curator-proxy": {
+        "__constructor": {
+            "name": "__constructor",
+            "inputs": [
+                {"name": "initialization_authority", "type_": "address"},
+            ],
+            "outputs": [],
+        },
         "initialize": {
             "name": "initialize",
             "inputs": [

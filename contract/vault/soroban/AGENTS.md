@@ -258,6 +258,8 @@ Practical order of attack:
 
 - `initialize()` is highly sensitive because front-running it would seize governance/curator
   control. Keep deployment and initialization assumptions explicit.
+- Curator-proxy deployments pin a one-time initialization authority in `__constructor` and remove
+  it after successful initialization. Do not reintroduce an unauthenticated first-claim window.
 - Review auth on every privileged Soroban entrypoint. Do not rely on outer routing alone.
 - Soroban transactions are atomic, but adapter correctness, state ordering, and accepted external
   asset snapshots still matter for accounting safety.
