@@ -253,6 +253,8 @@ impl ProxyGovernanceInterface for Contract {
 impl Contract {
     #[init]
     pub fn new(proxy_oracle_id: AccountId, admin_id: AccountId, policy: GovernancePolicy) -> Self {
+        // `policy` deserialized through `GovernancePolicyWire`, so it is already within bounds —
+        // an out-of-range init policy is rejected while parsing the args, before reaching here.
         let mut self_ = Self {
             state: State::new((proxy_oracle_id, policy)),
         };

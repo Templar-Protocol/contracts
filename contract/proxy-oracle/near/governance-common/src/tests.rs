@@ -97,6 +97,110 @@ fn set_target_default_bounded_by_max_proposal_ttl() {
     ));
 }
 
+fn policy_wire(default_ttl_secs: u64) -> GovernancePolicyWire {
+    GovernancePolicyWire {
+        reflexive_ttls: ReflexiveTtls {
+            set_policy: Nanoseconds::zero(),
+            set_role: Nanoseconds::zero(),
+            self_upgrade: Nanoseconds::zero(),
+        },
+        default_target: method_policy(default_ttl_secs, Role::Admin),
+        method_policies: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn policy_wire_parses_when_it_satisfies_the_invariants() {
+    let mut wire = policy_wire(100);
+    wire.reflexive_ttls.set_policy = Nanoseconds::from_secs(10);
+    wire.method_policies.insert(
+        "admin_set_manual_trip".to_owned(),
+        method_policy(5, Role::ManualTripper),
+    );
+
+    let parsed = GovernancePolicy::try_from(wire).unwrap();
+    assert_eq!(
+        parsed.resolve("admin_set_manual_trip").ttl,
+        Nanoseconds::from_secs(5)
+    );
+    assert_eq!(parsed.reflexive_ttls.set_policy, Nanoseconds::from_secs(10));
+}
+
+#[test]
+fn policy_wire_rejects_every_invariant_init_would_otherwise_bypass() {
+    let over_max = MAX_PROPOSAL_TTL.saturating_add(Nanoseconds::from_secs(1));
+
+    // Every reflexive bucket is bounded, not just the first: an oversized `set_policy` is the
+    // bricking case (no policy-repair proposal can then be created).
+    for kind in [
+        ReflexiveKind::SetPolicy,
+        ReflexiveKind::SetRole,
+        ReflexiveKind::SelfUpgrade,
+    ] {
+        let mut wire = policy_wire(1);
+        wire.reflexive_ttls.set(kind, over_max);
+        assert_eq!(
+            GovernancePolicy::try_from(wire),
+            Err(PolicyError::TtlExceedsMaximum {
+                maximum: MAX_PROPOSAL_TTL,
+                actual: over_max,
+            }),
+            "{kind:?} bucket not bounded"
+        );
+    }
+
+    let mut default_over = policy_wire(1);
+    default_over.default_target.ttl = over_max;
+    assert!(matches!(
+        GovernancePolicy::try_from(default_over),
+        Err(PolicyError::TtlExceedsMaximum { .. })
+    ));
+
+    let mut ceiling = policy_wire(10);
+    ceiling.method_policies.insert(
+        "admin_set_proxy".to_owned(),
+        method_policy(11, Role::ProxyConfigurationManager),
+    );
+    assert_eq!(
+        GovernancePolicy::try_from(ceiling),
+        Err(PolicyError::MethodTtlExceedsDefault {
+            default: Nanoseconds::from_secs(10),
+            actual: Nanoseconds::from_secs(11),
+        })
+    );
+
+    let mut too_many = policy_wire(1_000);
+    for index in 0..=MAX_METHOD_POLICIES {
+        too_many
+            .method_policies
+            .insert(format!("admin_m{index}"), method_policy(1, Role::Admin));
+    }
+    assert_eq!(
+        GovernancePolicy::try_from(too_many),
+        Err(PolicyError::TooManyMethodPolicies {
+            maximum: MAX_METHOD_POLICIES,
+        })
+    );
+}
+
+/// The bound is on the wire, not on a helper someone has to remember to call: an out-of-range policy
+/// never deserializes into a `GovernancePolicy` at all, which is what init args go through.
+#[test]
+fn out_of_range_policy_json_does_not_deserialize() {
+    let over_max = MAX_PROPOSAL_TTL.saturating_add(Nanoseconds::from_secs(1));
+    let mut wire = policy_wire(1);
+    wire.reflexive_ttls.set_policy = over_max;
+    let json = near_sdk::serde_json::to_string(&wire).unwrap();
+
+    let error = near_sdk::serde_json::from_str::<GovernancePolicy>(&json).unwrap_err();
+    assert!(
+        error.to_string().contains("exceeds maximum"),
+        "unexpected error: {error}"
+    );
+    // The same bytes are still readable as the unconstrained wire form.
+    near_sdk::serde_json::from_str::<GovernancePolicyWire>(&json).unwrap();
+}
+
 #[test]
 fn method_policy_cap_is_enforced() {
     let mut policy = policy(1_000);

@@ -10,7 +10,7 @@ use near_sdk_contract_tools::rbac::Rbac;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicy, LegacyOperation, MethodPolicy, Operation, ReflexiveKind, ReflexiveOperation,
-    ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
+    ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE, MAX_PROPOSAL_TTL,
 };
 
 use crate::{Contract, ProxyGovernanceInterface};
@@ -696,6 +696,28 @@ fn self_upgrade_execution_self_deploys_and_migrates() {
         }
         action => panic!("expected migrate function call, got {action:?}"),
     }
+}
+
+/// `new` takes an already-parsed policy: near-sdk deserializes its init args into
+/// `GovernancePolicy`, which exists only within bounds. An oversized `set_policy` lock would
+/// otherwise brick governance — every policy-repair proposal then exceeds `MAX_PROPOSAL_TTL` at
+/// create — so such args are rejected before `new` runs at all.
+#[test]
+fn init_args_carrying_a_bricking_policy_are_rejected_while_parsing() {
+    let mut args = near_sdk::serde_json::json!({
+        "proxy_oracle_id": "proxy.near",
+        "admin_id": "admin.near",
+        "policy": default_policy(),
+    });
+    args["policy"]["reflexive_ttls"]["set_policy"] =
+        near_sdk::serde_json::json!(MAX_PROPOSAL_TTL.saturating_add(Nanoseconds::from_secs(1)));
+
+    let error = near_sdk::serde_json::from_value::<GovernancePolicy>(args["policy"].clone())
+        .expect_err("an out-of-range policy must not parse");
+    assert!(
+        error.to_string().contains("exceeds maximum"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

@@ -258,15 +258,93 @@ impl Operation {
 /// The table-driven governance policy: independent reflexive timelocks, a conservative default for
 /// target methods, and a whitelist of per-method overrides that may be sped up or given a lower role.
 ///
-/// Invariant: every `method_policies` entry's `ttl` stays `<= default_target.ttl`. Enforced on every
-/// write, so an unlisted method (including one introduced by a future target upgrade) can never buy a
-/// shorter timelock or lower role than the conservative default.
+/// Invariant: every `method_policies` entry's `ttl` stays `<= default_target.ttl`, no TTL exceeds
+/// [`MAX_PROPOSAL_TTL`], and there are at most [`MAX_METHOD_POLICIES`] overrides. Maintained by the
+/// mutators below on every write, so an unlisted method (including one introduced by a future target
+/// upgrade) can never buy a shorter timelock or lower role than the conservative default.
+///
+/// A policy arriving from outside — contract init args, `--policy-file` — is parsed from
+/// [`GovernancePolicyWire`] rather than deserialized directly, so a value of this type is already
+/// within bounds and needs no separate validation step. Init is otherwise the one path that writes a
+/// whole policy without the mutators, and an out-of-range one bricks governance: `create_proposal`
+/// rejects any effective TTL above [`MAX_PROPOSAL_TTL`], so a `set_policy` lock seeded above it makes
+/// every policy-repair proposal unopenable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
+#[serde(try_from = "GovernancePolicyWire")]
 pub struct GovernancePolicy {
     pub reflexive_ttls: ReflexiveTtls,
     pub default_target: MethodPolicy,
     pub method_policies: BTreeMap<String, MethodPolicy>,
+}
+
+/// The wire form of [`GovernancePolicy`]: the same fields carrying no invariants. Every policy
+/// deserialized from JSON lands here first and is parsed into a [`GovernancePolicy`] or rejected, so
+/// the bounds are checked once, at the point untrusted input enters, rather than at each use.
+///
+/// Borsh state reads bypass this — stored policies were parsed or built through the mutators when
+/// they were written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct GovernancePolicyWire {
+    pub reflexive_ttls: ReflexiveTtls,
+    pub default_target: MethodPolicy,
+    pub method_policies: BTreeMap<String, MethodPolicy>,
+}
+
+impl TryFrom<GovernancePolicyWire> for GovernancePolicy {
+    type Error = PolicyError;
+
+    /// # Errors
+    ///
+    /// If any reflexive or default TTL exceeds [`MAX_PROPOSAL_TTL`], there are more than
+    /// [`MAX_METHOD_POLICIES`] overrides, or an override's `ttl` exceeds `default_target.ttl`.
+    fn try_from(wire: GovernancePolicyWire) -> Result<Self, Self::Error> {
+        let GovernancePolicyWire {
+            // Destructured so a new reflexive bucket has to be bounded here too.
+            reflexive_ttls:
+                ReflexiveTtls {
+                    set_policy,
+                    set_role,
+                    self_upgrade,
+                },
+            default_target,
+            method_policies,
+        } = wire;
+
+        for ttl in [set_policy, set_role, self_upgrade, default_target.ttl] {
+            if ttl > MAX_PROPOSAL_TTL {
+                return Err(PolicyError::TtlExceedsMaximum {
+                    maximum: MAX_PROPOSAL_TTL,
+                    actual: ttl,
+                });
+            }
+        }
+        if method_policies.len() > MAX_METHOD_POLICIES {
+            return Err(PolicyError::TooManyMethodPolicies {
+                maximum: MAX_METHOD_POLICIES,
+            });
+        }
+        if let Some((_, entry)) = method_policies
+            .iter()
+            .find(|(_, entry)| entry.ttl > default_target.ttl)
+        {
+            return Err(PolicyError::MethodTtlExceedsDefault {
+                default: default_target.ttl,
+                actual: entry.ttl,
+            });
+        }
+
+        Ok(Self {
+            reflexive_ttls: ReflexiveTtls {
+                set_policy,
+                set_role,
+                self_upgrade,
+            },
+            default_target,
+            method_policies,
+        })
+    }
 }
 
 impl GovernancePolicy {

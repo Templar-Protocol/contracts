@@ -17,6 +17,12 @@ use templar_proxy_oracle_near_governance_common::LegacyOperation;
 /// whose `ttl` exceeds the default, so `execute_proposal` reverts it (the `ttl <= default_target.ttl`
 /// invariant). That is a clean, atomic revert — the proposal stays queued and becomes executable once
 /// governance raises `default_target` first; the migration and the rest of the queue are unaffected.
+///
+/// The seeded policy is built in Rust rather than parsed from `GovernancePolicyWire` (the path an
+/// operator-supplied policy takes): `into_policy` satisfies the ceiling and count invariants by
+/// construction, and the only input it cannot bound is a v0 TTL above `MAX_PROPOSAL_TTL`. Rejecting
+/// that would fail the upgrade against state the operator cannot edit first, and clamping it would
+/// silently shorten a live timelock — so a v0 table is assumed to hold TTLs within the new maximum.
 #[derive(Clone, Debug)]
 #[near(serializers = [json])]
 pub struct V0ToV1;
