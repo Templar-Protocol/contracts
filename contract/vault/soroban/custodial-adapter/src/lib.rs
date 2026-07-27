@@ -25,6 +25,7 @@ enum DataKey {
     Paused,
     ReportedAssets(Address),
     ReportNonce(Address),
+    ReportedAt(Address),
 }
 
 #[contracterror]
@@ -218,6 +219,16 @@ impl CustodialAdapterContract {
         load_reported_assets(&env, &asset)
     }
 
+    /// Return the ledger timestamp of the latest explicit reported-NAV update.
+    ///
+    /// `None` means `set_reported_assets` has never succeeded for this asset.
+    /// Allocation and withdrawal lifecycle mutations do not change this value.
+    pub fn reported_at(env: Env, asset: Address) -> Result<Option<u64>, AdapterError> {
+        extend_instance_ttl(&env);
+        require_asset(&env, &asset)?;
+        Ok(load_reported_at(&env, &asset))
+    }
+
     /// Explicitly set reported route NAV for `asset`.
     ///
     /// The configured custodian is allowed to report NAV because custody of the
@@ -254,6 +265,7 @@ impl CustodialAdapterContract {
         }
         store_reported_assets(&env, &asset, amount);
         store_report_nonce(&env, &asset, report_nonce);
+        store_reported_at(&env, &asset, env.ledger().timestamp());
         env.events()
             .publish((symbol_short!("report"), caller, asset), amount);
         Ok(())
@@ -473,6 +485,12 @@ fn load_report_nonce(env: &Env, asset: &Address) -> u64 {
         .unwrap_or(0)
 }
 
+fn load_reported_at(env: &Env, asset: &Address) -> Option<u64> {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReportedAt(asset.clone()))
+}
+
 fn next_report_nonce(env: &Env, asset: &Address) -> Result<u64, AdapterError> {
     load_report_nonce(env, asset)
         .checked_add(1)
@@ -492,6 +510,12 @@ fn store_report_nonce(env: &Env, asset: &Address, nonce: u64) {
     env.storage()
         .instance()
         .set(&DataKey::ReportNonce(asset.clone()), &nonce);
+}
+
+fn store_reported_at(env: &Env, asset: &Address, timestamp: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReportedAt(asset.clone()), &timestamp);
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), AdapterError> {
@@ -610,7 +634,9 @@ mod kani_proofs {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use soroban_sdk::testutils::{Address as _, Events as _, MockAuth, MockAuthInvoke};
+    use soroban_sdk::testutils::{
+        Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
+    };
     use soroban_sdk::{contract, contractimpl, IntoVal, Symbol};
 
     const ADAPTER_SOURCE: &str = include_str!("lib.rs");
@@ -702,6 +728,12 @@ mod tests {
     fn report_nonce(env: &Env, contract_id: &Address, asset: &Address) -> u64 {
         env.as_contract(contract_id, || {
             CustodialAdapterContract::report_nonce(env.clone(), asset.clone()).unwrap()
+        })
+    }
+
+    fn reported_at(env: &Env, contract_id: &Address, asset: &Address) -> Option<u64> {
+        env.as_contract(contract_id, || {
+            CustodialAdapterContract::reported_at(env.clone(), asset.clone()).unwrap()
         })
     }
 
@@ -1228,6 +1260,100 @@ mod tests {
                 5
             );
         });
+    }
+
+    #[test]
+    fn reported_at_is_none_for_legacy_state_and_tracks_explicit_reports() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
+
+        env.as_contract(&contract_id, || {
+            store_reported_assets(&env, &asset, 50);
+            store_report_nonce(&env, &asset, 7);
+        });
+        assert_eq!(reported_assets(&env, &contract_id, &asset), 50);
+        assert_eq!(report_nonce(&env, &contract_id, &asset), 7);
+        assert_eq!(reported_at(&env, &contract_id, &asset), None);
+
+        env.ledger().set_timestamp(123);
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 7);
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(123));
+
+        env.ledger().set_timestamp(456);
+        set_reported_assets_for(&env, &contract_id, vault, asset.clone(), 0);
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(456));
+        assert!(!has_reported_assets_key(&env, &contract_id, &asset));
+    }
+
+    #[test]
+    fn lifecycle_nav_mutations_do_not_change_reported_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
+        let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &asset);
+
+        env.ledger().set_timestamp(100);
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 100);
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(100));
+
+        env.ledger().set_timestamp(200);
+        asset_admin.mint(&contract_id, &10);
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::supply(env.clone(), vault.clone(), asset.clone(), 10)
+                .unwrap();
+        });
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(100));
+
+        env.ledger().set_timestamp(300);
+        asset_admin.mint(&contract_id, &30);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::progress_withdrawal(
+                    env.clone(),
+                    vault.clone(),
+                    asset.clone(),
+                    20,
+                )
+                .unwrap(),
+                20
+            );
+        });
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(100));
+
+        env.ledger().set_timestamp(400);
+        env.as_contract(&contract_id, || {
+            CustodialAdapterContract::withdraw(env.clone(), vault, asset.clone(), 10).unwrap();
+        });
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(100));
+    }
+
+    #[test]
+    fn failed_explicit_report_does_not_change_reported_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _admin, vault, _custodian, asset) = setup_adapter(&env);
+
+        env.ledger().set_timestamp(100);
+        set_reported_assets_for(&env, &contract_id, vault.clone(), asset.clone(), 10);
+        let accepted_nonce = report_nonce(&env, &contract_id, &asset);
+
+        env.ledger().set_timestamp(200);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                CustodialAdapterContract::set_reported_assets(
+                    env.clone(),
+                    vault,
+                    asset.clone(),
+                    10,
+                    11,
+                    accepted_nonce,
+                ),
+                Err(AdapterError::InvalidInput)
+            );
+        });
+
+        assert_eq!(reported_at(&env, &contract_id, &asset), Some(100));
     }
 
     #[test]
