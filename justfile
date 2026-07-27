@@ -167,3 +167,14 @@ docs:
 # version and CI builds, uploads, and pins the WASM. See RELEASING.md.
 artifacts-fetch:
     cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts
+
+# Print the resolved artifact cache directory.
+artifacts-cache-path:
+    @cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts -- --print-path
+
+# Empty the artifact cache.
+#
+# Safe to run at any time: entries are immutable release assets, so this only
+# costs the next `just artifacts-fetch` a re-download.
+artifacts-clean:
+    cargo run --quiet -p templar-contract-artifacts --features fetch --bin fetch-artifacts -- --clean

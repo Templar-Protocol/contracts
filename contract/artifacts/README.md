@@ -66,6 +66,8 @@ use templar_contract_artifacts::{fetch, ArtifactId};
 let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
 ```
 
+### The cache
+
 Bytes are cached outside the repository so every worktree shares one copy:
 
 ```
@@ -73,8 +75,25 @@ ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artif
   └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 ```
 
-Warm it with `just artifacts-fetch`; `TEMPLAR_ARTIFACT_OFFLINE=1` forbids
-downloads and restricts lookups to the cache.
+| Command | Does |
+|---|---|
+| `just artifacts-fetch` | Download every pinned release into the cache |
+| `just artifacts-cache-path` | Print the resolved cache directory |
+| `just artifacts-clean` | Empty it, reporting what was freed |
+
+`TEMPLAR_ARTIFACT_OFFLINE=1` forbids downloads and restricts lookups to the
+cache. `TEMPLAR_ARTIFACT_CACHE` relocates it — point it inside a checkout if you
+would rather each one kept its own.
+
+Cleaning is never destructive: entries are immutable release assets, so the only
+cost is a re-download. `artifacts-clean` removes the `near/` subtree it owns and
+the root only if that leaves it empty, so a misaimed `TEMPLAR_ARTIFACT_CACHE`
+cannot take unrelated files with it.
+
+Sharing one cache across worktrees is safe because entries are verified against
+the in-repo pin on **every read**, not just on download. A branch whose `ids.rs`
+disagrees with a cached entry discards it and re-downloads, so the cache can
+never serve bytes the current checkout did not ask for.
 
 ### Trust
 

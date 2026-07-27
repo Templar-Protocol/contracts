@@ -35,7 +35,15 @@
 //! ```
 //!
 //! `TEMPLAR_ARTIFACT_OFFLINE=1` restricts lookups to the cache. Warm it with
-//! `just artifacts-fetch`.
+//! `just artifacts-fetch`, locate it with `just artifacts-cache-path`, and empty
+//! it with `just artifacts-clean`.
+//!
+//! The cache is shared rather than per-checkout because a released artifact is
+//! a global immutable fact keyed by `(package, version, sha256)`, not a property
+//! of a working tree — and because entries are verified against the in-repo pin
+//! on every *read*, so a branch whose catalog disagrees re-downloads rather than
+//! reusing the wrong bytes. Set `TEMPLAR_ARTIFACT_CACHE` to scope it to one
+//! checkout anyway.
 
 use std::{
     path::{Path, PathBuf},
@@ -249,6 +257,81 @@ pub async fn prefetch_all() -> Result<usize, FetchError> {
     Ok(cached)
 }
 
+/// What the cache holds.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CacheUsage {
+    pub files: usize,
+    pub bytes: u64,
+}
+
+/// Empty the artifact cache, reporting what was removed.
+///
+/// Only the `near/` subtree is deleted recursively — that is the entire
+/// footprint this module writes. The root itself is then removed only if it was
+/// left empty, so a `TEMPLAR_ARTIFACT_CACHE` aimed at a shared or unfortunate
+/// directory cannot take anything else with it.
+///
+/// Nothing is lost in any lasting sense: every entry is an immutable release
+/// asset, re-fetchable and re-verified against its catalog pin.
+pub fn clean() -> Result<CacheUsage, FetchError> {
+    clean_at(&cache_root()?)
+}
+
+/// [`clean`] against an explicit root, so tests need not mutate the environment.
+fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
+    let near = root.join("near");
+
+    let removed = usage_of(&near)?;
+    if near.is_dir() {
+        std::fs::remove_dir_all(&near).map_err(|source| FetchError::Cache {
+            path: near.clone(),
+            source,
+        })?;
+    }
+    // Non-recursive, and failure is fine: it only succeeds when the root holds
+    // nothing but the subtree we just removed.
+    let _ = std::fs::remove_dir(root);
+
+    Ok(removed)
+}
+
+/// Recursively total the files under `dir`. A missing directory is an empty one.
+fn usage_of(dir: &Path) -> Result<CacheUsage, FetchError> {
+    let mut total = CacheUsage::default();
+    let mut pending = vec![dir.to_owned()];
+
+    while let Some(current) = pending.pop() {
+        let entries = match std::fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(FetchError::Cache {
+                    path: current,
+                    source,
+                })
+            }
+        };
+        for entry in entries {
+            let entry = entry.map_err(|source| FetchError::Cache {
+                path: current.clone(),
+                source,
+            })?;
+            let metadata = entry.metadata().map_err(|source| FetchError::Cache {
+                path: entry.path(),
+                source,
+            })?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                total.files += 1;
+                total.bytes += metadata.len();
+            }
+        }
+    }
+
+    Ok(total)
+}
+
 async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
     let mut last = None;
     for attempt in 0..DOWNLOAD_ATTEMPTS {
@@ -334,6 +417,64 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A private scratch root. `clean_at` takes an explicit path precisely so
+    /// these do not have to mutate `TEMPLAR_ARTIFACT_CACHE` out from under the
+    /// other tests in this binary.
+    fn scratch_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "templar-artifact-cache-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    fn seed(root: &Path, target: &str, version: &str, bytes: &[u8]) {
+        let dir = root.join("near").join(target).join(version);
+        std::fs::create_dir_all(&dir).expect("scratch cache directory");
+        std::fs::write(dir.join(format!("{target}.wasm")), bytes).expect("scratch cache entry");
+    }
+
+    #[test]
+    fn clean_removes_every_entry_and_reports_what_it_freed() {
+        let root = scratch_root("removes");
+        seed(&root, "templar_market_contract", "1.3.0", &[0u8; 64]);
+        seed(&root, "templar_registry_contract", "1.1.0", &[0u8; 32]);
+
+        let removed = clean_at(&root).expect("clean succeeds");
+
+        assert_eq!(removed.files, 2);
+        assert_eq!(removed.bytes, 96);
+        assert!(!root.exists(), "an empty root is removed too");
+    }
+
+    #[test]
+    fn cleaning_an_absent_cache_is_a_no_op() {
+        let root = scratch_root("absent");
+        let removed = clean_at(&root).expect("clean succeeds");
+        assert_eq!(removed, CacheUsage::default());
+    }
+
+    #[test]
+    fn clean_only_touches_the_subtree_it_owns() {
+        // `TEMPLAR_ARTIFACT_CACHE` is arbitrary user input. Pointed somewhere
+        // unfortunate, cleaning must not take unrelated files with it — so only
+        // `near/` is removed recursively, and the root survives if anything
+        // else is in it.
+        let root = scratch_root("guard");
+        seed(&root, "templar_market_contract", "1.3.0", &[0u8; 16]);
+        let bystander = root.join("precious.txt");
+        std::fs::write(&bystander, b"not ours").expect("bystander file");
+
+        let removed = clean_at(&root).expect("clean succeeds");
+
+        assert_eq!(removed.files, 1, "only the cache entry is counted");
+        assert!(bystander.exists(), "unrelated files survive");
+        assert!(!root.join("near").exists(), "the owned subtree is gone");
+
+        std::fs::remove_dir_all(&root).expect("scratch cleanup");
+    }
 
     #[test]
     fn asset_url_matches_the_release_tag_and_uploaded_asset_name() {
