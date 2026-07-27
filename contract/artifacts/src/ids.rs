@@ -217,6 +217,49 @@ impl ArtifactMetadata {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Release naming
+// ---------------------------------------------------------------------------
+//
+// One home for the tag and asset conventions, and their inverse. release-plz
+// *produces* these tags (`git_tag_name` in release-plz.toml) and the fetch path
+// *consumes* them, so the two must agree or every download 404s at runtime with
+// nothing red. `catalog.rs` asserts the agreement against release-plz.toml, and
+// asserts this module's own round trip.
+
+/// Separates the package name from the version in a release tag.
+const TAG_VERSION_SEPARATOR: &str = "-v";
+
+/// The tag carrying a release: `templar-market-contract-v1.3.0`.
+pub fn release_tag(artifact: ArtifactId, version: &str) -> String {
+    format!(
+        "{}{TAG_VERSION_SEPARATOR}{version}",
+        artifact.metadata().package_name
+    )
+}
+
+/// The WASM asset on that release: `templar_market_contract-1.3.0.wasm`.
+pub fn asset_name(artifact: ArtifactId, version: &str) -> String {
+    format!("{}-{version}.wasm", artifact.metadata().cargo_target_name)
+}
+
+/// Inverse of [`release_tag`]: which artifact and version a tag names.
+///
+/// `None` for a tag outside the NEAR catalog — a Soroban package, a library.
+/// That is a distinct answer from "this failed", which is why release CI reads
+/// it through an exit code rather than an empty string.
+///
+/// Package names are matched whole, so a name that is a prefix of another
+/// cannot claim its tags: the separator must follow immediately.
+pub fn artifact_from_release_tag(tag: &str) -> Option<(ArtifactId, &str)> {
+    ArtifactId::ALL.into_iter().find_map(|artifact| {
+        let version = tag
+            .strip_prefix(artifact.metadata().package_name)?
+            .strip_prefix(TAG_VERSION_SEPARATOR)?;
+        (!version.is_empty()).then_some((artifact, version))
+    })
+}
+
 /// Return the full catalog of every known contract artifact.
 ///
 /// Order is stable but callers should not depend on a particular ordering.

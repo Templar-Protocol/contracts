@@ -162,26 +162,19 @@ pub fn cache_path(artifact: ArtifactId, version: &str) -> Result<PathBuf, FetchE
         .join(format!("{target}.wasm")))
 }
 
-/// The tag that carries this release: matches `git_tag_name` in `release-plz.toml`.
-pub fn release_tag(artifact: ArtifactId, version: &str) -> String {
-    format!("{}-v{version}", artifact.metadata().package_name)
-}
-
 /// Download URL for a release's WASM asset.
+///
+/// The tag and asset names come from [`crate::release_tag`] /
+/// [`crate::asset_name`] rather than being spelled out here — that convention
+/// has exactly one home.
 pub fn asset_url(artifact: ArtifactId, version: &str) -> String {
     let base = std::env::var("TEMPLAR_ARTIFACT_BASE_URL")
         .unwrap_or_else(|_| format!("https://github.com/{RELEASE_REPO}/releases/download"));
     format!(
         "{base}/{tag}/{asset}",
-        tag = release_tag(artifact, version),
-        asset = asset_name(artifact, version),
+        tag = crate::release_tag(artifact, version),
+        asset = crate::asset_name(artifact, version),
     )
-}
-
-/// The asset filename carried by a release: matches what `release-artifacts.yml`
-/// uploads.
-fn asset_name(artifact: ArtifactId, version: &str) -> String {
-    format!("{}-{version}.wasm", artifact.metadata().cargo_target_name)
 }
 
 /// Bytes of a released contract version, from the cache or the GitHub Release.
@@ -524,13 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn asset_url_matches_the_release_tag_and_uploaded_asset_name() {
-        // Tag shape mirrors `git_tag_name` in release-plz.toml; asset shape
-        // mirrors what release-artifacts.yml uploads.
-        assert_eq!(
-            release_tag(ArtifactId::ProxyOracle, "0.3.0"),
-            "templar-proxy-oracle-near-contract-v0.3.0",
-        );
+    fn asset_url_is_the_tag_and_asset_name_under_the_release_base() {
         assert!(asset_url(ArtifactId::ProxyOracle, "0.3.0").ends_with(
             "/templar-proxy-oracle-near-contract-v0.3.0/templar_proxy_oracle_near_contract-0.3.0.wasm"
         ));

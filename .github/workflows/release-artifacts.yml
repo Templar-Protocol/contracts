@@ -73,45 +73,34 @@ jobs:
           components: rustfmt
 
       - name: Resolve the artifact from the tag
-        id: resolve
+        id: catalog
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # `templar-market-contract-v1.4.0` -> package `templar-market-contract`, version `1.4.0`
-          {
-            echo "package=${REF_NAME%-v*}"
-            echo "version=${REF_NAME##*-v}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Locate the contract
-        id: catalog
-        env:
-          PACKAGE: ${{ steps.resolve.outputs.package }}
-          VERSION: ${{ steps.resolve.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Dump the whole catalog and select the row here, rather than filtering
-          # with `--artifact`: that conflates "this package is not catalogued"
-          # with "the command failed", so a compile or metadata error would look
-          # like an intentional skip and this job would report success after
-          # cutting a release with no WASM.
-          catalog=$(cargo run --quiet -p templar-contract-artifacts \
+          # The tag is parsed in Rust, by the tested inverse of the function that
+          # builds it — not pulled apart with parameter expansion here, which
+          # nothing checks against the catalog or against release-plz's template.
+          #
+          # Exit code 2 means "not a catalogued NEAR artifact" (a Soroban tag,
+          # say) as opposed to a genuine failure. Distinguishing them is the
+          # point: printing nothing for both would let a broken lookup green a
+          # release that has no WASM.
+          status=0
+          resolved=$(cargo run --quiet -p templar-contract-artifacts \
             --features workspace-loader,clap --bin prebuild-test-contracts -- \
-            --print-metadata)
+            --resolve "$REF_NAME") || status=$?
 
-          # Soroban contracts and anything else outside the NEAR catalog have no
-          # WASM artifact to cut.
-          metadata=$(awk -v pkg="$PACKAGE" '$1 == pkg { print; exit }' <<<"$catalog")
-          if [[ -z "$metadata" ]]; then
-            echo "::notice::${PACKAGE} has no catalogued WASM artifact; nothing to build."
+          if [ "$status" -eq 2 ]; then
+            echo "::notice::${REF_NAME} has no catalogued WASM artifact; nothing to build."
             exit 0
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::could not resolve ${REF_NAME} against the artifact catalog." >&2
+            exit "$status"
           fi
-          read -r _package source_path target _crate_version <<<"$metadata"
 
           {
-            echo "source_path=${source_path}"
-            echo "target=${target}"
+            echo "$resolved"
             echo "build=true"
           } >> "$GITHUB_OUTPUT"
 
@@ -127,14 +116,17 @@ jobs:
         env:
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           TARGET: ${{ steps.catalog.outputs.target }}
-          VERSION: ${{ steps.resolve.outputs.version }}
+          VERSION: ${{ steps.catalog.outputs.version }}
+          # From the catalog, not rebuilt here: the asset name is the same
+          # convention the downloader resolves, so it has one home.
+          ASSET: ${{ steps.catalog.outputs.asset }}
         run: |
           set -euo pipefail
           cargo near build reproducible-wasm --manifest-path "${SOURCE_PATH}/Cargo.toml"
 
           built="target/near/${TARGET}/${TARGET}.wasm"
           mkdir -p dist
-          cp "$built" "dist/${TARGET}-${VERSION}.wasm"
+          cp "$built" "dist/${ASSET}"
           (cd dist && sha256sum ./*.wasm > checksums.txt)
 
           sha=$(sha256sum "$built" | cut -d' ' -f1)
@@ -168,8 +160,8 @@ jobs:
         if: steps.catalog.outputs.build == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-          PACKAGE: ${{ steps.resolve.outputs.package }}
-          VERSION: ${{ steps.resolve.outputs.version }}
+          PACKAGE: ${{ steps.catalog.outputs.package }}
+          VERSION: ${{ steps.catalog.outputs.version }}
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           SHA256: ${{ steps.build.outputs.sha256 }}
           REF_NAME: ${{ github.ref_name }}

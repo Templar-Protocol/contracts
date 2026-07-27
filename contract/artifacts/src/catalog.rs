@@ -91,6 +91,129 @@ fn mocks_are_never_released() {
     }
 }
 
+/// Read `release-plz.toml`. It is the producer of every release tag, so several
+/// invariants here are really "does our code still agree with that file".
+fn release_plz_toml() -> String {
+    let path = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("release-plz.toml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The tag we *build* must be the tag release-plz *creates*.
+///
+/// These live in different languages in different files: `git_tag_name` is a
+/// template in `release-plz.toml`, and `release_tag` is Rust. Nothing but this
+/// test connects them, and a disagreement is invisible until every artifact
+/// download 404s at runtime.
+#[test]
+fn release_tag_matches_the_template_release_plz_creates() {
+    let manifest = release_plz_toml();
+    let template = manifest
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("git_tag_name")?.split('"').nth(1))
+        .map(str::to_owned)
+        .expect("release-plz.toml declares git_tag_name");
+
+    for artifact in ArtifactId::ALL {
+        let metadata = artifact.metadata();
+        // Every artifact, not just released ones: the agreement has to hold for
+        // the *next* release too, which is the one that has no entry yet.
+        let version = metadata.version().unwrap_or("9.9.9");
+
+        let rendered = template
+            .replace("{{ package }}", metadata.package_name)
+            .replace("{{package}}", metadata.package_name)
+            .replace("{{ version }}", version)
+            .replace("{{version}}", version);
+
+        assert_eq!(
+            rendered,
+            crate::release_tag(artifact, version),
+            "release-plz would tag {} as `{rendered}`, but the fetch path looks \
+             for `{}`. Reconcile `git_tag_name` in release-plz.toml with \
+             `release_tag` in ids.rs.",
+            metadata.package_name,
+            crate::release_tag(artifact, version),
+        );
+    }
+}
+
+/// Parsing a tag must recover exactly what produced it.
+#[test]
+fn every_release_tag_round_trips() {
+    for artifact in ArtifactId::ALL {
+        for version in artifact
+            .metadata()
+            .releases
+            .iter()
+            .map(|release| release.version)
+            .chain(["9.9.9"])
+        {
+            let tag = crate::release_tag(artifact, version);
+            assert_eq!(
+                crate::artifact_from_release_tag(&tag),
+                Some((artifact, version)),
+                "`{tag}` did not parse back to the artifact that produced it",
+            );
+        }
+    }
+
+    // A tag outside the NEAR catalog is a distinct answer, not a failure.
+    assert_eq!(
+        crate::artifact_from_release_tag("templar-soroban-vault-cli-v1.0.0"),
+        None,
+    );
+    assert_eq!(
+        crate::artifact_from_release_tag("templar-market-contract"),
+        None
+    );
+}
+
+/// Test scaffolding must never be released.
+///
+/// `release = true` is release-plz's default, so a crate nobody classified gets
+/// tagged, changelogged, and given a GitHub Release. That is how
+/// `templar-gateway-testing` — a sandbox harness — ended up Tier B.
+///
+/// Name-based, and deliberately so: tier is a human judgement with no clean
+/// mechanical signal (mocks are cdylib contracts, `templar-contract-artifacts`
+/// ships binaries). This catches the crates whose names announce what they are,
+/// which is the case that has actually bitten us.
+#[test]
+#[cfg(feature = "workspace-loader")]
+#[ignore = "requires cargo metadata and workspace access"]
+fn scaffolding_crates_are_excluded_from_releases() {
+    const SCAFFOLDING_MARKERS: [&str; 5] = ["test", "mock", "fuzz", "harness", "fixture"];
+
+    let manifest = release_plz_toml();
+    let metadata =
+        crate::workspace_loader::get_metadata(std::path::Path::new(env!("CARGO_WORKSPACE_DIR")))
+            .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
+
+    for package in metadata.workspace_packages() {
+        let name = package.name.as_str();
+        if !SCAFFOLDING_MARKERS
+            .iter()
+            .any(|marker| name.contains(marker))
+        {
+            continue;
+        }
+
+        // A `[[package]]` block naming it, followed by `release = false` before
+        // the next block starts.
+        let excluded = manifest.split("[[package]]").any(|block| {
+            block.contains(&format!("name = \"{name}\"")) && block.contains("release = false")
+        });
+
+        assert!(
+            excluded,
+            "`{name}` looks like test scaffolding but has no `release = false` \
+             block in release-plz.toml, so release-plz will tag it, write it a \
+             changelog, and cut it a GitHub Release.",
+        );
+    }
+}
+
 /// A release must never claim a version the source has not reached.
 ///
 /// The other direction is legitimate and common: unreleased work-in-progress is

@@ -44,47 +44,41 @@ struct Args {
     #[arg(long)]
     check: bool,
 
-    /// Print `<package_name> <source_path> <cargo_target_name> <version>` for
-    /// each selected artifact and exit, without building. Lets shell tooling
-    /// (`release-artifacts.yml`) read the catalog instead of re-deriving paths
-    /// and drifting from it. The package name leads so a caller can select a row
-    /// without passing `--artifact`, which cannot distinguish "not catalogued"
-    /// from "the command failed".
-    #[arg(long, conflicts_with = "check")]
-    print_metadata: bool,
+    /// Resolve a release tag to its catalogued artifact and exit, without
+    /// building. Writes `key=value` lines (`package`, `version`, `source_path`,
+    /// `target`, `asset`) for a CI step to append to `$GITHUB_OUTPUT`.
+    ///
+    /// The three outcomes a release job must tell apart are exit codes, not
+    /// output: `0` resolved, `2` not a catalogued NEAR artifact (a Soroban tag,
+    /// say), `1` genuine failure. Signalling "not catalogued" by printing
+    /// nothing would let a failed lookup masquerade as an intentional skip and
+    /// green a release with no WASM.
+    #[arg(long, value_name = "TAG", conflicts_with_all = ["check", "artifacts"])]
+    resolve: Option<String>,
 }
+
+/// `--resolve` found no catalogued artifact for the tag. Distinct from failure.
+const EXIT_NOT_CATALOGUED: u8 = 2;
 
 pub fn main() -> ExitCode {
     let args = Args::parse();
     let artifacts = selected_artifacts(&args.artifacts);
 
-    if args.print_metadata {
-        let metadata = match workspace_loader::get_metadata(&args.workspace_root) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                eprintln!("failed to read cargo metadata: {error}");
-                return ExitCode::FAILURE;
-            }
+    if let Some(tag) = &args.resolve {
+        // Purely a catalog lookup: no `cargo metadata`, because the version is
+        // in the tag. The tag is parsed by `artifact_from_release_tag`, the
+        // tested inverse of the function that builds it, rather than by pulling
+        // the string apart in shell.
+        let Some((artifact, version)) = crate::artifact_from_release_tag(tag) else {
+            eprintln!("{tag} names no catalogued NEAR artifact");
+            return ExitCode::from(EXIT_NOT_CATALOGUED);
         };
-        for artifact in &artifacts {
-            // Version comes from the crate's own Cargo.toml, so callers never
-            // re-derive it (and cannot disagree with the drift check).
-            let Some(package) = workspace_loader::find_package(&metadata, artifact.package_name)
-            else {
-                eprintln!(
-                    "package {} not in workspace metadata",
-                    artifact.package_name
-                );
-                return ExitCode::FAILURE;
-            };
-            println!(
-                "{} {} {} {}",
-                artifact.package_name,
-                artifact.source_path,
-                artifact.cargo_target_name,
-                package.version,
-            );
-        }
+        let metadata = artifact.metadata();
+        println!("package={}", metadata.package_name);
+        println!("version={version}");
+        println!("source_path={}", metadata.source_path);
+        println!("target={}", metadata.cargo_target_name);
+        println!("asset={}", crate::asset_name(artifact, version));
         return ExitCode::SUCCESS;
     }
 
