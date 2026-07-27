@@ -128,6 +128,31 @@ impl ReflexiveOperation {
             ReflexiveOperation::SelfUpgrade { .. } => ReflexiveKind::SelfUpgrade,
         }
     }
+
+    /// For an op that edits a timelock, that lock's `(current, new)` values; `None` for ops that edit
+    /// no lock. The match is exhaustive, so a future lock-editing variant must declare its lock here —
+    /// and is therefore subject to the shortening rule in [`OperationPolicy::minimum_ttl`] rather than
+    /// silently escaping it.
+    fn lock_edit(&self, policy: &GovernancePolicy) -> Option<(Nanoseconds, Nanoseconds)> {
+        match self {
+            ReflexiveOperation::SetReflexiveTtl { kind, ttl } => {
+                Some((policy.reflexive_ttls.get(*kind), *ttl))
+            }
+            ReflexiveOperation::SetTargetDefault { policy: new } => {
+                Some((policy.default_target.ttl, new.ttl))
+            }
+            ReflexiveOperation::SetMethodPolicy {
+                method,
+                policy: Some(new),
+            } => Some((policy.resolve(method).ttl, new.ttl)),
+            // A reset (`SetMethodPolicy { policy: None }`) restores `default_target`; the ceiling
+            // invariant keeps every override `<= default_target`, so it never shortens. Role changes
+            // and self-upgrade edit no lock.
+            ReflexiveOperation::SetMethodPolicy { policy: None, .. }
+            | ReflexiveOperation::SetRole { .. }
+            | ReflexiveOperation::SelfUpgrade { .. } => None,
+        }
+    }
 }
 
 /// A governance operation: either self-mutating ([`ReflexiveOperation`]) or a generic call dispatched
@@ -478,25 +503,17 @@ impl OperationPolicy<GovernancePolicy> for Operation {
     type OnExecuteError = ValidationError;
 
     fn minimum_ttl(&self, policy: &GovernancePolicy) -> Nanoseconds {
-        // The policy-edit lock is the base timelock for every reflexive edit.
-        let edit_lock = policy.reflexive_ttls.get(ReflexiveKind::SetPolicy);
         match self {
-            // Shortening any lock — a reflexive bucket, the target default, or a method override —
-            // must itself mature under at least that lock, so no timelock can be weakened faster than
-            // it currently protects. Raising or holding a lock needs only `edit_lock`.
-            Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl { kind, ttl }) => {
-                lock_edit_ttl(edit_lock, policy.reflexive_ttls.get(*kind), *ttl)
+            Operation::Reflexive(reflexive) => {
+                // The op's own reflexive bucket is the base lock. If it also shortens a lock, it must
+                // additionally mature under at least that lock, so no timelock can be weakened faster
+                // than it currently protects.
+                let base = policy.reflexive_ttls.get(reflexive.kind());
+                match reflexive.lock_edit(policy) {
+                    Some((current, new)) => lock_edit_ttl(base, current, new),
+                    None => base,
+                }
             }
-            Operation::Reflexive(ReflexiveOperation::SetTargetDefault { policy: new }) => {
-                lock_edit_ttl(edit_lock, policy.default_target.ttl, new.ttl)
-            }
-            Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
-                method,
-                policy: Some(new),
-            }) => lock_edit_ttl(edit_lock, policy.resolve(method).ttl, new.ttl),
-            // A reset (`SetMethodPolicy { policy: None }`) restores `default_target`; the ceiling
-            // invariant keeps every override `<= default_target`, so a reset never shortens.
-            Operation::Reflexive(reflexive) => policy.reflexive_ttls.get(reflexive.kind()),
             Operation::TargetFunctionCall(call) => policy.resolve(&call.method_name).ttl,
         }
     }

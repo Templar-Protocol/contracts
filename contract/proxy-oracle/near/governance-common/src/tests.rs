@@ -431,35 +431,21 @@ fn legacy_admin_upgrade_maps_to_target_call_with_upgrade_gas() {
 }
 
 #[test]
-fn into_operation_applies_the_gas_override() {
-    let set_proxy = || LegacyOperation::SetProxy {
-        id: templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
-        proxy: None,
-    };
-    // No override → the method default (30 Tgas).
-    let Operation::TargetFunctionCall(default) = set_proxy().into_operation(None).unwrap() else {
-        panic!("expected target call");
-    };
-    assert_eq!(default.gas, Gas::from_tgas(30));
-
-    // An override lands on the dispatched call.
-    let Operation::TargetFunctionCall(overridden) = set_proxy()
-        .into_operation(Some(Gas::from_tgas(120)))
-        .unwrap()
-    else {
-        panic!("expected target call");
-    };
+fn target_builders_apply_gas_default_and_override() {
+    let pid = templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]);
+    // No override → the method default.
+    let default = target::admin_set_proxy(pid, None, None).unwrap();
+    assert_eq!(default.gas, target::GAS_FOR_TARGET_DEFAULT);
+    // An override lands on the built call.
+    let overridden = target::admin_set_proxy(pid, None, Some(Gas::from_tgas(120))).unwrap();
     assert_eq!(overridden.gas, Gas::from_tgas(120));
-
-    // `admin_upgrade` keeps its 280 Tgas default when no override is given.
-    let Operation::TargetFunctionCall(upgrade) = LegacyOperation::AdminUpgrade {
-        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
-        migrate_args: Base64VecU8(vec![]),
-    }
-    .into_operation(None)
-    .unwrap() else {
-        panic!("expected target call");
-    };
+    // `admin_upgrade` keeps its own (280 Tgas) default.
+    let upgrade = target::admin_upgrade(
+        UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
+        Base64VecU8(vec![]),
+        None,
+    )
+    .unwrap();
     assert_eq!(upgrade.gas, GAS_FOR_ADMIN_UPGRADE);
 }
 

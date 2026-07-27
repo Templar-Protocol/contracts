@@ -202,8 +202,9 @@ impl OracleOp {
                 target::admin_upgrade(code, migrate_args, None)?
             }
             Self::Call(a) => {
-                // Fail early on malformed args rather than sending garbage bytes.
-                serde_json::from_str::<serde_json::Value>(&a.args)
+                // Fail early on malformed args rather than sending garbage bytes. `IgnoredAny`
+                // validates well-formedness without materializing the parsed tree.
+                serde_json::from_str::<serde::de::IgnoredAny>(&a.args)
                     .context("oracle call --args must be valid JSON")?;
                 FunctionCall {
                     method_name: a.method,
@@ -496,6 +497,6 @@ pub struct OracleCallArgs {
     #[arg(long, value_name = "AMOUNT", default_value_t = NearToken::from_yoctonear(0))]
     deposit: NearToken,
     /// Gas to attach to the call (e.g. `30 Tgas`).
-    #[arg(long, value_name = "GAS", default_value_t = Gas::from_tgas(30))]
+    #[arg(long, value_name = "GAS", default_value_t = target::GAS_FOR_TARGET_DEFAULT)]
     gas: Gas,
 }

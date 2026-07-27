@@ -240,27 +240,24 @@ fn map_set_action_ttl(kind: LegacyOperationKind, ttl: Nanoseconds) -> Operation 
     }
 }
 
-impl LegacyOperation {
-    /// Map to the generic [`Operation`], attaching `gas_override` to the dispatched target call when
-    /// given (otherwise the method's default). The migration and legacy-JSON paths pass `None`; the CLI
-    /// passes an operator-supplied override for the target subcommands that expose `--gas`.
+impl TryFrom<LegacyOperation> for Operation {
+    type Error = near_sdk::serde_json::Error;
+
+    /// Map to the generic [`Operation`]: target ops become `TargetFunctionCall`s with each method's
+    /// default gas. Only the migration and legacy-JSON paths use this (the CLI builds current-format
+    /// ops directly via [`crate::target`], where operators set gas), so no gas override is threaded.
     ///
     /// # Errors
     ///
     /// If serializing a target method's args to JSON fails.
-    pub fn into_operation(
-        self,
-        gas_override: Option<Gas>,
-    ) -> Result<Operation, near_sdk::serde_json::Error> {
-        Ok(match self {
+    fn try_from(operation: LegacyOperation) -> Result<Self, Self::Error> {
+        Ok(match operation {
             LegacyOperation::SetProxy { id, proxy } => {
-                Operation::TargetFunctionCall(target::admin_set_proxy(id, proxy, gas_override)?)
+                Operation::TargetFunctionCall(target::admin_set_proxy(id, proxy, None)?)
             }
             LegacyOperation::ConfigureCircuitBreakers { id, config } => {
                 Operation::TargetFunctionCall(target::admin_configure_circuit_breakers(
-                    id,
-                    config,
-                    gas_override,
+                    id, config, None,
                 )?)
             }
             LegacyOperation::AddCircuitBreaker {
@@ -268,16 +265,11 @@ impl LegacyOperation {
                 breaker_id,
                 breaker,
             } => Operation::TargetFunctionCall(target::admin_add_circuit_breaker(
-                id,
-                breaker_id,
-                breaker,
-                gas_override,
+                id, breaker_id, breaker, None,
             )?),
             LegacyOperation::RemoveCircuitBreaker { id, breaker_id } => {
                 Operation::TargetFunctionCall(target::admin_remove_circuit_breaker(
-                    id,
-                    breaker_id,
-                    gas_override,
+                    id, breaker_id, None,
                 )?)
             }
             LegacyOperation::SetManualTrip {
@@ -288,7 +280,7 @@ impl LegacyOperation {
                 id,
                 is_manually_tripped,
                 metadata,
-                gas_override,
+                None,
             )?),
             LegacyOperation::Rearm {
                 id,
@@ -300,7 +292,7 @@ impl LegacyOperation {
                 breaker_id,
                 armed_after_ns,
                 accepted_history_source,
-                gas_override,
+                None,
             )?),
             LegacyOperation::SetEnforced {
                 id,
@@ -310,11 +302,11 @@ impl LegacyOperation {
                 id,
                 breaker_id,
                 is_enforced,
-                gas_override,
+                None,
             )?),
-            LegacyOperation::AdminUpgrade { code, migrate_args } => Operation::TargetFunctionCall(
-                target::admin_upgrade(code, migrate_args, gas_override)?,
-            ),
+            LegacyOperation::AdminUpgrade { code, migrate_args } => {
+                Operation::TargetFunctionCall(target::admin_upgrade(code, migrate_args, None)?)
+            }
             LegacyOperation::AdminFunctionCall {
                 method_name,
                 args,
@@ -340,15 +332,5 @@ impl LegacyOperation {
                 Operation::Reflexive(ReflexiveOperation::SelfUpgrade { code, migrate_args })
             }
         })
-    }
-}
-
-impl TryFrom<LegacyOperation> for Operation {
-    type Error = near_sdk::serde_json::Error;
-
-    /// Maps with each target method's default gas. Callers that want an override use
-    /// [`LegacyOperation::into_operation`].
-    fn try_from(operation: LegacyOperation) -> Result<Self, Self::Error> {
-        operation.into_operation(None)
     }
 }
