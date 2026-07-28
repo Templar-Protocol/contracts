@@ -607,6 +607,7 @@ stellar contract invoke \
 
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
+- Existing manifests must record a nonempty network label matching `--network`. This label check does not authenticate custom network passphrases; do not reuse one network label with a different passphrase.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
 - Blend adapter admins must be contract addresses. Custodial adapter admins must differ from the bound asset token.
 - Share-token deployment rejects `admin == vault`; the manifest retains the initial admin as constructor provenance and reconciliation verifies the immutable vault binding.

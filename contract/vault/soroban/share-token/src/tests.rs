@@ -155,6 +155,27 @@ fn constructor_rejects_vault_as_admin() {
 }
 
 #[test]
+#[should_panic]
+fn constructor_rejects_share_token_as_admin() {
+    let env = Env::default();
+    init_env(&env);
+
+    let vault = env.register(VaultCaller, ());
+    let token = Address::generate(&env);
+    env.register_at(
+        &token,
+        SorobanShareTokenContract,
+        (
+            &token,
+            &vault,
+            &String::from_str(&env, "Templar Share"),
+            &String::from_str(&env, "tvSHARE"),
+            &7u32,
+        ),
+    );
+}
+
+#[test]
 fn constructor_emits_config_event() {
     let (env, admin, vault, token) = setup();
     let filtered_events = env.events().all().filter_by_contract(&token);
@@ -570,15 +591,17 @@ fn share_token_whitelist_allows_vault_authorized_escrow_to_vault() {
 }
 
 #[test]
-fn set_admin_rejects_rotation_to_vault() {
+fn set_admin_rejects_rotation_to_vault_or_self() {
     let (env, admin, vault, token) = setup();
 
-    let err = env.try_invoke_contract::<(), ShareTokenError>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &vault).into_val(&env),
-    );
-    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
+    for rejected_admin in [&vault, &token] {
+        let err = env.try_invoke_contract::<(), ShareTokenError>(
+            &token,
+            &soroban_sdk::Symbol::new(&env, "set_admin"),
+            (&admin, rejected_admin).into_val(&env),
+        );
+        assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
+    }
 
     let stored_admin: Address = env.invoke_contract(
         &token,
