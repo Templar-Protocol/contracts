@@ -1825,9 +1825,7 @@ fn validated_stack_adapter_admin<'a>(
     let vault = (!args.force_new)
         .then(|| contract_id(manifest, "vault"))
         .flatten();
-    let governance = (!args.force_new)
-        .then(|| contract_id(manifest, "governance"))
-        .flatten();
+    let governance = contract_id(manifest, "governance");
     let custodial_asset = include_custodial.then(|| {
         args.asset_token
             .as_ref()
@@ -6136,6 +6134,46 @@ mod tests {
                 })
             } else {
                 DeployCommand::Adapters(adapters)
+            };
+            let cli = Cli {
+                command: Commands::Deploy(DeployArgs { command }),
+                ..base_cli(state.clone(), Commands::Status)
+            };
+            let executor = RecordingExecutor::new();
+
+            let error = run(&cli, &executor).expect_err("governance admin must be rejected");
+
+            assert!(error
+                .to_string()
+                .contains("adapter admin must differ from the governance contract"));
+            assert!(executor.calls().is_empty());
+        }
+    }
+
+    #[test]
+    fn force_new_stack_deploy_and_plan_reject_recorded_governance_admin() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        manifest
+            .contracts
+            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
+        manifest.save(&state).expect("save manifest");
+
+        for plan in [false, true] {
+            let mut stack = test_deploy_stack_args(ACCOUNT);
+            stack.blend_pools = vec![ASSET_CONTRACT.parse().expect("pool")];
+            stack.adapter_admin = Some(OTHER_CONTRACT.parse().expect("adapter admin"));
+            stack.force_new = true;
+            let command = if plan {
+                DeployCommand::Plan(crate::cli::DeployPlanArgs {
+                    command: DeployPlanCommand::Stack(Box::new(stack)),
+                })
+            } else {
+                DeployCommand::Stack(Box::new(stack))
             };
             let cli = Cli {
                 command: Commands::Deploy(DeployArgs { command }),
