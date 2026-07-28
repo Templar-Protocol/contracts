@@ -571,8 +571,10 @@ impl OperationPolicy<GovernancePolicy> for Operation {
         match self {
             Operation::Reflexive(reflexive) => {
                 // The op's own reflexive bucket is the base lock. If it also shortens a lock, it must
-                // additionally mature under at least that lock, so no timelock can be weakened faster
-                // than it currently protects.
+                // additionally mature under at least that lock. Evaluated once, when the proposal is
+                // created, and then fixed for its lifetime (create-time binding, as in OpenZeppelin's
+                // TimelockController) — so this gates against the policy in force at creation, not at
+                // execution.
                 let base = policy.reflexive_ttls.get(reflexive.kind());
                 match reflexive.lock_edit(policy) {
                     Some((current, new)) => lock_edit_ttl(base, current, new),
