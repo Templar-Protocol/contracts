@@ -30,7 +30,7 @@ tooling. Consumers opt into the byte source they need.
 
 ## What the build script does — and does not
 
-`build.rs` compiles `releases.tsv` into the release lists and validates every
+`build.rs` compiles `releases/` into the release lists and validates every
 row, so a malformed record fails the build rather than a download. It does
 **not** compile contracts: that is `./script/prebuild-test-contracts.sh` or
 `cargo near build`. This crate only *reads* the resulting artifacts.
@@ -39,7 +39,7 @@ row, so a malformed record fails the build rather than a download. It does
 
 Released bytes are **GitHub Release assets, not repository content**. Each
 release records the tag that carries it and the asset on that tag, in
-[`releases.tsv`](releases.tsv) — one row per release, appended by CI.
+[`releases/`](releases/) — one row per release, appended by CI.
 
 Releases are **immutable**: cutting a new one *adds* a catalog entry and never
 rewrites an existing one. Historical bytes are what the migration and upgrade
@@ -134,7 +134,7 @@ artifacts are missing from `target/near` and exit non-zero without building.
 
 **There is nothing to do by hand.** Merging the release PR tags the version;
 `.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
-tag, uploads it, and opens a PR appending one row to `releases.tsv`. Until that
+tag, uploads it, and opens a PR appending one row to `releases/`. Until that
 PR merges, `fetch` will not serve the version — an unrecorded release has no
 reviewed hash to check downloaded bytes against.
 

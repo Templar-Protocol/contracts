@@ -91,7 +91,7 @@ pub fn main() -> ExitCode {
         println!("source_path={}", metadata.source_path);
         println!("target={}", metadata.cargo_target_name);
         // The one place a new release's asset gets its name; existing releases
-        // have theirs recorded in `releases.tsv`.
+        // have theirs recorded in `releases/`.
         println!("asset={}-{version}.wasm", metadata.cargo_target_name);
         println!("tag={tag}");
         return ExitCode::SUCCESS;

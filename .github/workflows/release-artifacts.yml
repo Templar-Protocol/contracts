@@ -5,7 +5,7 @@ name: Release Artifacts
 # On a contract release tag: build in the pinned NEP-330 Docker image at that
 # tag's own commit, upload the WASM plus checksums.txt to the GitHub Release,
 # then open a PR recording tag, asset and SHA-256 in
-# contract/artifacts/releases.tsv.
+# contract/artifacts/releases/.
 #
 # Building at the tag, and recording the entry only afterwards, are both
 # load-bearing — see "Contract WASM artifacts" in RELEASING.md.
@@ -155,7 +155,7 @@ jobs:
             exit 0
           fi
 
-          git add contract/artifacts/releases.tsv
+          git add contract/artifacts/releases/
           git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
           # `persist-credentials: false` above, so authenticate the push here
           # instead of leaving a credential in the runner's git config.

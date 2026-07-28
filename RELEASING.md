@@ -96,7 +96,7 @@ is no manual step to forget.
    builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
    GitHub Release, and opens a PR appending one row to
-   `contract/artifacts/releases.tsv` — the version, the tag, the asset, and the
+   `contract/artifacts/releases/` — the version, the tag, the asset, and the
    digest of the bytes it just built, each recorded as observed.
 
 3. Merge that PR. Until you do, the artifacts crate will not serve the version —
@@ -109,7 +109,7 @@ newest deployment, and registry reached 1.2.1 against a deployed 1.1.0. The
 catalog records what actually shipped, so only CI, after the fact, can write it.
 
 Bytes are Release assets, not repository content. Tests download them into a
-shared cache (`just artifacts-fetch`); the pinned SHA-256 in `releases.tsv` is
+shared cache (`just artifacts-fetch`); the pinned SHA-256 in `releases/` is
 what makes a downloaded asset trustworthy. See
 [`contract/artifacts/README.md`](contract/artifacts/README.md).
 

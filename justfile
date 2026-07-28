@@ -170,7 +170,7 @@ docs:
 
 # Warm the shared cache of released contract WASM.
 #
-# Downloads every release pinned in contract/artifacts/releases.tsv and verifies
+# Downloads every release pinned in contract/artifacts/releases/ and verifies
 # its SHA-256; migration and upgrade tests deploy these bytes. The cache is
 # outside the repo (override with TEMPLAR_ARTIFACT_CACHE;
 # TEMPLAR_ARTIFACT_OFFLINE=1 forbids downloads).

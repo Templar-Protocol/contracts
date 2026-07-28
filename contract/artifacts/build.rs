@@ -1,87 +1,55 @@
-//! Turn `releases.tsv` into the catalog's release lists.
+//! Compile `releases/` into the catalog's release lists.
 //!
-//! Release history is a table so CI appends one line and the PR diffs as that
-//! row. Malformed rows fail the build rather than surfacing at runtime.
+//! Release history is one file per release so that concurrent catalog PRs
+//! cannot conflict — see `releases/README.md`. Malformed rows fail the build
+//! rather than surfacing at runtime.
 
 use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
-const SOURCE: &str = "releases.tsv";
+const SOURCE: &str = "releases";
 const COLUMNS: usize = 5;
 
 fn main() {
     println!("cargo:rerun-if-changed={SOURCE}");
 
-    let table = std::fs::read_to_string(SOURCE).unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
-
-    // Keyed by variant for deterministic output; the Vec preserves file order,
-    // which is the oldest-first release order the catalog promises.
     let mut by_artifact: BTreeMap<String, Vec<Release>> = BTreeMap::new();
 
-    for (number, line) in table.lines().enumerate() {
-        let line = line.trim_end();
-        if line.is_empty() || line.starts_with('#') {
+    let dir = std::fs::read_dir(SOURCE).unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
+    for entry in dir {
+        let path = entry.unwrap_or_else(|e| panic!("{SOURCE}: {e}")).path();
+        if path.extension().is_none_or(|extension| extension != "tsv") {
             continue;
         }
-        let at = |what: &str| -> String { format!("{SOURCE}:{}: {what}", number + 1) };
-
-        let fields = line.split('\t').collect::<Vec<_>>();
-        assert!(
-            fields.len() == COLUMNS,
-            "{}",
-            at(&format!(
-                "expected {COLUMNS} tab-separated fields, found {}. Columns are \
-                 artifact, version, tag, asset, sha256.",
-                fields.len()
-            ))
-        );
-
-        let [artifact, version, tag, asset, sha256] =
-            [fields[0], fields[1], fields[2], fields[3], fields[4]];
-
-        for (name, value) in [
-            ("artifact", artifact),
-            ("version", version),
-            ("tag", tag),
-            ("asset", asset),
-        ] {
-            assert!(!value.is_empty(), "{}", at(&format!("{name} is empty")));
-        }
-        assert!(
-            sha256.len() == 64 && sha256.chars().all(|c| c.is_ascii_hexdigit()),
-            "{}",
-            at(&format!("sha256 `{sha256}` is not a 64-char hex digest"))
-        );
-
+        let release = parse(&path);
         by_artifact
-            .entry(pascal_case(artifact))
+            .entry(pascal_case(&release.artifact))
             .or_default()
-            .push(Release {
-                version: version.to_owned(),
-                tag: tag.to_owned(),
-                asset: asset.to_owned(),
-                sha256: sha256.to_ascii_lowercase(),
-            });
+            .push(release);
     }
 
     let mut generated = String::from(
-        "// @generated from releases.tsv by build.rs — do not edit.\n\
+        "// @generated from releases/ by build.rs — do not edit.\n\
          pub(crate) fn releases_for(id: ArtifactId) -> &'static [ArtifactRelease] {\n\
          \x20   match id {\n",
     );
-    for (variant, releases) in &by_artifact {
-        write!(generated, "        ArtifactId::{variant} => &[")
-            .expect("writing to a String cannot fail");
+    for (variant, releases) in &mut by_artifact {
+        // `read_dir` order is unspecified, and `current()` is defined as the
+        // last entry, so the ordering the catalog promises has to be imposed
+        // here rather than inherited from the filesystem.
+        releases.sort_by_key(|release| version_key(&release.version));
+
+        write!(generated, "        ArtifactId::{variant} => &[").expect("writing to a String");
         for release in releases {
             write!(
                 generated,
                 "ArtifactRelease {{ version: {:?}, tag: {:?}, asset: {:?}, sha256: {:?} }},",
                 release.version, release.tag, release.asset, release.sha256,
             )
-            .expect("writing to a String cannot fail");
+            .expect("writing to a String");
         }
         generated.push_str("],\n");
     }
-    // Artifacts absent from the table have never been released.
+    // Artifacts absent from the directory have never been released.
     generated.push_str("        _ => &[],\n    }\n}\n");
 
     let Some(out_dir) = std::env::var_os("OUT_DIR") else {
@@ -92,10 +60,81 @@ fn main() {
 }
 
 struct Release {
+    artifact: String,
     version: String,
     tag: String,
     asset: String,
     sha256: String,
+}
+
+fn parse(path: &Path) -> Release {
+    let name = path.display();
+    let contents = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+    let mut rows = contents.lines().filter(|line| !line.trim().is_empty());
+    let row = rows.next().unwrap_or_else(|| panic!("{name} is empty"));
+    assert!(
+        rows.next().is_none(),
+        "{name} holds more than one release; each file is exactly one"
+    );
+
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert!(
+        fields.len() == COLUMNS,
+        "{name}: expected {COLUMNS} tab-separated fields, found {}. Columns are \
+         artifact, version, tag, asset, sha256.",
+        fields.len()
+    );
+
+    let release = Release {
+        artifact: fields[0].to_owned(),
+        version: fields[1].to_owned(),
+        tag: fields[2].to_owned(),
+        asset: fields[3].to_owned(),
+        sha256: fields[4].to_ascii_lowercase(),
+    };
+
+    for (field, value) in [
+        ("artifact", &release.artifact),
+        ("version", &release.version),
+        ("tag", &release.tag),
+        ("asset", &release.asset),
+    ] {
+        assert!(!value.is_empty(), "{name}: {field} is empty");
+    }
+    assert!(
+        release.sha256.len() == 64 && release.sha256.chars().all(|c| c.is_ascii_hexdigit()),
+        "{name}: sha256 `{}` is not a 64-char hex digest",
+        release.sha256,
+    );
+
+    // The filename is a browsing aid, not data — but if the two disagree, one
+    // of them is a mistake worth surfacing.
+    let expected = format!("{}@{}.tsv", release.artifact, release.version);
+    let actual = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    assert!(
+        actual == expected,
+        "{name} describes {}@{} and should be named {expected}",
+        release.artifact,
+        release.version,
+    );
+
+    release
+}
+
+/// Orders versions numerically, so `0.10.0` follows `0.9.0`.
+fn version_key(version: &str) -> (u64, u64, u64) {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u64>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
 }
 
 /// `proxy-oracle` -> `ProxyOracle`, matching `ArtifactId`'s kebab-case naming.

@@ -1,4 +1,4 @@
-//! Append a release to `contract/artifacts/releases.tsv`.
+//! Record a release under `contract/artifacts/releases/`.
 //!
 //! Run by `.github/workflows/release-artifacts.yml` after it has built and
 //! uploaded a release's WASM; the one-line diff goes up as a PR. Never edited by
@@ -11,7 +11,7 @@
 //!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256>
 //! ```
 
-use std::{fmt::Write as _, process::ExitCode};
+use std::process::ExitCode;
 
 use clap::Parser;
 use templar_contract_artifacts::ArtifactId;
@@ -34,8 +34,8 @@ struct Args {
     sha256: String,
 }
 
-/// Relative to this crate's manifest directory.
-const RELEASES: &str = "releases.tsv";
+/// Directory of per-release files, relative to this crate's manifest.
+const RELEASES: &str = "releases";
 
 fn main() -> ExitCode {
     match record(&Args::parse()) {
@@ -64,60 +64,46 @@ fn record(args: &Args) -> Result<String, String> {
     }
     let sha = sha.to_ascii_lowercase();
 
-    // A tab would split one field into two and shift every later column. These
-    // land in a data file, not generated source, so nothing else needs policing.
+    // A tab would split one field into two and shift every later column; a
+    // slash would escape the releases directory. Nothing else needs policing:
+    // these land in a data file, not generated source.
     for (name, value) in [("version", version), ("tag", tag), ("asset", asset)] {
-        if value.is_empty() || value.contains('\t') || value.contains('\n') {
+        if value.is_empty() || value.contains(['\t', '\n', '/', '\\']) {
             return Err(format!(
-                "{name} `{value}` is empty or contains a tab/newline"
+                "{name} `{value}` is empty or contains a tab, newline or slash"
             ));
         }
     }
 
+    let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\n");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(RELEASES)
+        .join(format!("{artifact}@{version}.tsv"));
+
     // Releases are immutable, so re-recording one is either a no-op replay of
     // the same job or a genuine conflict. Never a rewrite.
-    if let Some(existing) = artifact.metadata().release(version) {
-        return if existing.sha256 == sha {
-            Ok(format!("{artifact}@{version} is already recorded as {sha}"))
-        } else {
-            Err(format!(
-                "{artifact}@{version} is already recorded as {}, refusing to \
-                 rewrite it to {sha}. Released bytes are immutable.",
-                existing.sha256,
+    match std::fs::read_to_string(&path) {
+        Ok(existing) if existing == row => {
+            return Ok(format!("{artifact}@{version} is already recorded as {sha}"))
+        }
+        Ok(existing) => {
+            return Err(format!(
+                "{artifact}@{version} is already recorded as `{}`, refusing to \
+                 rewrite it to `{}`. Released bytes are immutable.",
+                existing.trim_end(),
+                row.trim_end(),
             ))
-        };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{path:?}: {error}")),
     }
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(RELEASES);
-    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path:?}: {e}"))?;
-    let mut row = String::new();
-    writeln!(row, "{artifact}\t{version}\t{tag}\t{asset}\t{sha}")
-        .map_err(|e| format!("building the release row: {e}"))?;
-
-    std::fs::write(&path, insert_row(&table, &artifact.to_string(), &row))
-        .map_err(|e| format!("{path:?}: {e}"))?;
+    // A new file per release, never an edit to a shared one: one release PR can
+    // tag several contracts, and each tag opens its own catalog PR from the same
+    // `dev`. Distinct filenames leave git nothing to merge.
+    std::fs::write(&path, &row).map_err(|error| format!("{path:?}: {error}"))?;
 
     Ok(format!("recorded {artifact}@{version} as {sha} ({tag})"))
-}
-
-/// Insert `row` after the artifact's existing rows, or at the end if it has
-/// none.
-///
-/// Not a plain append: one release PR can tag several contracts, and each tag
-/// runs this in its own branch off the same `dev`. Appending would put every
-/// row at the same offset, so the second catalog PR to merge would conflict.
-/// Grouped by artifact, they touch different regions and merge cleanly.
-fn insert_row(table: &str, artifact: &str, row: &str) -> String {
-    let mut lines = table.lines().map(str::to_owned).collect::<Vec<_>>();
-    let after = lines
-        .iter()
-        .rposition(|line| line.split('\t').next() == Some(artifact))
-        .map_or(lines.len(), |index| index + 1);
-    lines.insert(after, row.trim_end().to_owned());
-    lines
-        .into_iter()
-        .map(|line| line + "\n")
-        .collect::<String>()
 }
 
 #[cfg(test)]
@@ -144,35 +130,24 @@ mod tests {
             ("empty asset", "1.0.0", "t", ""),
         ] {
             let error = record(&args(version, tag, asset))
-                .expect_err("should be rejected before touching releases.tsv");
+                .expect_err("should be rejected before touching releases/");
             assert!(
-                error.contains("empty or contains a tab/newline"),
+                error.contains("empty or contains a tab, newline or slash"),
                 "{label}: {error}"
             );
         }
     }
 
     #[test]
-    fn a_row_lands_in_its_own_artifact_group() {
-        // Two contracts released in one batch each open a catalog PR off the
-        // same `dev`; grouped inserts keep those PRs from conflicting.
-        let table =
-            "# header\nregistry\t1.0.0\ta\tb\tc\nmarket\t1.0.0\ta\tb\tc\nmarket\t1.1.0\ta\tb\tc\n";
-
-        let with_registry = insert_row(table, "registry", "registry\t1.1.0\tt\tw\td\n");
-        let rows: Vec<&str> = with_registry
-            .lines()
-            .map(|l| l.split('\t').next().unwrap())
-            .collect();
-        assert_eq!(
-            rows,
-            ["# header", "registry", "registry", "market", "market"]
-        );
-
-        // A first-ever release for an artifact still goes at the end.
-        let with_vault = insert_row(table, "vault", "vault\t1.0.0\tt\tw\td\n");
-        assert!(with_vault.ends_with("vault\t1.0.0\tt\tw\td\n"));
-        assert_eq!(with_vault.lines().count(), 5);
+    fn a_field_cannot_escape_the_releases_directory() {
+        for (label, version, tag) in [
+            ("slash in version", "../evil", "t"),
+            ("backslash in tag", "1.0.0", "..\\evil"),
+        ] {
+            let error = record(&args(version, tag, "a.wasm"))
+                .expect_err("should be rejected before touching releases/");
+            assert!(error.contains("tab, newline or slash"), "{label}: {error}");
+        }
     }
 
     #[test]

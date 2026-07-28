@@ -6,7 +6,7 @@
 //! to `target/near` directories.
 //!
 //! ⚠️ [`ArtifactMetadata::releases`] is the *released* history of a contract,
-//! compiled in from `releases.tsv` — NOT a mirror of current source, which is
+//! compiled in from `releases/` — NOT a mirror of current source, which is
 //! expected to run ahead of the newest release.
 //!
 //! Releases are immutable: ship new bytes by *adding* one, never by editing an
@@ -185,7 +185,7 @@ impl ArtifactMetadata {
     }
 
     /// Every released version of this contract, **oldest first**, from
-    /// `releases.tsv`. Empty for mocks: test scaffolding is never deployed, so
+    /// `releases/`. Empty for mocks: test scaffolding is never deployed, so
     /// "the canonical bytes of mock-ft" is not a thing that exists.
     pub fn releases(&self) -> &'static [ArtifactRelease] {
         releases_for(self.id)
@@ -209,7 +209,7 @@ impl ArtifactMetadata {
 /// Which catalogued artifact a release tag belongs to.
 ///
 /// Only asked of a tag release-plz just created; an existing release's tag is
-/// recorded in `releases.tsv`, never reconstructed. So a lenient prefix match
+/// recorded in `releases/`, never reconstructed. So a lenient prefix match
 /// suffices — it must identify the package, not round-trip.
 ///
 /// `None` means "not a NEAR artifact" (a Soroban tag), not "failed".
@@ -247,7 +247,7 @@ macro_rules! entry {
     };
 }
 
-// Release lists come from `releases.tsv`, compiled in by `build.rs`.
+// Release lists come from `releases/`, compiled in by `build.rs`.
 include!(concat!(env!("OUT_DIR"), "/releases.rs"));
 
 // `source_path` is where the contract lives *today*. Older releases were built

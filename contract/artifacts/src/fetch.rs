@@ -1,7 +1,7 @@
 //! Download and cache released contract WASM. Enabled via the `fetch` feature.
 //!
 //! Bytes are GitHub Release assets, not repository content; each release in
-//! `contract/artifacts/releases.tsv` records the tag and asset it shipped as.
+//! `contract/artifacts/releases/` records the tag and asset it shipped as.
 //! See `RELEASING.md` for why they are built at the tag's own commit.
 //!
 //! Every read is verified against the catalog's SHA-256 pin, including of an
@@ -52,7 +52,7 @@ const PREFETCH_CONCURRENCY: usize = 8;
 pub enum FetchError {
     #[error(
         "{artifact} has no release {version}; catalogued releases: [{catalogued}]. \
-         Historical versions live in contract/artifacts/releases.tsv."
+         Historical versions live in contract/artifacts/releases/."
     )]
     UnknownRelease {
         artifact: ArtifactId,

@@ -84,7 +84,7 @@ jobs:
               - 'contract/artifacts/build.rs'
               # CI's own catalog PR touches only this file; without it, the
               # one PR that records a release would run no tests.
-              - 'contract/artifacts/releases.tsv'
+              - 'contract/artifacts/releases/**'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
               - 'contract/market/tests/**'
@@ -144,8 +144,11 @@ jobs:
             artifact_manifests:
               - 'Cargo.toml'
               - 'contract/**/Cargo.toml'
-              - 'contract/artifacts/releases.tsv'
+              - 'contract/artifacts/releases/**'
               - 'mock/**/Cargo.toml'
+              # scaffolding_crates_are_excluded_from_releases is the only check
+              # on this file, and it is #[ignore]d out of the fast gate.
+              - 'release-plz.toml'
 
       - name: Plan CI surface
         id: plan

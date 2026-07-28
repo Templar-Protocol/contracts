@@ -267,7 +267,7 @@ mod tests {
         assert_eq!(parsed["package_name"], "templar-market-contract");
         assert_eq!(parsed["cargo_target_name"], "templar_market_contract");
         assert_eq!(parsed["source_path"], "contract/market");
-        // The release history is compiled in from `releases.tsv` and reached
+        // The release history is compiled in from `releases/` and reached
         // through `releases()`, so it is not part of this struct's serialized
         // shape — the gateway's DTO projects what it needs.
         assert!(parsed.get("releases").is_none());
