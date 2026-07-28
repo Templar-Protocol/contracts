@@ -155,8 +155,7 @@ async fn failed_migration_reverts_contract_code() -> Result<()> {
             templar_gateway_testing::ArtifactId::ProxyOracle,
             "0.1.0",
         )
-        .await
-        .to_vec(),
+        .await,
     )
     .await?;
     harness.patch_state(&account_id, patch()).await?;
