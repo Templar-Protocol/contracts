@@ -224,36 +224,6 @@ fn constructor_accepts_separate_share_token_admin() {
 }
 
 #[test]
-fn set_admin_allows_rotation_to_separate_admin() {
-    let (env, admin, _vault, token) = setup();
-    let new_admin = account_address_with_byte(&env, 8);
-
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &new_admin).into_val(&env),
-    );
-    let pending_admin: Option<Address> = env.invoke_contract(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "pending_admin"),
-        ().into_val(&env),
-    );
-    assert_eq!(pending_admin, Some(new_admin.clone()));
-
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "accept_admin"),
-        (&new_admin,).into_val(&env),
-    );
-    let stored_admin: Address = env.invoke_contract(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "admin"),
-        ().into_val(&env),
-    );
-    assert_eq!(stored_admin, new_admin);
-}
-
-#[test]
 fn vault_can_mint() {
     let (env, _admin, vault, token) = setup();
     let user = Address::generate(&env);
@@ -622,10 +592,17 @@ fn set_admin_rejects_rotation_to_vault() {
         ().into_val(&env),
     );
     assert_eq!(pending_admin, None);
+
+    env.invoke_contract::<()>(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "set_paused"),
+        (&admin, &true).into_val(&env),
+    );
+    assert!(env.invoke_contract::<bool>(&token, &Symbol::new(&env, "paused"), ().into_val(&env)));
 }
 
 #[test]
-fn set_admin_emits_propose_and_accept_events() {
+fn set_admin_allows_rotation_to_separate_admin() {
     let (env, admin, _vault, token) = setup();
     let new_admin = account_address_with_byte(&env, 9);
 
@@ -641,6 +618,12 @@ fn set_admin_emits_propose_and_accept_events() {
         let ContractEventBody::V0(body) = &event.body;
         body.topics.first() == Some(&admin_set)
     }));
+    let pending_admin: Option<Address> = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "pending_admin"),
+        ().into_val(&env),
+    );
+    assert_eq!(pending_admin, Some(new_admin.clone()));
 
     env.invoke_contract::<()>(
         &token,
@@ -654,6 +637,12 @@ fn set_admin_emits_propose_and_accept_events() {
         let ContractEventBody::V0(body) = &event.body;
         body.topics.first() == Some(&admin_acc)
     }));
+    let stored_admin: Address = env.invoke_contract(
+        &token,
+        &soroban_sdk::Symbol::new(&env, "admin"),
+        ().into_val(&env),
+    );
+    assert_eq!(stored_admin, new_admin);
 }
 
 #[test]
@@ -668,25 +657,6 @@ fn non_admin_cannot_set_admin() {
         (&non_admin, &new_admin).into_val(&env),
     );
     assert_eq!(err, Err(Ok(ShareTokenError::Unauthorized)));
-}
-
-#[test]
-fn rejected_rotation_to_vault_leaves_current_admin_authorized() {
-    let (env, admin, vault, token) = setup();
-
-    let err = env.try_invoke_contract::<(), ShareTokenError>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "set_admin"),
-        (&admin, &vault).into_val(&env),
-    );
-    assert_eq!(err, Err(Ok(ShareTokenError::InvalidInput)));
-
-    env.invoke_contract::<()>(
-        &token,
-        &soroban_sdk::Symbol::new(&env, "set_paused"),
-        (&admin, &true).into_val(&env),
-    );
-    assert!(env.invoke_contract::<bool>(&token, &Symbol::new(&env, "paused"), ().into_val(&env)));
 }
 
 #[test]

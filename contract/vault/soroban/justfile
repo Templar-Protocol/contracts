@@ -656,7 +656,9 @@ _resolve-adapter-admin:
 		admin="$vault_id"; \
 	fi; \
 	governance_id="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
-	if [ -n "$governance_id" ] && [ "$admin" = "$governance_id" ]; then \
+	if [ -z "$governance_id" ]; then \
+		echo "Warning: governance ID is unavailable; skipping the governance-as-adapter-admin check." >&2; \
+	elif [ "$admin" = "$governance_id" ]; then \
 		echo "Error: the configured governance contract cannot administer companion contracts; choose a different adapter admin." >&2; \
 		exit 1; \
 	fi; \
