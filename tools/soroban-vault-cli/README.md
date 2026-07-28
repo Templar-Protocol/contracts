@@ -74,24 +74,17 @@ Every deployment that requests a Blend or custodial adapter must also pass
 `--adapter-admin <address|vault>` (or `SOROBAN_ADAPTER_ADMIN`). Governance is never selected
 implicitly. The `vault` alias, and an explicit address equal to the vault, are accepted only after
 the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`. The current default
-runtime does not advertise that capability, so use an independently controlled account or contract
-until companion upgrades are implemented. The configured governance contract is rejected as an
-adapter admin because it cannot invoke companion-contract administration methods. Reusing an
-adapter requires its recorded admin, vault, pool or custodian, and asset constructor values to
-match the current request exactly; otherwise use `--force-new` or a different manifest.
+runtime does not advertise that capability. Blend adapter admins must be contract addresses;
+custodial adapter admins may be independently controlled accounts or contracts.
 
 For a new stack, `--admin` is passed explicitly to the governance contract, the initial vault
 curator configuration, and the share-token constructor. The share token keeps a separate immutable
 `vault` binding for mint and burn; it rejects deployments or later admin rotations that set
-`admin == vault`. The manifest records both addresses and reconciliation checks each getter against
-the recorded constructor value. For a replacement stack, pass a new `--state` path that does not
-contain the old deployment. If a recorded share token's constructor arguments do not match the new
-admin, vault, or metadata request, the CLI refuses to reuse it and directs the operator to a fresh
-manifest. Replacement deployments should also pass global `--fresh-state`; this rejects an existing
-manifest path before any network call. Existing manifests are rejected when their recorded network
-does not match `--network`. Reconciliation treats missing admin provenance as unknown, rejects a
-share-token admin equal to the vault or governance, rejects an adapter admin equal to governance,
-and requires capability `0x40` when an adapter admin is the vault.
+`admin == vault`. The manifest records the initial admin as constructor provenance, while
+reconciliation checks only the immutable vault binding because the token admin can rotate. For a
+replacement stack, pass global `--fresh-state` with a new `--state` path. The CLI reserves that path
+before any network call and refuses to overwrite an existing file. Omit `--fresh-state` when
+resuming an interrupted deployment from its reserved manifest.
 
 ```sh
 tmplr-soroban-vault \
@@ -103,7 +96,7 @@ tmplr-soroban-vault \
   --blend-pool CPOOL... \
   --blend-pool CPOOL2... \
   --custodian G... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 ```
 
 To add adapters later without redeploying the stack, use `deploy adapters`. If the manifest already
@@ -112,15 +105,13 @@ touched. For imported deployments, pass the existing contract ids once and the C
 the manifest before appending adapters.
 
 ```sh
-tmplr-soroban-vault \
-  --state contract/vault/soroban/.deploy-state/existing-vault.manifest.json \
-  deploy adapters \
+tmplr-soroban-vault deploy adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --asset-token CASSET... \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 ```
 
 To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
@@ -163,14 +154,14 @@ tmplr-soroban-vault deploy plan stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 
 tmplr-soroban-vault deploy plan adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 ```
 
 Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
@@ -184,7 +175,7 @@ tmplr-soroban-vault deploy resume \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 ```
 
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
@@ -196,9 +187,9 @@ The CLI uses the contract name `governance admin` for the address that controls 
 contract, but operationally that address can represent several curator models. It can be a single
 operator key, a multisig contract, or a governance contract controlled by an external process. A new
 stack uses `--admin` as both the governance admin and the initial vault curator. After deployment,
-the same address is also the share-token administrator, while the immutable vault binding remains
-the sole mint/burn authority. Governance proposals can split the runtime roles into separate
-curator, sentinel, and allocator identities.
+the same address is also the share-token administrator, while the installed token implementation
+reserves mint/burn authority for the immutable vault binding. Governance proposals can split the
+runtime roles into separate curator, sentinel, and allocator identities.
 
 Common role terms:
 
@@ -207,8 +198,9 @@ Common role terms:
 - `vault curator`: the runtime curator address. It starts as the deployment `--admin` and can be
   changed with `governance submit-set-curator`.
 - `share-token admin`: the deployment `--admin`. It controls token pause, restrictions, upgrades,
-  TTL maintenance, and two-step admin rotation. It is deliberately separate from the immutable
-  vault address, which alone controls mint and burn.
+  TTL maintenance, and two-step admin rotation. The installed token code reserves mint and burn for
+  the immutable vault, but the admin can replace that code through an upgrade. Treat the admin as
+  the ultimate trust boundary for all share-token behavior and keep it reachable and recoverable.
 - `sentinel`: an emergency backstop configured with `governance submit-set-sentinel`. It can only
   take protective actions such as pausing or tightening restrictions; governance admin is still
   required to relax or unpause.
@@ -540,7 +532,7 @@ tmplr-soroban-vault deploy stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian GCUSTODIAN... \
-  --adapter-admin GADAPTERADMIN...
+  --adapter-admin CADAPTERADMIN...
 
 tmplr-soroban-vault governance submit-set-sentinel \
   --admin GCURATOR_OR_MULTISIG... \
@@ -616,9 +608,9 @@ stellar contract invoke \
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
-- Adapter deployment rejects the configured governance contract as admin and refuses to reuse an adapter whose recorded constructor authority differs from the request.
-- Share-token deployment rejects `admin == vault`; deployment and reconciliation retain the explicit admin and immutable vault as separate authority fields.
-- `--fresh-state deploy stack` requires an unused manifest path before any upload, deployment, or manifest mutation; existing manifests must match the selected network.
+- Blend adapter admins must be contract addresses. Custodial adapter admins must differ from the bound asset token.
+- Share-token deployment rejects `admin == vault`; the manifest retains the initial admin as constructor provenance and reconciliation verifies the immutable vault binding.
+- `--fresh-state deploy stack` atomically reserves an unused manifest path before network calls; planning and dry-run modes require the path to be absent without creating it.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.

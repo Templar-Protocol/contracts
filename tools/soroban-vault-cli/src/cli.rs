@@ -57,7 +57,7 @@ pub struct Cli {
     )]
     pub state: PathBuf,
 
-    /// Require the deployment manifest path to be absent before planning or deploying a new stack
+    /// Require an unused deployment manifest path for a new stack
     #[arg(long)]
     pub fresh_state: bool,
 

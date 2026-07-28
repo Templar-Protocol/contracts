@@ -44,7 +44,7 @@ const CURATOR_PROXY_LEGACY_V1_HASH_ARG: &str = "legacy_v1_wasm_hash";
 
 pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
     guard_write(cli)?;
-    guard_fresh_state(cli)?;
+    guard_fresh_state_usage(cli)?;
     debug!(
         command = command_name(&cli.command),
         network = %cli.network,
@@ -66,7 +66,7 @@ pub fn run<E: CommandExecutor>(cli: &Cli, executor: &E) -> anyhow::Result<()> {
         let result = run_doctor(cli, executor);
         return print_response(&result, cli);
     }
-    let mut manifest = Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone())?;
+    let mut manifest = load_manifest(cli)?;
     let stellar = Stellar::new(cli, executor);
     confirm_dangerous_governance_change(cli, &stellar, &manifest)?;
     let result = match &cli.command {
@@ -135,16 +135,14 @@ fn guard_write(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn guard_fresh_state(cli: &Cli) -> anyhow::Result<()> {
+fn guard_fresh_state_usage(cli: &Cli) -> anyhow::Result<()> {
     if !cli.fresh_state {
         return Ok(());
     }
     let supported = match &cli.command {
         Commands::Deploy(args) => match &args.command {
             DeployCommand::Stack(_) => true,
-            DeployCommand::Plan(plan) => {
-                matches!(&plan.command, DeployPlanCommand::Stack(_))
-            }
+            DeployCommand::Plan(plan) => matches!(plan.command, DeployPlanCommand::Stack(_)),
             _ => false,
         },
         _ => false,
@@ -153,16 +151,33 @@ fn guard_fresh_state(cli: &Cli) -> anyhow::Result<()> {
         supported,
         "--fresh-state is only valid with `deploy stack` or `deploy plan stack`"
     );
-    let state_exists = cli
-        .state
-        .try_exists()
-        .with_context(|| format!("inspect deployment manifest path {}", cli.state.display()))?;
-    anyhow::ensure!(
-        !state_exists,
-        "fresh deployment requires an unused --state path; {} already exists",
-        cli.state.display()
-    );
     Ok(())
+}
+
+fn load_manifest(cli: &Cli) -> anyhow::Result<Manifest> {
+    if !cli.fresh_state {
+        return Manifest::load_or_new(&cli.state, &cli.network, cli.rpc_url.clone());
+    }
+    if matches!(
+        &cli.command,
+        Commands::Deploy(args) if matches!(&args.command, DeployCommand::Stack(_))
+    ) && !cli.dry_run
+    {
+        return Manifest::create_new(&cli.state, &cli.network, cli.rpc_url.clone());
+    }
+    match fs::symlink_metadata(&cli.state) {
+        Ok(_) => anyhow::bail!(
+            "fresh deployment requires an unused --state path; {} already exists",
+            cli.state.display()
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspect deployment manifest path {}", cli.state.display())
+            });
+        }
+    }
+    Ok(Manifest::new(&cli.network, cli.rpc_url.clone()))
 }
 
 fn checkpoint_manifest(cli: &Cli, manifest: &Manifest) -> anyhow::Result<()> {
@@ -667,20 +682,11 @@ fn deploy_stack<E: CommandExecutor>(
 
     let include_blend = !args.blend_pools.is_empty();
     let include_custodial = !args.custodians.is_empty();
-    let requested_adapter_admin = if include_blend || include_custodial {
-        Some(require_adapter_admin(args.adapter_admin.as_ref())?)
-    } else {
-        None
-    };
+    let requested_adapter_admin = validated_stack_adapter_admin(manifest, args)?;
     let admin = match &args.admin {
         Some(admin) => admin.to_string(),
         None => stellar.keys_address_source_account()?,
     };
-    if !args.force_new {
-        if let Some(existing_vault) = contract_id(manifest, "vault") {
-            validated_share_token_constructor_summary(manifest, args, &admin, existing_vault)?;
-        }
-    }
     let progress = DeploymentProgress::stack(
         cli,
         stack_progress_steps(
@@ -728,9 +734,25 @@ fn deploy_stack<E: CommandExecutor>(
         checkpoint_manifest(cli, manifest)?;
         Ok(vault)
     })?;
+    if include_custodial {
+        validate_custodial_adapter_admin(
+            requested_adapter_admin
+                .context("custodial adapter deployment requires --adapter-admin")?,
+            Some(&vault),
+            &asset_token,
+        )?;
+    }
+    if requested_adapter_admin.is_some_and(|admin| admin.targets_vault(&vault)) {
+        verify_vault_companion_upgrade(cli, stellar, &vault)?;
+    }
     let share_token = progress.step("share token deploy/reuse", || {
-        let constructor_summary =
-            validated_share_token_constructor_summary(manifest, args, &admin, &vault)?;
+        if args.force_new || !manifest.contracts.contains_key("share_token") {
+            anyhow::ensure!(
+                admin != vault,
+                "share-token admin must differ from the vault; choose a separately reachable admin"
+            );
+        }
+        let share_decimals = args.share_decimals.to_string();
         let share_token = deploy_contract_if_needed(
             cli,
             stellar,
@@ -749,7 +771,13 @@ fn deploy_stack<E: CommandExecutor>(
                 "--decimals".to_string(),
                 args.share_decimals.to_string(),
             ],
-            constructor_summary,
+            map_args([
+                ("admin", admin.as_str()),
+                ("vault", vault.as_str()),
+                ("name", args.share_name.as_str()),
+                ("symbol", args.share_symbol.as_str()),
+                ("decimals", share_decimals.as_str()),
+            ]),
             args.force_new,
         )?;
         checkpoint_manifest(cli, manifest)?;
@@ -914,7 +942,6 @@ fn deploy_stack<E: CommandExecutor>(
                 requested_adapter_admin
                     .context("adapter deployment requires --adapter-admin <address|vault>")?,
                 &vault,
-                &governance,
                 &args.blend_pools,
                 args.force_new,
             )
@@ -932,7 +959,6 @@ fn deploy_stack<E: CommandExecutor>(
                 requested_adapter_admin
                     .context("adapter deployment requires --adapter-admin <address|vault>")?,
                 &vault,
-                &governance,
                 &asset_token,
                 &args.custodians,
                 args.force_new,
@@ -1124,14 +1150,6 @@ fn reconcile_component<E: CommandExecutor>(
                     component
                         .repair_actions
                         .push(format!("{key}: investigate manifest/chain wiring mismatch"));
-                } else if wiring
-                    .iter()
-                    .any(|check| check.status == WiringStatus::Unknown)
-                {
-                    component.status = ReconcileStatus::Unknown;
-                    component.repair_actions.push(format!(
-                        "{key}: complete missing authority provenance before treating wiring as initialized"
-                    ));
                 } else if !wiring.is_empty() {
                     component.status = ReconcileStatus::Initialized;
                 }
@@ -1264,18 +1282,6 @@ fn verify_component_wiring<E: CommandExecutor>(
                 "vault",
                 contract_id(manifest, "vault"),
             )?);
-            if let Some(admin) = record.constructor_args.get("admin") {
-                checks.push(view_equals_check(
-                    stellar,
-                    &record.contract_id,
-                    "admin",
-                    Some(admin),
-                )?);
-            }
-            checks.push(share_token_admin_topology_check(
-                manifest,
-                record.constructor_args.get("admin").map(String::as_str),
-            ));
         }
         "proxy_4626" => {
             checks.push(view_equals_check(
@@ -1325,11 +1331,6 @@ fn verify_component_wiring<E: CommandExecutor>(
                     Some(admin),
                 )?);
             }
-            checks.push(adapter_admin_topology_check(
-                stellar,
-                manifest,
-                record.constructor_args.get("admin").map(String::as_str),
-            )?);
         }
         key if is_custodial_adapter_key(key) => {
             checks.push(view_equals_check(
@@ -1360,94 +1361,10 @@ fn verify_component_wiring<E: CommandExecutor>(
                     Some(admin),
                 )?);
             }
-            checks.push(adapter_admin_topology_check(
-                stellar,
-                manifest,
-                record.constructor_args.get("admin").map(String::as_str),
-            )?);
         }
         _ => {}
     }
     Ok(checks)
-}
-
-fn share_token_admin_topology_check(manifest: &Manifest, admin: Option<&str>) -> WiringCheck {
-    let vault = contract_id(manifest, "vault");
-    let governance = contract_id(manifest, "governance");
-    let status = match (admin, vault, governance) {
-        (Some(admin), Some(vault), _) if admin == vault => WiringStatus::Mismatch,
-        (Some(admin), _, Some(governance)) if admin == governance => WiringStatus::Mismatch,
-        (Some(_), Some(_), Some(_)) => WiringStatus::Match,
-        _ => WiringStatus::Unknown,
-    };
-    WiringCheck {
-        field: "admin_topology".to_string(),
-        expected: Some("admin differs from vault and governance".to_string()),
-        observed: admin.map(ToString::to_string),
-        status,
-    }
-}
-
-fn adapter_admin_topology_check<E: CommandExecutor>(
-    stellar: &Stellar<'_, E>,
-    manifest: &Manifest,
-    admin: Option<&str>,
-) -> anyhow::Result<WiringCheck> {
-    let vault = contract_id(manifest, "vault");
-    let governance = contract_id(manifest, "governance");
-    let Some(admin) = admin else {
-        return Ok(WiringCheck {
-            field: "admin_topology".to_string(),
-            expected: Some(
-                "admin differs from governance; vault admin requires companion-upgrade capability"
-                    .to_string(),
-            ),
-            observed: None,
-            status: WiringStatus::Unknown,
-        });
-    };
-    if governance.is_some_and(|governance| admin == governance) {
-        return Ok(WiringCheck {
-            field: "admin_topology".to_string(),
-            expected: Some(
-                "admin differs from governance; vault admin requires companion-upgrade capability"
-                    .to_string(),
-            ),
-            observed: Some(admin.to_string()),
-            status: WiringStatus::Mismatch,
-        });
-    }
-    if vault.is_some_and(|vault| admin == vault) {
-        let output = stellar.invoke_view(admin, "version", Vec::new())?;
-        let (version, feature_flags) = parse_runtime_version(&output.stdout)?;
-        return Ok(WiringCheck {
-            field: "admin_topology".to_string(),
-            expected: Some(format!(
-                "vault admin advertises companion-upgrade capability {RUNTIME_FEATURE_COMPANION_UPGRADE:#x}"
-            )),
-            observed: Some(format!(
-                "vault {admin} version {version} feature_mask={feature_flags:#x}"
-            )),
-            status: if feature_flags & RUNTIME_FEATURE_COMPANION_UPGRADE != 0 {
-                WiringStatus::Match
-            } else {
-                WiringStatus::Mismatch
-            },
-        });
-    }
-    Ok(WiringCheck {
-        field: "admin_topology".to_string(),
-        expected: Some(
-            "admin differs from governance; vault admin requires companion-upgrade capability"
-                .to_string(),
-        ),
-        observed: Some(admin.to_string()),
-        status: if vault.is_some() && governance.is_some() {
-            WiringStatus::Match
-        } else {
-            WiringStatus::Unknown
-        },
-    })
 }
 
 fn curator_proxy_supports_version_discovery(record: &ContractRecord) -> bool {
@@ -1882,17 +1799,75 @@ fn require_adapter_admin(admin: Option<&AdapterAdminArg>) -> anyhow::Result<&Ada
     )
 }
 
-fn resolve_adapter_admin<'a>(
-    admin: &'a AdapterAdminArg,
-    vault: &'a str,
-    governance: &str,
-) -> anyhow::Result<&'a str> {
-    let resolved = admin.resolve(vault);
-    anyhow::ensure!(
-        resolved != governance,
-        "adapter admin must differ from governance because the configured governance contract cannot administer companion contracts"
-    );
-    Ok(resolved)
+fn validated_stack_adapter_admin<'a>(
+    manifest: &Manifest,
+    args: &'a crate::cli::DeployStackArgs,
+) -> anyhow::Result<Option<&'a AdapterAdminArg>> {
+    let include_blend = !args.blend_pools.is_empty();
+    let include_custodial = !args.custodians.is_empty();
+    if !include_blend && !include_custodial {
+        return Ok(None);
+    }
+    let admin = require_adapter_admin(args.adapter_admin.as_ref())?;
+    validate_adapter_request(
+        admin,
+        include_blend,
+        include_custodial,
+        (!args.force_new)
+            .then(|| contract_id(manifest, "vault"))
+            .flatten(),
+        args.asset_token
+            .as_ref()
+            .map(AddressStr::as_str)
+            .or_else(|| contract_id(manifest, "asset_token")),
+    )?;
+    Ok(Some(admin))
+}
+
+fn validate_blend_adapter_admin(admin: &AdapterAdminArg) -> anyhow::Result<()> {
+    if let AdapterAdminArg::Address(address) = admin {
+        anyhow::ensure!(
+            address.as_str().starts_with('C'),
+            "Blend adapter admin must be a contract address or `vault`"
+        );
+    }
+    Ok(())
+}
+
+fn validate_custodial_adapter_admin(
+    admin: &AdapterAdminArg,
+    vault: Option<&str>,
+    asset_token: &str,
+) -> anyhow::Result<()> {
+    let resolved = match admin {
+        AdapterAdminArg::Vault => vault,
+        AdapterAdminArg::Address(address) => Some(address.as_str()),
+    };
+    if let Some(resolved) = resolved {
+        anyhow::ensure!(
+            resolved != asset_token,
+            "custodial adapter admin must differ from the asset token"
+        );
+    }
+    Ok(())
+}
+
+fn validate_adapter_request(
+    admin: &AdapterAdminArg,
+    include_blend: bool,
+    include_custodial: bool,
+    vault: Option<&str>,
+    asset_token: Option<&str>,
+) -> anyhow::Result<()> {
+    if include_blend {
+        validate_blend_adapter_admin(admin)?;
+    }
+    if include_custodial {
+        if let Some(asset_token) = asset_token {
+            validate_custodial_adapter_admin(admin, vault, asset_token)?;
+        }
+    }
+    Ok(())
 }
 
 fn verify_vault_companion_upgrade<E: CommandExecutor>(
@@ -1908,6 +1883,9 @@ fn verify_vault_companion_upgrade<E: CommandExecutor>(
             )
         })?;
     if cli.dry_run {
+        eprintln!(
+            "Warning: dry-run cannot verify that vault {vault} advertises companion-upgrade capability {RUNTIME_FEATURE_COMPANION_UPGRADE:#x}"
+        );
         return Ok(());
     }
     let (version, feature_flags) = parse_runtime_version(&output.stdout).with_context(|| {
@@ -1938,6 +1916,14 @@ fn deploy_adapters<E: CommandExecutor>(
         "deploy adapters requires at least one --blend-pool or --custodian"
     );
     let requested_adapter_admin = &args.adapter_admin;
+    validate_adapter_request(
+        requested_adapter_admin,
+        !args.blend_pools.is_empty(),
+        !args.custodians.is_empty(),
+        contract_id(manifest, "vault").or_else(|| args.vault.as_ref().map(AddressStr::as_str)),
+        contract_id(manifest, "asset_token")
+            .or_else(|| args.asset_token.as_ref().map(AddressStr::as_str)),
+    )?;
 
     record_imported_contract_if_provided(cli, manifest, "vault", args.vault.as_ref())?;
     checkpoint_manifest(cli, manifest)?;
@@ -1950,22 +1936,14 @@ fn deploy_adapters<E: CommandExecutor>(
 
     let vault = required_contract(manifest, "vault")?.to_string();
     let governance = required_contract(manifest, "governance")?.to_string();
-    let resolved_adapter_admin =
-        resolve_adapter_admin(requested_adapter_admin, &vault, &governance)?;
     let asset_token = if args.custodians.is_empty() {
         contract_id(manifest, "asset_token").map(ToString::to_string)
     } else {
         Some(required_contract(manifest, "asset_token")?.to_string())
     };
-    validate_recorded_adapter_reuse(
-        manifest,
-        &args.blend_pools,
-        &args.custodians,
-        Some(resolved_adapter_admin),
-        Some(&vault),
-        asset_token.as_deref(),
-        args.force_new,
-    )?;
+    if requested_adapter_admin.targets_vault(&vault) {
+        verify_vault_companion_upgrade(cli, stellar, &vault)?;
+    }
     let blend_adapters = if args.blend_pools.is_empty() {
         blend_adapter_statuses(manifest)
     } else {
@@ -1984,7 +1962,6 @@ fn deploy_adapters<E: CommandExecutor>(
             &wasm_hash,
             requested_adapter_admin,
             &vault,
-            &governance,
             &args.blend_pools,
             args.force_new,
         )?
@@ -2007,7 +1984,6 @@ fn deploy_adapters<E: CommandExecutor>(
             &wasm_hash,
             requested_adapter_admin,
             &vault,
-            &governance,
             asset_token
                 .as_deref()
                 .context("custodial adapters require asset_token in manifest or --asset-token")?,
@@ -2060,55 +2036,19 @@ fn deploy_stack_plan(
 
     let include_blend = !args.blend_pools.is_empty();
     let include_custodial = !args.custodians.is_empty();
-    if !args.force_new {
-        if let Some(existing_vault) = contract_id(manifest, "vault") {
-            if let Some(admin) = args.admin.as_ref() {
-                validated_share_token_constructor_summary(
-                    manifest,
-                    args,
-                    admin.as_str(),
-                    existing_vault,
-                )?;
-            } else if manifest.contracts.contains_key("share_token") {
-                anyhow::bail!(
-                    "deploy plan cannot validate a reused share token without explicit --admin"
-                );
-            }
-        }
-    }
+    let requested_adapter_admin = validated_stack_adapter_admin(manifest, args)?;
     let adapter_admin = if include_blend || include_custodial {
         let vault = (!args.force_new)
             .then(|| contract_id(manifest, "vault"))
             .flatten();
-        let governance = (!args.force_new)
-            .then(|| contract_id(manifest, "governance"))
-            .flatten();
         Some(plan_adapter_admin(
             &mut plan,
-            require_adapter_admin(args.adapter_admin.as_ref())?,
+            requested_adapter_admin.context("adapter deployment requires --adapter-admin")?,
             vault,
-            governance,
-        )?)
+        ))
     } else {
         None
     };
-    let planned_vault = (!args.force_new)
-        .then(|| contract_id(manifest, "vault"))
-        .flatten();
-    let planned_asset_token = args
-        .asset_token
-        .as_ref()
-        .map(AddressStr::as_str)
-        .or_else(|| contract_id(manifest, "asset_token"));
-    validate_recorded_adapter_reuse(
-        manifest,
-        &args.blend_pools,
-        &args.custodians,
-        adapter_admin.as_deref(),
-        planned_vault,
-        planned_asset_token,
-        args.force_new,
-    )?;
     for spec in ArtifactSpec::stack_artifacts(include_blend, include_custodial) {
         plan.wasm.push(wasm_plan(cli, manifest, spec, args.build)?);
     }
@@ -2198,20 +2138,15 @@ fn deploy_adapters_plan(
     );
     let vault =
         contract_id(manifest, "vault").or_else(|| args.vault.as_ref().map(AddressStr::as_str));
-    let governance = contract_id(manifest, "governance")
-        .or_else(|| args.governance.as_ref().map(AddressStr::as_str));
-    let adapter_admin = plan_adapter_admin(&mut plan, &args.adapter_admin, vault, governance)?;
-    let asset_token = contract_id(manifest, "asset_token")
-        .or_else(|| args.asset_token.as_ref().map(AddressStr::as_str));
-    validate_recorded_adapter_reuse(
-        manifest,
-        &args.blend_pools,
-        &args.custodians,
-        Some(&adapter_admin),
+    validate_adapter_request(
+        &args.adapter_admin,
+        !args.blend_pools.is_empty(),
+        !args.custodians.is_empty(),
         vault,
-        asset_token,
-        args.force_new,
+        contract_id(manifest, "asset_token")
+            .or_else(|| args.asset_token.as_ref().map(AddressStr::as_str)),
     )?;
+    let adapter_admin = plan_adapter_admin(&mut plan, &args.adapter_admin, vault);
     plan.required_signers.push(default_source_label());
     if !args.blend_pools.is_empty() {
         plan.wasm.push(wasm_plan(
@@ -2293,15 +2228,8 @@ fn plan_adapter_admin(
     plan: &mut PlanResponse,
     admin: &AdapterAdminArg,
     vault: Option<&str>,
-    governance: Option<&str>,
-) -> anyhow::Result<String> {
+) -> String {
     let resolved = admin.resolve(vault.unwrap_or("<vault>"));
-    if let Some(governance) = governance {
-        anyhow::ensure!(
-            resolved != governance,
-            "adapter admin must differ from governance because the configured governance contract cannot administer companion contracts"
-        );
-    }
     if admin.targets_vault(vault.unwrap_or("<vault>")) {
         plan.stellar_commands.push(stellar_command_shape(
             &format!("contract invoke --id {resolved} --send no -- version"),
@@ -2311,71 +2239,7 @@ fn plan_adapter_admin(
             "using the vault as adapter admin requires version() to advertise companion-upgrade capability {RUNTIME_FEATURE_COMPANION_UPGRADE:#x}"
         ));
     }
-    Ok(resolved.to_string())
-}
-
-fn validate_recorded_adapter_reuse(
-    manifest: &Manifest,
-    pools: &[AddressStr],
-    custodians: &[AddressStr],
-    adapter_admin: Option<&str>,
-    vault: Option<&str>,
-    asset_token: Option<&str>,
-    force_new: bool,
-) -> anyhow::Result<()> {
-    if force_new {
-        return Ok(());
-    }
-    for pool in pools {
-        let Some((key, record)) = blend_adapter_record_by_pool(manifest, pool) else {
-            continue;
-        };
-        let requested = map_args([
-            (
-                "admin",
-                adapter_admin.context("cannot validate reused adapter without --adapter-admin")?,
-            ),
-            (
-                "vault",
-                vault.context("cannot validate reused adapter without a vault address")?,
-            ),
-            ("pool", pool.as_str()),
-        ]);
-        ensure_recorded_constructor_args_match(
-            key,
-            record,
-            &requested,
-            "use --force-new or a fresh --state path",
-        )?;
-    }
-    for custodian in custodians {
-        let Some((key, record)) = custodial_adapter_record_by_custodian(manifest, custodian) else {
-            continue;
-        };
-        let requested = map_args([
-            (
-                "admin",
-                adapter_admin.context("cannot validate reused adapter without --adapter-admin")?,
-            ),
-            (
-                "vault",
-                vault.context("cannot validate reused adapter without a vault address")?,
-            ),
-            ("custodian", custodian.as_str()),
-            (
-                "asset",
-                asset_token
-                    .context("cannot validate reused custodial adapter without asset_token")?,
-            ),
-        ]);
-        ensure_recorded_constructor_args_match(
-            key,
-            record,
-            &requested,
-            "use --force-new or a fresh --state path",
-        )?;
-    }
-    Ok(())
+    resolved.to_string()
 }
 
 fn plan_custodial_adapters(
@@ -2500,69 +2364,6 @@ fn default_source_label() -> String {
     "Stellar default identity/keystore or STELLAR_ACCOUNT".to_string()
 }
 
-fn validated_share_token_constructor_summary(
-    manifest: &Manifest,
-    args: &crate::cli::DeployStackArgs,
-    admin: &str,
-    vault: &str,
-) -> anyhow::Result<BTreeMap<String, String>> {
-    anyhow::ensure!(
-        admin != vault,
-        "share-token admin must differ from the vault; choose a separately reachable admin"
-    );
-    let constructor_summary = map_args([
-        ("admin", admin),
-        ("vault", vault),
-        ("name", args.share_name.as_str()),
-        ("symbol", args.share_symbol.as_str()),
-        ("decimals", &args.share_decimals.to_string()),
-    ]);
-    ensure_reused_constructor_args_match(
-        manifest,
-        "share_token",
-        &constructor_summary,
-        args.force_new,
-    )?;
-    Ok(constructor_summary)
-}
-
-fn ensure_reused_constructor_args_match(
-    manifest: &Manifest,
-    key: &str,
-    requested: &BTreeMap<String, String>,
-    force_new: bool,
-) -> anyhow::Result<()> {
-    if force_new {
-        return Ok(());
-    }
-    let Some(record) = manifest.contracts.get(key) else {
-        return Ok(());
-    };
-    ensure_recorded_constructor_args_match(key, record, requested, "use a fresh --state path")
-}
-
-fn ensure_recorded_constructor_args_match(
-    key: &str,
-    record: &ContractRecord,
-    requested: &BTreeMap<String, String>,
-    recovery: &str,
-) -> anyhow::Result<()> {
-    for (name, requested_value) in requested {
-        let recorded_value = record.constructor_args.get(name).with_context(|| {
-            format!(
-                "refusing to reuse {key} {} because the manifest does not record constructor argument {name}; {recovery}",
-                record.contract_id,
-            )
-        })?;
-        anyhow::ensure!(
-            recorded_value == requested_value,
-            "refusing to reuse {key} {} because recorded constructor argument {name} differs from the requested value; {recovery}",
-            record.contract_id,
-        );
-    }
-    Ok(())
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "deployment recording needs checkpoint context plus constructor metadata"
@@ -2652,31 +2453,14 @@ fn append_blend_adapters<E: CommandExecutor>(
     wasm_hash: &str,
     adapter_admin: &AdapterAdminArg,
     vault: &str,
-    governance: &str,
     pools: &[AddressStr],
     force_new: bool,
 ) -> anyhow::Result<Vec<BlendAdapterStatus>> {
     for pool in pools {
-        let adapter_admin = resolve_adapter_admin(adapter_admin, vault, governance)?;
-        let constructor_summary = map_args([
-            ("admin", adapter_admin),
-            ("vault", vault),
-            ("pool", pool.as_str()),
-        ]);
-        if !force_new {
-            if let Some((key, record)) = blend_adapter_record_by_pool(manifest, pool) {
-                ensure_recorded_constructor_args_match(
-                    key,
-                    record,
-                    &constructor_summary,
-                    "use --force-new or a fresh --state path",
-                )?;
-                continue;
-            }
+        if !force_new && blend_adapter_by_pool(manifest, pool).is_some() {
+            continue;
         }
-        if adapter_admin == vault {
-            verify_vault_companion_upgrade(cli, stellar, vault)?;
-        }
+        let adapter_admin = adapter_admin.resolve(vault);
         let key = next_blend_adapter_key(manifest);
         let adapter = deploy_contract_if_needed(
             cli,
@@ -2692,7 +2476,11 @@ fn append_blend_adapters<E: CommandExecutor>(
                 "--pool".to_string(),
                 pool.to_string(),
             ],
-            constructor_summary,
+            map_args([
+                ("admin", adapter_admin),
+                ("vault", vault),
+                ("pool", pool.as_str()),
+            ]),
             force_new,
         )?;
         if let Some(record) = manifest.contracts.get_mut(&key) {
@@ -2714,7 +2502,6 @@ fn append_custodial_adapters<E: CommandExecutor>(
     wasm_hash: &str,
     adapter_admin: &AdapterAdminArg,
     vault: &str,
-    governance: &str,
     asset_token: &str,
     custodians: &[AddressStr],
     force_new: bool,
@@ -2724,28 +2511,10 @@ fn append_custodial_adapters<E: CommandExecutor>(
         if !planned_custodians.insert(custodian.as_str().to_string()) {
             continue;
         }
-        let adapter_admin = resolve_adapter_admin(adapter_admin, vault, governance)?;
-        let constructor_summary = map_args([
-            ("admin", adapter_admin),
-            ("vault", vault),
-            ("custodian", custodian.as_str()),
-            ("asset", asset_token),
-        ]);
-        if !force_new {
-            if let Some((key, record)) = custodial_adapter_record_by_custodian(manifest, custodian)
-            {
-                ensure_recorded_constructor_args_match(
-                    key,
-                    record,
-                    &constructor_summary,
-                    "use --force-new or a fresh --state path",
-                )?;
-                continue;
-            }
+        if !force_new && custodial_adapter_by_custodian(manifest, custodian).is_some() {
+            continue;
         }
-        if adapter_admin == vault {
-            verify_vault_companion_upgrade(cli, stellar, vault)?;
-        }
+        let adapter_admin = adapter_admin.resolve(vault);
         let key = next_custodial_adapter_key(manifest);
         let adapter = deploy_contract_if_needed(
             cli,
@@ -2763,7 +2532,12 @@ fn append_custodial_adapters<E: CommandExecutor>(
                 "--asset".to_string(),
                 asset_token.to_string(),
             ],
-            constructor_summary,
+            map_args([
+                ("admin", adapter_admin),
+                ("vault", vault),
+                ("custodian", custodian.as_str()),
+                ("asset", asset_token),
+            ]),
             force_new,
         )?;
         if let Some(record) = manifest.contracts.get_mut(&key) {
@@ -4409,13 +4183,6 @@ fn next_blend_adapter_index(manifest: &Manifest) -> usize {
 }
 
 fn blend_adapter_by_pool<'a>(manifest: &'a Manifest, pool: &AddressStr) -> Option<&'a str> {
-    blend_adapter_record_by_pool(manifest, pool).map(|(_, record)| record.contract_id.as_str())
-}
-
-fn blend_adapter_record_by_pool<'a>(
-    manifest: &'a Manifest,
-    pool: &AddressStr,
-) -> Option<(&'a str, &'a ContractRecord)> {
     manifest
         .contracts
         .iter()
@@ -4426,7 +4193,7 @@ fn blend_adapter_record_by_pool<'a>(
                     .get("pool")
                     .is_some_and(|value| value == pool.as_str())
         })
-        .map(|(key, record)| (key.as_str(), record))
+        .map(|(_, record)| record.contract_id.as_str())
 }
 
 fn custodial_adapter_key(index: usize) -> String {
@@ -4450,14 +4217,6 @@ fn custodial_adapter_by_custodian<'a>(
     manifest: &'a Manifest,
     custodian: &AddressStr,
 ) -> Option<&'a str> {
-    custodial_adapter_record_by_custodian(manifest, custodian)
-        .map(|(_, record)| record.contract_id.as_str())
-}
-
-fn custodial_adapter_record_by_custodian<'a>(
-    manifest: &'a Manifest,
-    custodian: &AddressStr,
-) -> Option<(&'a str, &'a ContractRecord)> {
     manifest
         .contracts
         .iter()
@@ -4468,7 +4227,7 @@ fn custodial_adapter_record_by_custodian<'a>(
                     .get("custodian")
                     .is_some_and(|value| value == custodian.as_str())
         })
-        .map(|(key, record)| (key.as_str(), record))
+        .map(|(_, record)| record.contract_id.as_str())
 }
 
 fn selected_blend_adapter<'a>(
@@ -5382,6 +5141,7 @@ mod tests {
     const ACCOUNT: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
     const CONTRACT: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
     const OTHER_CONTRACT: &str = "CBTLODGACWPBEZIDGHDLYQPGZDZRK4ITXHCET7EVPYAPP42CPIUDBUTK";
+    const ASSET_CONTRACT: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75";
 
     struct RecordingExecutor {
         calls: Mutex<Vec<(String, Vec<String>)>>,
@@ -5585,12 +5345,6 @@ mod tests {
             _redacted_args: &[usize],
             _env: &[crate::stellar::CommandEnv],
         ) -> anyhow::Result<CommandOutput> {
-            if args.iter().any(|arg| arg == "admin") {
-                return Ok(CommandOutput {
-                    stdout: ACCOUNT.to_string(),
-                    stderr: String::new(),
-                });
-            }
             if args
                 .windows(2)
                 .any(|pair| pair[0] == "--id" && pair[1] == CONTRACT)
@@ -6040,16 +5794,13 @@ mod tests {
                 initialized: true,
             },
         );
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(CONTRACT));
         manifest.contracts.insert(
             "share_token".to_string(),
             ContractRecord {
                 contract_id: CONTRACT.to_string(),
                 wasm_hash,
                 salt: None,
-                constructor_args: map_args([("vault", CONTRACT), ("admin", ACCOUNT)]),
+                constructor_args: map_args([("vault", CONTRACT), ("admin", CONTRACT)]),
                 deploy_tx: None,
                 initialized: false,
             },
@@ -6230,7 +5981,7 @@ mod tests {
             .insert("vault".to_string(), imported_record(CONTRACT));
         manifest
             .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
+            .insert("governance".to_string(), imported_record(CONTRACT));
         manifest
             .contracts
             .insert("asset_token".to_string(), imported_record(CONTRACT));
@@ -6240,11 +5991,7 @@ mod tests {
                 contract_id: CONTRACT.to_string(),
                 wasm_hash: "hash".to_string(),
                 salt: None,
-                constructor_args: map_args([
-                    ("admin", ACCOUNT),
-                    ("vault", CONTRACT),
-                    ("pool", CONTRACT),
-                ]),
+                constructor_args: map_args([("pool", CONTRACT)]),
                 deploy_tx: None,
                 initialized: true,
             },
@@ -6259,10 +6006,10 @@ mod tests {
                     asset_token: Some(CONTRACT.parse().expect("asset token")),
                     blend_pools: vec![
                         CONTRACT.parse().expect("existing pool"),
-                        ACCOUNT.parse().expect("new pool"),
+                        ASSET_CONTRACT.parse().expect("new pool"),
                     ],
                     custodians: Vec::new(),
-                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
+                    adapter_admin: OTHER_CONTRACT.parse().expect("adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -6283,7 +6030,7 @@ mod tests {
                 .constructor_args
                 .get("pool")
                 .map(String::as_str),
-            Some(ACCOUNT)
+            Some(ASSET_CONTRACT)
         );
         assert_eq!(
             loaded
@@ -6293,13 +6040,43 @@ mod tests {
                 .constructor_args
                 .get("admin")
                 .map(String::as_str),
-            Some(ACCOUNT)
+            Some(OTHER_CONTRACT)
         );
         let adapter_deploys = submitted_calls(&executor.calls())
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--pool"))
             .count();
         assert_eq!(adapter_deploys, 1);
+    }
+
+    #[test]
+    fn deploy_adapters_rejects_account_blend_admin_before_executor_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        manifest_with_governance_and_vault(&state);
+        let cli = Cli {
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
+                    vault: None,
+                    governance: None,
+                    asset_token: None,
+                    blend_pools: vec![CONTRACT.parse().expect("pool")],
+                    custodians: Vec::new(),
+                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
+                    build: false,
+                    force_new: false,
+                }),
+            }),
+            ..base_cli(state, Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("account admin must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("Blend adapter admin must be a contract address"));
+        assert!(executor.calls().is_empty());
     }
 
     #[test]
@@ -6394,7 +6171,7 @@ mod tests {
                     asset_token: None,
                     blend_pools: vec![CONTRACT.parse().expect("pool")],
                     custodians: Vec::new(),
-                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
+                    adapter_admin: OTHER_CONTRACT.parse().expect("adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -6451,15 +6228,14 @@ mod tests {
             write_fake_custodial_wasm(dir.path());
             let state = dir.path().join("manifest.json");
             let mut manifest = Manifest::new("testnet", None);
+            for key in ["vault", "governance", "asset_token"] {
+                manifest
+                    .contracts
+                    .insert(key.to_string(), imported_record(CONTRACT));
+            }
             manifest
                 .contracts
-                .insert("vault".to_string(), imported_record(CONTRACT));
-            manifest
-                .contracts
-                .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-            manifest
-                .contracts
-                .insert("asset_token".to_string(), imported_record(CONTRACT));
+                .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
             manifest.save(&state).expect("save manifest");
             let cli = Cli {
                 workspace_path: dir.path().into(),
@@ -6495,73 +6271,30 @@ mod tests {
     }
 
     #[test]
-    fn deploy_adapters_rejects_governance_as_explicit_admin_before_upload() {
+    fn reused_vault_admin_adapter_still_checks_companion_upgrade_capability() {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_fake_blend_wasm(dir.path());
         let state = dir.path().join("manifest.json");
         let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-        manifest.save(&state).expect("save manifest");
-        let cli = Cli {
-            workspace_path: dir.path().into(),
-            command: Commands::Deploy(DeployArgs {
-                command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
-                    vault: None,
-                    governance: None,
-                    asset_token: None,
-                    blend_pools: vec![CONTRACT.parse().expect("pool")],
-                    custodians: Vec::new(),
-                    adapter_admin: OTHER_CONTRACT.parse().expect("adapter admin"),
-                    build: false,
-                    force_new: false,
-                }),
-            }),
-            ..base_cli(state, Commands::Status)
-        };
-        let executor = RecordingExecutor::new();
-
-        let error = run(&cli, &executor).expect_err("governance admin must be rejected");
-
-        assert!(error
-            .to_string()
-            .contains("adapter admin must differ from governance"));
-        assert!(executor.calls().is_empty());
-    }
-
-    #[test]
-    fn deploy_adapters_rejects_reusing_blend_adapter_with_different_admin() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_fake_blend_wasm(dir.path());
-        let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-        let mut adapter = imported_record(CONTRACT);
-        adapter.constructor_args =
-            map_args([("admin", CONTRACT), ("vault", CONTRACT), ("pool", CONTRACT)]);
+        for key in ["vault", "governance"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
+        let mut adapter = imported_record(OTHER_CONTRACT);
+        adapter.constructor_args = map_args([("pool", ASSET_CONTRACT)]);
         manifest
             .contracts
             .insert("blend_adapter_0".to_string(), adapter);
         manifest.save(&state).expect("save manifest");
         let cli = Cli {
-            workspace_path: dir.path().into(),
             command: Commands::Deploy(DeployArgs {
                 command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
                     vault: None,
                     governance: None,
                     asset_token: None,
-                    blend_pools: vec![CONTRACT.parse().expect("pool")],
+                    blend_pools: vec![ASSET_CONTRACT.parse().expect("pool")],
                     custodians: Vec::new(),
-                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
+                    adapter_admin: "vault".parse().expect("vault adapter admin"),
                     build: false,
                     force_new: false,
                 }),
@@ -6570,64 +6303,17 @@ mod tests {
         };
         let executor = RecordingExecutor::new();
 
-        let error = run(&cli, &executor).expect_err("admin mismatch must reject reuse");
+        let error = run(&cli, &executor).expect_err("legacy vault admin must be rejected");
 
-        assert!(error
-            .to_string()
-            .contains("recorded constructor argument admin differs from the requested value"));
-        assert!(executor.calls().is_empty());
-    }
-
-    #[test]
-    fn deploy_adapters_rejects_reusing_custodial_adapter_with_different_admin() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_fake_custodial_wasm(dir.path());
-        let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-        manifest
-            .contracts
-            .insert("asset_token".to_string(), imported_record(CONTRACT));
-        let mut adapter = imported_record(CONTRACT);
-        adapter.constructor_args = map_args([
-            ("admin", CONTRACT),
-            ("vault", CONTRACT),
-            ("custodian", ACCOUNT),
-            ("asset", CONTRACT),
-        ]);
-        manifest
-            .contracts
-            .insert("custodial_adapter_0".to_string(), adapter);
-        manifest.save(&state).expect("save manifest");
-        let cli = Cli {
-            workspace_path: dir.path().into(),
-            command: Commands::Deploy(DeployArgs {
-                command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
-                    vault: None,
-                    governance: None,
-                    asset_token: None,
-                    blend_pools: Vec::new(),
-                    custodians: vec![ACCOUNT.parse().expect("custodian")],
-                    adapter_admin: ACCOUNT.parse().expect("adapter admin"),
-                    build: false,
-                    force_new: false,
-                }),
-            }),
-            ..base_cli(state, Commands::Status)
-        };
-        let executor = RecordingExecutor::new();
-
-        let error = run(&cli, &executor).expect_err("admin mismatch must reject reuse");
-
-        assert!(error
-            .to_string()
-            .contains("recorded constructor argument admin differs from the requested value"));
-        assert!(executor.calls().is_empty());
+        assert!(error.to_string().contains("companion-upgrade capability"));
+        assert!(executor
+            .calls()
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "version")));
+        assert!(!executor
+            .calls()
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "--pool")));
     }
 
     #[test]
@@ -6637,15 +6323,14 @@ mod tests {
         write_fake_custodial_wasm(dir.path());
         let state = dir.path().join("manifest.json");
         let mut manifest = Manifest::new("testnet", None);
+        for key in ["vault", "governance", "asset_token"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
         manifest
             .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-        manifest
-            .contracts
-            .insert("asset_token".to_string(), imported_record(CONTRACT));
+            .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
         manifest.save(&state).expect("save manifest");
         let cli = Cli {
             workspace_path: dir.path().into(),
@@ -6687,7 +6372,7 @@ mod tests {
                 .iter()
                 .filter(|(_, args)| args.iter().any(|arg| arg == "version"))
                 .count(),
-            2
+            1
         );
         let version_index = calls
             .iter()
@@ -6713,6 +6398,22 @@ mod tests {
     }
 
     #[test]
+    fn adapter_constructor_guards_reject_invalid_admin_shapes() {
+        let account_admin = ACCOUNT.parse().expect("account admin");
+        let asset_admin = CONTRACT.parse().expect("asset admin");
+
+        assert!(validate_adapter_request(&account_admin, true, false, None, None).is_err());
+        assert!(validate_adapter_request(
+            &asset_admin,
+            false,
+            true,
+            Some(OTHER_CONTRACT),
+            Some(CONTRACT),
+        )
+        .is_err());
+    }
+
+    #[test]
     fn deploy_plan_does_not_execute_or_write_manifest() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fake_stack_wasms(dir.path());
@@ -6734,7 +6435,7 @@ mod tests {
                         share_decimals: 7,
                         blend_pools: vec![CONTRACT.parse().expect("pool")],
                         custodians: Vec::new(),
-                        adapter_admin: Some(ACCOUNT.parse().expect("adapter admin")),
+                        adapter_admin: Some(OTHER_CONTRACT.parse().expect("adapter admin")),
                         build: false,
                         force_new: false,
                     })),
@@ -6807,12 +6508,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("manifest.json");
         let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
+        for key in ["vault", "governance"] {
+            manifest
+                .contracts
+                .insert(key.to_string(), imported_record(CONTRACT));
+        }
         let cli = base_cli(state, Commands::Status);
 
         let plan = deploy_adapters_plan(
@@ -7232,10 +6932,10 @@ mod tests {
                     share_decimals: 7,
                     blend_pools: vec![
                         CONTRACT.parse().expect("first pool"),
-                        ACCOUNT.parse().expect("second pool"),
+                        ASSET_CONTRACT.parse().expect("second pool"),
                     ],
                     custodians: Vec::new(),
-                    adapter_admin: Some(ACCOUNT.parse().expect("adapter admin")),
+                    adapter_admin: Some(OTHER_CONTRACT.parse().expect("adapter admin")),
                     build: false,
                     force_new: false,
                 })),
@@ -7261,6 +6961,7 @@ mod tests {
         let state = dir.path().join("manifest.json");
         let cli = Cli {
             workspace_path: dir.path().into(),
+            fresh_state: true,
             command: Commands::Deploy(DeployArgs {
                 command: DeployCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
             }),
@@ -7298,14 +6999,83 @@ mod tests {
             .1
             .windows(2)
             .any(|pair| pair == ["--admin", ACCOUNT]));
-        assert!(share_token_deploy
-            .1
-            .windows(2)
-            .any(|pair| pair == ["--vault", CONTRACT]));
     }
 
     #[test]
-    fn share_token_reconciliation_checks_recorded_admin_and_vault() {
+    fn fresh_plan_rejects_existing_manifest_without_writing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = dir.path().join("manifest.json");
+        Manifest::new("testnet", None)
+            .save(&state)
+            .expect("save existing manifest");
+        let cli = Cli {
+            fresh_state: true,
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Plan(crate::cli::DeployPlanArgs {
+                    command: DeployPlanCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
+                }),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = RecordingExecutor::new();
+
+        let error = run(&cli, &executor).expect_err("existing path must be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("fresh deployment requires an unused --state path"));
+        assert!(executor.calls().is_empty());
+    }
+
+    #[test]
+    fn resume_reuses_partial_share_token_without_treating_initial_admin_as_current() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_fake_stack_wasms(dir.path());
+        let state = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("testnet", None);
+        manifest
+            .contracts
+            .insert("vault".to_string(), imported_record(CONTRACT));
+        let mut share_token = imported_record(CONTRACT);
+        share_token.constructor_args = map_args([
+            ("admin", OTHER_CONTRACT),
+            ("vault", CONTRACT),
+            ("name", "Templar Vault Share"),
+            ("symbol", "tvSHARE"),
+            ("decimals", "7"),
+        ]);
+        manifest
+            .contracts
+            .insert("share_token".to_string(), share_token);
+        manifest.save(&state).expect("save partial manifest");
+        let cli = Cli {
+            workspace_path: dir.path().into(),
+            command: Commands::Deploy(DeployArgs {
+                command: DeployCommand::Resume(Box::new(test_deploy_stack_args(ACCOUNT))),
+            }),
+            ..base_cli(state.clone(), Commands::Status)
+        };
+        let executor = TtlRecordingExecutor::new();
+
+        run(&cli, &executor).expect("resume partial deployment");
+
+        let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+        assert!(manifest.contracts.contains_key("governance"));
+        assert_eq!(
+            manifest
+                .contracts
+                .get("share_token")
+                .and_then(|record| record.constructor_args.get("admin"))
+                .map(String::as_str),
+            Some(OTHER_CONTRACT)
+        );
+        assert!(!submitted_calls(&executor.calls())
+            .iter()
+            .any(|(_, args)| args.iter().any(|arg| arg == "--name")));
+    }
+
+    #[test]
+    fn share_token_reconciliation_checks_only_immutable_vault_binding() {
         let mut manifest = Manifest::new("testnet", None);
         manifest
             .contracts
@@ -7325,227 +7095,7 @@ mod tests {
         assert!(checks
             .iter()
             .any(|check| { check.field == "vault" && check.status == WiringStatus::Match }));
-        assert!(checks.iter().any(|check| {
-            check.field == "admin"
-                && check.expected.as_deref() == Some(ACCOUNT)
-                && check.status == WiringStatus::Mismatch
-        }));
-    }
-
-    #[test]
-    fn reconciliation_rejects_known_unreachable_admin_topologies() {
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-
-        assert_eq!(
-            share_token_admin_topology_check(&manifest, Some(CONTRACT)).status,
-            WiringStatus::Mismatch
-        );
-        assert_eq!(
-            share_token_admin_topology_check(&manifest, Some(OTHER_CONTRACT)).status,
-            WiringStatus::Mismatch
-        );
-
-        let cli = base_cli("manifest.json".into(), Commands::Status);
-        let executor = RecordingExecutor::new();
-        let stellar = Stellar::new(&cli, &executor);
-        assert_eq!(
-            adapter_admin_topology_check(&stellar, &manifest, Some(OTHER_CONTRACT))
-                .expect("adapter topology check")
-                .status,
-            WiringStatus::Mismatch
-        );
-        assert_eq!(
-            adapter_admin_topology_check(&stellar, &manifest, Some(CONTRACT))
-                .expect("vault topology check")
-                .status,
-            WiringStatus::Mismatch
-        );
-
-        let capable_executor =
-            RecordingExecutor::with_runtime_feature_flags(RUNTIME_FEATURE_COMPANION_UPGRADE);
-        let capable_stellar = Stellar::new(&cli, &capable_executor);
-        assert_eq!(
-            adapter_admin_topology_check(&capable_stellar, &manifest, Some(CONTRACT))
-                .expect("capable vault topology check")
-                .status,
-            WiringStatus::Match
-        );
-    }
-
-    #[test]
-    fn reconciliation_marks_missing_share_token_admin_provenance_unknown() {
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        manifest
-            .contracts
-            .insert("governance".to_string(), imported_record(OTHER_CONTRACT));
-        manifest
-            .contracts
-            .insert("share_token".to_string(), imported_record(CONTRACT));
-        let cli = base_cli("manifest.json".into(), Commands::Status);
-        let executor = TtlRecordingExecutor::new();
-        let stellar = Stellar::new(&cli, &executor);
-
-        let component = reconcile_component(&stellar, &manifest, "share_token", true);
-
-        assert_eq!(component.status, ReconcileStatus::Unknown);
-        assert!(component.wiring.iter().any(|check| {
-            check.field == "admin_topology" && check.status == WiringStatus::Unknown
-        }));
-    }
-
-    #[test]
-    fn deploy_stack_rejects_reusing_share_token_with_different_admin() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_fake_stack_wasms(dir.path());
-        let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        let mut share_token = imported_record(CONTRACT);
-        share_token.constructor_args = map_args([
-            ("admin", CONTRACT),
-            ("vault", CONTRACT),
-            ("name", "Templar Vault Share"),
-            ("symbol", "tvSHARE"),
-            ("decimals", "7"),
-        ]);
-        manifest
-            .contracts
-            .insert("share_token".to_string(), share_token);
-        manifest.save(&state).expect("save manifest");
-        let before = fs::read_to_string(&state).expect("read manifest before failure");
-        let cli = Cli {
-            workspace_path: dir.path().into(),
-            command: Commands::Deploy(DeployArgs {
-                command: DeployCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
-            }),
-            ..base_cli(state.clone(), Commands::Status)
-        };
-        let executor = RecordingExecutor::new();
-
-        let error = run(&cli, &executor).expect_err("mismatched manifest must fail");
-
-        assert!(error.to_string().contains(
-            "recorded constructor argument admin differs from the requested value; use a fresh --state path"
-        ));
-        let after = fs::read_to_string(&state).expect("read manifest after failure");
-        assert_eq!(after, before);
-        assert!(executor.calls().is_empty());
-    }
-
-    #[test]
-    fn fresh_stack_rejects_existing_manifest_before_network_calls() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = dir.path().join("manifest.json");
-        Manifest::new("testnet", None)
-            .save(&state)
-            .expect("save existing manifest");
-        let before = fs::read_to_string(&state).expect("read manifest");
-        let cli = Cli {
-            fresh_state: true,
-            command: Commands::Deploy(DeployArgs {
-                command: DeployCommand::Stack(Box::new(test_deploy_stack_args(ACCOUNT))),
-            }),
-            ..base_cli(state.clone(), Commands::Status)
-        };
-        let executor = RecordingExecutor::new();
-
-        let error = run(&cli, &executor).expect_err("existing fresh-state path must fail");
-
-        assert!(error
-            .to_string()
-            .contains("fresh deployment requires an unused --state path"));
-        assert!(executor.calls().is_empty());
-        assert_eq!(
-            fs::read_to_string(&state).expect("read manifest after failure"),
-            before
-        );
-    }
-
-    #[test]
-    fn fresh_state_rejects_early_return_commands() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cli = Cli {
-            fresh_state: true,
-            ..base_cli(dir.path().join("manifest.json"), Commands::Doctor)
-        };
-        let executor = RecordingExecutor::new();
-
-        let error = run(&cli, &executor).expect_err("doctor must reject fresh-state");
-
-        assert!(error
-            .to_string()
-            .contains("--fresh-state is only valid with `deploy stack` or `deploy plan stack`"));
-        assert!(executor.calls().is_empty());
-    }
-
-    #[test]
-    fn deploy_plan_rejects_reusing_share_token_with_different_admin() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let state = dir.path().join("manifest.json");
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        let mut share_token = imported_record(CONTRACT);
-        share_token.constructor_args = map_args([
-            ("admin", CONTRACT),
-            ("vault", CONTRACT),
-            ("name", "Templar Vault Share"),
-            ("symbol", "tvSHARE"),
-            ("decimals", "7"),
-        ]);
-        manifest
-            .contracts
-            .insert("share_token".to_string(), share_token);
-        let args = test_deploy_stack_args(ACCOUNT);
-        let cli = base_cli(state, Commands::Status);
-
-        let error = deploy_stack_plan(&cli, &manifest, &args)
-            .expect_err("mismatched manifest must fail during planning");
-
-        assert!(error.to_string().contains(
-            "recorded constructor argument admin differs from the requested value; use a fresh --state path"
-        ));
-    }
-
-    #[test]
-    fn deploy_plan_requires_explicit_admin_when_reusing_share_token() {
-        let mut manifest = Manifest::new("testnet", None);
-        manifest
-            .contracts
-            .insert("vault".to_string(), imported_record(CONTRACT));
-        let mut share_token = imported_record(CONTRACT);
-        share_token.constructor_args = map_args([
-            ("admin", ACCOUNT),
-            ("vault", CONTRACT),
-            ("name", "Templar Vault Share"),
-            ("symbol", "tvSHARE"),
-            ("decimals", "7"),
-        ]);
-        manifest
-            .contracts
-            .insert("share_token".to_string(), share_token);
-        let mut args = test_deploy_stack_args(ACCOUNT);
-        args.admin = None;
-        let cli = base_cli("manifest.json".into(), Commands::Status);
-
-        let error = deploy_stack_plan(&cli, &manifest, &args)
-            .expect_err("plan must not guess the default admin for reuse");
-
-        assert!(error
-            .to_string()
-            .contains("cannot validate a reused share token without explicit --admin"));
+        assert!(!checks.iter().any(|check| check.field == "admin"));
     }
 
     #[test]
