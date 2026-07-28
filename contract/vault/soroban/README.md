@@ -352,7 +352,8 @@ Use recipes in [contract/vault/soroban/justfile](./justfile):
 `SOROBAN_ADAPTER_ADMIN` to an explicit Soroban contract address. The literal value `vault` is
 accepted only when the deployed vault's `version()` response advertises
 companion-contract upgrade routing (`0x40`). The current default runtime mask is `0x1f`, so it
-rejects `SOROBAN_ADAPTER_ADMIN=vault`.
+rejects `SOROBAN_ADAPTER_ADMIN=vault`. The configured governance contract is also rejected because
+it cannot dispatch companion-contract administration calls; use a different explicit contract.
 
 After deployment, register the adapter as a vault market before allocation.
 
