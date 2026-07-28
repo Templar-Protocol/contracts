@@ -25,8 +25,18 @@ with a shared file, the second PR to merge conflicts with the first. Ordering
 rows by artifact does not fix it: single-row groups sit within git's context
 window of each other, and two first-time releases both land at the end.
 
-Distinct filenames make the conflict unrepresentable. Two releases are never
-the same file, so there is nothing to merge, whatever the merge strategy.
+That is the common case here, not a corner: contracts share a build, so they
+ship in batches. Two commits in this catalog each produced three releases
+(`1d736e62` → lst-oracle, market, registry; `e0f3a11f` → proxy-oracle,
+proxy-governance, pyth-lazer).
+
+The usual fix — `merge=union` in `.gitattributes` — is not available to us:
+GitHub ignores user-defined `.gitattributes` when merging a PR, so it would
+work locally and not in the merge that matters.
+
+Distinct filenames make the conflict unrepresentable instead. Two releases are
+never the same file, so there is nothing to merge, whatever the strategy. This
+is the same reason towncrier-style tools give each entry its own file.
 
 Absences are deliberate: no NEAR vault has shipped, mocks are test scaffolding,
 and universal-account 0.4.0 was built but never deployed — those bytes are test

@@ -81,7 +81,7 @@ Format: `type(scope): summary`
 - **Version impact** — `fix` bumps patch, `feat` bumps minor, and a breaking change bumps major. Everything else is recorded but does not itself force a bump.
 - **Breaking changes** — mark with `!` after the scope (`feat(gateway)!: drop the legacy read path`) or a `BREAKING CHANGE:` footer in the PR body. This is the only signal that produces a major bump; forgetting it ships a breaking change as a minor.
 - **Scope is optional and free-form.** It is conventional to name the crate or area (`gateway`, `market`, `vault`, `relayer`, `proxy-oracle`, `manager`), but nothing enforces a fixed list: release-plz determines *which* crate to bump from the files a commit touches, not from the scope.
-- **Linear IDs go in the PR description, never the title.** `ENG-504: Nest governance under proxy-oracle` is not a valid type and will be rejected — write `refactor(proxy-oracle): nest governance` and reference `ENG-504` in the body.
+- **Never start a title with a Linear ID.** `ENG-504: Nest governance under proxy-oracle` leads with no valid type, so the lint rejects it and release-plz would infer no bump — write `refactor(proxy-oracle): nest governance`. A trailing reference (`… (ENG-504)`) is fine: the type still parses, and the ID carries into the changelog.
 
 Releases themselves are cut by merging the standing "chore: release" PR. See `RELEASING.md`.
 
