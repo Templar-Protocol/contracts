@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -57,16 +58,39 @@ impl Manifest {
         );
         if manifest.network.is_empty() {
             manifest.network = network.to_string();
-        } else {
-            anyhow::ensure!(
-                manifest.network == network,
-                "manifest network {} does not match requested network {network}",
-                manifest.network
-            );
         }
         // Scrub legacy or hand-edited source account data; signing identity
         // must stay in env/keystore.
         manifest.source_account = None;
+        Ok(manifest)
+    }
+
+    pub fn create_new(path: &Path, network: &str, rpc_url: Option<String>) -> anyhow::Result<Self> {
+        let manifest = Self::new(network, rpc_url);
+        let raw = serde_json::to_vec_pretty(&manifest)?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("create manifest directory {}", parent.display()))?;
+        }
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                anyhow::bail!(
+                    "fresh deployment requires an unused --state path; {} already exists",
+                    path.display()
+                )
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("create manifest {}", path.display()));
+            }
+        };
+        if let Err(error) = file.write_all(&raw) {
+            let _ = fs::remove_file(path);
+            return Err(error).with_context(|| format!("write manifest {}", path.display()));
+        }
         Ok(manifest)
     }
 
@@ -154,18 +178,22 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_cross_network_reuse() {
+    fn create_new_reserves_manifest_path_exclusively() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("manifest.json");
-        Manifest::new("testnet", None)
-            .save(&path)
-            .expect("save manifest");
+        let path = dir.path().join("nested/manifest.json");
 
-        let error = Manifest::load_or_new(&path, "mainnet", None)
-            .expect_err("cross-network manifest reuse must fail");
+        let manifest = Manifest::create_new(&path, "testnet", None).expect("create manifest");
+        let raw = fs::read_to_string(&path).expect("read reserved manifest");
+        let stored: Manifest = serde_json::from_str(&raw).expect("parse reserved manifest");
 
+        assert_eq!(manifest.network, "testnet");
+        assert_eq!(stored.network, "testnet");
+        assert!(stored.contracts.is_empty());
+
+        let error =
+            Manifest::create_new(&path, "testnet", None).expect_err("second reservation must fail");
         assert!(error
             .to_string()
-            .contains("manifest network testnet does not match requested network mainnet"));
+            .contains("fresh deployment requires an unused --state path"));
     }
 }

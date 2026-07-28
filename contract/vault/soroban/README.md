@@ -345,12 +345,12 @@ Blend integration lives in the dedicated crate `contract/vault/soroban/blend-ada
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`
-- `SOROBAN_ADAPTER_ADMIN=G... just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
-- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=C... just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=C... just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
 
 **Breaking change:** adapter deployment no longer defaults the admin to governance. Set
-`SOROBAN_ADAPTER_ADMIN` to an explicit Soroban account or contract address. The literal value
-`vault` is accepted only when the deployed vault's `version()` response advertises
+`SOROBAN_ADAPTER_ADMIN` to an explicit Soroban contract address. The literal value `vault` is
+accepted only when the deployed vault's `version()` response advertises
 companion-contract upgrade routing (`0x40`). The current default runtime mask is `0x1f`, so it
 rejects `SOROBAN_ADAPTER_ADMIN=vault`.
 
@@ -483,6 +483,9 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
   maintenance, and two-step admin rotation. New deployments and admin rotations reject
   `admin == vault` so those controls cannot be assigned to a runtime that lacks the corresponding
   dispatcher.
+- The installed implementation enforces the vault-only mint/burn boundary, but the admin's upgrade
+  authority can replace that implementation. Treat the share-token admin as an ultimate trust
+  boundary over token behavior, not merely as a maintenance role.
 - The admin-only `extend_ttl(caller)` entrypoint is the explicit keeper path for proactive instance maintenance. Operators should schedule it well before the instance reaches the TTL threshold; if the instance is archived, restore the contract instance through the Stellar/Soroban archival restore flow first, then call `extend_ttl` as the configured admin.
 - Per-holder balances are persistent entries owned by the upstream `stellar-tokens` implementation. Balance reads and balance-changing writes refresh the specific holder balance that is touched; the share token intentionally does not maintain an enumerable holder index or perform unbounded global balance refreshes from `extend_ttl`.
 - Allowances are temporary entries bounded by their explicit `live_until_ledger`. They are not extended beyond that caller-selected expiry by the share-token keeper path; owners should renew approvals when continued delegated spending is desired.
