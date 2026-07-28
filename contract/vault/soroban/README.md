@@ -481,9 +481,9 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
 - Share-token instance storage is refreshed by every public share-token entrypoint, including SEP-41 read-only methods (`total_supply`, `balance`, `allowance`, `decimals`, `name`, and `symbol`) and the custom `admin` / `vault` getters.
 - Share-token authority is split deliberately: the immutable vault address alone authorizes mint
   and burn, while a separately configured admin controls pause, restrictions, upgrades, TTL
-  maintenance, and two-step admin rotation. New deployments and admin rotations reject
-  `admin == vault` so those controls cannot be assigned to a runtime that lacks the corresponding
-  dispatcher.
+  maintenance, and two-step admin rotation. New deployments and admin rotations reject the vault
+  and the share token itself as admin so those controls cannot be assigned to contracts that lack
+  the corresponding dispatcher.
 - The installed implementation enforces the vault-only mint/burn boundary, but the admin's upgrade
   authority can replace that implementation. Treat the share-token admin as an ultimate trust
   boundary over token behavior, not merely as a maintenance role.

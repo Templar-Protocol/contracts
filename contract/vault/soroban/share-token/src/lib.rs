@@ -373,7 +373,7 @@ fn require_contract_address(env: &Env, addr: &Address) {
 }
 
 fn require_separate_admin(env: &Env, admin: &Address, vault: &Address) {
-    if admin == vault {
+    if admin == vault || admin == &env.current_contract_address() {
         panic_with_error!(env, ShareTokenError::InvalidInput);
     }
 }

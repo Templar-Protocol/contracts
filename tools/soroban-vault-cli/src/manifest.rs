@@ -56,9 +56,16 @@ impl Manifest {
             "unsupported manifest version {}",
             manifest.version
         );
-        if manifest.network.is_empty() {
-            manifest.network = network.to_string();
-        }
+        anyhow::ensure!(
+            !manifest.network.is_empty(),
+            "manifest {} has no network provenance; use a new --state path",
+            path.display()
+        );
+        anyhow::ensure!(
+            manifest.network == network,
+            "manifest network mismatch: recorded {}, requested {network}",
+            manifest.network
+        );
         // Scrub legacy or hand-edited source account data; signing identity
         // must stay in env/keystore.
         manifest.source_account = None;
@@ -175,6 +182,24 @@ mod tests {
         assert_eq!(loaded.version, MANIFEST_VERSION);
         assert!(loaded.artifacts.contains_key("vault"));
         assert_eq!(loaded.source_account, None);
+    }
+
+    #[test]
+    fn load_rejects_missing_or_mismatched_network_provenance() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("manifest.json");
+        let mut manifest = Manifest::new("", None);
+        manifest.save(&path).expect("save empty network manifest");
+
+        let error = Manifest::load_or_new(&path, "testnet", None)
+            .expect_err("empty network provenance must fail");
+        assert!(error.to_string().contains("has no network provenance"));
+
+        manifest.network = "mainnet".to_string();
+        manifest.save(&path).expect("save mismatched manifest");
+        let error = Manifest::load_or_new(&path, "testnet", None)
+            .expect_err("mismatched network must fail");
+        assert!(error.to_string().contains("manifest network mismatch"));
     }
 
     #[test]
