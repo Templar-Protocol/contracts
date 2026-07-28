@@ -35,7 +35,8 @@ fn main() {
     for (variant, releases) in &mut by_artifact {
         // `read_dir` order is unspecified, and `current()` is defined as the
         // last entry, so the ordering the catalog promises has to be imposed
-        // here rather than inherited from the filesystem.
+        // here rather than inherited from the filesystem. `parse` has already
+        // rejected anything unsortable.
         releases.sort_by_key(|release| version_key(&release.version));
 
         write!(generated, "        ArtifactId::{variant} => &[").expect("writing to a String");
@@ -71,13 +72,7 @@ fn parse(path: &Path) -> Release {
     let name = path.display();
     let contents = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{name}: {e}"));
 
-    let mut rows = contents.lines().filter(|line| !line.trim().is_empty());
-    let row = rows.next().unwrap_or_else(|| panic!("{name} is empty"));
-    assert!(
-        rows.next().is_none(),
-        "{name} holds more than one release; each file is exactly one"
-    );
-
+    let row = contents.trim();
     let fields = row.split('\t').collect::<Vec<_>>();
     assert!(
         fields.len() == COLUMNS,
@@ -107,9 +102,15 @@ fn parse(path: &Path) -> Release {
         "{name}: sha256 `{}` is not a 64-char hex digest",
         release.sha256,
     );
+    assert!(
+        version_key(&release.version).is_some(),
+        "{name}: version `{}` is not `major.minor.patch`. Releases are ordered \
+         by this, and an unparsable one would sort nondeterministically.",
+        release.version,
+    );
 
-    // The filename is a browsing aid, not data — but if the two disagree, one
-    // of them is a mistake worth surfacing.
+    // The filename is the uniqueness key that makes concurrent catalog PRs
+    // conflict-free, so it has to agree with the row it holds.
     let expected = format!("{}@{}.tsv", release.artifact, release.version);
     let actual = path
         .file_name()
@@ -126,15 +127,19 @@ fn parse(path: &Path) -> Release {
 }
 
 /// Orders versions numerically, so `0.10.0` follows `0.9.0`.
-fn version_key(version: &str) -> (u64, u64, u64) {
-    let mut parts = version
-        .split('.')
-        .map(|part| part.parse::<u64>().unwrap_or(0));
-    (
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-        parts.next().unwrap_or(0),
-    )
+///
+/// `None` for anything that is not three numeric components. Defaulting instead
+/// would let two versions collapse to the same key, and a stable sort would then
+/// fall back to `read_dir` order — making the generated catalog, and `current()`
+/// with it, differ between machines.
+fn version_key(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.');
+    let key = (
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+        parts.next()?.parse().ok()?,
+    );
+    parts.next().is_none().then_some(key)
 }
 
 /// `proxy-oracle` -> `ProxyOracle`, matching `ArtifactId`'s kebab-case naming.

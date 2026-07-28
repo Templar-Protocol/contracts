@@ -98,7 +98,9 @@ jobs:
           cp "$built" "dist/${ASSET}"
           (cd dist && sha256sum ./*.wasm > checksums.txt)
 
-          sha=$(sha256sum "$built" | cut -d' ' -f1)
+          # From checksums.txt, so the digest pinned in the catalog is by
+          # construction the one published on the Release.
+          sha=$(cut -d' ' -f1 < dist/checksums.txt)
           echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
           echo "Built ${TARGET} ${VERSION} at $(git rev-parse HEAD): ${sha}"
 
@@ -150,12 +152,15 @@ jobs:
             --features workspace-loader,clap --bin record-release -- \
             "$PACKAGE" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
 
-          if git diff --quiet; then
+          # Stage first, then ask the index: a release is a *new* file, which
+          # `git diff` does not see, so checking before staging would report
+          # "already recorded" for every release and never open the PR.
+          git add "contract/artifacts/releases/${PACKAGE_ID}@${VERSION}.tsv"
+          if git diff --cached --quiet; then
             echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
             exit 0
           fi
 
-          git add contract/artifacts/releases/
           git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
           # `persist-credentials: false` above, so authenticate the push here
           # instead of leaving a credential in the runner's git config.

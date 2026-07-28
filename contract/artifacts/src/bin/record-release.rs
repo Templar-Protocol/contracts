@@ -64,15 +64,17 @@ fn record(args: &Args) -> Result<String, String> {
     }
     let sha = sha.to_ascii_lowercase();
 
-    // A tab would split one field into two and shift every later column; a
-    // slash would escape the releases directory. Nothing else needs policing:
-    // these land in a data file, not generated source.
+    // A tab would split one field into two and shift every later column.
     for (name, value) in [("version", version), ("tag", tag), ("asset", asset)] {
-        if value.is_empty() || value.contains(['\t', '\n', '/', '\\']) {
+        if value.is_empty() || value.contains(['\t', '\n']) {
             return Err(format!(
-                "{name} `{value}` is empty or contains a tab, newline or slash"
+                "{name} `{value}` is empty or contains a tab/newline"
             ));
         }
+    }
+    // Only `version` reaches the path — tags legitimately contain slashes.
+    if version.contains(['/', '\\']) {
+        return Err(format!("version `{version}` cannot contain a slash"));
     }
 
     let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\n");
@@ -80,30 +82,40 @@ fn record(args: &Args) -> Result<String, String> {
         .join(RELEASES)
         .join(format!("{artifact}@{version}.tsv"));
 
-    // Releases are immutable, so re-recording one is either a no-op replay of
-    // the same job or a genuine conflict. Never a rewrite.
-    match std::fs::read_to_string(&path) {
-        Ok(existing) if existing == row => {
-            return Ok(format!("{artifact}@{version} is already recorded as {sha}"))
+    // `create_new` makes "never rewrite a release" structural rather than a
+    // check that a later edit could bypass.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            std::io::Write::write_all(&mut file, row.as_bytes())
+                .map_err(|error| format!("{path:?}: {error}"))?;
+            Ok(format!("recorded {artifact}@{version} as {sha} ({tag})"))
         }
-        Ok(existing) => {
-            return Err(format!(
-                "{artifact}@{version} is already recorded as `{}`, refusing to \
-                 rewrite it to `{}`. Released bytes are immutable.",
-                existing.trim_end(),
-                row.trim_end(),
-            ))
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Compare the recorded digest rather than the raw line: a replay is
+            // still a replay if the file was reformatted.
+            let existing =
+                std::fs::read_to_string(&path).map_err(|error| format!("{path:?}: {error}"))?;
+            let recorded = existing
+                .trim()
+                .split('\t')
+                .nth(4)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if recorded == sha {
+                Ok(format!("{artifact}@{version} is already recorded as {sha}"))
+            } else {
+                Err(format!(
+                    "{artifact}@{version} is already recorded as {recorded}, \
+                     refusing to rewrite it to {sha}. Released bytes are immutable."
+                ))
+            }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("{path:?}: {error}")),
+        Err(error) => Err(format!("{path:?}: {error}")),
     }
-
-    // A new file per release, never an edit to a shared one: one release PR can
-    // tag several contracts, and each tag opens its own catalog PR from the same
-    // `dev`. Distinct filenames leave git nothing to merge.
-    std::fs::write(&path, &row).map_err(|error| format!("{path:?}: {error}"))?;
-
-    Ok(format!("recorded {artifact}@{version} as {sha} ({tag})"))
 }
 
 #[cfg(test)]
@@ -132,21 +144,22 @@ mod tests {
             let error = record(&args(version, tag, asset))
                 .expect_err("should be rejected before touching releases/");
             assert!(
-                error.contains("empty or contains a tab, newline or slash"),
+                error.contains("empty or contains a tab/newline"),
                 "{label}: {error}"
             );
         }
     }
 
     #[test]
-    fn a_field_cannot_escape_the_releases_directory() {
-        for (label, version, tag) in [
-            ("slash in version", "../evil", "t"),
-            ("backslash in tag", "1.0.0", "..\\evil"),
-        ] {
-            let error = record(&args(version, tag, "a.wasm"))
+    fn a_version_cannot_escape_the_releases_directory() {
+        // `version` is the only field that reaches the path.
+        for version in ["../evil", "a\\b"] {
+            let error = record(&args(version, "t", "a.wasm"))
                 .expect_err("should be rejected before touching releases/");
-            assert!(error.contains("tab, newline or slash"), "{label}: {error}");
+            assert!(
+                error.contains("cannot contain a slash"),
+                "{version}: {error}"
+            );
         }
     }
 

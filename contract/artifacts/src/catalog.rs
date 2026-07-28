@@ -1,78 +1,13 @@
-//! Catalog invariants: pure in-memory checks, run via
-//! `./script/check-artifact-drift.sh`.
+//! Catalog invariants that `build.rs` structurally cannot check — it validates
+//! each release file's shape, but has no access to `ArtifactId` or to cargo
+//! metadata. Run via `./script/check-artifact-drift.sh`.
 //!
 //! Source is expected to run ahead of the newest release, so these enforce only
 //! that direction. Whether a release's bytes match the source is a different
 //! question, answered by rebuilding at its tag in
 //! `.github/workflows/release-artifacts.yml`.
 
-use std::collections::HashSet;
-
 use crate::ArtifactId;
-
-/// `"1.2.1"` -> `(1, 2, 1)`, for ordering comparisons.
-fn parts(version: &str) -> (u64, u64, u64) {
-    let mut it = version.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-    (
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-        it.next().unwrap_or(0),
-    )
-}
-
-/// Structural invariants of each artifact's release list.
-#[test]
-fn catalog_releases_are_well_formed() {
-    for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
-        let mut seen = HashSet::new();
-        let mut previous: Option<&str> = None;
-
-        for release in artifact.releases() {
-            assert!(
-                seen.insert(release.version),
-                "{} lists version {} more than once — two different builds cannot \
-                 both be that version",
-                artifact.package_name,
-                release.version,
-            );
-            assert_eq!(
-                release.sha256.len(),
-                64,
-                "{}@{} sha256 is not a 64-char hex digest",
-                artifact.package_name,
-                release.version,
-            );
-            assert!(
-                release.sha256.chars().all(|c| c.is_ascii_hexdigit()),
-                "{}@{} sha256 is not hex",
-                artifact.package_name,
-                release.version,
-            );
-            // Recorded rather than derived, so absence is possible.
-            assert!(
-                !release.tag.is_empty() && !release.asset.is_empty(),
-                "{}@{} is missing its tag or asset; the download URL is built \
-                 from both",
-                artifact.package_name,
-                release.version,
-            );
-
-            // `current()` is the last entry, and the crate relies on that
-            // meaning "newest".
-            if let Some(previous) = previous {
-                assert!(
-                    parts(previous) < parts(release.version),
-                    "{}: release {} is listed after {}, but releases must be \
-                     oldest first",
-                    artifact.package_name,
-                    release.version,
-                    previous,
-                );
-            }
-            previous = Some(release.version);
-        }
-    }
-}
 
 /// The converse does not hold: a real contract with no releases simply has not
 /// shipped yet, which is true of the NEAR vault.

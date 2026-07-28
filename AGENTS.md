@@ -119,7 +119,7 @@ Several CI/test-infra files enumerate crates, contracts, or paths by hand. A fea
 - **Adding or removing a contract / mock WASM**:
   - `contract/artifacts/src/ids.rs` — the `ArtifactId` enum and each artifact's name/path. `contract/artifacts/releases/` holds the released history, compiled in by `build.rs` (empty for mocks, which are never released). See `contract/artifacts/README.md`. This is the canonical list; `script/prebuild-test-contracts.sh` derives from it.
   - `gateway/testing/src/wasm.rs` — the `wasm_fns!` list, so the harness can load it.
-- **Releasing a new version of an existing contract**: nothing to do by hand. Merging the Release PR tags it; CI builds the WASM reproducibly at that tag, uploads it, and opens a PR appending one row to `contract/artifacts/releases/`. See `RELEASING.md`.
+- **Releasing a new version of an existing contract**: nothing to do by hand. Merging the Release PR tags it; CI builds the WASM reproducibly at that tag, uploads it, and opens a PR adding one file under `contract/artifacts/releases/`. See `RELEASING.md`.
 - **Adding a new top-level source area / crate**:
   - `.github/workflows/test.yml` paths groups (`near_integration`, `soroban`, `feature_matrix`, `artifact_manifests`) and `.github/workflows/gas-report.yml` paths — add it to the right group so the relevant jobs fire.
   - Root `Cargo.toml` `[workspace] members` if an existing glob (`gateway/*`, `tools/*`, …) doesn't already cover the path.

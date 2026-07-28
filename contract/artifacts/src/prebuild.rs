@@ -45,8 +45,9 @@ struct Args {
     check: bool,
 
     /// Resolve a release tag to its catalogued artifact and exit. Writes
-    /// `key=value` lines (`package`, `version`, `tag`, `source_path`, `target`,
-    /// `asset`) for a CI step to append to `$GITHUB_OUTPUT`.
+    /// `key=value` lines (`artifact`, `package`, `version`, `tag`,
+    /// `source_path`, `target`, `asset`) for a CI step to append to
+    /// `$GITHUB_OUTPUT`.
     ///
     /// Exit codes carry the outcome: `0` resolved, `2` not a catalogued NEAR
     /// artifact, `1` failure — so a failed lookup cannot masquerade as an
@@ -86,6 +87,8 @@ pub fn main() -> ExitCode {
             }
         };
 
+        // The catalog key, and the name of the file `record-release` writes.
+        println!("artifact={artifact}");
         println!("package={}", metadata.package_name);
         println!("version={version}");
         println!("source_path={}", metadata.source_path);

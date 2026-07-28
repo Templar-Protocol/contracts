@@ -3,8 +3,10 @@
 # no network, no warm cache:
 #   - no artifact claims a release its crate's version never reached (the
 #     reverse is normal: unreleased work is *meant* to run ahead)
-#   - release lists are well-formed: unique versions, 64-char digests, ascending
 #   - mocks have no releases, and scaffolding crates are excluded from releases
+#
+# Each release file's own shape — column count, digest, sortable version — is
+# validated by contract/artifacts/build.rs, where a bad row fails the build.
 set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")

@@ -95,7 +95,7 @@ is no manual step to forget.
    [`release-artifacts.yml`](.github/workflows/release-artifacts.yml), which
    builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
-   GitHub Release, and opens a PR appending one row to
+   GitHub Release, and opens a PR adding one file under
    `contract/artifacts/releases/` — the version, the tag, the asset, and the
    digest of the bytes it just built, each recorded as observed.
 
