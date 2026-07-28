@@ -46,10 +46,10 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
             },
         )
         .await?;
-    assert_eq!(
-        policy.policy.resolve("admin_set_proxy").ttl,
-        Nanoseconds::zero()
-    );
+    // The sandbox harness deploys a uniform zero-TTL policy: no per-method overrides, so
+    // `admin_set_proxy` runs under the target default.
+    assert!(policy.policy.method_policies.is_empty());
+    assert_eq!(policy.policy.default_target.ttl, Nanoseconds::zero());
 
     // Create a SetProxy proposal (id 1).
     let price_id = PriceIdentifier([0xaa; 32]);

@@ -3,7 +3,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
-use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation, Proposal, Role};
+use templar_proxy_oracle_near_governance_common::{
+    GovernancePolicyWire, Operation, Proposal, Role,
+};
 
 /// Get the next governance proposal ID.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -21,6 +23,10 @@ pub struct ProposalCount {
 
 /// Get the governance policy table (reflexive timelocks, the conservative target default, and
 /// per-method overrides).
+///
+/// Returned in its unconstrained wire form: the policy bounds are enforced when a policy is written,
+/// and a read should surface whatever the contract actually holds rather than fail to decode state
+/// that predates the current bounds.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "proxyOracleGovernance.getGovernancePolicy", output = GetGovernancePolicyResult)]
 pub struct GetGovernancePolicy {
@@ -28,7 +34,7 @@ pub struct GetGovernancePolicy {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetGovernancePolicyResult {
-    pub policy: GovernancePolicy,
+    pub policy: GovernancePolicyWire,
 }
 
 /// List active governance proposal IDs.

@@ -473,31 +473,24 @@ fn operation_borsh_and_json_round_trip() {
     );
 }
 
+/// Pre-restructure JSON is rejected rather than converted: the old typed classification carried its
+/// own authorization (`AdminFunctionCall` was Admin-only whatever it called, `SetActionTtl` edited a
+/// TTL without touching roles), and silently reinterpreting it under the method-driven policy would
+/// create proposals with different privileges than the sender wrote. Old clients get a parse error.
 #[test]
-fn json_round_trips_through_every_top_level_variant() {
-    // Deserialization routes through `compat::OperationWire`, whose `OperationNew` twin is a
-    // hand-maintained mirror of `Operation`. Round-trip a sample of each top-level variant so an
-    // out-of-sync twin fails here rather than silently dropping the variant.
-    let samples = [
-        Operation::Reflexive(ReflexiveOperation::SetRole {
-            account_id: "op.near".parse().unwrap(),
-            role: Role::Admin,
-            set: true,
+fn legacy_json_is_rejected() {
+    for legacy in [
+        near_sdk::serde_json::json!({
+            "SetRole": { "account_id": "op.near", "role": "Admin", "set": true }
         }),
-        target("admin_set_proxy", 30),
-    ];
-    for operation in &samples {
-        let json = near_sdk::serde_json::to_value(operation).unwrap();
-        assert_eq!(
-            &near_sdk::serde_json::from_value::<Operation>(json).unwrap(),
-            operation,
-            "compat round-trip must preserve every Operation variant"
+        near_sdk::serde_json::json!({
+            "SetActionTtl": { "kind": "SetProxy", "new_ttl": "1" }
+        }),
+    ] {
+        assert!(
+            near_sdk::serde_json::from_value::<Operation>(legacy.clone()).is_err(),
+            "legacy shape must not deserialize: {legacy}"
         );
-    }
-    // Exhaustiveness guard: a new top-level `Operation` variant breaks this match, forcing a matching
-    // `compat::OperationNew`/`OperationWire` update and a new sample above.
-    match &samples[0] {
-        Operation::Reflexive(_) | Operation::TargetFunctionCall(_) => {}
     }
 }
 
@@ -656,26 +649,102 @@ fn legacy_ttl_config_seeds_policy_with_conservative_default() {
     }
 }
 
+/// Why the bring-up policy pre-declares every method: an unlisted method's current lock is
+/// `default_target`, so the *first* override for it is measured against the default and is a
+/// shortening whenever it is cheaper. Pre-declared at zero, the same end state is a raise instead.
 #[test]
-fn legacy_json_deserializes_into_new_operation() {
-    // Old externally-tagged JSON for a target op.
-    let legacy_json = near_sdk::serde_json::json!({
-        "SetRole": { "account_id": "op.near", "role": "Admin", "set": true }
-    });
-    let operation: Operation = near_sdk::serde_json::from_value(legacy_json).unwrap();
+fn a_first_override_is_gated_by_the_default_but_hardening_a_declared_method_is_not() {
+    let edit = |ttl_secs: u64| {
+        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method: "admin_set_proxy".to_owned(),
+            policy: Some(method_policy(ttl_secs, Role::ProxyConfigurationManager)),
+        })
+    };
+
+    // `policy(300)` leaves every reflexive lock at zero, so the policy-edit lock contributes nothing
+    // and any delay below is the shortening rule alone.
+    let bare = policy(300);
     assert_eq!(
-        operation,
+        edit(100).minimum_ttl(&bare),
+        Nanoseconds::from_secs(300),
+        "a cheaper first override for an unlisted method matures under default_target"
+    );
+    // Matching the default is a hold, not a shortening.
+    assert_eq!(edit(300).minimum_ttl(&bare), Nanoseconds::zero());
+
+    let mut predeclared = policy(300);
+    predeclared
+        .set_method_policy(
+            "admin_set_proxy".to_owned(),
+            Some(method_policy(0, Role::ProxyConfigurationManager)),
+        )
+        .unwrap();
+    assert_eq!(
+        edit(100).minimum_ttl(&predeclared),
+        Nanoseconds::zero(),
+        "raising a method declared at zero is immediate"
+    );
+}
+
+/// The policies shipped for `governance create --policy-file` have to stay parseable, or operators
+/// copy a file the contract will reject at init.
+#[test]
+fn the_example_policy_files_parse() {
+    let steady: GovernancePolicy =
+        near_sdk::serde_json::from_str(include_str!("../../../governance-policy.example.json"))
+            .unwrap();
+    let bootstrap: GovernancePolicy = near_sdk::serde_json::from_str(include_str!(
+        "../../../governance-policy.bootstrap.example.json"
+    ))
+    .unwrap();
+
+    assert_eq!(
+        steady.resolve("admin_set_manual_trip").role,
+        Role::ManualTripper
+    );
+    // An unlisted method still falls back to the conservative default.
+    assert_eq!(steady.resolve("admin_unknown").role, Role::Admin);
+    // Self-upgrade is the effective ceiling on every other lock, so it should be the longest.
+    let ttls = steady.reflexive_ttls();
+    assert!(ttls.self_upgrade > ttls.set_policy && ttls.self_upgrade > ttls.set_role);
+    assert!(ttls.self_upgrade > steady.default_target().ttl);
+
+    // Bring-up policy: same delegation, every lock open.
+    assert_eq!(bootstrap.default_target().ttl, Nanoseconds::zero());
+    assert_eq!(bootstrap.reflexive_ttls().set_policy, Nanoseconds::zero());
+    assert!(bootstrap
+        .method_policies()
+        .values()
+        .all(|entry| entry.ttl == Nanoseconds::zero()));
+
+    // The two files must agree on who may do what; only the timelocks differ. A role added to one
+    // and forgotten in the other would silently change delegation across the hardening step.
+    let roles = |policy: &GovernancePolicy| -> BTreeMap<String, Role> {
+        policy
+            .method_policies()
+            .iter()
+            .map(|(method, entry)| (method.clone(), entry.role))
+            .collect()
+    };
+    assert_eq!(roles(&steady), roles(&bootstrap));
+}
+
+/// The migration still converts the v0 typed form; that mapping is faithful because the seeded
+/// policy's roles are exactly the v0 ones at the instant it runs.
+#[test]
+fn legacy_operations_still_convert_for_the_migration() {
+    let converted = Operation::try_from(LegacyOperation::SetRole {
+        account_id: "op.near".parse().unwrap(),
+        role: Role::Admin,
+        set: true,
+    })
+    .unwrap();
+    assert_eq!(
+        converted,
         Operation::Reflexive(ReflexiveOperation::SetRole {
             account_id: "op.near".parse().unwrap(),
             role: Role::Admin,
             set: true,
         })
-    );
-
-    // New-shape JSON still deserializes.
-    let new_json = near_sdk::serde_json::to_value(target("admin_set_proxy", 30)).unwrap();
-    assert_eq!(
-        near_sdk::serde_json::from_value::<Operation>(new_json).unwrap(),
-        target("admin_set_proxy", 30)
     );
 }

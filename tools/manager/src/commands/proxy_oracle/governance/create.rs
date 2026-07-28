@@ -50,9 +50,11 @@ struct GovernanceInit {
 
 impl GovernanceCreate {
     pub fn try_into_spec(self) -> anyhow::Result<registry_spec::Deploy> {
-        let policy = match self.policy_file {
+        let policy: GovernancePolicy = match self.policy_file {
             Some(path) => load_json_file(&path).context("parse GovernancePolicy")?,
-            None => GovernancePolicy::uniform(self.ttl_default),
+            None => {
+                GovernancePolicy::uniform(self.ttl_default).context("build --ttl-default policy")?
+            }
         };
 
         let init = GovernanceInit {

@@ -18,6 +18,13 @@ use templar_proxy_oracle_near_governance_common::LegacyOperation;
 /// invariant). That is a clean, atomic revert — the proposal stays queued and becomes executable once
 /// governance raises `default_target` first; the migration and the rest of the queue are unaffected.
 ///
+/// One authorization consequence, for proposals pending at the migration instant only: v0's
+/// `AdminFunctionCall` was Admin-only whatever it called, while the generic `TargetFunctionCall` it
+/// becomes resolves its role from the method name. A queued raw call to, say, `admin_set_manual_trip`
+/// is therefore executable (and cancellable) by `ManualTripper` afterwards. That is the new model —
+/// privilege follows the method, and the seeded table grants that method to exactly that role — but
+/// it does change who can act on an already-queued proposal.
+///
 /// The seeded policy is built in Rust rather than parsed from `GovernancePolicyWire` (the path an
 /// operator-supplied policy takes): `into_policy` satisfies the ceiling and count invariants by
 /// construction, and the only input it cannot bound is a v0 TTL above `MAX_PROPOSAL_TTL`. Rejecting

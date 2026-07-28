@@ -932,7 +932,7 @@ impl SandboxHarness {
 }
 
 fn zero_governance_policy() -> GovernancePolicy {
-    GovernancePolicy::uniform(Nanoseconds::zero())
+    GovernancePolicy::uniform(Nanoseconds::zero()).expect("zero is within bounds")
 }
 
 /// Choose the harness mode from the environment. `NEAR_SANDBOX_RPC_URL` set →

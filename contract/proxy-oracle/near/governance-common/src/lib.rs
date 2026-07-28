@@ -158,55 +158,16 @@ impl ReflexiveOperation {
 /// A governance operation: either self-mutating ([`ReflexiveOperation`]) or a generic call dispatched
 /// to the governed proxy oracle ([`FunctionCall`]).
 ///
-/// Deserialization accepts both the current shape and the pre-restructure typed variants
-/// (`{"SetProxy":{…}}`, …) via [`compat::OperationWire`]; serialization always emits the current shape.
+/// Only this shape is accepted on the wire. Pre-restructure JSON (`{"SetProxy":{…}}`, …) is not:
+/// converting it would resolve authorization from the method name rather than the old typed
+/// classification, so an operation could be created under a different role than the client that
+/// wrote it intended. [`LegacyOperation`] is still converted for the v0 state migration, where the
+/// seeded policy's roles are exactly the old ones and the mapping is therefore faithful.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
-#[serde(try_from = "compat::OperationWire")]
 pub enum Operation {
     Reflexive(ReflexiveOperation),
     TargetFunctionCall(FunctionCall),
-}
-
-mod compat {
-    use near_sdk::near;
-
-    use super::{FunctionCall, LegacyOperation, Operation, ReflexiveOperation};
-
-    /// A structural twin of [`Operation`] with the natural (non-`try_from`) derive, so the untagged
-    /// wire can recognize the current shape without recursing through `Operation`'s own deserialize.
-    #[derive(Debug)]
-    #[near(serializers = [json])]
-    pub enum OperationNew {
-        Reflexive(ReflexiveOperation),
-        TargetFunctionCall(FunctionCall),
-    }
-
-    /// The current shape is tried first; disjoint variant tags let untagged deserialization fall
-    /// through to the legacy shape cleanly.
-    #[derive(Debug)]
-    #[near(serializers = [json])]
-    #[serde(untagged)]
-    pub enum OperationWire {
-        New(OperationNew),
-        Legacy(LegacyOperation),
-    }
-
-    impl TryFrom<OperationWire> for Operation {
-        type Error = near_sdk::serde_json::Error;
-
-        fn try_from(wire: OperationWire) -> Result<Self, Self::Error> {
-            match wire {
-                OperationWire::New(OperationNew::Reflexive(reflexive)) => {
-                    Ok(Operation::Reflexive(reflexive))
-                }
-                OperationWire::New(OperationNew::TargetFunctionCall(call)) => {
-                    Ok(Operation::TargetFunctionCall(call))
-                }
-                OperationWire::Legacy(legacy) => Operation::try_from(legacy),
-            }
-        }
-    }
 }
 
 /// Coarse operation classification carried on governance events.
@@ -272,9 +233,8 @@ impl Operation {
 /// The fields are private so that parsing is the only way in from outside this crate: a
 /// `GovernancePolicy` in hand always satisfies the invariants, and the code that trusts them
 /// ([`Self::resolve`], the TTL/role checks) cannot be handed a struct literal that skips the checks.
-/// The two in-crate paths that build one whole — [`Self::uniform`] and
-/// [`LegacyTtlConfig::into_policy`] (the v0 migration) — satisfy the invariants by construction
-/// instead; see the latter for why the migration is not routed through the wire form.
+/// [`Self::uniform`] parses through the wire form too; [`LegacyTtlConfig::into_policy`] (the v0
+/// migration) is the one builder that constructs a policy directly — see it for why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 #[serde(try_from = "GovernancePolicyWire")]
@@ -356,9 +316,14 @@ impl TryFrom<GovernancePolicyWire> for GovernancePolicy {
 impl GovernancePolicy {
     /// A uniform policy: every reflexive timelock and the target default set to `ttl`, `Admin` as the
     /// default target role, and no per-method overrides.
-    #[must_use]
-    pub fn uniform(ttl: Nanoseconds) -> Self {
-        Self {
+    ///
+    /// Goes through [`GovernancePolicyWire`] so the bounds are enforced in exactly one place.
+    ///
+    /// # Errors
+    ///
+    /// If `ttl` exceeds [`MAX_PROPOSAL_TTL`].
+    pub fn uniform(ttl: Nanoseconds) -> Result<Self, PolicyError> {
+        GovernancePolicyWire {
             reflexive_ttls: ReflexiveTtls {
                 set_policy: ttl,
                 set_role: ttl,
@@ -370,6 +335,7 @@ impl GovernancePolicy {
             },
             method_policies: BTreeMap::new(),
         }
+        .try_into()
     }
 
     #[must_use]

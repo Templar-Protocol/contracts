@@ -188,12 +188,8 @@ impl ProxyGovernanceInterface for Contract {
             .execute(u64::from(id), &proposal, Nanoseconds::near_timestamp())
             .unwrap_or_reject();
         let operation = self.proposals.remove(&id).unwrap_or_reject().operation;
-        Event::Executed {
-            id,
-            kind: operation.kind(),
-            method: operation.method(),
-        }
-        .emit();
+        let kind = operation.kind();
+        let method = operation.method();
 
         let proxy_oracle_id = self.proxy_oracle_id.clone();
 
@@ -245,6 +241,11 @@ impl ProxyGovernanceInterface for Contract {
                     .detach();
             }
         }
+
+        // Emitted last: the reflexive mutations above are fallible, and a failed one reverts state
+        // while leaving its logs on the receipt. Emitting first would advertise an execution that
+        // did not happen.
+        Event::Executed { id, kind, method }.emit();
     }
 }
 

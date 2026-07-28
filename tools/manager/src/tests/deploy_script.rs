@@ -345,7 +345,7 @@ fn json_fallback_still_works_for_create_proposal() {
             "write",
             "proxyOracleGovernance.createProposal",
             "--json",
-            r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"SetProxy":{"id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","proxy":{"aggregator":{"MedianLow":{"sources":[],"min_sources":1}},"freshness_filter":{"max_age_ns":"1","max_clock_drift_ns":"1"}}}},"requested_ttl":"0"}"#,
+            r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"TargetFunctionCall":{"method_name":"admin_set_proxy","args":"e30=","attached_deposit":"0","gas":"30000000000000"}},"requested_ttl":"0"}"#,
         ]
         .into_iter()
         .chain(CREDS),
