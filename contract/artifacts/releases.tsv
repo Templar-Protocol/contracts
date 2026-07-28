@@ -1,9 +1,13 @@
-# Released contract versions. Appended by CI on a release tag; never edited by hand.
+# Released contract versions. Appended by CI on a release tag; never edited by
+# hand. `tag` and `asset` are recorded as observed — see `ArtifactRelease` in
+# src/ids.rs.
 #
-# `tag` and `asset` are recorded as observed, not derived from a naming
-# convention: they name objects that already exist on GitHub, and this repo has
-# used three tag schemes over its life. A future change to release-plz's
-# `git_tag_name` therefore cannot strand these releases.
+# Everything here was recovered from code actually deployed on NEAR mainnet,
+# each tag pointing at the commit its WASM names in NEP-330 metadata.
+#
+# Absences are deliberate: no NEAR vault has shipped, mocks are test
+# scaffolding, and universal-account 0.4.0 was built but never deployed — those
+# bytes are test data, in contract/universal-account/tests/migration/.
 #
 # artifact	version	tag	asset	sha256
 registry	0.1.0	templar-registry-contract-v0.1.0	templar_registry_contract-0.1.0.wasm	c07b38a29202da247da12515d3b2e7a93855619209a76d73e5ae12b2facc6255

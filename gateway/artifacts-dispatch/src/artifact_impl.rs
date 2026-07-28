@@ -42,9 +42,8 @@ async fn load_artifact(artifact: ArtifactId) -> GatewayResult<LoadedArtifact> {
             other => GatewayError::ExternalService(other.to_string()),
         })?;
 
-    // `released_bytes` only returns bytes whose digest equals the pin, so the
-    // pin *is* this blob's SHA-256. Re-hashing 400 KB on every served request
-    // would compute a value we already have.
+    // `released_bytes` guarantees the digest equals the pin, so re-hashing
+    // 400 KB per request would recompute a value we already have.
     let sha256 = release.sha256.to_owned();
     let version_key = version_key_from_digest(metadata.package_name, release.version, &sha256);
 

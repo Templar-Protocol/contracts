@@ -74,16 +74,9 @@ wasm_fns! {
 /// upgrade tests that must deploy the real historical binary.
 ///
 /// Downloaded from that version's GitHub Release into a shared on-disk cache
-/// and verified against the SHA-256 pinned in the catalog, so a swapped asset
-/// fails here rather than silently changing what a migration test deploys.
-///
-/// No in-process memo: `released_bytes` already caches on disk, nextest gives
-/// each test its own process, and every caller wants owned bytes to hand to a
-/// deploy anyway.
-///
-/// A cold cache needs network. `just artifacts-fetch` warms it; CI does this
-/// before the sandbox tests so a network failure is one clear step rather than
-/// scattered test failures.
+/// and verified against the catalog's SHA-256 pin, so a swapped asset fails here
+/// rather than silently changing what a migration test deploys. A cold cache
+/// needs network; `just artifacts-fetch` warms it (CI does this first).
 ///
 /// # Panics
 /// If `version` is not a catalogued release of `artifact` (a test bug — the

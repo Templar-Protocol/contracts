@@ -82,9 +82,8 @@ jobs:
               - 'common/src/**'
               - 'contract/artifacts/Cargo.toml'
               - 'contract/artifacts/build.rs'
-              # The release catalog. CI's own catalog PR touches this and
-              # nothing else, so without it the one PR that records a release
-              # would run neither the drift check nor the node tests.
+              # CI's own catalog PR touches only this file; without it, the
+              # one PR that records a release would run no tests.
               - 'contract/artifacts/releases.tsv'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
@@ -140,9 +139,8 @@ jobs:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
-            # A version bump can change catalog version keys without touching
-            # contract `src/**`. The drift check's version guard must run on these
-            # too, or a stale catalog `version` could merge.
+            # A Cargo.toml version edit can drop a crate below a release that
+            # is already recorded, without touching contract `src/**`.
             artifact_manifests:
               - 'Cargo.toml'
               - 'contract/**/Cargo.toml'
@@ -454,10 +452,9 @@ jobs:
         with:
           tool: nextest,just
 
-      # The artifacts-dispatch tests serve real released bytes, so this
-      # partition needs the cache warm even though it runs no node. Fetching up
-      # front turns a network failure into one clear red step instead of a
-      # scattering of test failures.
+      # artifacts-dispatch serves real released bytes, so this partition needs
+      # the cache warm even though it runs no node. Fetching up front makes a
+      # network failure one red step rather than scattered test failures.
       - name: Warm the released-artifact cache
         run: just artifacts-fetch
 
@@ -498,12 +495,9 @@ jobs:
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
-      # Migration and upgrade tests deploy the real historical bytes, which are
-      # GitHub Release assets rather than repository content. Fetching them up
-      # front turns a network failure into one clear red step instead of a
-      # scattering of test failures. Deliberately not an `actions/cache` entry:
-      # the whole corpus is a couple of MB from GitHub's own CDN, and the repo
-      # cache is already under eviction pressure at the 10 GB cap.
+      # Migration and upgrade tests deploy real historical bytes. Not an
+      # `actions/cache` entry: a couple of MB from GitHub's own CDN, and the
+      # repo cache is already at the 10 GB eviction cap.
       - name: Warm the released-artifact cache
         run: just artifacts-fetch
 

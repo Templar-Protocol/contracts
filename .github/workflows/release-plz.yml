@@ -12,14 +12,9 @@ name: Release-plz
 # an ordinary merge to `dev` ships nothing.
 #
 # Secrets:
-#   RELEASE_PLZ_TOKEN     required PAT. A PR opened with the default GITHUB_TOKEN
-#                         does NOT trigger other workflows, so the Release PR
-#                         would never run `test.yml` and the release tags would
-#                         never run the artifact/CLI workflows — a release past
-#                         its gates. Both jobs fail fast if it is unset.
-#   CARGO_REGISTRY_TOKEN  only consulted once crates leave `git_only` mode.
-#                         Publishing is currently blocked upstream — see the
-#                         header of `release-plz.toml`.
+#   RELEASE_PLZ_TOKEN     required PAT — see "First-time setup" in RELEASING.md.
+#   CARGO_REGISTRY_TOKEN  only consulted once crates leave `git_only` mode; see
+#                         "Publishing to crates.io is currently blocked" there.
 
 on:
   push:
@@ -36,10 +31,7 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
-  # The whole design leans on this PAT: a release PR opened with the default
-  # GITHUB_TOKEN cannot trigger test.yml or the tag workflows, so a release
-  # would ship past its gates. Fail loudly rather than degrade silently — once,
-  # for both jobs, so the guard cannot be fixed in one copy and not the other.
+  # Guarded once for both jobs: without the PAT a release ships past its gates.
   require-token:
     name: Require RELEASE_PLZ_TOKEN
     runs-on: ubuntu-latest
@@ -58,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create tags and GitHub Releases
-      pull-requests: read
+      pull-requests: read # release-plz checks for an existing release PR
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

@@ -1,12 +1,7 @@
 //! Turn `releases.tsv` into the catalog's release lists.
 //!
-//! The released history is data, not code. Keeping it in a table means CI
-//! appends a release by writing one line — no parsing Rust, no splicing text
-//! into a source file, no `cargo fmt` afterwards to tidy up — and a release PR
-//! diffs as exactly the row that was added.
-//!
-//! Validation happens here rather than at runtime: a malformed row fails the
-//! build of the crate that would have served it.
+//! Release history is a table so CI appends one line and the PR diffs as that
+//! row. Malformed rows fail the build rather than surfacing at runtime.
 
 use std::{collections::BTreeMap, fmt::Write as _, path::Path};
 
@@ -18,9 +13,8 @@ fn main() {
 
     let table = std::fs::read_to_string(SOURCE).unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
 
-    // BTreeMap keyed by variant so the generated match arms are deterministic;
-    // the Vec preserves file order, which is the release order the catalog
-    // promises (oldest first).
+    // Keyed by variant for deterministic output; the Vec preserves file order,
+    // which is the oldest-first release order the catalog promises.
     let mut by_artifact: BTreeMap<String, Vec<Release>> = BTreeMap::new();
 
     for (number, line) in table.lines().enumerate() {
@@ -87,8 +81,7 @@ fn main() {
         }
         generated.push_str("],\n");
     }
-    // Artifacts absent from the table have simply never been released — mocks,
-    // and any contract that has not shipped yet.
+    // Artifacts absent from the table have never been released.
     generated.push_str("        _ => &[],\n    }\n}\n");
 
     let Some(out_dir) = std::env::var_os("OUT_DIR") else {

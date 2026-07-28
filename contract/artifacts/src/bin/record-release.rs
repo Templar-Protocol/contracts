@@ -1,22 +1,14 @@
 //! Append a release to `contract/artifacts/releases.tsv`.
 //!
 //! Run by `.github/workflows/release-artifacts.yml` after it has built and
-//! uploaded a release's WASM, against the hash of the bytes it just built. The
-//! resulting one-line diff goes up as a PR for a human to merge.
-//!
-//! Nobody edits the release list by hand. The catalog records what was
-//! *deployed*, and deployment is not something a `Cargo.toml` bump can assert:
-//! contract versions have repeatedly been bumped during development and never
-//! shipped. Letting CI append after the fact is what keeps the catalog honest —
-//! and it means there is no step for a developer to forget.
-//!
-//! Every field is *observed*, not derived: the tag and asset name objects that
-//! already exist on GitHub, and the digest is of bytes already built.
+//! uploaded a release's WASM; the one-line diff goes up as a PR. Never edited by
+//! hand — the catalog records what was *deployed*, which a `Cargo.toml` bump
+//! cannot assert.
 //!
 //! ```bash
 //! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
-//!   proxy-oracle 0.4.0 templar-proxy-oracle-near-contract-v0.4.0 \
-//!   templar_proxy_oracle_near_contract-0.4.0.wasm <sha256>
+//!   proxy-oracle 0.3.0 templar-proxy-oracle-near-contract-v0.3.0 \
+//!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256>
 //! ```
 
 use std::{fmt::Write as _, process::ExitCode};
@@ -24,7 +16,6 @@ use std::{fmt::Write as _, process::ExitCode};
 use clap::Parser;
 use templar_contract_artifacts::ArtifactId;
 
-/// Append a release to the artifact catalog.
 #[derive(Debug, Parser)]
 struct Args {
     /// Catalogued artifact the release belongs to.
@@ -73,9 +64,8 @@ fn record(args: &Args) -> Result<String, String> {
     }
     let sha = sha.to_ascii_lowercase();
 
-    // A tab would split one field into two and silently shift every column
-    // after it. Nothing else about these values needs policing: they land in a
-    // data file, not in generated source.
+    // A tab would split one field into two and shift every later column. These
+    // land in a data file, not generated source, so nothing else needs policing.
     for (name, value) in [("version", version), ("tag", tag), ("asset", asset)] {
         if value.is_empty() || value.contains('\t') || value.contains('\n') {
             return Err(format!(
@@ -99,15 +89,35 @@ fn record(args: &Args) -> Result<String, String> {
     }
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(RELEASES);
-    let mut table = std::fs::read_to_string(&path).map_err(|e| format!("{path:?}: {e}"))?;
-    if !table.ends_with('\n') {
-        table.push('\n');
-    }
-    writeln!(table, "{artifact}\t{version}\t{tag}\t{asset}\t{sha}")
+    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path:?}: {e}"))?;
+    let mut row = String::new();
+    writeln!(row, "{artifact}\t{version}\t{tag}\t{asset}\t{sha}")
         .map_err(|e| format!("building the release row: {e}"))?;
-    std::fs::write(&path, table).map_err(|e| format!("{path:?}: {e}"))?;
+
+    std::fs::write(&path, insert_row(&table, &artifact.to_string(), &row))
+        .map_err(|e| format!("{path:?}: {e}"))?;
 
     Ok(format!("recorded {artifact}@{version} as {sha} ({tag})"))
+}
+
+/// Insert `row` after the artifact's existing rows, or at the end if it has
+/// none.
+///
+/// Not a plain append: one release PR can tag several contracts, and each tag
+/// runs this in its own branch off the same `dev`. Appending would put every
+/// row at the same offset, so the second catalog PR to merge would conflict.
+/// Grouped by artifact, they touch different regions and merge cleanly.
+fn insert_row(table: &str, artifact: &str, row: &str) -> String {
+    let mut lines = table.lines().map(str::to_owned).collect::<Vec<_>>();
+    let after = lines
+        .iter()
+        .rposition(|line| line.split('\t').next() == Some(artifact))
+        .map_or(lines.len(), |index| index + 1);
+    lines.insert(after, row.trim_end().to_owned());
+    lines
+        .into_iter()
+        .map(|line| line + "\n")
+        .collect::<String>()
 }
 
 #[cfg(test)]
@@ -140,6 +150,29 @@ mod tests {
                 "{label}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn a_row_lands_in_its_own_artifact_group() {
+        // Two contracts released in one batch each open a catalog PR off the
+        // same `dev`; grouped inserts keep those PRs from conflicting.
+        let table =
+            "# header\nregistry\t1.0.0\ta\tb\tc\nmarket\t1.0.0\ta\tb\tc\nmarket\t1.1.0\ta\tb\tc\n";
+
+        let with_registry = insert_row(table, "registry", "registry\t1.1.0\tt\tw\td\n");
+        let rows: Vec<&str> = with_registry
+            .lines()
+            .map(|l| l.split('\t').next().unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            ["# header", "registry", "registry", "market", "market"]
+        );
+
+        // A first-ever release for an artifact still goes at the end.
+        let with_vault = insert_row(table, "vault", "vault\t1.0.0\tt\tw\td\n");
+        assert!(with_vault.ends_with("vault\t1.0.0\tt\tw\td\n"));
+        assert_eq!(with_vault.lines().count(), 5);
     }
 
     #[test]

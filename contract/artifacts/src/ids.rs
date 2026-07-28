@@ -5,23 +5,13 @@
 //! the single source of truth for artifact names, paths, and how they map
 //! to `target/near` directories.
 //!
-//! ⚠️ Each entry's `releases` list is the *released* history of a contract, NOT
-//! a mirror of current source. Source is allowed to move ahead of the newest
-//! release — unreleased work-in-progress is meant to lag it.
+//! ⚠️ [`ArtifactMetadata::releases`] is the *released* history of a contract,
+//! compiled in from `releases.tsv` — NOT a mirror of current source, which is
+//! expected to run ahead of the newest release.
 //!
-//! Bytes live on the GitHub Release for each version's tag, not in this repo;
-//! [`crate::fetch`] downloads and caches them. Each release pins the SHA-256 of
-//! its bytes, so a swapped asset is caught locally rather than trusted.
-//!
-//! Releases are **immutable**: ship new bytes by bumping the contract's
-//! `Cargo.toml` version and *adding* a release, never by editing one. Historical
-//! releases are what the migration and upgrade tests deploy, so rewriting one
-//! silently invalidates them.
-//!
-//! Cutting a release is not a manual step: merging the release PR tags the
-//! version, and `.github/workflows/release-artifacts.yml` builds the WASM
-//! reproducibly at that tag, uploads it, and opens the PR that fills in the
-//! pin. See `RELEASING.md`.
+//! Releases are immutable: ship new bytes by *adding* one, never by editing an
+//! entry, because historical releases are what the migration and upgrade tests
+//! deploy. Cutting one is not a manual step — see `RELEASING.md`.
 
 use std::{fmt, path::Path, str::FromStr};
 
@@ -155,38 +145,28 @@ impl FromStr for ArtifactId {
 
 /// One released version of a contract.
 ///
-/// A release exists because the bytes were *deployed*, not because a version
-/// number was bumped: those diverge, and this catalog tracks the former. It is
-/// appended to by CI when a release tag is cut, never by hand — see the module
-/// docs for why immutability matters here.
+/// A release exists because the bytes were *deployed*, not because a version was
+/// bumped. Appended by CI on a release tag, never by hand.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactRelease {
     /// Crate version this was released as.
     pub version: &'static str,
     /// Git tag carrying the release, exactly as it exists.
     ///
-    /// Recorded when the release is cut, not derived from a naming template.
-    /// The tag names an object that already exists on GitHub, and this repo has
-    /// used three schemes over its life (`v1.2.1`, `uac-v0.2.0`,
-    /// `templar-market-contract-v1.3.0`), so reconstructing it would assume a
-    /// uniformity that has never held. Changing release-plz's `git_tag_name`
-    /// governs the *next* tag and cannot strand these.
+    /// Recorded, not derived: three tag schemes have been used here (`v1.2.1`,
+    /// `uac-v0.2.0`, `templar-market-contract-v1.3.0`), so changing
+    /// release-plz's `git_tag_name` cannot strand old releases.
     pub tag: &'static str,
     /// Filename of the WASM asset on that release, likewise as it exists.
     pub asset: &'static str,
     /// SHA-256 (lowercase hex) of the released bytes.
     ///
-    /// The root of trust for a downloaded asset: [`crate::fetch`] verifies
-    /// against it and refuses bytes that do not match, so artifact integrity
-    /// rests on this reviewed, in-repo value rather than on GitHub serving us
-    /// the right file.
+    /// Root of trust: [`crate::fetch`] refuses bytes that do not match this
+    /// reviewed, in-repo value.
     pub sha256: &'static str,
 }
 
 /// Canonical metadata for a single contract artifact.
-///
-/// Every field is a compile-time constant derived from the workspace layout
-/// and the prebuild script.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactMetadata {
     /// The artifact identifier.
@@ -204,49 +184,35 @@ impl ArtifactMetadata {
         Path::new(self.source_path).join("Cargo.toml")
     }
 
-    /// Every released version of this contract, **oldest first**.
-    ///
-    /// Read from `releases.tsv` at build time, keyed by [`Self::id`] so there is
-    /// no name to mistype. Empty for mock contracts: they are test scaffolding,
-    /// never tagged and never deployed, so "the canonical bytes of mock-ft" is
-    /// not a thing that exists. Tests build them from source instead.
+    /// Every released version of this contract, **oldest first**, from
+    /// `releases.tsv`. Empty for mocks: test scaffolding is never deployed, so
+    /// "the canonical bytes of mock-ft" is not a thing that exists.
     pub fn releases(&self) -> &'static [ArtifactRelease] {
         releases_for(self.id)
     }
 
-    /// The newest release — what the gateway deploys and what `version_key`
-    /// refers to by default. `None` for an artifact that has never been
-    /// released (mocks).
+    /// The newest release — what the gateway deploys. `None` for an artifact
+    /// that has never been released (mocks).
     pub fn current(&self) -> Option<&'static ArtifactRelease> {
         self.releases().last()
     }
 
-    /// Version of the newest release.
     pub fn version(&self) -> Option<&'static str> {
         self.current().map(|release| release.version)
     }
 
-    /// Look up a specific released version.
     pub fn release(&self, version: &str) -> Option<&'static ArtifactRelease> {
         self.releases().iter().find(|r| r.version == version)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Release naming
-// ---------------------------------------------------------------------------
-
 /// Which catalogued artifact a release tag belongs to.
 ///
-/// Only ever asked of a tag release-plz has just created, to decide which
-/// contract to build — the tag of an *existing* release is recorded in
-/// `releases.tsv`, never reconstructed. So this is a deliberately lenient
-/// prefix match rather than an exact inverse of any naming template: it needs
-/// to identify the package, not to round-trip.
+/// Only asked of a tag release-plz just created; an existing release's tag is
+/// recorded in `releases.tsv`, never reconstructed. So a lenient prefix match
+/// suffices — it must identify the package, not round-trip.
 ///
-/// `None` for a tag outside the NEAR catalog — a Soroban package, a library.
-/// That is a distinct answer from "this failed", which is why release CI reads
-/// it through an exit code rather than an empty string.
+/// `None` means "not a NEAR artifact" (a Soroban tag), not "failed".
 pub fn artifact_from_release_tag(tag: &str) -> Option<ArtifactId> {
     ArtifactId::ALL
         .into_iter()
@@ -284,11 +250,6 @@ macro_rules! entry {
 // Release lists come from `releases.tsv`, compiled in by `build.rs`.
 include!(concat!(env!("OUT_DIR"), "/releases.rs"));
 
-// Every release below was recovered from code actually deployed on NEAR
-// mainnet, and its tag points at the commit that deployed WASM names in its
-// NEP-330 metadata — so each one rebuilds byte-for-byte from a fresh clone.
-// Each release's GitHub Release names the account its bytes were read from.
-//
 // `source_path` is where the contract lives *today*. Older releases were built
 // from different paths (proxy-oracle from `contract/proxy-oracle`, the LST
 // oracle from `contract/lst-oracle`); a verifier reads the historical path out
@@ -307,8 +268,6 @@ static MARKET_METADATA: ArtifactMetadata = entry!(
     "contract/market"
 );
 
-// No NEAR vault has been deployed yet; the Soroban vault is a separate
-// artifact. CI appends the first NEAR release here when one ships.
 static VAULT_METADATA: ArtifactMetadata = entry!(
     Vault,
     "templar-vault-contract",
@@ -316,9 +275,6 @@ static VAULT_METADATA: ArtifactMetadata = entry!(
     "contract/vault/near"
 );
 
-// 0.4.0 is deliberately absent: it was built and used as a migration-test
-// fixture but never deployed, so it is not a release. Those bytes live beside
-// the state patch they pair with, in contract/universal-account/tests/migration/.
 static UNIVERSAL_ACCOUNT_METADATA: ArtifactMetadata = entry!(
     UniversalAccount,
     "templar-universal-account-contract",
@@ -356,8 +312,7 @@ static PYTH_LAZER_ADAPTER_METADATA: ArtifactMetadata = entry!(
     "contract/pyth-lazer/contract"
 );
 
-// Mocks are test scaffolding: Tier C in `release-plz.toml`, never tagged, never
-// deployed. Tests build them from source.
+// Mocks: Tier C in `release-plz.toml`. Tests build them from source.
 static MOCK_FT_METADATA: ArtifactMetadata = entry!(MockFt, "mock-ft", "mock_ft", "mock/ft");
 static MOCK_MT_METADATA: ArtifactMetadata = entry!(MockMt, "mock-mt", "mock_mt", "mock/mt");
 static MOCK_ORACLE_METADATA: ArtifactMetadata =

@@ -1,54 +1,21 @@
-//! Download and cache released contract WASM.
+//! Download and cache released contract WASM. Enabled via the `fetch` feature.
 //!
-//! Enabled via the `fetch` feature.
+//! Bytes are GitHub Release assets, not repository content; each release in
+//! `contract/artifacts/releases.tsv` records the tag and asset it shipped as.
+//! See `RELEASING.md` for why they are built at the tag's own commit.
 //!
-//! # Where the bytes live
-//!
-//! Released bytes are GitHub Release assets, not repository content. Each
-//! release records the tag that carries it and the asset on that tag, both as
-//! observed when it was cut — see `contract/artifacts/releases.tsv`. The bytes
-//! are built by `.github/workflows/release-artifacts.yml` in the pinned NEP-330
-//! Docker image **at that tag's own commit**.
-//!
-//! Building at the tag is the whole point. `cargo near build reproducible-wasm`
-//! embeds its source commit into the WASM, so a rebuild only matches at the
-//! commit it was built from — and that commit has to be permanently reachable,
-//! or nobody (including nearblocks.io) can verify a deployed contract against
-//! this source tree. A tag is reachable from a fresh `git clone` forever; a
-//! feature branch that was squash-merged is not.
-//!
-//! # Trust
-//!
-//! Downloaded bytes are verified against the SHA-256 pinned in the catalog
-//! ([`ArtifactRelease::sha256`]) and discarded on mismatch. That pin is a
-//! reviewed, in-repo value, so artifact integrity does not rest on GitHub
-//! serving us the right file.
-//!
-//! # Cache
-//!
-//! Bytes land in a shared cache outside the repository, so every worktree and
-//! every test binary reuses one copy:
+//! Every read is verified against the catalog's SHA-256 pin, including of an
+//! existing cache entry — so a branch whose catalog disagrees re-downloads
+//! rather than reusing wrong bytes, and offline that mismatch is an error.
 //!
 //! ```text
 //! ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artifacts}
 //!   └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 //! ```
 //!
-//! `TEMPLAR_ARTIFACT_OFFLINE=1` restricts lookups to the cache. Warm it with
-//! `just artifacts-fetch`, locate it with `just artifacts-cache-path`, and empty
-//! it with `just artifacts-clean`.
-//!
-//! The cache is shared rather than per-checkout because a released artifact is
-//! a global immutable fact keyed by `(package, version, sha256)`, not a property
-//! of a working tree — and because entries are verified against the in-repo pin
-//! on every *read*, so a branch whose catalog disagrees re-downloads rather than
-//! reusing the wrong bytes. Offline, that same mismatch is an error instead: a
-//! cache entry is only ever used when it matches the pin exactly. Set
-//! `TEMPLAR_ARTIFACT_CACHE` to scope the cache to one checkout anyway.
-//!
-//! Cleaning is not synchronized against concurrent fetches. It does not need to
-//! be: an entry deleted mid-fetch is simply re-downloaded and re-verified, and
-//! the reported usage is a snapshot, not a guarantee.
+//! The cache is shared across worktrees and needs no locking: an entry deleted
+//! mid-fetch is re-downloaded. `TEMPLAR_ARTIFACT_OFFLINE=1` restricts lookups to
+//! it; `just artifacts-fetch` warms it, `just artifacts-clean` empties it.
 
 use std::{
     path::{Path, PathBuf},
@@ -162,11 +129,8 @@ pub fn cache_path(artifact: ArtifactId, version: &str) -> Result<PathBuf, FetchE
         .join(format!("{target}.wasm")))
 }
 
-/// Download URL for a release's WASM asset.
-///
-/// Both path segments are read off the release record rather than rebuilt from
-/// a naming convention: they name objects that already exist, so there is
-/// nothing to derive and no template for them to fall out of step with.
+/// Download URL for a release's WASM asset. Both segments are read off the
+/// release record, not rebuilt from a naming convention.
 pub fn asset_url(release: &ArtifactRelease) -> String {
     let base = std::env::var("TEMPLAR_ARTIFACT_BASE_URL")
         .unwrap_or_else(|_| format!("https://github.com/{RELEASE_REPO}/releases/download"));
@@ -227,13 +191,10 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
     Ok(bytes)
 }
 
-/// Populate the cache with every release in the catalog.
+/// Populate the cache with every release in the catalog, returning the count.
 ///
-/// Returns the number of releases now cached.
-///
-/// Downloads run concurrently: the whole catalog is only a few MB, so wall
-/// clock here is dominated by per-request latency to GitHub's CDN, not
-/// bandwidth. Sequentially this takes minutes, which CI pays on every run.
+/// Concurrent: wall clock is per-request latency to GitHub's CDN, not
+/// bandwidth. Sequentially this costs CI minutes per run.
 pub async fn prefetch_all() -> Result<usize, FetchError> {
     let releases = ArtifactId::ALL
         .into_iter()
@@ -268,7 +229,6 @@ pub async fn prefetch_all() -> Result<usize, FetchError> {
     Ok(cached)
 }
 
-/// What the cache holds.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CacheUsage {
     pub files: usize,
@@ -277,13 +237,9 @@ pub struct CacheUsage {
 
 /// Empty the artifact cache, reporting what was removed.
 ///
-/// Only the `near/` subtree is deleted recursively — that is the entire
-/// footprint this module writes. The root itself is then removed only if it was
-/// left empty, so a `TEMPLAR_ARTIFACT_CACHE` aimed at a shared or unfortunate
+/// Only the `near/` subtree is removed recursively — the root survives unless
+/// that left it empty — so a `TEMPLAR_ARTIFACT_CACHE` pointed at a shared
 /// directory cannot take anything else with it.
-///
-/// Nothing is lost in any lasting sense: every entry is an immutable release
-/// asset, re-fetchable and re-verified against its catalog pin.
 pub fn clean() -> Result<CacheUsage, FetchError> {
     clean_at(&cache_root()?)
 }
@@ -306,7 +262,7 @@ fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
     Ok(removed)
 }
 
-/// Recursively total the files under `dir`. A missing directory is an empty one.
+/// A missing directory totals as an empty one.
 fn usage_of(dir: &Path) -> Result<CacheUsage, FetchError> {
     let mut total = CacheUsage::default();
     let mut pending = vec![dir.to_owned()];
@@ -358,8 +314,6 @@ async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
         }
         match try_download(url).await {
             Ok(bytes) => return Ok(bytes),
-            // Rate limiting and server faults are exactly what backoff is for;
-            // every other status (404 above all) is a settled answer.
             Err(error @ FetchError::Status { status, .. }) => {
                 if !is_retryable(status) {
                     return Err(error);
@@ -385,9 +339,8 @@ async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
     })
 }
 
-/// One client for the process: a prefetch pulls 17 assets from a single host, so
-/// building one per attempt would mean 17 TLS handshakes and 17 connection pools
-/// where keep-alive gets it down to the concurrency cap.
+/// One client per process, so a prefetch reuses connections instead of paying a
+/// TLS handshake per asset.
 fn client() -> Result<&'static reqwest::Client, FetchError> {
     static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
     CLIENT
@@ -454,9 +407,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
 mod tests {
     use super::*;
 
-    /// A private scratch root. `clean_at` takes an explicit path precisely so
-    /// these do not have to mutate `TEMPLAR_ARTIFACT_CACHE` out from under the
-    /// other tests in this binary.
+    /// `clean_at` takes an explicit path so these need not mutate
+    /// `TEMPLAR_ARTIFACT_CACHE` for the rest of the binary.
     fn scratch_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "templar-artifact-cache-test-{}-{name}",
@@ -494,10 +446,8 @@ mod tests {
 
     #[test]
     fn clean_only_touches_the_subtree_it_owns() {
-        // `TEMPLAR_ARTIFACT_CACHE` is arbitrary user input. Pointed somewhere
-        // unfortunate, cleaning must not take unrelated files with it — so only
-        // `near/` is removed recursively, and the root survives if anything
-        // else is in it.
+        // `TEMPLAR_ARTIFACT_CACHE` is arbitrary user input: cleaning must not
+        // take unrelated files with it.
         let root = scratch_root("guard");
         seed(&root, "templar_market_contract", "1.3.0", &[0u8; 16]);
         let bystander = root.join("precious.txt");
@@ -510,6 +460,16 @@ mod tests {
         assert!(!root.join("near").exists(), "the owned subtree is gone");
 
         std::fs::remove_dir_all(&root).expect("scratch cleanup");
+    }
+
+    #[test]
+    fn only_rate_limiting_and_server_faults_are_retried() {
+        assert!(is_retryable(429));
+        assert!(is_retryable(500));
+        assert!(is_retryable(599));
+        for settled in [200, 301, 404, 410, 600] {
+            assert!(!is_retryable(settled), "{settled} should not be retried");
+        }
     }
 
     #[test]

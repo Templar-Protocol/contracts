@@ -58,9 +58,9 @@ impl From<&templar_contract_artifacts::ArtifactMetadata> for ArtifactMetadata {
 
 /// Add a contract artifact version to a registry.
 ///
-/// Resolves the artifact's embedded WASM bytes from the contract-artifacts
-/// catalog and computes the version key from the artifact's package name,
-/// version, and SHA-256 hash.
+/// Resolves the artifact's canonical released WASM bytes — downloaded and
+/// verified against the catalog's SHA-256 pin — and computes the version key
+/// from the artifact's package name, version, and that hash.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(write = "registry.addArtifactVersion")]
 pub struct AddArtifactVersion {

@@ -133,42 +133,19 @@ artifacts are missing from `target/near` and exit non-zero without building.
 ## Cutting a release
 
 **There is nothing to do by hand.** Merging the release PR tags the version;
-`.github/workflows/release-artifacts.yml` then builds the WASM reproducibly at
-that tag, uploads it, and opens a PR appending one row to `releases.tsv`. Until
-that PR merges, `fetch` will not serve the version — an unrecorded release has
-no reviewed hash to check downloaded bytes against.
+`.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
+tag, uploads it, and opens a PR appending one row to `releases.tsv`. Until that
+PR merges, `fetch` will not serve the version — an unrecorded release has no
+reviewed hash to check downloaded bytes against.
 
-### Why the catalog entry lags by one commit
+Why the build happens at the tag, and why the catalog row necessarily lands one
+commit later, are explained in [RELEASING.md](../../RELEASING.md#contract-wasm-artifacts).
 
-`cargo near build reproducible-wasm` embeds the source commit into the WASM
-(NEP-330), so **the same source built at two different commits produces
-different bytes**. Writing the hash into the commit that produces it would
-change the tree, the commit, and therefore the hash. The pin is necessarily one
-commit behind.
-
-### Why CI builds at the tag
-
-Verifiers such as nearblocks.io read the embedded commit back out of a deployed
-contract, clone the repository at it, and rebuild. So that commit must stay
-permanently reachable — and a squash-merged feature branch does not: it never
-becomes an ancestor of `dev` and is eventually garbage-collected.
-
-A tag is reachable from a fresh clone forever. Building at the tag makes the
-embedded commit the tag's own commit, so anyone can reproduce:
-
-```bash
-git checkout <package>-v<version>
-cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
-```
-
-The releases that predate this workflow were recovered from the chain: their
-bytes were read back off the accounts running them, and each tag was created at
-the commit that WASM names in its own NEP-330 metadata. So they are reproducible
-on exactly the same terms as new ones — each one's GitHub Release names the
-account its bytes came from. Note that several were built from paths
-that have since moved (proxy-oracle from `contract/proxy-oracle`, the LST oracle
-from `contract/lst-oracle`); the historical path is in the WASM's own
-`build_info`, which is what a verifier reads.
+Releases predating this workflow were recovered from the chain and are
+reproducible on the same terms. Several were built from paths that have since
+moved (proxy-oracle from `contract/proxy-oracle`, the LST oracle from
+`contract/lst-oracle`); a verifier reads the historical path from the WASM's own
+`build_info`, not from `source_path`.
 
 ## Checking consistency
 

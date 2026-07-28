@@ -45,7 +45,8 @@ not days ahead.
 
 ## Release tiers
 
-Which crates get what is set per-package in `release-plz.toml`.
+Tier C is set per-package in `release-plz.toml`; Tiers A and B share the
+`[workspace]` default.
 
 | Tier | Crates | Tag | CHANGELOG | GitHub Release | Registry |
 |---|---|---|---|---|---|
@@ -78,9 +79,9 @@ templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts"
 ```
 
 **To unblock**, once RedStone publishes the SDK (or we depend on a published
-fork): set `redstone`'s workspace dependency to a registry version, then on each
-Tier A block in `release-plz.toml` set `git_only = false` and `publish = true`,
-and enable `semver_check` at the workspace level. No code changes are required.
+fork): set `redstone`'s workspace dependency to a registry version, then add a
+`[[package]]` block per Tier A crate with `git_only = false` and
+`publish = true`, and enable `semver_check` at the workspace level. No code changes are required.
 Verify with `cargo publish --dry-run -p <crate>` bottom-up through the closure.
 
 ## Contract WASM artifacts
@@ -125,7 +126,7 @@ Building at the tag therefore makes verification trivial for anyone:
 
 ```bash
 git clone https://github.com/Templar-Protocol/contracts && cd contracts
-git checkout templar-proxy-oracle-near-contract-v0.4.0
+git checkout templar-proxy-oracle-near-contract-v0.3.0
 cargo near build reproducible-wasm --manifest-path contract/proxy-oracle/near/contract/Cargo.toml
 ```
 

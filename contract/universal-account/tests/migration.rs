@@ -32,10 +32,9 @@ use test_utils::test_signer::TestSigner;
 static WASM_0_2_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_2_0_state_patch.borsh");
 static WASM_0_4_0_STATE_PATCH: &[u8] = include_bytes!("./migration/0_4_0_state_patch.borsh");
 
-/// 0.4.0 was built but never deployed to production, so it is not a release and
-/// has no GitHub Release to fetch from — it is test data, and lives here beside
-/// the state patch it pairs with. 0.2.0 by contrast really did ship, so it comes
-/// from the catalog as the exact bytes that ran on mainnet.
+/// 0.4.0 was built but never deployed, so it is not a release and has no GitHub
+/// Release to fetch — it is test data, kept beside the state patch it pairs
+/// with.
 static WASM_0_4_0: &[u8] = include_bytes!("./migration/0_4_0.wasm");
 
 struct PatchKeys {

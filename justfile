@@ -170,16 +170,10 @@ docs:
 
 # Warm the shared cache of released contract WASM.
 #
-# Downloads every pinned release from its GitHub Release and verifies it against
-# the SHA-256 in contract/artifacts/releases.tsv. Migration and upgrade tests
-# deploy these bytes, so they need the cache warm (or network access).
-#
-# The cache lives outside the repository — ~/.cache/templar-contract-artifacts by
-# default — so every worktree shares one copy. Override with
-# TEMPLAR_ARTIFACT_CACHE; set TEMPLAR_ARTIFACT_OFFLINE=1 to forbid downloads.
-#
-# Cutting a release is NOT a manual step: merging the release PR tags the
-# version and CI builds, uploads, and pins the WASM. See RELEASING.md.
+# Downloads every release pinned in contract/artifacts/releases.tsv and verifies
+# its SHA-256; migration and upgrade tests deploy these bytes. The cache is
+# outside the repo (override with TEMPLAR_ARTIFACT_CACHE;
+# TEMPLAR_ARTIFACT_OFFLINE=1 forbids downloads).
 artifacts-fetch:
     cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts
 
@@ -187,9 +181,7 @@ artifacts-fetch:
 artifacts-cache-path:
     @cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts -- --print-path
 
-# Empty the artifact cache.
-#
-# Safe to run at any time: entries are immutable release assets, so this only
-# costs the next `just artifacts-fetch` a re-download.
+# Empty the artifact cache. Entries are immutable, so this only costs the next
+# `just artifacts-fetch` a re-download.
 artifacts-clean:
     cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts -- --clean

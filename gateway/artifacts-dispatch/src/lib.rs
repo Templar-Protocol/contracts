@@ -17,10 +17,8 @@ mod tests {
             .filter(|artifact| artifact.metadata().current().is_some())
     }
 
-    /// Serving bytes means downloading them, so these tests need a warm
-    /// artifact cache or network access. `just artifacts-fetch` warms it; CI
-    /// runs that step before both the fast and the node-backed gate, since this
-    /// crate is in the fast partition.
+    /// Serving bytes means downloading them: these need a warm artifact cache
+    /// or network. CI runs `just artifacts-fetch` before the fast gate.
     #[tokio::test]
     async fn test_dispatch_get_artifact_returns_wasm_bytes() {
         // Given: a GetArtifact request for the market artifact

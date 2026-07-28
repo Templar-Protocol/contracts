@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
-# Verify the contract artifact catalog is self-consistent:
-#   - no artifact claims a release for a version its crate never reached. The
-#     reverse — source ahead of the newest release — is normal: unreleased work
-#     is *meant* to run ahead, and a bump alone asserts nothing.
-#   - each artifact's release list is well-formed: no duplicate versions,
-#     64-char digests, and strictly increasing version numbers.
-#   - mocks have no releases.
-#
-# Every check is pure and in-memory: the catalog is data, so nothing here needs
-# the network or a warm artifact cache.
-#
-# Whether a release's bytes match what the source actually compiles to is a
-# different question, answered on release tags by
-# .github/workflows/release-artifacts.yml.
+# Verify the contract artifact catalog is self-consistent, purely in memory —
+# no network, no warm cache:
+#   - no artifact claims a release its crate's version never reached (the
+#     reverse is normal: unreleased work is *meant* to run ahead)
+#   - release lists are well-formed: unique versions, 64-char digests, ascending
+#   - mocks have no releases, and scaffolding crates are excluded from releases
 set -ex
 
 SCRIPT_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")

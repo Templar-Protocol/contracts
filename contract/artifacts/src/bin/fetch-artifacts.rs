@@ -1,19 +1,14 @@
 //! Manage the shared cache of released contract WASM.
 //!
 //! Run via `just artifacts-fetch` / `artifacts-cache-path` / `artifacts-clean`.
-//! CI warms the cache before the test gates so a network failure surfaces as one
-//! clear step rather than scattered test failures.
-//!
-//! The cache-touching modes resolve its location through [`fetch`] rather than
-//! re-deriving it, so shell callers cannot drift from the crate.
+//! Cache location is resolved through [`fetch`] so shell callers cannot drift
+//! from the crate.
 
 use std::process::ExitCode;
 
 use clap::Parser;
 use templar_contract_artifacts::fetch;
 
-/// Manage the shared cache of released contract WASM.
-///
 /// With no flags, downloads every pinned release in the catalog.
 #[derive(Debug, Parser)]
 struct Args {
@@ -131,8 +126,6 @@ mod tests {
 
     #[test]
     fn modes_are_mutually_exclusive_and_trailing_arguments_are_rejected() {
-        // Hand-rolled `args().nth(1)` dispatch silently ignored everything past
-        // the first argument, so `--clean --print-path` cleaned the cache.
         for argv in [
             vec!["fetch-artifacts", "--clean", "--print-path"],
             vec!["fetch-artifacts", "--clean", "stray"],
