@@ -97,9 +97,86 @@ fn reconcile_probes_stellar_asset_contract_without_fetching_wasm() {
     assert!(calls
         .iter()
         .any(|(_, args)| args.iter().any(|arg| arg == "decimals")));
+    assert!(calls.iter().any(|(_, args)| {
+        matches!(args.as_slice(), [contract, id, asset, ..] if contract == "contract" && id == "id" && asset == "asset")
+            && args
+                .windows(2)
+                .any(|pair| pair == ["--asset", "native"])
+    }));
     assert!(!calls.iter().any(|(_, args)| {
         matches!(args.as_slice(), [contract, fetch, ..] if contract == "contract" && fetch == "fetch")
     }));
+}
+
+#[test]
+fn reconcile_rejects_wrong_stellar_asset_contract_id() {
+    let mut manifest = Manifest::new("testnet", None);
+    manifest.contracts.insert(
+        "asset_token".to_string(),
+        ContractRecord {
+            contract_id: OTHER_CONTRACT.to_string(),
+            wasm_hash: "stellar-asset-contract".to_string(),
+            salt: None,
+            constructor_args: map_args([("asset", "native")]),
+            deploy_tx: None,
+            initialized: true,
+        },
+    );
+    let cli = base_cli("manifest.json".into(), Commands::Status);
+    let executor = RecordingExecutor::new();
+    let stellar = Stellar::new(&cli, &executor);
+
+    let response = reconcile_manifest(&stellar, &manifest, false);
+
+    let asset = response
+        .components
+        .iter()
+        .find(|component| component.key == "asset_token")
+        .expect("asset-token component");
+    assert_eq!(asset.status, ReconcileStatus::Mismatched);
+    assert!(!response.safe_to_resume);
+    assert!(asset
+        .warnings
+        .iter()
+        .any(|warning| warning.contains(ASSET_CONTRACT)));
+    assert!(!executor
+        .calls()
+        .iter()
+        .any(|(_, args)| args.iter().any(|arg| arg == "decimals")));
+}
+
+#[test]
+fn reconcile_keeps_stellar_asset_without_descriptor_unknown() {
+    let mut manifest = Manifest::new("testnet", None);
+    manifest.contracts.insert(
+        "asset_token".to_string(),
+        ContractRecord {
+            contract_id: ASSET_CONTRACT.to_string(),
+            wasm_hash: "stellar-asset-contract".to_string(),
+            salt: None,
+            constructor_args: BTreeMap::new(),
+            deploy_tx: None,
+            initialized: true,
+        },
+    );
+    let cli = base_cli("manifest.json".into(), Commands::Status);
+    let executor = RecordingExecutor::new();
+    let stellar = Stellar::new(&cli, &executor);
+
+    let response = reconcile_manifest(&stellar, &manifest, false);
+
+    let asset = response
+        .components
+        .iter()
+        .find(|component| component.key == "asset_token")
+        .expect("asset-token component");
+    assert_eq!(asset.status, ReconcileStatus::Unknown);
+    assert!(!response.safe_to_resume);
+    assert!(asset
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("no canonical asset descriptor")));
+    assert!(executor.calls().is_empty());
 }
 
 #[test]

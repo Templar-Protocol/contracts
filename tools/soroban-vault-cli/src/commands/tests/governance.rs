@@ -46,6 +46,20 @@ fn governance_kind_filter_matches_typed_action_kinds() {
 }
 
 #[test]
+fn governance_kind_filter_uses_outer_opaque_action_variant() {
+    let proposal = governance_proposal_view(
+        1,
+        "{id: 1, action: Other({SetAdmin: GADMIN}), valid_after_ns: 0}".to_string(),
+    );
+    let admin: GovernanceActionKindArg = "admin".parse().expect("admin kind");
+    let other: GovernanceActionKindArg = "other".parse().expect("other kind");
+
+    assert_eq!(proposal.action, "Other");
+    assert!(!proposal_matches_kind(&proposal, Some(&admin)));
+    assert!(proposal_matches_kind(&proposal, Some(&other)));
+}
+
+#[test]
 fn governance_timelock_uses_typed_kind_and_direct_contract_method() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

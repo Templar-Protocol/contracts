@@ -600,11 +600,23 @@ pub(super) fn proposal_matches_kind(
 }
 
 pub(super) fn summarize_governance_action(raw: &str) -> String {
-    GOVERNANCE_ACTION_KINDS
-        .iter()
-        .find_map(|(action, _)| raw.contains(action).then_some(*action))
+    outer_governance_action(raw)
+        .and_then(|outer| {
+            GOVERNANCE_ACTION_KINDS
+                .iter()
+                .find_map(|(action, _)| (*action == outer).then_some(*action))
+        })
         .unwrap_or("unknown")
         .to_string()
+}
+
+fn outer_governance_action(raw: &str) -> Option<&str> {
+    let (_, action) = raw.split_once("action:")?;
+    let action = action.trim_start();
+    let end = action
+        .find(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .unwrap_or(action.len());
+    (end > 0).then_some(&action[..end])
 }
 
 fn governance_action_kind(action: &str) -> Option<GovernanceActionKind> {

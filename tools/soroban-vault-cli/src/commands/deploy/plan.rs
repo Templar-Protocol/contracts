@@ -23,6 +23,7 @@ use super::{
         output::{PlanContract, PlanResponse, PlanWasm, Response},
     },
     adapters::{validate_adapter_deployment_request, validated_stack_adapter_admin},
+    stack::resolve_governance_timelock_ns,
 };
 
 pub(in crate::commands) fn run_deploy_plan<E: CommandExecutor>(
@@ -53,6 +54,7 @@ pub(in crate::commands) fn deploy_stack_plan(
             "zero governance timelock would be blocked without --allow-zero-timelock".to_string(),
         );
     }
+    let _ = resolve_governance_timelock_ns(manifest, args)?;
     plan.required_signers.push(
         args.admin
             .as_ref()

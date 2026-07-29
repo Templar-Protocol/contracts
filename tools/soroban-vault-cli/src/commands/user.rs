@@ -172,6 +172,7 @@ pub(super) fn run_user<E: CommandExecutor>(
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
             if let Some(proxy) = contract_id(manifest, "proxy_4626") {
+                require_atomic_exit_proxy(context, proxy)?;
                 invoke_response(stellar.invoke(
                     proxy,
                     "atomic_withdraw",
@@ -224,6 +225,7 @@ pub(super) fn run_user<E: CommandExecutor>(
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
             if let Some(proxy) = contract_id(manifest, "proxy_4626") {
+                require_atomic_exit_proxy(context, proxy)?;
                 invoke_response(stellar.invoke(
                     proxy,
                     "atomic_redeem",
@@ -360,4 +362,37 @@ pub(super) fn run_user<E: CommandExecutor>(
             )?)
         }
     }
+}
+
+fn require_atomic_exit_proxy<E: CommandExecutor>(
+    context: &CommandContext<'_, E>,
+    proxy: &str,
+) -> anyhow::Result<()> {
+    const REQUIRED_FUNCTIONS: [&str; 2] = ["atomic_withdraw", "atomic_redeem"];
+
+    if context.cli().dry_run {
+        eprintln!(
+            "Warning: dry-run cannot verify ERC-4626 proxy {proxy} atomic-exit support; the planned call remains routed through the recorded proxy"
+        );
+        return Ok(());
+    }
+
+    let available = context
+        .stellar()
+        .contract_interface_functions(proxy)
+        .with_context(|| {
+            format!(
+                "cannot verify atomic-exit support for recorded ERC-4626 proxy {proxy}; refusing direct-vault fallback while proxy_4626 is present"
+            )
+        })?;
+    let missing = REQUIRED_FUNCTIONS
+        .into_iter()
+        .filter(|function| !available.contains(*function))
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "recorded ERC-4626 proxy {proxy} is legacy and does not expose {}; deploy a replacement proxy and update the proxy_4626 manifest record before retrying",
+        missing.join(" and ")
+    );
+    Ok(())
 }

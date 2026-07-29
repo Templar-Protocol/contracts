@@ -485,9 +485,10 @@ The Stellar vault has two distinct exit paths.
 ### Atomic idle-liquidity exit
 
 `user atomic-withdraw` and `user atomic-redeem` use the ERC-4626 proxy's slippage-protected atomic
-exit methods when the deployment manifest contains `proxy_4626`. Proxy-less imported deployments
-fall back to the vault's equivalent atomic commands. Both routes complete in one transaction only
-when the vault has enough idle assets. They never pull
+exit methods when the deployment manifest contains `proxy_4626`. The CLI first verifies that the
+recorded proxy interface exposes both atomic entrypoints; legacy proxies must be replaced rather
+than bypassed. Proxy-less imported deployments fall back to the vault's equivalent atomic commands.
+Both routes complete in one transaction only when the vault has enough idle assets. They never pull
 liquidity from an adapter. As a result, `maxWithdraw` and `maxRedeem` can be zero
 while the user's shares still represent assets deployed to markets.
 

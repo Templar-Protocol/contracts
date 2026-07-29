@@ -40,6 +40,32 @@ fn deploy_plan_does_not_execute_or_write_manifest() {
 }
 
 #[test]
+fn force_new_stack_plan_requires_explicit_governance_timelock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let mut stack = test_deploy_stack_args(ACCOUNT);
+    stack.force_new = true;
+    stack.governance_timelock_ns = None;
+    let cli = base_cli(
+        state,
+        Commands::Deploy(DeployArgs {
+            command: DeployCommand::Plan(crate::cli::DeployPlanArgs {
+                command: DeployPlanCommand::Stack(Box::new(stack)),
+            }),
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    let error = run(&cli, &executor).expect_err("invalid force-new plan must fail");
+
+    assert!(error
+        .to_string()
+        .contains("new governance deployment requires --governance-timelock-ns"));
+    assert!(executor.calls().is_empty());
+}
+
+#[test]
 fn deploy_plan_uses_unique_keys_for_multiple_custodians() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

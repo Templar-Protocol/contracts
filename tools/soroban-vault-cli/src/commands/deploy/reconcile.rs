@@ -122,7 +122,50 @@ pub(in crate::commands) fn reconcile_component<E: CommandExecutor>(
         repair_actions: Vec::new(),
     };
 
-    let chain_hash = if record.wasm_hash == "stellar-asset-contract" {
+    let is_stellar_asset_contract = record.wasm_hash == "stellar-asset-contract";
+    if is_stellar_asset_contract {
+        let Some(asset) = record
+            .constructor_args
+            .get("asset")
+            .map(String::as_str)
+            .filter(|asset| !asset.is_empty() && *asset != "predeployed")
+        else {
+            component.status = ReconcileStatus::Unknown;
+            component.warnings.push(
+                "stellar asset contract record has no canonical asset descriptor".to_string(),
+            );
+            component.repair_actions.push(format!(
+                "{key}: record verified asset provenance before resuming"
+            ));
+            return component;
+        };
+        let expected_contract_id = match stellar.asset_contract_id(asset) {
+            Ok(contract_id) => contract_id,
+            Err(error) => {
+                component.status = ReconcileStatus::Unknown;
+                component.warnings.push(format!(
+                    "could not derive the Stellar asset contract id for {asset}: {error}"
+                ));
+                component.repair_actions.push(format!(
+                    "{key}: verify network/RPC and asset provenance before resuming"
+                ));
+                return component;
+            }
+        };
+        if record.contract_id != expected_contract_id {
+            component.status = ReconcileStatus::Mismatched;
+            component.warnings.push(format!(
+                "recorded contract {} does not match deterministic Stellar asset contract {expected_contract_id} for asset {asset}",
+                record.contract_id
+            ));
+            component.repair_actions.push(format!(
+                "{key}: replace the wrong asset contract record before resuming"
+            ));
+            return component;
+        }
+    }
+
+    let chain_hash = if is_stellar_asset_contract {
         stellar
             .invoke_view(&record.contract_id, "decimals", Vec::new())
             .map(|_| None)

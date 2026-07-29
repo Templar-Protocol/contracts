@@ -345,20 +345,46 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         Ok(())
     }
 
-    pub fn native_asset_id(&self) -> anyhow::Result<String> {
+    pub fn asset_contract_id(&self, asset: &str) -> anyhow::Result<String> {
         let mut args = vec![
             "contract".to_string(),
             "id".to_string(),
             "asset".to_string(),
             "--asset".to_string(),
-            "native".to_string(),
+            asset.to_string(),
         ];
         args.extend(self.network_args());
         let out = self.run(args, &[], Vec::new())?;
         if self.cli.dry_run {
-            return Ok("CDRYRUNNATIVEASSET".to_string());
+            return Ok(if asset == "native" {
+                "CDRYRUNNATIVEASSET".to_string()
+            } else {
+                "CDRYRUNASSETCONTRACT".to_string()
+            });
         }
         parse_contract_id(&out.stdout)
+    }
+
+    pub fn native_asset_id(&self) -> anyhow::Result<String> {
+        self.asset_contract_id("native")
+    }
+
+    pub fn contract_interface_functions(
+        &self,
+        contract_id: &str,
+    ) -> anyhow::Result<BTreeSet<String>> {
+        let mut args = vec![
+            "contract".to_string(),
+            "info".to_string(),
+            "interface".to_string(),
+            "--contract-id".to_string(),
+            contract_id.to_string(),
+            "--output".to_string(),
+            "json".to_string(),
+        ];
+        args.extend(self.network_args());
+        let out = self.run(args, &[], Vec::new())?;
+        contract_interface_function_names(&out.stdout)
     }
 
     pub fn build_package(
@@ -485,11 +511,12 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             }
         };
         eprintln!("Preflight simulation succeeded: {command_display}");
-        debug!(
-            stdout = %output_excerpt(&output.stdout),
-            stderr = %output_excerpt(&output.stderr),
-            "preflight simulation output"
-        );
+        if !output.stdout.is_empty() {
+            eprintln!("{}", output.stdout);
+        }
+        if !output.stderr.is_empty() {
+            eprintln!("{}", output.stderr);
+        }
         Ok(())
     }
 
@@ -600,12 +627,11 @@ fn append_reconciled_tx_hash(output: &mut CommandOutput, tx_hash: &str) {
 }
 
 fn should_confirm_transaction(args: &[String]) -> bool {
-    // `contract upload` returns the uploaded WASM hash as a bare 64-digit value.
-    // Treating that artifact hash as a transaction hash causes a false timeout.
     match args {
         [first, second, ..] if first == "tx" && second == "send" => true,
         [first, second, ..]
-            if first == "contract" && matches!(second.as_str(), "deploy" | "extend" | "invoke") =>
+            if first == "contract"
+                && matches!(second.as_str(), "deploy" | "extend" | "invoke" | "upload") =>
         {
             true
         }
@@ -616,6 +642,23 @@ fn should_confirm_transaction(args: &[String]) -> bool {
         }
         _ => false,
     }
+}
+
+fn contract_interface_function_names(stdout: &str) -> anyhow::Result<BTreeSet<String>> {
+    let entries: Vec<Value> =
+        serde_json::from_str(stdout).context("parse Stellar contract interface JSON")?;
+    let functions = entries
+        .iter()
+        .filter_map(|entry| entry.get("function_v0"))
+        .filter_map(|function| function.get("name"))
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        !functions.is_empty(),
+        "Stellar contract interface did not contain any function names"
+    );
+    Ok(functions)
 }
 
 enum PreflightPlan {
@@ -1056,6 +1099,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_contract_interface_function_names() {
+        let functions = contract_interface_function_names(
+            r#"[{"function_v0":{"name":"deposit"}},{"function_v0":{"name":"atomic_withdraw"}},{"udt_error_enum_v0":{"name":"ContractError"}}]"#,
+        )
+        .expect("parse interface functions");
+
+        assert_eq!(
+            functions,
+            BTreeSet::from(["atomic_withdraw".to_string(), "deposit".to_string()])
+        );
+    }
+
+    #[test]
     fn display_command_redacts_sensitive_arguments() {
         let args = vec![
             "contract".to_string(),
@@ -1164,7 +1220,7 @@ mod tests {
             "tx".to_string(),
             "send".to_string()
         ]));
-        assert!(!should_confirm_transaction(&[
+        assert!(should_confirm_transaction(&[
             "contract".to_string(),
             "upload".to_string()
         ]));

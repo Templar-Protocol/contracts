@@ -193,6 +193,49 @@ fn user_atomic_withdraw_prefers_erc4626_entrypoint() {
 }
 
 #[test]
+fn user_atomic_withdraw_rejects_legacy_erc4626_proxy_without_vault_fallback() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let mut manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    manifest
+        .contracts
+        .insert("proxy_4626".to_string(), imported_record("CPROXY"));
+    manifest.save(&state).expect("save proxy manifest");
+    let cli = base_cli(
+        state,
+        Commands::User(UserArgs {
+            command: UserCommand::AtomicWithdraw {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                assets: None,
+                assets_raw: Some(11),
+                asset_decimals: 7,
+                max_shares_burned: None,
+                max_shares_burned_raw: Some(12),
+                share_decimals: ShareDecimalsArg::Manifest,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::legacy_proxy();
+
+    let error = run(&cli, &executor).expect_err("legacy proxy must be rejected");
+
+    assert!(error
+        .to_string()
+        .contains("legacy and does not expose atomic_withdraw and atomic_redeem"));
+    let calls = executor.calls();
+    assert!(calls.iter().any(|(_, args)| {
+        matches!(args.as_slice(), [contract, info, interface, ..] if contract == "contract" && info == "info" && interface == "interface")
+    }));
+    assert!(!calls.iter().any(|(_, args)| {
+        args.iter()
+            .any(|arg| arg == "atomic_withdraw" || arg == "execute")
+    }));
+}
+
+#[test]
 fn user_atomic_withdraw_falls_back_to_vault_command_with_share_guard() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

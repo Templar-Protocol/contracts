@@ -43,6 +43,7 @@ const ASSET_CONTRACT: &str = "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7
 struct RecordingExecutor {
     calls: Mutex<Vec<(String, Vec<String>)>>,
     runtime_feature_flags: u64,
+    proxy_atomic_exits: bool,
 }
 
 impl RecordingExecutor {
@@ -54,6 +55,15 @@ impl RecordingExecutor {
         Self {
             calls: Mutex::new(Vec::new()),
             runtime_feature_flags,
+            proxy_atomic_exits: true,
+        }
+    }
+
+    fn legacy_proxy() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            runtime_feature_flags: 0x1f,
+            proxy_atomic_exits: false,
         }
     }
 
@@ -77,6 +87,25 @@ impl CommandExecutor for RecordingExecutor {
         if matches!(args, [keys, address, ..] if keys == "keys" && address == "address") {
             return Ok(CommandOutput {
                 stdout: ACCOUNT.to_string(),
+                stderr: String::new(),
+            });
+        }
+        if matches!(args, [contract, id, asset, ..] if contract == "contract" && id == "id" && asset == "asset")
+        {
+            return Ok(CommandOutput {
+                stdout: ASSET_CONTRACT.to_string(),
+                stderr: String::new(),
+            });
+        }
+        if matches!(args, [contract, info, interface, ..] if contract == "contract" && info == "info" && interface == "interface")
+        {
+            let stdout = if self.proxy_atomic_exits {
+                r#"[{"function_v0":{"name":"deposit_with_min"}},{"function_v0":{"name":"atomic_withdraw"}},{"function_v0":{"name":"atomic_redeem"}}]"#
+            } else {
+                r#"[{"function_v0":{"name":"deposit_with_min"}},{"function_v0":{"name":"withdraw"}},{"function_v0":{"name":"redeem"}}]"#
+            };
+            return Ok(CommandOutput {
+                stdout: stdout.to_string(),
                 stderr: String::new(),
             });
         }
@@ -248,6 +277,13 @@ impl CommandExecutor for ChainStateExecutor {
         _redacted_args: &[usize],
         _env: &[crate::stellar::CommandEnv],
     ) -> anyhow::Result<CommandOutput> {
+        if matches!(args, [contract, id, asset, ..] if contract == "contract" && id == "id" && asset == "asset")
+        {
+            return Ok(CommandOutput {
+                stdout: ASSET_CONTRACT.to_string(),
+                stderr: String::new(),
+            });
+        }
         if args
             .windows(2)
             .any(|pair| pair[0] == "--id" && pair[1] == CONTRACT)
@@ -277,6 +313,7 @@ fn submitted_calls(calls: &[(String, Vec<String>)]) -> Vec<(String, Vec<String>)
                 && !args.iter().any(|arg| arg == "--build-only")
                 && !matches!(args.as_slice(), [first, second, ..] if first == "tx" && second == "simulate")
                 && !matches!(args.as_slice(), [first, second, ..] if first == "contract" && second == "fetch")
+                && !matches!(args.as_slice(), [first, second, ..] if first == "contract" && second == "info")
         })
         .cloned()
         .collect()

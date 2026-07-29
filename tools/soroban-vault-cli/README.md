@@ -302,8 +302,9 @@ Withdrawals use distinct CLI surfaces:
   allocator first uses `curator allocate-withdraw` to bring liquidity back from one or more market
   adapters, then `user execute-withdraw` can settle the queued request.
 - `user atomic-withdraw` and `user atomic-redeem` are the synchronous, slippage-protected idle
-  liquidity exits. They call the ERC-4626 proxy when `proxy_4626` is recorded and fall back to the
-  direct vault command only when that proxy is absent from the manifest.
+  liquidity exits. They verify that a recorded ERC-4626 proxy exposes both atomic entrypoints before
+  calling it. A legacy recorded proxy is rejected with a replacement instruction; the direct vault
+  fallback is used only when `proxy_4626` is absent from the manifest.
 - `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
   Use it only when the vault is stuck in `Withdrawing` and operators have identified the operation id
   to abort.
