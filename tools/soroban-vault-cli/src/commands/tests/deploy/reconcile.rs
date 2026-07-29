@@ -394,3 +394,44 @@ fn share_token_reconciliation_checks_only_immutable_vault_binding() {
         .any(|check| { check.field == "vault" && check.status == WiringStatus::Match }));
     assert!(!checks.iter().any(|check| check.field == "admin"));
 }
+
+#[test]
+fn unknown_wiring_does_not_mark_an_uninitialized_component_initialized() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    let mut share_token = imported_record(CONTRACT);
+    share_token.initialized = false;
+    manifest
+        .contracts
+        .insert("share_token".to_string(), share_token);
+    manifest.save(&state).expect("save manifest");
+    let cli = base_cli(state.clone(), Commands::Status);
+    let executor = ChainStateExecutor {
+        wasm: b"share token wasm",
+    };
+    let context = CommandContext::new(&cli, &executor);
+
+    let response = reconcile_manifest(context.stellar(), &manifest, true);
+    let share = response
+        .components
+        .iter()
+        .find(|component| component.key == "share_token")
+        .expect("share component");
+    assert_eq!(share.status, ReconcileStatus::Deployed);
+    assert!(!share.wiring.is_empty());
+    assert!(share
+        .wiring
+        .iter()
+        .all(|check| check.status == WiringStatus::Unknown));
+
+    apply_reconcile_safe_manifest_updates(&context, &mut manifest, &response)
+        .expect("apply safe updates");
+    assert!(
+        !manifest
+            .contracts
+            .get("share_token")
+            .expect("share token record")
+            .initialized
+    );
+}

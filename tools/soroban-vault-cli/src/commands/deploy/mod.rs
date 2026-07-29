@@ -37,7 +37,8 @@ pub(in crate::commands) use reconcile::{
 };
 #[cfg(test)]
 pub(in crate::commands) use session::{
-    deploy_contract_if_needed, initialize_proxy_if_needed, ContractDeployment, InitializationState,
+    deploy_contract_if_needed, initialize_proxy_if_needed, initialize_vault_if_needed,
+    ContractDeployment, InitializationState,
 };
 
 pub(in crate::commands) fn run<E: CommandExecutor>(

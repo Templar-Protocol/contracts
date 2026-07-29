@@ -25,20 +25,44 @@ fn parse_proposal_id_ignores_confirmed_tx_hash_suffix() {
 }
 
 #[test]
+fn governance_kind_filter_matches_typed_action_kinds() {
+    for (action, expected_kind) in [
+        ("SetGroupCap(CMARKET, 42)", "cap-group"),
+        ("SetGroupRelCap(CMARKET, 42)", "cap-group"),
+        ("SetGroupMember(CMARKET, true)", "cap-group"),
+        ("RemoveMarket(CMARKET)", "market-removal"),
+        ("SetTimelock(CapGroup, 42)", "timelock-config"),
+    ] {
+        let proposal =
+            governance_proposal_view(1, format!("{{id: 1, action: {action}, valid_after_ns: 0}}"));
+        let expected_kind: GovernanceActionKindArg =
+            expected_kind.parse().expect("governance action kind");
+        let wrong_kind: GovernanceActionKindArg = "fees".parse().expect("wrong kind");
+
+        assert!(proposal_matches_kind(&proposal, Some(&expected_kind)));
+        assert!(!proposal_matches_kind(&proposal, Some(&wrong_kind)));
+        assert!(proposal_matches_kind(&proposal, None));
+    }
+}
+
+#[test]
 fn governance_timelock_uses_typed_kind_and_direct_contract_method() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
     manifest_with_governance(&state);
-    let cli = base_cli(
-        state,
-        Commands::Governance(GovernanceArgs {
-            command: GovernanceCommand::SubmitSetTimelock {
-                admin: ACCOUNT.parse().expect("admin"),
-                kind: "supply-queue".parse().expect("kind"),
-                timelock_ns: 42,
-            },
-        }),
-    );
+    let cli = Cli {
+        yes: true,
+        ..base_cli(
+            state,
+            Commands::Governance(GovernanceArgs {
+                command: GovernanceCommand::SubmitSetTimelock {
+                    admin: ACCOUNT.parse().expect("admin"),
+                    kind: "supply-queue".parse().expect("kind"),
+                    timelock_ns: 42,
+                },
+            }),
+        )
+    };
     let executor = RecordingExecutor::new();
 
     run(&cli, &executor).expect("run governance timelock");

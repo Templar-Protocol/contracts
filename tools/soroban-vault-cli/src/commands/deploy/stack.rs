@@ -289,6 +289,19 @@ pub(in crate::commands) fn deploy_stack<E: CommandExecutor>(
     if args.governance_timelock_ns == Some(0) && !cli.allow_zero_timelock {
         anyhow::bail!("zero governance timelock requires --allow-zero-timelock");
     }
+    let timelock_ns = args
+        .governance_timelock_ns
+        .or_else(|| {
+            if args.force_new {
+                return None;
+            }
+            manifest
+                .contracts
+                .get("governance")
+                .and_then(|record| record.constructor_args.get("timelock_ns"))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .context("new governance deployment requires --governance-timelock-ns")?;
 
     let include_blend = !args.blend_pools.is_empty();
     let include_custodial = !args.custodians.is_empty();
@@ -397,16 +410,6 @@ pub(in crate::commands) fn deploy_stack<E: CommandExecutor>(
         context.checkpoint(manifest)?;
         Ok(share_token)
     })?;
-    let timelock_ns = args
-        .governance_timelock_ns
-        .or_else(|| {
-            manifest
-                .contracts
-                .get("governance")
-                .and_then(|record| record.constructor_args.get("timelock_ns"))
-                .and_then(|value| value.parse::<u64>().ok())
-        })
-        .context("new governance deployment requires --governance-timelock-ns")?;
     let governance = progress.step("governance deploy/reuse", || {
         let governance = deploy_contract_if_needed(
             context,

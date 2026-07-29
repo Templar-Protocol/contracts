@@ -187,7 +187,10 @@ pub(in crate::commands) fn reconcile_component<E: CommandExecutor>(
                     component
                         .repair_actions
                         .push(format!("{key}: investigate manifest/chain wiring mismatch"));
-                } else if !wiring.is_empty() {
+                } else if wiring
+                    .iter()
+                    .any(|check| check.status == WiringStatus::Match)
+                {
                     component.status = ReconcileStatus::Initialized;
                 }
                 component.wiring = wiring;

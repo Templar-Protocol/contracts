@@ -11,6 +11,7 @@ use crate::{
     stellar::{CommandExecutor, Stellar},
     types::{AddressStr, FeeParamsArg},
 };
+use templar_soroban_governance::GovernanceActionKind;
 
 use super::{
     context::CommandContext,
@@ -595,43 +596,55 @@ pub(super) fn proposal_matches_kind(
     let Some(kind) = kind else {
         return true;
     };
-    let needle = kind.to_string().to_ascii_lowercase();
-    proposal.action.to_ascii_lowercase().contains(&needle)
-        || proposal.raw.to_ascii_lowercase().contains(&needle)
+    governance_action_kind(&proposal.action) == Some(kind.0)
 }
 
 pub(super) fn summarize_governance_action(raw: &str) -> String {
-    for action in [
-        "SetAdmin",
-        "SetCurator",
-        "SetGovernance",
-        "SetPaused",
-        "SetSupplyQueue",
-        "SetFees",
-        "SetRestrictions",
-        "SetSentinel",
-        "SetAllocators",
-        "SetAllowedAdapters",
-        "SetTimelock",
-        "SetCap",
-        "RemoveMarket",
-        "SetGroupCap",
-        "SetGroupRelCap",
-        "SetGroupMember",
-        "SetSkimRecipient",
-        "Skim",
-        "Upgrade",
-        "Migrate",
-        "CancelMigration",
-        "SetWithdrawalCooldown",
-        "SetIdleResyncCooldown",
-    ] {
-        if raw.contains(action) {
-            return action.to_string();
-        }
-    }
-    "unknown".to_string()
+    GOVERNANCE_ACTION_KINDS
+        .iter()
+        .find_map(|(action, _)| raw.contains(action).then_some(*action))
+        .unwrap_or("unknown")
+        .to_string()
 }
+
+fn governance_action_kind(action: &str) -> Option<GovernanceActionKind> {
+    GOVERNANCE_ACTION_KINDS
+        .iter()
+        .find_map(|(candidate, kind)| (*candidate == action).then_some(*kind))
+}
+
+const GOVERNANCE_ACTION_KINDS: [(&str, GovernanceActionKind); 24] = [
+    ("SetAdmin", GovernanceActionKind::Admin),
+    ("SetCurator", GovernanceActionKind::Curator),
+    ("SetGovernance", GovernanceActionKind::Governance),
+    ("SetPaused", GovernanceActionKind::Pause),
+    ("SetSupplyQueue", GovernanceActionKind::SupplyQueue),
+    ("SetFees", GovernanceActionKind::Fees),
+    ("SetRestrictions", GovernanceActionKind::Restrictions),
+    ("SetSentinel", GovernanceActionKind::Sentinel),
+    ("SetAllocators", GovernanceActionKind::Allocators),
+    ("SetAllowedAdapters", GovernanceActionKind::AllowedAdapters),
+    ("SetTimelock", GovernanceActionKind::TimelockConfig),
+    ("SetCap", GovernanceActionKind::Cap),
+    ("RemoveMarket", GovernanceActionKind::MarketRemoval),
+    ("SetGroupCap", GovernanceActionKind::CapGroup),
+    ("SetGroupRelCap", GovernanceActionKind::CapGroup),
+    ("SetGroupMember", GovernanceActionKind::CapGroup),
+    ("SetSkimRecipient", GovernanceActionKind::Skim),
+    ("Skim", GovernanceActionKind::Skim),
+    ("Upgrade", GovernanceActionKind::Upgrade),
+    ("CancelMigration", GovernanceActionKind::CancelMigration),
+    ("Migrate", GovernanceActionKind::Migrate),
+    (
+        "SetWithdrawalCooldown",
+        GovernanceActionKind::WithdrawalCooldown,
+    ),
+    (
+        "SetIdleResyncCooldown",
+        GovernanceActionKind::IdleResyncCooldown,
+    ),
+    ("Other", GovernanceActionKind::Other),
+];
 
 pub(super) fn parse_named_u64(raw: &str, name: &str) -> Option<u64> {
     let start = raw.find(name)? + name.len();

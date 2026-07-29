@@ -117,6 +117,11 @@ The vault intentionally exposes two withdrawal modes:
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
 
+The ERC-4626 proxy exposes the immediate path through `atomic_withdraw` and `atomic_redeem`,
+including `max_shares_burned` and `min_assets_out` slippage guards. Its existing `withdraw` and
+`redeem` compatibility methods remain queued ERC-7540-style requests; callers that need an
+immediate idle-liquidity exit must use the explicit atomic methods.
+
 The async queue is not a strict FIFO fairness boundary against atomic exits. It coordinates
 cooldowns, escrow, fixed asset claims, and allocator-driven liquidity recovery, but it does not
 reserve idle assets for queued requests while the vault remains idle. A later holder can still use

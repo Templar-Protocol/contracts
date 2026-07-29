@@ -91,6 +91,50 @@ fn deploy_plan_uses_unique_keys_for_multiple_custodians() {
 }
 
 #[test]
+fn deploy_plan_uses_unique_keys_for_multiple_blend_pools() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    manifest
+        .contracts
+        .insert("vault".to_string(), imported_record(CONTRACT));
+    manifest
+        .contracts
+        .insert("governance".to_string(), imported_record(CONTRACT));
+    let cli = base_cli(state, Commands::Status);
+    let plan = deploy_adapters_plan(
+        &cli,
+        &manifest,
+        &crate::cli::DeployAdaptersArgs {
+            vault: None,
+            governance: None,
+            asset_token: None,
+            blend_pools: vec![
+                ACCOUNT.parse().expect("first pool"),
+                CONTRACT.parse().expect("second pool"),
+            ],
+            custodians: Vec::new(),
+            adapter_admin: OTHER_CONTRACT.parse().expect("adapter admin"),
+            build: false,
+            force_new: false,
+        },
+    )
+    .expect("plan adapters");
+
+    let blend_keys = plan
+        .contracts_to_deploy
+        .iter()
+        .filter_map(|contract| {
+            contract
+                .key
+                .starts_with("blend_adapter_")
+                .then_some(contract.key.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(blend_keys, vec!["blend_adapter_0", "blend_adapter_1"]);
+}
+
+#[test]
 fn deploy_plan_records_companion_upgrade_check_for_vault_admin() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

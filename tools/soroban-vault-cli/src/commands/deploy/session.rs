@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::Context;
 use tracing::info;
 
 use crate::{
@@ -203,7 +204,8 @@ pub(in crate::commands) fn initialize_vault_if_needed<E: CommandExecutor>(
     if manifest
         .contracts
         .get("vault")
-        .is_some_and(|record| record.initialized)
+        .context("vault deployment was not recorded in manifest")?
+        .initialized
     {
         return Ok(());
     }
@@ -225,21 +227,23 @@ pub(in crate::commands) fn initialize_vault_if_needed<E: CommandExecutor>(
             virtual_assets.to_string(),
         ],
     )?;
-    if let Some(record) = manifest.contracts.get_mut("vault") {
-        record.initialized = true;
-        record.constructor_args.extend(map_args([
-            ("curator", admin),
-            ("governance", governance),
-            ("asset_token", asset_token),
-            ("share_token", share_token),
-        ]));
-        record
-            .constructor_args
-            .insert("virtual_shares".to_string(), virtual_shares.to_string());
-        record
-            .constructor_args
-            .insert("virtual_assets".to_string(), virtual_assets.to_string());
-    }
+    let record = manifest
+        .contracts
+        .get_mut("vault")
+        .context("vault deployment was not recorded in manifest")?;
+    record.initialized = true;
+    record.constructor_args.extend(map_args([
+        ("curator", admin),
+        ("governance", governance),
+        ("asset_token", asset_token),
+        ("share_token", share_token),
+    ]));
+    record
+        .constructor_args
+        .insert("virtual_shares".to_string(), virtual_shares.to_string());
+    record
+        .constructor_args
+        .insert("virtual_assets".to_string(), virtual_assets.to_string());
     context.checkpoint(manifest)?;
     Ok(())
 }
@@ -255,14 +259,17 @@ pub(in crate::commands) fn initialize_proxy_if_needed<E: CommandExecutor>(
     if manifest
         .contracts
         .get(key)
-        .is_some_and(|record| record.initialized)
+        .with_context(|| format!("{key} deployment was not recorded in manifest"))?
+        .initialized
     {
         return Ok(());
     }
     stellar.invoke(contract_id, "initialize", args)?;
-    if let Some(record) = manifest.contracts.get_mut(key) {
-        record.initialized = true;
-    }
+    manifest
+        .contracts
+        .get_mut(key)
+        .with_context(|| format!("{key} deployment was not recorded in manifest"))?
+        .initialized = true;
     context.checkpoint(manifest)?;
     Ok(())
 }

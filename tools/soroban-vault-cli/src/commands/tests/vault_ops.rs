@@ -19,13 +19,7 @@ fn curator_abort_withdrawing_encodes_vault_command() {
     run(&cli, &executor).expect("abort withdrawing");
 
     let calls = submitted_calls(&executor.calls());
-    let payload = calls
-        .iter()
-        .flat_map(|(_, args)| args.windows(2))
-        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
-        .expect("payload argument");
-    let bytes = hex::decode(payload).expect("decode payload hex");
-    let command = WireVaultCommand::decode(&bytes).expect("decode vault command");
+    let command = decoded_payload(&calls);
     assert_eq!(
         command,
         WireVaultCommand::AbortWithdrawing {
@@ -89,14 +83,124 @@ fn user_deposit_prefers_erc4626_proxy() {
 }
 
 #[test]
-fn user_withdraw_uses_atomic_vault_command_with_share_guard() {
+fn user_withdraw_uses_erc4626_async_entrypoint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    manifest
+        .contracts
+        .insert("proxy_4626".to_string(), imported_record("CPROXY"));
+    manifest.save(&state).expect("save manifest");
+    let cli = base_cli(
+        state,
+        Commands::User(UserArgs {
+            command: UserCommand::Withdraw {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                assets: None,
+                assets_raw: Some(11),
+                asset_decimals: 7,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run async withdraw through proxy");
+
+    let calls = submitted_calls(&executor.calls());
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
+    assert!(calls[0].1.iter().any(|arg| arg == "withdraw"));
+    assert!(!calls[0].1.iter().any(|arg| arg == "--max_shares_burned"));
+}
+
+#[test]
+fn user_redeem_uses_erc4626_async_entrypoint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    manifest
+        .contracts
+        .insert("proxy_4626".to_string(), imported_record("CPROXY"));
+    manifest.save(&state).expect("save manifest");
+    let cli = base_cli(
+        state,
+        Commands::User(UserArgs {
+            command: UserCommand::Redeem {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                shares: None,
+                shares_raw: Some(11),
+                share_decimals: ShareDecimalsArg::Manifest,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run async redeem through proxy");
+
+    let calls = submitted_calls(&executor.calls());
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
+    assert!(calls[0].1.iter().any(|arg| arg == "redeem"));
+    assert!(!calls[0].1.iter().any(|arg| arg == "--min_assets_out"));
+}
+
+#[test]
+fn user_atomic_withdraw_prefers_erc4626_entrypoint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let mut manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    manifest
+        .contracts
+        .insert("proxy_4626".to_string(), imported_record("CPROXY"));
+    manifest.save(&state).expect("save proxy manifest");
+    let cli = base_cli(
+        state.clone(),
+        Commands::User(UserArgs {
+            command: UserCommand::AtomicWithdraw {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                assets: None,
+                assets_raw: Some(11),
+                asset_decimals: 7,
+                max_shares_burned: None,
+                max_shares_burned_raw: Some(12),
+                share_decimals: ShareDecimalsArg::Manifest,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run atomic withdraw through proxy");
+
+    let calls = submitted_calls(&executor.calls());
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
+    assert!(calls[0].1.iter().any(|arg| arg == "atomic_withdraw"));
+    assert!(calls[0]
+        .1
+        .windows(2)
+        .any(|pair| pair == ["--max_shares_burned", "12"]));
+    let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    let transaction = manifest.transactions.last().expect("transaction record");
+    assert_eq!(transaction.contract_id.as_deref(), Some("CPROXY"));
+    assert_eq!(transaction.function.as_deref(), Some("atomic_withdraw"));
+}
+
+#[test]
+fn user_atomic_withdraw_falls_back_to_vault_command_with_share_guard() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
     let cli = base_cli(
         state.clone(),
         Commands::User(UserArgs {
-            command: UserCommand::Withdraw {
+            command: UserCommand::AtomicWithdraw {
                 operator: ACCOUNT.parse().expect("operator"),
                 receiver: Some(ACCOUNT.parse().expect("receiver")),
                 owner: Some(ACCOUNT.parse().expect("owner")),
@@ -114,14 +218,8 @@ fn user_withdraw_uses_atomic_vault_command_with_share_guard() {
     run(&cli, &executor).expect("run atomic withdraw");
 
     let calls = submitted_calls(&executor.calls());
-    let payload = calls
-        .iter()
-        .flat_map(|(_, args)| args.windows(2))
-        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
-        .expect("payload argument");
     assert_eq!(
-        WireVaultCommand::decode(&hex::decode(payload).expect("decode payload hex"))
-            .expect("decode vault command"),
+        decoded_payload(&calls),
         WireVaultCommand::AtomicWithdraw {
             owner: ACCOUNT.to_string(),
             receiver: ACCOUNT.to_string(),
@@ -137,14 +235,58 @@ fn user_withdraw_uses_atomic_vault_command_with_share_guard() {
 }
 
 #[test]
-fn user_redeem_uses_atomic_vault_command_with_asset_guard() {
+fn user_atomic_redeem_prefers_erc4626_entrypoint() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let mut manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    manifest
+        .contracts
+        .insert("proxy_4626".to_string(), imported_record("CPROXY"));
+    manifest.save(&state).expect("save proxy manifest");
+    let cli = base_cli(
+        state.clone(),
+        Commands::User(UserArgs {
+            command: UserCommand::AtomicRedeem {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                shares: None,
+                shares_raw: Some(11),
+                share_decimals: ShareDecimalsArg::Manifest,
+                min_assets_out: None,
+                min_assets_out_raw: 10,
+                asset_decimals: 7,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run atomic redeem through proxy");
+
+    let calls = submitted_calls(&executor.calls());
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].1.windows(2).any(|pair| pair == ["--id", "CPROXY"]));
+    assert!(calls[0].1.iter().any(|arg| arg == "atomic_redeem"));
+    assert!(calls[0]
+        .1
+        .windows(2)
+        .any(|pair| pair == ["--min_assets_out", "10"]));
+    let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    let transaction = manifest.transactions.last().expect("transaction record");
+    assert_eq!(transaction.contract_id.as_deref(), Some("CPROXY"));
+    assert_eq!(transaction.function.as_deref(), Some("atomic_redeem"));
+}
+
+#[test]
+fn user_atomic_redeem_falls_back_to_vault_command_with_asset_guard() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
     let cli = base_cli(
         state,
         Commands::User(UserArgs {
-            command: UserCommand::Redeem {
+            command: UserCommand::AtomicRedeem {
                 operator: ACCOUNT.parse().expect("operator"),
                 receiver: Some(ACCOUNT.parse().expect("receiver")),
                 owner: Some(ACCOUNT.parse().expect("owner")),
@@ -162,14 +304,8 @@ fn user_redeem_uses_atomic_vault_command_with_asset_guard() {
     run(&cli, &executor).expect("run atomic redeem");
 
     let calls = submitted_calls(&executor.calls());
-    let payload = calls
-        .iter()
-        .flat_map(|(_, args)| args.windows(2))
-        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
-        .expect("payload argument");
     assert_eq!(
-        WireVaultCommand::decode(&hex::decode(payload).expect("decode payload hex"))
-            .expect("decode vault command"),
+        decoded_payload(&calls),
         WireVaultCommand::AtomicRedeem {
             owner: ACCOUNT.to_string(),
             receiver: ACCOUNT.to_string(),

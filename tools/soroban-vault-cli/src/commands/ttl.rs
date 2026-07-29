@@ -28,30 +28,38 @@ pub(super) fn run_extend_ttl<E: CommandExecutor>(
     let mut skipped = Vec::new();
     let mut protocol_wasm_hashes = BTreeSet::new();
 
-    if let Some(vault) = contract_id(manifest, "vault") {
+    if let Some(vault) = manifest.contracts.get("vault") {
         let payload = hex::encode(WireVaultCommand::ExtendTtl.encode());
-        stellar.invoke(vault, "execute", args([("--payload", &payload)]))?;
+        stellar.invoke(
+            &vault.contract_id,
+            "execute",
+            args([("--payload", &payload)]),
+        )?;
+        protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, vault)?);
         extended.push("vault".to_string());
     } else {
         skipped.push("vault".to_string());
     }
 
-    if let Some(governance) = contract_id(manifest, "governance") {
-        stellar.invoke(governance, "extend_ttl", Vec::new())?;
+    if let Some(governance) = manifest.contracts.get("governance") {
+        stellar.invoke(&governance.contract_id, "extend_ttl", Vec::new())?;
+        protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, governance)?);
         extended.push("governance".to_string());
     } else {
         skipped.push("governance".to_string());
     }
 
-    if let Some(proxy) = contract_id(manifest, "proxy_4626") {
-        stellar.invoke(proxy, "extend_ttl", Vec::new())?;
+    if let Some(proxy) = manifest.contracts.get("proxy_4626") {
+        stellar.invoke(&proxy.contract_id, "extend_ttl", Vec::new())?;
+        protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, proxy)?);
         extended.push("proxy_4626".to_string());
     } else {
         skipped.push("proxy_4626".to_string());
     }
 
-    if let Some(proxy) = contract_id(manifest, "curator_proxy") {
-        stellar.invoke(proxy, "extend_ttl", Vec::new())?;
+    if let Some(proxy) = manifest.contracts.get("curator_proxy") {
+        stellar.invoke(&proxy.contract_id, "extend_ttl", Vec::new())?;
+        protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, proxy)?);
         extended.push("curator_proxy".to_string());
     } else {
         skipped.push("curator_proxy".to_string());

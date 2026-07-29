@@ -3,6 +3,7 @@
 use std::{
     fs::{self, OpenOptions},
     path::Path,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -143,8 +144,12 @@ pub(super) fn manifest_writable_check(path: &Path) -> DoctorCheck {
         );
     }
 
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let probe = parent.join(format!(
-        ".tmplr-soroban-vault-cli-write-test-{}",
+        ".tmplr-soroban-vault-cli-write-test-{}-{nanos}",
         std::process::id()
     ));
     match OpenOptions::new().write(true).create_new(true).open(&probe) {

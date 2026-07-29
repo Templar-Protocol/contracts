@@ -484,15 +484,17 @@ The Stellar vault has two distinct exit paths.
 
 ### Atomic idle-liquidity exit
 
-`user withdraw` and `user redeem` send the vault's atomic exit commands and complete in one
-transaction only when the vault has enough idle assets. They never pull
+`user atomic-withdraw` and `user atomic-redeem` use the ERC-4626 proxy's slippage-protected atomic
+exit methods when the deployment manifest contains `proxy_4626`. Proxy-less imported deployments
+fall back to the vault's equivalent atomic commands. Both routes complete in one transaction only
+when the vault has enough idle assets. They never pull
 liquidity from an adapter. As a result, `maxWithdraw` and `maxRedeem` can be zero
 while the user's shares still represent assets deployed to markets.
 
 ```sh
 tmplr-soroban-vault user preview --owner GUSER...
 
-tmplr-soroban-vault user withdraw \
+tmplr-soroban-vault user atomic-withdraw \
   --operator GUSER... \
   --assets 25 \
   --asset-decimals 7 \
@@ -503,6 +505,10 @@ tmplr-soroban-vault user withdraw \
 ### Queued withdrawal
 
 Use the queued path when idle liquidity is insufficient:
+
+The proxy-facing `user withdraw` and `user redeem` commands preserve its asynchronous
+ERC-7540-style compatibility methods. Use `request-withdraw` for the lower-level vault request
+surface with explicit share and minimum-asset inputs.
 
 ```sh
 tmplr-soroban-vault user request-withdraw \

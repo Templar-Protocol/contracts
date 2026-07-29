@@ -8,7 +8,7 @@ use crate::{cli::CuratorCommand, manifest::Manifest, stellar::CommandExecutor};
 use super::{
     context::CommandContext,
     governance::submit_and_maybe_accept,
-    invoke::supply_queue_entries_json,
+    invoke::{address_vec_json, supply_queue_entries_json},
     output::Response,
     vault_ops::{execute_allocation, execute_vault, required_amount},
 };
@@ -85,7 +85,7 @@ pub(super) fn run_curator<E: CommandExecutor>(
                 "--caller".to_string(),
                 admin.to_string(),
                 "--adapters".to_string(),
-                serde_json::to_string(adapters)?,
+                address_vec_json(adapters)?,
             ],
             *auto_accept,
         ),

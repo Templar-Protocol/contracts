@@ -29,3 +29,18 @@ fn doctor_checks_stellar_and_source_identity() {
             config_dir.display().to_string(),
         ]));
 }
+
+#[test]
+fn manifest_writable_probe_ignores_a_stale_pid_only_probe_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stale_probe = dir.path().join(format!(
+        ".tmplr-soroban-vault-cli-write-test-{}",
+        std::process::id()
+    ));
+    fs::write(&stale_probe, "stale").expect("write stale probe");
+
+    let check = manifest_writable_check(&dir.path().join("manifest.json"));
+
+    assert_eq!(check.status, DoctorStatus::Pass);
+    assert!(stale_probe.exists());
+}

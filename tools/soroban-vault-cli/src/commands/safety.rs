@@ -47,12 +47,16 @@ pub(super) fn confirm_dangerous_governance_change<E: CommandExecutor>(
 ) -> anyhow::Result<()> {
     let cli = context.cli();
     let stellar = context.stellar();
-    if cli.json || cli.json_lines {
-        return Ok(());
-    }
     let Some(diff) = governance_safety_diff(stellar, manifest, &cli.command)? else {
         return Ok(());
     };
+    if cli.json || cli.json_lines {
+        anyhow::ensure!(
+            cli.yes || cli.dry_run,
+            "dangerous governance change requires --yes in machine-readable output mode"
+        );
+        return Ok(());
+    }
     eprintln!("Dangerous governance change: {}", diff.title);
     for line in diff.lines {
         eprintln!("  {line}");
@@ -150,7 +154,7 @@ pub(super) fn view_or_unavailable<E: CommandExecutor>(
     function: &str,
     args: Vec<String>,
 ) -> String {
-    match stellar.invoke(contract_id, function, args) {
+    match stellar.invoke_view(contract_id, function, args) {
         Ok(output) if !output.stdout.is_empty() => output.stdout,
         Ok(_) => "<empty>".to_string(),
         Err(error) => format!("unavailable ({error})"),

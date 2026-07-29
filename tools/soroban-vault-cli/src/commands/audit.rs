@@ -80,11 +80,31 @@ pub(super) fn command_target_and_function(
                     )
                 }
                 UserCommand::Mint { .. } => (contract_id(manifest, "proxy_4626"), "mint"),
-                UserCommand::Withdraw { .. }
-                | UserCommand::Redeem { .. }
-                | UserCommand::RequestWithdraw { .. } => {
-                    (contract_id(manifest, "vault"), "execute")
+                UserCommand::Withdraw { .. } => (contract_id(manifest, "proxy_4626"), "withdraw"),
+                UserCommand::Redeem { .. } => (contract_id(manifest, "proxy_4626"), "redeem"),
+                UserCommand::AtomicWithdraw { .. } => {
+                    let proxy = contract_id(manifest, "proxy_4626");
+                    (
+                        proxy.or_else(|| contract_id(manifest, "vault")),
+                        if proxy.is_some() {
+                            "atomic_withdraw"
+                        } else {
+                            "execute"
+                        },
+                    )
                 }
+                UserCommand::AtomicRedeem { .. } => {
+                    let proxy = contract_id(manifest, "proxy_4626");
+                    (
+                        proxy.or_else(|| contract_id(manifest, "vault")),
+                        if proxy.is_some() {
+                            "atomic_redeem"
+                        } else {
+                            "execute"
+                        },
+                    )
+                }
+                UserCommand::RequestWithdraw { .. } => (contract_id(manifest, "vault"), "execute"),
                 UserCommand::ExecuteWithdraw { .. } => (
                     contract_id(manifest, "proxy_4626").or_else(|| contract_id(manifest, "vault")),
                     if contract_id(manifest, "proxy_4626").is_some() {

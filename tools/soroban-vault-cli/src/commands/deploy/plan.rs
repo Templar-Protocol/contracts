@@ -17,8 +17,8 @@ use super::{
     super::{
         context::CommandContext,
         inventory::{
-            blend_adapter_by_pool, contract_id, custodial_adapter_by_custodian,
-            custodial_adapter_key, next_blend_adapter_key, next_custodial_adapter_index,
+            blend_adapter_by_pool, blend_adapter_key, contract_id, custodial_adapter_by_custodian,
+            custodial_adapter_key, next_blend_adapter_index, next_custodial_adapter_index,
         },
         output::{PlanContract, PlanResponse, PlanWasm, Response},
     },
@@ -38,6 +38,10 @@ pub(in crate::commands) fn run_deploy_plan<E: CommandExecutor>(
     Ok(Response::Plan(plan))
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the full stack plan ordered to match deployment execution"
+)]
 pub(in crate::commands) fn deploy_stack_plan(
     cli: &Cli,
     manifest: &Manifest,
@@ -109,6 +113,7 @@ pub(in crate::commands) fn deploy_stack_plan(
             true,
         ));
     }
+    let mut next_blend_index = next_blend_adapter_index(manifest);
     for pool in &args.blend_pools {
         if !args.force_new && blend_adapter_by_pool(manifest, pool).is_some() {
             plan.contracts_to_reuse.push(PlanContract {
@@ -118,10 +123,11 @@ pub(in crate::commands) fn deploy_stack_plan(
             });
         } else {
             plan.contracts_to_deploy.push(PlanContract {
-                key: next_blend_adapter_key(manifest),
+                key: blend_adapter_key(next_blend_index),
                 contract_id: None,
                 reason: format!("new adapter for pool {pool}"),
             });
+            next_blend_index += 1;
             plan.manifest_mutations
                 .push(format!("record new Blend adapter for pool {pool}"));
             plan.stellar_commands.push(stellar_command_shape(
@@ -205,6 +211,7 @@ pub(in crate::commands) fn deploy_adapters_plan(
         }
     }
 
+    let mut next_blend_index = next_blend_adapter_index(manifest);
     for pool in &args.blend_pools {
         if !args.force_new && blend_adapter_by_pool(manifest, pool).is_some() {
             plan.contracts_to_reuse.push(PlanContract {
@@ -214,10 +221,11 @@ pub(in crate::commands) fn deploy_adapters_plan(
             });
         } else {
             plan.contracts_to_deploy.push(PlanContract {
-                key: next_blend_adapter_key(manifest),
+                key: blend_adapter_key(next_blend_index),
                 contract_id: None,
                 reason: format!("new adapter for pool {pool}"),
             });
+            next_blend_index += 1;
             plan.manifest_mutations
                 .push(format!("record new Blend adapter for pool {pool}"));
             plan.stellar_commands.push(stellar_command_shape(

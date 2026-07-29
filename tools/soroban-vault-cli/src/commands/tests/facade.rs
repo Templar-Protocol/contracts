@@ -98,3 +98,28 @@ fn fresh_state_rejects_non_stack_commands() {
         .to_string()
         .contains("--fresh-state is only valid with"));
 }
+
+#[test]
+fn machine_readable_governance_changes_require_yes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance(&state);
+    let cli = Cli {
+        json: true,
+        command: Commands::Governance(GovernanceArgs {
+            command: GovernanceCommand::SubmitSetAdmin {
+                admin: ACCOUNT.parse().expect("admin"),
+                new_admin: OTHER_CONTRACT.parse().expect("new admin"),
+            },
+        }),
+        ..base_cli(state, Commands::Status)
+    };
+    let executor = RecordingExecutor::new();
+
+    let error = run(&cli, &executor).expect_err("machine-readable write must fail closed");
+
+    assert!(error
+        .to_string()
+        .contains("dangerous governance change requires --yes"));
+    assert!(submitted_calls(&executor.calls()).is_empty());
+}

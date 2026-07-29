@@ -1,6 +1,10 @@
 use super::*;
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the topology fixture and all instance/code TTL assertions belong in one scenario"
+)]
 fn extend_ttl_supports_default_contract_admin_topology() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");
@@ -70,7 +74,7 @@ fn extend_ttl_supports_default_contract_admin_topology() {
     run(&cli, &executor).expect("extend ttl");
 
     let calls = submitted_calls(&executor.calls());
-    assert_eq!(calls.len(), 10);
+    assert_eq!(calls.len(), 14);
     assert!(calls.iter().any(
         |(_, args)| args.windows(2).any(|pair| pair == ["--id", "CVAULT"])
             && args.iter().any(|arg| arg == "execute")
@@ -85,6 +89,10 @@ fn extend_ttl_supports_default_contract_admin_topology() {
         assert_protocol_ttl_call(&calls, "--id", contract_id);
     }
     for wasm_hash in [
+        format!("{:x}", Sha256::digest(b"CVAULT")),
+        format!("{:x}", Sha256::digest(b"CGOVERNANCE")),
+        format!("{:x}", Sha256::digest(b"CPROXY4626")),
+        format!("{:x}", Sha256::digest(b"CCURATORPROXY")),
         format!("{:x}", Sha256::digest(b"CSHARE")),
         format!("{:x}", Sha256::digest(b"shared blend adapter wasm")),
     ] {
@@ -95,7 +103,7 @@ fn extend_ttl_supports_default_contract_admin_topology() {
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--wasm-hash"))
             .count(),
-        2
+        6
     );
     assert!(!calls
         .iter()
@@ -127,7 +135,7 @@ fn extend_ttl_runs_for_governance_admin_custodial_adapter() {
             caller: Some(ACCOUNT.parse().expect("caller")),
         }),
     );
-    let executor = RecordingExecutor::new();
+    let executor = TtlRecordingExecutor::new();
 
     run(&cli, &executor).expect("extend ttl");
 

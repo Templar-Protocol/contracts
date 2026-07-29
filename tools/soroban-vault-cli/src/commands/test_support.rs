@@ -15,15 +15,19 @@ use crate::{
     },
     manifest::{ContractRecord, Manifest},
     stellar::{CommandExecutor, CommandOutput, Stellar},
-    types::{ShareDecimalsArg, SupplyQueueEntryArg},
+    types::{GovernanceActionKindArg, ShareDecimalsArg, SupplyQueueEntryArg},
 };
 
 use super::{
     context::CommandContext,
     deploy::*,
+    doctor::manifest_writable_check,
+    governance::{governance_proposal_view, proposal_matches_kind},
     inventory::*,
     invoke::supply_queue_entries_json,
-    output::{OutputEnvelope, ParseErrorEnvelope, ReconcileStatus, Response, WiringStatus},
+    output::{
+        DoctorStatus, OutputEnvelope, ParseErrorEnvelope, ReconcileStatus, Response, WiringStatus,
+    },
     run,
     safety::guard_fresh_state_usage,
     CURATOR_PROXY_GOVERNANCE_ARG, CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG,
@@ -94,7 +98,7 @@ impl CommandExecutor for RecordingExecutor {
         if args.iter().any(|arg| arg == "pending") {
             let proposal_id = args
                 .windows(2)
-                .find_map(|pair| (pair[0] == "--proposal_id").then(|| pair[1].as_str()))
+                .find_map(|pair| (pair[0] == "--proposal_id").then_some(pair[1].as_str()))
                 .unwrap_or("0");
             let valid_after_ns = if proposal_id == "1" { 0 } else { u64::MAX };
             return Ok(CommandOutput {
@@ -244,7 +248,7 @@ impl CommandExecutor for ChainStateExecutor {
         {
             if let Some(path) = args
                 .windows(2)
-                .find_map(|pair| (pair[0] == "--out-file").then(|| &pair[1]))
+                .find_map(|pair| (pair[0] == "--out-file").then_some(&pair[1]))
             {
                 fs::write(path, self.wasm).expect("write fetched wasm");
             }
@@ -270,6 +274,16 @@ fn submitted_calls(calls: &[(String, Vec<String>)]) -> Vec<(String, Vec<String>)
         })
         .cloned()
         .collect()
+}
+
+fn decoded_payload(calls: &[(String, Vec<String>)]) -> WireVaultCommand {
+    let payload = calls
+        .iter()
+        .flat_map(|(_, args)| args.windows(2))
+        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
+        .expect("payload argument");
+    let bytes = hex::decode(payload).expect("decode payload hex");
+    WireVaultCommand::decode(&bytes).expect("decode vault command")
 }
 
 fn assert_protocol_ttl_call(calls: &[(String, Vec<String>)], selector: &str, value: &str) {

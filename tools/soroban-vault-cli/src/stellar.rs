@@ -681,6 +681,43 @@ fn temp_wasm_path(contract_id: &str) -> PathBuf {
     ))
 }
 
+struct TemporaryFileCleanup {
+    path: PathBuf,
+    active: bool,
+}
+
+impl TemporaryFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            active: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+    }
+}
+
+impl Drop for TemporaryFileCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Err(error) = fs::remove_file(&self.path) {
+            warn!(
+                path = %self.path.display(),
+                error = %error,
+                "failed to remove preflight transaction file"
+            );
+        }
+    }
+}
+
 fn with_preflight_xdr_file<T>(
     xdr: &str,
     operation: impl FnOnce(&Path) -> anyhow::Result<T>,
@@ -689,10 +726,10 @@ fn with_preflight_xdr_file<T>(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
+    let mut cleanup = TemporaryFileCleanup::new(std::env::temp_dir().join(format!(
         "tmplr-soroban-vault-cli-{}-{nanos}.tx.xdr",
         std::process::id()
-    ));
+    )));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -700,25 +737,24 @@ fn with_preflight_xdr_file<T>(
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(&path)
-        .with_context(|| format!("create preflight transaction file {}", path.display()))?;
+    let mut file = options.open(cleanup.path()).with_context(|| {
+        format!(
+            "create preflight transaction file {}",
+            cleanup.path().display()
+        )
+    })?;
+    cleanup.activate();
     if let Err(error) = file.write_all(xdr.as_bytes()) {
-        let _ = fs::remove_file(&path);
-        return Err(error)
-            .with_context(|| format!("write preflight transaction file {}", path.display()));
+        return Err(error).with_context(|| {
+            format!(
+                "write preflight transaction file {}",
+                cleanup.path().display()
+            )
+        });
     }
     drop(file);
 
-    let result = operation(&path);
-    if let Err(error) = fs::remove_file(&path) {
-        warn!(
-            path = %path.display(),
-            error = %error,
-            "failed to remove preflight transaction file"
-        );
-    }
-    result
+    operation(cleanup.path())
 }
 
 fn first_tx_hash(stdout: &str, stderr: &str) -> Option<String> {
@@ -820,7 +856,24 @@ fn transaction_status_from_result_variant(key: &str) -> Option<TransactionConfir
     let normalized = key.to_ascii_lowercase();
     match normalized.as_str() {
         "tx_success" | "tx_fee_bump_inner_success" => Some(TransactionConfirmationStatus::Success),
-        key if key.starts_with("tx_") => Some(TransactionConfirmationStatus::Failed),
+        "tx_fee_bump_inner_failed"
+        | "tx_failed"
+        | "tx_too_early"
+        | "tx_too_late"
+        | "tx_missing_operation"
+        | "tx_bad_seq"
+        | "tx_bad_auth"
+        | "tx_insufficient_balance"
+        | "tx_no_account"
+        | "tx_insufficient_fee"
+        | "tx_bad_auth_extra"
+        | "tx_internal_error"
+        | "tx_not_supported"
+        | "tx_bad_sponsorship"
+        | "tx_bad_min_seq_age_or_gap"
+        | "tx_malformed"
+        | "tx_soroban_invalid"
+        | "tx_frozen_key_accessed" => Some(TransactionConfirmationStatus::Failed),
         _ => None,
     }
 }
@@ -1285,6 +1338,40 @@ mod tests {
     }
 
     #[test]
+    fn removes_preflight_transaction_file_when_operation_panics() {
+        let staged_path = std::sync::Mutex::new(None);
+
+        let panic = std::panic::catch_unwind(|| {
+            with_preflight_xdr_file("AAAA", |path| -> anyhow::Result<()> {
+                *staged_path.lock().expect("lock staged path") = Some(path.to_path_buf());
+                panic!("forced operation panic");
+            })
+            .expect("operation should panic before returning");
+        });
+
+        assert!(panic.is_err());
+        assert!(!staged_path
+            .into_inner()
+            .expect("staged path mutex")
+            .expect("staged path")
+            .exists());
+    }
+
+    #[test]
+    fn inactive_temporary_file_cleanup_preserves_unowned_file() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("existing.tx.xdr");
+        fs::write(&path, "existing").expect("write existing file");
+
+        drop(TemporaryFileCleanup::new(path.clone()));
+
+        assert_eq!(
+            fs::read_to_string(path).expect("read existing file"),
+            "existing"
+        );
+    }
+
+    #[test]
     fn parses_transaction_hashes_from_command_text() {
         let hashes = parse_tx_hashes(
             "tx hash: 0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1326,6 +1413,13 @@ mod tests {
             r#"{"fee_charged":"113610","result":{"tx_failed":[{"op_inner":{"invoke_host_function":"trapped"}}]},"ext":"v0"}"#,
         );
         assert_eq!(status, Some(TransactionConfirmationStatus::Failed));
+
+        let status = transaction_status_from_output(
+            r#"{"a":{"tx_hash":"0123456789abcdef"},"z":{"tx_success":[]}}"#,
+        );
+        assert_eq!(status, Some(TransactionConfirmationStatus::Success));
+        assert_eq!(transaction_status_from_result_variant("tx_hash"), None);
+        assert_eq!(transaction_status_from_result_variant("tx_envelope"), None);
 
         let status = transaction_status_from_text(
             "command failed: transaction 00 not found on testnet network",

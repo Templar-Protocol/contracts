@@ -260,7 +260,6 @@ fn deploy_stack_without_blend_pools_skips_blend_adapter() {
     let state = dir.path().join("manifest.json");
     let cli = Cli {
         workspace_path: dir.path().into(),
-        dry_run: true,
         command: Commands::Deploy(DeployArgs {
             command: DeployCommand::Stack(Box::new(DeployStackArgs {
                 admin: Some(ACCOUNT.parse().expect("admin")),
@@ -278,11 +277,52 @@ fn deploy_stack_without_blend_pools_skips_blend_adapter() {
                 force_new: false,
             })),
         }),
-        ..base_cli(state, Commands::Status)
+        ..base_cli(state.clone(), Commands::Status)
     };
     let executor = RecordingExecutor::new();
 
     run(&cli, &executor).expect("deploy stack without blend pools");
 
+    assert!(!executor
+        .calls()
+        .iter()
+        .any(|(_, args)| args.iter().any(|arg| arg == "--pool")));
+    let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    assert!(!manifest
+        .contracts
+        .keys()
+        .any(|key| key.starts_with("blend_adapter_")));
+}
+
+#[test]
+fn force_new_stack_requires_an_explicit_governance_timelock() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    let mut governance = imported_record(CONTRACT);
+    governance
+        .constructor_args
+        .insert("timelock_ns".to_string(), "1000".to_string());
+    manifest
+        .contracts
+        .insert("governance".to_string(), governance);
+    manifest.save(&state).expect("save manifest");
+    let mut stack = test_deploy_stack_args(ACCOUNT);
+    stack.force_new = true;
+    stack.governance_timelock_ns = None;
+    let cli = Cli {
+        workspace_path: dir.path().into(),
+        command: Commands::Deploy(DeployArgs {
+            command: DeployCommand::Stack(Box::new(stack)),
+        }),
+        ..base_cli(state, Commands::Status)
+    };
+    let executor = RecordingExecutor::new();
+
+    let error = run(&cli, &executor).expect_err("force-new timelock must be explicit");
+
+    assert!(error
+        .to_string()
+        .contains("new governance deployment requires --governance-timelock-ns"));
     assert!(executor.calls().is_empty());
 }
