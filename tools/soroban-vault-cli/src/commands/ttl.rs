@@ -89,6 +89,10 @@ pub(super) fn run_extend_ttl<E: CommandExecutor>(
         }
     }
 
+    for wasm_hash in &protocol_wasm_hashes {
+        stellar.extend_contract_code_ttl(wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
+    }
+
     let adapters = custodial_adapter_statuses(manifest);
     if adapters.is_empty() {
         skipped.push("custodial_adapters".to_string());
@@ -99,13 +103,12 @@ pub(super) fn run_extend_ttl<E: CommandExecutor>(
                 .contracts
                 .get(&adapter.key)
                 .with_context(|| format!("missing {} contract record", adapter.key))?;
-            protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, record)?);
+            let wasm_hash = wasm_hash_for_ttl(stellar, record)?;
+            if protocol_wasm_hashes.insert(wasm_hash.clone()) {
+                stellar.extend_contract_code_ttl(&wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
+            }
             extended.push(adapter.key);
         }
-    }
-
-    for wasm_hash in protocol_wasm_hashes {
-        stellar.extend_contract_code_ttl(&wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
     }
 
     for key in ["asset_token"] {
