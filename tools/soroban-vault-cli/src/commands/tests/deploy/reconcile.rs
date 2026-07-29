@@ -109,6 +109,42 @@ fn reconcile_probes_stellar_asset_contract_without_fetching_wasm() {
 }
 
 #[test]
+fn reconcile_keeps_predeployed_asset_token_resumable() {
+    let mut manifest = Manifest::new("testnet", None);
+    manifest.contracts.insert(
+        "asset_token".to_string(),
+        ContractRecord {
+            contract_id: OTHER_CONTRACT.to_string(),
+            wasm_hash: "stellar-asset-contract".to_string(),
+            salt: None,
+            constructor_args: map_args([("asset", "predeployed")]),
+            deploy_tx: None,
+            initialized: true,
+        },
+    );
+    let cli = base_cli("manifest.json".into(), Commands::Status);
+    let executor = RecordingExecutor::new();
+    let stellar = Stellar::new(&cli, &executor);
+
+    let response = reconcile_manifest(&stellar, &manifest, false);
+
+    let asset = response
+        .components
+        .iter()
+        .find(|component| component.key == "asset_token")
+        .expect("asset-token component");
+    assert_eq!(asset.status, ReconcileStatus::Initialized);
+    assert!(response.safe_to_resume);
+    let calls = executor.calls();
+    assert!(calls
+        .iter()
+        .any(|(_, args)| args.iter().any(|arg| arg == "decimals")));
+    assert!(!calls.iter().any(|(_, args)| {
+        matches!(args.as_slice(), [contract, id, asset, ..] if contract == "contract" && id == "id" && asset == "asset")
+    }));
+}
+
+#[test]
 fn reconcile_rejects_wrong_stellar_asset_contract_id() {
     let mut manifest = Manifest::new("testnet", None);
     manifest.contracts.insert(

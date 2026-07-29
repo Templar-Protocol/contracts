@@ -66,6 +66,78 @@ fn force_new_stack_plan_requires_explicit_governance_timelock() {
 }
 
 #[test]
+fn deploy_stack_plan_rejects_conflicting_asset_token_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    manifest
+        .contracts
+        .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
+    manifest.save(&state).expect("save manifest");
+    let mut args = test_deploy_stack_args(ACCOUNT);
+    args.asset_token = Some(CONTRACT.parse().expect("conflicting asset token"));
+    let cli = base_cli(
+        state,
+        Commands::Deploy(DeployArgs {
+            command: DeployCommand::Plan(crate::cli::DeployPlanArgs {
+                command: DeployPlanCommand::Stack(Box::new(args)),
+            }),
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    let error = run(&cli, &executor).expect_err("conflicting asset token must fail planning");
+
+    assert!(error.to_string().contains(&format!(
+        "asset_token already recorded as {ASSET_CONTRACT}; refusing to overwrite with {CONTRACT}"
+    )));
+    assert!(executor.calls().is_empty());
+}
+
+#[test]
+fn deploy_adapters_plan_rejects_conflicting_import_ids() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    let mut manifest = Manifest::new("testnet", None);
+    for (key, contract_id) in [
+        ("vault", CONTRACT),
+        ("governance", OTHER_CONTRACT),
+        ("asset_token", ASSET_CONTRACT),
+    ] {
+        manifest
+            .contracts
+            .insert(key.to_string(), imported_record(contract_id));
+    }
+    let cli = base_cli(state, Commands::Status);
+    let cases = [
+        ("vault", Some(OTHER_CONTRACT), None, None, CONTRACT),
+        ("governance", None, Some(CONTRACT), None, OTHER_CONTRACT),
+        ("asset_token", None, None, Some(CONTRACT), ASSET_CONTRACT),
+    ];
+
+    for (key, vault, governance, asset_token, existing) in cases {
+        let args = crate::cli::DeployAdaptersArgs {
+            vault: vault.map(|value| value.parse().expect("vault")),
+            governance: governance.map(|value| value.parse().expect("governance")),
+            asset_token: asset_token.map(|value| value.parse().expect("asset token")),
+            blend_pools: vec![ACCOUNT.parse().expect("pool")],
+            custodians: Vec::new(),
+            adapter_admin: "vault".parse().expect("vault adapter admin"),
+            build: false,
+            force_new: false,
+        };
+        let provided = vault.or(governance).or(asset_token).expect("provided id");
+
+        let error = deploy_adapters_plan(&cli, &manifest, &args)
+            .expect_err("conflicting imported contract must fail planning");
+
+        assert!(error.to_string().contains(&format!(
+            "{key} already recorded as {existing}; refusing to overwrite with {provided}"
+        )));
+    }
+}
+
+#[test]
 fn deploy_plan_uses_unique_keys_for_multiple_custodians() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

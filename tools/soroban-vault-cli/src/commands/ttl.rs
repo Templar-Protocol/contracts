@@ -89,18 +89,23 @@ pub(super) fn run_extend_ttl<E: CommandExecutor>(
         }
     }
 
-    for wasm_hash in protocol_wasm_hashes {
-        stellar.extend_contract_code_ttl(&wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
-    }
-
     let adapters = custodial_adapter_statuses(manifest);
     if adapters.is_empty() {
         skipped.push("custodial_adapters".to_string());
     } else {
         for adapter in adapters {
             stellar.invoke(&adapter.contract_id, "extend_ttl", Vec::new())?;
+            let record = manifest
+                .contracts
+                .get(&adapter.key)
+                .with_context(|| format!("missing {} contract record", adapter.key))?;
+            protocol_wasm_hashes.insert(wasm_hash_for_ttl(stellar, record)?);
             extended.push(adapter.key);
         }
+    }
+
+    for wasm_hash in protocol_wasm_hashes {
+        stellar.extend_contract_code_ttl(&wasm_hash, CONTRACT_TTL_EXTEND_LEDGERS)?;
     }
 
     for key in ["asset_token"] {

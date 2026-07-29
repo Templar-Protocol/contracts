@@ -74,7 +74,7 @@ fn extend_ttl_supports_default_contract_admin_topology() {
     run(&cli, &executor).expect("extend ttl");
 
     let calls = submitted_calls(&executor.calls());
-    assert_eq!(calls.len(), 14);
+    assert_eq!(calls.len(), 15);
     assert!(calls.iter().any(
         |(_, args)| args.windows(2).any(|pair| pair == ["--id", "CVAULT"])
             && args.iter().any(|arg| arg == "execute")
@@ -95,6 +95,7 @@ fn extend_ttl_supports_default_contract_admin_topology() {
         format!("{:x}", Sha256::digest(b"CCURATORPROXY")),
         format!("{:x}", Sha256::digest(b"CSHARE")),
         format!("{:x}", Sha256::digest(b"shared blend adapter wasm")),
+        format!("{:x}", Sha256::digest(b"CCUSTODIAL0")),
     ] {
         assert_protocol_ttl_call(&calls, "--wasm-hash", &wasm_hash);
     }
@@ -103,7 +104,7 @@ fn extend_ttl_supports_default_contract_admin_topology() {
             .iter()
             .filter(|(_, args)| args.iter().any(|arg| arg == "--wasm-hash"))
             .count(),
-        6
+        7
     );
     assert!(!calls
         .iter()
@@ -149,4 +150,9 @@ fn extend_ttl_runs_for_governance_admin_custodial_adapter() {
         .any(|pair| pair == ["--id", "CCUSTODIAL0"])
         && args.iter().any(|arg| arg == "extend_ttl")
         && !args.iter().any(|arg| arg == "--caller")));
+    assert_protocol_ttl_call(
+        &calls,
+        "--wasm-hash",
+        &format!("{:x}", Sha256::digest(b"CCUSTODIAL0")),
+    );
 }

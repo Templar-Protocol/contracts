@@ -128,7 +128,7 @@ pub(in crate::commands) fn reconcile_component<E: CommandExecutor>(
             .constructor_args
             .get("asset")
             .map(String::as_str)
-            .filter(|asset| !asset.is_empty() && *asset != "predeployed")
+            .filter(|asset| !asset.is_empty())
         else {
             component.status = ReconcileStatus::Unknown;
             component.warnings.push(
@@ -139,29 +139,31 @@ pub(in crate::commands) fn reconcile_component<E: CommandExecutor>(
             ));
             return component;
         };
-        let expected_contract_id = match stellar.asset_contract_id(asset) {
-            Ok(contract_id) => contract_id,
-            Err(error) => {
-                component.status = ReconcileStatus::Unknown;
+        if asset != "predeployed" {
+            let expected_contract_id = match stellar.asset_contract_id(asset) {
+                Ok(contract_id) => contract_id,
+                Err(error) => {
+                    component.status = ReconcileStatus::Unknown;
+                    component.warnings.push(format!(
+                        "could not derive the Stellar asset contract id for {asset}: {error}"
+                    ));
+                    component.repair_actions.push(format!(
+                        "{key}: verify network/RPC and asset provenance before resuming"
+                    ));
+                    return component;
+                }
+            };
+            if record.contract_id != expected_contract_id {
+                component.status = ReconcileStatus::Mismatched;
                 component.warnings.push(format!(
-                    "could not derive the Stellar asset contract id for {asset}: {error}"
+                    "recorded contract {} does not match deterministic Stellar asset contract {expected_contract_id} for asset {asset}",
+                    record.contract_id
                 ));
                 component.repair_actions.push(format!(
-                    "{key}: verify network/RPC and asset provenance before resuming"
+                    "{key}: replace the wrong asset contract record before resuming"
                 ));
                 return component;
             }
-        };
-        if record.contract_id != expected_contract_id {
-            component.status = ReconcileStatus::Mismatched;
-            component.warnings.push(format!(
-                "recorded contract {} does not match deterministic Stellar asset contract {expected_contract_id} for asset {asset}",
-                record.contract_id
-            ));
-            component.repair_actions.push(format!(
-                "{key}: replace the wrong asset contract record before resuming"
-            ));
-            return component;
         }
     }
 

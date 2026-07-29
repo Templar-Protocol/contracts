@@ -89,6 +89,7 @@ pub(in crate::commands) fn deploy_stack_plan(
     ] {
         push_contract_plan(&mut plan, manifest, key, args.force_new);
     }
+    ensure_provided_contract_matches_manifest(manifest, "asset_token", args.asset_token.as_ref())?;
     if let Some(asset_token) = &args.asset_token {
         if let Some(existing) = contract_id(manifest, "asset_token") {
             plan.contracts_to_reuse.push(PlanContract {
@@ -192,6 +193,7 @@ pub(in crate::commands) fn deploy_adapters_plan(
         ("governance", args.governance.as_ref()),
         ("asset_token", args.asset_token.as_ref()),
     ] {
+        ensure_provided_contract_matches_manifest(manifest, key, provided)?;
         if let Some(existing) = contract_id(manifest, key) {
             plan.contracts_to_reuse.push(PlanContract {
                 key: key.to_string(),
@@ -246,6 +248,20 @@ pub(in crate::commands) fn deploy_adapters_plan(
         args.force_new,
     )?;
     Ok(plan)
+}
+
+fn ensure_provided_contract_matches_manifest(
+    manifest: &Manifest,
+    key: &str,
+    provided: Option<&AddressStr>,
+) -> anyhow::Result<()> {
+    if let (Some(existing), Some(provided)) = (contract_id(manifest, key), provided) {
+        anyhow::ensure!(
+            existing == provided.as_str(),
+            "{key} already recorded as {existing}; refusing to overwrite with {provided}"
+        );
+    }
+    Ok(())
 }
 
 pub(in crate::commands) fn plan_adapter_admin(
