@@ -2,6 +2,8 @@
 //!
 //! The proxy uses Soroban-style explicit `operator` arguments instead of an
 //! ambient `msg.sender`. For deposits, the operator is also the asset source.
+//! `atomic_withdraw` and `atomic_redeem` expose the vault's immediate
+//! idle-liquidity exits with explicit slippage limits.
 //! For asynchronous redemptions, the current audited compatibility path is
 //! owner-operated only: `operator == owner`.
 //!
@@ -20,8 +22,8 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, Address, Bytes, Env, IntoVal, InvokeError, Symbol,
 };
 use templar_soroban_shared_types::{
-    DepositReceipt, ExecuteWithdrawReceipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
-    ReceiptAddress, RequestWithdrawReceipt, VaultCommand as WireVaultCommand,
+    DepositReceipt, ExecuteWithdrawReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields,
+    ProxyViewResponse, ReceiptAddress, RequestWithdrawReceipt, VaultCommand as WireVaultCommand,
 };
 
 use crate::error::ContractError;
@@ -45,6 +47,20 @@ pub(crate) enum VaultCommand {
     },
     ExecuteWithdraw {
         caller: Address,
+    },
+    AtomicWithdraw {
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        assets: i128,
+        max_shares_burned: i128,
+    },
+    AtomicRedeem {
+        owner: Address,
+        receiver: Address,
+        operator: Address,
+        shares: i128,
+        min_assets_out: i128,
     },
 }
 
@@ -75,6 +91,32 @@ impl VaultCommand {
             }),
             Self::ExecuteWithdraw { caller } => Ok(WireVaultCommand::ExecuteWithdraw {
                 caller: address_to_wire(&caller)?,
+            }),
+            Self::AtomicWithdraw {
+                owner,
+                receiver,
+                operator,
+                assets,
+                max_shares_burned,
+            } => Ok(WireVaultCommand::AtomicWithdraw {
+                owner: address_to_wire(&owner)?,
+                receiver: address_to_wire(&receiver)?,
+                operator: address_to_wire(&operator)?,
+                assets,
+                max_shares_burned,
+            }),
+            Self::AtomicRedeem {
+                owner,
+                receiver,
+                operator,
+                shares,
+                min_assets_out,
+            } => Ok(WireVaultCommand::AtomicRedeem {
+                owner: address_to_wire(&owner)?,
+                receiver: address_to_wire(&receiver)?,
+                operator: address_to_wire(&operator)?,
+                shares,
+                min_assets_out,
             }),
         }
     }
@@ -157,6 +199,66 @@ impl Soroban4626ProxyContract {
         )?)?;
         emit_deposit_event(&env, &operator, &receiver, assets, receipt.shares_out);
         Ok(assets)
+    }
+
+    /// Atomically withdraw an exact asset amount from idle vault liquidity.
+    ///
+    /// `max_shares_burned` protects the caller from adverse share-price movement.
+    /// The authenticated `operator` may differ from `owner` when the share-token
+    /// allowance permits the delegated burn.
+    pub fn atomic_withdraw(
+        env: Env,
+        operator: Address,
+        assets: i128,
+        receiver: Address,
+        owner: Address,
+        max_shares_burned: i128,
+    ) -> Result<i128, ContractError> {
+        require_positive(assets)?;
+        require_non_negative(max_shares_burned)?;
+        operator.require_auth();
+        let receipt = decode_i128_receipt(invoke_vault_execute(
+            &env,
+            VaultCommand::AtomicWithdraw {
+                owner: owner.clone(),
+                receiver: receiver.clone(),
+                operator: operator.clone(),
+                assets,
+                max_shares_burned,
+            },
+        )?)?;
+        emit_atomic_withdraw_event(&env, &operator, &receiver, &owner, assets, receipt.value);
+        Ok(receipt.value)
+    }
+
+    /// Atomically redeem an exact share amount from idle vault liquidity.
+    ///
+    /// `min_assets_out` protects the caller from adverse share-price movement.
+    /// The authenticated `operator` may differ from `owner` when the share-token
+    /// allowance permits the delegated burn.
+    pub fn atomic_redeem(
+        env: Env,
+        operator: Address,
+        shares: i128,
+        receiver: Address,
+        owner: Address,
+        min_assets_out: i128,
+    ) -> Result<i128, ContractError> {
+        require_positive(shares)?;
+        require_non_negative(min_assets_out)?;
+        operator.require_auth();
+        let receipt = decode_i128_receipt(invoke_vault_execute(
+            &env,
+            VaultCommand::AtomicRedeem {
+                owner: owner.clone(),
+                receiver: receiver.clone(),
+                operator: operator.clone(),
+                shares,
+                min_assets_out,
+            },
+        )?)?;
+        emit_atomic_withdraw_event(&env, &operator, &receiver, &owner, receipt.value, shares);
+        Ok(receipt.value)
     }
 
     /// Request an asynchronous redemption by asset amount.
@@ -457,6 +559,12 @@ fn require_non_negative(amount: i128) -> Result<(), ContractError> {
         .ok_or(ContractError::InvalidInput)
 }
 
+fn require_positive(amount: i128) -> Result<(), ContractError> {
+    (amount > 0)
+        .then_some(())
+        .ok_or(ContractError::InvalidInput)
+}
+
 fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
@@ -627,6 +735,10 @@ fn decode_execute_withdraw_receipt(bytes: Bytes) -> Result<ExecuteWithdrawReceip
     ExecuteWithdrawReceipt::decode(&bytes.to_alloc_vec()).map_err(Into::into)
 }
 
+fn decode_i128_receipt(bytes: Bytes) -> Result<I128Receipt, ContractError> {
+    I128Receipt::decode(&bytes.to_alloc_vec()).map_err(Into::into)
+}
+
 fn require_self_operator(operator: &Address, owner: &Address) -> Result<(), ContractError> {
     (operator == owner)
         .then_some(())
@@ -664,6 +776,26 @@ pub(crate) fn emit_redeem_request_event(
             request_id,
         ),
         (sender.clone(), shares),
+    );
+}
+
+#[allow(deprecated)]
+fn emit_atomic_withdraw_event(
+    env: &Env,
+    sender: &Address,
+    receiver: &Address,
+    owner: &Address,
+    assets: i128,
+    shares: i128,
+) {
+    env.events().publish(
+        (
+            symbol_short!("Withdraw"),
+            sender.clone(),
+            receiver.clone(),
+            owner.clone(),
+        ),
+        (assets, shares),
     );
 }
 

@@ -288,18 +288,23 @@ NAV through `total_assets(asset)`, and the vault incorporates that value when al
 run `curator refresh-markets`. `curator allocate-withdraw` does not refresh route NAV; it verifies
 the realized Stellar token-balance delta and subtracts that amount from stored principal.
 
-Withdrawals use two different CLI surfaces:
+Withdrawals use distinct CLI surfaces:
 
 - `curator allocate-withdraw` is an allocator operation. It pulls liquidity back from the adapter
   bound to a market id by calling the adapter's `progress_withdrawal(vault, asset, amount)`. The
   `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
   returned by the adapter without calling adapter `total_assets`.
-- `user request-withdraw` starts a user exit; `user execute-withdraw` is the allocator/keeper step
-  that completes it. `request-withdraw` queues and escrows shares immediately; the configured
-  cooldown gates `execute-withdraw`. Execution attempts to pay the next ready request from idle
-  vault assets and requires an allocator-authorized operator. If idle assets are not sufficient, an
+- `user withdraw` and `user redeem` preserve the ERC-4626 proxy's asynchronous compatibility
+  methods. `user request-withdraw` is the lower-level direct vault request with explicit share and
+  minimum-asset inputs. These paths queue and escrow shares immediately; the configured cooldown
+  gates `user execute-withdraw`. Execution attempts to pay the next ready request from idle vault
+  assets and requires an allocator-authorized operator. If idle assets are not sufficient, an
   allocator first uses `curator allocate-withdraw` to bring liquidity back from one or more market
   adapters, then `user execute-withdraw` can settle the queued request.
+- `user atomic-withdraw` and `user atomic-redeem` are the synchronous, slippage-protected idle
+  liquidity exits. They verify that a recorded ERC-4626 proxy exposes both atomic entrypoints before
+  calling it. A legacy recorded proxy is rejected with a replacement instruction; the direct vault
+  fallback is used only when `proxy_4626` is absent from the manifest.
 - `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
   Use it only when the vault is stuck in `Withdrawing` and operators have identified the operation id
   to abort.
@@ -686,7 +691,7 @@ the environment.
 ## Common Operations
 
 ```sh
-# User deposit through ERC-4626 proxy when configured, using decimal asset units.
+# Slippage-protected user deposit. A configured proxy is invoked through deposit_with_min.
 tmplr-soroban-vault user deposit \
   --operator G... \
   --assets 1.25 \
@@ -695,6 +700,17 @@ tmplr-soroban-vault user deposit \
 
 # Exact raw units remain available for automation.
 tmplr-soroban-vault user deposit --operator G... --assets-raw 12500000
+
+# Queue an asynchronous exact-asset withdrawal through the ERC-4626 proxy.
+tmplr-soroban-vault user withdraw --operator G... --assets 1 --asset-decimals 7
+
+# Exit synchronously from idle liquidity with an explicit maximum share burn.
+tmplr-soroban-vault user atomic-withdraw \
+  --operator G... \
+  --assets 1 \
+  --asset-decimals 7 \
+  --max-shares-burned 1.01 \
+  --share-decimals manifest
 
 # Allocator supply through the vault compact command ABI.
 tmplr-soroban-vault curator allocate-supply \
