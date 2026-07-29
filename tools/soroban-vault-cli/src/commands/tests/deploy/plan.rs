@@ -74,10 +74,11 @@ fn deploy_stack_plan_rejects_conflicting_asset_token_id() {
         .contracts
         .insert("asset_token".to_string(), imported_record(ASSET_CONTRACT));
     manifest.save(&state).expect("save manifest");
+    let before = fs::read_to_string(&state).expect("read manifest before plan");
     let mut args = test_deploy_stack_args(ACCOUNT);
     args.asset_token = Some(CONTRACT.parse().expect("conflicting asset token"));
     let cli = base_cli(
-        state,
+        state.clone(),
         Commands::Deploy(DeployArgs {
             command: DeployCommand::Plan(crate::cli::DeployPlanArgs {
                 command: DeployPlanCommand::Stack(Box::new(args)),
@@ -92,6 +93,8 @@ fn deploy_stack_plan_rejects_conflicting_asset_token_id() {
         "asset_token already recorded as {ASSET_CONTRACT}; refusing to overwrite with {CONTRACT}"
     )));
     assert!(executor.calls().is_empty());
+    let after = fs::read_to_string(&state).expect("read manifest after plan");
+    assert_eq!(before, after);
 }
 
 #[test]
