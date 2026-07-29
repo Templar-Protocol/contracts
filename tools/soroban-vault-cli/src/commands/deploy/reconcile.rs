@@ -122,19 +122,31 @@ pub(in crate::commands) fn reconcile_component<E: CommandExecutor>(
         repair_actions: Vec::new(),
     };
 
-    match stellar.fetch_contract_wasm_hash(&record.contract_id) {
+    let chain_hash = if record.wasm_hash == "stellar-asset-contract" {
+        stellar
+            .invoke_view(&record.contract_id, "decimals", Vec::new())
+            .map(|_| None)
+    } else {
+        stellar
+            .fetch_contract_wasm_hash(&record.contract_id)
+            .map(Some)
+    };
+
+    match chain_hash {
         Ok(chain_hash) => {
-            component.chain_wasm_hash = Some(chain_hash.clone());
-            if should_compare_wasm_hash(&record.wasm_hash) && record.wasm_hash != chain_hash {
-                component.status = ReconcileStatus::Mismatched;
-                component.warnings.push(format!(
-                    "manifest wasm hash {} does not match chain wasm hash {chain_hash}",
-                    record.wasm_hash
-                ));
-                component.repair_actions.push(format!(
-                    "{key}: inspect wrong-network or wrong-contract drift before editing manifest"
-                ));
-                return component;
+            if let Some(chain_hash) = chain_hash {
+                component.chain_wasm_hash = Some(chain_hash.clone());
+                if should_compare_wasm_hash(&record.wasm_hash) && record.wasm_hash != chain_hash {
+                    component.status = ReconcileStatus::Mismatched;
+                    component.warnings.push(format!(
+                        "manifest wasm hash {} does not match chain wasm hash {chain_hash}",
+                        record.wasm_hash
+                    ));
+                    component.repair_actions.push(format!(
+                        "{key}: inspect wrong-network or wrong-contract drift before editing manifest"
+                    ));
+                    return component;
+                }
             }
             component.status = if record.initialized {
                 ReconcileStatus::Initialized

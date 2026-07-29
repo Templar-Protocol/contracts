@@ -5,6 +5,8 @@ mod render;
 
 use serde::Serialize;
 
+use crate::stellar::parse_labeled_tx_hashes;
+
 pub use error::{print_error, print_parse_error};
 pub(super) use render::print_response;
 
@@ -77,21 +79,21 @@ impl Response {
 
     pub(super) fn tx_hashes(&self) -> Vec<String> {
         match self {
-            Self::Command { stdout, stderr } => parse_tx_hashes(stdout)
-                .into_iter()
-                .chain(parse_tx_hashes(stderr))
-                .collect(),
+            Self::Command { stdout, stderr } => {
+                let mut hashes = Vec::new();
+                for hash in parse_labeled_tx_hashes(stdout)
+                    .into_iter()
+                    .chain(parse_labeled_tx_hashes(stderr))
+                {
+                    if !hashes.contains(&hash) {
+                        hashes.push(hash);
+                    }
+                }
+                hashes
+            }
             _ => Vec::new(),
         }
     }
-}
-
-pub(super) fn parse_tx_hashes(value: &str) -> Vec<String> {
-    value
-        .split(|c: char| !c.is_ascii_hexdigit())
-        .filter(|token| token.len() == 64)
-        .map(str::to_ascii_lowercase)
-        .collect()
 }
 
 #[derive(Debug, Serialize)]

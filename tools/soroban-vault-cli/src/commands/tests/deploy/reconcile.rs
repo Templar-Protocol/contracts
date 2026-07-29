@@ -66,6 +66,74 @@ fn reconcile_detects_wasm_hash_mismatch_and_blocks_resume() {
 }
 
 #[test]
+fn reconcile_probes_stellar_asset_contract_without_fetching_wasm() {
+    let mut manifest = Manifest::new("testnet", None);
+    manifest.contracts.insert(
+        "asset_token".to_string(),
+        ContractRecord {
+            contract_id: ASSET_CONTRACT.to_string(),
+            wasm_hash: "stellar-asset-contract".to_string(),
+            salt: None,
+            constructor_args: map_args([("asset", "native")]),
+            deploy_tx: None,
+            initialized: true,
+        },
+    );
+    let cli = base_cli("manifest.json".into(), Commands::Status);
+    let executor = RecordingExecutor::new();
+    let stellar = Stellar::new(&cli, &executor);
+
+    let response = reconcile_manifest(&stellar, &manifest, false);
+
+    let asset = response
+        .components
+        .iter()
+        .find(|component| component.key == "asset_token")
+        .expect("asset-token component");
+    assert_eq!(asset.status, ReconcileStatus::Initialized);
+    assert_eq!(asset.chain_wasm_hash, None);
+    assert!(response.safe_to_resume);
+    let calls = executor.calls();
+    assert!(calls
+        .iter()
+        .any(|(_, args)| args.iter().any(|arg| arg == "decimals")));
+    assert!(!calls.iter().any(|(_, args)| {
+        matches!(args.as_slice(), [contract, fetch, ..] if contract == "contract" && fetch == "fetch")
+    }));
+}
+
+#[test]
+fn reconcile_blocks_resume_when_stellar_asset_contract_probe_fails() {
+    let mut manifest = Manifest::new("testnet", None);
+    manifest.contracts.insert(
+        "asset_token".to_string(),
+        ContractRecord {
+            contract_id: ASSET_CONTRACT.to_string(),
+            wasm_hash: "stellar-asset-contract".to_string(),
+            salt: None,
+            constructor_args: map_args([("asset", "native")]),
+            deploy_tx: None,
+            initialized: true,
+        },
+    );
+    let cli = base_cli("manifest.json".into(), Commands::Status);
+    let executor = ChainStateExecutor {
+        wasm: b"unreachable",
+    };
+    let stellar = Stellar::new(&cli, &executor);
+
+    let response = reconcile_manifest(&stellar, &manifest, false);
+
+    let asset = response
+        .components
+        .iter()
+        .find(|component| component.key == "asset_token")
+        .expect("asset-token component");
+    assert_eq!(asset.status, ReconcileStatus::Missing);
+    assert!(!response.safe_to_resume);
+}
+
+#[test]
 fn reconcile_verifies_vault_version_for_capable_curator_proxy() {
     let mut manifest = Manifest::new("testnet", None);
     manifest

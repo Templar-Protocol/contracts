@@ -484,7 +484,7 @@ The Stellar vault has two distinct exit paths.
 
 ### Atomic idle-liquidity exit
 
-`user withdraw` and `user redeem` call the ERC-4626 proxy and complete in one
+`user withdraw` and `user redeem` send the vault's atomic exit commands and complete in one
 transaction only when the vault has enough idle assets. They never pull
 liquidity from an adapter. As a result, `maxWithdraw` and `maxRedeem` can be zero
 while the user's shares still represent assets deployed to markets.

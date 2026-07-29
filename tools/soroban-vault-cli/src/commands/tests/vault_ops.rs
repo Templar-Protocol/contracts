@@ -89,6 +89,98 @@ fn user_deposit_prefers_erc4626_proxy() {
 }
 
 #[test]
+fn user_withdraw_uses_atomic_vault_command_with_share_guard() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let cli = base_cli(
+        state.clone(),
+        Commands::User(UserArgs {
+            command: UserCommand::Withdraw {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                assets: None,
+                assets_raw: Some(11),
+                asset_decimals: 7,
+                max_shares_burned: None,
+                max_shares_burned_raw: Some(12),
+                share_decimals: ShareDecimalsArg::Manifest,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run atomic withdraw");
+
+    let calls = submitted_calls(&executor.calls());
+    let payload = calls
+        .iter()
+        .flat_map(|(_, args)| args.windows(2))
+        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
+        .expect("payload argument");
+    assert_eq!(
+        WireVaultCommand::decode(&hex::decode(payload).expect("decode payload hex"))
+            .expect("decode vault command"),
+        WireVaultCommand::AtomicWithdraw {
+            owner: ACCOUNT.to_string(),
+            receiver: ACCOUNT.to_string(),
+            operator: ACCOUNT.to_string(),
+            assets: 11,
+            max_shares_burned: 12,
+        }
+    );
+    let manifest = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    let transaction = manifest.transactions.last().expect("transaction record");
+    assert_eq!(transaction.contract_id.as_deref(), Some(CONTRACT));
+    assert_eq!(transaction.function.as_deref(), Some("execute"));
+}
+
+#[test]
+fn user_redeem_uses_atomic_vault_command_with_asset_guard() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = dir.path().join("manifest.json");
+    manifest_with_governance_and_vault(&state);
+    let cli = base_cli(
+        state,
+        Commands::User(UserArgs {
+            command: UserCommand::Redeem {
+                operator: ACCOUNT.parse().expect("operator"),
+                receiver: Some(ACCOUNT.parse().expect("receiver")),
+                owner: Some(ACCOUNT.parse().expect("owner")),
+                shares: None,
+                shares_raw: Some(11),
+                share_decimals: ShareDecimalsArg::Manifest,
+                min_assets_out: None,
+                min_assets_out_raw: 10,
+                asset_decimals: 7,
+            },
+        }),
+    );
+    let executor = RecordingExecutor::new();
+
+    run(&cli, &executor).expect("run atomic redeem");
+
+    let calls = submitted_calls(&executor.calls());
+    let payload = calls
+        .iter()
+        .flat_map(|(_, args)| args.windows(2))
+        .find_map(|pair| (pair[0] == "--payload").then_some(pair[1].as_str()))
+        .expect("payload argument");
+    assert_eq!(
+        WireVaultCommand::decode(&hex::decode(payload).expect("decode payload hex"))
+            .expect("decode vault command"),
+        WireVaultCommand::AtomicRedeem {
+            owner: ACCOUNT.to_string(),
+            receiver: ACCOUNT.to_string(),
+            operator: ACCOUNT.to_string(),
+            shares: 11,
+            min_assets_out: 10,
+        }
+    );
+}
+
+#[test]
 fn user_share_token_and_adapter_read_only_commands_use_view_invocation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = dir.path().join("manifest.json");

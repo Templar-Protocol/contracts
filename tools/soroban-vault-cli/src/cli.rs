@@ -427,7 +427,7 @@ pub enum UserCommand {
         #[arg(long, default_value = "manifest")]
         share_decimals: ShareDecimalsArg,
     },
-    /// Withdraw an exact asset amount through the ERC-4626 proxy.
+    /// Atomically withdraw an exact asset amount from idle vault liquidity.
     Withdraw {
         /// Authorized operator address burning shares.
         #[arg(long)]
@@ -457,7 +457,7 @@ pub enum UserCommand {
         #[arg(long, default_value = "manifest")]
         share_decimals: ShareDecimalsArg,
     },
-    /// Redeem an exact share amount through the ERC-4626 proxy.
+    /// Atomically redeem an exact share amount from idle vault liquidity.
     Redeem {
         /// Authorized operator address burning shares.
         #[arg(long)]

@@ -5,7 +5,11 @@ use std::{
     path::Path,
 };
 
-use crate::{artifacts::ArtifactSpec, cli::Cli, stellar::CommandExecutor};
+use crate::{
+    artifacts::ArtifactSpec,
+    cli::Cli,
+    stellar::{keys_address_source_account_args, CommandExecutor},
+};
 
 use super::{
     context::CommandContext,
@@ -92,8 +96,8 @@ pub(super) fn source_account_doctor_check<E: CommandExecutor>(
         );
     }
 
-    let args = vec!["keys".to_string(), "address".to_string()];
-    match executor.run("stellar", &args, &[], &[]) {
+    let (args, redacted_args) = keys_address_source_account_args(None, cli.config_dir.as_deref());
+    match executor.run("stellar", &args, &redacted_args, &[]) {
         Ok(output) if !output.stdout.trim().is_empty() => DoctorCheck::pass(
             "source_account",
             format!(

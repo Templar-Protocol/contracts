@@ -119,18 +119,17 @@ pub(super) fn run_user<E: CommandExecutor>(
             .unwrap_or(assets);
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
-            let proxy = required_contract(manifest, "proxy_4626")?;
-            invoke_response(stellar.invoke(
-                proxy,
-                "withdraw",
-                args([
-                    ("--operator", operator.as_str()),
-                    ("--assets", &assets.to_string()),
-                    ("--receiver", receiver.as_str()),
-                    ("--owner", owner.as_str()),
-                    ("--max_shares_burned", &max_shares_burned.to_string()),
-                ]),
-            )?)
+            execute_vault(
+                stellar,
+                manifest,
+                WireVaultCommand::AtomicWithdraw {
+                    owner: owner.to_string(),
+                    receiver: receiver.to_string(),
+                    operator: operator.to_string(),
+                    assets,
+                    max_shares_burned,
+                },
+            )
         }
         UserCommand::Redeem {
             operator,
@@ -158,18 +157,17 @@ pub(super) fn run_user<E: CommandExecutor>(
             )?;
             let owner = owner.as_ref().unwrap_or(operator);
             let receiver = receiver.as_ref().unwrap_or(operator);
-            let proxy = required_contract(manifest, "proxy_4626")?;
-            invoke_response(stellar.invoke(
-                proxy,
-                "redeem",
-                args([
-                    ("--operator", operator.as_str()),
-                    ("--shares", &shares.to_string()),
-                    ("--receiver", receiver.as_str()),
-                    ("--owner", owner.as_str()),
-                    ("--min_assets_out", &min_assets_out.to_string()),
-                ]),
-            )?)
+            execute_vault(
+                stellar,
+                manifest,
+                WireVaultCommand::AtomicRedeem {
+                    owner: owner.to_string(),
+                    receiver: receiver.to_string(),
+                    operator: operator.to_string(),
+                    shares,
+                    min_assets_out,
+                },
+            )
         }
         UserCommand::RequestWithdraw {
             owner,

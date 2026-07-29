@@ -53,7 +53,8 @@ impl<'a> OutputEnvelope<'a> {
         }
     }
 
-    fn error(cli: &'a Cli, error: &anyhow::Error) -> Self {
+    pub(in crate::commands) fn error(cli: &'a Cli, error: &anyhow::Error) -> Self {
+        let message = format!("{error:#}");
         Self {
             kind: "error",
             ok: false,
@@ -64,8 +65,8 @@ impl<'a> OutputEnvelope<'a> {
             warnings: Vec::new(),
             data: None,
             error: Some(ErrorEnvelope {
-                code: classify_error(error),
-                message: error.to_string(),
+                code: classify_error_message(&message),
+                message,
             }),
         }
     }
@@ -75,10 +76,6 @@ impl<'a> OutputEnvelope<'a> {
 struct ErrorEnvelope {
     code: &'static str,
     message: String,
-}
-
-fn classify_error(error: &anyhow::Error) -> &'static str {
-    classify_error_message(&error.to_string())
 }
 
 fn classify_error_message(message: &str) -> &'static str {

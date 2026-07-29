@@ -67,21 +67,37 @@ pub(super) fn command_target_and_function(
 ) -> (Option<String>, Option<String>) {
     match command {
         Commands::User(args) => {
-            let target = contract_id(manifest, "proxy_4626")
-                .or_else(|| contract_id(manifest, "vault"))
-                .map(ToString::to_string);
-            let function = match &args.command {
-                UserCommand::Deposit { .. } => "deposit_with_min",
-                UserCommand::Mint { .. } => "mint",
-                UserCommand::Withdraw { .. } => "withdraw",
-                UserCommand::Redeem { .. } => "redeem",
-                UserCommand::RequestWithdraw { .. } => "execute",
-                UserCommand::ExecuteWithdraw { .. } => "execute_withdraw",
+            let (target, function) = match &args.command {
+                UserCommand::Deposit { .. } => {
+                    let proxy = contract_id(manifest, "proxy_4626");
+                    (
+                        proxy.or_else(|| contract_id(manifest, "vault")),
+                        if proxy.is_some() {
+                            "deposit_with_min"
+                        } else {
+                            "execute"
+                        },
+                    )
+                }
+                UserCommand::Mint { .. } => (contract_id(manifest, "proxy_4626"), "mint"),
+                UserCommand::Withdraw { .. }
+                | UserCommand::Redeem { .. }
+                | UserCommand::RequestWithdraw { .. } => {
+                    (contract_id(manifest, "vault"), "execute")
+                }
+                UserCommand::ExecuteWithdraw { .. } => (
+                    contract_id(manifest, "proxy_4626").or_else(|| contract_id(manifest, "vault")),
+                    if contract_id(manifest, "proxy_4626").is_some() {
+                        "execute_withdraw"
+                    } else {
+                        "execute"
+                    },
+                ),
                 UserCommand::Balance { .. }
                 | UserCommand::Preview { .. }
-                | UserCommand::View { .. } => "view",
+                | UserCommand::View { .. } => (None, "view"),
             };
-            (target, Some(function.to_string()))
+            (target.map(ToString::to_string), Some(function.to_string()))
         }
         Commands::Curator(_) => (
             contract_id(manifest, "vault").map(ToString::to_string),
