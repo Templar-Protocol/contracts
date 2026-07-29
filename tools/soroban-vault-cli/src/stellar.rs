@@ -169,7 +169,8 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             .collect()
     }
 
-    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
+    /// Resolves the configured signing identity to its public Stellar account address.
+    pub fn source_public_address(&self) -> anyhow::Result<String> {
         let stellar_account = if self.cli.source_account.is_none() {
             match std::env::var("STELLAR_ACCOUNT") {
                 Ok(value) => Some(Zeroizing::new(value)),
@@ -182,7 +183,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             None
         };
         if let Some(account) = stellar_account.as_ref() {
-            if let Some(address) = public_address_from_stellar_account(account.as_str())? {
+            if let Some(address) = public_address_from_stellar_identity(account.as_str())? {
                 return Ok(address);
             }
         }
@@ -203,6 +204,11 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "stellar keys address returned no address"
         );
         Ok(out.stdout)
+    }
+
+    /// Backward-compatible alias for [`Self::source_public_address`].
+    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
+        self.source_public_address()
     }
 
     pub fn invoke(
@@ -966,7 +972,7 @@ pub(crate) fn keys_address_source_account_args(
     (args, redacted_args)
 }
 
-fn public_address_from_stellar_account(value: &str) -> anyhow::Result<Option<String>> {
+fn public_address_from_stellar_identity(value: &str) -> anyhow::Result<Option<String>> {
     match Strkey::from_string(value) {
         Ok(Strkey::PrivateKeyEd25519(mut private_key)) => {
             let signing_key = SigningKey::from_bytes(&private_key.0);
@@ -1084,7 +1090,7 @@ mod tests {
 
     #[test]
     fn derives_env_secret_for_source_address_without_argv() {
-        let address = public_address_from_stellar_account(
+        let address = public_address_from_stellar_identity(
             "SBU2RRGLXH3E5CQHTD3ODLDF2BWDCYUSSBLLZ5GNW7JXHDIYKXZWHOKR",
         )
         .expect("derive secret key")
@@ -1098,7 +1104,7 @@ mod tests {
 
     #[test]
     fn derives_env_seed_phrase_for_source_address_without_argv() {
-        let address = public_address_from_stellar_account(
+        let address = public_address_from_stellar_identity(
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         )
         .expect("derive seed phrase")
@@ -1112,7 +1118,7 @@ mod tests {
 
     #[test]
     fn derives_underlying_account_from_env_muxed_address() {
-        let address = public_address_from_stellar_account(
+        let address = public_address_from_stellar_identity(
             "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ",
         )
         .expect("derive muxed account")
@@ -1127,7 +1133,7 @@ mod tests {
     #[test]
     fn accepts_env_keystore_identity_for_redacted_lookup() {
         assert_eq!(
-            public_address_from_stellar_account("operator").expect("accept identity name"),
+            public_address_from_stellar_identity("operator").expect("accept identity name"),
             None
         );
         let (args, redacted_args) = keys_address_source_account_args(Some("operator"), None);

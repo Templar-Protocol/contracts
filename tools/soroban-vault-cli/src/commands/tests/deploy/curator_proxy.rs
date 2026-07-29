@@ -27,7 +27,7 @@ fn targeted_curator_proxy_deploy_uses_standard_initializer_and_verifies_version(
     assert!(calls.iter().any(|(_, args)| {
         matches!(args.as_slice(), [contract, deploy, ..] if contract == "contract" && deploy == "deploy")
             && args.windows(2).any(|pair| {
-                pair == ["--initialization_authority", CONTRACT]
+                pair == ["--initialization_authority", ACCOUNT]
             })
     }));
     assert!(calls.iter().any(|(_, args)| {
@@ -54,7 +54,7 @@ fn targeted_curator_proxy_deploy_uses_standard_initializer_and_verifies_version(
         proxy
             .constructor_args
             .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
-        Some(&CONTRACT.to_string())
+        Some(&ACCOUNT.to_string())
     );
     assert_eq!(
         proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
@@ -232,7 +232,7 @@ fn targeted_curator_proxy_deploy_imports_targets_and_uses_legacy_initializer() {
         proxy
             .constructor_args
             .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
-        Some(&CONTRACT.to_string())
+        Some(&ACCOUNT.to_string())
     );
     assert_eq!(
         proxy.constructor_args.get(CURATOR_PROXY_INITIALIZER_ARG),
@@ -310,7 +310,7 @@ fn targeted_curator_proxy_checkpoint_stays_uninitialized_when_initialize_fails()
         proxy
             .constructor_args
             .get(CURATOR_PROXY_INITIALIZATION_AUTHORITY_ARG),
-        Some(&CONTRACT.to_string())
+        Some(&ACCOUNT.to_string())
     );
     assert!(!proxy
         .constructor_args

@@ -79,7 +79,7 @@ pub(super) fn source_account_doctor_check<E: CommandExecutor>(
     let cli = context.cli();
     let executor = context.executor();
     if cli.source_account.is_some() {
-        return match context.stellar().keys_address_source_account() {
+        return match context.stellar().source_public_address() {
             Ok(address) => DoctorCheck::pass(
                 "source_account",
                 format!("source identity/address resolves to {address}"),

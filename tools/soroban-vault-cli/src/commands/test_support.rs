@@ -74,6 +74,12 @@ impl CommandExecutor for RecordingExecutor {
             .lock()
             .expect("lock calls")
             .push((program.to_string(), args.to_vec()));
+        if matches!(args, [keys, address, ..] if keys == "keys" && address == "address") {
+            return Ok(CommandOutput {
+                stdout: ACCOUNT.to_string(),
+                stderr: String::new(),
+            });
+        }
         if args.iter().any(|arg| arg == "pending_ids") {
             return Ok(CommandOutput {
                 stdout: "[1, 2]".to_string(),

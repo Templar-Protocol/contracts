@@ -174,7 +174,7 @@ pub(in crate::commands) fn curator_proxy_deployment_args<E: CommandExecutor>(
         return Ok((true, Vec::new(), BTreeMap::new()));
     }
 
-    let initialization_authority = stellar.keys_address_source_account()?;
+    let initialization_authority = stellar.source_public_address()?;
     Ok((
         false,
         vec![

@@ -308,7 +308,7 @@ pub(in crate::commands) fn deploy_stack<E: CommandExecutor>(
     let requested_adapter_admin = validated_stack_adapter_admin(manifest, args)?;
     let admin = match &args.admin {
         Some(admin) => admin.to_string(),
-        None => stellar.keys_address_source_account()?,
+        None => stellar.source_public_address()?,
     };
     let deploy_share_token = args.force_new || !manifest.contracts.contains_key("share_token");
     if deploy_share_token && !args.force_new {
@@ -506,7 +506,7 @@ pub(in crate::commands) fn deploy_stack<E: CommandExecutor>(
             if !args.force_new && manifest.contracts.contains_key("curator_proxy") {
                 (Vec::new(), BTreeMap::new())
             } else {
-                let initialization_authority = stellar.keys_address_source_account()?;
+                let initialization_authority = stellar.source_public_address()?;
                 (
                     vec![
                         "--initialization_authority".to_string(),
