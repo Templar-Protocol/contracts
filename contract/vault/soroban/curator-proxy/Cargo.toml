@@ -2,6 +2,7 @@
 name = "templar-curator-proxy-soroban"
 version = "1.1.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Typed Soroban curator operations proxy for Templar Protocol"
 publish = false

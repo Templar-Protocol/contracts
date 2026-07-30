@@ -2,6 +2,7 @@
 name = "templar-vault-kernel"
 version = "1.0.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Storage-agnostic vault kernel: actions, effects, and state transitions"
 repository.workspace = true

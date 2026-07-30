@@ -545,10 +545,14 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          touched=$(git diff --name-status --diff-filter=MDR "$BASE_SHA"...HEAD \
+          # Lowercase `a` excludes additions, so this is "anything that is not a
+          # new file" rather than a list of the statuses we thought of. Naming
+          # them missed `T`: swapping a release for a symlink to a new file is a
+          # typechange, which build.rs follows and an M/D/R filter never sees.
+          touched=$(git diff --name-status --diff-filter=a "$BASE_SHA"...HEAD \
             -- contract/artifacts/releases/ || true)
           if [ -n "$touched" ]; then
-            echo "::error::Released versions are immutable — this PR modifies, deletes or renames one:" >&2
+            echo "::error::Released versions are immutable — this PR changes one:" >&2
             echo "$touched" >&2
             exit 1
           fi

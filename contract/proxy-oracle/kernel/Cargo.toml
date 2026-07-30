@@ -3,6 +3,7 @@ name = "templar-proxy-oracle-kernel"
 license.workspace = true
 repository.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 version = "0.1.0"
 description = "Storage-agnostic price-aggregation kernel for Templar proxy oracles"
 

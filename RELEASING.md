@@ -7,7 +7,8 @@ configuration lives in [`release-plz.toml`](release-plz.toml).
 ## How to cut a release
 
 1. Land work on `dev` as normal. Each merge updates a standing pull request
-   titled **"chore: release"**, which accumulates the pending version bumps,
+   titled **"chore: release"** (fixed via `pr_name`, so it is always findable by
+   that name), which accumulates the pending version bumps,
    `Cargo.toml` edits, `Cargo.lock` updates, and `CHANGELOG.md` entries for every
    affected crate.
 2. When you want to ship, review that PR and **merge it**. That is the release

@@ -73,17 +73,17 @@ Use this section as an execution checklist: read the local docs first, preserve 
 
 ## Commit And PR Titles
 
-PRs are squash-merged, so **the PR title becomes the commit message on `dev`**, and `release-plz` reads those messages to decide each crate's next version. A title that does not parse means the crates you touched get **no version bump and no changelog entry**. `.github/workflows/pr-title.yml` enforces this on every PR.
+PRs are squash-merged, so **the PR title becomes the commit message on `dev`**, and `release-plz` reads those messages to decide each crate's next version. A title that does not parse still bumps — release-plz falls back to a patch — but it lands with **no changelog entry**, so the release says nothing about what changed. `.github/workflows/pr-title.yml` enforces the format on every PR.
 
 Format: `type(scope): summary`
 
 - **Allowed types** — `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `ci`, `build`, `chore`, `deploy`. Keep this list in sync with `commit_parsers` in `release-plz.toml` and `types` in `.github/workflows/pr-title.yml`.
 - **Version impact** — `feat` bumps minor and a breaking change bumps major. *Every* other type, `chore` and `docs` included, still bumps patch: release-plz releases any crate with commits since its last tag, and `skip = true` in `release-plz.toml` only keeps an entry out of the changelog, it does not suppress the bump. On a pre-1.0 crate a plain `feat` bumps patch too (`0.1.0` → `0.1.1`), since under Cargo's rules a minor bump there would signal a break.
-- **Breaking changes** — mark with `!` after the type or scope: `feat(gateway)!: drop the legacy read path`. Put it in the **title**, not the PR description — this repo squashes with `COMMIT_MESSAGES`, so the PR body never reaches the commit and a `BREAKING CHANGE:` footer written there is silently discarded. Forgetting the `!` ships a breaking change as a minor.
+- **Breaking changes** — mark with `!` after the type or scope: `feat(gateway)!: drop the legacy read path`. Put it in the **title**, not the PR description — this repo squashes with `COMMIT_MESSAGES`, so the PR body never reaches the commit and a `BREAKING CHANGE:` footer written there is silently discarded. Forgetting the `!` ships a breaking change as a compatible bump — minor at best, patch on a pre-1.0 crate or a non-`feat` type.
 - **Scope is optional and free-form.** It is conventional to name the crate or area (`gateway`, `market`, `vault`, `relayer`, `proxy-oracle`, `manager`), but nothing enforces a fixed list: release-plz determines *which* crate to bump from the files a commit touches, not from the scope.
 - **Never start a title with a Linear ID.** `ENG-504: Nest governance under proxy-oracle` leads with no valid type, so the lint rejects it and release-plz would infer no bump — write `refactor(proxy-oracle): nest governance`. A trailing reference (`… (ENG-504)`) is fine: the type still parses, and the ID carries into the changelog.
 
-Releases themselves are cut by merging the standing "chore: release" PR. See `RELEASING.md`.
+Releases themselves are cut by merging the standing release PR, which release-plz titles `chore: release`. See `RELEASING.md`.
 
 ## Build And Test
 

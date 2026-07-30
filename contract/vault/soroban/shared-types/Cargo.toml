@@ -2,6 +2,7 @@
 name = "templar-soroban-shared-types"
 version = "1.1.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Shared Soroban ABI selector types for Templar vault contracts"
 publish = false

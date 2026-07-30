@@ -31,28 +31,57 @@ fn release_plz_toml() -> String {
 }
 
 /// `release = true` is release-plz's default, so an unclassified crate gets
-/// tagged and released — that is how the `templar-gateway-testing` harness
-/// ended up Tier B. Name-based: tier is a human judgement with no mechanical
-/// signal (mocks are cdylib contracts, this crate ships binaries).
+/// tagged and released — that is how the `templar-gateway-testing` harness ended
+/// up Tier B, and later `templar-gateway-catalog`.
+///
+/// Two signals, because neither covers the other. Names catch helpers that are
+/// consumed (`test-utils` has dependents); the dependency graph catches ones
+/// that are not, whatever they are called — which is what `catalog` needed, and
+/// what a marker list could never have expressed.
 #[test]
 #[cfg(feature = "workspace-loader")]
 #[ignore = "requires cargo metadata and workspace access"]
 fn scaffolding_crates_are_excluded_from_releases() {
     const SCAFFOLDING_MARKERS: [&str; 5] = ["test", "mock", "fuzz", "harness", "fixture"];
+    /// Directories whose crates ship somewhere: a WASM blob, a service, a CLI.
+    /// A crate outside them that nothing consumes is scaffolding.
+    const DELIVERABLE_DIRS: [&str; 4] = ["contract/", "service/", "tools/", "client/"];
 
     let manifest = release_plz_toml();
-    let metadata =
-        crate::workspace_loader::get_metadata(std::path::Path::new(env!("CARGO_WORKSPACE_DIR")))
-            .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
+    let workspace_root = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
+    let metadata = crate::workspace_loader::get_metadata(workspace_root)
+        .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
+
+    let consumed = metadata
+        .workspace_packages()
+        .iter()
+        .flat_map(|package| &package.dependencies)
+        .map(|dependency| dependency.name.clone())
+        .collect::<std::collections::HashSet<_>>();
 
     for package in metadata.workspace_packages() {
         let name = package.name.as_str();
-        if !SCAFFOLDING_MARKERS
+        let relative = package
+            .manifest_path
+            .as_std_path()
+            .strip_prefix(workspace_root)
+            .unwrap_or(package.manifest_path.as_std_path())
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let named_like_scaffolding = SCAFFOLDING_MARKERS
             .iter()
-            .any(|marker| name.contains(marker))
-        {
+            .any(|marker| name.contains(marker));
+        let unconsumed_library = !consumed.contains(name)
+            && !DELIVERABLE_DIRS.iter().any(|dir| relative.starts_with(dir));
+
+        let Some(reason) = (match (named_like_scaffolding, unconsumed_library) {
+            (_, true) => Some("nothing in the workspace depends on it, and it ships no artifact"),
+            (true, false) => Some("its name marks it as test scaffolding"),
+            (false, false) => None,
+        }) else {
             continue;
-        }
+        };
 
         // A `[[package]]` block naming it, followed by `release = false` before
         // the next block starts.
@@ -62,8 +91,8 @@ fn scaffolding_crates_are_excluded_from_releases() {
 
         assert!(
             excluded,
-            "`{name}` looks like test scaffolding but has no `release = false` \
-             block in release-plz.toml, so release-plz will tag it, write it a \
+            "`{name}` is internal — {reason} — but has no `release = false` block \
+             in release-plz.toml, so release-plz will tag it, write it a \
              changelog, and cut it a GitHub Release.",
         );
     }

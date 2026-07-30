@@ -2,6 +2,7 @@
 name = "templar-soroban-governance"
 version = "1.0.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Timelocked governance executor for the Soroban vault"
 publish = false

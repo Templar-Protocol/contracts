@@ -107,14 +107,24 @@ pub enum FetchError {
     Client(String),
 }
 
+/// An exported-but-empty variable reads as `Some("")`, which would resolve the
+/// cache to a *relative* path — and `clean()` would then delete `./near` out of
+/// whatever directory it happened to run in. Empty means unset.
+fn non_empty_path(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+fn env_path(key: &str) -> Option<PathBuf> {
+    non_empty_path(std::env::var_os(key))
+}
+
 /// Root of the shared artifact cache.
 pub fn cache_root() -> Result<PathBuf, FetchError> {
-    if let Some(explicit) = std::env::var_os("TEMPLAR_ARTIFACT_CACHE") {
-        return Ok(PathBuf::from(explicit));
+    if let Some(explicit) = env_path("TEMPLAR_ARTIFACT_CACHE") {
+        return Ok(explicit);
     }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    let base = env_path("XDG_CACHE_HOME")
+        .or_else(|| env_path("HOME").map(|home| home.join(".cache")))
         .ok_or(FetchError::NoCacheDir)?;
     Ok(base.join("templar-contract-artifacts"))
 }
@@ -500,6 +510,18 @@ mod tests {
         assert!(removed.files <= 501, "reported {} files", removed.files);
         assert!(lost <= 500, "lost {lost} writes");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_empty_cache_variable_is_unset_rather_than_a_relative_path() {
+        // `TEMPLAR_ARTIFACT_CACHE=` resolved the root to "", so `clean()` would
+        // have deleted `./near` from the working directory.
+        assert_eq!(non_empty_path(Some(std::ffi::OsString::from(""))), None);
+        assert_eq!(
+            non_empty_path(Some(std::ffi::OsString::from("/tmp/cache"))),
+            Some(PathBuf::from("/tmp/cache"))
+        );
+        assert_eq!(non_empty_path(None), None);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 name = "templar-curator-primitives"
 version = "1.0.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Chain-agnostic curator policy and recovery primitives for Templar Protocol vaults"
 repository.workspace = true

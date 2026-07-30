@@ -15,6 +15,13 @@ publish = false
 # Batch changes into a Release PR instead of releasing on every merge to `dev`.
 release_always = false
 
+# Fixed. The default only differs when a single crate is releasing
+# (`chore(<crate>): release v<version>`), which is the rare case here — and a
+# title that is informative only sometimes is one no runbook or search can rely
+# on. What shipped lives in the tag, the PR body's version table, and the
+# changelog; the title's job is to make the release lever recognisable.
+pr_name = "chore: release"
+
 # Per-crate tags: `templar-gateway-client-v0.2.0`. Required for independent
 # versioning — a bare `v0.2.0` cannot say which crate it refers to.
 git_tag_name = "{{ package }}-v{{ version }}"
@@ -50,6 +57,11 @@ release = false
 
 [[package]]
 name = "templar-gateway-testing"
+release = false
+
+# Regenerates and checks gateway/METHODS.md. Nothing depends on it.
+[[package]]
+name = "templar-gateway-catalog"
 release = false
 
 [[package]]

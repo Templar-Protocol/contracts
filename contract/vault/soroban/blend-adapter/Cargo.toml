@@ -2,6 +2,7 @@
 name = "templar-soroban-blend-adapter"
 version = "1.0.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Soroban adapter contract for Blend v2 pool integration"
 publish = false

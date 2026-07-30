@@ -2,6 +2,7 @@
 name = "templar-soroban-runtime"
 version = "1.1.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
 publish = false
