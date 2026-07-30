@@ -57,7 +57,7 @@ impl CliContext {
     /// build a single-signer client from them.
     ///
     /// The signer stays behind `Arc<Signer>` rather than being unwrapped to a
-    /// secret key, so backends that never surrender one (Ledger) work here.
+    /// secret key, so a backend that never surrenders one still works here.
     pub(crate) async fn signing_client_for(
         &self,
         signer: &SignerArgs,

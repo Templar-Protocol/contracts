@@ -15,9 +15,11 @@ clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
-# `keystore`/`ledger` back the `--sign-with` backends, so an operator never has
-# to put a plaintext key in the environment.
-near-api = { workspace = true, features = ["keystore", "ledger"] }
+# `keystore` backs `--sign-with keychain`. near-api's `ledger` feature is
+# deliberately not enabled: it pulls hidapi, which needs libudev headers, and
+# cargo unifies features across a workspace build — every crate here and in CI
+# would inherit that system dependency. Nothing needs Ledger signing today.
+near-api = { workspace = true, features = ["keystore"] }
 # Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
 # `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
 # import, which only near-sdk's `unit-testing` mock defines. `unit-testing` is

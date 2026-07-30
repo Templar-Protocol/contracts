@@ -4,8 +4,8 @@
 //! one transaction without performing execution steps.
 //!
 //! Credentials resolve to an [`Arc<Signer>`] rather than a [`SecretKey`], so a
-//! backend that never surrenders its key (Ledger) is expressible. `--sign-with`
-//! selects the backend; `--print sputnik` remains the key-less path and never
+//! backend that holds its key outside this process is expressible.
+//! `--sign-with` selects the backend; `--print sputnik` remains the key-less path and never
 //! reaches credential resolution at all.
 
 use std::{ffi::OsStr, fmt, sync::Arc};
@@ -27,7 +27,12 @@ pub(crate) enum PrintFormat {
 }
 
 /// Where the signing key lives. Only [`SigningBackend::SecretKey`] puts one in
-/// the process; the others keep it in the OS keychain or on the device.
+/// the process.
+///
+/// A Ledger backend was tried and removed: near-api's `ledger` feature pulls
+/// hidapi, which needs libudev headers, and cargo unifies features across a
+/// workspace build — so every crate here and in CI would inherit that system
+/// dependency for something nothing needs yet.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SigningBackend {
     /// `--secret-key`, or `$SECRET_KEY`.
@@ -35,8 +40,6 @@ pub(crate) enum SigningBackend {
     SecretKey,
     /// The OS keychain, looked up by account id.
     Keychain,
-    /// A Ledger device, at near-api's default HD path.
-    Ledger,
 }
 
 /// The account authorizing a write and either its execution credential or its
@@ -105,8 +108,8 @@ impl SignerArgs {
     /// full access key on the new account.
     ///
     /// Only the `secret-key` backend can derive this locally. Plan mode has no
-    /// credential, and the keychain and Ledger backends hold their key outside
-    /// this process, so both require `--public-key`.
+    /// credential, and the keychain backend holds its key outside this process,
+    /// so both require `--public-key`.
     pub fn public_key(&self) -> anyhow::Result<PublicKey> {
         if let Some(public_key) = &self.public_key {
             return Ok(PublicKey::from(*public_key));
@@ -118,7 +121,7 @@ impl SignerArgs {
         }
         if self.sign_with != SigningBackend::SecretKey {
             anyhow::bail!(
-                "--public-key is required with --sign-with keychain/ledger for writes that embed the signer's key"
+                "--public-key is required with --sign-with keychain for writes that embed the signer's key"
             );
         }
         Ok(PublicKey::from(self.secret()?.public_key()))
@@ -144,11 +147,6 @@ impl SignerArgs {
                     .await
                     .context("find a usable key for this account in the OS keychain")?
             }
-            // near-api pins its default HD path here. Exposing `--ledger-hd-path`
-            // would mean naming `near_slip10::BIP32Path`, which near-api does not
-            // re-export — it would cost a direct dependency on near-slip10.
-            SigningBackend::Ledger => Signer::from_ledger()
-                .context("connect to Ledger — is it unlocked with the NEAR app open?")?,
         };
 
         Ok((self.account_id(), signer))
@@ -323,23 +321,18 @@ mod tests {
 
     /// The point of the flag: an operator can sign without a key in the
     /// environment, so naming a backend must lift the `--secret-key` demand.
-    #[rstest::rstest]
-    #[case(SigningBackend::Keychain, "keychain")]
-    #[case(SigningBackend::Ledger, "ledger")]
-    fn external_backend_parses_without_a_secret_key(
-        #[case] expected: SigningBackend,
-        #[case] flag: &str,
-    ) {
+    #[test]
+    fn external_backend_parses_without_a_secret_key() {
         let harness = Harness::try_parse_from([
             "tmplrmgr",
             "--signer-id",
             "signer.testnet",
             "--sign-with",
-            flag,
+            "keychain",
         ])
         .expect("external backend should parse with no credential");
 
-        assert_eq!(harness.signer.sign_with, expected);
+        assert_eq!(harness.signer.sign_with, SigningBackend::Keychain);
     }
 
     /// A key held in the keychain or on a device cannot be derived in-process,
@@ -348,7 +341,7 @@ mod tests {
     fn external_backend_requires_an_explicit_public_key() {
         let signer = SignerArgs {
             signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with: SigningBackend::Ledger,
+            sign_with: SigningBackend::Keychain,
             secret_key: None,
             print: None,
             public_key: None,

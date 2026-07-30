@@ -4,6 +4,7 @@
 //! flows live in focused submodules ([`teardown`], [`proposals`], [`generic`]) so
 //! this file stays a readable index of the command surface.
 
+mod export;
 pub(crate) mod generic;
 mod proposals;
 mod teardown;
@@ -97,6 +98,7 @@ async fn ft(ctx: CliContext, ns: FtNs) -> anyhow::Result<()> {
 async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
     match ns {
         MarketNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
+        MarketNs::Export(a) => export::market(ctx, a).await,
         MarketNs::Remove(a) => {
             // `market remove` is self-signed: the signer is the market account
             // being torn down.
