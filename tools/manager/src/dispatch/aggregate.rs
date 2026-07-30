@@ -22,6 +22,7 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, Circui
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
 
+use super::scaled;
 use crate::context::CliContext;
 use crate::spec::{
     check::{Check, Status},
@@ -36,7 +37,10 @@ use crate::spec::{
 /// timestamp *after* every oracle result has arrived and resolves both legs
 /// against it. Per-leg clocks let a fresh collateral and a week-old borrow each
 /// pass on their own terms and produce a ratio the contract could never accept.
-pub(super) async fn checks(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+pub(super) async fn checks(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+) -> (Vec<Check>, Option<Price>, Option<Price>) {
     let collateral = fetch_all(ctx, &spec.collateral).await;
     let borrow = fetch_all(ctx, &spec.borrow).await;
 
@@ -71,7 +75,7 @@ pub(super) async fn checks(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let (borrow_price, borrow_checks) = leg("borrow", &spec.borrow, spec, borrow, now, anchor);
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
-    checks
+    (checks, collateral_price, borrow_price)
 }
 
 /// Wall-clock, for freshness. The kernel takes `now` explicitly rather than
@@ -249,16 +253,6 @@ fn pair(collateral: Option<Price>, borrow: Option<Price>) -> Check {
             scaled(&collateral) / borrow
         )),
     )
-}
-
-/// A price as a plain number, for reporting only.
-fn scaled(price: &Price) -> f64 {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "this value is displayed, never used for a decision"
-    )]
-    let value = price.price as f64;
-    value * 10f64.powi(price.expo)
 }
 
 fn render(price: &Price) -> String {

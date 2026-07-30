@@ -84,9 +84,24 @@ async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> 
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
     checks.extend(accounts(ctx, spec).await);
-    // Aggregation last: its per-source prices supersede any liveness probe the
-    // checks above would otherwise have to repeat.
-    checks.extend(super::aggregate::checks(ctx, spec).await);
+    // Aggregation before the cross-check: it produces the prices the reference
+    // source is compared against.
+    let (aggregate_checks, collateral, borrow) = super::aggregate::checks(ctx, spec).await;
+    checks.extend(aggregate_checks);
+
+    match super::reference::CoinGecko::from_env() {
+        Ok(source) => {
+            checks.extend(super::reference::checks(&source, spec, collateral, borrow).await);
+        }
+        // Failing to build a client is "could not check", like every other
+        // reference-source problem.
+        Err(error) => checks.push(Check::new(
+            "reference.price",
+            Status::Skipped {
+                reason: format!("no reference price source: {error:#}"),
+            },
+        )),
+    }
     checks
 }
 

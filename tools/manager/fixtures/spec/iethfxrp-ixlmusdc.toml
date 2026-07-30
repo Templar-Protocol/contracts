@@ -11,6 +11,8 @@ name = "iethfxrp-ixlmusdc"
 [collateral]
 asset = "nep245:intents.near:nep141:eth-0xce6170ea245dc8d1f275a710a062b70f125f0110.omft.near"
 symbol = "FXRP"
+# Bridged; priced as XRP. Pinning records that assertion.
+reference = { coin_gecko = { id = "ripple" } }
 decimals = 6
 aggregator = "median_low"
 min_sources = 1
@@ -22,6 +24,7 @@ sources = [
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 aggregator = "median_high"
 min_sources = 1

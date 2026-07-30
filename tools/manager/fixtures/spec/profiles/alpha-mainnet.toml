@@ -22,6 +22,8 @@ mcr_maintenance = "1.25"
 mcr_liquidation = "1.2"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
+# 1.5% band for the third-party price cross-check.
+reference_tolerance = "0.015"
 origination_fee = { Flat = "0" }
 supply_withdrawal_fee = { fee = { Flat = "0" }, duration = "0", behavior = "Fixed" }
 yield_weights = { supply = 4, static = { "revenue.tmplr.near" = 1 } }
