@@ -147,8 +147,20 @@ impl SignerArgs {
             // near-api pins its default HD path here. Exposing `--ledger-hd-path`
             // would mean naming `near_slip10::BIP32Path`, which near-api does not
             // re-export — it would cost a direct dependency on near-slip10.
+            #[cfg(feature = "ledger")]
             SigningBackend::Ledger => Signer::from_ledger()
                 .context("connect to Ledger — is it unlocked with the NEAR app open?")?,
+            // The variant stays in the CLI either way, so an operator gets this
+            // instead of "unknown value". Ledger support pulls hidapi, which
+            // needs libudev headers, and cargo unifies features across a
+            // workspace build — leaving it on by default would impose that
+            // system dependency on every crate here and in CI.
+            #[cfg(not(feature = "ledger"))]
+            SigningBackend::Ledger => anyhow::bail!(
+                "this build has no Ledger support. Rebuild with \
+                 `cargo build -p templar-manager --features ledger` (needs libudev \
+                 headers: `libudev-dev` on Debian/Ubuntu, `systemd-devel` on Fedora)."
+            ),
         };
 
         Ok((self.account_id(), signer))

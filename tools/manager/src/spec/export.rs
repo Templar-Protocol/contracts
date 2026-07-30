@@ -53,11 +53,13 @@ impl MarketSpec {
             versions: deployed.versions,
             governance: deployed.governance,
             collateral: asset_spec(
+                "collateral",
                 deployed.configuration.collateral_asset.clone(),
                 oracle.collateral_asset_decimals,
                 deployed.collateral_proxy,
             )?,
             borrow: asset_spec(
+                "borrow",
                 deployed.configuration.borrow_asset.clone(),
                 oracle.borrow_asset_decimals,
                 deployed.borrow_proxy,
@@ -109,11 +111,27 @@ fn ensure_expressible(spec: &MarketSpec, oracle: &PriceOracleConfiguration) -> a
 }
 
 fn asset_spec<A: AssetClass>(
+    side: &str,
     asset: templar_common::asset::FungibleAsset<A>,
     decimals: i32,
     proxy: Proxy<Source>,
 ) -> anyhow::Result<AssetSpec<A>> {
     let (aggregator, min_sources, sources) = split_aggregator(proxy.aggregator)?;
+
+    // `None` means opposite things on the two sides of this conversion. On chain
+    // it is *unbounded* — `FreshnessFilter::accepts` admits a price of any age.
+    // In a spec it means *unspecified*, and `AssetSpec::into_proxy` fills it from
+    // `price_maximum_age` / `DEFAULT_MAX_CLOCK_DRIFT`. Copying it through would
+    // turn "accept any age" into "enforce the market's bound" on the next
+    // deploy, silently and with no diff to notice.
+    let freshness = &proxy.freshness_filter;
+    anyhow::ensure!(
+        freshness.max_age_ns.is_some() && freshness.max_clock_drift_ns.is_some(),
+        "the {side} proxy leaves a freshness bound unset, which is unbounded on \
+         chain but means `use the default` in a spec. Re-deploying an exported \
+         spec would silently start enforcing a bound this oracle does not have, \
+         so this market cannot be exported."
+    );
 
     Ok(AssetSpec {
         asset,
@@ -121,12 +139,14 @@ fn asset_spec<A: AssetClass>(
         // human to fill in; inventing a plausible ticker would be worse, since
         // the reference cross-check (ENG-543) would then verify a guess.
         symbol: None,
-        decimals: u8::try_from(decimals).ok(),
+        decimals: Some(u8::try_from(decimals).with_context(|| {
+            format!("{side} asset declares {decimals} decimals, which a spec cannot express")
+        })?),
         aggregator,
         min_sources,
         sources,
-        max_age: proxy.freshness_filter.max_age_ns,
-        max_clock_drift: proxy.freshness_filter.max_clock_drift_ns,
+        max_age: freshness.max_age_ns,
+        max_clock_drift: freshness.max_clock_drift_ns,
     })
 }
 

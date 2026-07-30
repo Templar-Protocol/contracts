@@ -147,6 +147,26 @@ fn exported_spec_renders_to_loadable_toml() {
     assert_eq!(reloaded, exported);
 }
 
+/// `None` freshness bounds mean *unbounded* on chain, but *unspecified* in a
+/// spec — where `into_proxy` fills them from `price_maximum_age` and
+/// `DEFAULT_MAX_CLOCK_DRIFT`. Copying one through would turn "accept a price of
+/// any age" into "enforce the market's bound" on the next deploy, silently.
+/// Neither in-scope alpha market exercises this, so it is constructed.
+#[test]
+fn refuses_a_proxy_with_an_unbounded_freshness_filter() {
+    let mut input = deployed("iethfxrp-ixlmusdc");
+    input.collateral_proxy.freshness_filter.max_age_ns = None;
+
+    let error = MarketSpec::from_deployed(input)
+        .expect_err("an unbounded freshness filter is not expressible as a spec");
+
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("collateral") && rendered.contains("unbounded"),
+        "the error must name the side and why it cannot round-trip: {rendered}"
+    );
+}
+
 /// The other sixteen alpha markets read an oracle a spec does not derive.
 /// Refusing is the whole point: emitting a spec that re-derives to a *different*
 /// oracle account would be a silent wrong answer.
