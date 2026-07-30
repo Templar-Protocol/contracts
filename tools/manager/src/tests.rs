@@ -9,6 +9,7 @@ use super::commands::signer::PrintFormat;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 mod deploy_script;
+mod export;
 mod ft;
 mod market;
 mod oracle;

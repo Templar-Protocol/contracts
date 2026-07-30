@@ -32,9 +32,11 @@ pub struct AssetSpec<A: AssetClass> {
     #[schemars(with = "String")]
     pub asset: FungibleAsset<A>,
 
-    /// Ticker. Never sent on chain — it exists so a preflight can check that the
-    /// sources below actually price this asset (ENG-543).
-    pub symbol: String,
+    /// Ticker. Never sent on chain, so `market export` cannot recover it and
+    /// leaves it unset. It exists so a preflight can check that the sources
+    /// below actually price this asset (ENG-543).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
 
     /// Overrides the token's on-chain metadata. Required when that metadata is
     /// absent or malformed, which has happened for at least one bridged asset
