@@ -21,6 +21,33 @@ A selection of available markets is shown below:
 | [`stnear-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc-1.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR |
 | [`ixlm-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmusdc.v1.tmplr.near) | Native XLM (via NEAR Intents) | USDC on XLM (via NEAR Intents) |
 
+## Signing
+
+Most `tmplrmgr` writes take `--signer-id` plus one credential, and `--sign-with`
+selects where that signing key lives:
+
+| Backend | Credential | Notes |
+|---|---|---|
+| `secret-key` (default) | `--secret-key`, or `$SECRET_KEY` | Puts a plaintext key in the environment. Fine for testnet and CI; avoid for mainnet. |
+| `keychain` | the OS keychain | Looked up by account id. The account's on-chain keys are listed to find a match. |
+| `ledger` | a Ledger device | Uses near-api's default HD path. The device must be unlocked with the NEAR app open. |
+
+For mainnet, prefer to sign nothing directly. `--print sputnik` emits a
+SputnikDAO proposal instead of executing, so a deployment can be reviewed and
+approved by the multisig with no operator key involved at all:
+
+```bash
+tmplrmgr market create --signer-id dao.near --print sputnik --public-key ed25519:… …
+```
+
+`keychain` and `ledger` hold their key outside this process, so writes that
+embed the signer's public key on a new account (any `registry deploy`) need it
+passed explicitly with `--public-key`.
+
+`registry clear-deployments` is the exception: it signs many *discovered*
+accounts with one authorized key, so it has no `--signer-id` and takes only
+`--secret-key`.
+
 ### Contract Verification
 
 All smart contracts use reproducible builds. To verify deployed code:

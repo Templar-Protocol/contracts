@@ -36,10 +36,12 @@ pub(crate) struct CliContext {
 }
 
 impl CliContext {
-    /// Build a single-signer client for `account_id` from `secret_key`. Each
-    /// executed write signs with credentials carried by its own command, and
-    /// teardown flows (e.g. `registry clear-deployments`) sign many discovered
-    /// accounts with one authorized key.
+    /// Build a single-signer client for `account_id` from a bare `secret_key`.
+    ///
+    /// For the teardown flows that sign many *discovered* accounts with one
+    /// authorized key (`registry clear-deployments`), where there is no single
+    /// `SignerArgs` to resolve. Writes that carry their own credentials use
+    /// [`Self::signing_client_for`] instead.
     pub(crate) fn signing_client(
         &self,
         account_id: impl Into<ManagedAccountId>,
@@ -49,6 +51,23 @@ impl CliContext {
             .secret_key(account_id, secret_key)?
             .build()
             .context("build signing client")
+    }
+
+    /// Resolve a write command's credentials through its selected backend and
+    /// build a single-signer client from them.
+    ///
+    /// The signer stays behind `Arc<Signer>` rather than being unwrapped to a
+    /// secret key, so backends that never surrender one (Ledger) work here.
+    pub(crate) async fn signing_client_for(
+        &self,
+        signer: &SignerArgs,
+    ) -> anyhow::Result<(ManagedAccountId, Client)> {
+        let (account_id, signing) = signer.resolve(&self.network).await?;
+        let client = Client::builder(self.network.clone())
+            .with_signer(account_id.clone(), signing)
+            .build()
+            .context("build signing client")?;
+        Ok((account_id, client))
     }
 
     /// Dispatch a read and print its JSON result.
@@ -80,8 +99,7 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, secret_key) = signer.resolve()?;
-        let client = self.signing_client(account_id.clone(), secret_key)?;
+        let (account_id, client) = self.signing_client_for(&signer).await?;
         let output = client.execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
@@ -113,9 +131,9 @@ impl CliContext {
             return print_plan(format, plan);
         }
 
-        let (account_id, secret_key) = signer.resolve()?;
+        let (account_id, signing) = signer.resolve(&self.network).await?;
         let (base_context, driver, signer_account_ids) = Client::builder(self.network.clone())
-            .secret_key(account_id.clone(), secret_key)?
+            .with_signer(account_id.clone(), signing)
             .build_parts()
             .context("build oracle-updates client")?;
         let client: Client<OracleUpdatesDispatch, Ctx> =

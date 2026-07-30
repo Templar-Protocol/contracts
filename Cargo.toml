@@ -88,8 +88,10 @@ k256 = "0.13.4"
 libfuzzer-sys = "0.4"
 moka = { version = "0.12.10", features = ["future", "sync"] }
 near-account-id = "2.6"
-near-api = "0.8.5"
-near-api-types = "0.8.5"
+# 0.8.6 is the floor for the `ledger` feature: 0.8.5 passes `slipped10::BIP32Path`
+# to near-ledger, which expects `near_slip10::BIP32Path`, so it does not compile.
+near-api = "0.8.6"
+near-api-types = "0.8.6"
 near-chain-configs = "0.34.7"
 near-contract-standards = "5.25"
 near-crypto = "0.34.7"

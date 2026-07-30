@@ -90,8 +90,7 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
         MarketNs::Remove(a) => {
             // `market remove` is self-signed: the signer is the market account
             // being torn down.
-            let (market, secret_key) = a.signer.resolve()?;
-            let client = ctx.signing_client(market.clone(), secret_key)?;
+            let (market, client) = ctx.signing_client_for(&a.signer).await?;
             teardown::remove_market(&ctx, &client, market, a.beneficiary_id(), a.force()).await?;
             print_json(&serde_json::json!({ "removed": true }))
         }

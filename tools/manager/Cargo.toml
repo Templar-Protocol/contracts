@@ -15,7 +15,9 @@ clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
-near-api.workspace = true
+# `keystore`/`ledger` back the `--sign-with` backends, so an operator never has
+# to put a plaintext key in the environment.
+near-api = { workspace = true, features = ["keystore", "ledger"] }
 # Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
 # `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
 # import, which only near-sdk's `unit-testing` mock defines. `unit-testing` is
