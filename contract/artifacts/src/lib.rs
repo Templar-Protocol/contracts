@@ -4,19 +4,15 @@
 //! # Features
 //!
 //! - **default** — Metadata and artifact IDs only; no WASM bytes.
-//! - **workspace-loader** — Read WASM bytes at runtime from
-//!   `target/near/{name}/{name}.wasm` and provide a `cargo near build` helper.
-//!   This is the *work-in-progress* source: whatever the tree currently builds.
-//! - **fetch** — Download *released* WASM from its GitHub Release into a shared
-//!   local cache, verified against the catalog's SHA-256 pin. This is the
-//!   *canonical* source: the exact bytes a version shipped as.
-//! - **clap** — Optional parsing helpers for command-line argument handling.
+//! - **workspace-loader** — WASM from `target/near/`: whatever the tree
+//!   currently builds.
+//! - **fetch** — *Released* WASM from its GitHub Release, verified against the
+//!   catalog's SHA-256 pin: the exact bytes a version shipped as.
+//! - **clap** — Parsing helpers for command-line arguments.
 //!
 //! # Version keys
 //!
-//! Version keys follow the format `{package_name}@{version}#{sha256_hex}`
-//! defined by `templar-tools-common`. This crate provides formatting and
-//! hashing helpers that produce the same output.
+//! `{package_name}@{version}#{sha256_hex}`, matching `templar-tools-common`.
 
 #[cfg(test)]
 mod catalog;

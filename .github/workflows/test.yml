@@ -536,11 +536,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Released bytes are immutable, and `record-release` only ever creates a
-      # file — so nothing in the tree stops a hand edit, and a *deletion* would
-      # silently move `current()` and stop `fetch` serving a version, with every
-      # other check still green. That property is repo-level, so it is enforced
-      # here rather than in code.
+      # `record-release` only ever creates files, so nothing in-tree stops a hand
+      # edit or deletion — which would silently move `current()` with every other
+      # check still green.
       - name: Released versions are append-only
         if: github.event_name == 'pull_request'
         env:

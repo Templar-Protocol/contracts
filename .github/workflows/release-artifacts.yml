@@ -1,14 +1,10 @@
 name: Release Artifacts
 
 # Cuts a contract's canonical WASM — the only way a release blob is produced.
-#
-# On a contract release tag: build in the pinned NEP-330 Docker image at that
-# tag's own commit, upload the WASM plus checksums.txt to the GitHub Release,
-# then open a PR recording tag, asset and SHA-256 in
-# contract/artifacts/releases/.
-#
-# Building at the tag, and recording the entry only afterwards, are both
-# load-bearing — see "Contract WASM artifacts" in RELEASING.md.
+# On a release tag: build in the pinned NEP-330 image at that tag's commit,
+# upload it to the GitHub Release, then open a PR recording tag, asset and
+# digest. Why at the tag, and why the record lands a commit later, are in
+# "Contract WASM artifacts" in RELEASING.md.
 
 on:
   push:
@@ -79,7 +75,8 @@ jobs:
         if: steps.catalog.outputs.build == 'true'
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
-          tool: cargo-near
+          # Same version the rest of CI pins.
+          tool: cargo-near@0.19.2
 
       - name: Build reproducibly at the tag
         id: build
@@ -114,16 +111,37 @@ jobs:
           # release-plz creates the tag and the GitHub Release moments apart, and
           # this job races the tag push. Wait for the release rather than failing
           # a build that succeeded.
+          published=false
           for attempt in 1 2 3 4 5; do
             if gh release view "$REF_NAME" >/dev/null 2>&1; then
-              gh release upload "$REF_NAME" dist/* --clobber
-              exit 0
+              published=true
+              break
             fi
             echo "Release $REF_NAME not published yet (attempt ${attempt}); waiting."
             sleep 15
           done
-          echo "::error::Release $REF_NAME never appeared; cannot attach the WASM." >&2
-          exit 1
+          if [ "$published" != true ]; then
+            echo "::error::Release $REF_NAME never appeared; cannot attach the WASM." >&2
+            exit 1
+          fi
+
+          # Never `--clobber`: the catalog pins the digest of whatever was
+          # uploaded first, so replacing an asset strands every fetch on a hash
+          # that no longer exists. Identical bytes replay; different bytes fail.
+          existing=$(mktemp -d)
+          for file in dist/*; do
+            name=$(basename "$file")
+            if gh release download "$REF_NAME" --pattern "$name" --dir "$existing" 2>/dev/null; then
+              if cmp -s "$file" "$existing/$name"; then
+                echo "::notice::${name} is already published with identical bytes."
+                continue
+              fi
+              echo "::error::${name} is already published with different bytes. \
+          Released assets are immutable; cut a new version rather than replacing one." >&2
+              exit 1
+            fi
+            gh release upload "$REF_NAME" "$file"
+          done
 
       # The hash is taken from the bytes this job just built, so the catalog
       # entry attests the CI build output rather than a re-download.

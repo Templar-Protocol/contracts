@@ -1,15 +1,9 @@
 name: PR Title
 
-# PRs land on `dev` as squash merges, so the PR title becomes the commit message
-# on the default branch. release-plz reads those messages to decide each crate's
-# next version, which makes the title load-bearing: an unconventional title means
-# the touched crates get no version bump and no changelog entry.
-#
-# Only the *type* is enforced. Scope is conventional but free-form on purpose —
-# release-plz selects which crate to bump from the files a commit touches, not
-# from the scope, so an allowlist would add friction without affecting releases.
-#
-# See the "Commit and PR titles" section of AGENTS.md for the full convention.
+# Squash-merged PR titles become the commit messages release-plz reads to decide
+# each crate's next version, so an unconventional title means no bump and no
+# changelog entry. Only the type is enforced: release-plz picks the crate from
+# the files a commit touches, not from the scope. See AGENTS.md.
 
 # `pull_request`, not `pull_request_target`: the title is already in the event
 # payload, so there is no reason to run in the base-repo context with secrets on
@@ -47,10 +41,7 @@ jobs:
             chore
             deploy
           requireScope: false
-          # Guard the two mistakes that actually break version inference:
-          # a Linear ID used as the summary, or an empty/placeholder subject.
-          # (`ENG-504: Nest governance...` as a *title prefix* is not a valid
-          # type, so it is already rejected — the ID belongs in the PR body.)
+          # A leading Linear ID breaks inference; a trailing one is fine.
           subjectPattern: ^(?![A-Z]{2,}-\d+).+$
           subjectPatternError: |
             The subject "{subject}" of PR title "{title}" is invalid.

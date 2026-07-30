@@ -250,10 +250,9 @@ macro_rules! entry {
 // Release lists come from `releases/`, compiled in by `build.rs`.
 include!(concat!(env!("OUT_DIR"), "/releases.rs"));
 
-// `source_path` is where the contract lives *today*. Older releases were built
-// from different paths (proxy-oracle from `contract/proxy-oracle`, the LST
-// oracle from `contract/lst-oracle`); a verifier reads the historical path out
-// of the WASM's own build_info, so this field only describes current work.
+// `source_path` is where a contract lives *today*; several older releases were
+// built from paths that have since moved. A verifier reads the historical path
+// from the WASM's own build_info, not from here.
 
 static REGISTRY_METADATA: ArtifactMetadata = entry!(
     Registry,

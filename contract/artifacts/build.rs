@@ -33,10 +33,8 @@ fn main() {
          \x20   match id {\n",
     );
     for (variant, releases) in &mut by_artifact {
-        // `read_dir` order is unspecified, and `current()` is defined as the
-        // last entry, so the ordering the catalog promises has to be imposed
-        // here rather than inherited from the filesystem. `parse` has already
-        // rejected anything unsortable.
+        // `read_dir` order is unspecified and `current()` is the last entry, so
+        // the ordering has to be imposed rather than inherited.
         releases.sort_by_key(|release| version_key(&release.version));
 
         write!(generated, "        ArtifactId::{variant} => &[").expect("writing to a String");

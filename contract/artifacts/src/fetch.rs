@@ -187,11 +187,9 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
         });
     }
 
-    // The bytes are already verified, so caching them is an optimization. A
-    // concurrent `artifacts-clean` can delete the directory between the
-    // `create_dir_all` and the write below; that must cost a future re-download,
-    // not this call. Any other cache failure (permissions, full disk) is real
-    // and still surfaces.
+    // The bytes are already verified, so caching them is an optimization: a
+    // concurrent clean deleting the directory costs a re-download, not this
+    // call. Other cache failures still surface.
     match write_atomically(&path, &bytes) {
         Err(FetchError::Cache { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
         other => other?,
@@ -249,11 +247,8 @@ pub struct CacheUsage {
 /// that left it empty — so a `TEMPLAR_ARTIFACT_CACHE` pointed at a shared
 /// directory cannot take anything else with it.
 ///
-/// Safe to run while another worktree is fetching. The subtree is renamed aside
-/// before it is walked or deleted, so a concurrent fetch rebuilds a fresh
-/// `near/` rather than racing a recursive delete. Cached bytes are re-verified
-/// against the catalog pin on every read, so the worst a lost race costs is a
-/// re-download.
+/// Safe to run while another worktree is fetching: the subtree is renamed aside
+/// before it is walked, so a concurrent fetch rebuilds a fresh `near/`.
 pub fn clean() -> Result<CacheUsage, FetchError> {
     clean_at(&cache_root()?)
 }
@@ -262,12 +257,9 @@ pub fn clean() -> Result<CacheUsage, FetchError> {
 fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
     let near = root.join("near");
 
-    // Rename before touching anything. `remove_dir_all` is a readdir/unlink/rmdir
-    // walk, not an atomic operation: a fetch that creates a directory partway
-    // through it makes the enclosing `rmdir` fail with `ENOTEMPTY`, and one that
-    // writes into a directory already deleted fails with `ENOENT`. A rename is a
-    // single syscall, and afterwards nothing can reach the doomed tree by path —
-    // so the walk below counts exactly what it removes.
+    // `remove_dir_all` is a readdir/unlink/rmdir walk, so a concurrent fetch can
+    // leave it with `ENOTEMPTY` or lose its own directory to `ENOENT`. Renaming
+    // first is one syscall, after which the walk counts exactly what it removes.
     let doomed = root.join(format!(".near.cleaning.{}", std::process::id()));
     let removed = match std::fs::rename(&near, &doomed) {
         Ok(()) => {
@@ -467,18 +459,13 @@ mod tests {
 
     #[test]
     fn a_fetch_that_lands_mid_clean_survives_it() {
-        // The rename is what makes this work: `clean_at` walks and deletes a
-        // subtree nothing can reach by path, so a writer racing it rebuilds a
-        // fresh `near/` instead of tripping over a half-deleted one.
         let root = scratch_root("concurrent");
         seed(&root, "templar_market_contract", "1.3.0", &[0u8; 64]);
 
         let writer = std::thread::spawn({
             let root = root.clone();
             move || {
-                // Mirrors `write_atomically` and its caller: a directory that
-                // vanished under us is the clean winning the race, which costs a
-                // re-download rather than failing the fetch.
+                // A directory that vanished is the clean winning the race.
                 let mut lost = 0;
                 for version in 0..500 {
                     let dir = root

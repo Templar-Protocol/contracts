@@ -86,9 +86,8 @@ fn record(args: &Args) -> Result<String, String> {
     if version.contains(['/', '\\']) {
         return Err(format!("version `{version}` cannot contain a slash"));
     }
-    // build.rs rejects the same shape, but only on the *next* compile — by which
-    // point CI has already committed the file and every later build fails,
-    // including the one that would report the problem.
+    // build.rs rejects this too, but only on the next compile — after CI has
+    // committed the file, by which point every build fails.
     if !is_major_minor_patch(version) {
         return Err(format!(
             "version `{version}` is not `major.minor.patch`; releases sort by it"

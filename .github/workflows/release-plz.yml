@@ -1,20 +1,8 @@
 name: Release-plz
 
-# Two jobs, both on every push to `dev`:
-#
-#   release-plz-pr   opens/updates one standing "chore: release" PR carrying the
-#                    pending version bumps and CHANGELOG entries.
-#   release-plz      runs after that PR is merged: tags each released crate and
-#                    cuts its GitHub Release. Tier configuration lives in
-#                    `release-plz.toml`.
-#
-# Merging the Release PR is the release trigger — `release_always = false` means
-# an ordinary merge to `dev` ships nothing.
-#
-# Secrets:
-#   RELEASE_PLZ_TOKEN     required PAT — see "First-time setup" in RELEASING.md.
-#   CARGO_REGISTRY_TOKEN  only consulted once crates leave `git_only` mode; see
-#                         "Publishing to crates.io is currently blocked" there.
+# `release-plz-pr` maintains the standing "chore: release" PR; `release-plz`
+# tags and cuts GitHub Releases once it merges. Merging that PR is the only
+# release trigger. See RELEASING.md, and `release-plz.toml` for tiers.
 
 on:
   push:
