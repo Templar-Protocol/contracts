@@ -25,7 +25,7 @@ use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
 use crate::context::CliContext;
 use crate::spec::{
     check::{Check, Status},
-    oracle::{AssetSpec, SourceSpec},
+    oracle::{AssetSpec, SourceSpec, DEFAULT_MAX_CLOCK_DRIFT},
     MarketSpec,
 };
 
@@ -49,11 +49,34 @@ async fn leg<A: AssetClass>(
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
 
+    // Clock drift is checked against wall-clock, before anything is anchored.
+    //
+    // The anchor below is the newest fetched price, so whichever source defines
+    // it is always evaluated at age zero. That makes the filter's own
+    // `max_clock_drift` bound unreachable here — a source with a bogus *future*
+    // timestamp would become the anchor, pass trivially, and push every honest
+    // peer past `max_age`, so the dry run would report a price built from the
+    // one bad source while production rejected exactly that source. Drift is
+    // only meaningful against a real clock, so it is judged here instead.
+    let max_drift = asset.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT);
+    let drift_limit = Nanoseconds::from_ns(now.as_ns().saturating_add(max_drift.as_ns()));
+
+    let mut transport_failed = false;
     for (index, source) in asset.sources.iter().enumerate() {
         let fetched = fetch(ctx, source).await;
+        let drifted = matches!(&fetched, Ok(Some(price)) if price.publish_time_ns > drift_limit);
+
         checks.push(Check::new(
             format!("oracle.price.{side}.{index}"),
             match &fetched {
+                Ok(Some(price)) if drifted => Status::failed(format!(
+                    "{} is timestamped {}s in the future, beyond the {}s clock-drift \
+                     bound. The deployed oracle would reject it.",
+                    source.describe(),
+                    Nanoseconds::from_ns(price.publish_time_ns.as_ns().saturating_sub(now.as_ns()))
+                        .as_secs(),
+                    max_drift.as_secs(),
+                )),
                 Ok(Some(price)) => Status::passed(describe_price(source, price, now)),
                 Ok(None) => Status::Skipped {
                     reason: format!(
@@ -65,22 +88,30 @@ async fn leg<A: AssetClass>(
                 Err(error) => Status::failed(format!("{}: {error:#}", source.describe())),
             },
         ));
+
+        if fetched.is_err() {
+            transport_failed = true;
+        }
         // Order matters: `Proxy::resolve` zips these against its own source list
         // and rejects a length mismatch, so every source needs a slot — `None`
-        // for one that did not answer, which is what `min_sources` weighs.
-        prices.push(fetched.ok().flatten());
+        // for one that did not answer, which is what `min_sources` weighs. A
+        // drifted price is dropped too: the deployed oracle would not use it.
+        prices.push(if drifted {
+            None
+        } else {
+            fetched.ok().flatten()
+        });
     }
 
-    // Freshness is measured between the sources, not against wall-clock.
+    // Age is measured between the sources, not against wall-clock.
     //
     // An adapter holds whatever price was last pushed to it; the relayer pushes
     // a fresh one when an operation needs it. So at rest a perfectly healthy
     // feed is routinely hours old, and filtering on wall-clock would report
     // every market as unaggregatable — a check that always fails tells you
-    // nothing. Anchoring on the newest price still catches the failure that
-    // matters here: one source lagging far behind its peers, which is what
-    // `max_age` guards against once the oracle is live. Absolute ages are
-    // reported per source above, so real staleness stays visible.
+    // nothing. Anchoring on the newest surviving price still catches the failure
+    // that matters here: one source lagging far behind its peers. Absolute ages
+    // are reported per source above, so real staleness stays visible.
     let anchor = prices
         .iter()
         .flatten()
@@ -108,6 +139,17 @@ async fn leg<A: AssetClass>(
         },
         // Too few live sources is the expected shape for a market whose feeds
         // have not been pushed yet, so it reads as "could not run", not "wrong".
+        // A source that errored is not a source that is quiet. Reporting a
+        // transport failure as "expected" would let a misconfigured adapter read
+        // like a feed awaiting its first push.
+        Err(error) if transport_failed => (
+            Status::failed(format!(
+                "{} could not aggregate ({error:?}) because a source could not be \
+                 read — see the failed `oracle.price.{side}.*` above",
+                aggregator_label(asset)
+            )),
+            None,
+        ),
         Err(error) => (
             Status::Skipped {
                 reason: format!(
