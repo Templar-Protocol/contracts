@@ -42,7 +42,7 @@ just test
 
 ## Contributing
 
-PRs are squash-merged, so the PR title becomes the commit message and drives automated versioning. Titles must follow `type(scope): summary` — see [Commit And PR Titles](AGENTS.md#commit-and-pr-titles). Releases are cut by merging the standing "chore: release" PR; see [RELEASING.md](RELEASING.md).
+PRs are squash-merged, so the PR title becomes the commit message and drives automated versioning. Titles must follow `type(scope): summary`, where the scope is optional — see [Commit And PR Titles](AGENTS.md#commit-and-pr-titles). Releases are cut by merging the standing "chore: release" PR; see [RELEASING.md](RELEASING.md).
 
 ## Links
 

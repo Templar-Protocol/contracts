@@ -132,6 +132,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           PACKAGE: ${{ steps.catalog.outputs.package }}
+          # The catalog key, and so the name of the file `record-release` writes.
+          ARTIFACT: ${{ steps.catalog.outputs.artifact }}
           VERSION: ${{ steps.catalog.outputs.version }}
           SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           ASSET: ${{ steps.catalog.outputs.asset }}
@@ -150,12 +152,12 @@ jobs:
           # would recompile from cold rather than relink.
           cargo run --quiet -p templar-contract-artifacts \
             --features workspace-loader,clap --bin record-release -- \
-            "$PACKAGE" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
+            "$ARTIFACT" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
 
           # Stage first, then ask the index: a release is a *new* file, which
           # `git diff` does not see, so checking before staging would report
           # "already recorded" for every release and never open the PR.
-          git add "contract/artifacts/releases/${PACKAGE_ID}@${VERSION}.tsv"
+          git add "contract/artifacts/releases/${ARTIFACT}@${VERSION}.tsv"
           if git diff --cached --quiet; then
             echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
             exit 0

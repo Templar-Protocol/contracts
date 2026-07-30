@@ -50,6 +50,16 @@ fn main() -> ExitCode {
     }
 }
 
+/// Three numeric components, nothing else — the shape `build.rs` sorts by.
+fn is_major_minor_patch(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let numeric = |part: Option<&str>| part.is_some_and(|p| p.parse::<u64>().is_ok());
+    numeric(parts.next())
+        && numeric(parts.next())
+        && numeric(parts.next())
+        && parts.next().is_none()
+}
+
 fn record(args: &Args) -> Result<String, String> {
     let Args {
         artifact,
@@ -75,6 +85,14 @@ fn record(args: &Args) -> Result<String, String> {
     // Only `version` reaches the path — tags legitimately contain slashes.
     if version.contains(['/', '\\']) {
         return Err(format!("version `{version}` cannot contain a slash"));
+    }
+    // build.rs rejects the same shape, but only on the *next* compile — by which
+    // point CI has already committed the file and every later build fails,
+    // including the one that would report the problem.
+    if !is_major_minor_patch(version) {
+        return Err(format!(
+            "version `{version}` is not `major.minor.patch`; releases sort by it"
+        ));
     }
 
     let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\n");
@@ -160,6 +178,15 @@ mod tests {
                 error.contains("cannot contain a slash"),
                 "{version}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn an_unsortable_version_is_rejected_before_it_reaches_the_catalog() {
+        for version in ["1.4.0-rc1", "1.4", "1.4.0.1", "v1.4.0"] {
+            let error = record(&args(version, "t", "a.wasm"))
+                .expect_err("build.rs would reject this only on the next compile");
+            assert!(error.contains("major.minor.patch"), "{version}: {error}");
         }
     }
 

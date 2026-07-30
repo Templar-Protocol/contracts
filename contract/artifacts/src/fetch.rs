@@ -187,7 +187,15 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
         });
     }
 
-    write_atomically(&path, &bytes)?;
+    // The bytes are already verified, so caching them is an optimization. A
+    // concurrent `artifacts-clean` can delete the directory between the
+    // `create_dir_all` and the write below; that must cost a future re-download,
+    // not this call. Any other cache failure (permissions, full disk) is real
+    // and still surfaces.
+    match write_atomically(&path, &bytes) {
+        Err(FetchError::Cache { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {}
+        other => other?,
+    }
     Ok(bytes)
 }
 
@@ -240,6 +248,12 @@ pub struct CacheUsage {
 /// Only the `near/` subtree is removed recursively — the root survives unless
 /// that left it empty — so a `TEMPLAR_ARTIFACT_CACHE` pointed at a shared
 /// directory cannot take anything else with it.
+///
+/// Safe to run while another worktree is fetching. The subtree is renamed aside
+/// before it is walked or deleted, so a concurrent fetch rebuilds a fresh
+/// `near/` rather than racing a recursive delete. Cached bytes are re-verified
+/// against the catalog pin on every read, so the worst a lost race costs is a
+/// re-download.
 pub fn clean() -> Result<CacheUsage, FetchError> {
     clean_at(&cache_root()?)
 }
@@ -248,13 +262,27 @@ pub fn clean() -> Result<CacheUsage, FetchError> {
 fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
     let near = root.join("near");
 
-    let removed = usage_of(&near)?;
-    if near.is_dir() {
-        std::fs::remove_dir_all(&near).map_err(|source| FetchError::Cache {
-            path: near.clone(),
-            source,
-        })?;
-    }
+    // Rename before touching anything. `remove_dir_all` is a readdir/unlink/rmdir
+    // walk, not an atomic operation: a fetch that creates a directory partway
+    // through it makes the enclosing `rmdir` fail with `ENOTEMPTY`, and one that
+    // writes into a directory already deleted fails with `ENOENT`. A rename is a
+    // single syscall, and afterwards nothing can reach the doomed tree by path —
+    // so the walk below counts exactly what it removes.
+    let doomed = root.join(format!(".near.cleaning.{}", std::process::id()));
+    let removed = match std::fs::rename(&near, &doomed) {
+        Ok(()) => {
+            let removed = usage_of(&doomed)?;
+            std::fs::remove_dir_all(&doomed).map_err(|source| FetchError::Cache {
+                path: doomed,
+                source,
+            })?;
+            removed
+        }
+        // Nothing cached yet: an empty cache cleans to zero rather than erroring.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => CacheUsage::default(),
+        Err(source) => return Err(FetchError::Cache { path: near, source }),
+    };
+
     // Non-recursive, and failure is fine: it only succeeds when the root holds
     // nothing but the subtree we just removed.
     let _ = std::fs::remove_dir(root);
@@ -435,6 +463,56 @@ mod tests {
         assert_eq!(removed.files, 2);
         assert_eq!(removed.bytes, 96);
         assert!(!root.exists(), "an empty root is removed too");
+    }
+
+    #[test]
+    fn a_fetch_that_lands_mid_clean_survives_it() {
+        // The rename is what makes this work: `clean_at` walks and deletes a
+        // subtree nothing can reach by path, so a writer racing it rebuilds a
+        // fresh `near/` instead of tripping over a half-deleted one.
+        let root = scratch_root("concurrent");
+        seed(&root, "templar_market_contract", "1.3.0", &[0u8; 64]);
+
+        let writer = std::thread::spawn({
+            let root = root.clone();
+            move || {
+                // Mirrors `write_atomically` and its caller: a directory that
+                // vanished under us is the clean winning the race, which costs a
+                // re-download rather than failing the fetch.
+                let mut lost = 0;
+                for version in 0..500 {
+                    let dir = root
+                        .join("near")
+                        .join("templar_registry_contract")
+                        .join(version.to_string());
+                    if std::fs::create_dir_all(&dir).is_err() {
+                        lost += 1;
+                        continue;
+                    }
+                    if let Err(error) = std::fs::write(dir.join("registry.wasm"), [7u8; 8]) {
+                        assert_eq!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound,
+                            "only a concurrent clean may interrupt a cache write"
+                        );
+                        lost += 1;
+                    }
+                }
+                lost
+            }
+        });
+
+        let removed = clean_at(&root).expect("clean never fails against a live writer");
+        let lost: u32 = writer.join().expect("writer thread never panics");
+
+        assert!(
+            !root.join("near/templar_market_contract").exists(),
+            "the pre-existing entry was removed"
+        );
+        // Whatever the rename captured, it can only be what was really there.
+        assert!(removed.files <= 501, "reported {} files", removed.files);
+        assert!(lost <= 500, "lost {lost} writes");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
