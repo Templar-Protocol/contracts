@@ -13472,12 +13472,14 @@ name = "templar-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "dirs 6.0.0",
  "hex",
  "near-account-id",
  "near-api",
  "near-sdk",
+ "reqwest 0.12.28",
  "rstest",
  "schemars 0.8.22",
  "serde",
