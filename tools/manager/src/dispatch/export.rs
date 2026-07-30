@@ -140,10 +140,16 @@ async fn versions(
         proxy_governance: version_key(ctx, registry_id, &governance_id).await?,
     };
 
-    // A deployment record outlives its version. `remove_version` soft-deletes,
-    // clearing the code but leaving the record, so a version key can be recovered
-    // faithfully and still be undeployable — the exported spec would fail with
-    // "Version code has been deleted". Better to refuse than to emit it.
+    // A deployment record outlives its version, so a recovered key can name a
+    // version the registry no longer offers at all. That case is caught here.
+    //
+    // What this does NOT catch is soft-deletion: `remove_version` only sets
+    // `VersionEntry::Code.code = None`, leaving the key in the map and
+    // `get_version_code_hash` still answering with the hash. No registry view
+    // distinguishes that, so an exported spec can still name a version whose
+    // redeployment fails with "Version code has been deleted" — after earlier
+    // contracts in the deploy have already been created. Closing that needs a
+    // registry view reporting code availability, which is a contract change.
     let live = ctx
         .client
         .read(registry::ListVersions {

@@ -117,6 +117,24 @@ impl SignerArgs {
     /// credential, and the keychain backend holds its key outside this process,
     /// so both require `--public-key`.
     pub fn public_key(&self) -> anyhow::Result<PublicKey> {
+        // The in-process backend derives from the key it will actually sign
+        // with. Returning a supplied `--public-key` here would grant a full
+        // access key on the new account to a key the signer does not hold,
+        // while the transaction is signed by the secret — so a contradicting
+        // value is an error, not an override.
+        if self.sign_with.is_none() && self.print.is_none() {
+            let derived = PublicKey::from(self.secret()?.public_key());
+            if let Some(supplied) = &self.public_key {
+                anyhow::ensure!(
+                    PublicKey::from(*supplied) == derived,
+                    "--public-key names a different key than --secret-key signs with. \
+                     The new account would grant full access to a key you do not hold; \
+                     drop --public-key to use the signer's own."
+                );
+            }
+            return Ok(derived);
+        }
+
         if let Some(public_key) = &self.public_key {
             return Ok(PublicKey::from(*public_key));
         }
