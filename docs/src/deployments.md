@@ -30,7 +30,6 @@ selects where that signing key lives:
 |---|---|---|
 | `secret-key` (default) | `--secret-key`, or `$SECRET_KEY` | Puts a plaintext key in the environment. Fine for testnet and CI; avoid for mainnet. |
 | `keychain` | the OS keychain | Looked up by account id. The account's on-chain keys are listed to find a match. |
-| `ledger` | a Ledger device | Opt-in at build time: `--features ledger`. Uses near-api's default HD path; the device must be unlocked with the NEAR app open. |
 
 For mainnet, prefer to sign nothing directly. `--print sputnik` emits a
 SputnikDAO proposal instead of executing, so a deployment can be reviewed and
@@ -40,7 +39,7 @@ approved by the multisig with no operator key involved at all:
 tmplrmgr market create --signer-id dao.near --print sputnik --public-key ed25519:… …
 ```
 
-`keychain` and `ledger` hold their key outside this process, so writes that
+`keychain` holds its key outside this process, so writes that
 embed the signer's public key on a new account (any `registry deploy`) need it
 passed explicitly with `--public-key`.
 

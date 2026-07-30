@@ -232,10 +232,10 @@ fn write_requires_secret_key_or_print() {
 #[test]
 fn write_with_an_external_backend_needs_no_secret_key() {
     let result = with_cleared_credential_env(|| {
-        try_parse_write(["--signer-id", "dao.near", "--sign-with", "ledger"])
+        try_parse_write(["--signer-id", "dao.near", "--sign-with", "keychain"])
     });
 
-    result.expect("--sign-with ledger should satisfy the credential requirement");
+    result.expect("--sign-with keychain should satisfy the credential requirement");
 }
 
 #[test]

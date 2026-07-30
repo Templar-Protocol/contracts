@@ -15,10 +15,10 @@ clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
-# `keystore` backs `--sign-with keychain`. `ledger` is opt-in: it pulls hidapi,
-# which needs libudev headers at build time, and cargo unifies features across a
-# workspace build — so enabling it unconditionally would make every crate in the
-# workspace, and CI, require a system dependency that only this binary uses.
+# `keystore` backs `--sign-with keychain`. near-api's `ledger` feature is
+# deliberately not enabled: it pulls hidapi, which needs libudev headers, and
+# cargo unifies features across a workspace build — every crate here and in CI
+# would inherit that system dependency. Nothing needs Ledger signing today.
 near-api = { workspace = true, features = ["keystore"] }
 # Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
 # `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
@@ -51,13 +51,6 @@ toml.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
-
-[features]
-default = []
-# Ledger signing. Requires libudev headers (`libudev-dev` on Debian/Ubuntu,
-# `systemd-devel` on Fedora). Build with `--features ledger` to use
-# `--sign-with ledger`.
-ledger = ["near-api/ledger"]
 
 [dev-dependencies]
 rstest.workspace = true
