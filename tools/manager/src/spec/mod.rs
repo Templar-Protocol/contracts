@@ -42,12 +42,25 @@ use serde_util::duration;
 pub const COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xcc; 32]);
 pub const BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier([0xbb; 32]);
 
+/// Default band for the reference-price cross-check.
+///
+/// Defaulted rather than required so `market export`, which cannot recover a
+/// judgement call from chain state, does not have to invent one silently.
+pub fn default_reference_tolerance() -> Decimal {
+    templar_common::dec!("0.015")
+}
+
 /// Bumped only on a breaking spec change; unknown versions are rejected.
 ///
+/// Every struct here is `deny_unknown_fields`, so *adding* a field is breaking
+/// in the reader direction: an older build rejects a document carrying it.
+///
 /// 2: `symbol` became optional, so `market export` can leave it unset rather
-/// than invent a ticker. A schema-1 reader requires it and would reject an
-/// exported spec, so the same number must not describe both.
-pub const SCHEMA_VERSION: u32 = 2;
+///    than invent a ticker.
+/// 3: `reference` and `reference_tolerance` on each asset, and
+///    `market.reference_tolerance`, for the third-party cross-check. Export
+///    always emits the market tolerance, so every exported spec carries it.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
@@ -125,6 +138,12 @@ pub struct MarketParams {
     pub maximum_usage_ratio: Decimal,
     #[schemars(with = "String")]
     pub liquidation_maximum_spread: Decimal,
+
+    /// Default band for the reference-price cross-check, as a fraction — `0.015`
+    /// is 1.5%. Per-asset `reference_tolerance` overrides it.
+    #[serde(default = "default_reference_tolerance")]
+    #[schemars(with = "String")]
+    pub reference_tolerance: Decimal,
 
     // These four are embedded on-chain types, which is the point — a field added
     // to `MarketConfiguration` surfaces here as a compile error. None of them

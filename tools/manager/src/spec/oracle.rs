@@ -33,10 +33,22 @@ pub struct AssetSpec<A: AssetClass> {
     pub asset: FungibleAsset<A>,
 
     /// Ticker. Never sent on chain, so `market export` cannot recover it and
-    /// leaves it unset. It exists so a preflight can check that the sources
-    /// below actually price this asset (ENG-543).
+    /// leaves it unset. It exists so the reference cross-check can confirm the
+    /// sources below actually price this asset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
+
+    /// How to find this asset on the reference price API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ReferenceAsset>,
+
+    /// Overrides `market.reference_tolerance` for this asset.
+    ///
+    /// Not a nicety: one flat band false-positives on an LST trading at a
+    /// premium to its underlying, or on a thinly-traded bridged token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub reference_tolerance: Option<templar_common::Decimal>,
 
     /// Overrides the token's on-chain metadata. Required when that metadata is
     /// absent or malformed, which has happened for at least one bridged asset
@@ -79,6 +91,30 @@ pub struct AssetSpec<A: AssetClass> {
 /// drift bound opposite directions, and a market willing to accept a 60s-old
 /// price has said nothing about accepting one dated 60s from now.
 pub const DEFAULT_MAX_CLOCK_DRIFT: Nanoseconds = Nanoseconds::from_ns(10_000_000_000);
+
+/// How to find an asset on the reference price API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReferenceAsset {
+    /// Resolve `symbol` against the API. Ambiguity is an error listing the
+    /// candidates, never a first match.
+    ByTicker,
+    /// A pinned id, skipping resolution.
+    ///
+    /// This is how a wrapped asset records what it is priced as: `FXRP` pinned
+    /// to `ripple` asserts that the bridged token tracks XRP — an assumption
+    /// that otherwise lives only in someone's head.
+    CoinGecko { id: String },
+    /// No third-party listing exists. The reason is recorded so an absent check
+    /// is visible in review rather than silently not running.
+    Unlisted { reason: String },
+}
+
+impl Default for ReferenceAsset {
+    fn default() -> Self {
+        Self::ByTicker
+    }
+}
 
 /// How multiple sources collapse into one price.
 ///

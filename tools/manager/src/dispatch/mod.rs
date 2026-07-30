@@ -9,6 +9,7 @@ mod export;
 pub(crate) mod generic;
 mod preflight;
 mod proposals;
+mod reference;
 mod teardown;
 
 use crate::cli::Command;
@@ -27,6 +28,20 @@ use crate::commands::{
     storage::StorageNs,
 };
 use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
+
+/// A kernel price as a plain number.
+///
+/// Shared by the aggregation dry-run and the reference cross-check, which
+/// compare against each other — two copies of this could drift into comparing
+/// differently-scaled numbers.
+fn scaled(price: &templar_proxy_oracle_kernel::Price) -> f64 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "displayed, or compared within a tolerance band; never exact"
+    )]
+    let value = price.price as f64;
+    value * 10f64.powi(price.expo)
+}
 
 pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Result<()> {
     match command {

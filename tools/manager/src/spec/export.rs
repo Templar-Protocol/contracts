@@ -139,6 +139,11 @@ fn asset_spec<A: AssetClass>(
         // human to fill in; inventing a plausible ticker would be worse, since
         // the reference cross-check (ENG-543) would then verify a guess.
         symbol: None,
+        // Neither reaches the chain. A pinned reference id is an assertion about
+        // what a wrapped token tracks; inventing one would be a guess presented
+        // as a record.
+        reference: None,
+        reference_tolerance: None,
         decimals: Some(u8::try_from(decimals).with_context(|| {
             format!("{side} asset declares {decimals} decimals, which a spec cannot express")
         })?),
@@ -215,6 +220,7 @@ fn market_params(configuration: &MarketConfiguration) -> MarketParams {
         mcr_liquidation: configuration.borrow_mcr_liquidation,
         maximum_usage_ratio: configuration.borrow_asset_maximum_usage_ratio,
         liquidation_maximum_spread: configuration.liquidation_maximum_spread,
+        reference_tolerance: super::default_reference_tolerance(),
         interest_rate_strategy: configuration.borrow_interest_rate_strategy.clone(),
         origination_fee: configuration.borrow_origination_fee.clone(),
         supply_withdrawal_fee: configuration.supply_withdrawal_fee.clone(),

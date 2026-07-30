@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
@@ -27,6 +28,8 @@ near-api = { workspace = true, features = ["keystore"] }
 # matching it here keeps standalone (`-p templar-manager`) and workspace builds
 # collision-free. Mirrors service/gateway, the other native bin over these crates.
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
+# Reference-price cross-check (ENG-543): the only outbound HTTP this tool makes.
+reqwest = { workspace = true, features = ["json"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
