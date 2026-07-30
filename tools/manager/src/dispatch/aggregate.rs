@@ -119,6 +119,10 @@ async fn leg<A: AssetClass>(
         .max()
         .unwrap_or(now);
 
+    // How many sources actually contributed. Distinguishes "nothing to judge"
+    // from "judged and rejected", which decide Skipped vs Failed below.
+    let live = prices.iter().flatten().count();
+
     // Cloned because `into_proxy` consumes, and the spec is still needed after.
     let proxy = asset.clone().into_proxy(spec.market.price_maximum_age);
     // No breakers: the oracle does not exist yet, so there is no configured set
@@ -137,15 +141,17 @@ async fn leg<A: AssetClass>(
                 None,
             ),
         },
-        // Too few live sources is the expected shape for a market whose feeds
-        // have not been pushed yet, so it reads as "could not run", not "wrong".
-        // A source that errored is not a source that is quiet. Reporting a
-        // transport failure as "expected" would let a misconfigured adapter read
-        // like a feed awaiting its first push.
-        Err(error) if transport_failed => (
+        // `Skipped` is only for "there was nothing to judge". If any source
+        // produced a price and the aggregation still rejected the set, the
+        // configuration is wrong and the deployed proxy would fail on the same
+        // inputs — reporting that as skipped would exit zero and green-light the
+        // deployment, since only failures are counted.
+        Err(error) if live > 0 || transport_failed => (
             Status::failed(format!(
-                "{} could not aggregate ({error:?}) because a source could not be \
-                 read — see the failed `oracle.price.{side}.*` above",
+                "{} could not aggregate ({error:?}) from {live} live source(s). \
+                 The deployed proxy would fail on the same inputs — check \
+                 `min_sources`, the freshness bounds, and the failed \
+                 `oracle.price.{side}.*` above.",
                 aggregator_label(asset)
             )),
             None,
@@ -153,9 +159,9 @@ async fn leg<A: AssetClass>(
         Err(error) => (
             Status::Skipped {
                 reason: format!(
-                    "{} could not aggregate: {error:?}. With feeds that carry no \
-                     price yet this is expected; once they do, re-run before \
-                     deploying.",
+                    "{} has no live sources to aggregate ({error:?}). For feeds \
+                     awaiting their first push this is expected; re-run once they \
+                     carry a price, before deploying.",
                     aggregator_label(asset)
                 ),
             },
