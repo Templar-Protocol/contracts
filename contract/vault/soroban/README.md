@@ -117,6 +117,11 @@ The vault intentionally exposes two withdrawal modes:
   `execute_withdraw` advances the queue only when the head request is cooled down and fully
   covered by idle assets; otherwise it fails atomically and leaves the request queued.
 
+The ERC-4626 proxy exposes the immediate path through `atomic_withdraw` and `atomic_redeem`,
+including `max_shares_burned` and `min_assets_out` slippage guards. Its existing `withdraw` and
+`redeem` compatibility methods remain queued ERC-7540-style requests; callers that need an
+immediate idle-liquidity exit must use the explicit atomic methods.
+
 The async queue is not a strict FIFO fairness boundary against atomic exits. It coordinates
 cooldowns, escrow, fixed asset claims, and allocator-driven liquidity recovery, but it does not
 reserve idle assets for queued requests while the vault remains idle. A later holder can still use
@@ -345,8 +350,15 @@ Blend integration lives in the dedicated crate `contract/vault/soroban/blend-ada
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-blend-adapter`
-- `just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
-- `just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=C... just deploy-blend-adapter <BLEND_POOL_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=C... just deploy-all-with-blend <BLEND_POOL_ADDRESS>`
+
+**Breaking change:** adapter deployment no longer defaults the admin to governance. Set
+`SOROBAN_ADAPTER_ADMIN` to an explicit Soroban contract address. The literal value `vault` is
+accepted only when the deployed vault's `version()` response advertises
+companion-contract upgrade routing (`0x40`). The current default runtime mask is `0x1f`, so it
+rejects `SOROBAN_ADAPTER_ADMIN=vault`. The configured governance contract is also rejected because
+it cannot dispatch companion-contract administration calls; use a different explicit contract.
 
 After deployment, register the adapter as a vault market before allocation.
 
@@ -373,8 +385,8 @@ NAV revision and must increase by one from the current value.
 Use recipes in [contract/vault/soroban/justfile](./justfile):
 
 - `just build-custodial-adapter`
-- `just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
-- `just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-custodial-adapter <CUSTODIAN_OR_MULTISIG_ADDRESS>`
+- `SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-custodial <CUSTODIAN_OR_MULTISIG_ADDRESS>`
 - `just custodial-adapter-status`
 - `just custodial-adapter-reported-at <ASSET_ADDRESS>`
 - `just custodial-adapter-set-reported-assets <CALLER_ADDRESS> <ASSET_ADDRESS> <EXPECTED_CURRENT> <RAW_AMOUNT> <REPORT_NONCE>`
@@ -387,6 +399,8 @@ the next successful explicit report. Rollout still requires upgrade authority ov
 WASM. Adapters
 whose admin is the governance contract cannot currently be upgraded through the shipped governance
 actions; adding that authority or migrating those routes to replacement adapters is separate work.
+The vault CLI and justfile recipes therefore require an explicit adapter admin and apply the same
+`0x40` capability gate before accepting the vault itself.
 
 ### Custodial Runbook Checks
 
@@ -470,6 +484,14 @@ Parity tests check behavioral equivalence across the shared kernel and chain exe
 ## Share Token TTL and Archival Recovery
 
 - Share-token instance storage is refreshed by every public share-token entrypoint, including SEP-41 read-only methods (`total_supply`, `balance`, `allowance`, `decimals`, `name`, and `symbol`) and the custom `admin` / `vault` getters.
+- Share-token authority is split deliberately: the immutable vault address alone authorizes mint
+  and burn, while a separately configured admin controls pause, restrictions, upgrades, TTL
+  maintenance, and two-step admin rotation. New deployments and admin rotations reject the vault
+  and the share token itself as admin so those controls cannot be assigned to contracts that lack
+  the corresponding dispatcher.
+- The installed implementation enforces the vault-only mint/burn boundary, but the admin's upgrade
+  authority can replace that implementation. Treat the share-token admin as an ultimate trust
+  boundary over token behavior, not merely as a maintenance role.
 - The admin-only `extend_ttl(caller)` entrypoint is the explicit keeper path for proactive instance maintenance. Operators should schedule it well before the instance reaches the TTL threshold; if the instance is archived, restore the contract instance through the Stellar/Soroban archival restore flow first, then call `extend_ttl` as the configured admin.
 - Per-holder balances are persistent entries owned by the upstream `stellar-tokens` implementation. Balance reads and balance-changing writes refresh the specific holder balance that is touched; the share token intentionally does not maintain an enumerable holder index or perform unbounded global balance refreshes from `extend_ttl`.
 - Allowances are temporary entries bounded by their explicit `live_until_ledger`. They are not extended beyond that caller-selected expiry by the share-token keeper path; owners should renew approvals when continued delegated spending is desired.

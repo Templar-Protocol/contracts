@@ -12,7 +12,7 @@ set dotenv-load := false
 #
 # WITH BLEND INTEGRATION (for yield):
 #   1. just setup
-#   2. just deploy-all-with-blend <BLEND_POOL_ADDRESS>
+#   2. SOROBAN_ADAPTER_ADMIN=C... just deploy-all-with-blend <BLEND_POOL_ADDRESS>
 #   3. just demo-deposit
 #
 # PREREQUISITES:
@@ -34,7 +34,7 @@ set dotenv-load := false
 #   SOROBAN_VIRTUAL_ASSETS   Initial virtual assets offset (default: 0)
 #   BLEND_ADAPTER_ID         Deployed Blend adapter contract ID
 #   BLEND_POOL_ID            Blend pool address
-#   SOROBAN_ADAPTER_ADMIN    Adapter admin contract/address (default: governance, then vault)
+#   SOROBAN_ADAPTER_ADMIN    Adapter admin address, or "vault" with capability 0x40 (required for deployment)
 #   CUSTODIAL_ADAPTER_ID     Deployed custodial adapter contract ID
 #   CUSTODIAL_ADDRESS        Custodian/multisig receiving allocated funds
 #
@@ -58,6 +58,7 @@ share_token_wasm := wasm_dir + "/templar_soroban_share_token.wasm"
 payload_script := justfile_directory() + "/scripts/vault_payload.py"
 custodial_adapter_abi_script := justfile_directory() + "/scripts/check_custodial_adapter_release_abi.py"
 release_abi_script := justfile_directory() + "/scripts/check_release_abi.py"
+runtime_feature_script := justfile_directory() + "/scripts/require_runtime_feature.py"
 default_friendbot := "https://friendbot.stellar.org"
 default_network := "testnet"
 default_rpc := "https://soroban-testnet.stellar.org"
@@ -87,8 +88,8 @@ deploy-all: _ensure-setup build deploy-test-token deploy deploy-share-token depl
 	@echo "  Asset Token: $(cat {{state_dir}}/asset_token_id 2>/dev/null || echo 'not found')"
 	@echo ""
 	@echo "Run: just demo-deposit"
-	@echo "For Blend integration: just deploy-blend-adapter"
-	@echo "For custodial integration: just deploy-custodial-adapter <custodian>"
+	@echo "For Blend integration: SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-blend-adapter <pool>"
+	@echo "For custodial integration: SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-custodial-adapter <custodian>"
 
 # Deploy everything including Blend adapter for yield strategies.
 # NOTE: Blend integration requires allowed-adapter and supply-queue governance after deployment.
@@ -412,14 +413,27 @@ deploy-share-token:
 		echo "Run: just build"; \
 		exit 1; \
 	fi; \
-	admin="$vault_id"; \
+	admin="${SOROBAN_ADMIN:-$(cat {{state_dir}}/admin_address 2>/dev/null)}"; \
+	if [ -z "$admin" ]; then \
+		if ! admin="$(stellar keys address ${SOROBAN_IDENTITY:-{{default_identity}}} 2>/dev/null)"; then \
+			admin=""; \
+		fi; \
+	fi; \
+	if [ -z "$admin" ]; then \
+		echo "Error: cannot resolve share-token admin; set SOROBAN_ADMIN or configure SOROBAN_IDENTITY."; \
+		exit 1; \
+	fi; \
+	if [ "$admin" = "$vault_id" ]; then \
+		echo "Error: share-token admin must be separate from the vault; set SOROBAN_ADMIN to a reachable account or contract."; \
+		exit 1; \
+	fi; \
 	name="${SOROBAN_SHARE_NAME:-Templar Vault Share}"; \
 	symbol="${SOROBAN_SHARE_SYMBOL:-tvSHARE}"; \
 	decimals="${SOROBAN_SHARE_DECIMALS:-7}"; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying share token contract..."; \
-	echo "  Admin: $admin (vault-bound)"; \
+	echo "  Admin: $admin"; \
 	echo "  Vault: $vault_id"; \
 	share_id=$(stellar contract deploy \
 		--wasm "$wasm" \
@@ -625,8 +639,53 @@ extend-ttl ledgers="100000":
 #
 # =============================================================================
 
+# Resolve the required adapter admin. Selecting the vault is fail-closed until the
+# deployed runtime advertises companion-contract upgrade routing (feature bit 0x40).
+_resolve-adapter-admin:
+	@admin="${SOROBAN_ADAPTER_ADMIN:-}"; \
+	vault_id="${SOROBAN_ADAPTER_VAULT_ID:-}"; \
+	if [ -z "$admin" ]; then \
+		echo "Error: SOROBAN_ADAPTER_ADMIN is required; set it to a Soroban address or 'vault'." >&2; \
+		exit 1; \
+	fi; \
+	if [ "$admin" = "vault" ]; then \
+		if [ -z "$vault_id" ]; then \
+			echo "Error: cannot resolve SOROBAN_ADAPTER_ADMIN=vault without a deployed vault ID." >&2; \
+			exit 1; \
+		fi; \
+		admin="$vault_id"; \
+	fi; \
+	governance_id="${SOROBAN_GOVERNANCE:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
+	if [ -z "$governance_id" ]; then \
+		echo "Warning: governance ID is unavailable; skipping the governance-as-adapter-admin check." >&2; \
+	elif [ "$admin" = "$governance_id" ]; then \
+		echo "Error: the configured governance contract cannot administer companion contracts; choose a different adapter admin." >&2; \
+		exit 1; \
+	fi; \
+	if [ -n "$vault_id" ] && [ "$admin" = "$vault_id" ]; then \
+		network="${SOROBAN_NETWORK:-{{default_network}}}"; \
+		source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
+		if ! version_response=$(stellar contract invoke \
+			--id "$vault_id" \
+			--network "$network" \
+			--source-account "$source" \
+			--send no \
+			-- version); then \
+			echo "Error: cannot use vault $vault_id as adapter admin because version() capability detection failed." >&2; \
+			exit 1; \
+		fi; \
+		if ! printf '%s\n' "$version_response" | python3 "{{runtime_feature_script}}" \
+			--feature-bit 0x40 \
+			--feature-name companion-upgrade \
+			--contract "vault $vault_id"; then \
+			exit 1; \
+		fi; \
+	fi; \
+	printf '%s\n' "$admin"
+
 # Deploy the Blend adapter contract.
-# Requires: vault must be deployed first, pool_address is the Blend pool to use.
+# Requires: vault must be deployed first, pool_address is the Blend pool to use, and
+# SOROBAN_ADAPTER_ADMIN must be an explicit address or capability-gated "vault".
 deploy-blend-adapter pool_address:
 	@wasm="${BLEND_ADAPTER_WASM:-{{blend_adapter_wasm}}}"; \
 	if [ ! -f "$wasm" ]; then \
@@ -639,10 +698,13 @@ deploy-blend-adapter pool_address:
 		echo "Error: Vault not deployed. Run 'just deploy' first."; \
 		exit 1; \
 	fi; \
-	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
-	if [ -z "$admin" ]; then \
-		admin="$vault_id"; \
+	if ! admin=$(SOROBAN_ADAPTER_VAULT_ID="$vault_id" just -f "{{justfile_directory()}}/justfile" _resolve-adapter-admin); then \
+		exit 1; \
 	fi; \
+	case "$admin" in \
+		C*) ;; \
+		*) echo "Error: Blend adapter admin must be a contract address (C...)." >&2; exit 1 ;; \
+	esac; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying Blend adapter..."; \
@@ -667,7 +729,8 @@ deploy-blend-adapter pool_address:
 	echo "{{pool_address}}" > "{{state_dir}}/blend_pool_id"
 
 # Deploy the custodial adapter contract.
-# Requires: vault must be deployed first, custodian is the multisig/address receiving allocated funds.
+# Requires: vault must be deployed first, custodian is the multisig/address receiving allocated
+# funds, and SOROBAN_ADAPTER_ADMIN must be an explicit address or capability-gated "vault".
 deploy-custodial-adapter custodian:
 	@wasm="${CUSTODIAL_ADAPTER_WASM:-{{custodial_adapter_wasm}}}"; \
 	if [ ! -f "$wasm" ]; then \
@@ -685,9 +748,8 @@ deploy-custodial-adapter custodian:
 		echo "Error: No asset token. Run 'just deploy-test-token' first or set SOROBAN_ASSET_TOKEN"; \
 		exit 1; \
 	fi; \
-	admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
-	if [ -z "$admin" ]; then \
-		admin="$vault_id"; \
+	if ! admin=$(SOROBAN_ADAPTER_VAULT_ID="$vault_id" just -f "{{justfile_directory()}}/justfile" _resolve-adapter-admin); then \
+		exit 1; \
 	fi; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
@@ -1410,8 +1472,8 @@ help:
 	@echo "QUICK START:"
 	@echo "  just setup                    Full setup (build, network, keys, fund)"
 	@echo "  just deploy-all               Deploy vault + share token + governance + test token, initialize"
-	@echo "  just deploy-all-with-blend <pool>  Deploy with Blend adapter"
-	@echo "  just deploy-all-with-custodial <custodian>  Deploy with custodial adapter"
+	@echo "  SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-all-with-blend <pool>"
+	@echo "  SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-all-with-custodial <custodian>"
 	@echo "  just demo-deposit             Run deposit demonstration"
 	@echo "  just demo-withdraw            Run withdrawal demonstration"
 	@echo "  just demo-e2e-full            Run full e2e flow"
@@ -1444,7 +1506,7 @@ help:
 	@echo "  just extend-ttl               Extend contract TTL"
 	@echo ""
 	@echo "BLEND ADAPTER:"
-	@echo "  just deploy-blend-adapter <pool>  Deploy adapter for Blend pool"
+	@echo "  SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-blend-adapter <pool>"
 	@echo "  just blend-adapter-status        Show adapter status"
 	@echo "  just blend-adapter-total-assets <asset>  Query pool position"
 	@echo "  just allocate-supply <mkt> <amt>  Supply to market via adapter"
@@ -1454,7 +1516,7 @@ help:
 	@echo "  just demo-e2e-blend              Full Blend integration e2e"
 	@echo ""
 	@echo "CUSTODIAL ADAPTER:"
-	@echo "  just deploy-custodial-adapter <custodian>  Deploy adapter for offchain custody route"
+	@echo "  SOROBAN_ADAPTER_ADMIN=<address|vault> just deploy-custodial-adapter <custodian>"
 	@echo "  just custodial-adapter-status              Show adapter status"
 	@echo "  just custodial-adapter-total-assets <asset>  Query reported position"
 	@echo "  just custodial-adapter-reported-at <asset>   Query latest explicit report timestamp"

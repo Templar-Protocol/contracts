@@ -6,7 +6,7 @@ on:
 jobs:
   build-and-deploy:
     name: Build documentation and deploy
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     permissions:
       contents: read
       pages: write

@@ -54,7 +54,7 @@ env:
 jobs:
   changes:
     name: Change Detection
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     outputs:
       near_integration: ${{ steps.filter.outputs.near_integration }}
       soroban: ${{ steps.filter.outputs.soroban }}
@@ -201,7 +201,7 @@ jobs:
 
   code-formatting:
     name: Code Formatting
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -211,7 +211,7 @@ jobs:
 
   code-linter:
     name: Code Linter
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -226,7 +226,7 @@ jobs:
 
   documentation:
     name: Documentation
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -240,7 +240,7 @@ jobs:
 
   binary-build:
     name: Binary Build
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -261,7 +261,7 @@ jobs:
 
   soroban:
     name: Soroban
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     timeout-minutes: 30
     if: ${{ needs.changes.outputs.run_soroban == 'true' }}
@@ -318,7 +318,7 @@ jobs:
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     if: ${{ needs.changes.outputs.run_feature_matrix == 'true' }}
     strategy:
@@ -422,7 +422,7 @@ jobs:
   fast-tests:
     name: Fast Tests
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     services:
       # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
       # database per test, so they need a reachable postgres at runtime.
@@ -473,7 +473,7 @@ jobs:
     # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
     # over 40 avoids a cold-run variance kill wasting a whole run.
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
       postgres: *postgres_service
@@ -525,7 +525,7 @@ jobs:
   artifact-drift-check:
     name: Artifact Drift Check
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' || needs.changes.outputs.artifact_manifests == 'true' }}
     steps:
@@ -562,7 +562,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     timeout-minutes: 40
     permissions:
@@ -622,7 +622,7 @@ jobs:
 
   full-required-gate:
     name: Full Required Gate
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     if: ${{ always() }}
     needs:
       - changes

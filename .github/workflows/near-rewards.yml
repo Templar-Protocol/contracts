@@ -8,7 +8,7 @@ on:
 
 jobs:
   calculate-rewards:
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     permissions:
       contents: read
       issues: read

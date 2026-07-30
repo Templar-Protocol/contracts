@@ -1,0 +1,35 @@
+{
+  "aggregator": {
+    "MedianHigh": {
+      "sources": [
+        {
+          "source": {
+            "Request": {
+              "Lazer": {
+                "oracle_id": "pyth-lazer.templar-alpha.near",
+                "feed_id": 7
+              }
+            }
+          },
+          "weight": 8
+        },
+        {
+          "source": {
+            "Request": {
+              "RedStone": {
+                "oracle_id": "redstone-adapter.v1.tmplr.near",
+                "price_id": "USDC"
+              }
+            }
+          },
+          "weight": 2
+        }
+      ],
+      "min_sources": 1
+    }
+  },
+  "freshness_filter": {
+    "max_age_ns": "60000000000",
+    "max_clock_drift_ns": "10000000000"
+  }
+}

@@ -5,8 +5,8 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, IntoVal, Vec,
 };
 use templar_soroban_shared_types::{
-    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, ReceiptAddress,
-    RequestWithdrawReceipt, VaultCommand as WireVaultCommand,
+    DepositReceipt, EmptyReceipt, ExecuteWithdrawReceipt, ExecuteWithdrawStatus, I128Receipt,
+    ReceiptAddress, RequestWithdrawReceipt, VaultCommand as WireVaultCommand,
 };
 
 use crate::{
@@ -169,6 +169,8 @@ impl MockVaultContract {
                     })
                     .unwrap_or_else(|| ExecuteWithdrawReceipt::NoPayout { status }.encode())
             }
+            WireVaultCommand::AtomicWithdraw { .. } => I128Receipt { value: 75 }.encode(),
+            WireVaultCommand::AtomicRedeem { .. } => I128Receipt { value: 88 }.encode(),
             _ => EmptyReceipt.encode(),
         };
 
@@ -420,6 +422,46 @@ fn test_rejects_negative_amounts_before_vault_call() {
             owner.clone(),
         )
     });
+    let atomic_withdraw_assets = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_withdraw(
+            fixture.env.clone(),
+            caller.clone(),
+            -1,
+            receiver.clone(),
+            owner.clone(),
+            1,
+        )
+    });
+    let atomic_withdraw_limit = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_withdraw(
+            fixture.env.clone(),
+            caller.clone(),
+            1,
+            receiver.clone(),
+            owner.clone(),
+            -1,
+        )
+    });
+    let atomic_redeem_shares = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_redeem(
+            fixture.env.clone(),
+            caller.clone(),
+            -1,
+            receiver.clone(),
+            owner.clone(),
+            1,
+        )
+    });
+    let atomic_redeem_limit = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_redeem(
+            fixture.env.clone(),
+            caller.clone(),
+            1,
+            receiver.clone(),
+            owner.clone(),
+            -1,
+        )
+    });
     let request = fixture.env.as_contract(&fixture.proxy, || {
         Soroban4626ProxyContract::request_withdraw(
             fixture.env.clone(),
@@ -435,7 +477,46 @@ fn test_rejects_negative_amounts_before_vault_call() {
     assert_eq!(mint, Err(ContractError::InvalidInput));
     assert_eq!(withdraw, Err(ContractError::InvalidInput));
     assert_eq!(redeem, Err(ContractError::InvalidInput));
+    assert_eq!(atomic_withdraw_assets, Err(ContractError::InvalidInput));
+    assert_eq!(atomic_withdraw_limit, Err(ContractError::InvalidInput));
+    assert_eq!(atomic_redeem_shares, Err(ContractError::InvalidInput));
+    assert_eq!(atomic_redeem_limit, Err(ContractError::InvalidInput));
     assert_eq!(request, Err(ContractError::InvalidInput));
+    assert_eq!(fixture.recorded_payloads().len(), 0);
+}
+
+#[test]
+fn test_atomic_exits_reject_zero_amounts_before_vault_call() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.initialize().expect("initialize succeeds");
+
+    let withdraw = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_withdraw(
+            fixture.env.clone(),
+            operator.clone(),
+            0,
+            receiver.clone(),
+            owner.clone(),
+            0,
+        )
+    });
+    let redeem = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_redeem(
+            fixture.env.clone(),
+            operator,
+            0,
+            receiver,
+            owner,
+            0,
+        )
+    });
+
+    assert_eq!(withdraw, Err(ContractError::InvalidInput));
+    assert_eq!(redeem, Err(ContractError::InvalidInput));
     assert_eq!(fixture.recorded_payloads().len(), 0);
 }
 
@@ -655,6 +736,125 @@ fn test_deposit_with_min_command_serialization() {
             receiver: address_wire(&receiver),
             assets: 250,
             min_shares_out: 240,
+        }
+    );
+}
+
+#[test]
+fn test_atomic_withdraw_serializes_guarded_vault_command_and_emits_event() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+
+    let shares_burned = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_withdraw(
+            fixture.env.clone(),
+            operator.clone(),
+            500,
+            receiver.clone(),
+            owner.clone(),
+            80,
+        )
+    });
+
+    assert_eq!(shares_burned, Ok(75));
+    let rendered = fixture.proxy_events_debug();
+    assert!(rendered.contains("Withdraw"));
+    assert!(rendered.contains("500"));
+    assert!(rendered.contains("75"));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_command(&payloads.get(0).expect("payload exists")),
+        WireVaultCommand::AtomicWithdraw {
+            owner: address_wire(&owner),
+            receiver: address_wire(&receiver),
+            operator: address_wire(&operator),
+            assets: 500,
+            max_shares_burned: 80,
+        }
+    );
+}
+
+#[test]
+fn test_atomic_redeem_serializes_guarded_vault_command_and_emits_event() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+
+    let assets_out = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_redeem(
+            fixture.env.clone(),
+            operator.clone(),
+            55,
+            receiver.clone(),
+            owner.clone(),
+            80,
+        )
+    });
+
+    assert_eq!(assets_out, Ok(88));
+    let rendered = fixture.proxy_events_debug();
+    assert!(rendered.contains("Withdraw"));
+    assert!(rendered.contains("88"));
+    assert!(rendered.contains("55"));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_command(&payloads.get(0).expect("payload exists")),
+        WireVaultCommand::AtomicRedeem {
+            owner: address_wire(&owner),
+            receiver: address_wire(&receiver),
+            operator: address_wire(&operator),
+            shares: 55,
+            min_assets_out: 80,
+        }
+    );
+}
+
+#[test]
+fn test_atomic_withdraw_rejects_receipt_with_trailing_bytes() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.env.mock_all_auths();
+    fixture.initialize().expect("initialize succeeds");
+    let mut malformed_receipt = I128Receipt { value: 75 }.encode();
+    malformed_receipt.extend_from_slice(&[0xAA, 0xBB, 0xCC]);
+    fixture.set_next_receipt(&malformed_receipt);
+
+    let result = fixture.env.as_contract(&fixture.proxy, || {
+        Soroban4626ProxyContract::atomic_withdraw(
+            fixture.env.clone(),
+            operator.clone(),
+            500,
+            receiver.clone(),
+            owner.clone(),
+            80,
+        )
+    });
+
+    assert_eq!(result, Err(ContractError::InvalidInput));
+    let payloads = fixture.recorded_payloads();
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(
+        decode_command(&payloads.get(0).expect("payload exists")),
+        WireVaultCommand::AtomicWithdraw {
+            owner: address_wire(&owner),
+            receiver: address_wire(&receiver),
+            operator: address_wire(&operator),
+            assets: 500,
+            max_shares_burned: 80,
         }
     );
 }
@@ -1001,6 +1201,24 @@ fn test_deposit_fails_without_auth() {
         &fixture.proxy,
         &soroban_sdk::Symbol::new(&fixture.env, "deposit"),
         (&caller, &100i128, &receiver).into_val(&fixture.env),
+    );
+}
+
+#[test]
+#[should_panic]
+fn test_atomic_withdraw_fails_without_auth() {
+    let fixture = Fixture::new();
+    let operator = Address::generate(&fixture.env);
+    let owner = Address::generate(&fixture.env);
+    let receiver = Address::generate(&fixture.env);
+
+    fixture.initialize().expect("initialize succeeds");
+    fixture.env.mock_auths(&[]);
+
+    fixture.env.invoke_contract::<i128>(
+        &fixture.proxy,
+        &soroban_sdk::Symbol::new(&fixture.env, "atomic_withdraw"),
+        (&operator, &100i128, &receiver, &owner, &100i128).into_val(&fixture.env),
     );
 }
 
