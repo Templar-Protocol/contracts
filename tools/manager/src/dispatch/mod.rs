@@ -4,6 +4,7 @@
 //! flows live in focused submodules ([`teardown`], [`proposals`], [`generic`]) so
 //! this file stays a readable index of the command surface.
 
+mod aggregate;
 mod export;
 pub(crate) mod generic;
 mod preflight;

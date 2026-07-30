@@ -8,7 +8,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_core::GatewayError;
-use templar_gateway_methods_spec::{account, contract, redstone, registry};
+use templar_gateway_methods_spec::{account, contract, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
 
 use crate::commands::spec::Check as CheckArgs;
@@ -84,6 +84,9 @@ async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> 
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
     checks.extend(accounts(ctx, spec).await);
+    // Aggregation last: its per-source prices supersede any liveness probe the
+    // checks above would otherwise have to repeat.
+    checks.extend(super::aggregate::checks(ctx, spec).await);
     checks
 }
 
@@ -125,80 +128,15 @@ async fn asset_checks<A: AssetClass>(
     checks
 }
 
-/// The adapter must exist. Whether it currently *holds* a price for the feed is
-/// reported, not required.
-///
-/// An adapter carries a feed once someone pushes one — Pyth Lazer will verify
-/// any feed it signs, and RedStone any feed written to it. A market being
-/// deployed for the first time may name a feed that has never appeared on this
-/// adapter on this chain, which says nothing about whether the adapter supports
-/// it. Failing on absence would block exactly the new-market case this pipeline
-/// exists for, so absence is reported as unverified instead.
+/// The adapter must exist. Whether it currently carries a price is reported by
+/// `oracle.price.*` in the aggregation dry-run, which fetches it anyway — asking
+/// here as well would round-trip every source twice.
 async fn source_status(ctx: &CliContext, source: &SourceSpec) -> Status {
     let oracle_id = source.oracle_id();
     match exists(ctx, oracle_id).await {
-        Ok(false) => return Status::failed(format!("adapter `{oracle_id}` does not exist")),
-        Err(error) => return Status::failed(format!("{error:#}")),
-        Ok(true) => {}
-    }
-
-    match holds_price(ctx, source).await {
-        Ok(true) => Status::passed(format!(
-            "{} on {oracle_id}, currently carrying a price",
-            describe(source)
-        )),
-        Ok(false) => Status::Skipped {
-            reason: format!(
-                "`{oracle_id}` holds no price for {} yet, which is expected for a feed \
-                 not previously used here and does not mean it is unsupported. The \
-                 aggregation dry-run cannot verify this feed until a price is pushed.",
-                describe(source)
-            ),
-        },
+        Ok(true) => Status::passed(format!("{} on {oracle_id}", source.describe())),
+        Ok(false) => Status::failed(format!("adapter `{oracle_id}` does not exist")),
         Err(error) => Status::failed(format!("{error:#}")),
-    }
-}
-
-/// Whether the adapter currently holds a price for this feed.
-async fn holds_price(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<bool> {
-    match source {
-        SourceSpec::Lazer {
-            oracle, feed_id, ..
-        } => {
-            // No typed gateway method covers the Lazer adapter, so this uses the
-            // documented generic escape hatch. `get_feed_data` answers `null`
-            // for a feed it is not currently carrying.
-            let result = ctx
-                .client
-                .read(contract::ViewFunction {
-                    contract_id: oracle.clone(),
-                    method_name: "get_feed_data".to_owned().into(),
-                    args: ContractArgs::Json(serde_json::json!({ "feed_id": feed_id })),
-                })
-                .await
-                .with_context(|| format!("read lazer feed {feed_id} from {oracle}"))?;
-            Ok(!result.value.is_null())
-        }
-        SourceSpec::RedStone {
-            oracle, price_id, ..
-        } => {
-            let result = ctx
-                .client
-                .read(redstone::ReadPriceData {
-                    oracle_id: oracle.clone(),
-                    feed_ids: vec![price_id.clone().into()],
-                })
-                .await
-                .with_context(|| format!("read redstone `{price_id}` from {oracle}"))?;
-            Ok(!result.entries.is_empty())
-        }
-    }
-}
-
-fn describe(source: &SourceSpec) -> String {
-    match source {
-        SourceSpec::Lazer { feed_id, .. } => format!("lazer feed {feed_id}"),
-        SourceSpec::RedStone { price_id, .. } => format!("redstone `{price_id}`"),
     }
 }
 
