@@ -97,14 +97,10 @@ async fn asset_checks<A: AssetClass>(
         },
     )];
 
-    let on_chain = match underlying_ft(&spec.asset) {
-        Some(account_id) => match ft_decimals(ctx, &account_id).await {
-            Ok(Some(decimals)) => OnChainDecimals::Known(decimals),
-            Ok(None) | Err(_) => OnChainDecimals::Unavailable,
-        },
-        None => OnChainDecimals::Unavailable,
+    let (status, resolved) = match underlying_decimals(ctx, side, &spec.asset).await {
+        Ok(on_chain) => reconcile_decimals(side, spec.decimals, on_chain, accept_mismatch),
+        Err(status) => (status, None),
     };
-    let (status, resolved) = reconcile_decimals(side, spec.decimals, on_chain, accept_mismatch);
     spec.decimals = resolved;
     checks.push(Check::new(format!("asset.decimals.{side}"), status));
 
@@ -210,6 +206,54 @@ fn underlying_ft<A: AssetClass>(asset: &FungibleAsset<A>) -> Option<AccountId> {
         .strip_prefix("nep141:")?
         .parse()
         .ok()
+}
+
+/// What the chain says about the decimals of the token that defines them, or a
+/// failed check.
+///
+/// `asset.exists` only covers `contract_id`, which for a NEP-245 asset is the
+/// *wrapper* — `intents.near` — not the token named inside its token id. So this
+/// is the only place the underlying account is ever touched, and swallowing its
+/// errors here means a mistyped bridge address produces an all-green report.
+/// That is the worst outcome the preflight can have, so:
+///
+/// - a token id naming an account that does not exist is a **failure**, not
+///   "unverified";
+/// - any other read failure is a **failure**, not "this token publishes no
+///   metadata";
+/// - only a real account with absent or unparseable metadata is `Unavailable`,
+///   which is the case the spec's `decimals` override exists for.
+async fn underlying_decimals<A: AssetClass>(
+    ctx: &CliContext,
+    side: &str,
+    asset: &FungibleAsset<A>,
+) -> Result<OnChainDecimals, Status> {
+    // An opaque NEP-245 token id names no NEP-141 account; nothing on chain can
+    // answer, and the override is the only source.
+    let Some(account_id) = underlying_ft(asset) else {
+        return Ok(OnChainDecimals::Unavailable);
+    };
+
+    match exists(ctx, &account_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(Status::failed(format!(
+                "the {side} token id names `{account_id}`, which does not exist. \
+                 Check the asset string — `asset.exists.{side}` only covers the \
+                 NEP-245 wrapper, not the token inside it."
+            )))
+        }
+        Err(error) => return Err(Status::failed(format!("{error:#}"))),
+    }
+
+    match ft_decimals(ctx, &account_id).await {
+        Ok(Some(decimals)) => Ok(OnChainDecimals::Known(decimals)),
+        Ok(None) => Ok(OnChainDecimals::Unavailable),
+        Err(error) => Err(Status::failed(format!(
+            "could not read decimals from `{account_id}`: {error:#}. This is \
+             inconclusive, not evidence the token publishes no metadata."
+        ))),
+    }
 }
 
 async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result<Option<u8>> {
