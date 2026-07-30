@@ -253,6 +253,18 @@ jobs:
         # is the one thing that catches it.
         run: cargo build --workspace --bins
 
+      # `tmplrmgr`'s `ledger` feature is opt-in so the default workspace build
+      # needs no system libraries — hidapi wants libudev, and cargo unifies
+      # features across a workspace build, so enabling it by default would put
+      # that dependency on all 22 crates. Compiling it here, in the one job that
+      # already installs nothing else, is what stops an opt-in feature from
+      # rotting unnoticed.
+      - name: Install Ledger build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+
+      - name: Check the ledger-enabled signer
+        run: cargo check -p templar-manager --features ledger --all-targets
+
   soroban:
     name: Soroban
     runs-on: warp-ubuntu-latest-x64-4x
