@@ -33,10 +33,22 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
             },
         ));
     } else {
+        // The spec names its own chain, and the CLI defaults to testnet. Reading
+        // a mainnet spec against testnet would report every account and version
+        // as missing — a page of confident, entirely wrong failures.
+        let declared = spec.network()?;
+        anyhow::ensure!(
+            declared == ctx.network(),
+            "this spec is for {declared} (its registry is `{}`), but the CLI is \
+             pointed at {}. Re-run with `--network {declared}`.",
+            spec.registry,
+            ctx.network(),
+        );
+
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
         // very run just read off the chain.
-        checks.extend(run(&ctx, &mut spec, args.accept_decimals_mismatch).await?);
+        checks.extend(run(&ctx, &mut spec, args.accept_decimals_mismatch).await);
     }
     // Offline checks run last so they see those decimals.
     checks.extend(crate::spec::check::run_offline(&spec));
@@ -63,17 +75,16 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
 /// Every check that needs the chain, in a stable order so two runs of the same
 /// spec produce comparable reports. Takes the spec mutably to write back the
 /// decimals it resolves.
-async fn run(
-    ctx: &CliContext,
-    spec: &mut MarketSpec,
-    accept_mismatch: bool,
-) -> anyhow::Result<Vec<Check>> {
+/// Nothing here propagates: a read that fails is a *check* that failed, and the
+/// operator still gets the rest of the report. Aborting on the first RPC error
+/// would hide every other problem in the spec.
+async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> Vec<Check> {
     let mut checks = Vec::new();
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
-    checks.extend(versions(ctx, spec).await?);
+    checks.extend(versions(ctx, spec).await);
     checks.extend(accounts(ctx, spec).await);
-    Ok(checks)
+    checks
 }
 
 /// Existence, decimals, and source checks for one side of the pair.
@@ -276,43 +287,68 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 
 /// Every version key must already be registered, or the deploy fails partway —
 /// which is how `deploy.sh` leaves an orphaned governance contract today.
-async fn versions(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<Vec<Check>> {
-    let registered = ctx
+async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+    let labelled = [
+        ("market", &spec.versions.market),
+        ("oracle", &spec.versions.proxy_oracle),
+        ("governance", &spec.versions.proxy_governance),
+    ];
+
+    let registered = match ctx
         .client
         .read(registry::ListVersions {
             registry_id: spec.registry.clone(),
             args: Pagination::default(),
         })
         .await
-        .with_context(|| format!("list versions in {}", spec.registry))?;
+    {
+        Ok(registered) => registered.values,
+        // One failed read must not swallow the rest of the report.
+        Err(error) => {
+            return labelled
+                .into_iter()
+                .map(|(label, _)| {
+                    Check::new(
+                        format!("registry.version.{label}"),
+                        Status::failed(format!(
+                            "could not list versions in {}: {error}",
+                            spec.registry
+                        )),
+                    )
+                })
+                .collect()
+        }
+    };
 
-    Ok([
-        ("market", &spec.versions.market),
-        ("oracle", &spec.versions.proxy_oracle),
-        ("governance", &spec.versions.proxy_governance),
-    ]
-    .into_iter()
-    .map(|(label, key)| {
-        Check::new(
-            format!("registry.version.{label}"),
-            if registered.values.iter().any(|known| known == key) {
-                Status::passed(key.clone())
-            } else {
-                Status::failed(format!(
-                    "`{key}` is not registered in {}; the deploy would fail partway",
-                    spec.registry
-                ))
-            },
-        )
-    })
-    .collect())
+    labelled
+        .into_iter()
+        .map(|(label, key)| {
+            Check::new(
+                format!("registry.version.{label}"),
+                if registered.iter().any(|known| known == key) {
+                    Status::passed(key.clone())
+                } else {
+                    Status::failed(format!(
+                        "`{key}` is not registered in {}; the deploy would fail partway",
+                        spec.registry
+                    ))
+                },
+            )
+        })
+        .collect()
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.
 async fn accounts(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let mut checks = vec![account_check(ctx, "protocol", &spec.market.protocol_account_id).await];
-    for account_id in spec.market.yield_weights.r#static.keys() {
-        checks.push(account_check(ctx, "yield_static", account_id).await);
+
+    // Check ids are a contract — `--skip-check` and the plan artifact key on
+    // them — so each recipient gets its own, and they are emitted in a stable
+    // order rather than `HashMap`'s.
+    let mut recipients: Vec<_> = spec.market.yield_weights.r#static.keys().collect();
+    recipients.sort();
+    for account_id in recipients {
+        checks.push(account_check(ctx, &format!("yield_static.{account_id}"), account_id).await);
     }
     checks
 }

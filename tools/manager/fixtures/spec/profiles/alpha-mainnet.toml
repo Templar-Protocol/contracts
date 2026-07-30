@@ -1,6 +1,6 @@
 # Shared by every alpha market. The values here were duplicated across each
 # market's `env.sh` before the spec existed.
-schema = 1
+schema = 2
 
 registry = "templar-alpha.near"
 
