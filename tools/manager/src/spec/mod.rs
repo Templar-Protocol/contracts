@@ -52,10 +52,15 @@ pub fn default_reference_tolerance() -> Decimal {
 
 /// Bumped only on a breaking spec change; unknown versions are rejected.
 ///
+/// Every struct here is `deny_unknown_fields`, so *adding* a field is breaking
+/// in the reader direction: an older build rejects a document carrying it.
+///
 /// 2: `symbol` became optional, so `market export` can leave it unset rather
-/// than invent a ticker. A schema-1 reader requires it and would reject an
-/// exported spec, so the same number must not describe both.
-pub const SCHEMA_VERSION: u32 = 2;
+///    than invent a ticker.
+/// 3: `reference` and `reference_tolerance` on each asset, and
+///    `market.reference_tolerance`, for the third-party cross-check. Export
+///    always emits the market tolerance, so every exported spec carries it.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
