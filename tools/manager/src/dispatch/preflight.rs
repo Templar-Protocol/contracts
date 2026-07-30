@@ -86,17 +86,8 @@ async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> 
     checks.extend(accounts(ctx, spec).await);
     // Aggregation last: its per-source prices supersede any liveness probe the
     // checks above would otherwise have to repeat.
-    checks.extend(super::aggregate::checks(ctx, spec, now()).await);
+    checks.extend(super::aggregate::checks(ctx, spec).await);
     checks
-}
-
-/// Wall-clock, for freshness filtering. The kernel takes `now` explicitly rather
-/// than reading a clock, which is what makes it testable.
-fn now() -> templar_common::Nanoseconds {
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    templar_common::Nanoseconds::from_ns(u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// Existence, decimals, and source checks for one side of the pair.

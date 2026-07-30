@@ -30,21 +30,80 @@ use crate::spec::{
 };
 
 /// `oracle.aggregate.{collateral,borrow,pair}`.
-pub(super) async fn checks(ctx: &CliContext, spec: &MarketSpec, now: Nanoseconds) -> Vec<Check> {
-    let (collateral, mut checks) = leg(ctx, "collateral", &spec.collateral, spec, now).await;
-    let (borrow, borrow_checks) = leg(ctx, "borrow", &spec.borrow, spec, now).await;
+///
+/// Both legs are fetched first, then judged against a single clock and a single
+/// anchor — mirroring the deployed contract, whose callback captures one block
+/// timestamp *after* every oracle result has arrived and resolves both legs
+/// against it. Per-leg clocks let a fresh collateral and a week-old borrow each
+/// pass on their own terms and produce a ratio the contract could never accept.
+pub(super) async fn checks(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+    let collateral = fetch_all(ctx, &spec.collateral).await;
+    let borrow = fetch_all(ctx, &spec.borrow).await;
+
+    // Sampled after the fetches, not before. Sequential RPCs can outlast the
+    // drift allowance, and a feed updated mid-sweep would then read as
+    // future-drifted against a clock taken before it was even requested.
+    let now = wall_clock();
+
+    // One anchor for both legs, capped at wall-clock.
+    //
+    // Capped, because a source timestamped in the future but *within*
+    // `max_clock_drift` is legitimate to the contract, yet as an anchor it would
+    // age every honest peer by that difference. Shared, because the contract
+    // resolves both legs against the same instant.
+    let newest = collateral
+        .iter()
+        .chain(borrow.iter())
+        .filter_map(|fetched| fetched.as_ref().ok()?.as_ref())
+        .map(|price| price.publish_time_ns)
+        .max()
+        .unwrap_or(now);
+    let anchor = newest.min(now);
+
+    let (collateral_price, mut checks) = leg(
+        "collateral",
+        &spec.collateral,
+        spec,
+        collateral,
+        now,
+        anchor,
+    );
+    let (borrow_price, borrow_checks) = leg("borrow", &spec.borrow, spec, borrow, now, anchor);
     checks.extend(borrow_checks);
-    checks.push(pair(collateral, borrow));
+    checks.push(pair(collateral_price, borrow_price));
     checks
 }
 
-/// One side: fetch every source, report each, then aggregate.
-async fn leg<A: AssetClass>(
+/// Wall-clock, for freshness. The kernel takes `now` explicitly rather than
+/// reading a clock, which is what makes it testable; this is the one place a
+/// clock is read.
+fn wall_clock() -> Nanoseconds {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    Nanoseconds::from_ns(u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// Every source's current price, in spec order.
+async fn fetch_all<A: AssetClass>(
     ctx: &CliContext,
+    asset: &AssetSpec<A>,
+) -> Vec<anyhow::Result<Option<Price>>> {
+    let mut fetched = Vec::with_capacity(asset.sources.len());
+    for source in &asset.sources {
+        fetched.push(fetch(ctx, source).await);
+    }
+    fetched
+}
+
+/// One side: fetch every source, report each, then aggregate.
+fn leg<A: AssetClass>(
     side: &str,
     asset: &AssetSpec<A>,
     spec: &MarketSpec,
+    fetched_sources: Vec<anyhow::Result<Option<Price>>>,
     now: Nanoseconds,
+    anchor: Nanoseconds,
 ) -> (Option<Price>, Vec<Check>) {
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
@@ -62,8 +121,8 @@ async fn leg<A: AssetClass>(
     let drift_limit = Nanoseconds::from_ns(now.as_ns().saturating_add(max_drift.as_ns()));
 
     let mut transport_failed = false;
-    for (index, source) in asset.sources.iter().enumerate() {
-        let fetched = fetch(ctx, source).await;
+    for ((index, source), fetched) in asset.sources.iter().enumerate().zip(fetched_sources) {
+        let fetched = &fetched;
         let drifted = matches!(&fetched, Ok(Some(price)) if price.publish_time_ns > drift_limit);
 
         checks.push(Check::new(
@@ -99,25 +158,9 @@ async fn leg<A: AssetClass>(
         prices.push(if drifted {
             None
         } else {
-            fetched.ok().flatten()
+            fetched.as_ref().ok().and_then(|price| *price)
         });
     }
-
-    // Age is measured between the sources, not against wall-clock.
-    //
-    // An adapter holds whatever price was last pushed to it; the relayer pushes
-    // a fresh one when an operation needs it. So at rest a perfectly healthy
-    // feed is routinely hours old, and filtering on wall-clock would report
-    // every market as unaggregatable — a check that always fails tells you
-    // nothing. Anchoring on the newest surviving price still catches the failure
-    // that matters here: one source lagging far behind its peers. Absolute ages
-    // are reported per source above, so real staleness stays visible.
-    let anchor = prices
-        .iter()
-        .flatten()
-        .map(|price| price.publish_time_ns)
-        .max()
-        .unwrap_or(now);
 
     // How many sources actually contributed. Distinguishes "nothing to judge"
     // from "judged and rejected", which decide Skipped vs Failed below.
