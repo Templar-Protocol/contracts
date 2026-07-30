@@ -57,13 +57,7 @@ pub(in crate::commands) fn validated_stack_adapter_admin<'a>(
             .map(AddressStr::as_str)
             .or_else(|| contract_id(manifest, "asset_token"))
     });
-    validate_adapter_admin(
-        admin,
-        include_blend,
-        vault,
-        governance,
-        custodial_asset.flatten(),
-    )?;
+    validate_adapter_admin(admin, vault, governance, custodial_asset.flatten())?;
     Ok(Some(admin))
 }
 
@@ -81,7 +75,6 @@ pub(in crate::commands) fn validate_adapter_deployment_request(
     });
     validate_adapter_admin(
         &args.adapter_admin,
-        !args.blend_pools.is_empty(),
         vault,
         governance,
         custodial_asset.flatten(),
@@ -90,19 +83,10 @@ pub(in crate::commands) fn validate_adapter_deployment_request(
 
 pub(in crate::commands) fn validate_adapter_admin(
     admin: &AdapterAdminArg,
-    include_blend: bool,
     vault: Option<&str>,
     governance: Option<&str>,
     custodial_asset: Option<&str>,
 ) -> anyhow::Result<()> {
-    if include_blend {
-        if let AdapterAdminArg::Address(address) = admin {
-            anyhow::ensure!(
-                address.as_str().starts_with('C'),
-                "Blend adapter admin must be a contract address or `vault`"
-            );
-        }
-    }
     let resolved = match admin {
         AdapterAdminArg::Vault => vault,
         AdapterAdminArg::Address(address) => Some(address.as_str()),
@@ -199,7 +183,6 @@ pub(in crate::commands) fn deploy_adapters<E: CommandExecutor>(
     };
     validate_adapter_admin(
         requested_adapter_admin,
-        !args.blend_pools.is_empty(),
         Some(&vault),
         Some(&governance),
         custodial_asset,
