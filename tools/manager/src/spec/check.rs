@@ -49,7 +49,7 @@ pub struct Check {
 }
 
 impl Check {
-    fn new(id: impl Into<String>, status: Status) -> Self {
+    pub(crate) fn new(id: impl Into<String>, status: Status) -> Self {
         Self {
             id: id.into(),
             status,
@@ -70,6 +70,68 @@ pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
         sources(spec),
         validate_configuration(spec),
     ]
+}
+
+/// What the chain said about a token's decimals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnChainDecimals {
+    /// `ft_metadata`/`mt_metadata` answered.
+    Known(u8),
+    /// The contract exists but its metadata is missing or unreadable. Real: at
+    /// least one bridged asset shipped without `ft_metadata` populated.
+    Unavailable,
+}
+
+/// Reconcile the spec's optional `decimals` override against the chain.
+///
+/// Pure, so the whole matrix is unit-testable without a network — the IO around
+/// it is a single view call.
+pub fn reconcile_decimals(
+    side: &str,
+    declared: Option<u8>,
+    on_chain: OnChainDecimals,
+    accept_mismatch: bool,
+) -> (Status, Option<u8>) {
+    match (declared, on_chain) {
+        (None, OnChainDecimals::Known(actual)) => (
+            Status::passed(format!("{actual} (from token metadata)")),
+            Some(actual),
+        ),
+        (None, OnChainDecimals::Unavailable) => (
+            Status::failed(format!(
+                "the {side} token publishes no readable decimals; set `{side}.decimals` \
+                 in the spec, verified against the asset's source chain"
+            )),
+            None,
+        ),
+        (Some(declared), OnChainDecimals::Known(actual)) if declared == actual => (
+            Status::passed(format!("{actual}, matching token metadata")),
+            Some(actual),
+        ),
+        (Some(declared), OnChainDecimals::Known(actual)) if accept_mismatch => (
+            Status::passed(format!(
+                "{declared} declared, overriding {actual} from token metadata \
+                 (--accept-decimals-mismatch)"
+            )),
+            Some(declared),
+        ),
+        (Some(declared), OnChainDecimals::Known(actual)) => (
+            Status::failed(format!(
+                "{side}.decimals says {declared} but token metadata says {actual}. \
+                 One of them is wrong; pass --accept-decimals-mismatch only if the \
+                 spec is right and the token is lying."
+            )),
+            None,
+        ),
+        (Some(declared), OnChainDecimals::Unavailable) => (
+            // Not a failure: this is exactly the case the override exists for.
+            // But it is unverified, and the report must not imply otherwise.
+            Status::passed(format!(
+                "{declared} declared; token publishes no metadata, so this is unverified"
+            )),
+            Some(declared),
+        ),
+    }
 }
 
 /// A market whose two sides are the same asset prices itself against itself.

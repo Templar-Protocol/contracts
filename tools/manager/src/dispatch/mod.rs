@@ -6,6 +6,7 @@
 
 mod export;
 pub(crate) mod generic;
+mod preflight;
 mod proposals;
 mod teardown;
 
@@ -41,17 +42,16 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
-        // Spec commands are purely local; the gateway context is unused.
-        Command::Spec { command } => spec(command),
+        Command::Spec { command } => spec(ctx, command).await,
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
         Command::Write(call) => generic::write(ctx, call).await,
     }
 }
 
-fn spec(ns: SpecNs) -> anyhow::Result<()> {
+async fn spec(ctx: CliContext, ns: SpecNs) -> anyhow::Result<()> {
     match ns {
-        SpecNs::Check(a) => a.run(),
+        SpecNs::Check(a) => preflight::check(ctx, a).await,
         SpecNs::PrintSchema => crate::commands::spec::print_schema(),
     }
 }
