@@ -61,10 +61,15 @@ pub trait ReferencePriceSource {
     fn label(&self) -> &'static str;
 }
 
-/// What an asset resolved to, or why it could not be checked. `Err` is reported,
-/// never failed: an absent check must be visible without blocking a deploy over
-/// a judgement the operator already recorded.
-type Resolved = Result<Listing, String>;
+/// What an asset resolved to, or the verdict explaining why it did not.
+///
+/// The `Err` carries a [`Status`], not a message, because the two failure modes
+/// are not the same kind of thing. A source that cannot be reached is
+/// `Skipped` — nothing was learned. A pinned id or ticker the source does not
+/// know is `Failed`: the spec asserted that coin exists and the source just
+/// disproved it. Collapsing them would let a fat-fingered id read exactly like
+/// a network blip and exit zero.
+type Resolved = Result<Listing, Status>;
 
 pub struct CoinGecko {
     client: reqwest::Client,
@@ -223,6 +228,15 @@ pub(super) async fn checks(
     };
 
     let collateral_tolerance = tolerance(&spec.collateral, spec);
+    let borrow_tolerance = tolerance(&spec.borrow, spec);
+    // The ratio carries both legs' deviations, so it is graded against the looser
+    // band. Using one leg's would contradict an override the operator set on the
+    // other — the override exists precisely for the leg that needs room.
+    let pair_tolerance = if collateral_tolerance > borrow_tolerance {
+        collateral_tolerance
+    } else {
+        borrow_tolerance
+    };
     let (collateral_check, collateral_reference) = compare(
         "collateral",
         source.label(),
@@ -237,7 +251,7 @@ pub(super) async fn checks(
         &borrow_resolved,
         borrow,
         &quotes,
-        tolerance(&spec.borrow, spec),
+        borrow_tolerance,
     );
 
     vec![
@@ -249,7 +263,7 @@ pub(super) async fn checks(
             borrow,
             collateral_reference,
             borrow_reference,
-            collateral_tolerance,
+            pair_tolerance,
         ),
     ]
 }
@@ -282,29 +296,42 @@ async fn resolve<A: AssetClass>(
     asset: &AssetSpec<A>,
 ) -> Resolved {
     match asset.reference.clone().unwrap_or_default() {
-        ReferenceAsset::Unlisted { reason } => Err(format!(
-            "the spec records this {side} asset as unlisted: {reason}"
-        )),
+        ReferenceAsset::Unlisted { reason } => Err(Status::Skipped {
+            reason: format!("the spec records this {side} asset as unlisted: {reason}"),
+        }),
         ReferenceAsset::CoinGecko { id } => match source.lookup(&id).await {
             Ok(Some(listing)) => Ok(listing),
-            Ok(None) => Err(format!("no coin has the pinned id `{id}`")),
-            Err(error) => Err(format!("could not look up `{id}`: {error:#}")),
+            // The spec asserted this coin exists. It does not.
+            Ok(None) => Err(Status::failed(format!(
+                "no coin has the pinned id `{id}`, so the {side} asset's `reference` \
+                 names something that does not exist"
+            ))),
+            Err(error) => Err(Status::Skipped {
+                reason: format!("could not look up `{id}`: {error:#}"),
+            }),
         },
         ReferenceAsset::ByTicker => {
             let Some(symbol) = &asset.symbol else {
-                return Err(format!(
-                    "the {side} asset has no `symbol` to resolve; set one, or pin \
-                     `reference` to an id"
-                ));
+                return Err(Status::Skipped {
+                    reason: format!(
+                        "the {side} asset has no `symbol` to resolve; set one, or pin \
+                         `reference` to an id"
+                    ),
+                });
             };
             match source.candidates(symbol).await {
-                Err(error) => Err(format!("could not resolve `{symbol}`: {error:#}")),
+                Err(error) => Err(Status::Skipped {
+                    reason: format!("could not resolve `{symbol}`: {error:#}"),
+                }),
                 Ok(candidates) => match candidates.as_slice() {
                     [only] => Ok(only.clone()),
-                    [] => Err(format!("no coin uses the ticker `{symbol}`")),
+                    // A ticker the source does not know is a typo, not an outage.
+                    [] => Err(Status::failed(format!(
+                        "no coin uses the ticker `{symbol}`"
+                    ))),
                     // Never a first match: picking one of several would silently
                     // verify the wrong asset, which is worse than not checking.
-                    many => Err(format!(
+                    many => Err(Status::failed(format!(
                         "`{symbol}` is ambiguous — {} coins use it ({}{}). Pin one \
                          with `reference = {{ coin_gecko = {{ id = \"…\" }} }}`.",
                         many.len(),
@@ -314,7 +341,7 @@ async fn resolve<A: AssetClass>(
                             .collect::<Vec<_>>()
                             .join(", "),
                         if many.len() > 5 { ", …" } else { "" }
-                    )),
+                    ))),
                 },
             }
         }
@@ -334,17 +361,7 @@ fn compare(
 
     let listing = match resolved {
         Ok(listing) => listing,
-        Err(reason) => {
-            return (
-                Check::new(
-                    id,
-                    Status::Skipped {
-                        reason: reason.clone(),
-                    },
-                ),
-                None,
-            )
-        }
+        Err(status) => return (Check::new(id, status.clone()), None),
     };
 
     let Some(aggregated) = aggregated.map(|price| scaled(&price)) else {
@@ -442,7 +459,9 @@ fn pair(
     if aggregated == 0.0 || borrow_reference == 0.0 {
         return Check::new(
             id,
-            Status::failed("a borrow price of zero admits no ratio".to_owned()),
+            Status::Skipped {
+                reason: "a borrow price of zero admits no ratio".to_owned(),
+            },
         );
     }
     let ours = scaled(&collateral) / aggregated;
@@ -451,7 +470,9 @@ fn pair(
     let Some(deviation) = deviation(ours, theirs) else {
         return Check::new(
             id,
-            Status::failed("the reference ratio is zero, so no comparison is possible".to_owned()),
+            Status::Skipped {
+                reason: "the reference ratio is zero, so no comparison is possible".to_owned(),
+            },
         );
     };
 
@@ -650,6 +671,57 @@ mod tests {
                 "{check:#?}"
             );
         }
+    }
+
+    /// A pinned id the source does not know is a failure, not a shrug: the spec
+    /// asserted that coin exists, and the source just disproved it. This is the
+    /// same distinction the account checks make, and the one most easily lost.
+    #[tokio::test]
+    async fn a_wrong_pinned_id_fails() {
+        let mut spec = spec();
+        spec.collateral.reference = Some(crate::spec::oracle::ReferenceAsset::CoinGecko {
+            id: "ripple-typo".to_owned(),
+        });
+
+        let checks = super::checks(
+            &Fixture::new(),
+            &spec,
+            Some(price(300_000_000, -8)),
+            Some(price(100_000_000, -8)),
+        )
+        .await;
+
+        let status = find(&checks, "reference.price.collateral");
+        assert!(
+            matches!(status, crate::spec::check::Status::Failed { .. }),
+            "a nonexistent pinned id must fail, not skip: {status:#?}"
+        );
+    }
+
+    /// The ratio carries both legs' deviations, so an override on either leg
+    /// must widen its band — otherwise the pair check contradicts a leg check
+    /// the operator deliberately configured.
+    #[tokio::test]
+    async fn the_pair_band_honours_either_leg_override() {
+        let mut spec = spec();
+        spec.borrow.reference_tolerance = Some(templar_common::dec!("0.5"));
+
+        // Borrow 20% off: inside its own 50% band, and the ratio must follow.
+        let checks = super::checks(
+            &Fixture::new(),
+            &spec,
+            Some(price(300_000_000, -8)),
+            Some(price(120_000_000, -8)),
+        )
+        .await;
+
+        assert!(
+            matches!(
+                find(&checks, "reference.price.pair"),
+                crate::spec::check::Status::Passed { .. }
+            ),
+            "{checks:#?}"
+        );
     }
 
     /// The ratio cancels USD drift between the two sources, so it still passes
