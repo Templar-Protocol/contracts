@@ -4,6 +4,7 @@ mod context;
 mod dispatch;
 mod proxy;
 mod resolve;
+mod spec;
 
 #[cfg(test)]
 mod tests;

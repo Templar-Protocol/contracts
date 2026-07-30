@@ -16,6 +16,7 @@ mod plan;
 mod proxy_oracle;
 mod redstone;
 mod registry;
+mod spec;
 mod storage;
 
 #[test]
@@ -33,6 +34,7 @@ fn help_lists_all_top_level_commands() {
         "owner",
         "pyth",
         "redstone",
+        "spec",
         "recover-nep141",
         "read",
         "write",

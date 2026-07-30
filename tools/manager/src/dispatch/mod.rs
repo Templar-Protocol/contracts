@@ -20,6 +20,7 @@ use crate::commands::{
     pyth::PythNs,
     redstone::RedstoneNs,
     registry::RegistryNs,
+    spec::SpecNs,
     storage::StorageNs,
 };
 use crate::context::{all_sources, lazer_source, print_json, redstone_source, CliContext};
@@ -39,9 +40,18 @@ pub(crate) async fn dispatch(ctx: CliContext, command: Command) -> anyhow::Resul
         Command::Oracle { command } => oracle(ctx, command).await,
         Command::Pyth { command } => pyth(ctx, command).await,
         Command::Redstone { command } => redstone(ctx, command).await,
+        // Spec commands are purely local; the gateway context is unused.
+        Command::Spec { command } => spec(command),
         Command::RecoverNep141(args) => teardown::recover_nep141(ctx, args).await,
         Command::Read(call) => generic::read(ctx, call).await,
         Command::Write(call) => generic::write(ctx, call).await,
+    }
+}
+
+fn spec(ns: SpecNs) -> anyhow::Result<()> {
+    match ns {
+        SpecNs::Check(a) => a.run(),
+        SpecNs::PrintSchema => crate::commands::spec::print_schema(),
     }
 }
 

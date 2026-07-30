@@ -1,0 +1,36 @@
+# Reproduces the live alpha market of the same name, which today needs four
+# files: env.sh, market-args.json, proxy-collateral.json, proxy-borrow.json.
+#
+# `decimals` is stated on both sides so the offline `config.validate` check can
+# run without an on-chain metadata lookup (ENG-541). It is the same value that
+# lookup will reconcile against.
+extends = ["profiles/alpha-mainnet.toml", "profiles/irs-stable.toml"]
+
+name = "iethfxrp-ixlmusdc"
+
+[collateral]
+asset = "nep245:intents.near:nep141:eth-0xce6170ea245dc8d1f275a710a062b70f125f0110.omft.near"
+symbol = "FXRP"
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.templar-alpha.near", feed_id = 14, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "XRP", weight = 2 },
+]
+
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+symbol = "USDC"
+decimals = 7
+aggregator = "median_high"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.templar-alpha.near", feed_id = 7, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDC", weight = 2 },
+]
+
+[market]
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "40000" }
+supply_withdrawal_range = { minimum = "40000" }
