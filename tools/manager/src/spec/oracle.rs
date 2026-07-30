@@ -123,6 +123,14 @@ impl SourceSpec {
         }
     }
 
+    /// How this source reads in a report.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Lazer { feed_id, .. } => format!("lazer feed {feed_id}"),
+            Self::RedStone { price_id, .. } => format!("redstone `{price_id}`"),
+        }
+    }
+
     pub const fn weight(&self) -> u32 {
         match self {
             Self::Lazer { weight, .. } | Self::RedStone { weight, .. } => *weight,
