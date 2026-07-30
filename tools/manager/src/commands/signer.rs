@@ -26,18 +26,20 @@ pub(crate) enum PrintFormat {
     Sputnik,
 }
 
-/// Where the signing key lives. Only [`SigningBackend::SecretKey`] puts one in
-/// the process.
+/// A backend that holds the signing key *outside* this process.
+///
+/// The in-process path — `--secret-key` / `$SECRET_KEY` — is deliberately not a
+/// variant. Naming it would let `--sign-with secret-key` satisfy clap's
+/// "a backend was chosen" condition while supplying no key, so the invocation
+/// would parse and only fail later. Absent `--sign-with`, the secret key is
+/// required; present, it is not.
 ///
 /// A Ledger backend was tried and removed: near-api's `ledger` feature pulls
 /// hidapi, which needs libudev headers, and cargo unifies features across a
 /// workspace build — so every crate here and in CI would inherit that system
 /// dependency for something nothing needs yet.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SigningBackend {
-    /// `--secret-key`, or `$SECRET_KEY`.
-    #[default]
-    SecretKey,
     /// The OS keychain, looked up by account id.
     Keychain,
 }
@@ -51,12 +53,9 @@ pub struct SignerArgs {
     /// Account that signs the transaction, or the DAO account that will execute a plan.
     #[arg(long, env = "SIGNER_ID", value_name = "ACCOUNT_ID")]
     signer_id: AccountId,
-    /// Where the signing key lives.
-    ///
-    /// A defaulted value is not "explicitly present" to clap, so `--secret-key`
-    /// stays required until this is named.
-    #[arg(long, value_enum, value_name = "BACKEND", default_value_t = SigningBackend::SecretKey)]
-    sign_with: SigningBackend,
+    /// Hold the signing key outside this process. Omit to use `--secret-key`.
+    #[arg(long, value_enum, value_name = "BACKEND")]
+    sign_with: Option<SigningBackend>,
     /// Private key for `--signer-id`, in `ed25519:…` form.
     ///
     /// Required only for the default `secret-key` backend: naming any
@@ -67,6 +66,8 @@ pub struct SignerArgs {
         env = "SECRET_KEY",
         hide_env_values = true,
         value_name = "SECRET_KEY",
+        // `--sign-with` names only external backends, so its presence always
+        // means some other credential source was chosen.
         required_unless_present_any = ["print", "sign_with"],
         conflicts_with = "print",
         value_parser = SecretKeyParser
@@ -77,7 +78,12 @@ pub struct SignerArgs {
     print: Option<PrintFormat>,
     /// Public key embedded by deploy/create writes. Required in plan-only mode,
     /// and for backends that hold their key outside this process.
-    #[arg(long, value_name = "PUBLIC_KEY", conflicts_with = "secret_key")]
+    ///
+    /// Deliberately not in conflict with `--secret-key`: an ambient `SECRET_KEY`
+    /// is extremely common, and a conflict would make the documented
+    /// `--sign-with keychain --public-key …` flow fail at parse time until the
+    /// operator unset an environment variable the selected backend ignores.
+    #[arg(long, value_name = "PUBLIC_KEY")]
     public_key: Option<CliPublicKey>,
 }
 
@@ -111,6 +117,24 @@ impl SignerArgs {
     /// credential, and the keychain backend holds its key outside this process,
     /// so both require `--public-key`.
     pub fn public_key(&self) -> anyhow::Result<PublicKey> {
+        // The in-process backend derives from the key it will actually sign
+        // with. Returning a supplied `--public-key` here would grant a full
+        // access key on the new account to a key the signer does not hold,
+        // while the transaction is signed by the secret — so a contradicting
+        // value is an error, not an override.
+        if self.sign_with.is_none() && self.print.is_none() {
+            let derived = PublicKey::from(self.secret()?.public_key());
+            if let Some(supplied) = &self.public_key {
+                anyhow::ensure!(
+                    PublicKey::from(*supplied) == derived,
+                    "--public-key names a different key than --secret-key signs with. \
+                     The new account would grant full access to a key you do not hold; \
+                     drop --public-key to use the signer's own."
+                );
+            }
+            return Ok(derived);
+        }
+
         if let Some(public_key) = &self.public_key {
             return Ok(PublicKey::from(*public_key));
         }
@@ -119,9 +143,9 @@ impl SignerArgs {
                 "--public-key is required with --print for writes that embed the signer's key"
             );
         }
-        if self.sign_with != SigningBackend::SecretKey {
+        if self.sign_with.is_some() {
             anyhow::bail!(
-                "--public-key is required with --sign-with keychain for writes that embed the signer's key"
+                "--public-key is required with --sign-with for writes that embed the signer's key"
             );
         }
         Ok(PublicKey::from(self.secret()?.public_key()))
@@ -140,9 +164,9 @@ impl SignerArgs {
         }
 
         let signer = match self.sign_with {
-            SigningBackend::SecretKey => Signer::from_secret_key(self.secret()?.clone())
+            None => Signer::from_secret_key(self.secret()?.clone())
                 .context("build a signer from --secret-key")?,
-            SigningBackend::Keychain => {
+            Some(SigningBackend::Keychain) => {
                 Signer::from_keystore_with_search_for_keys(self.signer_id.clone(), network)
                     .await
                     .context("find a usable key for this account in the OS keychain")?
@@ -269,7 +293,7 @@ mod tests {
     async fn plan_mode_rejects_credential_resolution() {
         let signer = SignerArgs {
             signer_id: "dao.near".parse().expect("valid account"),
-            sign_with: SigningBackend::SecretKey,
+            sign_with: None,
             secret_key: None,
             print: Some(PrintFormat::Sputnik),
             public_key: None,
@@ -291,7 +315,7 @@ mod tests {
     fn plan_write_that_embeds_a_key_requires_public_key() {
         let signer = SignerArgs {
             signer_id: "dao.near".parse().expect("valid account"),
-            sign_with: SigningBackend::SecretKey,
+            sign_with: None,
             secret_key: None,
             print: Some(PrintFormat::Json),
             public_key: None,
@@ -310,7 +334,7 @@ mod tests {
         let expected = PublicKey::from(secret_key.public_key());
         let signer = SignerArgs {
             signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with: SigningBackend::SecretKey,
+            sign_with: None,
             secret_key: Some(Box::new(secret_key)),
             print: None,
             public_key: None,
@@ -332,7 +356,7 @@ mod tests {
         ])
         .expect("external backend should parse with no credential");
 
-        assert_eq!(harness.signer.sign_with, SigningBackend::Keychain);
+        assert_eq!(harness.signer.sign_with, Some(SigningBackend::Keychain));
     }
 
     /// A key held in the keychain or on a device cannot be derived in-process,
@@ -341,7 +365,7 @@ mod tests {
     fn external_backend_requires_an_explicit_public_key() {
         let signer = SignerArgs {
             signer_id: "signer.testnet".parse().expect("valid account"),
-            sign_with: SigningBackend::Keychain,
+            sign_with: Some(SigningBackend::Keychain),
             secret_key: None,
             print: None,
             public_key: None,

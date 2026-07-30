@@ -238,6 +238,71 @@ fn write_with_an_external_backend_needs_no_secret_key() {
     result.expect("--sign-with keychain should satisfy the credential requirement");
 }
 
+/// `--sign-with` names only external backends. `secret-key` is not one, so it
+/// cannot be typed — an invocation that would parse while supplying no
+/// credential is unrepresentable rather than merely discouraged.
+#[test]
+fn sign_with_cannot_name_the_in_process_backend() {
+    let error = with_cleared_credential_env(|| {
+        try_parse_write(["--signer-id", "dao.near", "--sign-with", "secret-key"])
+    })
+    .expect_err("`secret-key` is not a --sign-with backend");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+}
+
+/// A supplied `--public-key` must never become the full access key on a new
+/// account when the signer holds a different secret — that would hand control
+/// of the account to a key the operator does not have.
+#[test]
+fn public_key_cannot_override_the_signing_key() {
+    let cli = with_cleared_credential_env(|| {
+        try_parse_write([
+            "--signer-id",
+            "signer.testnet",
+            "--secret-key",
+            TEST_SECRET_KEY,
+            "--public-key",
+            "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+        ])
+    })
+    .expect("clap accepts the pair; the conflict is semantic");
+
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant")
+    };
+    let error = call
+        .signer
+        .public_key()
+        .expect_err("a contradicting --public-key must not be honoured");
+
+    assert!(
+        error.to_string().contains("a key you do not hold"),
+        "error should say why: {error}"
+    );
+}
+
+/// An ambient `SECRET_KEY` is extremely common. It must not break the documented
+/// `--sign-with keychain --public-key …` flow, whose backend ignores it.
+#[test]
+fn an_ambient_secret_does_not_block_an_external_backend() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let original = std::env::var_os("SECRET_KEY");
+    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
+
+    let result = try_parse_write([
+        "--signer-id",
+        "dao.near",
+        "--sign-with",
+        "keychain",
+        "--public-key",
+        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+    ]);
+
+    restore_env("SECRET_KEY", original);
+    result.expect("an ignored ambient secret must not fail parsing");
+}
+
 #[test]
 fn write_command_accepts_print_without_secret() {
     let result = with_cleared_credential_env(|| {

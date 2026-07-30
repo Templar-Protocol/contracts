@@ -43,7 +43,11 @@ pub const COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xcc; 32]);
 pub const BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier([0xbb; 32]);
 
 /// Bumped only on a breaking spec change; unknown versions are rejected.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// 2: `symbol` became optional, so `market export` can leave it unset rather
+/// than invent a ticker. A schema-1 reader requires it and would reject an
+/// exported spec, so the same number must not describe both.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
@@ -174,6 +178,24 @@ fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
         .with_context(|| format!("`{label}.{registry}` is not a valid account id"))
 }
 
+/// Convert a spec duration to the coarser unit the chain stores it in, refusing
+/// anything that would not survive the conversion.
+///
+/// The spec accepts any unit `parse_duration` does, but the chain stores
+/// `price_maximum_age` in whole seconds and `time_chunk` in whole milliseconds.
+/// Dividing silently would make `price_maximum_age = "1500ms"` mean 1s to the
+/// market while the proxy still enforced 1.5s, and `time_chunk = "500us"`
+/// collapse to a zero-length chunk.
+fn exact_units(value: Nanoseconds, per_unit: u64, field: &str, unit: &str) -> anyhow::Result<u64> {
+    let ns = value.as_ns();
+    anyhow::ensure!(
+        ns % per_unit == 0,
+        "`{field}` must be a whole number of {unit}; {ns}ns is not, and the chain \
+         would store a different value than the proxy enforces"
+    );
+    Ok(ns / per_unit)
+}
+
 /// Convert an authored range through the validating `TryFrom`.
 ///
 /// The spec holds `AmountRange` rather than `ValidAmountRange` because
@@ -234,10 +256,23 @@ impl MarketSpec {
         borrow_decimals: i32,
     ) -> anyhow::Result<MarketConfiguration> {
         let oracle_id = self.oracle_id()?;
-        let price_maximum_age_s =
-            u32::try_from(self.market.price_maximum_age.as_ns() / 1_000_000_000)
-                .context("`price_maximum_age` exceeds u32 seconds")?;
-        let time_chunk_ms = self.market.time_chunk.as_ns() / 1_000_000;
+        let price_maximum_age_s = u32::try_from(exact_units(
+            self.market.price_maximum_age,
+            1_000_000_000,
+            "price_maximum_age",
+            "seconds",
+        )?)
+        .context("`price_maximum_age` exceeds u32 seconds")?;
+        let time_chunk_ms = exact_units(
+            self.market.time_chunk,
+            1_000_000,
+            "time_chunk",
+            "milliseconds",
+        )?;
+        anyhow::ensure!(
+            time_chunk_ms > 0,
+            "`time_chunk` must be at least 1ms; a zero-length chunk has no snapshot schedule"
+        );
 
         Ok(MarketConfiguration {
             time_chunk_configuration: TimeChunkConfiguration::new(time_chunk_ms),

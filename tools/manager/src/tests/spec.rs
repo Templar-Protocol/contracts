@@ -275,6 +275,36 @@ fn an_unverified_override_says_so() {
     );
 }
 
+/// The chain stores `price_maximum_age` in whole seconds and `time_chunk` in
+/// whole milliseconds. Dividing silently would make the market enforce a
+/// different bound than the proxy, or collapse a chunk to zero length.
+#[rstest::rstest]
+#[case::sub_second_age("price_maximum_age", "1500ms", "whole number of seconds")]
+#[case::sub_milli_chunk("time_chunk", "500us", "whole number of milliseconds")]
+#[case::zero_chunk("time_chunk", "0s", "at least 1ms")]
+fn durations_that_would_not_survive_the_chain_are_rejected(
+    #[case] field: &str,
+    #[case] value: &str,
+    #[case] expected: &str,
+) {
+    let mut spec = alpha_market();
+    let parsed = crate::commands::duration::parse_duration(value).expect("valid duration");
+    if field == "price_maximum_age" {
+        spec.market.price_maximum_age = parsed;
+    } else {
+        spec.market.time_chunk = parsed;
+    }
+
+    let error = spec
+        .into_market_configuration(6, 7)
+        .expect_err("a lossy duration must not reach the chain");
+
+    assert!(
+        format!("{error:#}").contains(expected),
+        "error should explain the loss: {error:#}"
+    );
+}
+
 #[test]
 fn sources_check_catches_an_unsatisfiable_minimum() {
     let mut spec = alpha_market();

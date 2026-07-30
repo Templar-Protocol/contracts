@@ -7,7 +7,7 @@ use near_api::{types::transaction::actions::Action, NetworkConfig, SecretKey};
 use near_sdk::json_types::Base64VecU8;
 use serde::Serialize;
 use std::io::Write as _;
-use templar_gateway_client::{Client, NetworkConfigBuilder};
+use templar_gateway_client::{Client, Network, NetworkConfigBuilder};
 use templar_gateway_core::{
     DispatchRead, GatewayContext, GatewayContextBuilder, OperationPlan, PlanWrite,
     PlannedTransaction,
@@ -32,10 +32,19 @@ pub(crate) struct CliContext {
     /// build a per-operation signing client from their command's credentials.
     pub(crate) client: Client,
     network: NetworkConfig,
+    /// The chain the CLI was pointed at. Kept alongside the built config so a
+    /// command can compare it against what a spec declares — reading a mainnet
+    /// spec against testnet reports every account as missing.
+    selected_network: Network,
     transaction_url_prefix: String,
 }
 
 impl CliContext {
+    /// The chain the CLI was pointed at.
+    pub(crate) const fn network(&self) -> Network {
+        self.selected_network
+    }
+
     /// Build a single-signer client for `account_id` from a bare `secret_key`.
     ///
     /// For the teardown flows that sign many *discovered* accounts with one
@@ -309,6 +318,7 @@ pub(crate) fn build_context(cli: &Cli) -> anyhow::Result<CliContext> {
     Ok(CliContext {
         client: Client::read_only(network.clone())?,
         network,
+        selected_network: cli.network,
         transaction_url_prefix: cli.transaction_url_prefix(),
     })
 }
