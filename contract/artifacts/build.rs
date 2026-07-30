@@ -87,25 +87,29 @@ fn parse(path: &Path) -> Release {
         sha256: fields[4].to_ascii_lowercase(),
     };
 
-    for (field, value) in [
-        ("artifact", &release.artifact),
-        ("version", &release.version),
-        ("tag", &release.tag),
-        ("asset", &release.asset),
-    ] {
-        assert!(!value.is_empty(), "{name}: {field} is empty");
-    }
     assert!(
         release.sha256.len() == 64 && release.sha256.chars().all(|c| c.is_ascii_hexdigit()),
         "{name}: sha256 `{}` is not a 64-char hex digest",
         release.sha256,
     );
     assert!(
+        is_canonical_artifact(&release.artifact),
+        "{name}: artifact `{}` is not canonical kebab-case; it would join another \
+         artifact's release list.",
+        release.artifact,
+    );
+    assert!(
         version_key(&release.version).is_some(),
-        "{name}: version `{}` is not `major.minor.patch`. Releases are ordered \
-         by this, and an unparsable one would sort nondeterministically.",
+        "{name}: version `{}` is not canonically spelled `major.minor.patch`, \
+         which releases are ordered by.",
         release.version,
     );
+    for (field, value) in [("tag", &release.tag), ("asset", &release.asset)] {
+        assert!(
+            is_url_safe(value),
+            "{name}: {field} `{value}` is not usable as a URL path segment.",
+        );
+    }
 
     // The filename is the uniqueness key that makes concurrent catalog PRs
     // conflict-free, so it has to agree with the row it holds.
@@ -126,18 +130,37 @@ fn parse(path: &Path) -> Release {
 
 /// Orders versions numerically, so `0.10.0` follows `0.9.0`.
 ///
-/// `None` for anything that is not three numeric components. Defaulting instead
-/// would let two versions collapse to the same key, and a stable sort would then
-/// fall back to `read_dir` order — making the generated catalog, and `current()`
-/// with it, differ between machines.
+/// `None` unless canonically spelled: `1.03.0` would key the same as `1.3.0`,
+/// and equal keys sort by `read_dir` order, which differs between machines.
 fn version_key(version: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = version.split('.');
-    let key = (
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-        parts.next()?.parse().ok()?,
-    );
-    parts.next().is_none().then_some(key)
+    let mut components = version.split('.');
+    let mut next = || {
+        let component = components.next()?;
+        let value = component.parse::<u64>().ok()?;
+        (value.to_string() == component).then_some(value)
+    };
+    let key = (next()?, next()?, next()?);
+    components.next().is_none().then_some(key)
+}
+
+/// Canonical kebab-case. `Market`, `market-` and `proxy--oracle` otherwise
+/// pascal-case onto an existing variant and join its release list.
+fn is_canonical_artifact(artifact: &str) -> bool {
+    !artifact.is_empty()
+        && artifact.split('-').all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Usable as a URL path segment verbatim, so `asset_url` needs no encoding.
+fn is_url_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 /// `proxy-oracle` -> `ProxyOracle`, matching `ArtifactId`'s kebab-case naming.

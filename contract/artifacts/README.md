@@ -158,8 +158,12 @@ Seconds, no contract builds:
 | Check | Catches |
 |---|---|
 | `no_release_is_ahead_of_its_source` | a release claiming a version the crate never reached (the reverse — source ahead of the newest release — is normal) |
-| `catalog_releases_are_well_formed` | duplicate versions, malformed digests, releases listed out of order |
 | `mocks_are_never_released` | a mock that acquired a release |
+| `scaffolding_crates_are_excluded_from_releases` | a Tier C crate that lost its `release = false` |
+
+Each file's own shape — column count, canonical artifact and version spelling,
+URL-safe tag and asset, digest, and agreement with its filename — is checked by
+`build.rs`, so a malformed record fails the build rather than a download.
 
 What this does **not** check is whether the bytes match what the source actually
 compiles to. That needs a reproducible rebuild, which runs on release tags in

@@ -172,6 +172,10 @@ jobs:
             --features workspace-loader,clap --bin record-release -- \
             "$ARTIFACT" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
 
+          # build.rs validates the row, but only at compile time — so compile,
+          # before committing rather than after.
+          cargo build --quiet -p templar-contract-artifacts
+
           # Stage first, then ask the index: a release is a *new* file, which
           # `git diff` does not see, so checking before staging would report
           # "already recorded" for every release and never open the PR.
@@ -202,6 +206,13 @@ jobs:
             "" \
             "    git checkout ${REF_NAME}" \
             "    cargo near build reproducible-wasm --manifest-path ${SOURCE_PATH}/Cargo.toml")
+
+          # The force-push already updated any open PR, and GitHub rejects a
+          # second one for the same head/base.
+          if [ -n "$(gh pr list --head "$branch" --base dev --state open --json number --jq '.[].number')" ]; then
+            echo "::notice::Catalog PR for ${REF_NAME} is already open; updated it in place."
+            exit 0
+          fi
 
           gh pr create \
             --base dev \

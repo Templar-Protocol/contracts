@@ -50,16 +50,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Three numeric components, nothing else — the shape `build.rs` sorts by.
-fn is_major_minor_patch(version: &str) -> bool {
-    let mut parts = version.split('.');
-    let numeric = |part: Option<&str>| part.is_some_and(|p| p.parse::<u64>().is_ok());
-    numeric(parts.next())
-        && numeric(parts.next())
-        && numeric(parts.next())
-        && parts.next().is_none()
-}
-
 fn record(args: &Args) -> Result<String, String> {
     let Args {
         artifact,
@@ -68,29 +58,13 @@ fn record(args: &Args) -> Result<String, String> {
         asset,
         sha256: sha,
     } = args;
-
-    if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(format!("{sha} is not a 64-char hex SHA-256"));
-    }
     let sha = sha.to_ascii_lowercase();
 
-    // A tab would split one field into two and shift every later column.
-    for (name, value) in [("version", version), ("tag", tag), ("asset", asset)] {
-        if value.is_empty() || value.contains(['\t', '\n']) {
-            return Err(format!(
-                "{name} `{value}` is empty or contains a tab/newline"
-            ));
-        }
-    }
-    // Only `version` reaches the path — tags legitimately contain slashes.
-    if version.contains(['/', '\\']) {
-        return Err(format!("version `{version}` cannot contain a slash"));
-    }
-    // build.rs rejects this too, but only on the next compile — after CI has
-    // committed the file, by which point every build fails.
-    if !is_major_minor_patch(version) {
+    // `version` is the only field reaching the path. The row's shape is build.rs's
+    // to judge, and the workflow rebuilds before committing.
+    if version.is_empty() || version.contains(['/', '\\']) || version.contains("..") {
         return Err(format!(
-            "version `{version}` is not `major.minor.patch`; releases sort by it"
+            "version `{version}` is empty or would escape the releases directory"
         ));
     }
 
@@ -152,49 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn a_field_cannot_break_the_column_layout() {
-        for (label, version, tag, asset) in [
-            ("tab in version", "1.0.0\tevil", "t", "a.wasm"),
-            ("newline in tag", "1.0.0", "t\nevil", "a.wasm"),
-            ("empty asset", "1.0.0", "t", ""),
-        ] {
-            let error = record(&args(version, tag, asset))
-                .expect_err("should be rejected before touching releases/");
-            assert!(
-                error.contains("empty or contains a tab/newline"),
-                "{label}: {error}"
-            );
-        }
-    }
-
-    #[test]
     fn a_version_cannot_escape_the_releases_directory() {
-        // `version` is the only field that reaches the path.
-        for version in ["../evil", "a\\b"] {
+        for version in ["", "../evil", "a\\b", "1.0.0/../../etc"] {
             let error = record(&args(version, "t", "a.wasm"))
                 .expect_err("should be rejected before touching releases/");
-            assert!(
-                error.contains("cannot contain a slash"),
-                "{version}: {error}"
-            );
+            assert!(error.contains("escape the releases directory"), "{error}");
         }
-    }
-
-    #[test]
-    fn an_unsortable_version_is_rejected_before_it_reaches_the_catalog() {
-        for version in ["1.4.0-rc1", "1.4", "1.4.0.1", "v1.4.0"] {
-            let error = record(&args(version, "t", "a.wasm"))
-                .expect_err("build.rs would reject this only on the next compile");
-            assert!(error.contains("major.minor.patch"), "{version}: {error}");
-        }
-    }
-
-    #[test]
-    fn a_bad_digest_is_rejected() {
-        let mut bad = args("1.0.0", "t", "a.wasm");
-        bad.sha256 = "not-a-digest".to_owned();
-        let error = record(&bad).expect_err("should be rejected");
-        assert!(error.contains("64-char hex"), "{error}");
     }
 
     #[test]

@@ -20,17 +20,21 @@ If you never merge the Release PR, nothing is ever released.
 ### Choosing version numbers
 
 Bumps are proposed automatically from the commit messages since each crate's
-last tag (`fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE` → major; see
-[Commit And PR Titles](AGENTS.md#commit-and-pr-titles)). Pre-1.0 crates follow
-Cargo's semver rules, so a breaking change goes `0.1.0` → `0.2.0`.
+last tag: `feat` → minor, `!` in the title → major, anything else → patch. Any
+crate with a commit since its tag gets *some* bump — `chore` and `docs` included
+— so a release batch is usually wider than the work you were thinking of. See
+[Commit And PR Titles](AGENTS.md#commit-and-pr-titles).
 
-To override a proposed version, either comment on the Release PR:
+Pre-1.0 crates follow Cargo's semver rules, where the minor position carries
+breakage: `!` goes `0.1.0` → `0.2.0`, and a plain `feat` goes `0.1.0` → `0.1.1`
+rather than to `0.2.0`. Set `features_always_increment_minor` in
+`release-plz.toml` if you would rather every `feat` take the minor.
 
-```
-release-plz set-version templar-gateway-core@2.0.0
-```
-
-…or edit the version directly in the PR branch.
+To override a proposed version, edit it in the Release PR branch — change the
+crate's `Cargo.toml` and its `CHANGELOG.md` heading, or run
+`release-plz set-version templar-gateway-core@2.0.0` locally and push the
+result. There is no comment-triggered equivalent: nothing in this repo listens
+to `issue_comment`, so a command posted on the PR does nothing.
 
 ### Editing the Release PR
 
