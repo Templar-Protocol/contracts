@@ -8,7 +8,7 @@ use serde_json::Value;
 use templar_common::market::MarketConfiguration;
 
 use crate::spec::{
-    check::{self, Status},
+    check::{self, OnChainDecimals, Status},
     extends,
     oracle::SourceSpec,
     MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
@@ -236,6 +236,43 @@ fn config_validate_is_skipped_not_passed_without_decimals() {
         .expect("config.validate should always be reported");
 
     assert!(matches!(validate.status, Status::Skipped { .. }));
+}
+
+/// The whole decimals matrix, pure and offline. The override exists because a
+/// bridged asset shipped without `ft_metadata`, so "declared, nothing on chain"
+/// must pass — while still reading as unverified, not as confirmed.
+#[rstest::rstest]
+#[case::derived(None, OnChainDecimals::Known(6), false, Some(6), false)]
+#[case::agrees(Some(6), OnChainDecimals::Known(6), false, Some(6), false)]
+#[case::disagrees(Some(8), OnChainDecimals::Known(6), false, None, true)]
+#[case::disagrees_accepted(Some(8), OnChainDecimals::Known(6), true, Some(8), false)]
+#[case::override_unverified(Some(8), OnChainDecimals::Unavailable, false, Some(8), false)]
+#[case::nothing_to_go_on(None, OnChainDecimals::Unavailable, false, None, true)]
+fn decimals_reconciliation(
+    #[case] declared: Option<u8>,
+    #[case] on_chain: OnChainDecimals,
+    #[case] accept_mismatch: bool,
+    #[case] expected: Option<u8>,
+    #[case] should_fail: bool,
+) {
+    let (status, resolved) =
+        check::reconcile_decimals("collateral", declared, on_chain, accept_mismatch);
+
+    assert_eq!(resolved, expected);
+    assert_eq!(status.is_failure(), should_fail, "{status:?}");
+}
+
+/// An unverified override must not read as confirmed — the report is what an
+/// operator trusts before spending real NEAR.
+#[test]
+fn an_unverified_override_says_so() {
+    let (status, _) =
+        check::reconcile_decimals("borrow", Some(8), OnChainDecimals::Unavailable, false);
+
+    assert!(
+        matches!(&status, Status::Passed { detail } if detail.contains("unverified")),
+        "{status:?}"
+    );
 }
 
 #[test]
