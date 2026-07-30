@@ -51,8 +51,7 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
         return ctx.write(signer_args, create_spec).await;
     }
 
-    let (signer, secret_key) = signer_args.resolve()?;
-    let client = ctx.signing_client(signer.clone(), secret_key)?;
+    let (signer, client) = ctx.signing_client_for(&signer_args).await?;
     let create = client.execute_as(signer.clone(), create_spec).await?;
     // Fail fast if the create reverted, before waiting on / executing a proposal
     // that was never created.

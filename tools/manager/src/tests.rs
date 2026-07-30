@@ -180,7 +180,9 @@ fn parses_write_fallback_with_json() {
         super::cli::Command::Write(call) => {
             assert_eq!(call.call.method, "registry.removeVersion");
             assert!(call.call.json.is_some());
-            call.signer.resolve().expect("credentials should resolve");
+            call.signer
+                .public_key()
+                .expect("credentials should resolve");
         }
         _ => panic!("expected Write variant"),
     }
@@ -218,6 +220,19 @@ fn write_requires_secret_key_or_print() {
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
     );
+}
+
+/// The whole point of `--sign-with`: naming a backend that holds the key
+/// elsewhere must satisfy the credential requirement with nothing in the
+/// environment. Credentials are cleared so an ambient `SECRET_KEY` cannot make
+/// this pass for the wrong reason.
+#[test]
+fn write_with_an_external_backend_needs_no_secret_key() {
+    let result = with_cleared_credential_env(|| {
+        try_parse_write(["--signer-id", "dao.near", "--sign-with", "ledger"])
+    });
+
+    result.expect("--sign-with ledger should satisfy the credential requirement");
 }
 
 #[test]
@@ -260,7 +275,7 @@ fn print_conflicts_with_secret_key_from_environment() {
 }
 
 #[test]
-fn public_key_requires_print_mode() {
+fn public_key_is_not_a_credential() {
     let error = with_cleared_credential_env(|| {
         try_parse_write([
             "--signer-id",
@@ -269,13 +284,16 @@ fn public_key_requires_print_mode() {
             "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
         ])
     })
-    .expect_err("--public-key is plan-only");
+    .expect_err("--public-key names a key, it does not authorize a write");
 
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
     );
-    assert!(error.to_string().contains("--print <FORMAT>"));
+    assert!(
+        error.to_string().contains("--secret-key"),
+        "the error should name the missing credential: {error}"
+    );
 }
 
 #[test]
@@ -320,7 +338,7 @@ fn signer_env_satisfies_write_credentials() {
         let cli = try_parse_write([]).map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         match cli.command {
-            super::cli::Command::Write(call) => call.signer.resolve().map(|_| ()),
+            super::cli::Command::Write(call) => call.signer.public_key().map(|_| ()),
             _ => anyhow::bail!("expected Write variant"),
         }
     })();
