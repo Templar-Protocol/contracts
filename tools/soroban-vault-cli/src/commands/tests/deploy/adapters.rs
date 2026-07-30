@@ -80,11 +80,13 @@ fn deploy_adapters_appends_new_pool_to_existing_manifest() {
 }
 
 #[test]
-fn deploy_adapters_rejects_account_blend_admin_before_executor_calls() {
+fn deploy_adapters_accepts_account_blend_admin() {
     let dir = tempfile::tempdir().expect("tempdir");
+    write_fake_blend_wasm(dir.path());
     let state = dir.path().join("manifest.json");
     manifest_with_governance_and_vault(&state);
     let cli = Cli {
+        workspace_path: dir.path().into(),
         command: Commands::Deploy(DeployArgs {
             command: DeployCommand::Adapters(crate::cli::DeployAdaptersArgs {
                 vault: None,
@@ -97,16 +99,28 @@ fn deploy_adapters_rejects_account_blend_admin_before_executor_calls() {
                 force_new: false,
             }),
         }),
-        ..base_cli(state, Commands::Status)
+        ..base_cli(state.clone(), Commands::Status)
     };
     let executor = RecordingExecutor::new();
 
-    let error = run(&cli, &executor).expect_err("account admin must be rejected");
+    run(&cli, &executor).expect("account admin should be accepted");
 
-    assert!(error
-        .to_string()
-        .contains("Blend adapter admin must be a contract address"));
-    assert!(executor.calls().is_empty());
+    let loaded = Manifest::load_or_new(&state, "testnet", None).expect("load manifest");
+    assert_eq!(
+        loaded
+            .contracts
+            .get("blend_adapter_0")
+            .expect("deployed Blend adapter")
+            .constructor_args
+            .get("admin")
+            .map(String::as_str),
+        Some(ACCOUNT)
+    );
+    assert!(submitted_calls(&executor.calls())
+        .iter()
+        .any(|(_, args)| args
+            .windows(2)
+            .any(|window| window[0] == "--admin" && window[1] == ACCOUNT)));
 }
 
 #[test]
@@ -475,23 +489,17 @@ fn runtime_version_parser_requires_typed_version_and_feature_mask() {
 }
 
 #[test]
-fn adapter_constructor_guards_reject_invalid_admin_shapes() {
+fn adapter_admin_validation_accepts_accounts_and_rejects_collisions() {
     let account_admin = ACCOUNT.parse().expect("account admin");
     let asset_admin = CONTRACT.parse().expect("asset admin");
     let governance_admin = OTHER_CONTRACT.parse().expect("governance admin");
 
-    assert!(validate_adapter_admin(&account_admin, true, None, None, None).is_err());
-    assert!(validate_adapter_admin(
-        &asset_admin,
-        false,
-        Some(OTHER_CONTRACT),
-        None,
-        Some(CONTRACT),
-    )
-    .is_err());
+    assert!(validate_adapter_admin(&account_admin, None, None, None).is_ok());
+    assert!(
+        validate_adapter_admin(&asset_admin, Some(OTHER_CONTRACT), None, Some(CONTRACT),).is_err()
+    );
     assert!(validate_adapter_admin(
         &governance_admin,
-        false,
         Some(CONTRACT),
         Some(OTHER_CONTRACT),
         None,
