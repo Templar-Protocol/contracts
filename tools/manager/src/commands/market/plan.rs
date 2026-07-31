@@ -51,6 +51,13 @@ pub struct Apply {
     #[arg(long)]
     pub(crate) yes: bool,
 
+    /// Ignore a named check re-run at apply time.
+    ///
+    /// `market plan` accepts the same flag, and a check skippable at plan time
+    /// but fatal at apply is a plan that can be written and never sent.
+    #[arg(long = "skip-check", value_name = "CHECK_ID")]
+    pub(crate) skip_check: Vec<String>,
+
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
 }

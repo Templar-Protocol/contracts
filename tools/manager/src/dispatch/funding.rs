@@ -33,9 +33,11 @@ const GAS_PRICE_SAFETY_DENOMINATOR: u128 = 2;
 pub(super) struct Requirement {
     pub deposits: NearToken,
     pub gas: NearToken,
-    /// The running total's high-water mark, and the step that reaches it.
+    /// The running total's high-water mark.
     pub peak: NearToken,
-    pub peak_step: usize,
+    /// Cumulative requirement after each step this account signs, in order.
+    /// Kept so a shortfall can name the step the deploy would actually stop at.
+    cumulative: Vec<(usize, NearToken)>,
 }
 
 impl Requirement {
@@ -43,10 +45,22 @@ impl Requirement {
         self.deposits = self.deposits.saturating_add(deposit);
         self.gas = self.gas.saturating_add(gas);
         let running = self.deposits.saturating_add(self.gas);
-        if running > self.peak {
-            self.peak = running;
-            self.peak_step = index;
-        }
+        self.peak = self.peak.max(running);
+        self.cumulative.push((index, running));
+    }
+
+    /// The first step whose cumulative requirement exceeds what is available —
+    /// where execution would actually stop.
+    ///
+    /// Not the step that reaches the peak: with nothing crediting an account the
+    /// running total only rises, so the peak is always the *last* step and would
+    /// name the same step however short the account is. Where it stops depends
+    /// on the balance, so it cannot be computed until the balance is known.
+    fn stops_at(&self, available: NearToken) -> Option<usize> {
+        self.cumulative
+            .iter()
+            .find(|(_, running)| *running > available)
+            .map(|(index, _)| *index)
     }
 }
 
@@ -68,6 +82,10 @@ pub(super) fn simulate(
     let mut required: BTreeMap<AccountId, Requirement> = BTreeMap::new();
 
     for (index, step) in steps.iter().enumerate() {
+        // Registered even with no calls, so a step cannot drop its signer out of
+        // the report entirely — an unlisted account reads as "nothing to check".
+        required.entry(step.signer_id.clone()).or_default();
+
         for call in &step.function_calls {
             // Fail closed. A step whose cost cannot be computed is an unknown
             // charge, and treating it as zero is how a check reports "funded"
@@ -94,16 +112,20 @@ pub(super) fn simulate(
     Ok(required)
 }
 
-/// Spendable balance: staked storage is not available to send.
+/// Spendable balance: what is left after the storage stake is backed.
 ///
-/// An account holding 14 NEAR with 1.6 staked for storage cannot spend 14, and a
+/// An account holding 44 NEAR with 44 staked for storage cannot spend it, and a
 /// check against `amount` alone strands you on an account that looks funded.
+///
+/// `locked` is *not* subtracted. `amount` is already the liquid balance, and the
+/// protocol backs the storage stake with `amount + locked` — so a validator's
+/// stake absorbs its storage cost rather than adding to it. Subtracting `locked`
+/// as well double-counts it and reports a well-funded staking account as short.
 fn available(account: &account::GetResult) -> NearToken {
-    let staked = STORAGE_AMOUNT_PER_BYTE.saturating_mul(u128::from(account.storage_usage));
+    let storage = STORAGE_AMOUNT_PER_BYTE.saturating_mul(u128::from(account.storage_usage));
     account
         .amount
-        .saturating_sub(account.locked)
-        .saturating_sub(staked)
+        .saturating_sub(storage.saturating_sub(account.locked))
 }
 
 /// `funding.<account_id>` for every distinct signer in the plan.
@@ -112,12 +134,21 @@ fn available(account: &account::GetResult) -> NearToken {
 /// run at plan time *and* again at apply: balances drift, and the plan-time
 /// answer is only as good as the moment it was taken.
 pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Result<Vec<Check>> {
-    let gas_price = ctx
-        .client
-        .read(chain::GetBlock { block_hash: None })
-        .await
-        .context("read the current gas price")?
-        .gas_price;
+    // A failed read is a failed *check*, matching `targets_available`: aborting
+    // the whole run on a transient RPC hiccup leaves no override, since the
+    // sibling checks degrade gracefully and this one would not.
+    let gas_price = match ctx.client.read(chain::GetBlock { block_hash: None }).await {
+        Ok(block) => block.gas_price,
+        Err(error) => {
+            return Ok(vec![Check::new(
+                "funding.gas_price",
+                Status::failed(format!(
+                    "could not read the current gas price ({error}), so no \
+                     signer's cost can be bounded"
+                )),
+            )])
+        }
+    };
 
     let required = simulate(steps, gas_price)?;
     let mut checks = Vec::with_capacity(required.len());
@@ -145,22 +176,21 @@ pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Resu
 /// conservative answer to "will I get stuck" is the correct one, but it must not
 /// read as a miscalculation.
 fn verdict(need: &Requirement, available: NearToken, steps: &[PlanStep]) -> Status {
-    let at = steps.get(need.peak_step).map_or_else(
-        || format!("step {}", need.peak_step),
-        |step| step.label.clone(),
-    );
-
     let detail = format!(
-        "needs {} at peak ({} deposits + {} prepaid gas, refunds not credited), \
-         reached at `{at}`; {available} spendable after storage staking",
+        "needs {} ({} deposits + {} prepaid gas, refunds not credited); \
+         {available} spendable after storage staking",
         need.peak, need.deposits, need.gas,
     );
 
-    if available >= need.peak {
+    let Some(stops_at) = need.stops_at(available) else {
         return Status::passed(detail);
-    }
+    };
+    let label = steps
+        .get(stops_at)
+        .map_or_else(|| format!("step {stops_at}"), |step| step.label.clone());
+
     Status::failed(format!(
-        "{detail}. SHORT {} — top up to at least {}.",
+        "{detail}. SHORT {} — would stop at `{label}`; top up to at least {}.",
         need.peak.saturating_sub(available),
         need.peak,
     ))
@@ -212,18 +242,43 @@ mod tests {
         assert_eq!(need(&steps, "bob.near").peak, NearToken::from_near(5));
     }
 
-    /// The peak names the step that reaches it, so an operator knows where the
-    /// deploy would stop rather than only that it would.
+    /// Where a deploy stops depends on the *balance*, not on where the peak is.
+    /// With nothing crediting an account the running total only rises, so the
+    /// peak is always the last step and would name it however short the account
+    /// is — which is a diagnostic that tells an operator nothing.
     #[test]
-    fn the_peak_names_the_step_that_reaches_it() {
+    fn the_stopping_point_follows_the_balance() {
         let steps = vec![
             step("alice.near", NearToken::from_near(3), 0),
             step("bob.near", NearToken::from_near(9), 0),
-            step("alice.near", NearToken::from_near(1), 0),
+            step("alice.near", NearToken::from_near(4), 0),
         ];
+        let alice = need(&steps, "alice.near");
 
-        assert_eq!(need(&steps, "alice.near").peak_step, 2);
-        assert_eq!(need(&steps, "bob.near").peak_step, 1);
+        // Enough for step 0 (3 NEAR) but not for step 2's cumulative 7.
+        assert_eq!(alice.stops_at(NearToken::from_near(5)), Some(2));
+        // Not even the first charge.
+        assert_eq!(alice.stops_at(NearToken::from_near(1)), Some(0));
+        // Covers everything.
+        assert_eq!(alice.stops_at(NearToken::from_near(7)), None);
+    }
+
+    /// `amount` is already liquid, and the protocol backs the storage stake with
+    /// `amount + locked` — so a validator's stake absorbs its storage cost.
+    /// Subtracting `locked` as well reports a well-funded staking account short.
+    #[test]
+    fn locked_stake_is_not_subtracted_twice() {
+        let account = crate::spec::plan::testing::account(
+            NearToken::from_near(20),
+            NearToken::from_near(100),
+            20_000,
+        );
+
+        assert_eq!(
+            available(&account),
+            NearToken::from_near(20),
+            "the stake covers the 0.2 NEAR storage cost; the liquid 20 is intact"
+        );
     }
 
     /// Prepaid gas is reserved in full at signing, and the price can rise
