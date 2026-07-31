@@ -189,6 +189,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         );
     }
 
+    ensure_plan_is_complete(&file)?;
     ensure_plan_is_coherent(&file)?;
     ensure_initializers_are_sound(&file)?;
     ensure_proposals_are_runnable(&file)?;
@@ -613,6 +614,63 @@ async fn occupied_targets(
         }
     }
     Ok(occupied)
+}
+
+/// A deployment must still be a deployment.
+///
+/// Every coherence check below is conditional on finding the component it
+/// validates, so *deleting* a step disables its guard rather than tripping it:
+/// remove the oracle deploy and governance and the market stay mutually
+/// consistent, the proposals fail against an account that does not exist —
+/// reporting success, because `admin_set_proxy` is detached — and the market is
+/// deployed pointing at nothing.
+///
+/// This is the same fail-open shape as the swallowed `Err`s fixed earlier, in a
+/// form the sweep for those missed: the value is absent rather than unreadable.
+fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
+    let (mut governance, mut oracle, mut market, mut proposals) = (0, 0, 0, 0);
+
+    for step in &file.steps {
+        for call in &step.function_calls {
+            if is_governance_proposal(call)? {
+                proposals += 1;
+                continue;
+            }
+            let Some(init) = decoded_init_args(call) else {
+                continue;
+            };
+            if init.get("admin_id").is_some() {
+                governance += 1;
+            }
+            if init.get("owner_id").is_some() {
+                oracle += 1;
+            }
+            if init.get("configuration").is_some() {
+                market += 1;
+            }
+        }
+    }
+
+    for (what, found) in [
+        ("governance deploy", governance),
+        ("proxy-oracle deploy", oracle),
+        ("market deploy", market),
+    ] {
+        anyhow::ensure!(
+            found == 1,
+            "a deployment plan needs exactly one {what}; this one has {found}. \
+             A missing component is not a smaller deployment — the remaining \
+             steps still reference it, and the checks that would catch that are \
+             skipped when the step they validate is absent."
+        );
+    }
+    anyhow::ensure!(
+        proposals >= 2,
+        "a deployment plan configures both price feeds, which needs at least a \
+         create and an execute per feed; this one has {proposals} proposal \
+         step(s). A market whose feeds are never set prices nothing."
+    );
+    Ok(())
 }
 
 /// The proposals must be executable, in this plan, in this order.
@@ -1686,6 +1744,47 @@ mod tests {
 
         let error = super::ensure_proposals_are_runnable(&file).expect_err("unrunnable");
         assert!(format!("{error:#}").contains(expected), "{error:#}");
+    }
+
+    /// Deleting a step disables the guard that validates it, so completeness is
+    /// checked before coherence. Same fail-open shape as the swallowed `Err`s,
+    /// in the form where the value is absent rather than unreadable.
+    #[test]
+    fn a_truncated_plan_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let deploy = |init: serde_json::Value| PlanStep {
+            label: "deploy".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "x",
+                    "version_key": "v1",
+                    "init_args": base64::engine::general_purpose::STANDARD
+                        .encode(serde_json::to_vec(&init).expect("encode")),
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        };
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        // Governance and market, but no oracle: the two survivors reference an
+        // oracle nothing deploys, and every oracle check would be skipped.
+        file.steps.push(deploy(
+            serde_json::json!({ "proxy_oracle_id": "o.near", "admin_id": "a.near" }),
+        ));
+        file.steps
+            .push(deploy(serde_json::json!({ "configuration": { "x": 1 } })));
+
+        let error = super::ensure_plan_is_complete(&file).expect_err("incomplete");
+        assert!(
+            format!("{error:#}").contains("proxy-oracle deploy"),
+            "{error:#}"
+        );
     }
 
     /// A coherent plan passes.
