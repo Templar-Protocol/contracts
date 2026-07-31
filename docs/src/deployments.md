@@ -1,68 +1,77 @@
-# Smart Contract Deployments
+# Deploying a market
 
-This page provides information about Templar Protocol smart contracts and how to interact with them.
+A market is described by one spec file and deployed in two commands. There is
+no shell script: the spec is the source of truth, and everything that used to
+live in `env.sh`, `market-args.json` and `proxy-*.json` is derived from it.
 
-## Deployments
-
-- **Registry**: [`v1.tmplr.near`](https://nearblocks.io/address/v1.tmplr.near)
-- **LST Oracle Adapter**: [`lst.oracle.tmplr.near`](https://nearblocks.io/address/lst.oracle.tmplr.near)
-
-### Markets
-
-Market contracts are deployed dynamically through the registry. Each market represents a single asset pair (COLLATERAL &rarr; BORROW).
-
-A selection of available markets is shown below:
-
-| Account ID | Collateral Asset | Borrow Asset |
-|---|---|---|
-| [`ibtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/ibtc-iethusdc.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
-| [`iethwbtc-iethusdc.v1.tmplr.near`](https://nearblocks.io/address/iethwbtc-iethusdc.v1.tmplr.near) | wBTC on Ethererum (via NEAR Intents) | USDC on Ethereum (via NEAR Intents) |
-| [`ibtc-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/ibtc-usdc-1.v1.tmplr.near) | Native BTC (via NEAR Intents) | USDC on NEAR |
-| [`stnear-usdc-1.v1.tmplr.near`](https://nearblocks.io/address/stnear-usdc-1.v1.tmplr.near) | stNEAR on NEAR | USDC on NEAR |
-| [`ixlm-ixlmusdc.v1.tmplr.near`](https://nearblocks.io/address/ixlm-ixlmusdc.v1.tmplr.near) | Native XLM (via NEAR Intents) | USDC on XLM (via NEAR Intents) |
-
-## Signing
-
-Most `tmplrmgr` writes take `--signer-id` plus one credential, and `--sign-with`
-selects where that signing key lives:
-
-| Backend | Credential | Notes |
-|---|---|---|
-| `secret-key` (default) | `--secret-key`, or `$SECRET_KEY` | Puts a plaintext key in the environment. Fine for testnet and CI; avoid for mainnet. |
-| `keychain` | the OS keychain | Looked up by account id. The account's on-chain keys are listed to find a match. |
-
-For mainnet, prefer to sign nothing directly. `--print sputnik` emits a
-SputnikDAO proposal instead of executing, so a deployment can be reviewed and
-approved by the multisig with no operator key involved at all:
-
-```bash
-tmplrmgr market create --signer-id dao.near --print sputnik --public-key ed25519:… …
+```
+tmplrmgr market plan  tools/manager/specs/alpha/<market>.toml --out plan.json \
+    --signer-id <you> --public-key ed25519:…
+$EDITOR plan.json          # optional
+tmplrmgr market apply --plan plan.json --sign-with keychain
 ```
 
-`keychain` holds its key outside this process, so writes that
-embed the signer's public key on a new account (any `registry deploy`) need it
-passed explicitly with `--public-key`.
+`plan` reads the chain and writes a file; it sends nothing and takes no
+credential. `apply` sends what the file says.
 
-`registry clear-deployments` is the exception: it signs many *discovered*
-accounts with one authorized key, so it has no `--signer-id` and takes only
-`--secret-key`.
+## Why two steps
 
-### Contract Verification
+The plan is a reviewable artifact. It lists every transaction, decodes the
+market configuration for reading, names the keys each new account will grant,
+and carries the results of every preflight check. Reviewing a deployment no
+longer means reading a shell script and trusting it matches four JSON files.
 
-All smart contracts use reproducible builds. To verify deployed code:
+It is also editable, for when the spec cannot express something. `apply`
+re-derives what it can from the steps that will actually execute — the accounts
+being created, the oracle each step references, the admin being seated — so an
+edit that makes the deployment incoherent is refused by name rather than sent.
 
-```bash
-near contract verify deployed-at <contract-id> mainnet now
+## Writing a spec
+
+Shared values live in `tools/manager/specs/alpha/profiles/`. A market file names the profiles
+it extends and states only what differs:
+
+```toml
+extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
+name = "my-market"
+
+[oracle.direct]                    # reads an oracle that already exists
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep141:usdc.near"
+price_id = "eaa020c6…"             # the oracle's own identifier
+decimals = 6
 ```
 
-Example output:
+Omit `[oracle.direct]` to deploy a dedicated proxy oracle instead. A proxy
+market names `sources` per asset and the deployment creates a governance
+contract, the oracle it owns, and the market — seven transactions rather than
+one.
 
-```txt
-INFO The code obtained from the contract account ID and the code calculated from the repository are the same.
-|    Contract code hash: DaudmUa3nAym9dfQkn8mpNPZxkphSRGwEaTMgtymVhFE
-|    Contract version:	1.0.0
-|    Standards used by the contract:	[nep330:1.2.0]
-|    View the contract's source code on:	https://github.com/Templar-Protocol/contracts/tree/1d736e62a86424dd947284cbd8e83bef803fa9fb
-|    Build Environment:	sourcescan/cargo-near:0.13.4-rust-1.85.0@sha256:a9d8bee7b134856cc8baa142494a177f2ba9ecfededfcdd38f634e14cca8aae2
-|    Build Command:	cargo near build non-reproducible-wasm --locked
+## Checking before and after
+
 ```
+tmplrmgr spec check   tools/manager/specs/alpha/<market>.toml       # before deploying
+tmplrmgr market verify <account-id> --governance-admin <account-id> \
+    --against tools/manager/specs/alpha/<market>.toml               # after
+```
+
+`market verify` currently reconstructs a spec by reading back a proxy oracle
+this tool deployed, so it works for proxy markets only — the 16 direct markets
+are covered by `spec check`, which validates the oracle they read and the
+price identifiers it serves. Extending verify to direct markets is tracked
+separately.
+
+`verify` re-runs the preflight against what is actually on chain and exits
+non-zero on failure, so it can run on a schedule. That matters because the
+governance call that configures a price feed is dispatched detached: it reports
+success even when the oracle rejected the proxy, so deployed state is the only
+witness that a market can price anything.
+
+## Resuming
+
+`apply` journals each step beside the plan as it lands. If a run is
+interrupted, re-running it skips what completed and continues from the first
+incomplete step. Editing a step that has already run is refused; editing one
+that has not is allowed, which is the point.

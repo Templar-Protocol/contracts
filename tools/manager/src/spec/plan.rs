@@ -25,7 +25,7 @@ use super::check::Check;
 /// Bumped when this artifact's shape changes. `apply` hard-refuses a mismatch:
 /// every struct here is `deny_unknown_fields`, and this file authorizes spending
 /// real NEAR.
-pub const PLAN_SCHEMA_VERSION: u32 = 1;
+pub const PLAN_SCHEMA_VERSION: u32 = 2;
 
 /// A function call's arguments, in whichever form a human can actually edit.
 ///
@@ -184,6 +184,20 @@ impl PlanStep {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Derived {
+    /// Whether this deployment creates its own proxy oracle.
+    ///
+    /// Recorded rather than inferred. The shape of a direct plan — one deploy,
+    /// no proposals — is indistinguishable from a proxy plan whose proxy steps
+    /// were deleted, and three attempts to tell them apart from account names
+    /// were each wrong in a different way. It is covered by `summary_digest`,
+    /// so editing it is reported as drift like any other claim in the file.
+    ///
+    /// Not `#[serde(default)]`: a plan written before this field existed would
+    /// default to `false`, read as "direct", and skip the completeness
+    /// requirement that is the entire point — a defaulted bool defaults to the
+    /// unsafe answer. The schema version is bumped instead, so such a file is
+    /// refused outright rather than misread.
+    pub creates_its_own_oracle: bool,
     pub market_id: AccountId,
     pub oracle_id: AccountId,
     pub governance_id: AccountId,

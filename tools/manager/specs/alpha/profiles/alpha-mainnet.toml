@@ -1,5 +1,5 @@
-# Shared by every alpha market. The values here were duplicated across each
-# market's `env.sh` before the spec existed.
+# Shared by every alpha market. These values were duplicated across each
+# market's `env.sh` and `market-args.json` before the spec existed.
 schema = 4
 
 registry = "templar-alpha.near"
@@ -11,17 +11,11 @@ proxy_governance = "templar-proxy-oracle-near-governance-contract@0.1.0#92b67071
 
 [governance]
 admin = "templar-alpha.near"
-# Every proposal is executable on creation, which is what lets a deploy
-# configure both feeds in single calls.
 ttl_default = "0s"
 
 [market]
 time_chunk = "10m"
 price_maximum_age = "60s"
-mcr_maintenance = "1.25"
-mcr_liquidation = "1.2"
-maximum_usage_ratio = "0.99"
-liquidation_maximum_spread = "0.1"
 # 1.5% band for the third-party price cross-check.
 reference_tolerance = "0.015"
 origination_fee = { Flat = "0" }

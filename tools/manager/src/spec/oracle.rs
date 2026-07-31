@@ -42,6 +42,12 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ReferenceAsset>,
 
+    /// The identifier this asset's price is served under, when `oracle` is
+    /// `direct`. Unused for a proxy, which serves the constants this tool owns.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "price_id")]
+    #[schemars(with = "Option<String>")]
+    pub price_id: Option<templar_common::oracle::pyth::PriceIdentifier>,
+
     /// Overrides `market.reference_tolerance` for this asset.
     ///
     /// Not a nicety: one flat band false-positives on an LST trading at a
@@ -56,11 +62,19 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
 
-    pub aggregator: AggregatorSpec,
+    /// `None` for a direct market, which aggregates nothing. Optional rather
+    /// than defaulted: a proxy spec that omits it would otherwise deploy
+    /// `MedianLow` silently, where every alpha market reads its borrow side at
+    /// `median_high` — a permissive difference nobody authored. Absence has to
+    /// be *representable* for `config.oracle_mode` to reject it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregator: Option<AggregatorSpec>,
 
     /// Minimum sources that must resolve for a price to be produced.
+    #[serde(default)]
     pub min_sources: u32,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceSpec>,
 
     /// Defaults to the market's `price_maximum_age`, so the market-side and
@@ -123,9 +137,10 @@ impl Default for ReferenceAsset {
 /// both fields — precisely the class of mistake this tool exists to catch. No
 /// alpha market uses it. Adding it means giving it validation that rejects the
 /// fields it cannot honour, not just another variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregatorSpec {
+    #[default]
     MedianLow,
     MedianHigh,
 }
@@ -206,7 +221,10 @@ impl<A: AssetClass> AssetSpec<A> {
         let sources = self.sources.into_iter().map(WeightedSource::from);
         // `Median::new` defaults `min_sources` to 1; the field is public and the
         // spec always states it, so set it rather than accept the default.
-        let aggregator = match self.aggregator {
+        // `config.oracle_mode` refuses a proxy spec that states no aggregator,
+        // so by here it is present; the fallback keeps this total rather than
+        // panicking on a path the checks already closed.
+        let aggregator = match self.aggregator.unwrap_or_default() {
             AggregatorSpec::MedianLow => {
                 let mut median = MedianLow::new(sources);
                 median.min_sources = self.min_sources;
@@ -226,5 +244,35 @@ impl<A: AssetClass> AssetSpec<A> {
                 Some(self.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT)),
             ),
         )
+    }
+}
+
+/// A Pyth price identifier as hex, matching the form the chain stores.
+mod price_id {
+    use serde::{Deserialize as _, Deserializer, Serializer};
+    use templar_common::oracle::pyth::PriceIdentifier;
+
+    #[expect(clippy::ref_option, reason = "serde's serialize_with signature")]
+    pub fn serialize<S: Serializer>(
+        value: &Option<PriceIdentifier>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(id) => serializer.serialize_str(&hex::encode(id.0)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PriceIdentifier>, D::Error> {
+        let Some(text) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
+        Ok(Some(PriceIdentifier(bytes)))
     }
 }

@@ -80,8 +80,102 @@ pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
     vec![
         assets_distinct(spec),
         sources(spec),
+        mode_is_fully_described(spec),
         validate_configuration(spec),
     ]
+}
+
+/// Fields belonging to the other oracle mode are refused rather than ignored.
+///
+/// `OracleMode` documents itself as making a half-described spec impossible,
+/// but the fields all live on the shared `AssetSpec`, so the type does not
+/// enforce it — a proxy spec may carry a `price_id` and a direct spec a list of
+/// `sources`, and both are silently dropped. Silently dropped is the problem:
+/// an author who wrote `sources` on a direct spec believes those sources are
+/// being aggregated, and nothing tells them otherwise.
+///
+/// Enforced here rather than by splitting `AssetSpec` by mode, which is the
+/// deeper fix and a larger change than this issue should carry.
+fn mode_is_fully_described(spec: &MarketSpec) -> Check {
+    let id = "config.oracle_mode";
+    let direct = spec.oracle.is_direct();
+    let mut problems = Vec::new();
+
+    for (side, price_id, sources, aggregator, min_sources, max_age, max_clock_drift) in [
+        (
+            "collateral",
+            spec.collateral.price_id,
+            spec.collateral.sources.len(),
+            spec.collateral.aggregator,
+            spec.collateral.min_sources,
+            spec.collateral.max_age,
+            spec.collateral.max_clock_drift,
+        ),
+        (
+            "borrow",
+            spec.borrow.price_id,
+            spec.borrow.sources.len(),
+            spec.borrow.aggregator,
+            spec.borrow.min_sources,
+            spec.borrow.max_age,
+            spec.borrow.max_clock_drift,
+        ),
+    ] {
+        // The omission that silently changes behaviour: no aggregator deploys
+        // `median_low`, where every deployed borrow feed reads `median_high`.
+        if !direct && aggregator.is_none() {
+            problems.push(format!(
+                "{side} states no `aggregator`; a proxy would silently deploy \
+                 `median_low`, more permissive than the `median_high` every \
+                 deployed borrow feed uses"
+            ));
+        }
+        if direct && aggregator.is_some() {
+            problems.push(format!(
+                "{side}.aggregator is set, but this market aggregates nothing; \
+                 it would be ignored"
+            ));
+        }
+        // Required, and checked here rather than left to `config.validate`:
+        // that check skips itself when decimals are unresolved, so an offline
+        // run of a direct spec missing a `price_id` exited zero.
+        if direct && price_id.is_none() {
+            problems.push(format!(
+                "{side} states no `price_id`; a pre-existing oracle serves its \
+                 own identifiers and this spec has nothing to derive one from"
+            ));
+        }
+        if direct && min_sources > 0 {
+            problems.push(format!(
+                "{side}.min_sources is set, but this market aggregates nothing; \
+                 it would be ignored"
+            ));
+        }
+        if direct && (max_age.is_some() || max_clock_drift.is_some()) {
+            problems.push(format!(
+                "{side} sets a freshness bound, but the oracle it reads enforces \
+                 its own; it would be ignored"
+            ));
+        }
+        if direct && sources > 0 {
+            problems.push(format!(
+                "{side} names {sources} source(s), but this market reads an \
+                 oracle it does not configure; they would be ignored"
+            ));
+        }
+        if !direct && price_id.is_some() {
+            problems.push(format!(
+                "{side}.price_id is set, but a proxy oracle serves the constants \
+                 this tool owns; it would be ignored"
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        Check::new(id, Status::passed(if direct { "direct" } else { "proxy" }))
+    } else {
+        Check::new(id, Status::failed(problems.join("; ")))
+    }
 }
 
 /// What the chain said about a token's decimals.
@@ -165,11 +259,34 @@ fn assets_distinct(spec: &MarketSpec) -> Check {
 /// set whose weights are all zero has no median to take.
 fn sources(spec: &MarketSpec) -> Check {
     let id = "config.sources";
+    // A direct market aggregates nothing — whoever owns the oracle it reads
+    // configured that — so there are no sources here to be unsatisfiable.
+    if spec.oracle.is_direct() {
+        return Check::new(
+            id,
+            Status::Skipped {
+                reason: "this market reads an existing oracle, which aggregates \
+                         on its own behalf"
+                    .to_owned(),
+            },
+        );
+    }
     let mut problems = Vec::new();
     // The two sides are distinct types (`AssetSpec<CollateralAsset>` /
     // `AssetSpec<BorrowAsset>`), so they cannot share a loop.
     source_problems("collateral", &spec.collateral, &mut problems);
     source_problems("borrow", &spec.borrow, &mut problems);
+    for (side, asset_min) in [
+        ("collateral", spec.collateral.min_sources),
+        ("borrow", spec.borrow.min_sources),
+    ] {
+        if asset_min == 0 {
+            problems.push(format!(
+                "{side}.min_sources is 0; state it explicitly (every deployed \
+                 proxy carries at least 1)"
+            ));
+        }
+    }
 
     if problems.is_empty() {
         Check::new(

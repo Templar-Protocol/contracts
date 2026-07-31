@@ -92,6 +92,7 @@ fn plan_file(steps: Vec<(String, PlannedTransaction)>) -> PlanFile {
         "mainnet".to_owned(),
         "sha256:test".to_owned(),
         Derived {
+            creates_its_own_oracle: true,
             market_id: spec.market_id().expect("market id"),
             oracle_id: spec.oracle_id().expect("oracle id"),
             governance_id: spec.governance_id().expect("governance id"),
@@ -262,6 +263,7 @@ fn a_failure_tolerating_step_is_refused() {
         "mainnet".to_owned(),
         "sha256:test".to_owned(),
         Derived {
+            creates_its_own_oracle: true,
             market_id: "m.near".parse().expect("valid account"),
             oracle_id: "o.near".parse().expect("valid account"),
             governance_id: "g.near".parse().expect("valid account"),
@@ -301,6 +303,7 @@ fn a_non_function_call_action_is_refused() {
         "mainnet".to_owned(),
         "sha256:test".to_owned(),
         Derived {
+            creates_its_own_oracle: true,
             market_id: "m.near".parse().expect("valid account"),
             oracle_id: "o.near".parse().expect("valid account"),
             governance_id: "g.near".parse().expect("valid account"),

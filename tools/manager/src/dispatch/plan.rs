@@ -85,8 +85,12 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         spec.network()?.to_string(),
         spec_digest,
         Derived {
+            creates_its_own_oracle: !spec.oracle.is_direct(),
             market_id: spec.market_id()?,
-            oracle_id: spec.oracle_id()?,
+            // The oracle the market will read, which for a direct market is
+            // not the proxy id this spec would otherwise derive. Naming the
+            // wrong one misstates the most safety-critical fact in the file.
+            oracle_id: spec.oracle.account_id(spec.oracle_id()?),
             governance_id: spec.governance_id()?,
             collateral_decimals: spec.collateral.decimals,
             borrow_decimals: spec.borrow.decimals,
@@ -401,12 +405,18 @@ pub(crate) async fn build(
     public_key: &PublicKey,
     signer_id: &AccountId,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
+    // A direct market reads an oracle that already exists, so a deployment
+    // creates only the market: no governance to seat, no proxy to own, no
+    // proposals to configure. The guards for those steps are skipped rather
+    // than satisfied with placeholders.
+    let direct = spec.oracle.is_direct();
+
     // A plan is a fixed list of transactions; it cannot encode "wait". With a
     // non-zero TTL the two proxy proposals are not executable when they are
     // created, and the alternative — emitting the creates and dropping the
     // executes — would deploy a market pointing at an unconfigured oracle.
     anyhow::ensure!(
-        spec.governance.ttl_default == Nanoseconds::from_ns(0),
+        direct || spec.governance.ttl_default == Nanoseconds::from_ns(0),
         "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
          executable when created, and a plan cannot wait. Deploy with \
          `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
@@ -421,7 +431,7 @@ pub(crate) async fn build(
     // exactly the orphaned half-deployment this tool exists to prevent.
     // `deploy.sh` made this unrepresentable by passing `--admin-id $SIGNER_ID`.
     anyhow::ensure!(
-        &spec.governance.admin == signer_id,
+        direct || &spec.governance.admin == signer_id,
         "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
          which would not hold the Admin role. Every proxy proposal would revert \
          after the governance and oracle deploys had already spent their \
@@ -453,24 +463,32 @@ pub(crate) async fn build(
         .clone()
         .into_market_configuration(i32::from(collateral_decimals), i32::from(borrow_decimals))?;
 
-    let mut steps = oracle_stack(client, signer_id, spec, public_key).await?;
+    let mut steps = if direct {
+        Vec::new()
+    } else {
+        oracle_stack(client, signer_id, spec, public_key).await?
+    };
 
     // Both sides project to the same `Proxy<Source>`, so one loop covers them
     // even though `AssetSpec` is generic over the asset class.
-    for (side, price_id, proposal_id, proxy) in [
-        (
-            "collateral",
-            COLLATERAL_PRICE_ID,
-            collateral_proposal,
-            spec.collateral.clone().into_proxy(price_maximum_age),
-        ),
-        (
-            "borrow",
-            BORROW_PRICE_ID,
-            borrow_proposal,
-            spec.borrow.clone().into_proxy(price_maximum_age),
-        ),
-    ] {
+    for (side, price_id, proposal_id, proxy) in if direct {
+        Vec::new()
+    } else {
+        vec![
+            (
+                "collateral",
+                COLLATERAL_PRICE_ID,
+                collateral_proposal,
+                spec.collateral.clone().into_proxy(price_maximum_age),
+            ),
+            (
+                "borrow",
+                BORROW_PRICE_ID,
+                borrow_proposal,
+                spec.borrow.clone().into_proxy(price_maximum_age),
+            ),
+        ]
+    } {
         steps.extend(set_proxy(client, signer_id, spec, side, price_id, proposal_id, proxy).await?);
     }
 
@@ -784,6 +802,30 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
+/// How many of the market's two assets are top-level NEP-141, and therefore
+/// need the market registered with them.
+fn nep141_assets(file: &PlanFile) -> usize {
+    file.steps
+        .iter()
+        .flat_map(|step| &step.function_calls)
+        .filter_map(decoded_init_args)
+        .find_map(|init| {
+            let configuration = init.get("configuration")?.clone();
+            Some(
+                ["collateral_asset", "borrow_asset"]
+                    .into_iter()
+                    .filter(|key| {
+                        configuration
+                            .get(key)
+                            .and_then(|asset| asset.get("Nep141"))
+                            .is_some()
+                    })
+                    .count(),
+            )
+        })
+        .unwrap_or(0)
+}
+
 /// A deployment must still be a deployment.
 ///
 /// Every coherence check below is conditional on finding the component it
@@ -817,6 +859,48 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
                 market += 1;
             }
         }
+    }
+
+    // A direct-oracle deployment creates only the market — but "no proxy
+    // components" is also exactly what a *proxy* plan looks like once its four
+    // proxy steps are deleted, which is the fail-open this function exists to
+    // prevent. The two are told apart by the oracle the market is configured to
+    // read: a name this tool would have created means the steps that create it
+    // are missing, not absent by design.
+    // The plan states which shape it is, so neither branch guesses. A proxy
+    // plan requires every proxy component *unconditionally*: falling through to
+    // a name check when the flag says "proxy" is what let a plan with its proxy
+    // steps deleted and its market renamed pass, since the renamed market's
+    // derived proxy is not the one its configuration references.
+    // A market must be registered with each NEP-141 it holds, or it cannot
+    // receive that asset. The gateway plans one `storage_deposit` per such
+    // asset; deleting one passed every check, because completeness counted only
+    // deploys and proposals and coherence validates a registration only when it
+    // is still there. Derived from the encoded configuration, so it is the
+    // market's own assets that decide how many are required.
+    let expected = nep141_assets(file);
+    let registrations = file
+        .steps
+        .iter()
+        .flat_map(|step| &step.function_calls)
+        .filter(|call| matches!(storage_registration_target(call), Ok(Some(_))))
+        .count();
+    anyhow::ensure!(
+        registrations >= expected,
+        "this market holds {expected} NEP-141 asset(s) but the plan carries \
+         {registrations} storage registration(s). A market that is not \
+         registered with a token cannot receive it."
+    );
+
+    if !file.derived.creates_its_own_oracle {
+        anyhow::ensure!(
+            market == 1 && governance == 0 && oracle == 0 && proposals == 0,
+            "this plan says it reads an existing oracle, but carries {governance} \
+             governance, {oracle} oracle and {proposals} proposal step(s) \
+             alongside {market} market deploy(s). A direct deployment creates \
+             only the market."
+        );
+        return Ok(());
     }
 
     for (what, found) in [
@@ -1205,11 +1289,20 @@ async fn ensure_targets_free(ctx: &CliContext, targets: &[AccountId]) -> anyhow:
 /// Every account this deployment creates must be free.
 async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<Vec<Check>> {
     let mut checks = Vec::new();
-    for (label, account_id) in [
-        ("governance", spec.governance_id()?),
-        ("oracle", spec.oracle_id()?),
-        ("market", spec.market_id()?),
-    ] {
+    // Only what this deployment creates. A direct market creates just itself,
+    // and reporting the derived proxy names as "free" would tell an operator
+    // this deploy is about to make accounts it never touches.
+    let targets = if spec.oracle.is_direct() {
+        vec![("market", spec.market_id()?)]
+    } else {
+        vec![
+            ("governance", spec.governance_id()?),
+            ("oracle", spec.oracle_id()?),
+            ("market", spec.market_id()?),
+        ]
+    };
+
+    for (label, account_id) in targets {
         checks.push(Check::new(
             format!("deployment.available.{label}"),
             match super::preflight::exists(ctx, &account_id).await {
@@ -1472,6 +1565,7 @@ mod tests {
             step_digests: Vec::new(),
             summary_digest: "sha256:test".to_owned(),
             derived: Derived {
+                creates_its_own_oracle: true,
                 market_id: "m.near".parse().expect("valid account"),
                 oracle_id: "o.near".parse().expect("valid account"),
                 governance_id: "g.near".parse().expect("valid account"),

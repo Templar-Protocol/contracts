@@ -35,7 +35,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
     let price_maximum_age = spec.market.price_maximum_age;
     print_json(&serde_json::json!({
         "market_id": spec.market_id()?,
-        "oracle_id": spec.oracle_id()?,
+        "oracle_id": spec.oracle.account_id(spec.oracle_id()?),
         "governance_id": spec.governance_id()?,
         "network": spec.network()?.to_string(),
         "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
@@ -109,6 +109,7 @@ async fn run(
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
+    checks.extend(direct_oracle(ctx, spec).await);
     checks.extend(accounts(ctx, spec).await);
     // Aggregation before the cross-check: it produces the prices the reference
     // source is compared against.
@@ -277,11 +278,17 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 /// contract change ENG-463/464 wants for ABI validation). Until then a
 /// soft-deleted version passes here and fails mid-deploy.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
-    let labelled = [
-        ("market", &spec.versions.market),
-        ("oracle", &spec.versions.proxy_oracle),
-        ("governance", &spec.versions.proxy_governance),
-    ];
+    // A direct market deploys only itself, so the proxy versions it never uses
+    // need not be registered.
+    let labelled: Vec<_> = if spec.oracle.is_direct() {
+        vec![("market", &spec.versions.market)]
+    } else {
+        vec![
+            ("market", &spec.versions.market),
+            ("oracle", &spec.versions.proxy_oracle),
+            ("governance", &spec.versions.proxy_governance),
+        ]
+    };
 
     let registered = match ctx
         .client
@@ -325,6 +332,125 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
             )
         })
         .collect()
+}
+
+/// Whether the contract simply has no such method, as opposed to rejecting the
+/// call. Matched on the runtime's own wording, since `GatewayError` carries
+/// contract failures as text.
+fn is_missing_method(error: &templar_gateway_core::GatewayError) -> bool {
+    let rendered = error.to_string();
+    rendered.contains("MethodNotFound") || rendered.contains("doesn't exist")
+}
+
+/// A direct market's oracle gets none of the validation a proxy's does.
+///
+/// A proxy spec is checked three ways — the sources exist, they aggregate, the
+/// result matches a third party. A direct spec skips all three, because there
+/// is no aggregation of ours to reproduce. That left the oracle it *does* read
+/// checked by nothing: a mistyped `price_id`, or an oracle account that does
+/// not exist, passed every check and deployed. `MarketConfiguration` is
+/// immutable after init, so the market would be permanently unable to price.
+async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+    use templar_gateway_methods_spec::contract;
+    use templar_gateway_types::common::ContractArgs;
+
+    let crate::spec::OracleMode::Direct { account_id } = &spec.oracle else {
+        return Vec::new();
+    };
+
+    let mut checks = vec![Check::new(
+        "oracle.exists",
+        match exists(ctx, account_id).await {
+            Ok(true) => Status::passed(account_id.to_string()),
+            Ok(false) => Status::failed(format!(
+                "`{account_id}` does not exist, so this market would read an \
+                 oracle that is not there"
+            )),
+            Err(error) => Status::failed(format!("{error:#}")),
+        },
+    )];
+
+    let Ok((collateral, borrow)) = spec.price_identifiers() else {
+        return checks;
+    };
+    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
+        let hex = hex::encode(id.0);
+        checks.push(Check::new(
+            format!("oracle.serves.{side}"),
+            match ctx
+                .client
+                .read(contract::ViewFunction {
+                    contract_id: account_id.clone(),
+                    method_name: "get_price".to_owned().into(),
+                    args: ContractArgs::Json(serde_json::json!({ "price_identifier": hex })),
+                })
+                .await
+            {
+                // Absent is a **failure** here, and deliberately not the
+                // Skipped that ENG-541 established for proxy sources. That rule
+                // covers an adapter we are configuring, which may legitimately
+                // await its first push. This is an oracle we do not control,
+                // and the spec is asserting an identifier already exists on it
+                // — so "not there" means the identifier is wrong, which is the
+                // whole reason this check exists. Reporting it as not-run would
+                // exit zero for the mistyped `price_id` it was added to catch,
+                // and `MarketConfiguration` is immutable after init.
+                Ok(result) if result.value.is_null() => Status::failed(format!(
+                    "`{account_id}` serves no price for {hex}. For an oracle this \
+                     deployment does not configure, an unknown identifier is a \
+                     wrong one — and it cannot be corrected after init."
+                )),
+                Ok(_) => Status::passed(format!("{hex} on {account_id}")),
+                // The four oracles these specs read do not share one method
+                // surface: `pyth-oracle.near` answers `get_price`, while the
+                // LST and proxy oracles expose their own. A missing method is
+                // "this build cannot probe that oracle kind", which is not
+                // evidence the identifier is wrong — and reporting it as such
+                // would fail every spec reading those three.
+                // Not every oracle answers `get_price`. A proxy oracle exposes
+                // `price_feed_exists`, so fall through to it rather than give
+                // up: three of the shipped specs read oracles of that kind, and
+                // reporting them unprobeable left them with no price validation
+                // at all — a `Skipped` that no gate counts.
+                Err(error) if is_missing_method(&error) => {
+                    match ctx
+                        .client
+                        .read(
+                            templar_gateway_methods_spec::proxy_oracle::PriceFeedExists {
+                                oracle_id: account_id.clone(),
+                                price_identifier: id,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(result) if result.exists => {
+                            Status::passed(format!("{hex} on {account_id} (proxy)"))
+                        }
+                        Ok(_) => Status::failed(format!(
+                            "`{account_id}` serves no feed for {hex}. It cannot be \
+                             corrected after init."
+                        )),
+                        Err(inner) if is_missing_method(&inner) => Status::Skipped {
+                            reason: format!(
+                                "`{account_id}` answers neither `get_price` nor \
+                                 `price_feed_exists`, so this build cannot confirm \
+                                 it serves {hex}. Check it by hand before \
+                                 deploying — this is not a pass."
+                            ),
+                        },
+                        Err(inner) => Status::failed(format!(
+                            "`{account_id}` did not answer for {hex}: {inner}"
+                        )),
+                    }
+                }
+                Err(error) => Status::failed(format!(
+                    "`{account_id}` did not answer for {hex}: {error}. A mistyped \
+                     `price_id` cannot be corrected after init."
+                )),
+            },
+        ));
+    }
+    checks
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.

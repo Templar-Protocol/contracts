@@ -35,9 +35,10 @@ fn alpha_market() -> MarketSpec {
 #[test]
 fn reproduces_the_live_alpha_market_configuration() {
     let deployed: Value = serde_json::from_str(
-        &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "../../contract/market/examples/config/alpha/iethfxrp-ixlmusdc/market-args.json",
-        ))
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/deployed/iethfxrp-ixlmusdc.templar-alpha.near.json"),
+        )
         .expect("checked-in market args should be readable"),
     )
     .expect("market args should be JSON");
@@ -128,7 +129,7 @@ fn derived_proxies_match_the_deployed_proxy_files() {
         let deployed: Value = serde_json::from_str(
             &std::fs::read_to_string(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../contract/market/examples/config/alpha/iethfxrp-ixlmusdc")
+                    .join("fixtures/deployed/iethfxrp-ixlmusdc")
                     .join(side),
             )
             .unwrap_or_else(|error| panic!("read {side}: {error}")),
@@ -320,4 +321,59 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
         matches!(&sources.status, Status::Failed { detail } if detail.contains("99 of 2")),
         "{sources:#?}"
     );
+}
+
+/// Every migrated alpha market must reproduce the configuration it was
+/// generated from (ENG-548).
+///
+/// The load-bearing test for the migration: these specs replace checked-in
+/// `market-args.json` files that are the record of what is actually deployed.
+/// Compared as parsed `MarketConfiguration`s rather than as JSON text, because
+/// `Decimal` does not round-trip its own representation — comparing text would
+/// assert on formatting and fail for specs that are in fact identical.
+#[test]
+fn migrated_specs_reproduce_their_deployed_configurations() {
+    let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs/alpha");
+    let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deployed");
+
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&specs).expect("specs/alpha should exist") {
+        let path = entry.expect("readable entry").path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .expect("spec has a stem")
+            .to_string_lossy()
+            .to_string();
+
+        let spec = extends::load(&path).unwrap_or_else(|e| panic!("load {name}: {e:#}"));
+        let flat = configs.join(format!("{name}.templar-alpha.near.json"));
+        let source = flat;
+        let deployed: Value = serde_json::from_str(
+            &std::fs::read_to_string(&source)
+                .unwrap_or_else(|e| panic!("read config for {name}: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("parse config for {name}: {e}"));
+        let deployed: MarketConfiguration =
+            serde_json::from_value(deployed.get("configuration").cloned().unwrap_or(deployed))
+                .unwrap_or_else(|e| panic!("parse configuration for {name}: {e}"));
+
+        let (collateral, borrow) = (
+            spec.collateral.decimals.expect("collateral decimals"),
+            spec.borrow.decimals.expect("borrow decimals"),
+        );
+        let derived = spec
+            .into_market_configuration(i32::from(collateral), i32::from(borrow))
+            .unwrap_or_else(|e| panic!("convert {name}: {e:#}"));
+
+        assert_eq!(
+            derived, deployed,
+            "spec `{name}` differs from what is deployed"
+        );
+        checked += 1;
+    }
+
+    assert_eq!(checked, 18, "every alpha market must be covered");
 }
