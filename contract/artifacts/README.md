@@ -91,7 +91,7 @@ ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-arti
 |---|---|
 | `just artifacts-fetch` | Download every pinned release into the cache |
 | `just artifacts-cache-path` | Print the resolved cache directory |
-| `just artifacts-clean` | Empty it, reporting what was freed |
+| `just artifacts-clean` | Delete it |
 
 `TEMPLAR_ARTIFACT_OFFLINE=1` forbids downloads and restricts lookups to the
 cache. `TEMPLAR_ARTIFACT_CACHE` relocates it — point it inside a checkout if you
@@ -99,9 +99,9 @@ would rather each one kept its own. Like `XDG_CACHE_HOME`, it names the
 *parent*: the `templar-contract-artifacts` directory is always appended.
 
 Cleaning is never destructive: entries are immutable release assets, so the only
-cost is a re-download. `artifacts-clean` removes only the entry directories the
-catalog names — there is no recursive delete — so a misaimed
-`TEMPLAR_ARTIFACT_CACHE` leaves anything already there untouched.
+cost is a re-download. `artifacts-clean` is a `rm -rf` on the directory
+`artifacts-cache-path` prints — the cache is disposable, so it needs no code of
+its own, and deleting it cannot be aimed anywhere the crate did not choose.
 
 Sharing one cache across worktrees is safe because entries are verified against
 the in-repo pin on **every read**, not just on download. A branch whose catalog
@@ -166,7 +166,9 @@ Seconds, no contract builds:
 |---|---|
 | `no_release_is_ahead_of_its_source` | a release claiming a version the crate never reached (the reverse — source ahead of the newest release — is normal) |
 | `mocks_are_never_released` | a mock that acquired a release |
-| `scaffolding_crates_are_excluded_from_releases` | a Tier C crate that lost its `release = false` |
+| `every_catalogued_artifact_matches_the_release_tag_glob` | a contract whose tag would not fire the artifact workflow |
+| `internal_crates_are_excluded_from_releases` | a crate whose manifest forbids publishing that release-plz would still tag |
+| `no_tier_can_reach_a_registry` | `release-plz.toml` losing the one setting that defers crates.io |
 
 Each file's own shape — column count, canonical artifact and version spelling,
 URL-safe tag and asset, digest, and agreement with its filename — is checked by

@@ -77,88 +77,53 @@ fn release_false_packages() -> std::collections::BTreeSet<String> {
 /// tagged and released — that is how the `templar-gateway-testing` harness ended
 /// up Tier B, and later `templar-gateway-catalog`.
 ///
-/// Two layers. The authoritative Tier C set is asserted exactly, so a crate
-/// cannot drop out of it by a typo, a rename, or a commented-out line. The
-/// classification below is the net for a *newly added* crate that nobody
-/// thought to classify — it flags candidates the exact set would not know to
-/// expect.
+/// `release-artifacts.yml` only fires on tags matching `*-contract-v*`, and
+/// release-plz builds tags as `{package}-v{version}`. A catalogued contract
+/// whose package name does not end in `-contract` would therefore be released
+/// with no WASM and no catalog entry, and the pipeline would stay green.
+#[test]
+fn every_catalogued_artifact_matches_the_release_tag_glob() {
+    for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
+        if artifact.package_name.starts_with("mock-") {
+            continue;
+        }
+        assert!(
+            artifact.package_name.ends_with("-contract"),
+            "`{}` is catalogued, so its release tag must match the \
+             `*-contract-v*` trigger in .github/workflows/release-artifacts.yml",
+            artifact.package_name,
+        );
+    }
+}
+
+/// Tier C is derived, not listed: RELEASING.md makes `publish = false` in a
+/// crate's own manifest the defining property, so the workspace already states
+/// the set. A literal copy here, or a name/path heuristic guessing at new
+/// crates, would each be one more place to drift.
 #[test]
 #[cfg(feature = "workspace-loader")]
 #[ignore = "requires cargo metadata and workspace access"]
-fn scaffolding_crates_are_excluded_from_releases() {
-    /// Tier C, as documented in RELEASING.md. Editing this list is the
-    /// deliberate act of reclassifying a crate.
-    const TIER_C: [&str; 11] = [
-        "mock-ft",
-        "mock-mt",
-        "mock-oracle",
-        "mock-receiver",
-        "mock-ref",
-        "templar-contract-artifacts",
-        "templar-fuzz",
-        "templar-gateway-catalog",
-        "templar-gateway-testing",
-        "templar-proxy-oracle-soroban-integration-tests",
-        "test-utils",
-    ];
-    const SCAFFOLDING_MARKERS: [&str; 5] = ["test", "mock", "fuzz", "harness", "fixture"];
-    /// Directories whose crates ship somewhere: a WASM blob, a service, a CLI.
-    /// A crate outside them that nothing consumes is scaffolding.
-    const DELIVERABLE_DIRS: [&str; 4] = ["contract/", "service/", "tools/", "client/"];
+fn internal_crates_are_excluded_from_releases() {
+    let metadata =
+        crate::workspace_loader::get_metadata(std::path::Path::new(env!("CARGO_WORKSPACE_DIR")))
+            .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
 
-    let excluded = release_false_packages();
-    let expected = TIER_C
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        excluded, expected,
-        "release-plz.toml's `release = false` set has drifted from Tier C. \
-         Anything missing gets tagged, changelogged and released by default."
-    );
-
-    let workspace_root = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
-    let metadata = crate::workspace_loader::get_metadata(workspace_root)
-        .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
-
-    let consumed = metadata
+    // `publish = false` parses as an empty allow-list of registries.
+    let internal = metadata
         .workspace_packages()
         .iter()
-        .flat_map(|package| &package.dependencies)
-        .map(|dependency| dependency.name.clone())
-        .collect::<std::collections::HashSet<_>>();
+        .filter(|package| package.publish.as_deref() == Some(&[]))
+        .map(|package| package.name.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
 
-    for package in metadata.workspace_packages() {
-        let name = package.name.as_str();
-        let relative = package
-            .manifest_path
-            .as_std_path()
-            .strip_prefix(workspace_root)
-            .unwrap_or(package.manifest_path.as_std_path())
-            .to_string_lossy()
-            .replace('\\', "/");
-
-        let named_like_scaffolding = SCAFFOLDING_MARKERS
-            .iter()
-            .any(|marker| name.contains(marker));
-        let unconsumed_library = !consumed.contains(name)
-            && !DELIVERABLE_DIRS.iter().any(|dir| relative.starts_with(dir));
-
-        let Some(reason) = (match (named_like_scaffolding, unconsumed_library) {
-            (_, true) => Some("nothing in the workspace depends on it, and it ships no artifact"),
-            (true, false) => Some("its name marks it as test scaffolding"),
-            (false, false) => None,
-        }) else {
-            continue;
-        };
-
-        assert!(
-            excluded.contains(name),
-            "`{name}` is internal — {reason} — but is not in release-plz.toml's \
-             `release = false` set, so release-plz will tag it, write it a \
-             changelog, and cut it a GitHub Release. Add it there and to TIER_C.",
-        );
-    }
+    assert_eq!(
+        release_false_packages(),
+        internal,
+        "release-plz.toml's `release = false` set must be exactly the crates \
+         whose Cargo.toml forbids publishing. A crate missing from it is tagged, \
+         changelogged and released by default; a crate wrongly in it is a \
+         deliverable that will never be tagged.",
+    );
 }
 
 /// A release must never claim a version the source has not reached.

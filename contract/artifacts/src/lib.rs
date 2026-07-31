@@ -34,20 +34,6 @@ pub use workspace_loader::{
 };
 
 use sha2::Digest;
-use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Errors returned by artifact operations in the default configuration.
-#[derive(Error, Debug)]
-pub enum ArtifactError {
-    /// There is no WASM bytes source available — neither `fetch` nor
-    /// `workspace-loader` is enabled.
-    #[error("No WASM byte source available. Enable the `fetch` or `workspace-loader` feature.")]
-    NoWasmSource,
-}
 
 // ---------------------------------------------------------------------------
 // Version keys
@@ -194,13 +180,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(catalog_ids, ArtifactId::ALL);
-    }
-
-    #[test]
-    fn test_artifact_id_metadata_is_complete() {
-        for id in ArtifactId::ALL {
-            assert_eq!(id.metadata().id, id);
-        }
     }
 
     #[test]

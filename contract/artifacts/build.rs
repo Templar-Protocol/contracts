@@ -1,7 +1,7 @@
 //! Compile `releases/` into the catalog's release lists.
 //!
 //! Release history is one file per release so that concurrent catalog PRs
-//! cannot conflict — see `releases/README.md`. Malformed rows fail the build
+//! cannot conflict — see `RELEASES.md`. Malformed rows fail the build
 //! rather than surfacing at runtime.
 
 use std::{collections::BTreeMap, fmt::Write as _, path::Path};

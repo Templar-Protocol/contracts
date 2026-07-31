@@ -13,12 +13,13 @@ default = []
 # workspace-loader: read WASM bytes from target/near/{name}/{name}.wasm at runtime.
 workspace-loader = ["dep:cargo_metadata"]
 # fetch: download released WASM from GitHub Releases into a shared local cache.
-fetch = ["dep:reqwest", "dep:tokio"]
+fetch = ["dep:dirs", "dep:reqwest", "dep:tokio"]
 # clap: optional parsing helpers for command-line argument handling.
 clap = ["dep:clap"]
 
 [dependencies]
 cargo_metadata = { version = "0.23", optional = true }
+dirs = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 hex.workspace = true
 reqwest = { workspace = true, optional = true }

@@ -532,8 +532,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          # The append-only check below diffs against the base branch.
-          fetch-depth: 0
+          # Only the append-only check needs history, and only on a PR. This job
+          # also fires on any manifest change, where a full clone of a ~100 MB
+          # object store would be pure cost.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
           persist-credentials: false
 
       # `record-release` only ever creates files, so nothing in-tree stops a hand

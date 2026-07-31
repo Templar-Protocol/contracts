@@ -45,8 +45,8 @@ struct Args {
     check: bool,
 
     /// Resolve a release tag to its catalogued artifact and exit. Writes
-    /// `key=value` lines (`artifact`, `package`, `version`, `tag`,
-    /// `source_path`, `target`, `asset`) for a CI step to append to
+    /// `key=value` lines (`artifact`, `package`, `version`, `source_path`,
+    /// `target`, `asset`) for a CI step to append to
     /// `$GITHUB_OUTPUT`.
     ///
     /// Exit codes carry the outcome: `0` resolved, `2` not a catalogued NEAR
@@ -61,7 +61,6 @@ const EXIT_NOT_CATALOGUED: u8 = 2;
 
 pub fn main() -> ExitCode {
     let args = Args::parse();
-    let artifacts = selected_artifacts(&args.artifacts);
 
     if let Some(tag) = &args.resolve {
         let Some(artifact) = crate::artifact_from_release_tag(tag) else {
@@ -96,10 +95,10 @@ pub fn main() -> ExitCode {
         // The one place a new release's asset gets its name; existing releases
         // have theirs recorded in `releases/`.
         println!("asset={}-{version}.wasm", metadata.cargo_target_name);
-        println!("tag={tag}");
         return ExitCode::SUCCESS;
     }
 
+    let artifacts = selected_artifacts(&args.artifacts);
     let result = if args.check {
         check_all(&args.workspace_root, &artifacts)
     } else {

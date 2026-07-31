@@ -11,10 +11,7 @@
 //!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256>
 //! ```
 
-use std::{
-    process::ExitCode,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::process::ExitCode;
 
 use clap::Parser;
 use templar_contract_artifacts::ArtifactId;
@@ -39,10 +36,6 @@ struct Args {
 
 /// Directory of per-release files, relative to this crate's manifest.
 const RELEASES: &str = "releases";
-
-/// Distinguishes staged files within one process; the pid alone does not, and
-/// the first call to finish would delete the other's.
-static STAGED: AtomicU64 = AtomicU64::new(0);
 
 fn main() -> ExitCode {
     match record(&Args::parse()) {
@@ -80,22 +73,18 @@ fn record(args: &Args) -> Result<String, String> {
         .join(RELEASES)
         .join(format!("{artifact}@{version}.tsv"));
 
-    // Write the row in full, then install it under its final name with
-    // `hard_link`, which fails rather than clobbering. So the immutable path
-    // only ever appears complete: `create_new` would have reserved the name
-    // before the write, and an interrupted one leaves a truncated record that a
-    // retry then refuses to replace and build.rs rejects — with the append-only
-    // check standing in the way of repairing it.
-    let staged = path.with_extension(format!(
-        "{}.{}.staged",
-        std::process::id(),
-        STAGED.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::write(&staged, &row).map_err(|error| format!("{staged:?}: {error}"))?;
-    let installed = std::fs::hard_link(&staged, &path);
-    let _ = std::fs::remove_file(&staged);
+    // `create_new` is the one-call create-or-fail primitive, which makes "never
+    // rewrite a release" a property of the syscall rather than a check. An
+    // interrupted write can leave a truncated row, but only in an uncommitted
+    // working tree: the workflow rebuilds the crate before staging, and build.rs
+    // rejects a malformed row, so the job fails and nothing reaches the repo.
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, row.as_bytes()));
 
-    match installed {
+    match created {
         Ok(()) => Ok(format!("recorded {artifact}@{version} as {sha} ({tag})")),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Compare the recorded digest rather than the raw line: a replay is
