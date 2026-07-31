@@ -21,7 +21,11 @@ fn fixture(relative: &str) -> PathBuf {
 }
 
 fn alpha_market() -> MarketSpec {
-    extends::load(&fixture("iethfxrp-ixlmusdc.toml")).expect("fixture spec should load")
+    extends::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
+    )
+    .expect("fixture spec should load")
 }
 
 /// The load-bearing test: the spec must reproduce a market we already run
@@ -333,7 +337,7 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
 /// assert on formatting and fail for specs that are in fact identical.
 #[test]
 fn migrated_specs_reproduce_their_deployed_configurations() {
-    let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs/alpha");
+    let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deployments/alpha");
     let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deployed");
 
     let mut checked = 0;

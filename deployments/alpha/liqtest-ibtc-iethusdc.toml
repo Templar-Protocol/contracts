@@ -1,14 +1,14 @@
-extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
 
-name = "liqtest-idoge-iethusdc"
+name = "liqtest-ibtc-iethusdc"
 
 # Reads an oracle it does not deploy, so this market creates only itself.
 [oracle.direct]
 account_id = "pyth-oracle.near"
 
 [collateral]
-asset = "nep245:intents.near:nep141:doge.omft.near"
-price_id = "dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c"
+asset = "nep245:intents.near:nep141:btc.omft.near"
+price_id = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
 decimals = 8
 
 [borrow]
@@ -21,6 +21,7 @@ mcr_maintenance = "1.25"
 mcr_liquidation = "1.25"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.08"
-borrow_range = { minimum = "1" }
-supply_range = { minimum = "40000" }
+borrow_range = { minimum = "1", maximum = "1000000000" }
+supply_range = { minimum = "40000", maximum = "1000000000" }
 supply_withdrawal_range = { minimum = "40000" }
+borrow_maximum_duration_ms = 31536000000

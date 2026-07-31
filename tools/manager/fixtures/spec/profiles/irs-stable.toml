@@ -1,7 +1,0 @@
-# The piecewise curve currently copy-pasted into every stable-borrow market's
-# `market-args.json`. This is the reuse `extends` exists for.
-[market.interest_rate_strategy.Piecewise]
-base = "0"
-optimal = "0.9"
-rate_1 = "0.06666666666666666666666666666666666667"
-rate_2 = "1.8"

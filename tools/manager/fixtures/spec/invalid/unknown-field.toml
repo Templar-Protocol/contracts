@@ -1,5 +1,5 @@
 # A typo must be an error, not a silently ignored key.
-extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-stable.toml"]
+extends = ["../../../../../deployments/profiles/alpha-mainnet.toml", "../../../../../deployments/profiles/irs-stable.toml"]
 name = "typo-market"
 no_such_field = true
 
@@ -18,6 +18,10 @@ min_sources = 1
 sources = [{ kind = "lazer", oracle = "lazer.near", feed_id = 2, weight = 1 }]
 
 [market]
+mcr_maintenance = "1.25"
+mcr_liquidation = "1.2"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
 borrow_range = { minimum = "1" }
 supply_range = { minimum = "1" }
 supply_withdrawal_range = { minimum = "1" }

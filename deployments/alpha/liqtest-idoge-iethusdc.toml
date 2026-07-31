@@ -1,15 +1,15 @@
-extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
 
-name = "liqtest-iada-iethusdc"
+name = "liqtest-idoge-iethusdc"
 
 # Reads an oracle it does not deploy, so this market creates only itself.
 [oracle.direct]
 account_id = "pyth-oracle.near"
 
 [collateral]
-asset = "nep245:intents.near:nep141:cardano.omft.near"
-price_id = "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d"
-decimals = 6
+asset = "nep245:intents.near:nep141:doge.omft.near"
+price_id = "dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c"
+decimals = 8
 
 [borrow]
 asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"

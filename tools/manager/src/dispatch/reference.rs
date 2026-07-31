@@ -582,7 +582,7 @@ mod tests {
     fn spec() -> crate::spec::MarketSpec {
         crate::spec::extends::load(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/spec/iethfxrp-ixlmusdc.toml"),
+                .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
         )
         .expect("fixture spec should load")
     }

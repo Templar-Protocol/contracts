@@ -26,7 +26,8 @@ const PUBLIC_KEY: &str = "ed25519:H9k5eiU4xXS3M4z8HzKJSLaZdqGdGwBG49o7orNC4eZW";
 
 fn alpha_market() -> MarketSpec {
     crate::spec::extends::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/spec/iethfxrp-ixlmusdc.toml"),
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
     )
     .expect("fixture spec should load")
 }

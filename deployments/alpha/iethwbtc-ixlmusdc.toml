@@ -1,6 +1,6 @@
 # Deploys its own proxy oracle, so this market creates a governance contract,
 # the oracle it owns, and the market itself.
-extends = ["profiles/alpha-mainnet.toml"]
+extends = ["../profiles/alpha-mainnet.toml"]
 
 name = "iethwbtc-ixlmusdc"
 

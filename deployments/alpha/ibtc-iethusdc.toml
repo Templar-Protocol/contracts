@@ -1,15 +1,15 @@
-extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
 
-name = "liqtest-ixrp-iethusdc"
+name = "ibtc-iethusdc"
 
 # Reads an oracle it does not deploy, so this market creates only itself.
 [oracle.direct]
 account_id = "pyth-oracle.near"
 
 [collateral]
-asset = "nep245:intents.near:nep141:xrp.omft.near"
-price_id = "ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8"
-decimals = 6
+asset = "nep245:intents.near:nep141:btc.omft.near"
+price_id = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+decimals = 8
 
 [borrow]
 asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"
@@ -18,7 +18,7 @@ decimals = 6
 
 [market]
 mcr_maintenance = "1.25"
-mcr_liquidation = "1.25"
+mcr_liquidation = "1.2"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.08"
 borrow_range = { minimum = "1" }
