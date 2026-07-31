@@ -1275,11 +1275,20 @@ async fn ensure_targets_free(ctx: &CliContext, targets: &[AccountId]) -> anyhow:
 /// Every account this deployment creates must be free.
 async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<Vec<Check>> {
     let mut checks = Vec::new();
-    for (label, account_id) in [
-        ("governance", spec.governance_id()?),
-        ("oracle", spec.oracle_id()?),
-        ("market", spec.market_id()?),
-    ] {
+    // Only what this deployment creates. A direct market creates just itself,
+    // and reporting the derived proxy names as "free" would tell an operator
+    // this deploy is about to make accounts it never touches.
+    let targets = if spec.oracle.is_direct() {
+        vec![("market", spec.market_id()?)]
+    } else {
+        vec![
+            ("governance", spec.governance_id()?),
+            ("oracle", spec.oracle_id()?),
+            ("market", spec.market_id()?),
+        ]
+    };
+
+    for (label, account_id) in targets {
         checks.push(Check::new(
             format!("deployment.available.{label}"),
             match super::preflight::exists(ctx, &account_id).await {
