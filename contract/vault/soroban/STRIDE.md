@@ -63,7 +63,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | **Guardian** | Curator (via RBAC config) | Pause/unpause vault. **Note**: Same as allocator — no separate guardian wired in production. |
 | **User** | Any signed account | Deposit, request async withdrawal, or atomically withdraw/redeem idle assets. Subject to restrictions (whitelist/blacklist/pause). |
 | **Keeper/Allocator** | Curator-configured operational account | Execute queued withdrawals after cooldown once enough assets are idle; allocate/withdraw from markets to make liquidity available. |
-| **Blend adapter administrator** | Adapter constructor or two-step `set_admin` / `accept_admin` handoff | Pause or unpause the adapter, rotate administration, extend instance TTL, and upgrade adapter Wasm. May be an authenticated Soroban account or contract; it does not receive vault-only supply, withdrawal, or rescue authority. |
+| **Blend adapter administrator** | Adapter constructor or two-step `set_admin` / `accept_admin` handoff | Pause or unpause the adapter, rotate administration, extend instance TTL, and upgrade adapter Wasm. The administrator may be an authenticated Soroban account or contract; it does not receive vault-only supply, withdrawal, or rescue authority. |
 
 ### High-Level Dataflow
 
