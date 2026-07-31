@@ -1,19 +1,13 @@
 //! `market plan` / `market apply` — generate a deployment as a file, then send
-//! that file.
-//!
-//! The two commands exist because a spec cannot express every market and a check
-//! can be wrong. Splitting generation from execution puts a reviewable artifact
-//! between the two, and makes the concrete transactions editable when the
-//! declarative path falls short.
-//!
-//! What `plan` produces is exactly what `deploy.sh` runs today, in the same
-//! order — see [`build`].
+//! that file. Splitting the two puts a reviewable, editable artifact between
+//! them; the artifact itself is [`crate::spec::plan`].
 
 use std::io::Write as _;
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
 use near_api::types::NearToken;
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::Nanoseconds;
 use templar_gateway_client::Client;
 use templar_gateway_core::{
@@ -25,6 +19,8 @@ use templar_gateway_methods_spec::{
 };
 use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
 use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec};
+use templar_proxy_oracle_kernel::proxy::Proxy;
+use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::Operation;
 
 use crate::commands::market::{Apply, Plan};
@@ -37,12 +33,10 @@ use crate::spec::{
 };
 
 /// Deposits funding each new account's storage and balance, matching
-/// `script/deploy.sh`.
-///
-/// Constants rather than spec fields: these size a *contract's* storage staking,
-/// which follows from the code being deployed, not from the market's identity.
-/// A deployment that genuinely needs more can raise one by editing the plan,
-/// which is what the artifact is for.
+/// `script/deploy.sh`. Constants rather than spec fields: these size a
+/// *contract's* storage staking, which follows from the code being deployed
+/// rather than from the market. A deployment needing more can raise one by
+/// editing the plan.
 const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_millinear(3_500);
 const ORACLE_DEPOSIT: NearToken = NearToken::from_near(5);
 const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_500);
@@ -56,10 +50,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch).await?;
     apply_skips(&mut checks, &args.skip_check)?;
 
-    let failed = checks
-        .iter()
-        .filter(|check| check.status.is_failure())
-        .count();
+    let failed = crate::spec::check::failures(&checks);
     if failed > 0 {
         print_json(&checks)?;
         anyhow::bail!(
@@ -68,7 +59,13 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         );
     }
 
-    let steps = build(&ctx.client, &spec, &args.public_key(), &args.signer_id).await?;
+    let steps = build(
+        &ctx.client,
+        &spec,
+        &PublicKey::from(args.public_key),
+        &args.signer_id,
+    )
+    .await?;
     let file = PlanFile::new(
         spec.network()?.to_string(),
         spec_digest,
@@ -124,15 +121,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     }
 
     let plan = file.into_operation_plan()?;
-    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
-    let output = client
-        .execute_request(WriteRequest {
-            signer_account_id: signer,
-            idempotency_key: None,
-            body: PreparedPlan { steps: plan.steps },
-        })
-        .await?;
-    ctx.finish_write(&output)
+    ctx.execute_via::<PlanDispatch, _>(&args.signer, PreparedPlan { steps: plan.steps })
+        .await
 }
 
 /// The deployment, in the order `deploy.sh` runs it.
@@ -162,7 +152,6 @@ pub(crate) async fn build(
         spec.governance.ttl_default.as_ns(),
     );
 
-    let governance_id = spec.governance_id()?;
     let price_maximum_age = spec.market.price_maximum_age;
     let full_access_keys = Some(vec![public_key.clone()]);
 
@@ -173,12 +162,21 @@ pub(crate) async fn build(
     // governance. Resuming onto existing contracts is ENG-546.
     let (collateral_proposal, borrow_proposal) = (0, 1);
 
-    let (collateral_decimals, borrow_decimals) = decimals(spec)?;
+    // Resolved by the preflight; the caller refuses before reaching here if a
+    // decimals check failed. Guessing would mis-scale every price.
+    let (Some(collateral_decimals), Some(borrow_decimals)) =
+        (spec.collateral.decimals, spec.borrow.decimals)
+    else {
+        anyhow::bail!(
+            "asset decimals are unresolved, so a market configuration cannot be \
+             built. Set `decimals` in the spec, or fix `asset.decimals.*`."
+        );
+    };
     let configuration = spec
         .clone()
-        .into_market_configuration(collateral_decimals, borrow_decimals)?;
+        .into_market_configuration(i32::from(collateral_decimals), i32::from(borrow_decimals))?;
 
-    let mut steps = Vec::from(oracle_stack(client, signer_id, spec, public_key).await?);
+    let mut steps = oracle_stack(client, signer_id, spec, public_key).await?;
 
     // Both sides project to the same `Proxy<Source>`, so one loop covers them
     // even though `AssetSpec` is generic over the asset class.
@@ -196,21 +194,7 @@ pub(crate) async fn build(
             spec.borrow.clone().into_proxy(price_maximum_age),
         ),
     ] {
-        steps.extend(
-            set_proxy(
-                client,
-                signer_id,
-                &governance_id,
-                spec.governance.ttl_default,
-                ProxyProposal {
-                    side,
-                    price_id,
-                    proposal_id,
-                    proxy,
-                },
-            )
-            .await?,
-        );
+        steps.extend(set_proxy(client, signer_id, spec, side, price_id, proposal_id, proxy).await?);
     }
 
     steps.push((
@@ -233,17 +217,14 @@ pub(crate) async fn build(
     Ok(steps)
 }
 
-/// The governance contract and the oracle it owns.
-///
-/// Emitted as a pair, in this order: the oracle names its governance as
-/// `owner_id` at init, so governance must exist first. Reversing them would
-/// deploy an oracle owned by an account that does not exist yet.
+/// The governance contract, then the oracle it owns: the oracle names its
+/// governance as `owner_id` at init, so governance must exist first.
 async fn oracle_stack(
     client: &Client,
     signer_id: &AccountId,
     spec: &MarketSpec,
     public_key: &PublicKey,
-) -> anyhow::Result<[(String, PlannedTransaction); 2]> {
+) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
     let full_access_keys = Some(vec![public_key.clone()]);
     let governance_id = spec.governance_id()?;
     let oracle_id = spec.oracle_id()?;
@@ -255,7 +236,7 @@ async fn oracle_stack(
     })
     .context("encode governance init args")?;
 
-    Ok([
+    Ok(vec![
         (
             format!("deploy governance {governance_id}"),
             step(
@@ -291,36 +272,20 @@ async fn oracle_stack(
     ])
 }
 
-/// One feed's proxy configuration, as a governance proposal.
-struct ProxyProposal {
-    side: &'static str,
-    price_id: templar_common::oracle::pyth::PriceIdentifier,
-    proposal_id: u32,
-    proxy:
-        templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
-}
-
-/// Propose a feed's proxy, then execute that proposal.
-///
-/// Two transactions rather than one: a proposal is always created before it can
-/// run, even at `ttl_default = 0`. They are emitted as a pair so a plan can
-/// never carry a create without its execute, which would leave the oracle
-/// configured for one leg only.
+/// Propose a feed's proxy, then execute that proposal. Two transactions: a
+/// proposal is always created before it can run, even at `ttl_default = 0`.
 async fn set_proxy(
     client: &Client,
     signer_id: &AccountId,
-    governance_id: &AccountId,
-    requested_ttl: Nanoseconds,
-    proposal: ProxyProposal,
-) -> anyhow::Result<[(String, PlannedTransaction); 2]> {
-    let ProxyProposal {
-        side,
-        price_id,
-        proposal_id,
-        proxy,
-    } = proposal;
+    spec: &MarketSpec,
+    side: &str,
+    price_id: PriceIdentifier,
+    proposal_id: u32,
+    proxy: Proxy<Source>,
+) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
+    let governance_id = spec.governance_id()?;
 
-    Ok([
+    Ok(vec![
         (
             format!("propose {side} proxy (proposal {proposal_id})"),
             step(
@@ -333,7 +298,7 @@ async fn set_proxy(
                         id: price_id,
                         proxy: Some(proxy),
                     },
-                    requested_ttl,
+                    requested_ttl: spec.governance.ttl_default,
                 },
             )
             .await?,
@@ -344,7 +309,7 @@ async fn set_proxy(
                 client,
                 signer_id,
                 gov::ExecuteProposal {
-                    governance_id: governance_id.clone(),
+                    governance_id,
                     id: proposal_id,
                 },
             )
@@ -353,23 +318,8 @@ async fn set_proxy(
     ])
 }
 
-/// Decimals resolved by the preflight. Absent means a check failed, and the
-/// caller refuses before reaching here — but building a configuration from
-/// guessed decimals would mis-scale every price, so this never assumes.
-fn decimals(spec: &MarketSpec) -> anyhow::Result<(i32, i32)> {
-    let (Some(collateral), Some(borrow)) = (spec.collateral.decimals, spec.borrow.decimals) else {
-        anyhow::bail!(
-            "asset decimals are unresolved, so a market configuration cannot be \
-             built. Set `decimals` in the spec, or fix `asset.decimals.*`."
-        );
-    };
-    Ok((i32::from(collateral), i32::from(borrow)))
-}
-
-/// Plan one write, requiring it to be a single transaction.
-///
-/// Each of these specs plans to exactly one; a multi-transaction step would make
-/// the labels lie about what an operator is confirming.
+/// Plan one write, requiring it to be a single transaction — a multi-transaction
+/// step would make the labels lie about what an operator is confirming.
 async fn step<S>(
     client: &Client,
     signer_id: &AccountId,
@@ -387,24 +337,14 @@ where
         })
         .await?;
 
-    let [transaction] = <[PlannedTransaction; 1]>::try_from(plan.steps).map_err(|steps| {
-        anyhow::anyhow!(
-            "`{}` planned {} transactions; the plan builder assumes one per step",
-            S::RPC_METHOD,
-            steps.len()
-        )
-    })?;
-    Ok(transaction)
+    crate::context::single_transaction(plan)
+        .with_context(|| format!("planning `{}`", S::RPC_METHOD))
 }
 
-/// Mark the named checks skipped, preserving the verdict each one reached.
-///
-/// The original detail is kept in the reason: a reviewer of the plan needs to
-/// see *what* was suppressed, and a bare "skipped" would hide the failure the
-/// operator chose to override.
-///
-/// An id that matches nothing is an error. A typo would otherwise read as a
-/// successful suppression while the check kept running.
+/// Mark the named checks skipped, recording the verdict each one reached — a
+/// bare "skipped" would hide the failure the operator chose to override. An id
+/// matching nothing is an error, since a typo would otherwise read as a
+/// successful suppression.
 fn apply_skips(checks: &mut [Check], skip: &[String]) -> anyhow::Result<()> {
     for id in skip {
         let mut matched = false;
@@ -431,13 +371,9 @@ fn apply_skips(checks: &mut [Check], skip: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The only two hard refusals.
-///
-/// A schema mismatch means this build cannot read the file faithfully, and a
-/// network mismatch would send a mainnet deployment to testnet or the reverse.
-/// Everything else — including a plan edited beyond recognition — is reported
-/// and confirmed rather than blocked, because blocking it would defeat the
-/// artifact's purpose.
+/// The only two hard refusals: this build cannot read a foreign schema
+/// faithfully, and a network mismatch would send a mainnet deployment to testnet
+/// or the reverse. Everything else is reported and confirmed, never blocked.
 fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         file.schema == PLAN_SCHEMA_VERSION,
@@ -491,8 +427,8 @@ fn confirm(question: &str) -> anyhow::Result<()> {
 }
 
 /// A plan that is already built, so an edited plan file rides the same executor
-/// as every other write — the store, idempotency, and recovery behaviour all
-/// come along rather than being reimplemented here.
+/// as every other write — store, idempotency and recovery come along rather than
+/// being reimplemented here.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PreparedPlan {
     steps: Vec<PlannedTransaction>,
@@ -503,9 +439,7 @@ impl schemars::JsonSchema for PreparedPlan {
         "PreparedPlan".to_owned()
     }
 
-    /// Never served over the RPC surface — this spec exists only to reach the
-    /// executor from inside this binary — so an unconstrained schema is honest
-    /// rather than lazy.
+    /// Never served over the RPC surface, so there is no schema to describe.
     fn json_schema(_generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
         schemars::schema::Schema::Bool(true)
     }
@@ -513,11 +447,19 @@ impl schemars::JsonSchema for PreparedPlan {
 
 impl MethodSpec for PreparedPlan {
     type Output = WriteOperationResult;
-    const RPC_METHOD: &'static str = "market.apply";
+    const RPC_METHOD: &'static str = "manager.applyPlan";
 }
 
+/// A dispatcher local to this binary, reached with `Client::via`.
+///
+/// The impl deliberately does *not* target `methods_dispatch::Dispatch`: that
+/// would bolt a method onto the shared dispatcher from a leaf tool, giving it a
+/// capability `methods-spec` never declares and that never appears in
+/// `METHODS.md`. A local ZST keeps the passthrough where it belongs.
+pub(crate) struct PlanDispatch;
+
 #[async_trait::async_trait]
-impl PlanWrite<PreparedPlan, GatewayContext> for Dispatch {
+impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
     async fn plan(
         request: WriteRequest<PreparedPlan>,
         _context: GatewayContext,
@@ -588,7 +530,7 @@ mod tests {
         assert!(error.to_string().contains("names no check"), "{error:#}");
     }
 
-    fn plan_file(schema: u32, network: &str) -> PlanFile {
+    fn bare_plan(schema: u32, network: &str) -> PlanFile {
         PlanFile {
             schema,
             tool_version: "0.1.0".to_owned(),
@@ -609,7 +551,7 @@ mod tests {
 
     #[test]
     fn a_matching_plan_is_accepted() {
-        ensure_compatible(&plan_file(PLAN_SCHEMA_VERSION, "mainnet"), "mainnet")
+        ensure_compatible(&bare_plan(PLAN_SCHEMA_VERSION, "mainnet"), "mainnet")
             .expect("same schema and network");
     }
 
@@ -617,7 +559,7 @@ mod tests {
     /// a confirmation prompt should be able to wave through.
     #[test]
     fn a_network_mismatch_is_refused() {
-        let error = ensure_compatible(&plan_file(PLAN_SCHEMA_VERSION, "mainnet"), "testnet")
+        let error = ensure_compatible(&bare_plan(PLAN_SCHEMA_VERSION, "mainnet"), "testnet")
             .expect_err("wrong network");
 
         assert!(
@@ -628,7 +570,7 @@ mod tests {
 
     #[test]
     fn a_schema_mismatch_is_refused() {
-        let error = ensure_compatible(&plan_file(PLAN_SCHEMA_VERSION + 1, "mainnet"), "mainnet")
+        let error = ensure_compatible(&bare_plan(PLAN_SCHEMA_VERSION + 1, "mainnet"), "mainnet")
             .expect_err("wrong schema");
 
         assert!(error.to_string().contains("Regenerate it"), "{error:#}");

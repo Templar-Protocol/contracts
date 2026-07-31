@@ -1,20 +1,15 @@
 use std::path::PathBuf;
 
+use crate::commands::signer::SignerArgs;
 use clap::Args;
 use near_account_id::AccountId;
 use near_api::PublicKey as CliPublicKey;
-use templar_gateway_types::primitive::PublicKey;
 
-use crate::commands::signer::SignerArgs;
-
-/// Generate the deployment for a spec as an editable file, without sending
-/// anything.
-///
-/// Deliberately takes no credential. Planning reads the chain and writes a file;
-/// giving it a key would mean a mistyped subcommand could spend NEAR. The
-/// operator's account and public key are still needed — the account signs each
-/// planned transaction, and the key is granted full access on every account the
-/// deploy creates — but neither is a secret.
+/// Deliberately takes no credential: planning reads the chain and writes a file,
+/// so a mistyped subcommand cannot spend NEAR. The account and public key are
+/// still needed — the account signs each planned transaction and the key is
+/// granted full access on the accounts created — but neither is a secret, which
+/// is why this is not [`SignerArgs`].
 #[derive(Args, Debug)]
 pub struct Plan {
     /// Path to the market spec.
@@ -30,7 +25,7 @@ pub struct Plan {
 
     /// Public key granted full access on each account the deploy creates.
     #[arg(long, value_name = "PUBLIC_KEY")]
-    public_key: CliPublicKey,
+    pub(crate) public_key: CliPublicKey,
 
     /// Ignore a named check. Every other check still runs, and every derived
     /// value is still derived — this suppresses one verdict, not the preflight.
@@ -43,12 +38,6 @@ pub struct Plan {
     /// Accept a `decimals` override that disagrees with the token's metadata.
     #[arg(long)]
     pub(crate) accept_decimals_mismatch: bool,
-}
-
-impl Plan {
-    pub(crate) fn public_key(&self) -> PublicKey {
-        PublicKey::from(self.public_key)
-    }
 }
 
 /// Send a plan file.

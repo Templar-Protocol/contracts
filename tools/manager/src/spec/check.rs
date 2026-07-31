@@ -60,6 +60,15 @@ impl Check {
     }
 }
 
+/// How many checks failed. The gate `spec check` and `market plan` both apply,
+/// in one place so they cannot drift apart.
+pub fn failures(checks: &[Check]) -> usize {
+    checks
+        .iter()
+        .filter(|check| check.status.is_failure())
+        .count()
+}
+
 /// Run every offline check.
 ///
 /// Decimals are supplied because `config.validate` needs a full

@@ -36,10 +36,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
         "checks": checks,
     }))?;
 
-    let failed = checks
-        .iter()
-        .filter(|check| check.status.is_failure())
-        .count();
+    let failed = crate::spec::check::failures(&checks);
     anyhow::ensure!(failed == 0, "{failed} check(s) failed");
     Ok(())
 }

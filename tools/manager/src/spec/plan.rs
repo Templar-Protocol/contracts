@@ -1,31 +1,16 @@
 //! The plan artifact: a serializable, hand-editable form of an
-//! [`OperationPlan`].
-//!
-//! This is the escape hatch. A spec cannot express every market, and a check can
-//! be wrong; when either happens, an operator needs to see the concrete
-//! transactions, change one, and send the result. So `market plan` writes this
-//! file, and `market apply` sends it.
-//!
-//! `gateway/core` is deliberately untouched. [`PlannedTransaction`] already
-//! derives `Serialize`/`Deserialize`, so the only thing missing was a *legible*
-//! encoding — which is a property of this tool, not of the gateway. The step
-//! `label` lives here for the same reason: it exists to orient a human reading a
-//! diff, and the executor has no use for it.
+//! [`OperationPlan`], for when the spec cannot express what a market needs or a
+//! check is wrong.
 //!
 //! ## Why JSON args are canonicalized
 //!
-//! `near_api` serializes `FunctionCallAction::args` as base64, which is correct
-//! on the wire and useless in a file someone has to edit. So JSON args are
-//! carried as JSON — but re-encoding through [`serde_json::Value`] sorts object
-//! keys, while the gateway produced them in struct-declaration order. The bytes
-//! therefore differ from the originals.
-//!
-//! Rather than pretend otherwise, conversion *into* this file canonicalizes.
-//! The invariant that matters is not "the bytes are untouched" but **what
-//! `apply` sends is exactly what `plan` showed** — so the canonical form is the
-//! one that gets digested, displayed, and executed. Key order carries no meaning
-//! to a contract decoding with `serde_json`, so nothing on chain can observe the
-//! difference.
+//! `near_api` serializes `FunctionCallAction::args` as base64, which is useless
+//! in a file someone has to edit. Carrying them as JSON means re-encoding
+//! through [`serde_json::Value`], which sorts object keys the gateway emitted in
+//! declaration order — so the original bytes cannot be preserved. Conversion
+//! into this file therefore canonicalizes, and the canonical form is what gets
+//! digested, displayed, and executed: what `apply` sends is what `plan` showed.
+//! Key order means nothing to a contract decoding with `serde_json`.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -37,20 +22,17 @@ use templar_gateway_types::{Base64Bytes, ManagedAccountId, NearGas};
 
 use super::check::Check;
 
-/// Bumped when this artifact's shape changes.
-///
-/// `apply` hard-refuses a mismatch. Every struct here is `deny_unknown_fields`,
-/// so a plan written by a newer tool is rejected outright rather than applied
-/// with fields this build cannot see — and this file authorizes spending real
-/// NEAR.
+/// Bumped when this artifact's shape changes. `apply` hard-refuses a mismatch:
+/// every struct here is `deny_unknown_fields`, and this file authorizes spending
+/// real NEAR.
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
 
 /// A function call's arguments, in whichever form a human can actually edit.
 ///
-/// Base64 is the wire encoding and `near_api`'s native serialization, but a plan
-/// of opaque blobs cannot be edited, which is the whole point of the artifact.
-/// So JSON args — nearly all of them — are carried as JSON, and base64 is
-/// reserved for the genuinely opaque case (`registry add_version` takes borsh).
+/// Deliberately not [`templar_gateway_types::common::ContractArgs`], which
+/// models the same choice but serializes as `{"encoding": …, "value": …}`. This
+/// file is read and edited by hand, so the terser `{"json": …}` is the shape
+/// worth having.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanArgs {
@@ -59,13 +41,10 @@ pub enum PlanArgs {
 }
 
 impl PlanArgs {
-    /// Classify by probing the bytes, not by a list of method names — a list
-    /// would silently drift from the methods it describes, and the failure mode
-    /// is an unreadable plan rather than an error.
-    ///
-    /// Only a JSON *object* counts. Every NEAR contract takes its JSON args as
-    /// one, so requiring it costs nothing and rules out a borsh payload that
-    /// happens to parse as a bare JSON scalar (`5`, `null`, a quoted string).
+    /// Classify by probing the bytes rather than by a list of method names,
+    /// which would drift from the methods it describes. Only a JSON *object*
+    /// counts — every NEAR contract takes its JSON args as one, so requiring it
+    /// rules out borsh that happens to parse as a bare scalar.
     fn from_bytes(args: Vec<u8>) -> Self {
         match serde_json::from_slice::<serde_json::Value>(&args) {
             Ok(value) if value.is_object() => Self::Json(value),
@@ -86,36 +65,25 @@ impl PlanArgs {
 pub struct PlanFunctionCall {
     pub method_name: String,
     pub args: PlanArgs,
-    /// Gas units. A plain integer rather than a `NearGas` string, so editing it
-    /// needs no knowledge of that crate's parse format.
+    /// Gas units, as a plain integer so editing needs no knowledge of
+    /// `NearGas`'s parse format.
     pub gas: u64,
     pub deposit: NearToken,
 }
 
-/// One transaction.
-///
-/// Every step a deployment plans is one or more function calls; a plan carrying
-/// any other action kind is refused at conversion rather than silently dropped,
-/// so `function_calls` is the field rather than a general `actions` list.
+/// One transaction. Every step a deployment plans is a function call; any other
+/// action kind is refused at conversion rather than silently dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanStep {
-    /// What this step is for, in words. Manager-only: the executor never reads
-    /// it, and it exists so a diff of an edited plan is legible.
+    /// Manager-only, so a diff of an edited plan is legible. The executor never
+    /// reads it, which is why it lives here and not in [`PlannedTransaction`].
     pub label: String,
     pub signer_id: AccountId,
     pub receiver_id: AccountId,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default)]
     pub continue_on_failure: bool,
     pub function_calls: Vec<PlanFunctionCall>,
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde predicate signature"
-)]
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 impl PlanStep {
@@ -132,8 +100,7 @@ impl PlanStep {
                 }),
                 other => anyhow::bail!(
                     "a deployment plan carries only function calls, but `{label}` \
-                     planned {other:?}. This is a bug in the plan builder, not \
-                     something an edited plan can cause."
+                     planned {other:?}"
                 ),
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -168,15 +135,10 @@ impl PlanStep {
             continue_on_failure: self.continue_on_failure,
         })
     }
-
-    /// The digest recorded for this step at generation time.
-    fn digest(&self) -> anyhow::Result<String> {
-        digest(self)
-    }
 }
 
-/// Values the spec implies rather than states, recorded so a reader does not
-/// have to re-derive them — and so a reviewer can see what the tool concluded.
+/// Values the spec implies rather than states, so a reviewer can see what the
+/// tool concluded without re-deriving them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Derived {
@@ -193,15 +155,12 @@ pub struct PlanFile {
     pub schema: u32,
     pub tool_version: String,
     pub network: String,
-    /// Digest of the spec this plan came from. Reported on apply so a plan can
-    /// be traced back to its source, including after the spec has moved on.
+    /// Digest of the spec this plan came from, so a plan can be traced back to
+    /// its source after the spec has moved on.
     pub spec_digest: String,
-    /// Per-step digests as generated.
-    ///
-    /// One per step rather than a single whole-file digest: with seven steps,
-    /// "something changed" is not actionable, and naming the changed steps is
-    /// what lets an operator confirm the edit they meant to make is the only one
-    /// present.
+    /// Per-step digests as generated. One per step rather than a single
+    /// whole-file digest: with seven steps, "something changed" is not
+    /// actionable.
     pub step_digests: Vec<String>,
     pub derived: Derived,
     pub checks: Vec<Check>,
@@ -211,15 +170,15 @@ pub struct PlanFile {
 /// What changed between a plan as generated and the file as it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Drift {
-    /// Indices of steps whose content differs from the recorded digest.
+    /// Indices whose content differs from the recorded digest.
     pub changed: Vec<usize>,
-    pub added: usize,
-    pub removed: usize,
+    /// Steps added (positive) or removed (negative).
+    pub delta: isize,
 }
 
 impl Drift {
     pub fn is_clean(&self) -> bool {
-        self.changed.is_empty() && self.added == 0 && self.removed == 0
+        self.changed.is_empty() && self.delta == 0
     }
 
     /// A plain sentence for the confirmation prompt.
@@ -240,11 +199,10 @@ impl Drift {
                     .join(", #")
             ));
         }
-        if self.added > 0 {
-            parts.push(format!("{} step(s) added", self.added));
-        }
-        if self.removed > 0 {
-            parts.push(format!("{} step(s) removed", self.removed));
+        match self.delta {
+            0 => {}
+            added if added > 0 => parts.push(format!("{added} step(s) added")),
+            removed => parts.push(format!("{} step(s) removed", -removed)),
         }
         format!(
             "plan has been edited since generation: {}",
@@ -268,7 +226,7 @@ impl PlanFile {
             .collect::<anyhow::Result<Vec<_>>>()?;
         let step_digests = steps
             .iter()
-            .map(PlanStep::digest)
+            .map(digest)
             .collect::<anyhow::Result<Vec<_>>>()?;
 
         Ok(Self {
@@ -283,29 +241,26 @@ impl PlanFile {
         })
     }
 
-    /// Recompute each step's digest and report how the file differs from what
-    /// was generated.
+    /// How the file differs from what was generated.
     ///
-    /// Reported, never enforced. Editing the plan is the feature; refusing an
-    /// edited plan would block exactly the case this artifact exists for.
+    /// Reported, never enforced: editing the plan is the feature, so refusing an
+    /// edited plan would block the case this artifact exists for.
     pub fn drift(&self) -> anyhow::Result<Drift> {
         let current = self
             .steps
             .iter()
-            .map(PlanStep::digest)
+            .map(digest)
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        let changed = current
-            .iter()
-            .zip(&self.step_digests)
-            .enumerate()
-            .filter_map(|(index, (now, then))| (now != then).then_some(index))
-            .collect();
-
         Ok(Drift {
-            changed,
-            added: current.len().saturating_sub(self.step_digests.len()),
-            removed: self.step_digests.len().saturating_sub(current.len()),
+            changed: current
+                .iter()
+                .zip(&self.step_digests)
+                .enumerate()
+                .filter_map(|(index, (now, then))| (now != then).then_some(index))
+                .collect(),
+            delta: isize::try_from(current.len()).unwrap_or(isize::MAX)
+                - isize::try_from(self.step_digests.len()).unwrap_or(isize::MAX),
         })
     }
 
@@ -321,10 +276,11 @@ impl PlanFile {
     }
 }
 
-/// `sha256:…` over a value's canonical JSON encoding.
+/// `sha256:…` over a value's JSON encoding.
 pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
-    use sha2::{Digest as _, Sha256};
-
     let bytes = serde_json::to_vec(value).context("serialize for digest")?;
-    Ok(format!("sha256:{}", hex::encode(Sha256::digest(&bytes))))
+    Ok(format!(
+        "sha256:{}",
+        templar_contract_artifacts::sha256_hex(&bytes)
+    ))
 }
