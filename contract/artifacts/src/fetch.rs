@@ -270,6 +270,23 @@ pub fn clean() -> Result<CacheUsage, FetchError> {
 
 /// [`clean`] against an explicit root, so tests need not mutate the environment.
 fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
+    // Every path below resolves *through* the root, so a symlinked one puts the
+    // rename and the recursive delete inside whatever it points at. Namespacing
+    // only isolates us while the namespace is a real directory — and in a shared
+    // parent, someone else can create it first.
+    if root
+        .symlink_metadata()
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err(FetchError::Cache {
+            path: root.to_owned(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "cache root is a symlink; refusing to delete through it",
+            ),
+        });
+    }
+
     let near = root.join("near");
 
     // `remove_dir_all` is a readdir/unlink/rmdir walk, so a concurrent fetch can
@@ -549,6 +566,22 @@ mod tests {
             "a sibling `near/` under the override is not ours to touch"
         );
         let _ = std::fs::remove_dir_all(&override_dir);
+    }
+
+    #[test]
+    fn cleaning_refuses_a_symlinked_root() {
+        let root = scratch_root("symlinked");
+        let victim = scratch_root("symlink-victim");
+        std::fs::create_dir_all(victim.join("near").join("theirs")).expect("scratch directory");
+        std::fs::create_dir_all(root.parent().expect("scratch parent")).ok();
+        std::os::unix::fs::symlink(&victim, &root).expect("scratch symlink");
+
+        let error = clean_at(&root).expect_err("a symlinked root redirects the delete");
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert!(victim.join("near").join("theirs").exists(), "target intact");
+
+        let _ = std::fs::remove_file(&root);
+        let _ = std::fs::remove_dir_all(&victim);
     }
 
     #[test]

@@ -31,11 +31,22 @@ breakage: `!` goes `0.1.0` → `0.2.0`, and a plain `feat` goes `0.1.0` → `0.1
 rather than to `0.2.0`. Set `features_always_increment_minor` in
 `release-plz.toml` if you would rather every `feat` take the minor.
 
-To override a proposed version, edit it in the Release PR branch — change the
-crate's `Cargo.toml` and its `CHANGELOG.md` heading, or run
-`release-plz set-version templar-gateway-core@2.0.0` locally and push the
-result. There is no comment-triggered equivalent: nothing in this repo listens
-to `issue_comment`, so a command posted on the PR does nothing.
+To override a proposed version, run `release-plz set-version` on the Release PR
+branch and push the result:
+
+```bash
+release-plz set-version templar-gateway-core@2.0.0
+```
+
+Do not hand-edit the crate's `Cargo.toml`. Sixteen workspace dependencies pin
+their path crates by version (`templar-gateway-core = { path = "./gateway/core",
+version = "0.1.0" }`), so bumping only the crate leaves the root requirement
+unsatisfiable and `cargo` refuses to resolve the workspace at all — the Release
+PR then cannot pass the test gate it has to pass. `set-version` updates the
+dependents and the lockfile with it.
+
+There is no comment-triggered equivalent: nothing in this repo listens to
+`issue_comment`, so a command posted on the PR does nothing.
 
 ### Editing the Release PR
 
