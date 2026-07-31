@@ -802,6 +802,30 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
+/// How many of the market's two assets are top-level NEP-141, and therefore
+/// need the market registered with them.
+fn nep141_assets(file: &PlanFile) -> usize {
+    file.steps
+        .iter()
+        .flat_map(|step| &step.function_calls)
+        .filter_map(decoded_init_args)
+        .find_map(|init| {
+            let configuration = init.get("configuration")?.clone();
+            Some(
+                ["collateral_asset", "borrow_asset"]
+                    .into_iter()
+                    .filter(|key| {
+                        configuration
+                            .get(key)
+                            .and_then(|asset| asset.get("Nep141"))
+                            .is_some()
+                    })
+                    .count(),
+            )
+        })
+        .unwrap_or(0)
+}
+
 /// A deployment must still be a deployment.
 ///
 /// Every coherence check below is conditional on finding the component it
@@ -848,6 +872,26 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     // a name check when the flag says "proxy" is what let a plan with its proxy
     // steps deleted and its market renamed pass, since the renamed market's
     // derived proxy is not the one its configuration references.
+    // A market must be registered with each NEP-141 it holds, or it cannot
+    // receive that asset. The gateway plans one `storage_deposit` per such
+    // asset; deleting one passed every check, because completeness counted only
+    // deploys and proposals and coherence validates a registration only when it
+    // is still there. Derived from the encoded configuration, so it is the
+    // market's own assets that decide how many are required.
+    let expected = nep141_assets(file);
+    let registrations = file
+        .steps
+        .iter()
+        .flat_map(|step| &step.function_calls)
+        .filter(|call| matches!(storage_registration_target(call), Ok(Some(_))))
+        .count();
+    anyhow::ensure!(
+        registrations >= expected,
+        "this market holds {expected} NEP-141 asset(s) but the plan carries \
+         {registrations} storage registration(s). A market that is not \
+         registered with a token cannot receive it."
+    );
+
     if !file.derived.creates_its_own_oracle {
         anyhow::ensure!(
             market == 1 && governance == 0 && oracle == 0 && proposals == 0,
