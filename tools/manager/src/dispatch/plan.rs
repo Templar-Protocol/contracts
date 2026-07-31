@@ -27,6 +27,7 @@ use templar_proxy_oracle_near_governance_common::Operation;
 use crate::commands::market::{Apply, Plan};
 use crate::commands::proxy_oracle::governance::{uniform_ttls, GovernanceInit};
 use crate::context::{print_json, CliContext};
+use crate::spec::journal::{self, Journal};
 use crate::spec::{
     check::{Check, Status},
     plan::{Derived, PlanFile, PLAN_SCHEMA_VERSION},
@@ -119,6 +120,31 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         !file.steps.is_empty(),
         "this plan has no steps; nothing would be deployed"
     );
+    // Reconciled before anything else that reads the steps: if the journal and
+    // the plan disagree, nothing below is meaningful.
+    let journal_path = journal::path_for(&args.plan);
+    let mut journal = Journal::load(&journal_path)?;
+    let remaining = journal.remaining(&file)?;
+
+    if remaining.len() < file.steps.len() {
+        eprintln!(
+            "\nResuming: {} of {} step(s) already completed per {}.",
+            file.steps.len() - remaining.len(),
+            file.steps.len(),
+            journal_path.display(),
+        );
+    }
+    if remaining.is_empty() {
+        eprintln!("Every step in this plan has already been applied.");
+        return Ok(());
+    }
+
+    // Against the remaining steps only — a resume must not demand the deposits
+    // it has already paid.
+    let outstanding: Vec<_> = remaining
+        .iter()
+        .filter_map(|index| file.steps.get(*index).cloned())
+        .collect();
     render(&file);
     report_checks(&file);
 
@@ -238,12 +264,11 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     if !args.yes {
         confirm(&format!(
             "Send {} transaction(s) as {credential}?",
-            file.steps.len(),
+            remaining.len(),
         ))?;
     }
 
-    // Balances drift, and the plan-time answer was only good at that moment.
-    let mut funding = super::funding::checks(&ctx, &file.steps).await?;
+    let mut funding = super::funding::checks(&ctx, &outstanding).await?;
     let matched = apply_skips(&mut funding, &args.skip_check);
     ensure_every_skip_matched(&args.skip_check, &matched)?;
     let short = crate::spec::check::failures(&funding);
@@ -261,9 +286,46 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // the check is only worth what it is worth at the moment of the send.
     ensure_targets_free(&ctx, &targets).await?;
 
-    let plan = file.into_operation_plan()?;
-    ctx.execute_via::<PlanDispatch, _>(&args.signer, PreparedPlan { steps: plan.steps })
-        .await
+    // One transaction per call, so every outcome can be journalled as it
+    // happens. Batching them would leave an interrupted run with nothing
+    // recorded — which is the only run a journal exists for.
+    let plan = file.clone().into_operation_plan()?;
+    for index in remaining {
+        let step = &file.steps[index];
+        let transaction = plan.steps[index].clone();
+        eprintln!("\n[{index}] {}", step.label);
+
+        let output = ctx
+            .execute_via::<PlanDispatch, _>(
+                &args.signer,
+                PreparedPlan {
+                    steps: vec![transaction],
+                },
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "step {index} (`{}`) failed. Completed steps are recorded in \
+                     {}; re-run `market apply` to resume from here.",
+                    step.label,
+                    journal_path.display(),
+                )
+            })?;
+
+        journal.append(
+            &journal_path,
+            journal::Entry {
+                step: index,
+                digest: crate::spec::plan::digest(step)?,
+                label: step.label.clone(),
+                tx_hash: output
+                    .operation
+                    .latest_tx_hash()
+                    .map(|hash| hash.to_string()),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// The deployment, in the order `deploy.sh` runs it.

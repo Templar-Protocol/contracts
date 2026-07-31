@@ -463,3 +463,102 @@ async fn requires_network_plans_the_deploy_script_in_order() {
         "the plan must reproduce deploy.sh"
     );
 }
+
+/// Journal reconciliation (ENG-546). All offline: the journal keys on the plan's
+/// own per-step digests, so nothing here needs a chain.
+mod journal {
+    use super::{plan_file, sample_steps};
+    use crate::spec::journal::{Entry, Journal};
+
+    fn entry(step: usize, digest: String) -> Entry {
+        Entry {
+            step,
+            digest,
+            label: format!("step {step}"),
+            tx_hash: None,
+        }
+    }
+
+    fn done(file: &crate::spec::plan::PlanFile, steps: &[usize]) -> Journal {
+        Journal {
+            entries: steps
+                .iter()
+                .map(|index| entry(*index, file.step_digests[*index].clone()))
+                .collect(),
+        }
+    }
+
+    /// The point of the journal: an interrupted deploy continues instead of
+    /// repeating work that already spent its deposit.
+    #[test]
+    fn completed_steps_are_skipped() {
+        let file = plan_file(sample_steps());
+        let journal = done(&file, &[0]);
+
+        assert_eq!(
+            journal.remaining(&file).expect("reconciles"),
+            vec![1, 2],
+            "only the steps that have not run"
+        );
+    }
+
+    #[test]
+    fn a_fresh_journal_runs_everything() {
+        let file = plan_file(sample_steps());
+        assert_eq!(
+            Journal::default().remaining(&file).expect("reconciles"),
+            vec![0, 1, 2]
+        );
+    }
+
+    /// Editing a step that has *already run* is the case that must be refused:
+    /// re-running it repeats a completed transaction, skipping it applies
+    /// something nobody executed. Named rather than silently resolved either way.
+    #[test]
+    fn an_edit_under_a_completed_step_is_refused() {
+        let mut file = plan_file(sample_steps());
+        let journal = done(&file, &[0]);
+        file.steps[0].function_calls[0].gas += 1;
+
+        let error = journal
+            .remaining(&file)
+            .expect_err("the plan changed under a completed step");
+        assert!(
+            format!("{error:#}").contains("changed under it"),
+            "{error:#}"
+        );
+    }
+
+    /// Editing a step that has *not* run is fine — the artifact exists to be
+    /// edited, and only completed steps are frozen.
+    #[test]
+    fn an_edit_ahead_of_the_cursor_is_allowed() {
+        let mut file = plan_file(sample_steps());
+        let journal = done(&file, &[0]);
+        file.steps[2].function_calls[0].gas += 1;
+
+        assert_eq!(journal.remaining(&file).expect("reconciles"), vec![1, 2]);
+    }
+
+    /// A journal from a different plan must not be mistaken for progress on
+    /// this one.
+    #[test]
+    fn a_journal_for_another_plan_is_refused() {
+        let file = plan_file(sample_steps());
+        let journal = Journal {
+            entries: vec![entry(99, "sha256:whatever".to_owned())],
+        };
+
+        let error = journal.remaining(&file).expect_err("out of range");
+        assert!(format!("{error:#}").contains("different plan"), "{error:#}");
+    }
+
+    /// The journal lives beside its plan, derived rather than configurable.
+    #[test]
+    fn the_journal_sits_beside_its_plan() {
+        assert_eq!(
+            crate::spec::journal::path_for(std::path::Path::new("/tmp/mkt/plan.json")),
+            std::path::PathBuf::from("/tmp/mkt/plan.json.journal.json")
+        );
+    }
+}

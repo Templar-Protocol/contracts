@@ -134,14 +134,19 @@ impl CliContext {
     ///
     /// The execute half of [`CliContext::write`], without the `--print` branch:
     /// `market apply` has a plan in hand and nothing left to print.
-    pub(crate) async fn execute_via<D, S>(&self, signer: &SignerArgs, body: S) -> anyhow::Result<()>
+    pub(crate) async fn execute_via<D, S>(
+        &self,
+        signer: &SignerArgs,
+        body: S,
+    ) -> anyhow::Result<WriteOperationResult>
     where
         S: MethodSpec<Output = WriteOperationResult>,
         D: PlanWrite<S, GatewayContext>,
     {
         let (account_id, client) = self.signing_client_for(signer).await?;
         let output = client.via::<D>().execute_as(account_id, body).await?;
-        self.finish_write(&output)
+        self.finish_write(&output)?;
+        Ok(output)
     }
 
     /// Plan or execute an `oracle.*` write through [`OracleUpdatesDispatch`],
