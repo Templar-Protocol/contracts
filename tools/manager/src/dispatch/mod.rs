@@ -13,6 +13,7 @@ mod preflight;
 mod proposals;
 mod reference;
 mod teardown;
+mod verify;
 
 use crate::cli::Command;
 use crate::commands::{
@@ -119,6 +120,7 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
         MarketNs::Export(a) => export::market(ctx, a).await,
         MarketNs::Plan(a) => plan::plan(ctx, a).await,
         MarketNs::Apply(a) => plan::apply(ctx, a).await,
+        MarketNs::Verify(a) => verify::market(ctx, a).await,
         MarketNs::Remove(a) => {
             // `market remove` is self-signed: the signer is the market account
             // being torn down.

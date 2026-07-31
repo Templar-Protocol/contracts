@@ -24,29 +24,7 @@ use crate::spec::{
 };
 
 pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> {
-    let (name, registry_id) = split_market_id(&args.market_id)?;
-
-    let configuration = ctx
-        .client
-        .read(market::GetConfiguration {
-            market_id: args.market_id.clone(),
-        })
-        .await
-        .context("read market configuration")?;
-
-    let oracle_id = configuration.price_oracle_configuration.account_id.clone();
-    let governance_id = governance_account_id(&name, &registry_id)?;
-    let spec = MarketSpec::from_deployed(Deployed {
-        versions: versions(&ctx, &name, &registry_id, &oracle_id, &args.market_id).await?,
-        governance: GovernanceSpec {
-            admin: args.governance_admin.clone(),
-            ttl_default: governance_ttl(&ctx, &governance_id).await?,
-        },
-        collateral_proxy: proxy(&ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
-        borrow_proxy: proxy(&ctx, &oracle_id, BORROW_PRICE_ID).await?,
-        market_id: args.market_id.clone(),
-        configuration,
-    })?;
+    let spec = reconstruct(&ctx, &args.market_id, &args.governance_admin).await?;
 
     let rendered = toml::to_string_pretty(&spec).context("render spec as TOML")?;
     match &args.out {
@@ -56,6 +34,48 @@ pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> 
         None => print!("{rendered}"),
     }
     Ok(())
+}
+
+/// The spec equivalent to what is deployed at `market_id`.
+///
+/// Shared with `market verify` (ENG-547), which re-runs the preflight against
+/// it: verifying a *differently* reconstructed spec than `export` emits would
+/// mean the two disagree about what the deployment is.
+///
+/// Reads the oracle's actual proxies, so a market whose feeds were never
+/// configured fails here rather than verifying clean. That matters because
+/// `admin_set_proxy` is dispatched detached: the proposal that should have set
+/// them reports success even when the oracle rejected it, so on-chain state is
+/// the only witness.
+pub(super) async fn reconstruct(
+    ctx: &CliContext,
+    market_id: &AccountId,
+    governance_admin: &AccountId,
+) -> anyhow::Result<MarketSpec> {
+    let (name, registry_id) = split_market_id(market_id)?;
+
+    let configuration = ctx
+        .client
+        .read(market::GetConfiguration {
+            market_id: market_id.clone(),
+        })
+        .await
+        .context("read market configuration")?;
+
+    let oracle_id = configuration.price_oracle_configuration.account_id.clone();
+    let governance_id = governance_account_id(&name, &registry_id)?;
+
+    MarketSpec::from_deployed(Deployed {
+        versions: versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
+        governance: GovernanceSpec {
+            admin: governance_admin.clone(),
+            ttl_default: governance_ttl(ctx, &governance_id).await?,
+        },
+        collateral_proxy: proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
+        borrow_proxy: proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?,
+        market_id: market_id.clone(),
+        configuration,
+    })
 }
 
 /// The governance contract's default proposal TTL, read rather than assumed.
@@ -73,15 +93,27 @@ async fn governance_ttl(
 
     let mut uniform: Option<(OperationKind, Nanoseconds)> = None;
     for kind in OperationKind::value_variants() {
-        let ttl = ctx
+        let ttl = match ctx
             .client
             .read(governance::GetOperationTtl {
                 governance_id: governance_id.clone(),
                 kind: *kind,
             })
             .await
-            .with_context(|| format!("read {kind:?} TTL from {governance_id}"))?
-            .ttl_ns;
+        {
+            Ok(result) => result.ttl_ns,
+            // A deployed contract older than this build does not know every
+            // operation kind — `SelfUpgrade` postdates the governance running
+            // on the alpha markets, and asking for its TTL panics the contract.
+            // A kind the deployment does not have has no TTL to recover, which
+            // is not the same as a failed read: matched on the contract's own
+            // "unknown variant" so a genuine RPC failure still propagates.
+            Err(error) if is_unknown_variant(&error) => continue,
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context(format!("read {kind:?} TTL from {governance_id}")))
+            }
+        };
 
         match uniform {
             None => uniform = Some((*kind, ttl)),
@@ -99,6 +131,12 @@ async fn governance_ttl(
     uniform
         .map(|(_, ttl)| ttl)
         .context("governance exposes no operation kinds to read a TTL from")
+}
+
+/// Whether the contract rejected the *argument* as a variant it does not know,
+/// rather than failing for any other reason.
+fn is_unknown_variant(error: &templar_gateway_core::GatewayError) -> bool {
+    error.to_string().contains("unknown variant")
 }
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is
