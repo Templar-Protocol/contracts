@@ -62,9 +62,13 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
 
+    /// Defaulted so a direct market, which aggregates nothing, need not state
+    /// an aggregator it will never use.
+    #[serde(default)]
     pub aggregator: AggregatorSpec,
 
     /// Minimum sources that must resolve for a price to be produced.
+    #[serde(default)]
     pub min_sources: u32,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -130,9 +134,10 @@ impl Default for ReferenceAsset {
 /// both fields — precisely the class of mistake this tool exists to catch. No
 /// alpha market uses it. Adding it means giving it validation that rejects the
 /// fields it cannot honour, not just another variant here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregatorSpec {
+    #[default]
     MedianLow,
     MedianHigh,
 }
