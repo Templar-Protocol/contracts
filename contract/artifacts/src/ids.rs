@@ -145,8 +145,8 @@ impl FromStr for ArtifactId {
 
 /// One released version of a contract.
 ///
-/// A release exists because the bytes were *deployed*, not because a version was
-/// bumped. Appended by CI on a release tag, never by hand.
+/// The canonical build for a version that was *released*, not merely bumped.
+/// Appended by CI on a release tag, never by hand.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct ArtifactRelease {
     /// Crate version this was released as.

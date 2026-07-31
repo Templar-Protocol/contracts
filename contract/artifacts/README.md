@@ -58,11 +58,17 @@ reconstructing them from a template would assume a uniformity that has never
 held. Changing release-plz's `git_tag_name` governs the *next* tag and cannot
 strand the ones already cut.
 
-**A release means the bytes were deployed, not that a version was bumped.**
+**A release means a release tag was cut and its WASM published, not that a
+version was bumped.**
 Those diverge, routinely — market's crate version reached 1.4.0 while 1.3.0 was
-the newest thing on mainnet, and registry reached 1.2.1 against a deployed
-1.1.0. So source is *expected* to run ahead of the newest release, and the
-catalog is appended to by CI when a release tag is cut, never by hand.
+the newest release, and registry reached 1.2.1 against a released 1.1.0. So
+source is *expected* to run ahead of the newest release, and the catalog is
+appended to by CI when a release tag is cut, never by hand.
+
+An entry is the canonical build for a released version, **not** evidence that
+those bytes run anywhere: nothing consults a chain. The 17 historical entries
+are the exception — they predate this workflow and were recovered from the
+accounts running them, which is why their releases name the source account.
 
 ```rust
 // Requires: features = ["fetch"]
@@ -77,7 +83,7 @@ let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
 Bytes are cached outside the repository so every worktree shares one copy:
 
 ```text
-${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artifacts}
+${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-artifacts
   └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
 ```
 
@@ -89,13 +95,13 @@ ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/templar-contract-artif
 
 `TEMPLAR_ARTIFACT_OFFLINE=1` forbids downloads and restricts lookups to the
 cache. `TEMPLAR_ARTIFACT_CACHE` relocates it — point it inside a checkout if you
-would rather each one kept its own.
+would rather each one kept its own. Like `XDG_CACHE_HOME`, it names the
+*parent*: the `templar-contract-artifacts` directory is always appended.
 
 Cleaning is never destructive: entries are immutable release assets, so the only
-cost is a re-download. The cache root carries a `.templar-artifact-cache` marker
-written when anything is first cached there, and `artifacts-clean` refuses a
-directory that lacks it — so a misaimed `TEMPLAR_ARTIFACT_CACHE` fails loudly
-instead of deleting someone else's `near/`.
+cost is a re-download. Because the override names the parent, everything
+`artifacts-clean` can reach sits under a directory named after this crate — a
+misaimed `TEMPLAR_ARTIFACT_CACHE` cannot touch what was already there.
 
 Sharing one cache across worktrees is safe because entries are verified against
 the in-repo pin on **every read**, not just on download. A branch whose catalog

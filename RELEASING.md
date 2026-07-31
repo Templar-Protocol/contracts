@@ -92,16 +92,23 @@ changes are required.
 **Flipping those flags is not enough on its own.** Every Tier A crate already
 has a baseline tag at its current version, and release-plz reads an existing tag
 as "already released" without consulting the registry — so today's versions
-would be skipped and the first upload would be some later bump. Bootstrap
-either by publishing the current versions by hand bottom-up
-(`cargo publish -p <crate>`) before flipping, or by bumping every Tier A crate
-past its tag first. `--dry-run` validates but uploads nothing, so it cannot
-seed the registry.
+would be skipped and the first upload would be some later bump.
+
+**Bump every Tier A crate past its tag, and let the first Release PR carry them
+up.** Do not hand-publish the current versions to close the gap: those tags
+point at trees that still carry the RedStone *git* dependency, so they cannot be
+published at all, and publishing the working tree instead would bind a crates.io
+version permanently to contents its identically-named tag does not contain.
+`--dry-run` validates a manifest but uploads nothing, so it cannot seed the
+registry either.
 
 ## Contract WASM artifacts
 
-Releasing a contract also produces its canonical WASM — **automatically**. There
-is no manual step to forget.
+Releasing a **NEAR contract that `contract/artifacts` catalogues** also produces
+its canonical WASM — automatically, with no manual step to forget. Soroban
+contracts are tagged and released like any Tier B crate but get no WASM asset:
+the catalog is NEAR-only, and `release-artifacts.yml` exits cleanly on a tag it
+does not recognise.
 
 1. Merge your work as normal, then merge the Release PR. That tags the version.
 
@@ -117,10 +124,16 @@ is no manual step to forget.
    an unrecorded release has no reviewed hash to check downloaded bytes against.
 
 Note what is *not* in that list: nothing asks a developer to declare a release
-up front. A `Cargo.toml` bump cannot assert one, because bumps and deployments
+up front. A `Cargo.toml` bump cannot assert one, because bumps and releases
 routinely diverge — market's crate version reached 1.4.0 while 1.3.0 was the
-newest deployment, and registry reached 1.2.1 against a deployed 1.1.0. The
-catalog records what actually shipped, so only CI, after the fact, can write it.
+newest release, and registry reached 1.2.1 against a released 1.1.0. Only CI,
+after the fact, can write the entry: a reproducible build's digest cannot be
+known until the build exists.
+
+A catalogued entry is the **canonical build for a released version** — the bytes
+CI built at that tag and published. It is not a claim that they run on any
+chain; nothing here consults one. The 17 backfilled entries are the exception,
+recovered from the accounts that were running them.
 
 Bytes are Release assets, not repository content. Tests download them into a
 shared cache (`just artifacts-fetch`); the pinned SHA-256 in `releases/` is

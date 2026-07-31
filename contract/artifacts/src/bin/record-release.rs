@@ -2,7 +2,7 @@
 //!
 //! Run by `.github/workflows/release-artifacts.yml` after it has built and
 //! uploaded a release's WASM; the one-line diff goes up as a PR. Never edited by
-//! hand — the catalog records what was *deployed*, which a `Cargo.toml` bump
+//! hand — the catalog records what was *released*, which a `Cargo.toml` bump
 //! cannot assert.
 //!
 //! ```bash
