@@ -35,8 +35,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> T {
 fn placeholder_versions() -> Versions {
     Versions {
         market: "v1.3.0".to_owned(),
-        proxy_oracle: "oracle@0.3.0".to_owned(),
-        proxy_governance: "governance@0.1.0".to_owned(),
+        proxy_oracle: Some("oracle@0.3.0".to_owned()),
+        proxy_governance: Some("governance@0.1.0".to_owned()),
     }
 }
 
@@ -55,10 +55,12 @@ fn deployed(market: &str) -> Deployed {
             .expect("valid market id"),
         configuration: serde_json::from_value(configuration["configuration"].clone())
             .unwrap_or_else(|error| panic!("parse {market} configuration: {error}")),
-        collateral_proxy: read_json(&alpha(&format!("{market}/proxy-collateral.json"))),
-        borrow_proxy: read_json(&alpha(&format!("{market}/proxy-borrow.json"))),
+        collateral_proxy: Some(read_json(&alpha(&format!(
+            "{market}/proxy-collateral.json"
+        )))),
+        borrow_proxy: Some(read_json(&alpha(&format!("{market}/proxy-borrow.json")))),
         versions: placeholder_versions(),
-        governance: placeholder_governance(),
+        governance: Some(placeholder_governance()),
     }
 }
 
@@ -71,8 +73,8 @@ fn round_trips_every_in_scope_alpha_market() {
         let input = deployed(market);
         let (configuration, collateral_proxy, borrow_proxy) = (
             input.configuration.clone(),
-            input.collateral_proxy.clone(),
-            input.borrow_proxy.clone(),
+            input.collateral_proxy.clone().expect("proxy fixture"),
+            input.borrow_proxy.clone().expect("proxy fixture"),
         );
         let oracle = &configuration.price_oracle_configuration;
         let (collateral_decimals, borrow_decimals) = (
@@ -155,7 +157,12 @@ fn exported_spec_renders_to_loadable_toml() {
 #[test]
 fn refuses_a_proxy_with_an_unbounded_freshness_filter() {
     let mut input = deployed("iethfxrp-ixlmusdc");
-    input.collateral_proxy.freshness_filter.max_age_ns = None;
+    input
+        .collateral_proxy
+        .as_mut()
+        .expect("proxy fixture")
+        .freshness_filter
+        .max_age_ns = None;
 
     let error = MarketSpec::from_deployed(input)
         .expect_err("an unbounded freshness filter is not expressible as a spec");
@@ -167,11 +174,13 @@ fn refuses_a_proxy_with_an_unbounded_freshness_filter() {
     );
 }
 
-/// The other sixteen alpha markets read an oracle a spec does not derive.
-/// Refusing is the whole point: emitting a spec that re-derives to a *different*
-/// oracle account would be a silent wrong answer.
+/// A market presented as a *proxy* deployment — its proxies were read — whose
+/// oracle is not the one a spec derives. Refusing is the whole point: emitting a
+/// proxy spec that re-derives to a different oracle account would be a silent
+/// wrong answer. (A market with no proxies read is a direct market, and exports
+/// as one; see below.)
 #[test]
-fn refuses_a_market_it_cannot_express() {
+fn refuses_a_proxy_market_whose_oracle_is_not_the_derived_one() {
     let configuration: MarketConfiguration =
         read_json(&alpha("ixlm-ixlmusdc.templar-alpha.near.json"));
     let in_scope = deployed("iethfxrp-ixlmusdc");
@@ -184,9 +193,9 @@ fn refuses_a_market_it_cannot_express() {
         collateral_proxy: in_scope.collateral_proxy,
         borrow_proxy: in_scope.borrow_proxy,
         versions: placeholder_versions(),
-        governance: placeholder_governance(),
+        governance: Some(placeholder_governance()),
     })
-    .expect_err("a pyth-direct market is not expressible as a spec");
+    .expect_err("a proxy export must not silently re-derive a different oracle");
 
     let rendered = format!("{error:#}");
     assert!(
@@ -196,5 +205,62 @@ fn refuses_a_market_it_cannot_express() {
     assert!(
         rendered.contains("proxy-oracle-ixlm-ixlmusdc.templar-alpha.near"),
         "the error must name what a spec would derive instead: {rendered}"
+    );
+}
+
+/// A direct market exports as `oracle.direct`, naming the oracle it reads and
+/// each asset's identifier on it.
+///
+/// It used to be refused outright: `from_deployed` hardcoded `OracleMode::Proxy`
+/// and `ensure_expressible` then rejected every market whose oracle was not the
+/// derived proxy — 32 of the 45 migrated markets, including every one of them
+/// that reads `pyth-oracle.near`.
+#[test]
+fn exports_a_direct_market_as_direct() {
+    let configuration: MarketConfiguration =
+        read_json(&alpha("ixlm-ixlmusdc.templar-alpha.near.json"));
+    let oracle = configuration.price_oracle_configuration.clone();
+
+    let spec = MarketSpec::from_deployed(Deployed {
+        market_id: "ixlm-ixlmusdc.templar-alpha.near"
+            .parse()
+            .expect("valid market id"),
+        configuration: configuration.clone(),
+        collateral_proxy: None,
+        borrow_proxy: None,
+        versions: Versions {
+            market: "v1.3.0".to_owned(),
+            proxy_oracle: None,
+            proxy_governance: None,
+        },
+        governance: None,
+    })
+    .expect("a direct market must export");
+
+    assert_eq!(
+        spec.oracle,
+        crate::spec::OracleMode::Direct {
+            account_id: oracle.account_id.clone()
+        },
+    );
+    assert_eq!(
+        spec.collateral.price_id,
+        Some(oracle.collateral_asset_price_id)
+    );
+    assert_eq!(spec.borrow.price_id, Some(oracle.borrow_asset_price_id));
+    assert!(spec.collateral.sources.is_empty() && spec.collateral.aggregator.is_none());
+    assert!(
+        spec.governance.is_none(),
+        "a direct market governs no oracle"
+    );
+
+    // And it must re-derive to exactly what is deployed.
+    assert_eq!(
+        spec.into_market_configuration(
+            oracle.collateral_asset_decimals,
+            oracle.borrow_asset_decimals
+        )
+        .expect("convert"),
+        configuration,
     );
 }

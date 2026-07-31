@@ -62,17 +62,41 @@ pub(super) async fn reconstruct(
         .await
         .context("read market configuration")?;
 
-    let oracle_id = configuration.price_oracle_configuration.account_id.clone();
+    let oracle = &configuration.price_oracle_configuration;
+    let oracle_id = oracle.account_id.clone();
     let governance_id = governance_account_id(&name, &registry_id)?;
+
+    // Which mode this market is in, decided from chain state before anything
+    // proxy-shaped is read. A direct market's oracle is not ours: it has no
+    // proxy to fetch, and the governance account beside it was never deployed,
+    // so reading either fails on a market that is perfectly healthy.
+    let proxy_mode = oracle_id == crate::spec::oracle_account_id(&name, &registry_id)?
+        && oracle.collateral_asset_price_id == COLLATERAL_PRICE_ID
+        && oracle.borrow_asset_price_id == BORROW_PRICE_ID;
+
+    if !proxy_mode {
+        return MarketSpec::from_deployed(Deployed {
+            versions: Versions {
+                market: version_key(ctx, &registry_id, market_id).await?,
+                proxy_oracle: None,
+                proxy_governance: None,
+            },
+            governance: None,
+            collateral_proxy: None,
+            borrow_proxy: None,
+            market_id: market_id.clone(),
+            configuration,
+        });
+    }
 
     MarketSpec::from_deployed(Deployed {
         versions: versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
-        governance: GovernanceSpec {
+        governance: Some(GovernanceSpec {
             admin: governance_admin.clone(),
             ttl_default: governance_ttl(ctx, &governance_id).await?,
-        },
-        collateral_proxy: proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
-        borrow_proxy: proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?,
+        }),
+        collateral_proxy: Some(proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?),
+        borrow_proxy: Some(proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?),
         market_id: market_id.clone(),
         configuration,
     })
@@ -174,8 +198,8 @@ async fn versions(
     let governance_id = governance_account_id(name, registry_id)?;
     let versions = Versions {
         market: version_key(ctx, registry_id, market_id).await?,
-        proxy_oracle: version_key(ctx, registry_id, oracle_id).await?,
-        proxy_governance: version_key(ctx, registry_id, &governance_id).await?,
+        proxy_oracle: Some(version_key(ctx, registry_id, oracle_id).await?),
+        proxy_governance: Some(version_key(ctx, registry_id, &governance_id).await?),
     };
 
     // A deployment record outlives its version, so a recovered key can name a
@@ -199,10 +223,13 @@ async fn versions(
         .values;
 
     for (label, key) in [
-        ("market", &versions.market),
-        ("proxy_oracle", &versions.proxy_oracle),
-        ("proxy_governance", &versions.proxy_governance),
-    ] {
+        ("market", Some(&versions.market)),
+        ("proxy_oracle", versions.proxy_oracle.as_ref()),
+        ("proxy_governance", versions.proxy_governance.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(label, key)| key.map(|key| (label, key)))
+    {
         anyhow::ensure!(
             live.iter().any(|known| known == key),
             "`{registry_id}` no longer offers the {label} version `{key}` this \

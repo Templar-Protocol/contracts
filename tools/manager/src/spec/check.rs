@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use super::MarketSpec;
 
+#[cfg(test)]
+pub use super::oracle::AggregatorSpec;
+
 /// A check's verdict. `Skipped` is distinct from `Passed` so a report can never
 /// present "not run" as "fine".
 ///
@@ -341,11 +344,19 @@ fn sources(spec: &MarketSpec) -> Check {
     // `AssetSpec<BorrowAsset>`), so they cannot share a loop.
     source_problems("collateral", &spec.collateral, &mut problems);
     source_problems("borrow", &spec.borrow, &mut problems);
-    for (side, asset_min) in [
-        ("collateral", spec.collateral.min_sources),
-        ("borrow", spec.borrow.min_sources),
+    for (side, asset_min, aggregator) in [
+        (
+            "collateral",
+            spec.collateral.min_sources,
+            spec.collateral.aggregator,
+        ),
+        ("borrow", spec.borrow.min_sources, spec.borrow.aggregator),
     ] {
-        if asset_min == 0 {
+        // `priority` honors no minimum, and `config.oracle_mode` refuses a
+        // priority asset that states one. Requiring a minimum here as well made
+        // the two checks contradict each other, so no correctly authored
+        // priority spec could pass either.
+        if aggregator.unwrap_or_default().is_weighted() && asset_min == 0 {
             problems.push(format!(
                 "{side}.min_sources is 0; state it explicitly (every deployed \
                  proxy carries at least 1)"
@@ -384,10 +395,14 @@ fn source_problems<A: templar_common::asset::AssetClass>(
             asset.min_sources
         ));
     }
-    if asset
-        .sources
-        .iter()
-        .all(|source| source.weight().unwrap_or(0) == 0)
+    // Weights only mean something to a median. A `priority` asset ranks by
+    // position and carries none, so treating its absent weights as zeroes
+    // reported every correctly authored priority spec as unresolvable.
+    if asset.aggregator.unwrap_or_default().is_weighted()
+        && asset
+            .sources
+            .iter()
+            .all(|source| source.weight().unwrap_or(0) == 0)
     {
         problems.push(format!("{side} sources all have weight 0"));
     }

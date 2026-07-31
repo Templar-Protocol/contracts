@@ -33,11 +33,12 @@ use crate::spec::{
 
 /// `oracle.aggregate.{collateral,borrow,pair}`.
 ///
-/// Both legs are fetched first, then judged against a single clock and a single
-/// anchor — mirroring the deployed contract, whose callback captures one block
-/// timestamp *after* every oracle result has arrived and resolves both legs
-/// against it. Per-leg clocks let a fresh collateral and a week-old borrow each
-/// pass on their own terms and produce a ratio the contract could never accept.
+/// Both legs are fetched first, then judged against a single wall-clock reading
+/// taken after every result has arrived — mirroring the deployed contract, whose
+/// callback captures one block timestamp at that same point and resolves both
+/// legs against it. Per-leg clocks let a fresh collateral and a week-old borrow
+/// each pass on their own terms and produce a ratio the contract could never
+/// accept.
 pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
@@ -69,21 +70,6 @@ pub(super) async fn checks(
     // future-drifted against a clock taken before it was even requested.
     let now = wall_clock();
 
-    // One anchor for both legs, capped at wall-clock.
-    //
-    // Capped, because a source timestamped in the future but *within*
-    // `max_clock_drift` is legitimate to the contract, yet as an anchor it would
-    // age every honest peer by that difference. Shared, because the contract
-    // resolves both legs against the same instant.
-    let newest = collateral
-        .iter()
-        .chain(borrow.iter())
-        .filter_map(|fetched| fetched.as_ref().ok()?.as_ref())
-        .map(|price| price.publish_time_ns)
-        .max()
-        .unwrap_or(now);
-    let anchor = newest.min(now);
-
     // Against the oracle's own breakers when one is deployed. An empty set is
     // right for `market plan` — the oracle does not exist yet — and wrong for
     // `market verify`: a tripped breaker means the live oracle prices nothing,
@@ -98,37 +84,33 @@ pub(super) async fn checks(
         spec,
         collateral,
         now,
-        anchor,
         collateral_breakers,
     );
-    let (borrow_price, borrow_checks) = leg(
-        "borrow",
-        &spec.borrow,
-        spec,
-        borrow,
-        now,
-        anchor,
-        borrow_breakers,
-    );
+    let (borrow_price, borrow_checks) =
+        leg("borrow", &spec.borrow, spec, borrow, now, borrow_breakers);
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
     (checks, collateral_price, borrow_price)
 }
 
-/// The oracle's configured breakers for a feed, or an empty set.
+/// The oracle's configured breakers for a feed.
 ///
-/// Empty when no oracle is deployed (planning) or when the set cannot be read —
-/// the latter is reported by `oracle.aggregate.*` failing to resolve rather than
-/// silently passing, since a proxy with no set simply has nothing to trip.
+/// `Ok(empty)` has two legitimate sources: no oracle is deployed yet (planning),
+/// or the deployed proxy has no set. A *failed read* is neither. An empty set
+/// trips on nothing, so substituting one can only turn a `Failed` aggregation
+/// into a `Passed` — which on `market verify` reports a market healthy whose
+/// live breaker may be blocking every price. The error is returned so the leg
+/// reports "could not check" instead.
 async fn breakers(
     ctx: &CliContext,
     oracle_id: Option<&near_account_id::AccountId>,
     id: templar_common::oracle::pyth::PriceIdentifier,
-) -> CircuitBreakerSet<CircuitBreaker> {
+) -> anyhow::Result<CircuitBreakerSet<CircuitBreaker>> {
     let Some(oracle_id) = oracle_id else {
-        return CircuitBreakerSet::empty();
+        return Ok(CircuitBreakerSet::empty());
     };
-    ctx.client
+    let result = ctx
+        .client
         .read(
             templar_gateway_methods_spec::proxy_oracle::GetProxyCircuitBreakerSet {
                 oracle_id: oracle_id.clone(),
@@ -136,9 +118,10 @@ async fn breakers(
             },
         )
         .await
-        .ok()
-        .and_then(|result| result.circuit_breaker_set)
-        .unwrap_or_else(CircuitBreakerSet::empty)
+        .with_context(|| format!("read the circuit-breaker set for {id:?} on {oracle_id}"))?;
+    Ok(result
+        .circuit_breaker_set
+        .unwrap_or_else(CircuitBreakerSet::empty))
 }
 
 /// Wall-clock, for freshness. The kernel takes `now` explicitly rather than
@@ -170,21 +153,16 @@ fn leg<A: AssetClass>(
     spec: &MarketSpec,
     fetched_sources: Vec<anyhow::Result<Option<Price>>>,
     now: Nanoseconds,
-    anchor: Nanoseconds,
-    mut breakers: CircuitBreakerSet<CircuitBreaker>,
+    breakers: anyhow::Result<CircuitBreakerSet<CircuitBreaker>>,
 ) -> (Option<Price>, Vec<Check>) {
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
 
-    // Clock drift is checked against wall-clock, before anything is anchored.
-    //
-    // The anchor below is the newest fetched price, so whichever source defines
-    // it is always evaluated at age zero. That makes the filter's own
-    // `max_clock_drift` bound unreachable here — a source with a bogus *future*
-    // timestamp would become the anchor, pass trivially, and push every honest
-    // peer past `max_age`, so the dry run would report a price built from the
-    // one bad source while production rejected exactly that source. Drift is
-    // only meaningful against a real clock, so it is judged here instead.
+    // Drift is judged here, against wall-clock, and a drifted price is dropped
+    // below rather than handed to `resolve`. That is what lets resolution use
+    // the real clock: the deployed contract passes `env::block_timestamp`, so
+    // resolving against anything else reports a freshness verdict the live
+    // oracle would not give.
     let max_drift = asset.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT);
     let drift_limit = Nanoseconds::from_ns(now.as_ns().saturating_add(max_drift.as_ns()));
 
@@ -234,9 +212,30 @@ fn leg<A: AssetClass>(
     // from "judged and rejected", which decide Skipped vs Failed below.
     let live = prices.iter().flatten().count();
 
+    // A breaker set that could not be read is not an empty one. Reported here
+    // rather than resolved around, because resolving with an empty set removes
+    // a rejection condition and can only turn a Failed into a Passed.
+    let mut breakers = match breakers {
+        Ok(breakers) => breakers,
+        Err(error) => {
+            checks.push(Check::new(
+                format!("oracle.aggregate.{side}"),
+                Status::failed(format!(
+                    "the deployed oracle's circuit breakers could not be read \
+                     ({error:#}), so this aggregation cannot be judged. A tripped \
+                     breaker would block every price."
+                )),
+            ));
+            return (None, checks);
+        }
+    };
+
     // Cloned because `into_proxy` consumes, and the spec is still needed after.
     let proxy = asset.clone().into_proxy(spec.market.price_maximum_age);
-    let resolved = proxy.resolve(&mut breakers, prices, anchor);
+    // `now`, not the newest fetched timestamp. Anchoring to the newest price
+    // makes whichever source defines it age zero, so a set of feeds all stale by
+    // the same amount every passes `max_age` here and is rejected on chain.
+    let resolved = proxy.resolve(&mut breakers, prices, now);
 
     let (status, price) = match resolved {
         Ok(outcome) => match outcome.value {

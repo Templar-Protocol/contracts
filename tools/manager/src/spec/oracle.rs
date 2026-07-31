@@ -225,6 +225,16 @@ impl SourceSpec {
         }
     }
 
+    /// Drop the weight, as a `priority` source carries none.
+    pub fn clear_weight(&mut self) {
+        match self {
+            Self::Lazer { weight, .. }
+            | Self::RedStone { weight, .. }
+            | Self::Pyth { weight, .. }
+            | Self::Lst { weight, .. } => *weight = None,
+        }
+    }
+
     /// The authored weight, if any. `priority` sources carry none.
     pub const fn weight(&self) -> Option<u32> {
         match self {

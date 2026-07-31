@@ -299,15 +299,11 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
-    let labeled: Vec<_> = if spec.oracle.is_direct() {
-        vec![("market", &spec.versions.market)]
-    } else {
-        vec![
-            ("market", &spec.versions.market),
-            ("oracle", &spec.versions.proxy_oracle),
-            ("governance", &spec.versions.proxy_governance),
-        ]
-    };
+    let mut labeled = vec![("market", Some(spec.versions.market.clone()))];
+    if !spec.oracle.is_direct() {
+        labeled.push(("oracle", spec.versions.proxy_oracle.clone()));
+        labeled.push(("governance", spec.versions.proxy_governance.clone()));
+    }
 
     let registered = match ctx
         .client
@@ -340,13 +336,21 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .map(|(label, key)| {
             Check::new(
                 format!("registry.version.{label}"),
-                if registered.iter().any(|known| known == key) {
-                    Status::passed(key.clone())
-                } else {
-                    Status::failed(format!(
+                match key {
+                    // A proxy spec that names no version for a contract it
+                    // deploys cannot be planned; reported here rather than
+                    // aborting the whole report.
+                    None => Status::failed(format!(
+                        "this spec deploys its own proxy oracle but states no \
+                         `versions.proxy_{label}`"
+                    )),
+                    Some(key) if registered.iter().any(|known| *known == key) => {
+                        Status::passed(key)
+                    }
+                    Some(key) => Status::failed(format!(
                         "`{key}` is not registered in {}; the deploy would fail partway",
                         spec.registry
-                    ))
+                    )),
                 },
             )
         })

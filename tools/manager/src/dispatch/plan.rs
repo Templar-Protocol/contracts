@@ -415,30 +415,33 @@ pub(crate) async fn build(
     // non-zero TTL the two proxy proposals are not executable when they are
     // created, and the alternative — emitting the creates and dropping the
     // executes — would deploy a market pointing at an unconfigured oracle.
-    anyhow::ensure!(
-        direct || spec.governance.ttl_default == Nanoseconds::from_ns(0),
-        "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
-         executable when created, and a plan cannot wait. Deploy with \
-         `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
-         proposal, or run the proposals by hand with `proxy-oracle governance \
-         execute-proposal --when-ready`.",
-        spec.governance.ttl_default.as_ns(),
-    );
+    if !direct {
+        let governance = spec.governance_spec()?;
+        anyhow::ensure!(
+            governance.ttl_default == Nanoseconds::from_ns(0),
+            "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
+             executable when created, and a plan cannot wait. Deploy with \
+             `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
+             proposal, or run the proposals by hand with `proxy-oracle governance \
+             execute-proposal --when-ready`.",
+            governance.ttl_default.as_ns(),
+        );
 
-    // The proposals are created and executed by `signer_id`, but only
-    // `governance.admin` is granted the Admin role at init. Mismatched, the two
-    // registry deploys succeed and every proposal reverts — 8.5 NEAR spent on
-    // exactly the orphaned half-deployment this tool exists to prevent.
-    // The retired shell deploy made this unrepresentable: it passed the
-    // signer as the admin.
-    anyhow::ensure!(
-        direct || &spec.governance.admin == signer_id,
-        "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
-         which would not hold the Admin role. Every proxy proposal would revert \
-         after the governance and oracle deploys had already spent their \
-         deposits. Set them to the same account.",
-        spec.governance.admin,
-    );
+        // The proposals are created and executed by `signer_id`, but only
+        // `governance.admin` is granted the Admin role at init. Mismatched, the two
+        // registry deploys succeed and every proposal reverts — 8.5 NEAR spent on
+        // exactly the orphaned half-deployment this tool exists to prevent.
+        // The retired shell deploy made this unrepresentable: it passed the
+        // signer as the admin.
+        anyhow::ensure!(
+            &governance.admin == signer_id,
+            "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
+             which would not hold the Admin role. Every proxy proposal would revert \
+             after the governance and oracle deploys had already spent their \
+             deposits. Set them to the same account.",
+            governance.admin,
+        );
+    }
 
     let price_maximum_age = spec.market.price_maximum_age;
     let full_access_keys = Some(vec![public_key.clone()]);
@@ -531,15 +534,16 @@ async fn oracle_stack(
     // cannot configure either proxy — and because `admin_set_proxy` is
     // dispatched detached, the proposals still *report* success and the deploy
     // reaches market creation with an unconfigured oracle.
+    let governance = spec.governance_spec()?;
     crate::commands::proxy_oracle::check_owner_id_is_honored(
-        &spec.versions.proxy_oracle,
+        spec.proxy_oracle_version()?,
         &governance_id,
     )?;
 
     let governance_init = serde_json::to_vec(&GovernanceInit {
         proxy_oracle_id: oracle_id.clone(),
-        admin_id: spec.governance.admin.clone(),
-        ttls: uniform_ttls(spec.governance.ttl_default),
+        admin_id: governance.admin.clone(),
+        ttls: uniform_ttls(governance.ttl_default),
     })
     .context("encode governance init args")?;
 
@@ -550,7 +554,7 @@ async fn oracle_stack(
         registry::Deploy {
             registry_id: spec.registry.clone(),
             name: crate::spec::governance_name(&spec.name),
-            version_key: spec.versions.proxy_governance.clone(),
+            version_key: spec.proxy_governance_version()?.to_owned(),
             init_args: Base64Bytes(governance_init),
             full_access_keys: full_access_keys.clone(),
             deposit: GOVERNANCE_DEPOSIT,
@@ -565,7 +569,7 @@ async fn oracle_stack(
             proxy_oracle::Create {
                 registry_id: spec.registry.clone(),
                 name: crate::spec::oracle_name(&spec.name),
-                version_key: spec.versions.proxy_oracle.clone(),
+                version_key: spec.proxy_oracle_version()?.to_owned(),
                 owner_id: Some(governance_id),
                 full_access_keys: full_access_keys.clone(),
                 deposit: ORACLE_DEPOSIT,
@@ -600,7 +604,7 @@ async fn set_proxy(
                 id: price_id,
                 proxy: Some(proxy),
             },
-            requested_ttl: spec.governance.ttl_default,
+            requested_ttl: spec.governance_spec()?.ttl_default,
         },
     )
     .await?;

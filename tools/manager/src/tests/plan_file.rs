@@ -337,7 +337,7 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
     );
     let spec = alpha_market();
     assert_ne!(
-        spec.governance.admin,
+        spec.governance_spec().expect("proxy fixture").admin,
         signer_id(),
         "the fixture must not already agree, or this proves nothing"
     );
@@ -368,10 +368,13 @@ async fn an_oracle_version_that_ignores_owner_id_is_refused() {
             .expect("valid key"),
     );
     let mut spec = alpha_market();
-    let admin = spec.governance.admin.clone();
+    let admin = spec.governance_spec().expect("proxy fixture").admin.clone();
     // Well-formed key, pre-0.3.0 version: the guard must reject it for what the
     // version *means*, not because the key failed to parse.
-    spec.versions.proxy_oracle = spec.versions.proxy_oracle.replace("@0.3.0#", "@0.2.0#");
+    spec.versions.proxy_oracle = spec
+        .versions
+        .proxy_oracle
+        .map(|key| key.replace("@0.3.0#", "@0.2.0#"));
 
     let error = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
         .await
@@ -406,7 +409,7 @@ async fn requires_network_plans_the_deploy_script_in_order() {
     // the Admin role, and `build` refuses that rather than plan a deployment
     // whose proposals revert after the deposits are already spent.
     let spec = alpha_market();
-    let admin = spec.governance.admin.clone();
+    let admin = spec.governance_spec().expect("proxy fixture").admin.clone();
     let labeled = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
         .await
         .expect("the alpha fixture should plan");

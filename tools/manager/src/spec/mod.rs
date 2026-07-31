@@ -81,7 +81,9 @@ pub struct MarketSpec {
     #[serde(default)]
     pub oracle: OracleMode,
 
-    pub governance: GovernanceSpec,
+    /// Absent for a direct market, which deploys no oracle to govern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<GovernanceSpec>,
 
     pub collateral: AssetSpec<CollateralAsset>,
     pub borrow: AssetSpec<BorrowAsset>,
@@ -121,13 +123,21 @@ impl OracleMode {
     }
 }
 
-/// Registry version keys for the three contracts a deployment creates.
+/// Registry version keys for the contracts a deployment creates.
+///
+/// The two proxy keys are optional because a direct market creates neither
+/// contract. `config.oracle_mode` requires them for a proxy spec, so the
+/// optionality cannot be used to under-specify a deployment that needs them —
+/// it exists so `market export` can describe a direct market without inventing
+/// versions for contracts that were never deployed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Versions {
     pub market: String,
-    pub proxy_oracle: String,
-    pub proxy_governance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_oracle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_governance: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -202,8 +212,13 @@ pub struct MarketParams {
     pub supply_withdrawal_range: AmountRange<BorrowAsset>,
 }
 
-/// `proxy-gov-<name>.<registry>`, as a free function because `market export`
-/// derives it *before* it has a spec to call methods on.
+/// The proxy account ids, as free functions because `market export` derives
+/// them *before* it has a spec to call methods on — it uses them to decide which
+/// mode the deployment is in.
+pub fn oracle_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
+    derived_id(&oracle_name(name), registry)
+}
+
 pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
     derived_id(&governance_name(name), registry)
 }
@@ -273,6 +288,30 @@ impl MarketSpec {
                 self.registry
             ),
         }
+    }
+
+    /// The fields only a proxy deployment has. Absent is a valid spec — a
+    /// direct market deploys neither contract — so the error names the mode
+    /// rather than reading as a missing required field.
+    pub fn governance_spec(&self) -> anyhow::Result<&GovernanceSpec> {
+        self.governance.as_ref().context(
+            "this spec deploys its own proxy oracle but states no `[governance]`; \
+             the oracle would have no owner able to configure it",
+        )
+    }
+
+    pub fn proxy_oracle_version(&self) -> anyhow::Result<&str> {
+        self.versions.proxy_oracle.as_deref().context(
+            "this spec deploys its own proxy oracle but states no \
+             `versions.proxy_oracle`",
+        )
+    }
+
+    pub fn proxy_governance_version(&self) -> anyhow::Result<&str> {
+        self.versions.proxy_governance.as_deref().context(
+            "this spec deploys its own proxy oracle but states no \
+             `versions.proxy_governance`",
+        )
     }
 
     /// `<name>.<registry>` — where the market contract lands.

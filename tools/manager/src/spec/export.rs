@@ -32,13 +32,17 @@ use super::{
 };
 
 /// Everything read off chain for one market.
+///
+/// The proxy and governance fields are `None` for a direct market, which reads
+/// an oracle it does not own: there is no proxy of ours to fetch, and the
+/// governance account beside it was never deployed.
 pub struct Deployed {
     pub market_id: AccountId,
     pub configuration: MarketConfiguration,
-    pub collateral_proxy: Proxy<Source>,
-    pub borrow_proxy: Proxy<Source>,
+    pub collateral_proxy: Option<Proxy<Source>>,
+    pub borrow_proxy: Option<Proxy<Source>>,
     pub versions: Versions,
-    pub governance: GovernanceSpec,
+    pub governance: Option<GovernanceSpec>,
 }
 
 impl MarketSpec {
@@ -47,10 +51,19 @@ impl MarketSpec {
         let (name, registry) = split_market_id(&deployed.market_id)?;
         let oracle = &deployed.configuration.price_oracle_configuration;
 
+        // A market whose proxies were not read is one that reads someone else's
+        // oracle. It names that account and each asset's identifier on it,
+        // rather than being refused as inexpressible.
+        let direct = deployed.collateral_proxy.is_none() && deployed.borrow_proxy.is_none();
+
         let spec = Self {
-            // Export reconstructs proxy deployments; `reconstruct` refuses a
-            // market whose oracle it did not create.
-            oracle: super::OracleMode::Proxy,
+            oracle: if direct {
+                super::OracleMode::Direct {
+                    account_id: oracle.account_id.clone(),
+                }
+            } else {
+                super::OracleMode::Proxy
+            },
             schema: SCHEMA_VERSION,
             extends: Vec::new(),
             registry,
@@ -62,12 +75,14 @@ impl MarketSpec {
                 deployed.configuration.collateral_asset.clone(),
                 oracle.collateral_asset_decimals,
                 deployed.collateral_proxy,
+                Some(oracle.collateral_asset_price_id),
             )?,
             borrow: asset_spec(
                 "borrow",
                 deployed.configuration.borrow_asset.clone(),
                 oracle.borrow_asset_decimals,
                 deployed.borrow_proxy,
+                Some(oracle.borrow_asset_price_id),
             )?,
             market: market_params(&deployed.configuration),
         };
@@ -76,7 +91,9 @@ impl MarketSpec {
         // deployed proxies rather than being left to defaults: an export exists
         // for fidelity, and a later change to a default must not silently alter
         // what an exported spec means.
-        ensure_expressible(&spec, oracle)?;
+        if !direct {
+            ensure_expressible(&spec, oracle)?;
+        }
         Ok(spec)
     }
 }
@@ -89,7 +106,12 @@ pub fn split_market_id(market_id: &AccountId) -> anyhow::Result<(String, Account
     let name = market_id
         .as_str()
         .strip_suffix(&format!(".{registry}"))
-        .unwrap_or_default();
+        .with_context(|| format!("`{market_id}` does not end with `.{registry}`"))?;
+    anyhow::ensure!(
+        !name.is_empty(),
+        "`{market_id}` has an empty market name, so every derived account id \
+         would be malformed"
+    );
     Ok((name.to_owned(), registry.to_owned()))
 }
 
@@ -119,8 +141,31 @@ fn asset_spec<A: AssetClass>(
     side: &str,
     asset: templar_common::asset::FungibleAsset<A>,
     decimals: i32,
-    proxy: Proxy<Source>,
+    proxy: Option<Proxy<Source>>,
+    price_id: Option<templar_common::oracle::pyth::PriceIdentifier>,
 ) -> anyhow::Result<AssetSpec<A>> {
+    let decimals = Some(u8::try_from(decimals).with_context(|| {
+        format!("{side} asset declares {decimals} decimals, which a spec cannot express")
+    })?);
+
+    // A direct market names the identifier its oracle serves this asset under,
+    // and aggregates nothing.
+    let Some(proxy) = proxy else {
+        return Ok(AssetSpec {
+            asset,
+            price_id,
+            symbol: None,
+            reference: None,
+            reference_tolerance: None,
+            decimals,
+            aggregator: None,
+            min_sources: 0,
+            sources: Vec::new(),
+            max_age: None,
+            max_clock_drift: None,
+        });
+    };
+
     let (aggregator, min_sources, sources) = split_aggregator(proxy.aggregator)?;
 
     // `None` means opposite things on the two sides of this conversion. On chain
@@ -152,9 +197,7 @@ fn asset_spec<A: AssetClass>(
         // as a record.
         reference: None,
         reference_tolerance: None,
-        decimals: Some(u8::try_from(decimals).with_context(|| {
-            format!("{side} asset declares {decimals} decimals, which a spec cannot express")
-        })?),
+        decimals,
         aggregator: Some(aggregator),
         min_sources,
         sources,

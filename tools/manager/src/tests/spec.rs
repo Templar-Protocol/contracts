@@ -251,6 +251,44 @@ fn offline_checks_pass_for_a_real_market() {
     );
 }
 
+/// A correctly authored `priority` spec must pass every offline check.
+///
+/// `config.oracle_mode` refuses a priority asset that states `min_sources` or
+/// weights; `config.sources` used to require both. The two contradicted each
+/// other, so the aggregator was unusable however it was written.
+#[test]
+fn a_priority_aggregator_passes_the_offline_checks() {
+    let mut spec = alpha_market();
+    for (aggregator, min_sources, sources) in [
+        (
+            &mut spec.collateral.aggregator,
+            &mut spec.collateral.min_sources,
+            &mut spec.collateral.sources,
+        ),
+        (
+            &mut spec.borrow.aggregator,
+            &mut spec.borrow.min_sources,
+            &mut spec.borrow.sources,
+        ),
+    ] {
+        *aggregator = Some(check::AggregatorSpec::Priority);
+        *min_sources = 0;
+        for source in sources.iter_mut() {
+            source.clear_weight();
+        }
+    }
+
+    let failures: Vec<_> = check::run_offline(&spec)
+        .into_iter()
+        .filter(|check| check.status.is_failure())
+        .collect();
+
+    assert!(
+        failures.is_empty(),
+        "a valid priority spec must not fail any offline check: {failures:#?}"
+    );
+}
+
 /// Without stated decimals the configuration cannot be built offline. That must
 /// read as "not run", never as "fine".
 #[test]
