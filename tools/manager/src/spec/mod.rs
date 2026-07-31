@@ -13,6 +13,7 @@
 pub mod check;
 pub mod export;
 pub mod extends;
+pub mod journal;
 pub mod oracle;
 pub mod plan;
 mod serde_util;
