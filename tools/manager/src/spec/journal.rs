@@ -180,10 +180,9 @@ impl Journal {
         // *plan* is intact. Only the executed set is wrong.
         anyhow::ensure!(
             done.iter().copied().eq(0..done.len()),
-            "this journal records steps {:?} as done, which is not a prefix of \
-             the plan. Steps run in order, so a gap means an entry was removed \
-             or invented; resuming would skip a step that never ran.",
-            done,
+            "this journal records steps {done:?} as done, which is not a prefix \
+             of the plan. Steps run in order, so a gap means an entry was \
+             removed or invented; resuming would skip a step that never ran.",
         );
 
         Ok((0..file.steps.len())
