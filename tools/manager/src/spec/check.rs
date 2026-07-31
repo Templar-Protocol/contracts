@@ -80,8 +80,54 @@ pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
     vec![
         assets_distinct(spec),
         sources(spec),
+        mode_is_fully_described(spec),
         validate_configuration(spec),
     ]
+}
+
+/// Fields belonging to the other oracle mode are refused rather than ignored.
+///
+/// `OracleMode` documents itself as making a half-described spec impossible,
+/// but the fields all live on the shared `AssetSpec`, so the type does not
+/// enforce it — a proxy spec may carry a `price_id` and a direct spec a list of
+/// `sources`, and both are silently dropped. Silently dropped is the problem:
+/// an author who wrote `sources` on a direct spec believes those sources are
+/// being aggregated, and nothing tells them otherwise.
+///
+/// Enforced here rather than by splitting `AssetSpec` by mode, which is the
+/// deeper fix and a larger change than this issue should carry.
+fn mode_is_fully_described(spec: &MarketSpec) -> Check {
+    let id = "config.oracle_mode";
+    let direct = spec.oracle.is_direct();
+    let mut problems = Vec::new();
+
+    for (side, price_id, sources) in [
+        (
+            "collateral",
+            spec.collateral.price_id,
+            spec.collateral.sources.len(),
+        ),
+        ("borrow", spec.borrow.price_id, spec.borrow.sources.len()),
+    ] {
+        if direct && sources > 0 {
+            problems.push(format!(
+                "{side} names {sources} source(s), but this market reads an \
+                 oracle it does not configure; they would be ignored"
+            ));
+        }
+        if !direct && price_id.is_some() {
+            problems.push(format!(
+                "{side}.price_id is set, but a proxy oracle serves the constants \
+                 this tool owns; it would be ignored"
+            ));
+        }
+    }
+
+    if problems.is_empty() {
+        Check::new(id, Status::passed(if direct { "direct" } else { "proxy" }))
+    } else {
+        Check::new(id, Status::failed(problems.join("; ")))
+    }
 }
 
 /// What the chain said about a token's decimals.
