@@ -111,6 +111,23 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     render(&file);
     report_checks(&file);
 
+    // Re-read, rather than trusting the plan's own `deployment.available.*`.
+    // A plan is written to be reviewed, and a target free at plan time can be
+    // claimed while that review happens — after which the first six steps
+    // succeed and the market deploy fails, which is the half-spent deploy the
+    // plan-time check exists to prevent.
+    let occupied = occupied_targets(&ctx, &file.derived).await?;
+    anyhow::ensure!(
+        occupied.is_empty(),
+        "{} already exist(s), and this plan creates them. Re-plan under a \
+         different `name`, or tear the existing deployment down.",
+        occupied
+            .iter()
+            .map(|account_id| format!("`{account_id}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
     // Provenance is reported, not enforced.
     let drift = file.drift()?;
     eprintln!("\n{}", drift.describe());
@@ -438,6 +455,21 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
         file.network,
     );
     Ok(())
+}
+
+/// Which of the deployment's target accounts exist right now.
+async fn occupied_targets(ctx: &CliContext, derived: &Derived) -> anyhow::Result<Vec<AccountId>> {
+    let mut occupied = Vec::new();
+    for account_id in [
+        &derived.governance_id,
+        &derived.oracle_id,
+        &derived.market_id,
+    ] {
+        if super::preflight::exists(ctx, account_id).await? {
+            occupied.push(account_id.clone());
+        }
+    }
+    Ok(occupied)
 }
 
 /// Every account this deployment creates must be free.

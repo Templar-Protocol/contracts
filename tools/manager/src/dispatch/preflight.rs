@@ -253,6 +253,15 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 
 /// Every version key must already be registered, or the deploy fails partway —
 /// which is how `deploy.sh` leaves an orphaned governance contract today.
+///
+/// Membership is all this can check. `remove_version` soft-deletes: it sets
+/// `VersionEntry::Code.code = None` but keeps the key, and `code_hash()` still
+/// answers with the stored hash — so `list_versions` and `get_version_code_hash`
+/// both report a removed version as present, while `deploy` aborts with
+/// "Version code has been deleted". No registry view distinguishes the two, so
+/// closing this needs an additive view reporting code availability (the same
+/// contract change ENG-463/464 wants for ABI validation). Until then a
+/// soft-deleted version passes here and fails mid-deploy.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let labelled = [
         ("market", &spec.versions.market),
