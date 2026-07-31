@@ -29,7 +29,7 @@ use crate::commands::proxy_oracle::governance::{uniform_ttls, GovernanceInit};
 use crate::context::{print_json, CliContext};
 use crate::spec::{
     check::{Check, Status},
-    plan::{Derived, PlanFile, PLAN_SCHEMA_VERSION},
+    plan::{Derived, PlanArgs, PlanFile, PLAN_SCHEMA_VERSION},
     MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
@@ -111,22 +111,13 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     render(&file);
     report_checks(&file);
 
-    // Re-read, rather than trusting the plan's own `deployment.available.*`.
-    // A plan is written to be reviewed, and a target free at plan time can be
+    // Re-read, rather than trusting the plan's own `deployment.available.*`. A
+    // plan is written to be reviewed, and a target free at plan time can be
     // claimed while that review happens — after which the first six steps
     // succeed and the market deploy fails, which is the half-spent deploy the
     // plan-time check exists to prevent.
-    let occupied = occupied_targets(&ctx, &file.derived).await?;
-    anyhow::ensure!(
-        occupied.is_empty(),
-        "{} already exist(s), and this plan creates them. Re-plan under a \
-         different `name`, or tear the existing deployment down.",
-        occupied
-            .iter()
-            .map(|account_id| format!("`{account_id}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
+    let targets = planned_targets(&file);
+    ensure_targets_free(&ctx, &targets).await?;
 
     // Provenance is reported, not enforced.
     let drift = file.drift()?;
@@ -160,6 +151,10 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             file.steps.len(),
         ))?;
     }
+
+    // Again, immediately before sending: the prompt above has no time limit, and
+    // the check is only worth what it is worth at the moment of the send.
+    ensure_targets_free(&ctx, &targets).await?;
 
     let plan = file.into_operation_plan()?;
     ctx.execute_via::<PlanDispatch, _>(&args.signer, PreparedPlan { steps: plan.steps })
@@ -457,19 +452,60 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Which of the deployment's target accounts exist right now.
-async fn occupied_targets(ctx: &CliContext, derived: &Derived) -> anyhow::Result<Vec<AccountId>> {
+/// The accounts this plan's steps would create.
+///
+/// Read off the steps rather than `derived`, because the steps are what
+/// executes. Editing a deploy's `name` is a supported hand edit, and `derived`
+/// is metadata `into_operation_plan` never consults — checking it would check
+/// accounts the plan no longer touches while the edited one collides.
+///
+/// A registry deploy is recognised by its argument shape (`name` beside a
+/// `version_key`) rather than by a method name, and creates `{name}` beneath the
+/// registry it is addressed to.
+fn planned_targets(file: &PlanFile) -> Vec<AccountId> {
+    file.steps
+        .iter()
+        .flat_map(|step| {
+            step.function_calls.iter().filter_map(move |call| {
+                let PlanArgs::Json(args) = &call.args else {
+                    return None;
+                };
+                args.get("version_key")?;
+                let name = args.get("name")?.as_str()?;
+                format!("{name}.{}", step.receiver_id).parse().ok()
+            })
+        })
+        .collect()
+}
+
+/// Which of those accounts exist right now.
+async fn occupied_targets(
+    ctx: &CliContext,
+    targets: &[AccountId],
+) -> anyhow::Result<Vec<AccountId>> {
     let mut occupied = Vec::new();
-    for account_id in [
-        &derived.governance_id,
-        &derived.oracle_id,
-        &derived.market_id,
-    ] {
+    for account_id in targets {
         if super::preflight::exists(ctx, account_id).await? {
             occupied.push(account_id.clone());
         }
     }
     Ok(occupied)
+}
+
+/// Refuse a plan whose targets are taken.
+async fn ensure_targets_free(ctx: &CliContext, targets: &[AccountId]) -> anyhow::Result<()> {
+    let occupied = occupied_targets(ctx, targets).await?;
+    anyhow::ensure!(
+        occupied.is_empty(),
+        "{} already exist(s), and this plan creates them. Re-plan under a \
+         different `name`, or tear the existing deployment down.",
+        occupied
+            .iter()
+            .map(|account_id| format!("`{account_id}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    Ok(())
 }
 
 /// Every account this deployment creates must be free.
@@ -634,7 +670,7 @@ impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_skips, ensure_compatible, PLAN_SCHEMA_VERSION};
+    use super::{apply_skips, ensure_compatible, PlanArgs, PLAN_SCHEMA_VERSION};
     use crate::spec::check::{Check, Status};
     use crate::spec::plan::{Derived, PlanFile};
 
@@ -710,6 +746,65 @@ mod tests {
             checks: Vec::new(),
             steps: Vec::new(),
         }
+    }
+
+    /// Editing a deploy's `name` is a supported hand edit, and the steps are
+    /// what executes — so the collision check must follow the edit, not the
+    /// `derived` metadata that `into_operation_plan` never reads.
+    #[test]
+    fn targets_come_from_the_steps_not_the_metadata() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy market".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "edited-by-hand",
+                    "version_key": "v1.3.0",
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        });
+
+        assert_eq!(
+            super::planned_targets(&file)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["edited-by-hand.templar-alpha.near"],
+            "the edited name is what gets deployed, so it is what gets checked"
+        );
+        assert_ne!(
+            file.derived.market_id.as_str(),
+            "edited-by-hand.templar-alpha.near",
+            "and it deliberately disagrees with the stale metadata"
+        );
+    }
+
+    /// A governance proposal creates no account, so it contributes no target.
+    #[test]
+    fn only_registry_deploys_are_targets() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "propose".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "gov.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "create_proposal".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({ "id": 0, "requested_ttl": "0" })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_yoctonear(1),
+            }],
+        });
+
+        assert!(super::planned_targets(&file).is_empty());
     }
 
     #[test]
