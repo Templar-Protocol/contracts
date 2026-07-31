@@ -7,7 +7,7 @@ mod has_role;
 mod list_proposals;
 mod list_role;
 
-pub use create::GovernanceCreate;
+pub use create::{GovernanceCreate, GovernanceInit};
 pub use create_proposal::CreateProposal;
 pub use execute_proposal::ExecuteProposalArgs;
 pub use get_operation_ttl::GetOperationTtl;
@@ -102,7 +102,7 @@ impl CancelProposal {
     }
 }
 
-fn uniform_ttls(ttl: Nanoseconds) -> TtlConfig {
+pub(crate) fn uniform_ttls(ttl: Nanoseconds) -> TtlConfig {
     TtlConfig {
         set_proxy: ttl,
         configure_circuit_breakers: ttl,

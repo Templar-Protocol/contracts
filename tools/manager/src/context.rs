@@ -154,7 +154,7 @@ impl CliContext {
     /// Report the tx link, print the machine-readable result, then fail unless the
     /// operation succeeded on chain. Printing precedes the status check so a reverted
     /// operation still emits its JSON on stdout.
-    fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
+    pub(crate) fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
         self.report_tx(output);
         print_json(output)?;
         check_operation_status(output)

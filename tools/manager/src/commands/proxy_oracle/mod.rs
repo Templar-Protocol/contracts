@@ -1,7 +1,7 @@
 mod create;
 mod get_proxy;
 mod get_proxy_circuit_breaker_set;
-mod governance;
+pub mod governance;
 mod list_proxies;
 mod price_feed_exists;
 mod update_prices;

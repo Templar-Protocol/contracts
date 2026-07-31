@@ -8,13 +8,16 @@
 //! (ENG-541), aggregation dry-run (ENG-542), and reference cross-check
 //! (ENG-543) register alongside them later.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::MarketSpec;
 
 /// A check's verdict. `Skipped` is distinct from `Passed` so a report can never
 /// present "not run" as "fine".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Deserialize` because the plan artifact (ENG-544) embeds these and is read
+/// back on apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum Status {
     Passed { detail: String },
@@ -40,7 +43,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Check {
     /// Stable, dotted id — e.g. `config.validate`.
     pub id: String,

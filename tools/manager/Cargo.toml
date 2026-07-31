@@ -33,6 +33,8 @@ reqwest = { workspace = true, features = ["json"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Plan-artifact step digests (ENG-544).
+sha2.workspace = true
 sputnikdao2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true

@@ -14,6 +14,7 @@ pub mod check;
 pub mod export;
 pub mod extends;
 pub mod oracle;
+pub mod plan;
 mod serde_util;
 
 use anyhow::Context as _;
@@ -184,11 +185,23 @@ pub fn market_account_id(name: &str, registry: &AccountId) -> anyhow::Result<Acc
 }
 
 pub fn oracle_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
-    derived_id(&format!("proxy-oracle-{name}"), registry)
+    derived_id(&oracle_name(name), registry)
 }
 
 pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
-    derived_id(&format!("proxy-gov-{name}"), registry)
+    derived_id(&governance_name(name), registry)
+}
+
+/// The sub-account *label* a registry deploy creates, as distinct from the full
+/// account id. `registry.deploy` takes the label and derives the id itself, so
+/// both forms are needed — and deriving one from the other by string surgery is
+/// how the two drifted apart in `deploy.sh`.
+pub fn oracle_name(name: &str) -> String {
+    format!("proxy-oracle-{name}")
+}
+
+pub fn governance_name(name: &str) -> String {
+    format!("proxy-gov-{name}")
 }
 
 fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {

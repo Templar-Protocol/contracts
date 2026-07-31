@@ -23,9 +23,42 @@ use crate::spec::{
 /// failed, so it is usable as a gate in CI or a pre-deploy script.
 pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
+    let checks = run_all(&ctx, &mut spec, args.offline, args.accept_decimals_mismatch).await?;
+
+    let price_maximum_age = spec.market.price_maximum_age;
+    print_json(&serde_json::json!({
+        "market_id": spec.market_id()?,
+        "oracle_id": spec.oracle_id()?,
+        "governance_id": spec.governance_id()?,
+        "network": spec.network()?.to_string(),
+        "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
+        "borrow_proxy": spec.borrow.clone().into_proxy(price_maximum_age),
+        "checks": checks,
+    }))?;
+
+    let failed = checks
+        .iter()
+        .filter(|check| check.status.is_failure())
+        .count();
+    anyhow::ensure!(failed == 0, "{failed} check(s) failed");
+    Ok(())
+}
+
+/// Every check, online then offline, writing resolved decimals back into the
+/// spec as it goes.
+///
+/// Shared with `market plan` (ENG-544), which embeds the same results in its
+/// artifact — running a *different* set of checks there would let a plan be
+/// written for a spec `spec check` rejects.
+pub(super) async fn run_all(
+    ctx: &CliContext,
+    spec: &mut MarketSpec,
+    offline: bool,
+    accept_decimals_mismatch: bool,
+) -> anyhow::Result<Vec<Check>> {
     let mut checks = Vec::new();
 
-    if args.offline {
+    if offline {
         checks.push(Check::new(
             "preflight.online",
             Status::Skipped {
@@ -48,28 +81,11 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
         // very run just read off the chain.
-        checks.extend(run(&ctx, &mut spec, args.accept_decimals_mismatch).await);
+        checks.extend(run(ctx, spec, accept_decimals_mismatch).await);
     }
     // Offline checks run last so they see those decimals.
-    checks.extend(crate::spec::check::run_offline(&spec));
-
-    let price_maximum_age = spec.market.price_maximum_age;
-    print_json(&serde_json::json!({
-        "market_id": spec.market_id()?,
-        "oracle_id": spec.oracle_id()?,
-        "governance_id": spec.governance_id()?,
-        "network": spec.network()?.to_string(),
-        "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
-        "borrow_proxy": spec.borrow.clone().into_proxy(price_maximum_age),
-        "checks": checks,
-    }))?;
-
-    let failed = checks
-        .iter()
-        .filter(|check| check.status.is_failure())
-        .count();
-    anyhow::ensure!(failed == 0, "{failed} check(s) failed");
-    Ok(())
+    checks.extend(crate::spec::check::run_offline(spec));
+    Ok(checks)
 }
 
 /// Every check that needs the chain, in a stable order so two runs of the same
