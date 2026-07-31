@@ -130,25 +130,6 @@ impl CliContext {
         self.finish_write(&output)
     }
 
-    /// Execute a write through a caller-chosen dispatcher, then report it.
-    ///
-    /// The execute half of [`CliContext::write`], without the `--print` branch:
-    /// `market apply` has a plan in hand and nothing left to print.
-    pub(crate) async fn execute_via<D, S>(
-        &self,
-        signer: &SignerArgs,
-        body: S,
-    ) -> anyhow::Result<WriteOperationResult>
-    where
-        S: MethodSpec<Output = WriteOperationResult>,
-        D: PlanWrite<S, GatewayContext>,
-    {
-        let (account_id, client) = self.signing_client_for(signer).await?;
-        let output = client.via::<D>().execute_as(account_id, body).await?;
-        self.finish_write(&output)?;
-        Ok(output)
-    }
-
     /// Plan or execute an `oracle.*` write through [`OracleUpdatesDispatch`],
     /// whose context carries the in-process payload sources the method fetches.
     pub(crate) async fn oracle_write<S, Ctx>(
@@ -190,7 +171,7 @@ impl CliContext {
     /// Report the tx link, print the machine-readable result, then fail unless the
     /// operation succeeded on chain. Printing precedes the status check so a reverted
     /// operation still emits its JSON on stdout.
-    fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
+    pub(crate) fn finish_write(&self, output: &WriteOperationResult) -> anyhow::Result<()> {
         self.report_tx(output);
         print_json(output)?;
         check_operation_status(output)

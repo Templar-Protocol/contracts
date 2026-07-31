@@ -153,8 +153,19 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // claimed while that review happens — after which the first six steps
     // succeed and the market deploy fails, which is the half-spent deploy the
     // plan-time check exists to prevent.
-    let targets = planned_targets(&file)?;
-    ensure_targets_are_distinct(&targets)?;
+    // Distinctness over the whole plan — creating an account twice is broken
+    // however far the run got. Freeness over the *outstanding* steps only: a
+    // resume has already created the accounts its completed steps made, and
+    // checking those would abort every resume that has anything to resume.
+    // Scoping rather than skipping keeps the guard where it still bites: a step
+    // whose outcome was ambiguous is not journalled, so it stays outstanding and
+    // its target is still checked.
+    ensure_targets_are_distinct(&planned_targets(&file)?)?;
+    let outstanding_file = PlanFile {
+        steps: outstanding.clone(),
+        ..file.clone()
+    };
+    let targets = planned_targets(&outstanding_file)?;
     ensure_targets_free(&ctx, &targets).await?;
 
     // Provenance is reported, not enforced.
@@ -283,42 +294,61 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // the check is only worth what it is worth at the moment of the send.
     ensure_targets_free(&ctx, &targets).await?;
 
-    // One transaction per call, so every outcome can be journalled as it
-    // happens. Batching them would leave an interrupted run with nothing
-    // recorded — which is the only run a journal exists for.
+    // One transaction per call, so every outcome is journalled as it happens.
+    // Batching would leave an interrupted run with nothing recorded — the only
+    // run a journal exists for.
     let plan = file.clone().into_operation_plan()?;
+    // One signing client for the whole run: near-api caches nonces on the
+    // `Signer`, and rebuilding it per step would start each from an empty cache
+    // and risk signing a nonce the chain has already consumed.
+    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
+
     for index in remaining {
         let step = &file.steps[index];
-        let transaction = plan.steps[index].clone();
         eprintln!("\n[{index}] {}", step.label);
 
-        let output = ctx
-            .execute_via::<PlanDispatch, _>(
-                &args.signer,
+        // Recorded before submission. A step that was sent and never resolved
+        // must not read as one that never ran: re-sending a registry deploy
+        // that actually succeeded strands its deposit, since the failed
+        // `create_account` refunds to the registry, not to the operator.
+        let entry = journal::Entry {
+            step: index,
+            digest: journal::executable_digest(step)?,
+            label: step.label.clone(),
+            outcome: journal::Outcome::Attempted,
+            tx_hash: None,
+        };
+        journal.record(&journal_path, entry.clone())?;
+
+        let output = client
+            .via::<PlanDispatch>()
+            .execute_as(
+                signer.clone(),
                 PreparedPlan {
-                    steps: vec![transaction],
+                    steps: vec![plan.steps[index].clone()],
                 },
             )
             .await
             .with_context(|| {
                 format!(
-                    "step {index} (`{}`) failed. Completed steps are recorded in \
-                     {}; re-run `market apply` to resume from here.",
+                    "step {index} (`{}`) did not complete. It is recorded as \
+                     attempted in {}; re-run `market apply`, which will stop and \
+                     ask you to confirm what happened to it.",
                     step.label,
                     journal_path.display(),
                 )
             })?;
+        ctx.finish_write(&output)?;
 
-        journal.append(
+        journal.record(
             &journal_path,
             journal::Entry {
-                step: index,
-                digest: crate::spec::plan::digest(step)?,
-                label: step.label.clone(),
+                outcome: journal::Outcome::Completed,
                 tx_hash: output
                     .operation
                     .latest_tx_hash()
                     .map(|hash| hash.to_string()),
+                ..entry
             },
         )?;
     }
@@ -676,7 +706,7 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
 /// Fails closed. A call carrying a `version_key` whose target cannot be derived
 /// is an unreviewable step, not an absent one: every silent `None` here would be
 /// an unchecked account, which is exactly what this guard exists to prevent.
-fn planned_targets(file: &PlanFile) -> anyhow::Result<Vec<AccountId>> {
+pub(crate) fn planned_targets(file: &PlanFile) -> anyhow::Result<Vec<AccountId>> {
     let mut targets = Vec::new();
     for step in &file.steps {
         for call in &step.function_calls {

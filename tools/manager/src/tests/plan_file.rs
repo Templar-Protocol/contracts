@@ -475,6 +475,7 @@ mod journal {
             step,
             digest,
             label: format!("step {step}"),
+            outcome: crate::spec::journal::Outcome::Completed,
             tx_hash: None,
         }
     }
@@ -483,7 +484,13 @@ mod journal {
         Journal {
             entries: steps
                 .iter()
-                .map(|index| entry(*index, file.step_digests[*index].clone()))
+                .map(|index| {
+                    entry(
+                        *index,
+                        crate::spec::journal::executable_digest(&file.steps[*index])
+                            .expect("digest"),
+                    )
+                })
                 .collect(),
         }
     }
@@ -551,6 +558,94 @@ mod journal {
 
         let error = journal.remaining(&file).expect_err("out of range");
         assert!(format!("{error:#}").contains("different plan"), "{error:#}");
+    }
+
+    /// A step that was submitted but never resolved is neither progress nor
+    /// absence: re-sending a deploy that actually landed strands its deposit,
+    /// skipping it deploys nothing. Only a human can tell, so the run stops.
+    #[test]
+    fn an_unresolved_attempt_stops_the_run() {
+        use crate::spec::journal::Outcome;
+
+        let file = plan_file(sample_steps());
+        let mut journal = done(&file, &[0]);
+        journal.entries[0].outcome = Outcome::Attempted;
+        journal.entries[0].tx_hash = Some("SOMEHASH".to_owned());
+
+        let error = journal.remaining(&file).expect_err("outcome unknown");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("never recorded"), "{rendered}");
+        assert!(rendered.contains("SOMEHASH"), "{rendered}");
+    }
+
+    /// Steps run in order and only completions are recorded, so the done set is
+    /// always a prefix. A gap means an entry was removed or invented — and
+    /// resuming would step over work that never happened while every
+    /// plan-level check still passed, because the *plan* is intact.
+    #[test]
+    fn a_journal_with_a_gap_is_refused() {
+        let file = plan_file(sample_steps());
+        let journal = done(&file, &[0, 2]);
+
+        let error = journal.remaining(&file).expect_err("not a prefix");
+        assert!(format!("{error:#}").contains("not a prefix"), "{error:#}");
+    }
+
+    /// Renaming a completed step changes nothing executable, so it must not
+    /// block a resume.
+    #[test]
+    fn relabelling_a_completed_step_does_not_block_resume() {
+        let mut file = plan_file(sample_steps());
+        let journal = done(&file, &[0]);
+        file.steps[0].label = "renamed by hand".to_owned();
+
+        assert_eq!(journal.remaining(&file).expect("reconciles"), vec![1, 2]);
+    }
+
+    /// The showstopper this review caught: a resume has already created the
+    /// accounts its completed steps made, so checking the *whole* plan's targets
+    /// for freeness aborts every resume that has anything to resume. Freeness
+    /// must be asked of the outstanding steps only — and asking it of those is
+    /// what keeps the guard biting when a step's outcome was ambiguous and it
+    /// therefore stayed outstanding.
+    #[test]
+    fn freeness_is_asked_only_of_the_steps_still_to_run() {
+        use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
+
+        let deploy = |name: &str| PlanStep {
+            label: format!("deploy {name}"),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": name, "version_key": "v1",
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        };
+
+        let mut file = plan_file(sample_steps());
+        file.steps = vec![deploy("gov"), deploy("oracle"), deploy("market")];
+
+        let all = crate::dispatch::plan::planned_targets(&file).expect("targets");
+        assert_eq!(all.len(), 3, "three deploys, three accounts");
+
+        // Step 0 completed, so its target already exists and must not be asked
+        // to be free.
+        let outstanding = PlanFile {
+            steps: file.steps[1..].to_vec(),
+            ..file.clone()
+        };
+        let remaining_targets =
+            crate::dispatch::plan::planned_targets(&outstanding).expect("targets");
+
+        assert!(
+            remaining_targets.len() < all.len(),
+            "a completed deploy's target must drop out of the freeness check: \
+             {all:?} vs {remaining_targets:?}"
+        );
     }
 
     /// The journal lives beside its plan, derived rather than configurable.
