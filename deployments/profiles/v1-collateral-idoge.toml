@@ -1,0 +1,15 @@
+# DOGE, held through NEAR Intents (`idoge`), as the collateral asset of a v1
+# market that deploys its own proxy oracle.
+#
+# Matches `idoge-ixlmusdc`, the only v1 market holding it today.
+[collateral]
+asset = "nep245:intents.near:nep141:doge.omft.near"
+symbol = "DOGE"
+reference = { coin_gecko = { id = "dogecoin" } }
+decimals = 8
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "dcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c", weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "DOGE", weight = 2 },
+]

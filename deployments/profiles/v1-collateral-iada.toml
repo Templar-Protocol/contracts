@@ -1,0 +1,15 @@
+# ADA, held through NEAR Intents (`iada`), as the collateral asset of a v1
+# market that deploys its own proxy oracle.
+#
+# Matches `iada-ixlmusdc`, the only v1 market holding it today.
+[collateral]
+asset = "nep245:intents.near:nep141:cardano.omft.near"
+symbol = "ADA"
+reference = { coin_gecko = { id = "cardano" } }
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d", weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "ADA", weight = 2 },
+]

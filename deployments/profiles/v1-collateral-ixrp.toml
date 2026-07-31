@@ -1,0 +1,15 @@
+# XRP, held through NEAR Intents (`ixrp`), as the collateral asset of a v1
+# market that deploys its own proxy oracle.
+#
+# Matches `ixrp-ixlmusdc`, the only v1 market holding it today.
+[collateral]
+asset = "nep245:intents.near:nep141:xrp.omft.near"
+symbol = "XRP"
+reference = { coin_gecko = { id = "ripple" } }
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "ec5d399846a9209f3fe5881d70aae9268c94339ff9817e8d18ff19fa05eea1c8", weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "XRP", weight = 2 },
+]

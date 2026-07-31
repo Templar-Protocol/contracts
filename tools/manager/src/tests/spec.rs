@@ -211,56 +211,63 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
     );
 }
 
-/// Each shared asset profile must reproduce the borrow leg of every deployed
+/// Each shared asset profile must reproduce the asset leg of every deployed
 /// market it claims to represent.
 ///
-/// Compared against the migrated specs rather than an inline literal: a profile
-/// asserted only against itself would prove nothing, and the point of factoring
-/// one out is that markets can adopt it without changing what they deploy.
+/// Compared as the parsed TOML section against the migrated specs, not against
+/// an inline literal: a profile asserted only against itself would prove
+/// nothing, and the whole point of factoring one out is that a market can adopt
+/// it without changing what it deploys.
+///
+/// `symbol` and `reference` are removed before comparing, and their presence
+/// asserted separately. Neither reaches the chain, so `market export` cannot
+/// recover them and no migrated spec has them — supplying them is what these
+/// profiles add, and without them the reference cross-check cannot run at all.
 #[rstest]
-#[case(
-    "extends-v1-borrow-ixlmusdc.toml",
-    &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"]
-)]
-#[case("extends-v1-borrow-usdt.toml", &["linear-usdt", "stnear-usdt"])]
-fn a_shared_borrow_profile_matches_the_markets_it_represents(
-    #[case] fixture_name: &str,
+#[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
+#[case("v1-borrow-usdt", "borrow", &["linear-usdt", "stnear-usdt"])]
+#[case("v1-collateral-iada", "collateral", &["iada-ixlmusdc"])]
+#[case("v1-collateral-ibtc", "collateral", &["ibtc-ixlmusdc"])]
+#[case("v1-collateral-idoge", "collateral", &["idoge-ixlmusdc"])]
+#[case("v1-collateral-iethhemibtc", "collateral", &["iethhemibtc-iethusdc"])]
+#[case("v1-collateral-iethwbtc", "collateral", &["iethwbtc-ixlmusdc"])]
+#[case("v1-collateral-iltc", "collateral", &["iltc-ixlmusdc"])]
+#[case("v1-collateral-ixlm", "collateral", &["ixlm-ixlmusdc-1"])]
+#[case("v1-collateral-ixrp", "collateral", &["ixrp-ixlmusdc"])]
+#[case("v1-collateral-izec", "collateral", &["izec-ixlmusdc"])]
+fn a_shared_asset_profile_matches_the_markets_it_represents(
+    #[case] profile: &str,
+    #[case] side: &str,
     #[case] markets: &[&str],
 ) {
-    let spec = extends::load(&fixture(fixture_name))
-        .unwrap_or_else(|error| panic!("load {fixture_name}: {error:#}"));
-    let from_profile = spec.borrow.clone();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let section = |path: PathBuf| -> toml::Value {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let mut document: toml::Table = toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+        document
+            .remove(side)
+            .unwrap_or_else(|| panic!("{} states no `[{side}]`", path.display()))
+    };
 
-    // The metadata is the reason to have a profile at all: neither field
-    // reaches the chain, so `market export` cannot recover them and every
-    // migrated spec is missing them.
-    assert!(
-        from_profile.symbol.is_some() && from_profile.reference.is_some(),
-        "a shared asset profile must carry the cross-check metadata: {from_profile:#?}"
-    );
+    let mut from_profile = section(root.join(format!("deployments/profiles/{profile}.toml")));
+    let table = from_profile
+        .as_table_mut()
+        .unwrap_or_else(|| panic!("`{profile}` `[{side}]` is not a table"));
+    for field in ["symbol", "reference"] {
+        assert!(
+            table.remove(field).is_some(),
+            "`{profile}` must carry `{field}`; it is the cross-check metadata no \
+             exported spec can recover"
+        );
+    }
 
     for market in markets {
-        let deployed = extends::load(
-            &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("../../deployments/v1/{market}.toml")),
-        )
-        .unwrap_or_else(|error| panic!("load {market}: {error:#}"))
-        .borrow;
-
-        // Compared as the on-chain projection plus the fields that reach the
-        // market configuration. `symbol`/`reference` are deliberately excluded:
-        // adopting this profile must change nothing deployed, and those two are
-        // exactly what it adds on top.
-        let age = spec.market.price_maximum_age;
         assert_eq!(
-            from_profile.clone().into_proxy(age),
-            deployed.clone().into_proxy(age),
-            "`{fixture_name}` would deploy a different proxy than `{market}` runs"
-        );
-        assert_eq!(
-            (&from_profile.asset, from_profile.decimals),
-            (&deployed.asset, deployed.decimals),
-            "`{fixture_name}` names a different token than `{market}`"
+            from_profile,
+            section(root.join(format!("deployments/v1/{market}.toml"))),
+            "`{profile}` would deploy a different {side} leg than `{market}` runs"
         );
     }
 }

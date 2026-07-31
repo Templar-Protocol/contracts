@@ -1,8 +1,8 @@
 # Native NEAR USDT as the borrow asset of a v1 market that deploys its own
 # proxy oracle. Shared by `linear-usdt` and `stnear-usdt`.
 #
-# Deliberately not shaped like `v1-borrow-ixlmusdc.toml`: no deployed v1 market
-# prices USDT through Lazer, so there is no feed id to name here and no
+# Deliberately not shaped like `v1-borrow-ixlmusdc.toml`: no deployed v1
+# market prices USDT through Lazer, so there is no feed id to name here and no
 # second source to weigh against. A single Pyth source under `median_low` is
 # what is actually deployed; inventing a Lazer leg would put a feed nobody has
 # configured into every market that extends this.
