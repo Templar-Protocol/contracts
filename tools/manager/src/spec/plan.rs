@@ -266,6 +266,7 @@ impl Drift {
 
 impl PlanFile {
     /// Build the artifact from labelled transactions, canonicalizing JSON args.
+    #[cfg(test)]
     pub fn new(
         network: String,
         spec_digest: String,
@@ -273,10 +274,27 @@ impl PlanFile {
         checks: Vec<Check>,
         steps: Vec<(String, PlannedTransaction)>,
     ) -> anyhow::Result<Self> {
-        let steps = steps
+        let steps = Self::steps_from(steps)?;
+        Self::from_steps(network, spec_digest, derived, checks, steps)
+    }
+
+    /// The artifact's steps, converted but not yet sealed into a file — so a
+    /// check that has to read them (funding, ENG-545) can run before the digests
+    /// that must cover its result are computed.
+    pub fn steps_from(steps: Vec<(String, PlannedTransaction)>) -> anyhow::Result<Vec<PlanStep>> {
+        steps
             .into_iter()
             .map(|(label, transaction)| PlanStep::from_planned(label, transaction))
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .collect()
+    }
+
+    pub fn from_steps(
+        network: String,
+        spec_digest: String,
+        derived: Derived,
+        checks: Vec<Check>,
+        steps: Vec<PlanStep>,
+    ) -> anyhow::Result<Self> {
         let step_digests = steps
             .iter()
             .map(digest)
@@ -369,4 +387,22 @@ pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
         "sha256:{}",
         templar_contract_artifacts::sha256_hex(&bytes)
     ))
+}
+
+#[cfg(test)]
+pub mod testing {
+    use near_api::types::NearToken;
+    use templar_gateway_methods_spec::account;
+
+    /// An `account.get` result with only the fields the funding check reads.
+    pub fn account(amount: NearToken, locked: NearToken, storage_usage: u64) -> account::GetResult {
+        account::GetResult {
+            amount,
+            locked,
+            code_hash: String::new(),
+            storage_usage,
+            global_contract_hash: None,
+            global_contract_account_id: None,
+        }
+    }
 }

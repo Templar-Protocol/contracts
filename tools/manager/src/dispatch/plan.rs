@@ -56,6 +56,18 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     // would otherwise be discovered only after governance and the oracle were
     // deployed and both proposals executed.
     checks.extend(targets_available(&ctx, &spec).await?);
+
+    let steps = build(
+        &ctx.client,
+        &spec,
+        &PublicKey::from(args.public_key),
+        &args.signer_id,
+    )
+    .await?;
+    let steps = PlanFile::steps_from(steps)?;
+    // After the steps exist, because it reads them; before the gate, because a
+    // signer that cannot pay is a reason not to write a plan at all.
+    checks.extend(super::funding::checks(&ctx, &steps).await?);
     apply_skips(&mut checks, &args.skip_check)?;
 
     let failed = crate::spec::check::failures(&checks);
@@ -67,14 +79,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         );
     }
 
-    let steps = build(
-        &ctx.client,
-        &spec,
-        &PublicKey::from(args.public_key),
-        &args.signer_id,
-    )
-    .await?;
-    let file = PlanFile::new(
+    let file = PlanFile::from_steps(
         spec.network()?.to_string(),
         spec_digest,
         Derived {
@@ -236,6 +241,18 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             file.steps.len(),
         ))?;
     }
+
+    // Balances drift, and the plan-time answer was only good at that moment.
+    let funding = super::funding::checks(&ctx, &file.steps).await?;
+    let short = crate::spec::check::failures(&funding);
+    for check in &funding {
+        eprintln!("  {} — {:?}", check.id, check.status);
+    }
+    anyhow::ensure!(
+        short == 0,
+        "{short} signer(s) cannot cover this plan. Top up and re-run; stopping \
+         now costs nothing, stopping at step 4 does not."
+    );
 
     // Again, immediately before sending: the prompt above has no time limit, and
     // the check is only worth what it is worth at the moment of the send.

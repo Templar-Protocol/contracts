@@ -13,7 +13,8 @@ use crate::commands::signer::SignerArgs;
 
 /// Rough NEAR-per-byte storage staking rate used to size a global-hash upload
 /// (matches the registry contract's own accounting).
-const STORAGE_AMOUNT_PER_BYTE: NearToken = NearToken::from_yoctonear(10_000_000_000_000_000_000);
+pub(crate) const STORAGE_AMOUNT_PER_BYTE: NearToken =
+    NearToken::from_yoctonear(10_000_000_000_000_000_000);
 
 /// CLI mirror of [`DeployMode`]. Local to the manager so `templar-common` keeps
 /// clap gated behind its (non-default, host-only) `rpc` feature and never pulls
