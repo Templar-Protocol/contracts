@@ -2,6 +2,7 @@
 //! that file. Splitting the two puts a reviewable, editable artifact between
 //! them; the artifact itself is [`crate::spec::plan`].
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 
 use anyhow::Context as _;
@@ -101,6 +102,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
 
     ensure_compatible(&file, &ctx.network().to_string())?;
     render(&file);
+    report_checks(&file);
 
     // Provenance is reported, not enforced.
     let drift = file.drift()?;
@@ -112,11 +114,26 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         );
     }
 
+    // Each step names its own signer; `execute_as` only labels the store
+    // record. A credential for some other account fails at step 0 with an
+    // opaque executor error, so it is caught here instead.
+    let credential = args.signer.account_id().0;
+    let signers: BTreeSet<&AccountId> = file.steps.iter().map(|step| &step.signer_id).collect();
+    anyhow::ensure!(
+        signers.iter().all(|signer| **signer == credential),
+        "this plan is signed by {}, but the credential given is for `{credential}`. \
+         Re-run with a matching --signer-id, or re-plan.",
+        signers
+            .iter()
+            .map(|signer| format!("`{signer}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+
     if !args.yes {
         confirm(&format!(
-            "Send {} transaction(s) as {}?",
+            "Send {} transaction(s) as {credential}?",
             file.steps.len(),
-            args.signer.account_id().0,
         ))?;
     }
 
@@ -150,6 +167,20 @@ pub(crate) async fn build(
          proposal, or run the proposals by hand with `proxy-oracle governance \
          execute-proposal --when-ready`.",
         spec.governance.ttl_default.as_ns(),
+    );
+
+    // The proposals are created and executed by `signer_id`, but only
+    // `governance.admin` is granted the Admin role at init. Mismatched, the two
+    // registry deploys succeed and every proposal reverts — 8.5 NEAR spent on
+    // exactly the orphaned half-deployment this tool exists to prevent.
+    // `deploy.sh` made this unrepresentable by passing `--admin-id $SIGNER_ID`.
+    anyhow::ensure!(
+        &spec.governance.admin == signer_id,
+        "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
+         which would not hold the Admin role. Every proxy proposal would revert \
+         after the governance and oracle deploys had already spent their \
+         deposits. Set them to the same account.",
+        spec.governance.admin,
     );
 
     let price_maximum_age = spec.market.price_maximum_age;
@@ -391,6 +422,38 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The checks the plan carries.
+///
+/// `apply` is often run by someone other than whoever planned, and a plan can be
+/// hand-edited, so the verdicts travel with the artifact and are shown before
+/// the prompt. Only non-passing ones are printed: a suppressed check records the
+/// failure it overrode, and burying that in a wall of green is how an override
+/// stops being reviewed.
+fn report_checks(file: &PlanFile) {
+    let notable: Vec<_> = file
+        .checks
+        .iter()
+        .filter(|check| !matches!(check.status, Status::Passed { .. }))
+        .collect();
+
+    let failed = crate::spec::check::failures(&file.checks);
+    eprintln!(
+        "\n{} check(s): {} passed, {} not run, {failed} FAILED",
+        file.checks.len(),
+        file.checks.len() - notable.len(),
+        notable.len() - failed,
+    );
+    for check in notable {
+        eprintln!("  {} — {:?}", check.id, check.status);
+    }
+    if failed > 0 {
+        eprintln!(
+            "This plan carries FAILED checks. `market plan` refuses to write one, \
+             so this file was edited or produced by another build."
+        );
+    }
+}
+
 /// The plan, for a human about to authorize it.
 fn render(file: &PlanFile) {
     eprintln!(
@@ -405,8 +468,34 @@ fn render(file: &PlanFile) {
                 "      {}  deposit {}  gas {}",
                 call.method_name, call.deposit, call.gas
             );
+            if let Some(init_args) = decoded_init_args(call) {
+                eprintln!("      init_args: {init_args}");
+            }
         }
     }
+}
+
+/// A registry deploy's `init_args`, decoded.
+///
+/// `registry.deploy` takes them as base64 *inside* its JSON args, so the market
+/// configuration — the MCRs, the rate curve, the oracle account — is the one
+/// part of a deployment the artifact cannot show as JSON. Telling an operator to
+/// read the steps while hiding the payload that matters most would be hollow, so
+/// it is decoded for display. It stays base64 in the file: expanding it there
+/// would have to survive a byte-exact round trip, which is a schema change
+/// rather than a rendering one.
+fn decoded_init_args(call: &crate::spec::plan::PlanFunctionCall) -> Option<String> {
+    use base64::Engine as _;
+
+    let crate::spec::plan::PlanArgs::Json(args) = &call.args else {
+        return None;
+    };
+    let encoded = args.get("init_args")?.as_str()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    serde_json::to_string(&value).ok()
 }
 
 /// Ask before spending real NEAR. Anything but `y` aborts.
@@ -537,6 +626,7 @@ mod tests {
             network: network.to_owned(),
             spec_digest: "sha256:test".to_owned(),
             step_digests: Vec::new(),
+            summary_digest: "sha256:test".to_owned(),
             derived: Derived {
                 market_id: "m.near".parse().expect("valid account"),
                 oracle_id: "o.near".parse().expect("valid account"),

@@ -47,7 +47,7 @@ impl PlanArgs {
     /// rules out borsh that happens to parse as a bare scalar.
     fn from_bytes(args: Vec<u8>) -> Self {
         match serde_json::from_slice::<serde_json::Value>(&args) {
-            Ok(value) if value.is_object() => Self::Json(value),
+            Ok(value) if value.is_object() && exactly_representable(&value) => Self::Json(value),
             _ => Self::Base64(Base64Bytes(args)),
         }
     }
@@ -60,6 +60,24 @@ impl PlanArgs {
     }
 }
 
+/// Whether every number survives a decode/re-encode unchanged.
+///
+/// `serde_json` without `arbitrary_precision` demotes an integer too large for
+/// `u64` to `f64`, which re-encodes in exponent form — a different value than
+/// the operator reviewed, on a transaction that spends real money. Today every
+/// large number reaching these args is a string (`U128`, `Decimal`,
+/// `NearToken`), so nothing hits this; the classifier is method-agnostic by
+/// design, so the first one that does must fall back to opaque bytes rather
+/// than be silently rewritten.
+fn exactly_representable(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(number) => number.is_i64() || number.is_u64(),
+        serde_json::Value::Array(items) => items.iter().all(exactly_representable),
+        serde_json::Value::Object(fields) => fields.values().all(exactly_representable),
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanFunctionCall {
@@ -68,6 +86,8 @@ pub struct PlanFunctionCall {
     /// Gas units, as a plain integer so editing needs no knowledge of
     /// `NearGas`'s parse format.
     pub gas: u64,
+    /// In yoctoNEAR (1 NEAR = 10^24). `render` prints the human form; this is
+    /// the raw value, and editing it by eye is how you send 6 yoctoNEAR.
     pub deposit: NearToken,
 }
 
@@ -81,8 +101,6 @@ pub struct PlanStep {
     pub label: String,
     pub signer_id: AccountId,
     pub receiver_id: AccountId,
-    #[serde(default)]
-    pub continue_on_failure: bool,
     pub function_calls: Vec<PlanFunctionCall>,
 }
 
@@ -105,11 +123,21 @@ impl PlanStep {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
+        // Not carried in the artifact. A tolerated revert still completes the
+        // operation as `Succeeded`, so an editable `continue_on_failure` would
+        // let a hand-edit turn a reverted governance call into `apply` exiting
+        // zero. Nothing a deployment plans sets it, so it is refused rather
+        // than rendered.
+        anyhow::ensure!(
+            !transaction.continue_on_failure,
+            "`{label}` tolerates its own failure, which a deployment plan must \
+             never do"
+        );
+
         Ok(Self {
             label,
             signer_id: transaction.signer_account_id.0,
             receiver_id: transaction.receiver_id,
-            continue_on_failure: transaction.continue_on_failure,
             function_calls,
         })
     }
@@ -132,7 +160,7 @@ impl PlanStep {
             signer_account_id: ManagedAccountId::from(self.signer_id),
             receiver_id: self.receiver_id,
             actions,
-            continue_on_failure: self.continue_on_failure,
+            continue_on_failure: false,
         })
     }
 }
@@ -162,6 +190,11 @@ pub struct PlanFile {
     /// whole-file digest: with seven steps, "something changed" is not
     /// actionable.
     pub step_digests: Vec<String>,
+    /// Digest over everything `render` shows that is not a step — the derived
+    /// ids and the check results. Without it, editing a check from `failed` to
+    /// `passed`, or repointing `derived.market_id`, reports the plan as
+    /// unmodified.
+    pub summary_digest: String,
     pub derived: Derived,
     pub checks: Vec<Check>,
     pub steps: Vec<PlanStep>,
@@ -174,11 +207,13 @@ pub struct Drift {
     pub changed: Vec<usize>,
     /// Steps added (positive) or removed (negative).
     pub delta: isize,
+    /// The derived values or check results differ.
+    pub summary: bool,
 }
 
 impl Drift {
     pub fn is_clean(&self) -> bool {
-        self.changed.is_empty() && self.delta == 0
+        self.changed.is_empty() && self.delta == 0 && !self.summary
     }
 
     /// A plain sentence for the confirmation prompt.
@@ -203,6 +238,9 @@ impl Drift {
             0 => {}
             added if added > 0 => parts.push(format!("{added} step(s) added")),
             removed => parts.push(format!("{} step(s) removed", -removed)),
+        }
+        if self.summary {
+            parts.push("the derived values or check results differ".to_owned());
         }
         format!(
             "plan has been edited since generation: {}",
@@ -235,6 +273,7 @@ impl PlanFile {
             network,
             spec_digest,
             step_digests,
+            summary_digest: summary_digest(&derived, &checks)?,
             derived,
             checks,
             steps,
@@ -261,6 +300,7 @@ impl PlanFile {
                 .collect(),
             delta: isize::try_from(current.len()).unwrap_or(isize::MAX)
                 - isize::try_from(self.step_digests.len()).unwrap_or(isize::MAX),
+            summary: summary_digest(&self.derived, &self.checks)? != self.summary_digest,
         })
     }
 
@@ -274,6 +314,10 @@ impl PlanFile {
                 .collect::<anyhow::Result<Vec<_>>>()?,
         })
     }
+}
+
+fn summary_digest(derived: &Derived, checks: &[Check]) -> anyhow::Result<String> {
+    digest(&(derived, checks))
 }
 
 /// `sha256:…` over a value's JSON encoding.

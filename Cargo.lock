@@ -13473,6 +13473,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "clap",
  "dirs 6.0.0",
  "hex",
@@ -13484,7 +13485,6 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "sputnikdao2",
  "templar-common",
  "templar-contract-artifacts",

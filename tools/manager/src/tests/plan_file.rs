@@ -195,6 +195,81 @@ fn a_removed_step_is_reported() {
     );
 }
 
+/// Editing a check from `failed` to `passed`, or repointing a derived id, must
+/// not report the plan as unmodified — `render` shows those values, so a clean
+/// verdict over them is worth more than it should be.
+#[test]
+fn editing_the_summary_is_drift_too() {
+    let mut file = plan_file(sample_steps());
+
+    file.checks[0].status = Status::failed("actually broken");
+    let drift = file.drift().expect("digest");
+    assert!(drift.summary, "a rewritten check verdict is an edit");
+    assert!(!drift.is_clean());
+    assert!(
+        drift.describe().contains("check results differ"),
+        "{}",
+        drift.describe()
+    );
+
+    let mut file = plan_file(sample_steps());
+    file.derived.market_id = "elsewhere.near".parse().expect("valid account");
+    assert!(
+        file.drift().expect("digest").summary,
+        "a repointed market id is an edit"
+    );
+}
+
+/// A number too large for `u64` decodes as `f64` and would re-encode in
+/// exponent form — a different value than the operator reviewed. Such args stay
+/// opaque instead.
+#[test]
+fn args_that_would_not_survive_re_encoding_stay_opaque() {
+    let lossy = br#"{"amount":123456789012345678901234567890}"#.to_vec();
+    let file = plan_file(vec![(
+        "big number".to_owned(),
+        transaction("deposit", lossy.clone()),
+    )]);
+
+    assert!(
+        matches!(file.steps[0].function_calls[0].args, PlanArgs::Base64(_)),
+        "a value that cannot round-trip must not be presented as editable JSON"
+    );
+    assert_eq!(
+        file.into_operation_plan().expect("convert").steps[0].actions,
+        transaction("deposit", lossy).actions,
+        "and it must survive byte-for-byte"
+    );
+}
+
+/// A step that tolerates its own failure would let a hand-edit turn a reverted
+/// governance call into `apply` exiting zero.
+#[test]
+fn a_failure_tolerating_step_is_refused() {
+    let mut tolerant = transaction("deploy_market", b"{}".to_vec());
+    tolerant.continue_on_failure = true;
+
+    let error = PlanFile::new(
+        "mainnet".to_owned(),
+        "sha256:test".to_owned(),
+        Derived {
+            market_id: "m.near".parse().expect("valid account"),
+            oracle_id: "o.near".parse().expect("valid account"),
+            governance_id: "g.near".parse().expect("valid account"),
+            collateral_decimals: Some(6),
+            borrow_decimals: Some(7),
+        },
+        Vec::new(),
+        vec![("tolerant".to_owned(), tolerant)],
+    )
+    .expect_err("a deployment must not tolerate a reverted step");
+
+    assert!(
+        format!("{error:#}").contains("tolerates its own failure"),
+        "{error:#}"
+    );
+}
+
 /// A plan carrying an action kind the artifact cannot render is refused, not
 /// silently dropped — a dropped action would be a transaction the operator
 /// reviewed and the chain never saw.
@@ -234,6 +309,36 @@ fn a_non_function_call_action_is_refused() {
     );
 }
 
+/// Planning for an account that will not hold the Admin role must fail before
+/// anything is planned, not after 8.5 NEAR of deploys have succeeded and every
+/// proposal reverts. Offline: the guard runs before the first read.
+#[tokio::test]
+async fn a_signer_that_is_not_the_governance_admin_is_refused() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
+        .build()
+        .expect("build client");
+    let public_key = PublicKey::from(
+        PUBLIC_KEY
+            .parse::<near_api::PublicKey>()
+            .expect("valid key"),
+    );
+    let spec = alpha_market();
+    assert_ne!(
+        spec.governance.admin,
+        signer_id(),
+        "the fixture must not already agree, or this proves nothing"
+    );
+
+    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &signer_id())
+        .await
+        .expect_err("a non-admin signer cannot execute the proxy proposals");
+
+    assert!(
+        format!("{error:#}").contains("would not hold the Admin role"),
+        "{error:#}"
+    );
+}
+
 /// The deployment `deploy.sh` performs, in the order it performs it.
 ///
 /// The order is a safety property: `registry deploy` fails when the account
@@ -253,10 +358,14 @@ async fn requires_network_plans_the_deploy_script_in_order() {
             .expect("valid key"),
     );
 
-    let labelled =
-        crate::dispatch::plan::build(&client, &alpha_market(), &public_key, &signer_id())
-            .await
-            .expect("the alpha fixture should plan");
+    // Signed by the spec's `governance.admin`: any other account would not hold
+    // the Admin role, and `build` refuses that rather than plan a deployment
+    // whose proposals revert after the deposits are already spent.
+    let spec = alpha_market();
+    let admin = spec.governance.admin.clone();
+    let labelled = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
+        .await
+        .expect("the alpha fixture should plan");
 
     let sequence: Vec<_> = labelled
         .iter()

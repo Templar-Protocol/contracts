@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# Decoding `registry.deploy` init args for display (ENG-544).
+base64.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
