@@ -85,6 +85,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         spec.network()?.to_string(),
         spec_digest,
         Derived {
+            creates_its_own_oracle: !spec.oracle.is_direct(),
             market_id: spec.market_id()?,
             // The oracle the market will read, which for a direct market is
             // not the proxy id this spec would otherwise derive. Naming the
@@ -890,6 +891,17 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     // prevent. The two are told apart by the oracle the market is configured to
     // read: a name this tool would have created means the steps that create it
     // are missing, not absent by design.
+    if !file.derived.creates_its_own_oracle {
+        anyhow::ensure!(
+            market == 1 && governance == 0 && oracle == 0 && proposals == 0,
+            "this plan says it reads an existing oracle, but carries {governance} \
+             governance, {oracle} oracle and {proposals} proposal step(s) \
+             alongside {market} market deploy(s). A direct deployment creates \
+             only the market."
+        );
+        return Ok(());
+    }
+
     if governance == 0 && oracle == 0 && proposals == 0 {
         anyhow::ensure!(
             market == 1,
@@ -1569,6 +1581,7 @@ mod tests {
             step_digests: Vec::new(),
             summary_digest: "sha256:test".to_owned(),
             derived: Derived {
+                creates_its_own_oracle: true,
                 market_id: "m.near".parse().expect("valid account"),
                 oracle_id: "o.near".parse().expect("valid account"),
                 governance_id: "g.near".parse().expect("valid account"),
