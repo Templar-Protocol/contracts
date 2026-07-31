@@ -33,7 +33,7 @@ env:
 jobs:
   universal-account:
     name: Universal Account
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 15
     steps:
       - name: Checkout repository
@@ -50,7 +50,7 @@ jobs:
 
   vault-kernel:
     name: Vault Kernel
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 15
     steps:
       - name: Checkout repository
@@ -67,7 +67,7 @@ jobs:
 
   vault-kernel-sync-external:
     name: Vault Kernel / Sync External
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -93,7 +93,7 @@ jobs:
 
   vault-kernel-withdraw-escrow:
     name: Vault Kernel / Withdraw Escrow
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 15
     steps:
       - name: Checkout repository
@@ -112,7 +112,7 @@ jobs:
 
   vault-kernel-allocation-lifecycle:
     name: Vault Kernel / Allocation Lifecycle
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 25
     steps:
       - name: Checkout repository
@@ -134,7 +134,7 @@ jobs:
 
   vault-kernel-refresh-lifecycle:
     name: Vault Kernel / Refresh Lifecycle
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 20
     steps:
       - name: Checkout repository
@@ -154,7 +154,7 @@ jobs:
 
   vault-kernel-recovery:
     name: Vault Kernel / Recovery
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 25
     steps:
       - name: Checkout repository
@@ -177,7 +177,7 @@ jobs:
 
   vault-kernel-refresh-fees:
     name: Vault Kernel / Refresh Fees
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     timeout-minutes: 20
     steps:
       - name: Checkout repository
