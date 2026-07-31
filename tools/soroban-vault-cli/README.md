@@ -614,7 +614,9 @@ stellar contract invoke \
 - Zero governance timelocks require `--allow-zero-timelock`.
 - Existing manifests must record a nonempty network label matching `--network`. This label check does not authenticate custom network passphrases; do not reuse one network label with a different passphrase.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
-- Blend and custodial adapter admins may be accounts or contracts. Custodial adapter admins must differ from the bound asset token.
+- Blend and custodial adapter admins may be accounts or contracts, but must differ from the
+  configured governance contract. Custodial adapter admins must also differ from the bound asset
+  token.
 - Share-token deployment rejects `admin == vault`; the manifest retains the initial admin as constructor provenance and reconciliation verifies the immutable vault binding.
 - `--fresh-state deploy stack` atomically reserves an unused manifest path before network calls; planning and dry-run modes require the path to be absent without creating it.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
