@@ -21,10 +21,12 @@ use templar_common::{
     Nanoseconds,
 };
 use templar_proxy_oracle_kernel::proxy::{aggregator::Aggregator, Proxy};
-use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
+use templar_proxy_oracle_near_common::{
+    input::Source, price_transformer::Action, request::OracleRequest,
+};
 
 use super::{
-    oracle::{AggregatorSpec, AssetSpec, SourceSpec},
+    oracle::{AggregatorSpec, AssetSpec, SourceSpec, LST_CALL_GAS},
     GovernanceSpec, MarketParams, MarketSpec, Versions, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
     SCHEMA_VERSION,
 };
@@ -164,8 +166,9 @@ fn asset_spec<A: AssetClass>(
 /// One on-chain source as a spec source. `weight` is `None` for `priority`,
 /// which carries none.
 fn source_spec(source: Source, weight: Option<u32>) -> anyhow::Result<SourceSpec> {
-    let Source::Request(request) = source else {
-        anyhow::bail!("oracle uses a price-transformer source, which a spec does not express");
+    let request = match source {
+        Source::Request(request) => request,
+        Source::Transformer(transformer) => return lst_spec(transformer, weight),
     };
     Ok(match request {
         OracleRequest::Lazer(lazer) => SourceSpec::Lazer {
@@ -183,6 +186,44 @@ fn source_spec(source: Source, weight: Option<u32>) -> anyhow::Result<SourceSpec
             price_id: pyth.price_id,
             weight,
         },
+    })
+}
+
+/// A price-transformer source as `SourceSpec::Lst`.
+///
+/// The spec fixes the view's arguments and gas, so anything else is refused
+/// rather than exported into a spec that would redeploy with different ones.
+fn lst_spec(
+    transformer: templar_proxy_oracle_near_common::input::ProxyPriceTransformer,
+    weight: Option<u32>,
+) -> anyhow::Result<SourceSpec> {
+    let OracleRequest::Pyth(pyth) = transformer.request else {
+        anyhow::bail!("a price transformer over a non-Pyth source is not expressible as a spec");
+    };
+    let Action::NormalizeNativeLstPrice { decimals } = transformer.action;
+
+    anyhow::ensure!(
+        transformer.call.args.0 == b"null",
+        "the transformer calls `{}` with arguments; a spec's LST source calls a \
+         no-argument view",
+        transformer.call.method_name,
+    );
+    anyhow::ensure!(
+        transformer.call.gas.0 == LST_CALL_GAS.as_gas(),
+        "the transformer prepays {} gas for `{}`, but a spec's LST source always \
+         prepays {}",
+        transformer.call.gas.0,
+        transformer.call.method_name,
+        LST_CALL_GAS.as_gas(),
+    );
+
+    Ok(SourceSpec::Lst {
+        oracle: pyth.oracle_id,
+        price_id: pyth.price_id,
+        contract: transformer.call.account_id,
+        method: transformer.call.method_name,
+        decimals,
+        weight,
     })
 }
 

@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use rstest::rstest;
 use serde_json::Value;
 use templar_common::market::MarketConfiguration;
 
@@ -41,7 +42,7 @@ fn reproduces_the_live_alpha_market_configuration() {
     let deployed: Value = serde_json::from_str(
         &std::fs::read_to_string(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/deployed/iethfxrp-ixlmusdc.templar-alpha.near.json"),
+                .join("fixtures/deployed/alpha/iethfxrp-ixlmusdc.templar-alpha.near.json"),
         )
         .expect("checked-in market args should be readable"),
     )
@@ -133,7 +134,7 @@ fn derived_proxies_match_the_deployed_proxy_files() {
         let deployed: Value = serde_json::from_str(
             &std::fs::read_to_string(
                 Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("fixtures/deployed/iethfxrp-ixlmusdc")
+                    .join("fixtures/deployed/alpha/iethfxrp-ixlmusdc")
                     .join(side),
             )
             .unwrap_or_else(|error| panic!("read {side}: {error}")),
@@ -185,6 +186,29 @@ fn extends_applies_profiles_then_lets_the_market_win() {
     assert_eq!(spec.name, "iethfxrp-ixlmusdc");
     // Fully applied chains are emptied, so a re-serialized spec is not a lie.
     assert!(spec.extends.is_empty());
+}
+
+/// A value a profile already set is replaced, not merged into.
+///
+/// Merging key by key turns `{ Flat = "0" }` under `{ Proportional = "0.001" }`
+/// into a two-variant table that deserializes to nothing, and lets a profile's
+/// `borrow_range.maximum` survive a market that states only a minimum. Caught
+/// by the v1 migration, where two markets override both.
+#[test]
+fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
+    use templar_common::fee::Fee;
+
+    let spec = extends::load(&fixture("overrides-values.toml")).expect("spec should load");
+
+    assert!(
+        matches!(spec.market.origination_fee, Fee::Proportional(_)),
+        "the profile's `Flat` variant leaked through: {:?}",
+        spec.market.origination_fee
+    );
+    assert_eq!(
+        spec.market.borrow_range.maximum, None,
+        "the profile's maximum leaked into a range that states only a minimum"
+    );
 }
 
 #[test]
@@ -327,21 +351,31 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
     );
 }
 
-/// Every migrated alpha market must reproduce the configuration it was
-/// generated from (ENG-548).
+/// Every migrated market must reproduce the configuration it was generated
+/// from (ENG-548).
 ///
 /// The load-bearing test for the migration: these specs replace checked-in
 /// `market-args.json` files that are the record of what is actually deployed.
 /// Compared as parsed `MarketConfiguration`s rather than as JSON text, because
 /// `Decimal` does not round-trip its own representation — comparing text would
 /// assert on formatting and fail for specs that are in fact identical.
-#[test]
-fn migrated_specs_reproduce_their_deployed_configurations() {
-    let specs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deployments/alpha");
-    let configs = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/deployed");
+///
+/// The counts are asserted so that deleting a spec, or pointing the loop at an
+/// empty directory, fails instead of passing vacuously.
+#[rstest]
+#[case("alpha", "templar-alpha.near", 18)]
+#[case("v1", "v1.tmplr.near", 27)]
+fn migrated_specs_reproduce_their_deployed_configurations(
+    #[case] suite: &str,
+    #[case] registry: &str,
+    #[case] expected: usize,
+) {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let specs = manifest.join("../../deployments").join(suite);
+    let configs = manifest.join("fixtures/deployed").join(suite);
 
     let mut checked = 0;
-    for entry in std::fs::read_dir(&specs).expect("specs/alpha should exist") {
+    for entry in std::fs::read_dir(&specs).unwrap_or_else(|e| panic!("read {suite} specs: {e}")) {
         let path = entry.expect("readable entry").path();
         if path.extension().is_none_or(|ext| ext != "toml") {
             continue;
@@ -353,8 +387,7 @@ fn migrated_specs_reproduce_their_deployed_configurations() {
             .to_string();
 
         let spec = extends::load(&path).unwrap_or_else(|e| panic!("load {name}: {e:#}"));
-        let flat = configs.join(format!("{name}.templar-alpha.near.json"));
-        let source = flat;
+        let source = configs.join(format!("{name}.{registry}.json"));
         let deployed: Value = serde_json::from_str(
             &std::fs::read_to_string(&source)
                 .unwrap_or_else(|e| panic!("read config for {name}: {e}")),
@@ -368,9 +401,25 @@ fn migrated_specs_reproduce_their_deployed_configurations() {
             spec.collateral.decimals.expect("collateral decimals"),
             spec.borrow.decimals.expect("borrow decimals"),
         );
-        let derived = spec
+        let mut derived = spec
             .into_market_configuration(i32::from(collateral), i32::from(borrow))
             .unwrap_or_else(|e| panic!("convert {name}: {e:#}"));
+
+        // `TimeChunkConfiguration` has two encodings of one number: the legacy
+        // `V0::BlockTimestampMs { divisor }` and `V1 { duration_ms }`, which
+        // `duration_ms()` reads identically. Two v1 markets carry the legacy
+        // form. A spec states the duration, so it always builds `V1` — the
+        // durations are compared, and the encoding deliberately is not, rather
+        // than adding a spec field whose only purpose is to reproduce a form
+        // nothing new should deploy.
+        assert_eq!(
+            derived.time_chunk_configuration.duration_ms(),
+            deployed.time_chunk_configuration.duration_ms(),
+            "spec `{name}` derives a different time chunk"
+        );
+        derived
+            .time_chunk_configuration
+            .clone_from(&deployed.time_chunk_configuration);
 
         assert_eq!(
             derived, deployed,
@@ -379,5 +428,5 @@ fn migrated_specs_reproduce_their_deployed_configurations() {
         checked += 1;
     }
 
-    assert_eq!(checked, 18, "every alpha market must be covered");
+    assert_eq!(checked, expected, "every {suite} market must be covered");
 }

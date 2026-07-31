@@ -1,5 +1,5 @@
 # A typo must be an error, not a silently ignored key.
-extends = ["../../../../../deployments/profiles/alpha-mainnet.toml", "../../../../../deployments/profiles/irs-stable.toml"]
+extends = ["../base.toml"]
 name = "typo-market"
 no_such_field = true
 
@@ -8,14 +8,18 @@ asset = "nep141:collateral.near"
 symbol = "C"
 aggregator = "median_low"
 min_sources = 1
-sources = [{ kind = "lazer", oracle = "lazer.near", feed_id = 1, weight = 1 }]
+sources = [
+    { kind = "lazer", oracle = "lazer.near", feed_id = 1, weight = 1 },
+]
 
 [borrow]
 asset = "nep141:borrow.near"
 symbol = "B"
 aggregator = "median_high"
 min_sources = 1
-sources = [{ kind = "lazer", oracle = "lazer.near", feed_id = 2, weight = 1 }]
+sources = [
+    { kind = "lazer", oracle = "lazer.near", feed_id = 2, weight = 1 },
+]
 
 [market]
 mcr_maintenance = "1.25"

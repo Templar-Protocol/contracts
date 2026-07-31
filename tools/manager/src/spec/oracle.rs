@@ -19,7 +19,11 @@ use templar_proxy_oracle_kernel::proxy::{
     freshness_filter::FreshnessFilter,
     Proxy, WeightedSource,
 };
-use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
+use templar_proxy_oracle_near_common::{
+    input::{ProxyPriceTransformer, Source},
+    price_transformer::Call,
+    request::OracleRequest,
+};
 
 use super::serde_util::{duration_opt, fungible_asset};
 
@@ -131,12 +135,6 @@ impl Default for ReferenceAsset {
 }
 
 /// How multiple sources collapse into one price.
-///
-/// `Priority` is deliberately absent: its on-chain form holds *unweighted*
-/// sources and has no `min_sources`, so a spec naming it would silently discard
-/// both fields — precisely the class of mistake this tool exists to catch. No
-/// alpha market uses it. Adding it means giving it validation that rejects the
-/// fields it cannot honor, not just another variant here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregatorSpec {
@@ -186,7 +184,30 @@ pub enum SourceSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weight: Option<u32>,
     },
+    /// A liquid-staking token, priced as its underlying scaled by the exchange
+    /// rate a view on the staking contract returns.
+    Lst {
+        /// Pyth oracle serving the *underlying* asset.
+        oracle: near_account_id::AccountId,
+        #[serde(with = "price_id_hex")]
+        #[schemars(with = "String")]
+        price_id: templar_common::oracle::pyth::PriceIdentifier,
+        /// Staking contract, and the no-argument view returning the exchange
+        /// rate in `decimals` native units.
+        contract: near_account_id::AccountId,
+        method: String,
+        decimals: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u32>,
+    },
 }
+
+/// Gas for the exchange-rate view, matching both deployed LST sources.
+///
+/// Constant rather than a spec field: it is a property of a no-argument view,
+/// not a per-market decision. Export refuses a transformer that differs rather
+/// than emitting a spec that would redeploy with the wrong value.
+pub const LST_CALL_GAS: near_sdk::Gas = near_sdk::Gas::from_tgas(3);
 
 impl SourceSpec {
     /// The account serving this source, for the reachability check in ENG-541.
@@ -194,7 +215,8 @@ impl SourceSpec {
         match self {
             Self::Lazer { oracle, .. }
             | Self::RedStone { oracle, .. }
-            | Self::Pyth { oracle, .. } => oracle,
+            | Self::Pyth { oracle, .. }
+            | Self::Lst { oracle, .. } => oracle,
         }
     }
 
@@ -204,6 +226,9 @@ impl SourceSpec {
             Self::Lazer { feed_id, .. } => format!("lazer feed {feed_id}"),
             Self::RedStone { price_id, .. } => format!("redstone `{price_id}`"),
             Self::Pyth { price_id, .. } => format!("pyth `{}`", hex::encode(price_id.0)),
+            Self::Lst {
+                contract, method, ..
+            } => format!("lst `{contract}.{method}`"),
         }
     }
 
@@ -212,7 +237,8 @@ impl SourceSpec {
         match self {
             Self::Lazer { weight, .. }
             | Self::RedStone { weight, .. }
-            | Self::Pyth { weight, .. } => *weight,
+            | Self::Pyth { weight, .. }
+            | Self::Lst { weight, .. } => *weight,
         }
     }
 }
@@ -222,38 +248,60 @@ impl From<SourceSpec> for WeightedSource<Source> {
         // `priority` carries no weights; the field is validated away for that
         // aggregator, and the value here is discarded when the sources are
         // unwrapped into a plain list.
-        let (request, weight) = match spec {
+        let (source, weight) = match spec {
             SourceSpec::Lazer {
                 oracle,
                 feed_id,
                 weight,
-            } => (OracleRequest::lazer(oracle, feed_id), weight.unwrap_or(1)),
+            } => (
+                Source::Request(OracleRequest::lazer(oracle, feed_id)),
+                weight,
+            ),
             SourceSpec::RedStone {
                 oracle,
                 price_id,
                 weight,
             } => (
-                OracleRequest::redstone(oracle, price_id),
-                weight.unwrap_or(1),
+                Source::Request(OracleRequest::redstone(oracle, price_id)),
+                weight,
             ),
             SourceSpec::Pyth {
                 oracle,
                 price_id,
                 weight,
+            } => (Source::Request(pyth_request(oracle, price_id)), weight),
+            SourceSpec::Lst {
+                oracle,
+                price_id,
+                contract,
+                method,
+                decimals,
+                weight,
             } => (
-                OracleRequest::Pyth(templar_proxy_oracle_near_common::request::PythRequest {
-                    oracle_id: oracle,
-                    price_id,
-                }),
-                weight.unwrap_or(1),
+                Source::Transformer(ProxyPriceTransformer::lst(
+                    pyth_request(oracle, price_id),
+                    decimals,
+                    Call::new(&contract, method, (), LST_CALL_GAS),
+                )),
+                weight,
             ),
         };
 
         Self {
-            source: Source::Request(request),
-            weight,
+            source,
+            weight: weight.unwrap_or(1),
         }
     }
+}
+
+fn pyth_request(
+    oracle_id: near_account_id::AccountId,
+    price_id: templar_common::oracle::pyth::PriceIdentifier,
+) -> OracleRequest {
+    OracleRequest::Pyth(templar_proxy_oracle_near_common::request::PythRequest {
+        oracle_id,
+        price_id,
+    })
 }
 
 impl<A: AssetClass> AssetSpec<A> {

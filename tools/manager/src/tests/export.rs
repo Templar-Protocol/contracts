@@ -19,7 +19,7 @@ const IN_SCOPE: [&str; 2] = ["iethfxrp-ixlmusdc", "iethwbtc-ixlmusdc"];
 
 fn alpha(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("fixtures/deployed")
+        .join("fixtures/deployed/alpha")
         .join(relative)
 }
 

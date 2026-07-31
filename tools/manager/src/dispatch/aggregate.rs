@@ -21,6 +21,7 @@ use templar_gateway_types::common::ContractArgs;
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{CircuitBreaker, CircuitBreakerSet};
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
+use templar_proxy_oracle_near_common::price_transformer::Action;
 
 use super::scaled;
 use crate::context::CliContext;
@@ -393,6 +394,54 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
             .map(|entry| entry.data.clone())
             .as_ref()
             .and_then(redstone_types::FeedData::to_pyth_price),
+        SourceSpec::Lst {
+            oracle,
+            price_id,
+            contract,
+            method,
+            decimals,
+            ..
+        } => {
+            let underlying = ctx
+                .client
+                .read(templar_gateway_methods_spec::pyth::ListEmaPricesUnsafe {
+                    oracle_id: oracle.clone(),
+                    price_ids: vec![*price_id],
+                })
+                .await
+                .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
+                .prices
+                .into_iter()
+                .next()
+                .and_then(|entry| entry.price);
+
+            // Scaled by the same `Action` the contract applies, not by a second
+            // implementation of the same arithmetic here.
+            match underlying {
+                None => None,
+                Some(underlying) => {
+                    let rate = ctx
+                        .client
+                        .read(contract::ViewFunction {
+                            contract_id: contract.clone(),
+                            method_name: method.clone().into(),
+                            args: ContractArgs::Json(serde_json::Value::Null),
+                        })
+                        .await
+                        .with_context(|| format!("read `{contract}.{method}`"))?;
+                    let rate: templar_common::Decimal =
+                        serde_json::from_value::<near_sdk::json_types::U128>(rate.value)
+                            .context("decode the LST exchange rate")?
+                            .0
+                            .into();
+
+                    Action::NormalizeNativeLstPrice {
+                        decimals: *decimals,
+                    }
+                    .apply(underlying, rate)
+                }
+            }
+        }
     };
 
     Ok(pyth_price.as_ref().and_then(pyth_price_try_to_kernel))

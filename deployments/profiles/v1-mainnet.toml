@@ -1,0 +1,29 @@
+# Shared by every v1 market.
+#
+# `versions` is the topology a re-apply would create, not a record of every
+# deployed one: nine of the eleven v1 proxy oracles predate governance and are
+# owned directly by `tmplr.near`. Their market configurations are unaffected —
+# the market names the oracle account, not its owner — so these specs still
+# reproduce what is deployed.
+schema = 4
+
+registry = "v1.tmplr.near"
+
+[versions]
+market = "v1.3.0"
+proxy_oracle = "templar-proxy-oracle-near-contract@0.3.0#d2e62c4566c98e55121a5aad32e0e5b8cfb911f82aca71dbaeaa83794fed9e8e"
+proxy_governance = "templar-proxy-oracle-near-governance-contract@0.1.0#09ecfafa86bfdca5e05b9174590cd056d59bf3a9d8727e9d452cfb98701334b0"
+
+[governance]
+admin = "tmplr.near"
+ttl_default = "0s"
+
+[market]
+time_chunk = "10m"
+price_maximum_age = "60s"
+# 1.5% band for the third-party price cross-check.
+reference_tolerance = "0.015"
+origination_fee = { Flat = "0" }
+supply_withdrawal_fee = { fee = { Flat = "0" }, duration = "0", behavior = "Fixed" }
+yield_weights = { supply = 4, static = { "revenue.tmplr.near" = 1 } }
+protocol_account_id = "revenue.tmplr.near"

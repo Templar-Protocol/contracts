@@ -96,17 +96,28 @@ fn take_extends(value: &mut Value, declaring_file: &Path) -> anyhow::Result<Vec<
         .collect()
 }
 
-/// Recursively merge `overlay` into `base`, with `overlay` winning.
+/// Merge `overlay` into `base`, with `overlay` winning.
 ///
-/// Tables merge key by key; every other value — arrays included — replaces
-/// wholesale. Appending arrays would make a profile's source list impossible to
-/// override, only extend.
+/// Merging stops at a spec's `[section]` keys: the document and each section
+/// merge key by key, and every value below that replaces wholesale.
+///
+/// The depth limit is load-bearing, not a simplification. A spec's values
+/// include externally-tagged enums — `origination_fee = { Flat = "0" }` in a
+/// profile against `{ Proportional = "0.001" }` in a market — and merging those
+/// key by key yields `{ Flat, Proportional }`, a two-variant table that
+/// deserializes to nothing. The same applies to any value whose absent keys
+/// mean something: `borrow_range = { minimum = "1" }` over a profile's
+/// `{ minimum, maximum }` must drop the maximum, not inherit it.
 fn merge(base: &mut Value, overlay: Value) {
+    merge_to_depth(base, overlay, 2);
+}
+
+fn merge_to_depth(base: &mut Value, overlay: Value, depth: usize) {
     match (base, overlay) {
-        (Value::Table(base), Value::Table(overlay)) => {
+        (Value::Table(base), Value::Table(overlay)) if depth > 0 => {
             for (key, value) in overlay {
                 match base.get_mut(&key) {
-                    Some(existing) => merge(existing, value),
+                    Some(existing) => merge_to_depth(existing, value, depth - 1),
                     None => {
                         base.insert(key, value);
                     }
