@@ -325,7 +325,9 @@ fn describe_price(source: &SourceSpec, price: &Price, now: Nanoseconds) -> Strin
     format!(
         "{} w{} {} age {age_s}s",
         source.describe(),
-        source.weight(),
+        source
+            .weight()
+            .map_or_else(|| "-".to_owned(), |w| w.to_string()),
         render(price)
     )
 }
@@ -362,6 +364,20 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
                 // a different number than the market will see.
                 .and_then(|feed| feed.to_ema_price())
         }
+        SourceSpec::Pyth {
+            oracle, price_id, ..
+        } => ctx
+            .client
+            .read(templar_gateway_methods_spec::pyth::ListEmaPricesUnsafe {
+                oracle_id: oracle.clone(),
+                price_ids: vec![*price_id],
+            })
+            .await
+            .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
+            .prices
+            .into_iter()
+            .next()
+            .and_then(|entry| entry.price),
         SourceSpec::RedStone {
             oracle, price_id, ..
         } => ctx

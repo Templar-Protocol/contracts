@@ -143,6 +143,16 @@ pub enum AggregatorSpec {
     #[default]
     MedianLow,
     MedianHigh,
+    /// Takes the first source that answers, in order. Carries no weights and no
+    /// `min_sources`; both are refused on a `priority` asset.
+    Priority,
+}
+
+impl AggregatorSpec {
+    /// Whether this aggregator weighs its sources and honors a minimum count.
+    pub const fn is_weighted(self) -> bool {
+        matches!(self, Self::MedianLow | Self::MedianHigh)
+    }
 }
 
 /// A weighted price source, flattened for authoring.
@@ -157,12 +167,24 @@ pub enum SourceSpec {
     Lazer {
         oracle: near_account_id::AccountId,
         feed_id: u32,
-        weight: u32,
+        /// Required by the median aggregators, refused by `priority`, which
+        /// ranks its sources by position instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u32>,
     },
     RedStone {
         oracle: near_account_id::AccountId,
         price_id: String,
-        weight: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u32>,
+    },
+    Pyth {
+        oracle: near_account_id::AccountId,
+        #[serde(with = "price_id_hex")]
+        #[schemars(with = "String")]
+        price_id: templar_common::oracle::pyth::PriceIdentifier,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u32>,
     },
 }
 
@@ -170,7 +192,9 @@ impl SourceSpec {
     /// The account serving this source, for the reachability check in ENG-541.
     pub fn oracle_id(&self) -> &near_account_id::AccountId {
         match self {
-            Self::Lazer { oracle, .. } | Self::RedStone { oracle, .. } => oracle,
+            Self::Lazer { oracle, .. }
+            | Self::RedStone { oracle, .. }
+            | Self::Pyth { oracle, .. } => oracle,
         }
     }
 
@@ -179,29 +203,50 @@ impl SourceSpec {
         match self {
             Self::Lazer { feed_id, .. } => format!("lazer feed {feed_id}"),
             Self::RedStone { price_id, .. } => format!("redstone `{price_id}`"),
+            Self::Pyth { price_id, .. } => format!("pyth `{}`", hex::encode(price_id.0)),
         }
     }
 
-    pub const fn weight(&self) -> u32 {
+    /// The authored weight, if any. `priority` sources carry none.
+    pub const fn weight(&self) -> Option<u32> {
         match self {
-            Self::Lazer { weight, .. } | Self::RedStone { weight, .. } => *weight,
+            Self::Lazer { weight, .. }
+            | Self::RedStone { weight, .. }
+            | Self::Pyth { weight, .. } => *weight,
         }
     }
 }
 
 impl From<SourceSpec> for WeightedSource<Source> {
     fn from(spec: SourceSpec) -> Self {
+        // `priority` carries no weights; the field is validated away for that
+        // aggregator, and the value here is discarded when the sources are
+        // unwrapped into a plain list.
         let (request, weight) = match spec {
             SourceSpec::Lazer {
                 oracle,
                 feed_id,
                 weight,
-            } => (OracleRequest::lazer(oracle, feed_id), weight),
+            } => (OracleRequest::lazer(oracle, feed_id), weight.unwrap_or(1)),
             SourceSpec::RedStone {
                 oracle,
                 price_id,
                 weight,
-            } => (OracleRequest::redstone(oracle, price_id), weight),
+            } => (
+                OracleRequest::redstone(oracle, price_id),
+                weight.unwrap_or(1),
+            ),
+            SourceSpec::Pyth {
+                oracle,
+                price_id,
+                weight,
+            } => (
+                OracleRequest::Pyth(templar_proxy_oracle_near_common::request::PythRequest {
+                    oracle_id: oracle,
+                    price_id,
+                }),
+                weight.unwrap_or(1),
+            ),
         };
 
         Self {
@@ -225,6 +270,11 @@ impl<A: AssetClass> AssetSpec<A> {
         // so by here it is present; the fallback keeps this total rather than
         // panicking on a path the checks already closed.
         let aggregator = match self.aggregator.unwrap_or_default() {
+            AggregatorSpec::Priority => Aggregator::Priority(
+                templar_proxy_oracle_kernel::proxy::aggregator::method::priority::Priority::new(
+                    sources.map(|weighted: WeightedSource<Source>| weighted.source),
+                ),
+            ),
             AggregatorSpec::MedianLow => {
                 let mut median = MedianLow::new(sources);
                 median.min_sources = self.min_sources;
@@ -274,5 +324,30 @@ mod price_id {
             .try_into()
             .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
         Ok(Some(PriceIdentifier(bytes)))
+    }
+}
+
+/// A required price identifier as hex. The `price_id` module beside it handles
+/// the optional case on `AssetSpec`; the difference is only `Option`.
+mod price_id_hex {
+    use serde::{Deserialize as _, Deserializer, Serializer};
+    use templar_common::oracle::pyth::PriceIdentifier;
+
+    pub fn serialize<S: Serializer>(
+        value: &PriceIdentifier,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&hex::encode(value.0))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PriceIdentifier, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
+        Ok(PriceIdentifier(bytes))
     }
 }

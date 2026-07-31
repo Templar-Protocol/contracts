@@ -157,8 +157,8 @@ fn source_accessors_cover_both_variants() {
     assert_eq!(
         kinds,
         vec![
-            ("pyth-lazer.templar-alpha.near".to_owned(), 8),
-            ("redstone-adapter.v1.tmplr.near".to_owned(), 2),
+            ("pyth-lazer.templar-alpha.near".to_owned(), Some(8)),
+            ("redstone-adapter.v1.tmplr.near".to_owned(), Some(2)),
         ]
     );
     assert!(matches!(sources[0], SourceSpec::Lazer { feed_id: 7, .. }));

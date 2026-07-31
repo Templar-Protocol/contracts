@@ -85,6 +85,16 @@ pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
     ]
 }
 
+/// One side's sources, without needing the caller to name the generic asset
+/// class twice.
+fn asset_sources<'a>(spec: &'a MarketSpec, side: &str) -> &'a [super::oracle::SourceSpec] {
+    if side == "collateral" {
+        &spec.collateral.sources
+    } else {
+        &spec.borrow.sources
+    }
+}
+
 /// Fields belonging to the other oracle mode are refused rather than ignored.
 ///
 /// `OracleMode` documents itself as making a half-described spec impossible,
@@ -156,6 +166,36 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
                 "{side} sets a freshness bound, but the oracle it reads enforces \
                  its own; it would be ignored"
             ));
+        }
+        // `priority` ranks its sources by position: it carries no weights and
+        // no minimum. Accepting either would silently drop what was authored,
+        // the same failure the mode fields have.
+        if !direct {
+            let weighted = aggregator.unwrap_or_default().is_weighted();
+            let stated: Vec<_> = asset_sources(spec, side)
+                .iter()
+                .filter_map(|source| source.weight())
+                .collect();
+            if weighted && stated.len() != sources {
+                problems.push(format!(
+                    "{side} uses a median aggregator, which weighs its sources, \
+                     but only {} of {sources} state a `weight`",
+                    stated.len()
+                ));
+            }
+            if !weighted && !stated.is_empty() {
+                problems.push(format!(
+                    "{side} uses `priority`, which ranks sources by position; \
+                     the {} `weight`(s) stated would be ignored",
+                    stated.len()
+                ));
+            }
+            if !weighted && min_sources > 0 {
+                problems.push(format!(
+                    "{side}.min_sources is set, but `priority` takes the first \
+                     source that answers and honors no minimum"
+                ));
+            }
         }
         if direct && sources > 0 {
             problems.push(format!(
@@ -319,7 +359,11 @@ fn source_problems<A: templar_common::asset::AssetClass>(
             asset.min_sources
         ));
     }
-    if asset.sources.iter().all(|source| source.weight() == 0) {
+    if asset
+        .sources
+        .iter()
+        .all(|source| source.weight().unwrap_or(0) == 0)
+    {
         problems.push(format!("{side} sources all have weight 0"));
     }
 }

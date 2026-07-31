@@ -161,6 +161,31 @@ fn asset_spec<A: AssetClass>(
     })
 }
 
+/// One on-chain source as a spec source. `weight` is `None` for `priority`,
+/// which carries none.
+fn source_spec(source: Source, weight: Option<u32>) -> anyhow::Result<SourceSpec> {
+    let Source::Request(request) = source else {
+        anyhow::bail!("oracle uses a price-transformer source, which a spec does not express");
+    };
+    Ok(match request {
+        OracleRequest::Lazer(lazer) => SourceSpec::Lazer {
+            oracle: lazer.oracle_id,
+            feed_id: lazer.feed_id,
+            weight,
+        },
+        OracleRequest::RedStone(redstone) => SourceSpec::RedStone {
+            oracle: redstone.oracle_id,
+            price_id: redstone.price_id.to_string(),
+            weight,
+        },
+        OracleRequest::Pyth(pyth) => SourceSpec::Pyth {
+            oracle: pyth.oracle_id,
+            price_id: pyth.price_id,
+            weight,
+        },
+    })
+}
+
 fn split_aggregator(
     aggregator: Aggregator<Source>,
 ) -> anyhow::Result<(AggregatorSpec, u32, Vec<SourceSpec>)> {
@@ -175,37 +200,22 @@ fn split_aggregator(
             median.sources,
             median.min_sources,
         ),
-        Aggregator::Priority(_) => anyhow::bail!(
-            "oracle uses the `Priority` aggregator, which a spec does not express \
-             (it carries neither weights nor `min_sources`)"
-        ),
+        Aggregator::Priority(priority) => {
+            return Ok((
+                AggregatorSpec::Priority,
+                0,
+                priority
+                    .sources
+                    .into_iter()
+                    .map(|source| source_spec(source, None))
+                    .collect::<anyhow::Result<_>>()?,
+            ))
+        }
     };
 
     let sources = sources
         .into_iter()
-        .map(|weighted| {
-            let Source::Request(request) = weighted.source else {
-                anyhow::bail!(
-                    "oracle uses a price-transformer source, which a spec does not express"
-                );
-            };
-            Ok(match request {
-                OracleRequest::Lazer(lazer) => SourceSpec::Lazer {
-                    oracle: lazer.oracle_id,
-                    feed_id: lazer.feed_id,
-                    weight: weighted.weight,
-                },
-                OracleRequest::RedStone(redstone) => SourceSpec::RedStone {
-                    oracle: redstone.oracle_id,
-                    price_id: redstone.price_id.to_string(),
-                    weight: weighted.weight,
-                },
-                OracleRequest::Pyth(pyth) => anyhow::bail!(
-                    "oracle has a direct Pyth source (`{}`), which a spec does not express",
-                    pyth.oracle_id
-                ),
-            })
-        })
+        .map(|weighted| source_spec(weighted.source, Some(weighted.weight)))
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     Ok((kind, min_sources, sources))
