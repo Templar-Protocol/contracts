@@ -191,6 +191,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
 
     ensure_plan_is_coherent(&file)?;
     ensure_initializers_are_sound(&file)?;
+    ensure_proposals_are_runnable(&file)?;
 
     // Whoever holds these keys controls the three new accounts. A mistyped or
     // substituted `--public-key` at plan time is invisible in the artifact —
@@ -612,6 +613,67 @@ async fn occupied_targets(
         }
     }
     Ok(occupied)
+}
+
+/// The proposals must be executable, in this plan, in this order.
+///
+/// Their own arguments had gone unvalidated: every other guard here checks
+/// deploy arguments or the account references between steps. A proposal carries
+/// three editable values that decide whether the oracle ever gets configured —
+/// and an oracle that is never configured is the failure this whole guard suite
+/// exists to prevent, because `admin_set_proxy` is dispatched detached and the
+/// step still reports success.
+fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
+    let mut created: BTreeSet<u64> = BTreeSet::new();
+
+    for step in &file.steps {
+        for call in &step.function_calls {
+            if !is_governance_proposal(call)? {
+                continue;
+            }
+            let bytes = call.args.to_bytes()?;
+            let args: serde_json::Value =
+                serde_json::from_slice(&bytes).context("a proposal's arguments are not JSON")?;
+            let id = args
+                .get("id")
+                .and_then(serde_json::Value::as_u64)
+                .context("a proposal carries no numeric id")?;
+
+            // `operation` marks a create; its absence marks an execute.
+            if args.get("operation").is_some() {
+                let ttl = args.get("requested_ttl");
+                let zero = ttl.is_none()
+                    || ttl.and_then(|ttl| ttl.as_str()) == Some("0")
+                    || ttl.and_then(serde_json::Value::as_u64) == Some(0);
+                anyhow::ensure!(
+                    zero,
+                    "`{}` requests a TTL of {}, so the proposal would not be \
+                     executable when the next step tries to run it. The effective \
+                     TTL is the larger of the requested and configured values, so \
+                     raising it here delays execution regardless of the \
+                     contract's own zero TTLs.",
+                    step.label,
+                    ttl.map_or_else(|| "?".to_owned(), ToString::to_string),
+                );
+                anyhow::ensure!(
+                    created.insert(id),
+                    "`{}` creates proposal {id}, which this plan already creates. \
+                     The governance contract requires each id to be the next one, \
+                     so the second would be rejected.",
+                    step.label,
+                );
+            } else {
+                anyhow::ensure!(
+                    created.contains(&id),
+                    "`{}` executes proposal {id}, but this plan does not create it \
+                     beforehand. It would run against a proposal that does not \
+                     exist yet, leaving the feed unconfigured.",
+                    step.label,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Re-apply, against the encoded steps, the plan-time guards whose subject an
@@ -1580,6 +1642,50 @@ mod tests {
             .expect_err("two deploys, one account");
 
         assert!(format!("{error:#}").contains("more than once"), "{error:#}");
+    }
+
+    /// Proposal arguments decide whether the oracle is ever configured, and an
+    /// unconfigured oracle still reports success (`admin_set_proxy` is
+    /// dispatched detached), so these are refused rather than discovered later.
+    #[rstest::rstest]
+    #[case::raised_ttl(
+        serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "600000000000" }),
+        None,
+        "not be executable"
+    )]
+    #[case::execute_without_create(serde_json::json!({ "id": 7 }), None, "does not create it")]
+    #[case::duplicate_create(
+        serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "0" }),
+        Some(serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "0" })),
+        "already creates"
+    )]
+    fn unrunnable_proposals_are_refused(
+        #[case] first: serde_json::Value,
+        #[case] second: Option<serde_json::Value>,
+        #[case] expected: &str,
+    ) {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let proposal = |args: serde_json::Value| PlanStep {
+            label: "proposal".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "gov.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "create_proposal".to_owned(),
+                args: PlanArgs::Json(args),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_yoctonear(1),
+            }],
+        };
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(proposal(first));
+        if let Some(second) = second {
+            file.steps.push(proposal(second));
+        }
+
+        let error = super::ensure_proposals_are_runnable(&file).expect_err("unrunnable");
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
     }
 
     /// A coherent plan passes.
