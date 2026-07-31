@@ -623,7 +623,7 @@ async fn occupied_targets(
 /// redundant: the renamed account really is deployed and collision-checked,
 /// while every stale reference still points at one the plan never creates.
 fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
-    let (mut oracle, mut governance) = (None, None);
+    let (mut oracle, mut governance, mut market) = (None, None, None);
     let (mut governance_says, mut market_says, mut oracle_says) = (None, None, None);
 
     for step in &file.steps {
@@ -647,6 +647,10 @@ fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
                 .and_then(|id| id.as_str())
             {
                 market_says = Some(named.to_owned());
+            }
+            // The market is the deploy whose initializer carries a configuration.
+            if init.get("configuration").is_some() {
+                market = deploy_target(step, call)?;
             }
         }
     }
@@ -674,6 +678,28 @@ fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
                     "this plan deploys the {label} as `{created}`, but {who} points \
                      at `{named}`. One was edited without the other, so the \
                      deployment would reference an account this plan never creates."
+                );
+            }
+        }
+    }
+
+    // A NEP-141 market also registers storage *for the market account*, named
+    // in the registration's own args. Editing the market deploy's `name` leaves
+    // those registrations pointing at an account this plan never creates, so the
+    // new market would be unable to receive its own assets.
+    if let Some(market) = market {
+        for step in &file.steps {
+            for call in &step.function_calls {
+                let Some(registered) = storage_registration_target(call)? else {
+                    continue;
+                };
+                anyhow::ensure!(
+                    registered == market.as_str(),
+                    "`{}` registers storage for `{registered}`, but this plan \
+                     deploys the market as `{market}`. One was edited without the \
+                     other, so the market would not be registered with its own \
+                     token.",
+                    step.label,
                 );
             }
         }
@@ -728,6 +754,30 @@ fn ensure_init_args_readable(
         step.label,
     );
     Ok(())
+}
+
+/// The account a `storage_deposit` registers, if this call is one.
+fn storage_registration_target(
+    call: &crate::spec::plan::PlanFunctionCall,
+) -> anyhow::Result<Option<String>> {
+    let bytes = call.args.to_bytes()?;
+    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(None);
+    };
+    // Keyed on the pair, so an unrelated `account_id` argument cannot be
+    // mistaken for a registration.
+    if args.get("registration_only").is_none() {
+        return Ok(None);
+    }
+    let Some(account_id) = args.get("account_id") else {
+        return Ok(None);
+    };
+    Ok(Some(
+        account_id
+            .as_str()
+            .context("a storage registration names a non-string account")?
+            .to_owned(),
+    ))
 }
 
 /// Whether a call is a governance proposal: a numeric proposal `id`, and not a
@@ -1364,6 +1414,55 @@ mod tests {
 
         super::ensure_plan_is_coherent(&file)
             .expect("a token storage deposit is not a misrouted proposal");
+    }
+
+    /// Editing the market deploy's `name` leaves its storage registrations
+    /// pointing at an account the plan never creates, so the market could not
+    /// receive its own assets. Third instance of the same shape: one reference
+    /// edited, the rest stale.
+    #[test]
+    fn a_renamed_market_orphans_its_storage_registrations() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let init = base64::engine::general_purpose::STANDARD.encode(
+            serde_json::to_vec(&serde_json::json!({ "configuration": { "x": 1 } }))
+                .expect("encode"),
+        );
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy market".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "mkt-renamed", "version_key": "v1", "init_args": init,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        });
+        file.steps.push(PlanStep {
+            label: "register storage".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "usdc.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "storage_deposit".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "account_id": "mkt.templar-alpha.near",
+                    "registration_only": true,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_millinear(10),
+            }],
+        });
+
+        let error = super::ensure_plan_is_coherent(&file).expect_err("stale registration");
+        assert!(
+            format!("{error:#}").contains("mkt-renamed.templar-alpha.near"),
+            "{error:#}"
+        );
     }
 
     /// A coherent plan passes.
