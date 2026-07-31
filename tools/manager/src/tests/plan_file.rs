@@ -339,6 +339,37 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
     );
 }
 
+/// A proxy-oracle version whose `new` ignores `owner_id` leaves the *registry*
+/// as owner, so governance can never configure either proxy. Because
+/// `admin_set_proxy` is dispatched detached, the proposals would still report
+/// success and the deploy would reach market creation with a dead oracle — so
+/// this is refused at plan time. Offline: the guard precedes the first read.
+#[tokio::test]
+async fn an_oracle_version_that_ignores_owner_id_is_refused() {
+    let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
+        .build()
+        .expect("build client");
+    let public_key = PublicKey::from(
+        PUBLIC_KEY
+            .parse::<near_api::PublicKey>()
+            .expect("valid key"),
+    );
+    let mut spec = alpha_market();
+    let admin = spec.governance.admin.clone();
+    // Well-formed key, pre-0.3.0 version: the guard must reject it for what the
+    // version *means*, not because the key failed to parse.
+    spec.versions.proxy_oracle = spec.versions.proxy_oracle.replace("@0.3.0#", "@0.2.0#");
+
+    let error = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
+        .await
+        .expect_err("a pre-0.3.0 oracle cannot seat an owner");
+
+    assert!(
+        format!("{error:#}").contains("registry would own the oracle"),
+        "{error:#}"
+    );
+}
+
 /// The deployment `deploy.sh` performs, in the order it performs it.
 ///
 /// The order is a safety property: `registry deploy` fails when the account

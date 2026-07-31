@@ -44,7 +44,10 @@ pub struct Create {
 /// contract's own ABI.
 ///
 /// [`Version::from_version_key`]: templar_gateway_types::version::Version::from_version_key
-fn check_owner_id_is_honored(version_key: &str, owner_id: &AccountId) -> anyhow::Result<()> {
+pub(crate) fn check_owner_id_is_honored(
+    version_key: &str,
+    owner_id: &AccountId,
+) -> anyhow::Result<()> {
     let version = ProxyOracleVersion::from_version_key(version_key)
         .with_context(|| format!("cannot tell whether {version_key} honors --owner-id"))?;
 

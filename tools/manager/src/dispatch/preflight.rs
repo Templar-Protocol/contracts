@@ -335,7 +335,7 @@ async fn account_check(ctx: &CliContext, label: &str, account_id: &AccountId) ->
 /// Only `AccountNotFound` means "no"; every other failure propagates. A timed-out
 /// RPC reported as "this account does not exist" would send an operator off to
 /// create an account that is already there.
-async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result<bool> {
+pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result<bool> {
     match ctx
         .client
         .read(account::Get {

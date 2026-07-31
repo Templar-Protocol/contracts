@@ -49,6 +49,13 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
 
     let mut checks =
         super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch).await?;
+    // Plan-time only, deliberately not in `run_all`: `spec check` validates a
+    // spec, which stays valid after its market is deployed, while planning a
+    // deployment needs its three target accounts free. `registry deploy` fails
+    // on an occupied account, so a collision on the *market* — the last step —
+    // would otherwise be discovered only after governance and the oracle were
+    // deployed and both proposals executed.
+    checks.extend(targets_available(&ctx, &spec).await?);
     apply_skips(&mut checks, &args.skip_check)?;
 
     let failed = crate::spec::check::failures(&checks);
@@ -260,6 +267,17 @@ async fn oracle_stack(
     let governance_id = spec.governance_id()?;
     let oracle_id = spec.oracle_id()?;
 
+    // Constructing the gateway request directly bypasses the guard
+    // `proxy-oracle create` applies, so it is applied here too: a pre-0.3.0
+    // `new` ignores `owner_id`, leaving the registry as owner. Governance then
+    // cannot configure either proxy — and because `admin_set_proxy` is
+    // dispatched detached, the proposals still *report* success and the deploy
+    // reaches market creation with an unconfigured oracle.
+    crate::commands::proxy_oracle::check_owner_id_is_honored(
+        &spec.versions.proxy_oracle,
+        &governance_id,
+    )?;
+
     let governance_init = serde_json::to_vec(&GovernanceInit {
         proxy_oracle_id: oracle_id.clone(),
         admin_id: spec.governance.admin.clone(),
@@ -420,6 +438,29 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
         file.network,
     );
     Ok(())
+}
+
+/// Every account this deployment creates must be free.
+async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<Vec<Check>> {
+    let mut checks = Vec::new();
+    for (label, account_id) in [
+        ("governance", spec.governance_id()?),
+        ("oracle", spec.oracle_id()?),
+        ("market", spec.market_id()?),
+    ] {
+        checks.push(Check::new(
+            format!("deployment.available.{label}"),
+            match super::preflight::exists(ctx, &account_id).await {
+                Ok(false) => Status::passed(format!("`{account_id}` is free")),
+                Ok(true) => Status::failed(format!(
+                    "`{account_id}` already exists; the {label} deploy would fail. \
+                     Pick another `name`, or tear the existing deployment down."
+                )),
+                Err(error) => Status::failed(format!("{error:#}")),
+            },
+        ));
+    }
+    Ok(checks)
 }
 
 /// The checks the plan carries.
