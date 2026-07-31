@@ -187,13 +187,21 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         );
     }
 
-    ensure_oracle_is_coherent(&file)?;
+    ensure_plan_is_coherent(&file)?;
 
     // Whoever holds these keys controls the three new accounts. A mistyped or
     // substituted `--public-key` at plan time is invisible in the artifact —
     // the keys live inside the encoded args — so where the applier's own key is
     // derivable it must be the one being granted.
-    if let Ok(mine) = args.signer.public_key() {
+    // Not `if let Ok(..)`: an unknown key must refuse, not skip. With
+    // `--sign-with keychain` and no `--public-key` this errors, and swallowing
+    // that would disable the guard in exactly the configuration that cannot
+    // derive its own key.
+    {
+        let mine = args.signer.public_key().context(
+            "cannot tell which key this plan grants full access to without knowing \
+             yours; pass --public-key",
+        )?;
         // Compared through the JSON encoding, which is the form the args carry.
         let mine = serde_json::to_value(&mine)
             .ok()
@@ -605,53 +613,89 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
-/// Three steps name the oracle, and an edit to one is not an edit to the others.
+/// The accounts a deployment creates are named in more places than they are
+/// created, and an edit to one is not an edit to the others.
 ///
-/// The oracle deploy creates `{name}.{registry}`; the governance initializer
-/// names it as `proxy_oracle_id`; the market configuration points at it as its
-/// price oracle. Editing the oracle deploy's `name` — a supported edit that
-/// `planned_targets` now follows correctly — silently leaves the other two
-/// pointing at an account this plan never creates, producing a live market
-/// wired to nothing.
-fn ensure_oracle_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
-    let mut deployed: Option<AccountId> = None;
-    let mut governance_says: Option<String> = None;
-    let mut market_says: Option<String> = None;
+/// The oracle is created by its deploy, named by the governance initializer as
+/// `proxy_oracle_id`, and pointed at by the market configuration. Governance is
+/// created by its deploy, named by the oracle initializer as `owner_id`, and
+/// addressed by every proposal step. `planned_targets` follows a renamed
+/// account correctly — which is what makes this necessary rather than
+/// redundant: the renamed account really is deployed and collision-checked,
+/// while every stale reference still points at one the plan never creates.
+fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
+    let (mut oracle, mut governance) = (None, None);
+    let (mut governance_says, mut market_says, mut oracle_says) = (None, None, None);
 
     for step in &file.steps {
         for call in &step.function_calls {
             let Some(init) = decoded_init_args(call) else {
                 continue;
             };
-            // The oracle is the deploy whose initializer seats an owner.
-            if init.get("owner_id").is_some() {
-                deployed = deploy_target(step, call)?;
+            // The oracle's initializer seats an owner; governance's seats an admin.
+            if let Some(owner) = init.get("owner_id").and_then(|id| id.as_str()) {
+                oracle = deploy_target(step, call)?;
+                oracle_says = Some(owner.to_owned());
             }
-            if let Some(oracle) = init.get("proxy_oracle_id").and_then(|id| id.as_str()) {
-                governance_says = Some(oracle.to_owned());
+            if init.get("admin_id").is_some() {
+                governance = deploy_target(step, call)?;
             }
-            if let Some(oracle) = init
+            if let Some(named) = init.get("proxy_oracle_id").and_then(|id| id.as_str()) {
+                governance_says = Some(named.to_owned());
+            }
+            if let Some(named) = init
                 .pointer("/configuration/price_oracle_configuration/account_id")
                 .and_then(|id| id.as_str())
             {
-                market_says = Some(oracle.to_owned());
+                market_says = Some(named.to_owned());
             }
         }
     }
 
-    let Some(deployed) = deployed else {
-        return Ok(());
-    };
-    for (who, named) in [
-        ("the governance initializer", governance_says),
-        ("the market configuration", market_says),
+    for (created, label, references) in [
+        (
+            oracle.as_ref(),
+            "oracle",
+            vec![
+                ("the governance initializer", governance_says),
+                ("the market configuration", market_says),
+            ],
+        ),
+        (
+            governance.as_ref(),
+            "governance contract",
+            vec![("the oracle's owner", oracle_says)],
+        ),
     ] {
-        if let Some(named) = named {
+        let Some(created) = created else { continue };
+        for (who, named) in references {
+            if let Some(named) = named {
+                anyhow::ensure!(
+                    named == created.as_str(),
+                    "this plan deploys the {label} as `{created}`, but {who} points \
+                     at `{named}`. One was edited without the other, so the \
+                     deployment would reference an account this plan never creates."
+                );
+            }
+        }
+    }
+
+    // Every step that is not a registry deploy addresses the governance
+    // contract. A renamed governance would otherwise leave the proposals
+    // pointing at the old account.
+    if let Some(governance) = governance {
+        for step in &file.steps {
+            let deploys = step
+                .function_calls
+                .iter()
+                .any(|call| matches!(deploy_target(step, call), Ok(Some(_))));
             anyhow::ensure!(
-                named == deployed.as_str(),
-                "this plan deploys the oracle as `{deployed}`, but {who} points at \
-                 `{named}`. One of them was edited without the other, and the \
-                 market would be wired to an oracle this plan never creates."
+                deploys || step.receiver_id == governance,
+                "`{}` is addressed to `{}`, but this plan deploys governance as \
+                 `{governance}`. The proposal would be sent to an account this \
+                 plan never creates.",
+                step.label,
+                step.receiver_id,
             );
         }
     }
@@ -1169,13 +1213,60 @@ mod tests {
             }),
         ));
 
-        let error = super::ensure_oracle_is_coherent(&file).expect_err("inconsistent");
+        let error = super::ensure_plan_is_coherent(&file).expect_err("inconsistent");
         assert!(
             format!("{error:#}").contains("renamed-oracle.templar-alpha.near"),
             "{error:#}"
         );
         assert!(
             format!("{error:#}").contains("market configuration"),
+            "{error:#}"
+        );
+    }
+
+    /// Renaming the governance deploy leaves the oracle owned by, and the
+    /// proposals addressed to, an account the plan never creates.
+    #[test]
+    fn a_renamed_governance_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let encode = |init: &serde_json::Value| {
+            base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_vec(init).expect("encode init"))
+        };
+        let deploy = |label: &str, name: &str, init: serde_json::Value| PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": name,
+                    "version_key": "v1",
+                    "init_args": encode(&init),
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        };
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(deploy(
+            "deploy governance",
+            "gov-renamed",
+            serde_json::json!({ "proxy_oracle_id": "o.templar-alpha.near", "admin_id": "a.near" }),
+        ));
+        // The oracle still names the *old* governance as its owner.
+        file.steps.push(deploy(
+            "deploy oracle",
+            "o",
+            serde_json::json!({ "owner_id": "gov.templar-alpha.near" }),
+        ));
+
+        let error = super::ensure_plan_is_coherent(&file).expect_err("inconsistent");
+        assert!(
+            format!("{error:#}").contains("gov-renamed.templar-alpha.near"),
             "{error:#}"
         );
     }
@@ -1206,7 +1297,7 @@ mod tests {
             }],
         });
 
-        super::ensure_oracle_is_coherent(&file).expect("nothing contradicts it");
+        super::ensure_plan_is_coherent(&file).expect("nothing contradicts it");
     }
 
     /// A governance proposal creates no account, so it contributes no target.
