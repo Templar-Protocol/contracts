@@ -101,14 +101,35 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
     let direct = spec.oracle.is_direct();
     let mut problems = Vec::new();
 
-    for (side, price_id, sources) in [
+    for (side, price_id, sources, aggregator) in [
         (
             "collateral",
             spec.collateral.price_id,
             spec.collateral.sources.len(),
+            spec.collateral.aggregator,
         ),
-        ("borrow", spec.borrow.price_id, spec.borrow.sources.len()),
+        (
+            "borrow",
+            spec.borrow.price_id,
+            spec.borrow.sources.len(),
+            spec.borrow.aggregator,
+        ),
     ] {
+        // The omission that silently changes behaviour: no aggregator deploys
+        // `median_low`, where every deployed borrow feed reads `median_high`.
+        if !direct && aggregator.is_none() {
+            problems.push(format!(
+                "{side} states no `aggregator`; a proxy would silently deploy \
+                 `median_low`, more permissive than the `median_high` every \
+                 deployed borrow feed uses"
+            ));
+        }
+        if direct && aggregator.is_some() {
+            problems.push(format!(
+                "{side}.aggregator is set, but this market aggregates nothing; \
+                 it would be ignored"
+            ));
+        }
         if direct && sources > 0 {
             problems.push(format!(
                 "{side} names {sources} source(s), but this market reads an \
@@ -228,8 +249,17 @@ fn sources(spec: &MarketSpec) -> Check {
     // `AssetSpec<BorrowAsset>`), so they cannot share a loop.
     source_problems("collateral", &spec.collateral, &mut problems);
     source_problems("borrow", &spec.borrow, &mut problems);
-    stated_aggregator("collateral", &spec.collateral, &mut problems);
-    stated_aggregator("borrow", &spec.borrow, &mut problems);
+    for (side, asset_min) in [
+        ("collateral", spec.collateral.min_sources),
+        ("borrow", spec.borrow.min_sources),
+    ] {
+        if asset_min == 0 {
+            problems.push(format!(
+                "{side}.min_sources is 0; state it explicitly (every deployed \
+                 proxy carries at least 1)"
+            ));
+        }
+    }
 
     if problems.is_empty() {
         Check::new(
@@ -242,24 +272,6 @@ fn sources(spec: &MarketSpec) -> Check {
         )
     } else {
         Check::new(id, Status::failed(problems.join("; ")))
-    }
-}
-
-/// A proxy spec that omits `aggregator` would silently deploy `MedianLow`,
-/// where every alpha market reads the borrow side at `median_high` — a
-/// permissive difference, and previously a hard parse error. Defaulting the
-/// field is what lets a *direct* spec omit what it never uses, so the
-/// requirement moves here rather than back to serde.
-fn stated_aggregator<A: templar_common::asset::AssetClass>(
-    side: &str,
-    asset: &super::oracle::AssetSpec<A>,
-    problems: &mut Vec<String>,
-) {
-    if asset.min_sources == 0 {
-        problems.push(format!(
-            "{side}.min_sources is 0; state it explicitly (every deployed proxy \
-             carries at least 1)"
-        ));
     }
 }
 

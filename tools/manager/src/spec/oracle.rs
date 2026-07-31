@@ -62,10 +62,13 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
 
-    /// Defaulted so a direct market, which aggregates nothing, need not state
-    /// an aggregator it will never use.
-    #[serde(default)]
-    pub aggregator: AggregatorSpec,
+    /// `None` for a direct market, which aggregates nothing. Optional rather
+    /// than defaulted: a proxy spec that omits it would otherwise deploy
+    /// `MedianLow` silently, where every alpha market reads its borrow side at
+    /// `median_high` — a permissive difference nobody authored. Absence has to
+    /// be *representable* for `config.oracle_mode` to reject it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregator: Option<AggregatorSpec>,
 
     /// Minimum sources that must resolve for a price to be produced.
     #[serde(default)]
@@ -218,7 +221,10 @@ impl<A: AssetClass> AssetSpec<A> {
         let sources = self.sources.into_iter().map(WeightedSource::from);
         // `Median::new` defaults `min_sources` to 1; the field is public and the
         // spec always states it, so set it rather than accept the default.
-        let aggregator = match self.aggregator {
+        // `config.oracle_mode` refuses a proxy spec that states no aggregator,
+        // so by here it is present; the fallback keeps this total rather than
+        // panicking on a path the checks already closed.
+        let aggregator = match self.aggregator.unwrap_or_default() {
             AggregatorSpec::MedianLow => {
                 let mut median = MedianLow::new(sources);
                 median.min_sources = self.min_sources;

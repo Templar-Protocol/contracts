@@ -331,7 +331,11 @@ fn describe_price(source: &SourceSpec, price: &Price, now: Nanoseconds) -> Strin
 }
 
 fn aggregator_label<A: AssetClass>(asset: &AssetSpec<A>) -> String {
-    format!("{:?} (min_sources {})", asset.aggregator, asset.min_sources)
+    format!(
+        "{:?} (min_sources {})",
+        asset.aggregator.unwrap_or_default(),
+        asset.min_sources
+    )
 }
 
 /// One source's current price, projected exactly as the contract projects it.

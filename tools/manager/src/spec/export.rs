@@ -153,7 +153,7 @@ fn asset_spec<A: AssetClass>(
         decimals: Some(u8::try_from(decimals).with_context(|| {
             format!("{side} asset declares {decimals} decimals, which a spec cannot express")
         })?),
-        aggregator,
+        aggregator: Some(aggregator),
         min_sources,
         sources,
         max_age: freshness.max_age_ns,
