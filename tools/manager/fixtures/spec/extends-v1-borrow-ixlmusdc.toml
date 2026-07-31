@@ -1,0 +1,13 @@
+# Exercises `profiles/v1-borrow-ixlmusdc.toml`: a market that states no borrow
+# leg of its own must come out with the deployed one.
+extends = ["base.toml", "../../../../deployments/profiles/v1-borrow-ixlmusdc.toml"]
+
+name = "extends-usdc"
+
+[collateral]
+asset = "nep141:collateral.near"
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "lazer.near", feed_id = 1, weight = 1 },
+]

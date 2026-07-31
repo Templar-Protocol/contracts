@@ -1,0 +1,12 @@
+# Exercises `profiles/v1-borrow-usdt.toml`.
+extends = ["base.toml", "../../../../deployments/profiles/v1-borrow-usdt.toml"]
+
+name = "extends-usdt"
+
+[collateral]
+asset = "nep141:collateral.near"
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "lazer.near", feed_id = 1, weight = 1 },
+]

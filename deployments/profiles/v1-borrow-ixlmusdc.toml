@@ -1,0 +1,21 @@
+# USDC (Stellar, bridged through NEAR Intents) as the borrow asset of a v1
+# market that deploys its own proxy oracle.
+#
+# `ixlmusdc` rather than plain `usdc`: v1 borrows three distinct tokens all
+# called USDC — this one, native `usdc.near`, and the Ethereum-bridged
+# `iethusdc`. A profile named for the ticker would silently pin the wrong one.
+#
+# This is the shape the current-generation proxy markets use — the two on proxy
+# oracle 0.3.0. The six older markets borrowing this same token read it through
+# a `pyth` source under `median_low`, and do not match this profile.
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
+decimals = 7
+aggregator = "median_high"
+min_sources = 1
+sources = [
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 7, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDC", weight = 2 },
+]

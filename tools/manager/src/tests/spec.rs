@@ -211,6 +211,60 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
     );
 }
 
+/// Each shared asset profile must reproduce the borrow leg of every deployed
+/// market it claims to represent.
+///
+/// Compared against the migrated specs rather than an inline literal: a profile
+/// asserted only against itself would prove nothing, and the point of factoring
+/// one out is that markets can adopt it without changing what they deploy.
+#[rstest]
+#[case(
+    "extends-v1-borrow-ixlmusdc.toml",
+    &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"]
+)]
+#[case("extends-v1-borrow-usdt.toml", &["linear-usdt", "stnear-usdt"])]
+fn a_shared_borrow_profile_matches_the_markets_it_represents(
+    #[case] fixture_name: &str,
+    #[case] markets: &[&str],
+) {
+    let spec = extends::load(&fixture(fixture_name))
+        .unwrap_or_else(|error| panic!("load {fixture_name}: {error:#}"));
+    let from_profile = spec.borrow.clone();
+
+    // The metadata is the reason to have a profile at all: neither field
+    // reaches the chain, so `market export` cannot recover them and every
+    // migrated spec is missing them.
+    assert!(
+        from_profile.symbol.is_some() && from_profile.reference.is_some(),
+        "a shared asset profile must carry the cross-check metadata: {from_profile:#?}"
+    );
+
+    for market in markets {
+        let deployed = extends::load(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("../../deployments/v1/{market}.toml")),
+        )
+        .unwrap_or_else(|error| panic!("load {market}: {error:#}"))
+        .borrow;
+
+        // Compared as the on-chain projection plus the fields that reach the
+        // market configuration. `symbol`/`reference` are deliberately excluded:
+        // adopting this profile must change nothing deployed, and those two are
+        // exactly what it adds on top.
+        let age = spec.market.price_maximum_age;
+        assert_eq!(
+            from_profile.clone().into_proxy(age),
+            deployed.clone().into_proxy(age),
+            "`{fixture_name}` would deploy a different proxy than `{market}` runs"
+        );
+        assert_eq!(
+            (&from_profile.asset, from_profile.decimals),
+            (&deployed.asset, deployed.decimals),
+            "`{fixture_name}` names a different token than `{market}`"
+        );
+    }
+}
+
 #[test]
 fn unknown_fields_are_rejected() {
     let error = extends::load(&fixture("invalid/unknown-field.toml"))
