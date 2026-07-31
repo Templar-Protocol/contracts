@@ -9,6 +9,7 @@ mod remove;
 mod remove_version;
 
 pub use add_version::AddVersion;
+pub(crate) use add_version::STORAGE_AMOUNT_PER_BYTE;
 pub use clear_deployments::ClearDeployments;
 pub use deploy::Deploy;
 pub use get_deployment::GetDeployment;

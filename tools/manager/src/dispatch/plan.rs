@@ -56,16 +56,11 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     // would otherwise be discovered only after governance and the oracle were
     // deployed and both proposals executed.
     checks.extend(targets_available(&ctx, &spec).await?);
-    apply_skips(&mut checks, &args.skip_check)?;
 
-    let failed = crate::spec::check::failures(&checks);
-    if failed > 0 {
-        print_json(&checks)?;
-        anyhow::bail!(
-            "{failed} check(s) failed; no plan written. Fix the spec, or re-run \
-             with `--skip-check <id>` for a check that is wrong."
-        );
-    }
+    let mut matched = apply_skips(&mut checks, &args.skip_check);
+    // Gated before `build`, which has hard bails of its own: letting it run
+    // first would replace a full check report with a single unrelated error.
+    gate(&checks)?;
 
     let steps = build(
         &ctx.client,
@@ -74,7 +69,17 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         &args.signer_id,
     )
     .await?;
-    let file = PlanFile::new(
+    let steps = PlanFile::steps_from(steps)?;
+
+    // After the steps exist, because it reads them; before the plan is written,
+    // because a signer that cannot pay is a reason not to write one.
+    let mut funding = super::funding::checks(&ctx, &steps).await?;
+    matched.extend(apply_skips(&mut funding, &args.skip_check));
+    ensure_every_skip_matched(&args.skip_check, &matched)?;
+    checks.extend(funding);
+    gate(&checks)?;
+
+    let file = PlanFile::from_steps(
         spec.network()?.to_string(),
         spec_digest,
         Derived {
@@ -236,6 +241,21 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             file.steps.len(),
         ))?;
     }
+
+    // Balances drift, and the plan-time answer was only good at that moment.
+    let mut funding = super::funding::checks(&ctx, &file.steps).await?;
+    let matched = apply_skips(&mut funding, &args.skip_check);
+    ensure_every_skip_matched(&args.skip_check, &matched)?;
+    let short = crate::spec::check::failures(&funding);
+    for check in &funding {
+        eprintln!("  {} — {:?}", check.id, check.status);
+    }
+    anyhow::ensure!(
+        short == 0,
+        "{short} signer(s) cannot cover this plan. Top up and re-run, or pass \
+         `--skip-check` if the check is wrong; stopping now costs nothing, \
+         stopping at step 4 does not."
+    );
 
     // Again, immediately before sending: the prompt above has no time limit, and
     // the check is only worth what it is worth at the moment of the send.
@@ -510,7 +530,8 @@ where
 /// bare "skipped" would hide the failure the operator chose to override. An id
 /// matching nothing is an error, since a typo would otherwise read as a
 /// successful suppression.
-fn apply_skips(checks: &mut [Check], skip: &[String]) -> anyhow::Result<()> {
+fn apply_skips(checks: &mut [Check], skip: &[String]) -> BTreeSet<String> {
+    let mut matched_ids = BTreeSet::new();
     for id in skip {
         let mut matched = false;
         for check in checks.iter_mut() {
@@ -527,10 +548,35 @@ fn apply_skips(checks: &mut [Check], skip: &[String]) -> anyhow::Result<()> {
                 reason: format!("--skip-check {id} ({previous})"),
             };
         }
+        if matched {
+            matched_ids.insert(id.clone());
+        }
+    }
+    matched_ids
+}
+
+/// A skip that matched nothing is a typo, and a typo must not read as a
+/// successful suppression. Checked once, after every phase has run, because the
+/// funding checks do not exist until the steps are built.
+fn ensure_every_skip_matched(skip: &[String], matched: &BTreeSet<String>) -> anyhow::Result<()> {
+    for id in skip {
         anyhow::ensure!(
-            matched,
+            matched.contains(id),
             "--skip-check `{id}` names no check in this run. Check ids are listed \
              by `spec check`; a typo here would silently suppress nothing."
+        );
+    }
+    Ok(())
+}
+
+/// Print the checks and refuse when any failed.
+fn gate(checks: &[Check]) -> anyhow::Result<()> {
+    let failed = crate::spec::check::failures(checks);
+    if failed > 0 {
+        print_json(&checks)?;
+        anyhow::bail!(
+            "{failed} check(s) failed; no plan written. Fix the spec, or re-run \
+             with `--skip-check <id>` for a check that is wrong."
         );
     }
     Ok(())
@@ -1258,8 +1304,7 @@ mod tests {
     #[test]
     fn skipping_leaves_every_other_check_alone() {
         let mut checks = checks();
-        apply_skips(&mut checks, &["reference.price.collateral".to_owned()])
-            .expect("a real id should skip");
+        apply_skips(&mut checks, &["reference.price.collateral".to_owned()]);
 
         assert!(matches!(checks[0].status, Status::Passed { .. }));
         assert!(matches!(checks[1].status, Status::Skipped { .. }));
@@ -1274,7 +1319,7 @@ mod tests {
     #[test]
     fn a_skipped_check_records_the_verdict_it_suppressed() {
         let mut checks = checks();
-        apply_skips(&mut checks, &["reference.price.collateral".to_owned()]).expect("skip");
+        apply_skips(&mut checks, &["reference.price.collateral".to_owned()]);
 
         let Status::Skipped { reason } = &checks[1].status else {
             panic!("expected Skipped, got {:?}", checks[1].status);
@@ -1288,8 +1333,10 @@ mod tests {
     /// A typo must not read as a successful suppression.
     #[test]
     fn an_unknown_skip_id_is_an_error() {
-        let error = apply_skips(&mut checks(), &["config.validte".to_owned()])
-            .expect_err("a typo names no check");
+        let skip = ["config.validte".to_owned()];
+        let matched = apply_skips(&mut checks(), &skip);
+        let error =
+            super::ensure_every_skip_matched(&skip, &matched).expect_err("a typo names no check");
 
         assert!(error.to_string().contains("names no check"), "{error:#}");
     }

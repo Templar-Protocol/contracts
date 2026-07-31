@@ -6,6 +6,7 @@
 
 mod aggregate;
 mod export;
+mod funding;
 pub(crate) mod generic;
 pub(crate) mod plan;
 mod preflight;
