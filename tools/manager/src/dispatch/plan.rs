@@ -62,7 +62,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let mut matched = apply_skips(&mut checks, &args.skip_check);
     // Gated before `build`, which has hard bails of its own: letting it run
     // first would replace a full check report with a single unrelated error.
-    gate(&checks)?;
+    gate(&checks, spec.market_id()?.as_str())?;
 
     let steps = build(
         &ctx.client,
@@ -79,7 +79,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     matched.extend(apply_skips(&mut funding, &args.skip_check));
     ensure_every_skip_matched(&args.skip_check, &matched)?;
     checks.extend(funding);
-    gate(&checks)?;
+    gate(&checks, spec.market_id()?.as_str())?;
 
     let file = PlanFile::from_steps(
         spec.network()?.to_string(),
@@ -711,14 +711,10 @@ fn ensure_every_skip_matched(skip: &[String], matched: &BTreeSet<String>) -> any
 }
 
 /// Print the checks and refuse when any failed.
-fn gate(checks: &[Check]) -> anyhow::Result<()> {
-    let failed = crate::spec::check::failures(checks);
-    if failed > 0 {
+fn gate(checks: &[Check], market_id: &str) -> anyhow::Result<()> {
+    if crate::spec::check::failures(checks) > 0 {
         print_json(&checks)?;
-        anyhow::bail!(
-            "{failed} check(s) failed; no plan written. Fix the spec, or re-run \
-             with `--skip-check <id>` for a check that is wrong."
-        );
+        crate::spec::check::gate(checks, market_id, "no plan was written")?;
     }
     Ok(())
 }

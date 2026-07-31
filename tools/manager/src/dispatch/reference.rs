@@ -456,11 +456,22 @@ fn pair(
     };
 
     let aggregated = scaled(&borrow);
-    if aggregated == 0.0 || borrow_reference == 0.0 {
+    // The two zeroes are not the same finding. Ours aggregating to zero is a
+    // defect — `oracle.aggregate.pair` fails on exactly this — while a zero from
+    // the third-party API means only that there is nothing to compare against.
+    if aggregated == 0.0 {
+        return Check::new(
+            id,
+            Status::failed("the borrow leg aggregated to zero, so no ratio exists".to_owned()),
+        );
+    }
+    if borrow_reference == 0.0 {
         return Check::new(
             id,
             Status::Skipped {
-                reason: "a borrow price of zero admits no ratio".to_owned(),
+                reason: "the reference API prices the borrow asset at zero, so \
+                         there is no ratio to compare against"
+                    .to_owned(),
             },
         );
     }

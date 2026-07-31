@@ -126,9 +126,15 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
             // being torn down.
             let (market, client) = ctx.signing_client_for(&a.signer).await?;
             teardown::remove_market(&ctx, &client, market, a.beneficiary_id(), a.force()).await?;
-            print_json(&serde_json::json!({ "removed": true }))
+            print_json(&Removed { removed: true })
         }
     }
+}
+
+/// `market remove` has nothing to report but success.
+#[derive(serde::Serialize)]
+struct Removed {
+    removed: bool,
 }
 
 async fn proxy_oracle(ctx: CliContext, ns: ProxyOracleNs) -> anyhow::Result<()> {

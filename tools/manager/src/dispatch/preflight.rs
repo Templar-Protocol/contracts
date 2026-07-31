@@ -33,19 +33,34 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
     .await?;
 
     let price_maximum_age = spec.market.price_maximum_age;
-    print_json(&serde_json::json!({
-        "market_id": spec.market_id()?,
-        "oracle_id": spec.oracle.account_id(spec.oracle_id()?),
-        "governance_id": spec.governance_id()?,
-        "network": spec.network()?.to_string(),
-        "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
-        "borrow_proxy": spec.borrow.clone().into_proxy(price_maximum_age),
-        "checks": checks,
-    }))?;
+    let market_id = spec.market_id()?;
+    print_json(&crate::spec::check::Report {
+        subject: CheckedSpec {
+            oracle_id: spec.oracle.account_id(spec.oracle_id()?),
+            governance_id: spec.governance_id()?,
+            network: spec.network()?.to_string(),
+            collateral_proxy: spec.collateral.clone().into_proxy(price_maximum_age),
+            borrow_proxy: spec.borrow.clone().into_proxy(price_maximum_age),
+            market_id: market_id.clone(),
+        },
+        checks: &checks,
+    })?;
 
-    let failed = crate::spec::check::failures(&checks);
-    anyhow::ensure!(failed == 0, "{failed} check(s) failed");
-    Ok(())
+    crate::spec::check::gate(&checks, market_id.as_str(), "the spec is not deployable")
+}
+
+/// What `spec check` reports alongside its checks: everything the spec derives,
+/// so a reviewer sees the accounts and proxies a deploy would create.
+#[derive(serde::Serialize)]
+struct CheckedSpec {
+    market_id: AccountId,
+    oracle_id: AccountId,
+    governance_id: AccountId,
+    network: String,
+    collateral_proxy:
+        templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
+    borrow_proxy:
+        templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
 }
 
 /// Every check, online then offline, writing resolved decimals back into the

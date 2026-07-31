@@ -12,6 +12,9 @@
 //! upstream adapter is migrated or a source reconfigured. Exits non-zero on
 //! failure so it can run on a schedule.
 
+use anyhow::Context as _;
+use near_account_id::AccountId;
+
 use crate::commands::market::Verify;
 use crate::context::{print_json, CliContext};
 use crate::spec::{
@@ -64,19 +67,37 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
         checks.push(matches_intent(&spec, intended, path));
     }
 
-    print_json(&serde_json::json!({
-        "market_id": args.market_id,
-        "oracle_id": spec.oracle_id()?,
-        "checks": checks,
-    }))?;
+    print_json(&crate::spec::check::Report {
+        subject: VerifiedMarket {
+            market_id: args.market_id.clone(),
+            oracle_id: spec.oracle_id()?,
+        },
+        checks: &checks,
+    })?;
 
-    let failed = crate::spec::check::failures(&checks);
-    anyhow::ensure!(
-        failed == 0,
-        "{failed} check(s) failed for {}",
-        args.market_id
-    );
-    Ok(())
+    crate::spec::check::gate(
+        &checks,
+        args.market_id.as_str(),
+        "this market does not match its spec",
+    )
+}
+
+/// Everything a spec determines about a deployed market, for comparison
+/// against the same projection of what is on chain.
+#[derive(serde::Serialize)]
+struct Projection {
+    configuration: templar_common::market::MarketConfiguration,
+    collateral_proxy:
+        templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
+    borrow_proxy:
+        templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
+}
+
+/// What `market verify` reports alongside its checks.
+#[derive(serde::Serialize)]
+struct VerifiedMarket {
+    market_id: AccountId,
+    oracle_id: AccountId,
 }
 
 /// Is `--governance-admin` actually the admin?
@@ -134,13 +155,16 @@ fn matches_intent(deployed: &MarketSpec, intended: &MarketSpec, path: &std::path
             anyhow::bail!("decimals are unresolved, so no configuration can be projected");
         };
         let age = spec.market.price_maximum_age;
-        Ok(serde_json::json!({
-            "configuration": spec
+        // Compared as a `Value` because the difference has to be *reported* per
+        // key; the projection itself is the typed shape below.
+        serde_json::to_value(Projection {
+            configuration: spec
                 .clone()
                 .into_market_configuration(i32::from(collateral), i32::from(borrow))?,
-            "collateral_proxy": spec.collateral.clone().into_proxy(age),
-            "borrow_proxy": spec.borrow.clone().into_proxy(age),
-        }))
+            collateral_proxy: spec.collateral.clone().into_proxy(age),
+            borrow_proxy: spec.borrow.clone().into_proxy(age),
+        })
+        .context("project the spec")
     };
 
     match (projected(deployed), projected(intended)) {

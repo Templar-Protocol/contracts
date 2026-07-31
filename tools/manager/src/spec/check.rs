@@ -4,9 +4,8 @@
 //! artifact both key on these, so ids are part of the tool's contract: renaming
 //! one breaks a caller's skip list.
 //!
-//! This module holds only the checks that need no network. The on-chain reads
-//! (ENG-541), aggregation dry-run (ENG-542), and reference cross-check
-//! (ENG-543) register alongside them later.
+//! This module holds only the checks that need no network; the on-chain ones
+//! live in [`crate::dispatch::preflight`].
 
 use serde::{Deserialize, Serialize};
 
@@ -60,13 +59,39 @@ impl Check {
     }
 }
 
-/// How many checks failed. The gate `spec check` and `market plan` both apply,
-/// in one place so they cannot drift apart.
+/// How many checks failed.
 pub fn failures(checks: &[Check]) -> usize {
     checks
         .iter()
         .filter(|check| check.status.is_failure())
         .count()
+}
+
+/// A command's check report, as printed.
+///
+/// A struct rather than an ad-hoc document so the two commands that emit it
+/// cannot drift, and so a consumer has a shape to deserialize.
+#[derive(Debug, Serialize)]
+pub struct Report<'a, T: Serialize> {
+    #[serde(flatten)]
+    pub subject: T,
+    pub checks: &'a [Check],
+}
+
+/// The gate every command applies to its checks.
+///
+/// The count lived here already; the *message* did not, and the three callers
+/// had drifted to three different ones. `subject` names what was checked, and
+/// `consequence` says what did not happen — an operator needs both, and only
+/// the caller knows either.
+pub fn gate(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Result<()> {
+    let failed = failures(checks);
+    anyhow::ensure!(
+        failed == 0,
+        "{failed} check(s) failed for {subject}; {consequence}. Fix the spec, or \
+         re-run with `--skip-check <id>` for a check that is wrong."
+    );
+    Ok(())
 }
 
 /// Run every offline check.
