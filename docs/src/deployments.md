@@ -5,7 +5,7 @@ no shell script: the spec is the source of truth, and everything that used to
 live in `env.sh`, `market-args.json` and `proxy-*.json` is derived from it.
 
 ```
-tmplrmgr market plan  specs/alpha/<market>.toml --out plan.json \
+tmplrmgr market plan  tools/manager/specs/alpha/<market>.toml --out plan.json \
     --signer-id <you> --public-key ed25519:…
 $EDITOR plan.json          # optional
 tmplrmgr market apply --plan plan.json --sign-with keychain
@@ -28,7 +28,7 @@ edit that makes the deployment incoherent is refused by name rather than sent.
 
 ## Writing a spec
 
-Shared values live in `specs/alpha/profiles/`. A market file names the profiles
+Shared values live in `tools/manager/specs/alpha/profiles/`. A market file names the profiles
 it extends and states only what differs:
 
 ```toml
@@ -52,9 +52,9 @@ one.
 ## Checking before and after
 
 ```
-tmplrmgr spec check   specs/alpha/<market>.toml       # before deploying
+tmplrmgr spec check   tools/manager/specs/alpha/<market>.toml       # before deploying
 tmplrmgr market verify <account-id> --governance-admin <account-id> \
-    --against specs/alpha/<market>.toml               # after
+    --against tools/manager/specs/alpha/<market>.toml               # after
 ```
 
 `market verify` currently reconstructs a spec by reading back a proxy oracle

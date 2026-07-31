@@ -407,13 +407,42 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                 // "this build cannot probe that oracle kind", which is not
                 // evidence the identifier is wrong — and reporting it as such
                 // would fail every spec reading those three.
-                Err(error) if is_missing_method(&error) => Status::Skipped {
-                    reason: format!(
-                        "`{account_id}` does not answer `get_price`, so this build \
-                         cannot confirm it serves {hex}. Probing the LST and \
-                         proxy oracle surfaces is not implemented."
-                    ),
-                },
+                // Not every oracle answers `get_price`. A proxy oracle exposes
+                // `price_feed_exists`, so fall through to it rather than give
+                // up: three of the shipped specs read oracles of that kind, and
+                // reporting them unprobeable left them with no price validation
+                // at all — a `Skipped` that no gate counts.
+                Err(error) if is_missing_method(&error) => {
+                    match ctx
+                        .client
+                        .read(
+                            templar_gateway_methods_spec::proxy_oracle::PriceFeedExists {
+                                oracle_id: account_id.clone(),
+                                price_identifier: id,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(result) if result.exists => {
+                            Status::passed(format!("{hex} on {account_id} (proxy)"))
+                        }
+                        Ok(_) => Status::failed(format!(
+                            "`{account_id}` serves no feed for {hex}. It cannot be \
+                             corrected after init."
+                        )),
+                        Err(inner) if is_missing_method(&inner) => Status::Skipped {
+                            reason: format!(
+                                "`{account_id}` answers neither `get_price` nor \
+                                 `price_feed_exists`, so this build cannot confirm \
+                                 it serves {hex}. Check it by hand before \
+                                 deploying — this is not a pass."
+                            ),
+                        },
+                        Err(inner) => Status::failed(format!(
+                            "`{account_id}` did not answer for {hex}: {inner}"
+                        )),
+                    }
+                }
                 Err(error) => Status::failed(format!(
                     "`{account_id}` did not answer for {hex}: {error}. A mistyped \
                      `price_id` cannot be corrected after init."

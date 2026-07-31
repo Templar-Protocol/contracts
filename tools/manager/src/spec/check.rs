@@ -101,18 +101,24 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
     let direct = spec.oracle.is_direct();
     let mut problems = Vec::new();
 
-    for (side, price_id, sources, aggregator) in [
+    for (side, price_id, sources, aggregator, min_sources, max_age, max_clock_drift) in [
         (
             "collateral",
             spec.collateral.price_id,
             spec.collateral.sources.len(),
             spec.collateral.aggregator,
+            spec.collateral.min_sources,
+            spec.collateral.max_age,
+            spec.collateral.max_clock_drift,
         ),
         (
             "borrow",
             spec.borrow.price_id,
             spec.borrow.sources.len(),
             spec.borrow.aggregator,
+            spec.borrow.min_sources,
+            spec.borrow.max_age,
+            spec.borrow.max_clock_drift,
         ),
     ] {
         // The omission that silently changes behaviour: no aggregator deploys
@@ -137,6 +143,18 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
             problems.push(format!(
                 "{side} states no `price_id`; a pre-existing oracle serves its \
                  own identifiers and this spec has nothing to derive one from"
+            ));
+        }
+        if direct && min_sources > 0 {
+            problems.push(format!(
+                "{side}.min_sources is set, but this market aggregates nothing; \
+                 it would be ignored"
+            ));
+        }
+        if direct && (max_age.is_some() || max_clock_drift.is_some()) {
+            problems.push(format!(
+                "{side} sets a freshness bound, but the oracle it reads enforces \
+                 its own; it would be ignored"
             ));
         }
         if direct && sources > 0 {
