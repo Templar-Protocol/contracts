@@ -109,6 +109,7 @@ async fn run(
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
+    checks.extend(direct_oracle(ctx, spec).await);
     checks.extend(accounts(ctx, spec).await);
     // Aggregation before the cross-check: it produces the prices the reference
     // source is compared against.
@@ -331,6 +332,75 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
             )
         })
         .collect()
+}
+
+/// A direct market's oracle gets none of the validation a proxy's does.
+///
+/// A proxy spec is checked three ways — the sources exist, they aggregate, the
+/// result matches a third party. A direct spec skips all three, because there
+/// is no aggregation of ours to reproduce. That left the oracle it *does* read
+/// checked by nothing: a mistyped `price_id`, or an oracle account that does
+/// not exist, passed every check and deployed. `MarketConfiguration` is
+/// immutable after init, so the market would be permanently unable to price.
+async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+    use templar_gateway_methods_spec::contract;
+    use templar_gateway_types::common::ContractArgs;
+
+    let crate::spec::OracleMode::Direct { account_id } = &spec.oracle else {
+        return Vec::new();
+    };
+
+    let mut checks = vec![Check::new(
+        "oracle.exists",
+        match exists(ctx, account_id).await {
+            Ok(true) => Status::passed(account_id.to_string()),
+            Ok(false) => Status::failed(format!(
+                "`{account_id}` does not exist, so this market would read an \
+                 oracle that is not there"
+            )),
+            Err(error) => Status::failed(format!("{error:#}")),
+        },
+    )];
+
+    let Ok((collateral, borrow)) = spec.price_identifiers() else {
+        return checks;
+    };
+    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
+        let hex = hex::encode(id.0);
+        checks.push(Check::new(
+            format!("oracle.serves.{side}"),
+            match ctx
+                .client
+                .read(contract::ViewFunction {
+                    contract_id: account_id.clone(),
+                    method_name: "get_price".to_owned().into(),
+                    args: ContractArgs::Json(serde_json::json!({ "price_identifier": hex })),
+                })
+                .await
+            {
+                // Absent is a **failure** here, and deliberately not the
+                // Skipped that ENG-541 established for proxy sources. That rule
+                // covers an adapter we are configuring, which may legitimately
+                // await its first push. This is an oracle we do not control,
+                // and the spec is asserting an identifier already exists on it
+                // — so "not there" means the identifier is wrong, which is the
+                // whole reason this check exists. Reporting it as not-run would
+                // exit zero for the mistyped `price_id` it was added to catch,
+                // and `MarketConfiguration` is immutable after init.
+                Ok(result) if result.value.is_null() => Status::failed(format!(
+                    "`{account_id}` serves no price for {hex}. For an oracle this \
+                     deployment does not configure, an unknown identifier is a \
+                     wrong one — and it cannot be corrected after init."
+                )),
+                Ok(_) => Status::passed(format!("{hex} on {account_id}")),
+                Err(error) => Status::failed(format!(
+                    "`{account_id}` did not answer for {hex}: {error}. A mistyped \
+                     `price_id` cannot be corrected after init."
+                )),
+            },
+        ));
+    }
+    checks
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.

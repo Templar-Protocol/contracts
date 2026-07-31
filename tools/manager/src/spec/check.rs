@@ -182,6 +182,8 @@ fn sources(spec: &MarketSpec) -> Check {
     // `AssetSpec<BorrowAsset>`), so they cannot share a loop.
     source_problems("collateral", &spec.collateral, &mut problems);
     source_problems("borrow", &spec.borrow, &mut problems);
+    stated_aggregator("collateral", &spec.collateral, &mut problems);
+    stated_aggregator("borrow", &spec.borrow, &mut problems);
 
     if problems.is_empty() {
         Check::new(
@@ -194,6 +196,24 @@ fn sources(spec: &MarketSpec) -> Check {
         )
     } else {
         Check::new(id, Status::failed(problems.join("; ")))
+    }
+}
+
+/// A proxy spec that omits `aggregator` would silently deploy `MedianLow`,
+/// where every alpha market reads the borrow side at `median_high` — a
+/// permissive difference, and previously a hard parse error. Defaulting the
+/// field is what lets a *direct* spec omit what it never uses, so the
+/// requirement moves here rather than back to serde.
+fn stated_aggregator<A: templar_common::asset::AssetClass>(
+    side: &str,
+    asset: &super::oracle::AssetSpec<A>,
+    problems: &mut Vec<String>,
+) {
+    if asset.min_sources == 0 {
+        problems.push(format!(
+            "{side}.min_sources is 0; state it explicitly (every deployed proxy \
+             carries at least 1)"
+        ));
     }
 }
 

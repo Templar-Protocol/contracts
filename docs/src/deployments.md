@@ -57,6 +57,12 @@ tmplrmgr market verify <account-id> --governance-admin <account-id> \
     --against specs/alpha/<market>.toml               # after
 ```
 
+`market verify` currently reconstructs a spec by reading back a proxy oracle
+this tool deployed, so it works for proxy markets only — the 16 direct markets
+are covered by `spec check`, which validates the oracle they read and the
+price identifiers it serves. Extending verify to direct markets is tracked
+separately.
+
 `verify` re-runs the preflight against what is actually on chain and exits
 non-zero on failure, so it can run on a schedule. That matters because the
 governance call that configures a price feed is dispatched detached: it reports

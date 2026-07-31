@@ -1,4 +1,4 @@
-extends = ["profiles/alpha-mainnet.toml", "profiles/irs-0.toml"]
+extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
 
 name = "ixlm-ixlmpyusd"
 

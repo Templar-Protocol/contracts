@@ -1,0 +1,8 @@
+# The interest-rate curve every alpha market uses, previously copy-pasted per
+# market in three textual variants that differ only in trailing `Decimal`
+# precision (…88889 vs …8889). Those parse equal — `REPR_EPSILON` swallows the
+# 1e-38 difference — so they were one curve written three ways, and keeping
+# them apart would have let an edit to one silently diverge nine markets from
+# nine others meant to share it.
+[market]
+interest_rate_strategy = { Piecewise = { base = "0", optimal = "0.9", rate_1 = "0.08888888888888888888888888888888888889", rate_2 = "2.4" } }

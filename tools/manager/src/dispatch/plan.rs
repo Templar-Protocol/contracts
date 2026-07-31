@@ -86,7 +86,10 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         spec_digest,
         Derived {
             market_id: spec.market_id()?,
-            oracle_id: spec.oracle_id()?,
+            // The oracle the market will read, which for a direct market is
+            // not the proxy id this spec would otherwise derive. Naming the
+            // wrong one misstates the most safety-critical fact in the file.
+            oracle_id: spec.oracle.account_id(spec.oracle_id()?),
             governance_id: spec.governance_id()?,
             collateral_decimals: spec.collateral.decimals,
             borrow_decimals: spec.borrow.decimals,
@@ -798,6 +801,28 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
+/// The oracle the market step is configured to read, if it can be read off the
+/// encoded step.
+fn market_oracle(file: &PlanFile) -> Option<String> {
+    file.steps
+        .iter()
+        .flat_map(|step| &step.function_calls)
+        .filter_map(decoded_init_args)
+        .find_map(|init| {
+            init.pointer("/configuration/price_oracle_configuration/account_id")?
+                .as_str()
+                .map(ToOwned::to_owned)
+        })
+}
+
+/// Whether the market reads an oracle named the way this tool names the ones it
+/// creates. A market pointing at `pyth-oracle.near` does not; one pointing at
+/// `proxy-oracle-…` does, and a plan carrying no oracle deploy therefore lost
+/// the steps that would have made it.
+fn reads_a_proxy_this_tool_creates(file: &PlanFile) -> bool {
+    market_oracle(file).is_some_and(|oracle| oracle.starts_with("proxy-oracle-"))
+}
+
 /// A deployment must still be a deployment.
 ///
 /// Every coherence check below is conditional on finding the component it
@@ -833,15 +858,25 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
         }
     }
 
-    // A direct-oracle deployment creates only the market. Recognised by the
-    // absence of every proxy component rather than by a flag, because the steps
-    // are all this function can see — and demanding the proxy components of a
-    // plan that legitimately has none would refuse every direct market.
+    // A direct-oracle deployment creates only the market — but "no proxy
+    // components" is also exactly what a *proxy* plan looks like once its four
+    // proxy steps are deleted, which is the fail-open this function exists to
+    // prevent. The two are told apart by the oracle the market is configured to
+    // read: a name this tool would have created means the steps that create it
+    // are missing, not absent by design.
     if governance == 0 && oracle == 0 && proposals == 0 {
         anyhow::ensure!(
             market == 1,
             "a deployment plan needs exactly one market deploy; this one has \
              {market}."
+        );
+        anyhow::ensure!(
+            !reads_a_proxy_this_tool_creates(file),
+            "this plan deploys only a market, but that market is configured to \
+             read `{}` — a proxy-oracle name this tool creates, and nothing here \
+             creates it. The proxy steps have been removed; the market would \
+             price against an account that will never exist.",
+            market_oracle(file).unwrap_or_default()
         );
         return Ok(());
     }

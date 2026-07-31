@@ -1,3 +1,0 @@
-# Shared interest-rate curve, previously copy-pasted into each market.
-[market]
-interest_rate_strategy = { Piecewise = { base = "0", optimal = "0.9", rate_1 = "0.0888888888888888888888888888888888889", rate_2 = "2.4" } }
