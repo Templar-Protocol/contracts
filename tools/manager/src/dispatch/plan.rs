@@ -204,19 +204,16 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         }
     }
 
-    // Every other write this tool performs is a single transaction, so this
-    // risk is new here and worth stating before the money is spent rather than
-    // after: the operation record lives in an in-memory store
-    // (`ClientBuilder`'s default), so an interrupt or an ambiguous RPC result
-    // part-way through leaves nothing to resume from or reconcile against.
-    // ENG-546 replaces the store and adds resume.
-    if file.steps.len() > 1 {
+    // Still worth stating before the money moves: the operator should know a
+    // partial run is recoverable *and* where the record lives, rather than
+    // discovering both after an interruption.
+    if remaining.len() > 1 {
         eprintln!(
-            "\nThis sends {} transactions in sequence. They are not journalled: \
-             if this is interrupted part-way, no record of what landed is kept, \
-             and re-running starts from the first step. Check the deployed \
-             accounts by hand before retrying.",
-            file.steps.len()
+            "\nThis sends {} transactions in sequence. Each is recorded in {} as \
+             it lands, so an interruption resumes from the next incomplete step \
+             rather than restarting.",
+            remaining.len(),
+            journal_path.display(),
         );
     }
 
