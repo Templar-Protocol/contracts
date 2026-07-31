@@ -49,7 +49,7 @@ pub(super) async fn checks(
     if spec.oracle.is_direct() {
         return (
             vec![Check::new(
-                "oracle.aggregate",
+                "oracle.aggregate.all",
                 Status::Skipped {
                     reason: "this market reads an existing oracle; there is no \
                              proxy aggregation to reproduce"

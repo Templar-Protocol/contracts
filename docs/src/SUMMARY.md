@@ -8,7 +8,7 @@
     - [Liquidate](./contract/market/liquidate.md)
   - [Registry](./contract/registry.md)
   - [LST Oracle](./contract/lst-oracle.md)
-- [Smart Contract Deployments](./deployments.md)
+- [Deploying a market](./deployments.md)
 - [Oracles](./oracles.md)
 - [Protocol Governance](./governance.md)
 - [Stellar Vault Curator Guide](./curator-guide.md)

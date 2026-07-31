@@ -752,38 +752,12 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
 ///
 /// Works from each call's *bytes*, so re-encoding a deploy's args as `base64`
 /// (equally valid in this schema, and executed verbatim) cannot hide its target.
-/// A registry deploy is recognized by its argument shape — `name` beside a
-/// `version_key` — and creates `{name}` beneath the registry it is addressed to.
-///
-/// Fails closed. A call carrying a `version_key` whose target cannot be derived
-/// is an unreviewable step, not an absent one: every silent `None` here would be
-/// an unchecked account, which is exactly what this guard exists to prevent.
+/// Every account this plan would create.
 pub(crate) fn planned_targets(file: &PlanFile) -> anyhow::Result<Vec<AccountId>> {
     let mut targets = Vec::new();
     for step in &file.steps {
         for call in &step.function_calls {
-            let bytes = call.args.to_bytes()?;
-            let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-                continue;
-            };
-            if args.get("version_key").is_none() {
-                continue;
-            }
-
-            let name = args.get("name").and_then(serde_json::Value::as_str);
-            let target = name.and_then(|name| {
-                format!("{name}.{}", step.receiver_id)
-                    .parse::<AccountId>()
-                    .ok()
-            });
-            targets.push(target.with_context(|| {
-                format!(
-                    "`{}` deploys from a registry but names no usable sub-account \
-                     ({name:?}), so the account it would create cannot be checked \
-                     for a collision",
-                    step.label
-                )
-            })?);
+            targets.extend(deploy_target(step, call)?);
         }
     }
     Ok(targets)
@@ -809,7 +783,7 @@ fn nep141_assets(file: &PlanFile) -> usize {
     file.steps
         .iter()
         .flat_map(|step| &step.function_calls)
-        .filter_map(decoded_init_args)
+        .filter_map(|call| decoded_init_args(call).ok().flatten())
         .find_map(|init| {
             let configuration = init.get("configuration")?.clone();
             Some(
@@ -834,10 +808,8 @@ fn nep141_assets(file: &PlanFile) -> usize {
 /// remove the oracle deploy and governance and the market stay mutually
 /// consistent, the proposals fail against an account that does not exist —
 /// reporting success, because `admin_set_proxy` is detached — and the market is
-/// deployed pointing at nothing.
-///
-/// This is the same fail-open shape as the swallowed `Err`s fixed earlier, in a
-/// form the sweep for those missed: the value is absent rather than unreadable.
+/// deployed pointing at nothing. So completeness is established before
+/// coherence, rather than left to guards that cannot fire.
 fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     let (mut governance, mut oracle, mut market, mut proposals) = (0, 0, 0, 0);
 
@@ -847,7 +819,7 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
                 proposals += 1;
                 continue;
             }
-            let Some(init) = decoded_init_args(call) else {
+            let Some(init) = decoded_init_args(call)? else {
                 continue;
             };
             if init.get("admin_id").is_some() {
@@ -942,9 +914,7 @@ fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
             if !is_governance_proposal(call)? {
                 continue;
             }
-            let bytes = call.args.to_bytes()?;
-            let args: serde_json::Value =
-                serde_json::from_slice(&bytes).context("a proposal's arguments are not JSON")?;
+            let args = json_args(call)?.context("parse a proposal's arguments")?;
             let id = args
                 .get("id")
                 .and_then(serde_json::Value::as_u64)
@@ -992,22 +962,18 @@ fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
 ///
 /// `build` refuses an oracle version that ignores `owner_id` and a non-zero
 /// governance TTL, but both live in step arguments an operator may rewrite, and
-/// a plan-time refusal does not bind the file. This is the third guard in this
-/// PR whose executing value was editable after the check (`admin_id` was the
-/// first), so all of them are re-verified here rather than one at a time.
+/// a plan-time refusal does not bind the file.
 fn ensure_initializers_are_sound(file: &PlanFile) -> anyhow::Result<()> {
     for step in &file.steps {
         for call in &step.function_calls {
-            let Some(init) = decoded_init_args(call) else {
+            let Some(init) = decoded_init_args(call)? else {
                 continue;
             };
 
             // The oracle: its `new` must honor the owner it is given, or the
             // registry stays owner and governance can never configure a proxy.
             if let Some(owner_id) = init.get("owner_id").and_then(|id| id.as_str()) {
-                let bytes = call.args.to_bytes()?;
-                let args: serde_json::Value = serde_json::from_slice(&bytes)
-                    .context("a registry deploy's arguments are not JSON")?;
+                let args = json_args(call)?.context("parse a registry deploy's arguments")?;
                 let version_key = args
                     .get("version_key")
                     .and_then(|key| key.as_str())
@@ -1054,7 +1020,7 @@ fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
 
     for step in &file.steps {
         for call in &step.function_calls {
-            let Some(init) = decoded_init_args(call) else {
+            let Some(init) = decoded_init_args(call)? else {
                 continue;
             };
             // The oracle's initializer seats an owner; governance's seats an admin.
@@ -1159,22 +1125,20 @@ fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
 /// A registry deploy must carry `init_args` this build can decode.
 ///
 /// Otherwise every guard reading them — the seated `admin_id`, the oracle and
-/// governance coherence checks — skips the step silently, which is the same
-/// fail-open that has already appeared three times in this file: a guard asked
-/// "is this wrong?" and answered "no" because it could not tell.
+/// governance coherence checks — skips the step silently rather than refusing
+/// it.
 fn ensure_init_args_readable(
     step: &crate::spec::plan::PlanStep,
     call: &crate::spec::plan::PlanFunctionCall,
 ) -> anyhow::Result<()> {
-    let bytes = call.args.to_bytes()?;
-    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Some(args) = json_args(call)? else {
         return Ok(());
     };
     if args.get("version_key").is_none() {
         return Ok(());
     }
     anyhow::ensure!(
-        decoded_init_args(call).is_some(),
+        decoded_init_args(call)?.is_some(),
         "`{}` deploys from a registry but its `init_args` cannot be decoded, so \
          what the new contract is initialized with cannot be checked or shown",
         step.label,
@@ -1186,8 +1150,7 @@ fn ensure_init_args_readable(
 fn storage_registration_target(
     call: &crate::spec::plan::PlanFunctionCall,
 ) -> anyhow::Result<Option<String>> {
-    let bytes = call.args.to_bytes()?;
-    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Some(args) = json_args(call)? else {
         return Ok(None);
     };
     // Keyed on the pair, so an unrelated `account_id` argument cannot be
@@ -1209,8 +1172,7 @@ fn storage_registration_target(
 /// Whether a call is a governance proposal: a numeric proposal `id`, and not a
 /// registry deploy.
 fn is_governance_proposal(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<bool> {
-    let bytes = call.args.to_bytes()?;
-    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Some(args) = json_args(call)? else {
         return Ok(false);
     };
     Ok(args.get("version_key").is_none()
@@ -1218,12 +1180,17 @@ fn is_governance_proposal(call: &crate::spec::plan::PlanFunctionCall) -> anyhow:
 }
 
 /// The account a single registry-deploy call would create.
+///
+/// A registry deploy is recognized by its argument shape — `name` beside a
+/// `version_key` — and creates `{name}` beneath the registry it is addressed to.
+///
+/// Fails closed: a call carrying a `version_key` whose target cannot be derived
+/// is an unreviewable step, not an absent one.
 fn deploy_target(
     step: &crate::spec::plan::PlanStep,
     call: &crate::spec::plan::PlanFunctionCall,
 ) -> anyhow::Result<Option<AccountId>> {
-    let bytes = call.args.to_bytes()?;
-    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+    let Some(args) = json_args(call)? else {
         return Ok(None);
     };
     if args.get("version_key").is_none() {
@@ -1365,11 +1332,21 @@ fn render(file: &PlanFile) {
                 "      {}  deposit {}  gas {}",
                 call.method_name, call.deposit, call.gas
             );
-            for key in granted_keys(call).unwrap_or_default() {
-                eprintln!("      grants full access to: {key}");
+            // Reported rather than swallowed: this is the only place an
+            // operator sees the keys and the init args, so a display that
+            // silently shows neither is worse than one that says why.
+            match granted_keys(call) {
+                Ok(keys) => {
+                    for key in keys {
+                        eprintln!("      grants full access to: {key}");
+                    }
+                }
+                Err(error) => eprintln!("      keys unreadable: {error:#}"),
             }
-            if let Some(init_args) = decoded_init_args(call) {
-                eprintln!("      init_args: {init_args}");
+            match decoded_init_args(call) {
+                Ok(Some(init_args)) => eprintln!("      init_args: {init_args}"),
+                Ok(None) => {}
+                Err(error) => eprintln!("      init_args unreadable: {error:#}"),
             }
         }
     }
@@ -1382,10 +1359,9 @@ fn render(file: &PlanFile) {
 /// accounts. A mistyped or substituted `--public-key` at plan time is
 /// indistinguishable from a correct one unless an operator can see it.
 fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Vec<String>> {
-    let bytes = call.args.to_bytes()?;
-    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        // Not JSON at all (borsh), so it grants no keys — as opposed to args
-        // this build could not read, which `to_bytes` already refused above.
+    // Opaque (borsh) args grant no keys, as opposed to args this build cannot
+    // encode at all — which `json_args` refuses rather than reports as empty.
+    let Some(args) = json_args(call)? else {
         return Ok(Vec::new());
     };
     let Some(keys) = args.get("full_access_keys") else {
@@ -1407,7 +1383,13 @@ fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Ve
 
 /// One field of a registry deploy's decoded `init_args`, as a string.
 fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<String> {
-    Some(decoded_init_args(call)?.get(field)?.as_str()?.to_owned())
+    Some(
+        decoded_init_args(call)
+            .ok()??
+            .get(field)?
+            .as_str()?
+            .to_owned(),
+    )
 }
 
 /// A registry deploy's `init_args`, decoded.
@@ -1422,16 +1404,36 @@ fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<S
 /// Works from the call's bytes, like [`planned_targets`], so re-encoding the
 /// *outer* args as base64 cannot hide the payload from either the display or
 /// the `admin_id` guard built on it.
-fn decoded_init_args(call: &crate::spec::plan::PlanFunctionCall) -> Option<serde_json::Value> {
+fn decoded_init_args(
+    call: &crate::spec::plan::PlanFunctionCall,
+) -> anyhow::Result<Option<serde_json::Value>> {
     use base64::Engine as _;
 
-    let bytes = call.args.to_bytes().ok()?;
-    let args: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let encoded = args.get("init_args")?.as_str()?;
-    let init = base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .ok()?;
-    serde_json::from_slice(&init).ok()
+    let decode = || {
+        let args = json_args(call).ok()??;
+        let encoded = args.get("init_args")?.as_str()?;
+        let init = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?;
+        serde_json::from_slice(&init).ok()
+    };
+    // Args that cannot be encoded are never "no init args": they cannot be sent
+    // at all, so the failure propagates rather than reading as absence.
+    call.args.to_bytes()?;
+    Ok(decode())
+}
+
+/// A call's arguments as JSON, or `None` when they are opaque.
+///
+/// Opaque is legitimate — `registry.add_version` takes borsh — so each caller
+/// decides what absence means. Args this build cannot *encode* are a different
+/// failure: the step cannot be sent, so that always propagates rather than
+/// reading as "nothing to check".
+fn json_args(
+    call: &crate::spec::plan::PlanFunctionCall,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let bytes = call.args.to_bytes()?;
+    Ok(serde_json::from_slice(&bytes).ok())
 }
 
 /// Ask before spending real NEAR. Anything but `y` aborts.
@@ -1526,11 +1528,8 @@ mod tests {
         assert!(matches!(checks[1].status, Status::Skipped { .. }));
     }
 
-    /// A suppressed failure must still say what it was.
-    ///
-    /// This is the same trap that produced four false-passes elsewhere in this
-    /// tool: `Skipped` is how "not run" is reported, and using it to hide a
-    /// known failure without recording the failure turns a red check green with
+    /// A suppressed failure must still say what it was: `Skipped` also means
+    /// "not run", so hiding a known failure in it turns a red check green with
     /// nothing left to review.
     #[test]
     fn a_skipped_check_records_the_verdict_it_suppressed() {
@@ -1872,8 +1871,7 @@ mod tests {
 
     /// Editing the market deploy's `name` leaves its storage registrations
     /// pointing at an account the plan never creates, so the market could not
-    /// receive its own assets. Third instance of the same shape: one reference
-    /// edited, the rest stale.
+    /// receive its own assets.
     #[test]
     fn a_renamed_market_orphans_its_storage_registrations() {
         use crate::spec::plan::{PlanFunctionCall, PlanStep};
@@ -2011,8 +2009,7 @@ mod tests {
     }
 
     /// Deleting a step disables the guard that validates it, so completeness is
-    /// checked before coherence. Same fail-open shape as the swallowed `Err`s,
-    /// in the form where the value is absent rather than unreadable.
+    /// checked before coherence.
     #[test]
     fn a_truncated_plan_is_refused() {
         use crate::spec::plan::{PlanFunctionCall, PlanStep};

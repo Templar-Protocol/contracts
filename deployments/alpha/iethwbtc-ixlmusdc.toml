@@ -1,6 +1,6 @@
 # Deploys its own proxy oracle, so this market creates a governance contract,
 # the oracle it owns, and the market itself.
-extends = ["../profiles/alpha-mainnet.toml"]
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-stable.toml"]
 
 name = "iethwbtc-ixlmusdc"
 
@@ -29,7 +29,6 @@ sources = [
 ]
 
 [market]
-interest_rate_strategy = { Piecewise = { base = "0", optimal = "0.9", rate_1 = "0.06666666666666666666666666666666666667", rate_2 = "1.8" } }
 mcr_maintenance = "1.2"
 mcr_liquidation = "1.15"
 maximum_usage_ratio = "0.99"

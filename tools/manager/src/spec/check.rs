@@ -369,7 +369,7 @@ fn source_problems<A: templar_common::asset::AssetClass>(
 }
 
 /// The contract's own invariants — mcr ordering, the interest-rate ceiling at
-/// full utilisation, the liquidation-spread bound, withdrawal-range coherence.
+/// full utilization, the liquidation-spread bound, withdrawal-range coherence.
 ///
 /// These already run at market init. Running them here moves the failure from
 /// "after governance and the oracle are deployed and ~8.5 NEAR is spent" to

@@ -6,7 +6,7 @@ For definitions of key terms and concepts, refer to the [Glossary](./glossary.md
 
 ## Quick Navigation
 
-- **[Smart Contract Addresses](./deployments.md)** - Official contract addresses and verification
+- **[Deploying a market](./deployments.md)** - Declarative market deployment with `tmplrmgr`
 - **[Protocol Governance](./governance.md)** - Administrative controls and upgrade mechanisms
 - **[Stellar Vault Curator Guide](./curator-guide.md)** - Deployment, governance, allocation, withdrawals, and keeper operations
 - **[Oracle System](./oracles.md)** - Price feed infrastructure and monitoring

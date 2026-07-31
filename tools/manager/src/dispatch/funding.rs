@@ -66,15 +66,9 @@ impl Requirement {
 
 /// Walk the steps in order, charging each signer.
 ///
-/// Sequential rather than a per-account sum, because the two differ as soon as a
-/// plan has more than one signer and the balance moves between them. They do
-/// *not* differ today: the artifact carries only function calls, and a
-/// function-call deposit lands with the receiving contract rather than becoming
-/// spendable balance for a later signer, so nothing credits an account and the
-/// running total only rises. Crediting it would be optimistic in a check whose
-/// whole value is being conservative — so the model is the honest one, and the
-/// peak simply coincides with the total until an action exists that can move
-/// balance between signers.
+/// Sequential rather than a per-account sum: nothing in a plan credits an
+/// account today, so the two coincide, but the sequential model stays correct
+/// if that changes.
 pub(super) fn simulate(
     steps: &[PlanStep],
     gas_price: NearToken,

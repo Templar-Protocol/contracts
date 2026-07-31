@@ -152,7 +152,8 @@ pub enum Command {
     },
     /// Recover a NEP-141 balance from the signer to a beneficiary and unregister storage.
     RecoverNep141(RecoverNep141),
-    /// Work with a declarative market deployment spec. Entirely local.
+    /// Work with a declarative market deployment spec. `check` reads the chain
+    /// unless `--offline`.
     Spec {
         #[command(subcommand)]
         command: SpecNs,

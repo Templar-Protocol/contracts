@@ -606,12 +606,10 @@ mod journal {
         assert_eq!(journal.remaining(&file).expect("reconciles"), vec![1, 2]);
     }
 
-    /// The showstopper this review caught: a resume has already created the
-    /// accounts its completed steps made, so checking the *whole* plan's targets
-    /// for freeness aborts every resume that has anything to resume. Freeness
-    /// must be asked of the outstanding steps only — and asking it of those is
-    /// what keeps the guard biting when a step's outcome was ambiguous and it
-    /// therefore stayed outstanding.
+    /// A resume has already created the accounts its completed steps made, so
+    /// checking the *whole* plan's targets for freeness aborts every resume that
+    /// has anything to resume. Freeness is asked of the outstanding steps only,
+    /// which also keeps it biting on a step whose outcome was ambiguous.
     #[test]
     fn freeness_is_asked_only_of_the_steps_still_to_run() {
         use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};

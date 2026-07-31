@@ -5,7 +5,7 @@ use near_account_id::AccountId;
 
 /// Reconstruct a deployment spec from a deployed market.
 ///
-/// Arguments only — the read chain that fulfils this lives in
+/// Arguments only — the read chain that fulfills this lives in
 /// [`crate::dispatch::export`], keeping this layer free of IO like every other
 /// command.
 #[derive(Args, Debug)]

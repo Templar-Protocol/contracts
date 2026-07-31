@@ -48,7 +48,7 @@ pub struct AssetSpec<A: AssetClass> {
 
     /// The identifier this asset's price is served under, when `oracle` is
     /// `direct`. Unused for a proxy, which serves the constants this tool owns.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "price_id")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub price_id: Option<templar_common::oracle::pyth::PriceIdentifier>,
 
@@ -66,11 +66,9 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
 
-    /// `None` for a direct market, which aggregates nothing. Optional rather
-    /// than defaulted: a proxy spec that omits it would otherwise deploy
-    /// `MedianLow` silently, where every alpha market reads its borrow side at
-    /// `median_high` — a permissive difference nobody authored. Absence has to
-    /// be *representable* for `config.oracle_mode` to reject it.
+    /// `None` for a direct market. Optional rather than defaulted so
+    /// `config.oracle_mode` can reject a proxy spec that omits it; the default
+    /// would silently be `MedianLow`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregator: Option<AggregatorSpec>,
 
@@ -103,11 +101,8 @@ pub struct AssetSpec<A: AssetClass> {
 }
 
 /// Tolerance for a price timestamped in the future, matching every deployed
-/// alpha proxy.
-///
-/// Deliberately *not* derived from `price_maximum_age`: staleness and clock
-/// drift bound opposite directions, and a market willing to accept a 60s-old
-/// price has said nothing about accepting one dated 60s from now.
+/// proxy. Not derived from `price_maximum_age`: staleness and drift bound
+/// opposite directions.
 pub const DEFAULT_MAX_CLOCK_DRIFT: Nanoseconds = Nanoseconds::from_ns(10_000_000_000);
 
 /// How to find an asset on the reference price API.
@@ -178,7 +173,6 @@ pub enum SourceSpec {
     },
     Pyth {
         oracle: near_account_id::AccountId,
-        #[serde(with = "price_id_hex")]
         #[schemars(with = "String")]
         price_id: templar_common::oracle::pyth::PriceIdentifier,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -189,7 +183,6 @@ pub enum SourceSpec {
     Lst {
         /// Pyth oracle serving the *underlying* asset.
         oracle: near_account_id::AccountId,
-        #[serde(with = "price_id_hex")]
         #[schemars(with = "String")]
         price_id: templar_common::oracle::pyth::PriceIdentifier,
         /// Staking contract, and the no-argument view returning the exchange
@@ -342,60 +335,5 @@ impl<A: AssetClass> AssetSpec<A> {
                 Some(self.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT)),
             ),
         )
-    }
-}
-
-/// A Pyth price identifier as hex, matching the form the chain stores.
-mod price_id {
-    use serde::{Deserialize as _, Deserializer, Serializer};
-    use templar_common::oracle::pyth::PriceIdentifier;
-
-    #[expect(clippy::ref_option, reason = "serde's serialize_with signature")]
-    pub fn serialize<S: Serializer>(
-        value: &Option<PriceIdentifier>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match value {
-            Some(id) => serializer.serialize_str(&hex::encode(id.0)),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<PriceIdentifier>, D::Error> {
-        let Some(text) = Option::<String>::deserialize(deserializer)? else {
-            return Ok(None);
-        };
-        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
-        Ok(Some(PriceIdentifier(bytes)))
-    }
-}
-
-/// A required price identifier as hex. The `price_id` module beside it handles
-/// the optional case on `AssetSpec`; the difference is only `Option`.
-mod price_id_hex {
-    use serde::{Deserialize as _, Deserializer, Serializer};
-    use templar_common::oracle::pyth::PriceIdentifier;
-
-    pub fn serialize<S: Serializer>(
-        value: &PriceIdentifier,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&hex::encode(value.0))
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<PriceIdentifier, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
-        let bytes: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
-        Ok(PriceIdentifier(bytes))
     }
 }

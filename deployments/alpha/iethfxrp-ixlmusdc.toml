@@ -1,5 +1,5 @@
-# Reproduces the live alpha market of the same name, which today needs four
-# files: env.sh, market-args.json, proxy-collateral.json, proxy-borrow.json.
+# Deploys its own proxy oracle, so this market creates a governance contract,
+# the oracle it owns, and the market itself.
 #
 # `decimals` is stated on both sides so the offline `config.validate` check can
 # run without an on-chain metadata lookup (ENG-541). It is the same value that

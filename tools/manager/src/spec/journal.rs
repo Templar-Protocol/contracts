@@ -1,10 +1,9 @@
 //! An append-only record of what a deploy actually did, so an interrupted one
 //! can be resumed instead of restarted.
 //!
-//! The shell deploy this replaces was not re-runnable, and its own comment
-//! cost: a stale version key aborts at the oracle step and leaves an orphaned
-//! governance contract to be deleted by hand. Ordering was the only safety
-//! property. This replaces it with a mechanism.
+//! The shell deploy this replaces was not re-runnable: a stale version key
+//! aborted at the oracle step and left an orphaned governance contract to be
+//! deleted by hand. Ordering was its only safety property.
 //!
 //! ## Keyed on the plan, not the spec
 //!

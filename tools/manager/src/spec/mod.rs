@@ -39,8 +39,7 @@ use oracle::AssetSpec;
 use serde_util::duration;
 
 /// The proxy oracle serves exactly one market, so its two price identifiers are
-/// per-oracle constants rather than configuration. They were previously typed
-/// out as `cccc…`/`bbbb…` in two files each, with nothing checking they matched.
+/// per-oracle constants rather than configuration.
 pub const COLLATERAL_PRICE_ID: PriceIdentifier = PriceIdentifier([0xcc; 32]);
 pub const BORROW_PRICE_ID: PriceIdentifier = PriceIdentifier([0xbb; 32]);
 
@@ -52,16 +51,9 @@ pub fn default_reference_tolerance() -> Decimal {
     templar_common::dec!("0.015")
 }
 
-/// Bumped only on a breaking spec change; unknown versions are rejected.
-///
-/// Every struct here is `deny_unknown_fields`, so *adding* a field is breaking
-/// in the reader direction: an older build rejects a document carrying it.
-///
-/// 2: `symbol` became optional, so `market export` can leave it unset rather
-///    than invent a ticker.
-/// 3: `reference` and `reference_tolerance` on each asset, and
-///    `market.reference_tolerance`, for the third-party cross-check. Export
-///    always emits the market tolerance, so every exported spec carries it.
+/// Bumped on a breaking spec change; unknown versions are rejected. Every
+/// struct here is `deny_unknown_fields`, so adding a field is breaking in the
+/// reader direction: an older build rejects a document carrying it.
 pub const SCHEMA_VERSION: u32 = 4;
 
 /// A complete market deployment: the market contract, its dedicated proxy
@@ -98,16 +90,10 @@ pub struct MarketSpec {
 
 /// Which oracle a market reads.
 ///
-/// `Proxy` deploys a dedicated proxy oracle and a governance contract to own
-/// it, aggregating the sources each asset names. `Direct` points the market at
-/// an oracle that already exists — 16 of the 18 alpha markets do this, reading
-/// `pyth-oracle.near`, the LST oracle, or a proxy someone else deployed — so a
-/// deployment creates only the market, and each asset names the oracle's own
-/// price identifier instead of sources.
-///
-/// A mode rather than optional fields on one shape, so a spec cannot
-/// half-describe either: a direct market has no aggregator to configure, and a
-/// proxy market has no external identifier to name.
+/// `Proxy` deploys a dedicated proxy oracle plus the governance contract that
+/// owns it, aggregating the sources each asset names. `Direct` points at an
+/// oracle that already exists, so a deployment creates only the market and each
+/// asset names that oracle's own price identifier instead of sources.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum OracleMode {
@@ -191,12 +177,9 @@ pub struct MarketParams {
     #[schemars(with = "String")]
     pub reference_tolerance: Decimal,
 
-    // These four are embedded on-chain types, which is the point — a field added
-    // to `MarketConfiguration` surfaces here as a compile error. None of them
-    // implement `JsonSchema` though, so the emitted schema describes them only
-    // as "some JSON". Tightening that means deriving `JsonSchema` across the
-    // `templar-common` market types, which are compiled into contracts; that is
-    // its own piece of work, not ENG-539's.
+    // Embedded on-chain types: a field added to `MarketConfiguration` surfaces
+    // here as a compile error. None implement `JsonSchema`, so the emitted
+    // schema describes them only as "some JSON".
     #[schemars(with = "serde_json::Value")]
     pub interest_rate_strategy: InterestRateStrategy,
     #[schemars(with = "serde_json::Value")]
@@ -239,8 +222,7 @@ pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result
 
 /// The sub-account *label* a registry deploy creates, as distinct from the full
 /// account id. `registry.deploy` takes the label and derives the id itself, so
-/// both forms are needed — and deriving one from the other by string surgery is
-/// how the two drifted apart before.
+/// both forms are needed.
 pub fn oracle_name(name: &str) -> String {
     format!("proxy-oracle-{name}")
 }

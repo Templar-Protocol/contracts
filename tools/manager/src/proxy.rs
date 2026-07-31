@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 /// Load a proxy-configuration file, accepting both the canonical
 /// `{aggregator: {MedianLow|…}, freshness_filter}` shape and the legacy
 /// `{aggregator: {method, filter}, entries}` shape that the checked-in
-/// `contract/market/examples/config/**/proxy-*.json` files still use.
+/// `proxy-*.json` files under `tools/manager/fixtures/deployed/` still use.
 ///
 /// Legacy reshaping only supports the `MedianLow` aggregator method (it bails on
 /// any other) and only carries the `min_sources`/`max_age`/`max_clock_drift`

@@ -28,11 +28,11 @@ edit that makes the deployment incoherent is refused by name rather than sent.
 
 ## Writing a spec
 
-Shared values live in `deployments/alpha/profiles/`. A market file names the profiles
+Shared values live in `deployments/profiles/`. A market file names the profiles
 it extends and states only what differs:
 
 ```toml
-extends = ["profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
 name = "my-market"
 
 [oracle.direct]                    # reads an oracle that already exists
@@ -46,8 +46,8 @@ decimals = 6
 
 Omit `[oracle.direct]` to deploy a dedicated proxy oracle instead. A proxy
 market names `sources` per asset and the deployment creates a governance
-contract, the oracle it owns, and the market — seven transactions rather than
-one.
+contract, the oracle it owns, and the market — seven transactions, plus one
+storage registration per NEP-141 asset, rather than one.
 
 ## Checking before and after
 

@@ -1,6 +1,6 @@
 //! Profile composition for [`super::MarketSpec`].
 //!
-//! `extends = ["../../profiles/alpha-mainnet.toml", "…/irs-stable.toml"]`
+//! `extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-stable.toml"]`
 //! deep-merges each listed file beneath the declaring one, in order, before a
 //! single deserialization. That is the whole feature — the shared interest-rate
 //! curve currently copy-pasted across markets becomes one file, without a

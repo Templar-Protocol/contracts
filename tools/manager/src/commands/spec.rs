@@ -1,5 +1,5 @@
 //! Local operations on a deployment spec. Arguments only — the preflight that
-//! fulfils `check` lives in [`crate::dispatch::preflight`], since it reads the
+//! fulfills `check` lives in [`crate::dispatch::preflight`], since it reads the
 //! chain.
 
 use std::path::PathBuf;

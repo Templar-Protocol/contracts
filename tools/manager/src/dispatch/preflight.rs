@@ -124,7 +124,7 @@ async fn run(
         // Failing to build a client is "could not check", like every other
         // reference-source problem.
         Err(error) => checks.push(Check::new(
-            "reference.price",
+            "reference.price.all",
             Status::Skipped {
                 reason: format!("no reference price source: {error:#}"),
             },
