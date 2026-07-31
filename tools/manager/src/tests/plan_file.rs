@@ -218,6 +218,15 @@ fn editing_the_summary_is_drift_too() {
         file.drift().expect("digest").summary,
         "a repointed market id is an edit"
     );
+
+    // `render` presents `spec_digest` as the plan's source, so rewriting it
+    // must not read as unmodified either.
+    let mut file = plan_file(sample_steps());
+    file.spec_digest = "sha256:something-else".to_owned();
+    assert!(
+        file.drift().expect("digest").summary,
+        "a rewritten spec digest is an edit"
+    );
 }
 
 /// A number too large for `u64` decodes as `f64` and would re-encode in

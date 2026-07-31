@@ -190,10 +190,11 @@ pub struct PlanFile {
     /// whole-file digest: with seven steps, "something changed" is not
     /// actionable.
     pub step_digests: Vec<String>,
-    /// Digest over everything `render` shows that is not a step — the derived
-    /// ids and the check results. Without it, editing a check from `failed` to
-    /// `passed`, or repointing `derived.market_id`, reports the plan as
-    /// unmodified.
+    /// Digest over everything this file states except the steps themselves —
+    /// provenance, derived ids, check results. Without it, editing a check from
+    /// `failed` to `passed`, repointing `derived.market_id`, or rewriting the
+    /// `spec_digest` that `render` presents as the plan's source all report the
+    /// plan as unmodified.
     pub summary_digest: String,
     pub derived: Derived,
     pub checks: Vec<Check>,
@@ -266,6 +267,14 @@ impl PlanFile {
             .iter()
             .map(digest)
             .collect::<anyhow::Result<Vec<_>>>()?;
+        let summary_digest = summary_digest(
+            PLAN_SCHEMA_VERSION,
+            env!("CARGO_PKG_VERSION"),
+            &network,
+            &spec_digest,
+            &derived,
+            &checks,
+        )?;
 
         Ok(Self {
             schema: PLAN_SCHEMA_VERSION,
@@ -273,7 +282,7 @@ impl PlanFile {
             network,
             spec_digest,
             step_digests,
-            summary_digest: summary_digest(&derived, &checks)?,
+            summary_digest,
             derived,
             checks,
             steps,
@@ -300,7 +309,14 @@ impl PlanFile {
                 .collect(),
             delta: isize::try_from(current.len()).unwrap_or(isize::MAX)
                 - isize::try_from(self.step_digests.len()).unwrap_or(isize::MAX),
-            summary: summary_digest(&self.derived, &self.checks)? != self.summary_digest,
+            summary: summary_digest(
+                self.schema,
+                &self.tool_version,
+                &self.network,
+                &self.spec_digest,
+                &self.derived,
+                &self.checks,
+            )? != self.summary_digest,
         })
     }
 
@@ -316,8 +332,15 @@ impl PlanFile {
     }
 }
 
-fn summary_digest(derived: &Derived, checks: &[Check]) -> anyhow::Result<String> {
-    digest(&(derived, checks))
+fn summary_digest(
+    schema: u32,
+    tool_version: &str,
+    network: &str,
+    spec_digest: &str,
+    derived: &Derived,
+    checks: &[Check],
+) -> anyhow::Result<String> {
+    digest(&(schema, tool_version, network, spec_digest, derived, checks))
 }
 
 /// `sha256:…` over a value's JSON encoding.
