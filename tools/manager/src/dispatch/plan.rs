@@ -48,7 +48,8 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let spec_digest = crate::spec::plan::digest(&spec)?;
 
     let mut checks =
-        super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch).await?;
+        super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch, None)
+            .await?;
     // Plan-time only, deliberately not in `run_all`: `spec check` validates a
     // spec, which stays valid after its market is deployed, while planning a
     // deployment needs its three target accounts free. `registry deploy` fails

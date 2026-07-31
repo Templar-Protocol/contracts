@@ -27,7 +27,7 @@ use crate::context::CliContext;
 use crate::spec::{
     check::{Check, Status},
     oracle::{AssetSpec, SourceSpec, DEFAULT_MAX_CLOCK_DRIFT},
-    MarketSpec,
+    MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
 /// `oracle.aggregate.{collateral,borrow,pair}`.
@@ -40,6 +40,7 @@ use crate::spec::{
 pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
+    deployed_oracle: Option<&near_account_id::AccountId>,
 ) -> (Vec<Check>, Option<Price>, Option<Price>) {
     let collateral = fetch_all(ctx, &spec.collateral).await;
     let borrow = fetch_all(ctx, &spec.borrow).await;
@@ -64,6 +65,14 @@ pub(super) async fn checks(
         .unwrap_or(now);
     let anchor = newest.min(now);
 
+    // Against the oracle's own breakers when one is deployed. An empty set is
+    // right for `market plan` — the oracle does not exist yet — and wrong for
+    // `market verify`: a tripped breaker means the live oracle prices nothing,
+    // and resolving without it would report the aggregation healthy for a
+    // market that is blocked.
+    let collateral_breakers = breakers(ctx, deployed_oracle, COLLATERAL_PRICE_ID).await;
+    let borrow_breakers = breakers(ctx, deployed_oracle, BORROW_PRICE_ID).await;
+
     let (collateral_price, mut checks) = leg(
         "collateral",
         &spec.collateral,
@@ -71,11 +80,46 @@ pub(super) async fn checks(
         collateral,
         now,
         anchor,
+        collateral_breakers,
     );
-    let (borrow_price, borrow_checks) = leg("borrow", &spec.borrow, spec, borrow, now, anchor);
+    let (borrow_price, borrow_checks) = leg(
+        "borrow",
+        &spec.borrow,
+        spec,
+        borrow,
+        now,
+        anchor,
+        borrow_breakers,
+    );
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
     (checks, collateral_price, borrow_price)
+}
+
+/// The oracle's configured breakers for a feed, or an empty set.
+///
+/// Empty when no oracle is deployed (planning) or when the set cannot be read —
+/// the latter is reported by `oracle.aggregate.*` failing to resolve rather than
+/// silently passing, since a proxy with no set simply has nothing to trip.
+async fn breakers(
+    ctx: &CliContext,
+    oracle_id: Option<&near_account_id::AccountId>,
+    id: templar_common::oracle::pyth::PriceIdentifier,
+) -> CircuitBreakerSet<CircuitBreaker> {
+    let Some(oracle_id) = oracle_id else {
+        return CircuitBreakerSet::empty();
+    };
+    ctx.client
+        .read(
+            templar_gateway_methods_spec::proxy_oracle::GetProxyCircuitBreakerSet {
+                oracle_id: oracle_id.clone(),
+                id,
+            },
+        )
+        .await
+        .ok()
+        .and_then(|result| result.circuit_breaker_set)
+        .unwrap_or_else(CircuitBreakerSet::empty)
 }
 
 /// Wall-clock, for freshness. The kernel takes `now` explicitly rather than
@@ -108,6 +152,7 @@ fn leg<A: AssetClass>(
     fetched_sources: Vec<anyhow::Result<Option<Price>>>,
     now: Nanoseconds,
     anchor: Nanoseconds,
+    mut breakers: CircuitBreakerSet<CircuitBreaker>,
 ) -> (Option<Price>, Vec<Check>) {
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
@@ -172,9 +217,6 @@ fn leg<A: AssetClass>(
 
     // Cloned because `into_proxy` consumes, and the spec is still needed after.
     let proxy = asset.clone().into_proxy(spec.market.price_maximum_age);
-    // No breakers: the oracle does not exist yet, so there is no configured set
-    // and nothing to trip. This measures the aggregation, not the guard rails.
-    let mut breakers = CircuitBreakerSet::<CircuitBreaker>::empty();
     let resolved = proxy.resolve(&mut breakers, prices, anchor);
 
     let (status, price) = match resolved {

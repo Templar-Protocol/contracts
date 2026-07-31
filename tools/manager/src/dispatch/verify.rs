@@ -12,8 +12,6 @@
 //! upstream adapter is migrated or a source reconfigured. Exits non-zero on
 //! failure so it can run on a schedule.
 
-use anyhow::Context as _;
-
 use crate::commands::market::Verify;
 use crate::context::{print_json, CliContext};
 use crate::spec::{
@@ -25,16 +23,41 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
     let mut spec =
         super::export::reconstruct(&ctx, &args.market_id, &args.governance_admin).await?;
 
+    let oracle_id = spec.oracle_id()?;
+
+    // Fields that never reach the chain cannot be recovered from it, so an
+    // intended spec supplies them. Without this the reference cross-check — the
+    // only one that catches a transposed feed on a *live* market — reports
+    // itself skipped on every run of the command built to monitor live markets.
+    let intended = args
+        .against
+        .as_ref()
+        .map(|path| crate::spec::extends::load(path))
+        .transpose()?;
+    if let Some(intended) = &intended {
+        spec.collateral.symbol = intended.collateral.symbol.clone();
+        spec.collateral.reference = intended.collateral.reference.clone();
+        spec.borrow.symbol = intended.borrow.symbol.clone();
+        spec.borrow.reference = intended.borrow.reference.clone();
+    }
+
     // The same checks `spec check` runs, against the reconstructed spec — not a
     // parallel set. A verify that checked less than a preflight would pass
-    // markets a preflight would refuse.
-    let mut checks =
-        super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch).await?;
+    // markets a preflight would refuse. The oracle is named so the aggregation
+    // resolves against the breakers the deployed one actually carries.
+    let mut checks = super::preflight::run_all(
+        &ctx,
+        &mut spec,
+        false,
+        args.accept_decimals_mismatch,
+        Some(&oracle_id),
+    )
+    .await?;
 
     checks.push(admin_holds_the_role(&ctx, &spec, &args.governance_admin).await?);
 
-    if let Some(path) = &args.against {
-        checks.push(matches_intent(&spec, path)?);
+    if let (Some(intended), Some(path)) = (&intended, &args.against) {
+        checks.push(matches_intent(&spec, intended, path));
     }
 
     print_json(&serde_json::json!({
@@ -89,43 +112,58 @@ async fn admin_holds_the_role(
 
 /// Does what is deployed still match what was intended?
 ///
-/// Compared as parsed specs rather than as rendered text: `Decimal` does not
-/// round-trip its own representation (`"1.2"` re-serializes as `"1.199…9"`), so
-/// a textual diff would report drift for a market that is in fact identical.
+/// Compares the two specs' **on-chain projections**, not the specs themselves.
+/// A reconstruction cannot recover what never reached the chain — `symbol`,
+/// `reference`, and the freshness bounds an authored spec leaves to defaults —
+/// so comparing documents reports drift for a market that is byte-identical to
+/// its own spec, on every scheduled run forever. What is deployable is what is
+/// comparable.
 ///
-/// `versions` is excluded. A deployment records the version it was created
-/// with, while a spec names the version to deploy *next* — an intended spec
-/// bumped for a future redeploy is not drift in the running market.
-fn matches_intent(deployed: &MarketSpec, path: &std::path::Path) -> anyhow::Result<Check> {
+/// `versions` is likewise not compared: a deployment records the version it was
+/// created with, while a spec names the version to deploy *next*.
+fn matches_intent(deployed: &MarketSpec, intended: &MarketSpec, path: &std::path::Path) -> Check {
     let id = "verify.matches_intent";
-    let intended = crate::spec::extends::load(path)?;
 
-    let comparable = |spec: &MarketSpec| -> anyhow::Result<serde_json::Value> {
-        let mut value = serde_json::to_value(spec).context("render spec for comparison")?;
-        if let Some(object) = value.as_object_mut() {
-            object.remove("versions");
-        }
-        Ok(value)
+    let projected = |spec: &MarketSpec| -> anyhow::Result<serde_json::Value> {
+        let (Some(collateral), Some(borrow)) = (spec.collateral.decimals, spec.borrow.decimals)
+        else {
+            anyhow::bail!("decimals are unresolved, so no configuration can be projected");
+        };
+        let age = spec.market.price_maximum_age;
+        Ok(serde_json::json!({
+            "configuration": spec
+                .clone()
+                .into_market_configuration(i32::from(collateral), i32::from(borrow))?,
+            "collateral_proxy": spec.collateral.clone().into_proxy(age),
+            "borrow_proxy": spec.borrow.clone().into_proxy(age),
+        }))
     };
 
-    let (deployed_value, intended_value) = (comparable(deployed)?, comparable(&intended)?);
-    if deployed_value == intended_value {
-        return Ok(Check::new(
+    match (projected(deployed), projected(intended)) {
+        (Ok(left), Ok(right)) if left == right => {
+            Check::new(id, Status::passed(format!("matches {}", path.display())))
+        }
+        (Ok(left), Ok(right)) => Check::new(
             id,
-            Status::passed(format!("matches {}", path.display())),
-        ));
+            Status::failed(format!(
+                "deployed state differs from {} in: {}. Run `market export` to \
+                 see what is actually deployed.",
+                path.display(),
+                differing_keys(&left, &right).join(", ")
+            )),
+        ),
+        // Unprojectable is unknown, and unknown is not a match.
+        (left, right) => Check::new(
+            id,
+            Status::failed(format!(
+                "could not compare against {}: {}",
+                path.display(),
+                left.err()
+                    .or(right.err())
+                    .map_or_else(|| "unknown".to_owned(), |error| format!("{error:#}"))
+            )),
+        ),
     }
-
-    let differing = differing_keys(&deployed_value, &intended_value);
-    Ok(Check::new(
-        id,
-        Status::failed(format!(
-            "deployed state differs from {} in: {}. Run `market export` to see \
-             what is actually deployed.",
-            path.display(),
-            differing.join(", ")
-        )),
-    ))
 }
 
 /// Which top-level sections differ, so the failure names where to look rather

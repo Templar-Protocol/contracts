@@ -23,7 +23,14 @@ use crate::spec::{
 /// failed, so it is usable as a gate in CI or a pre-deploy script.
 pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
-    let checks = run_all(&ctx, &mut spec, args.offline, args.accept_decimals_mismatch).await?;
+    let checks = run_all(
+        &ctx,
+        &mut spec,
+        args.offline,
+        args.accept_decimals_mismatch,
+        None,
+    )
+    .await?;
 
     let price_maximum_age = spec.market.price_maximum_age;
     print_json(&serde_json::json!({
@@ -52,6 +59,7 @@ pub(super) async fn run_all(
     spec: &mut MarketSpec,
     offline: bool,
     accept_decimals_mismatch: bool,
+    deployed_oracle: Option<&AccountId>,
 ) -> anyhow::Result<Vec<Check>> {
     let mut checks = Vec::new();
 
@@ -78,7 +86,7 @@ pub(super) async fn run_all(
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
         // very run just read off the chain.
-        checks.extend(run(ctx, spec, accept_decimals_mismatch).await);
+        checks.extend(run(ctx, spec, accept_decimals_mismatch, deployed_oracle).await);
     }
     // Offline checks run last so they see those decimals.
     checks.extend(crate::spec::check::run_offline(spec));
@@ -91,7 +99,12 @@ pub(super) async fn run_all(
 /// Nothing here propagates: a read that fails is a *check* that failed, and the
 /// operator still gets the rest of the report. Aborting on the first RPC error
 /// would hide every other problem in the spec.
-async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> Vec<Check> {
+async fn run(
+    ctx: &CliContext,
+    spec: &mut MarketSpec,
+    accept_mismatch: bool,
+    deployed_oracle: Option<&AccountId>,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
@@ -99,7 +112,8 @@ async fn run(ctx: &CliContext, spec: &mut MarketSpec, accept_mismatch: bool) -> 
     checks.extend(accounts(ctx, spec).await);
     // Aggregation before the cross-check: it produces the prices the reference
     // source is compared against.
-    let (aggregate_checks, collateral, borrow) = super::aggregate::checks(ctx, spec).await;
+    let (aggregate_checks, collateral, borrow) =
+        super::aggregate::checks(ctx, spec, deployed_oracle).await;
     checks.extend(aggregate_checks);
 
     match super::reference::CoinGecko::from_env() {
