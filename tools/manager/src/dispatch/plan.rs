@@ -158,6 +158,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // makes every proposal revert after the deposits are spent.
     for step in &file.steps {
         for call in &step.function_calls {
+            ensure_init_args_readable(step, call)?;
             let Some(admin_id) = init_arg(call, "admin_id") else {
                 continue;
             };
@@ -193,15 +194,13 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // substituted `--public-key` at plan time is invisible in the artifact —
     // the keys live inside the encoded args — so where the applier's own key is
     // derivable it must be the one being granted.
-    // Not `if let Ok(..)`: an unknown key must refuse, not skip. With
-    // `--sign-with keychain` and no `--public-key` this errors, and swallowing
-    // that would disable the guard in exactly the configuration that cannot
-    // derive its own key.
+    // Asked of the backend, not taken from `--public-key`: for an external
+    // backend the flag is only what the operator *asserted*, and checking a
+    // grant against an assertion checks nothing. Errors propagate — an applier
+    // who cannot say which key they hold cannot verify the one being handed
+    // control of three new accounts, and that is a refusal, not a pass.
     {
-        let mine = args.signer.public_key().context(
-            "cannot tell which key this plan grants full access to without knowing \
-             yours; pass --public-key",
-        )?;
+        let mine = ctx.signing_public_key(&args.signer).await?;
         // Compared through the JSON encoding, which is the form the args carry.
         let mine = serde_json::to_value(&mine)
             .ok()
@@ -209,7 +208,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             .unwrap_or_default();
         for step in &file.steps {
             for call in &step.function_calls {
-                let granted = granted_keys(call);
+                let granted = granted_keys(call)?;
                 anyhow::ensure!(
                     granted.is_empty() || granted.iter().any(|key| key == &mine),
                     "`{}` grants full access to {}, not to `{mine}`. Applying this \
@@ -680,26 +679,66 @@ fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
         }
     }
 
-    // Every step that is not a registry deploy addresses the governance
-    // contract. A renamed governance would otherwise leave the proposals
-    // pointing at the old account.
+    // Governance proposals must address the governance account this plan
+    // deploys. Identified positively — by carrying a numeric proposal `id` —
+    // rather than as "not a deploy": a NEP-141 market also plans a
+    // `storage_deposit` addressed to the *token*, which is neither a deploy nor
+    // a proposal, and an exclusion rule would refuse every NEP-141 market.
     if let Some(governance) = governance {
         for step in &file.steps {
-            let deploys = step
-                .function_calls
-                .iter()
-                .any(|call| matches!(deploy_target(step, call), Ok(Some(_))));
-            anyhow::ensure!(
-                deploys || step.receiver_id == governance,
-                "`{}` is addressed to `{}`, but this plan deploys governance as \
-                 `{governance}`. The proposal would be sent to an account this \
-                 plan never creates.",
-                step.label,
-                step.receiver_id,
-            );
+            for call in &step.function_calls {
+                if !is_governance_proposal(call)? {
+                    continue;
+                }
+                anyhow::ensure!(
+                    step.receiver_id == governance,
+                    "`{}` is addressed to `{}`, but this plan deploys governance \
+                     as `{governance}`. The proposal would be sent to an account \
+                     this plan never creates.",
+                    step.label,
+                    step.receiver_id,
+                );
+            }
         }
     }
     Ok(())
+}
+
+/// A registry deploy must carry `init_args` this build can decode.
+///
+/// Otherwise every guard reading them — the seated `admin_id`, the oracle and
+/// governance coherence checks — skips the step silently, which is the same
+/// fail-open that has already appeared three times in this file: a guard asked
+/// "is this wrong?" and answered "no" because it could not tell.
+fn ensure_init_args_readable(
+    step: &crate::spec::plan::PlanStep,
+    call: &crate::spec::plan::PlanFunctionCall,
+) -> anyhow::Result<()> {
+    let bytes = call.args.to_bytes()?;
+    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(());
+    };
+    if args.get("version_key").is_none() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        decoded_init_args(call).is_some(),
+        "`{}` deploys from a registry but its `init_args` cannot be decoded, so \
+         what the new contract is initialized with cannot be checked or shown",
+        step.label,
+    );
+    Ok(())
+}
+
+/// Whether a call is a governance proposal: a numeric proposal `id`, and not a
+/// registry deploy.
+fn is_governance_proposal(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<bool> {
+    let bytes = call.args.to_bytes()?;
+    let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(false);
+    };
+    Ok(args.get("version_key").is_none()
+        && args.get("id").is_some_and(serde_json::Value::is_number))
 }
 
 /// The account a single registry-deploy call would create.
@@ -824,7 +863,7 @@ fn render(file: &PlanFile) {
                 "      {}  deposit {}  gas {}",
                 call.method_name, call.deposit, call.gas
             );
-            for key in granted_keys(call) {
+            for key in granted_keys(call).unwrap_or_default() {
                 eprintln!("      grants full access to: {key}");
             }
             if let Some(init_args) = decoded_init_args(call) {
@@ -840,21 +879,28 @@ fn render(file: &PlanFile) {
 /// args, which are not printed, yet they decide who controls the three new
 /// accounts. A mistyped or substituted `--public-key` at plan time is
 /// indistinguishable from a correct one unless an operator can see it.
-fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> Vec<String> {
-    let Ok(bytes) = call.args.to_bytes() else {
-        return Vec::new();
-    };
+fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Vec<String>> {
+    let bytes = call.args.to_bytes()?;
     let Ok(args) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-        return Vec::new();
+        // Not JSON at all (borsh), so it grants no keys — as opposed to args
+        // this build could not read, which `to_bytes` already refused above.
+        return Ok(Vec::new());
     };
-    args.get("full_access_keys")
-        .and_then(|keys| keys.as_array())
-        .map(|keys| {
-            keys.iter()
-                .filter_map(|key| key.as_str().map(ToOwned::to_owned))
-                .collect()
+    let Some(keys) = args.get("full_access_keys") else {
+        return Ok(Vec::new());
+    };
+    let keys = keys.as_array().context(
+        "`full_access_keys` is not a list, so the keys granted control of this \
+         account cannot be read",
+    )?;
+    keys.iter()
+        .map(|key| {
+            key.as_str().map(ToOwned::to_owned).context(
+                "a granted full-access key is not a string, so it cannot be \
+                 checked against yours",
+            )
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// One field of a registry deploy's decoded `init_args`, as a string.
@@ -1269,6 +1315,55 @@ mod tests {
             format!("{error:#}").contains("gov-renamed.templar-alpha.near"),
             "{error:#}"
         );
+    }
+
+    /// A NEP-141 market plans a `storage_deposit` addressed to the *token* —
+    /// neither a deploy nor a proposal. An exclusion rule ("everything that is
+    /// not a deploy must address governance") refused every such market, which
+    /// is the case this plan builder was fixed to support in the first place.
+    #[test]
+    fn a_token_storage_deposit_does_not_have_to_address_governance() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let init = base64::engine::general_purpose::STANDARD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "proxy_oracle_id": "o.templar-alpha.near",
+                "admin_id": "a.near",
+            }))
+            .expect("encode"),
+        );
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy governance".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "gov", "version_key": "v1", "init_args": init,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(3),
+            }],
+        });
+        file.steps.push(PlanStep {
+            label: "register storage for usdc.near".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "usdc.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "storage_deposit".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "account_id": "mkt.templar-alpha.near",
+                    "registration_only": true,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_millinear(10),
+            }],
+        });
+
+        super::ensure_plan_is_coherent(&file)
+            .expect("a token storage deposit is not a misrouted proposal");
     }
 
     /// A coherent plan passes.

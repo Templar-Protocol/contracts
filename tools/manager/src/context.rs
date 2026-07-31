@@ -79,6 +79,23 @@ impl CliContext {
         Ok((account_id, client))
     }
 
+    /// The public key the configured backend will actually sign with.
+    ///
+    /// Distinct from [`SignerArgs::public_key`], which for an external backend
+    /// returns the key the operator *asserted* via `--public-key`. Verifying a
+    /// full-access grant against an assertion verifies nothing, so this resolves
+    /// the backend and asks it.
+    pub(crate) async fn signing_public_key(
+        &self,
+        signer: &SignerArgs,
+    ) -> anyhow::Result<near_api::PublicKey> {
+        let (_, signing) = signer.resolve(&self.network).await?;
+        signing
+            .get_public_key()
+            .await
+            .context("ask the signing backend which key it will sign with")
+    }
+
     /// Dispatch a read and print its JSON result.
     pub(crate) async fn read<S>(&self, request: S) -> anyhow::Result<()>
     where
