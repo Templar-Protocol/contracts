@@ -5,7 +5,6 @@ edition = "2021"
 rust-version.workspace = true
 license.workspace = true
 description = "Stub Soroban ERC-4626 proxy contract for Templar Protocol"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

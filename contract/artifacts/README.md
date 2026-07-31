@@ -99,9 +99,9 @@ would rather each one kept its own. Like `XDG_CACHE_HOME`, it names the
 *parent*: the `templar-contract-artifacts` directory is always appended.
 
 Cleaning is never destructive: entries are immutable release assets, so the only
-cost is a re-download. Because the override names the parent, everything
-`artifacts-clean` can reach sits under a directory named after this crate — a
-misaimed `TEMPLAR_ARTIFACT_CACHE` cannot touch what was already there.
+cost is a re-download. `artifacts-clean` removes only the entry directories the
+catalog names — there is no recursive delete — so a misaimed
+`TEMPLAR_ARTIFACT_CACHE` leaves anything already there untouched.
 
 Sharing one cache across worktrees is safe because entries are verified against
 the in-repo pin on **every read**, not just on download. A branch whose catalog

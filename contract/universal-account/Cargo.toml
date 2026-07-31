@@ -5,7 +5,6 @@ license.workspace = true
 name = "templar-universal-account-contract"
 repository.workspace = true
 version = "0.5.0"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

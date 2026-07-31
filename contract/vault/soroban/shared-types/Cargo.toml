@@ -5,7 +5,6 @@ edition = "2021"
 rust-version.workspace = true
 license.workspace = true
 description = "Shared Soroban ABI selector types for Templar vault contracts"
-publish = false
 
 [lib]
 crate-type = ["rlib"]

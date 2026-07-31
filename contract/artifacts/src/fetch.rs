@@ -135,14 +135,29 @@ pub fn cache_root() -> Result<PathBuf, FetchError> {
     Ok(base.join(CACHE_DIR))
 }
 
+/// Every release the catalog knows about. `prefetch_all` writes exactly this
+/// set, and `clean` removes exactly this set.
+fn catalogued() -> impl Iterator<Item = (ArtifactId, &'static str)> {
+    ArtifactId::ALL.into_iter().flat_map(|artifact| {
+        artifact
+            .metadata()
+            .releases()
+            .iter()
+            .map(move |release| (artifact, release.version))
+    })
+}
+
+/// Directory holding one release's bytes, relative to an explicit root.
+fn entry_dir(root: &Path, artifact: ArtifactId, version: &str) -> PathBuf {
+    root.join("near")
+        .join(artifact.metadata().cargo_target_name)
+        .join(version)
+}
+
 /// Where a given release's bytes are cached.
 pub fn cache_path(artifact: ArtifactId, version: &str) -> Result<PathBuf, FetchError> {
     let target = artifact.metadata().cargo_target_name;
-    Ok(cache_root()?
-        .join("near")
-        .join(target)
-        .join(version)
-        .join(format!("{target}.wasm")))
+    Ok(entry_dir(&cache_root()?, artifact, version).join(format!("{target}.wasm")))
 }
 
 /// Download URL for a release's WASM asset. Both segments are read off the
@@ -218,25 +233,29 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
 /// Concurrent: wall clock is per-request latency to GitHub's CDN, not
 /// bandwidth. Sequentially this costs CI minutes per run.
 pub async fn prefetch_all() -> Result<usize, FetchError> {
-    let releases = ArtifactId::ALL
-        .into_iter()
-        .flat_map(|artifact| {
-            artifact
-                .metadata()
-                .releases()
-                .iter()
-                .map(move |release| (artifact, release.version))
-        })
-        .collect::<Vec<_>>();
-
     let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(PREFETCH_CONCURRENCY));
     let mut tasks = tokio::task::JoinSet::new();
-    for (artifact, version) in releases {
+    for (artifact, version) in catalogued().collect::<Vec<_>>() {
         let permits = std::sync::Arc::clone(&permits);
         tasks.spawn(async move {
             // The semaphore is never closed, so acquiring cannot fail.
             let _permit = permits.acquire().await;
-            released_bytes(artifact, version).await.map(|_| ())
+            released_bytes(artifact, version).await?;
+
+            // `released_bytes` returns verified bytes even when caching them
+            // lost a race with `clean`, which is right for a consumer but not
+            // for warming: reporting "cached" for an entry that is not on disk
+            // would leave the next offline lookup to fail instead.
+            if cache_path(artifact, version)?.is_file() {
+                return Ok(());
+            }
+            Err(FetchError::Cache {
+                path: cache_path(artifact, version)?,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "entry vanished while warming; a concurrent clean interfered",
+                ),
+            })
         });
     }
 
@@ -259,21 +278,22 @@ pub struct CacheUsage {
 
 /// Empty the artifact cache, reporting what was removed.
 ///
-/// Only ever deletes inside [`CACHE_DIR`], which this crate names, so a misaimed
-/// `TEMPLAR_ARTIFACT_CACHE` cannot reach anything already in that directory.
+/// Removes only the entry directories the catalog names, so there is no
+/// recursive delete to misaim: a wrong `TEMPLAR_ARTIFACT_CACHE` can at worst
+/// reach a path laid out exactly as this crate lays one out.
 ///
-/// Safe to run while another worktree is fetching: the subtree is renamed aside
-/// before it is walked, so a concurrent fetch rebuilds a fresh `near/`.
+/// Safe to run while another worktree is fetching. Unlinking is atomic, and a
+/// directory a writer has just repopulated simply fails to `rmdir`.
 pub fn clean() -> Result<CacheUsage, FetchError> {
     clean_at(&cache_root()?)
 }
 
 /// [`clean`] against an explicit root, so tests need not mutate the environment.
 fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
-    // Every path below resolves *through* the root, so a symlinked one puts the
-    // rename and the recursive delete inside whatever it points at. Namespacing
-    // only isolates us while the namespace is a real directory — and in a shared
-    // parent, someone else can create it first.
+    // Cheap belt-and-braces: a symlinked root redirects every path below. The
+    // deletions are catalogue-shaped either way, so this is no longer what makes
+    // cleaning safe — it is not a security boundary, since the root could be
+    // swapped after the check.
     if root
         .symlink_metadata()
         .is_ok_and(|meta| meta.file_type().is_symlink())
@@ -287,68 +307,55 @@ fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
         });
     }
 
-    let near = root.join("near");
-
-    // `remove_dir_all` is a readdir/unlink/rmdir walk, so a concurrent fetch can
-    // leave it with `ENOTEMPTY` or lose its own directory to `ENOENT`. Renaming
-    // first is one syscall, after which the walk counts exactly what it removes.
-    let doomed = root.join(format!(".near.cleaning.{}", std::process::id()));
-    let removed = match std::fs::rename(&near, &doomed) {
-        Ok(()) => {
-            let removed = usage_of(&doomed)?;
-            std::fs::remove_dir_all(&doomed).map_err(|source| FetchError::Cache {
-                path: doomed,
-                source,
-            })?;
-            removed
-        }
-        // Nothing cached yet: an empty cache cleans to zero rather than erroring.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => CacheUsage::default(),
-        Err(source) => return Err(FetchError::Cache { path: near, source }),
-    };
-
-    // Non-recursive, and failure is fine: it only succeeds when the root holds
-    // nothing but the subtree we just removed.
-    let _ = std::fs::remove_dir(root);
-
-    Ok(removed)
-}
-
-/// A missing directory totals as an empty one.
-fn usage_of(dir: &Path) -> Result<CacheUsage, FetchError> {
-    let mut total = CacheUsage::default();
-    let mut pending = vec![dir.to_owned()];
-
-    while let Some(current) = pending.pop() {
-        let entries = match std::fs::read_dir(&current) {
+    let mut removed = CacheUsage::default();
+    for (artifact, version) in catalogued() {
+        let dir = entry_dir(root, artifact, version);
+        // Every regular file in it, not just the `.wasm`: `write_atomically`
+        // stages a sibling `.tmp` that an interrupted write leaks, and this
+        // directory's path is itself derived from the catalog.
+        let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(source) => {
-                return Err(FetchError::Cache {
-                    path: current,
-                    source,
-                })
-            }
+            Err(source) => return Err(FetchError::Cache { path: dir, source }),
         };
         for entry in entries {
             let entry = entry.map_err(|source| FetchError::Cache {
-                path: current.clone(),
+                path: dir.clone(),
                 source,
             })?;
-            let metadata = entry.metadata().map_err(|source| FetchError::Cache {
-                path: entry.path(),
-                source,
-            })?;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else {
-                total.files += 1;
-                total.bytes += metadata.len();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            // `NotFound` means a concurrent clean got there first, which is the
+            // outcome either way.
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {
+                    removed.files += 1;
+                    removed.bytes += metadata.len();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(FetchError::Cache {
+                        path: entry.path(),
+                        source,
+                    })
+                }
             }
         }
+        // Each `rmdir` is non-recursive and its failure is expected whenever a
+        // writer has repopulated the directory, or something we do not own sits
+        // in it.
+        let _ = std::fs::remove_dir(&dir);
+        let _ = dir.parent().map(std::fs::remove_dir);
     }
 
-    Ok(total)
+    let _ = std::fs::remove_dir(root.join("near"));
+    let _ = std::fs::remove_dir(root);
+
+    Ok(removed)
 }
 
 /// Statuses worth another attempt: rate limiting and server-side faults. Every
@@ -494,43 +501,71 @@ mod tests {
         let root = scratch_root("concurrent");
         seed(&root, "templar_market_contract", "1.3.0", &[0u8; 64]);
 
+        // Catalogued entries, so the writer is racing paths `clean` really
+        // visits — seeding uncatalogued versions would make this vacuous.
         let writer = std::thread::spawn({
             let root = root.clone();
             move || {
-                // A directory that vanished is the clean winning the race.
-                let mut lost = 0;
-                for version in 0..500 {
-                    let dir = root
-                        .join("near")
-                        .join("templar_registry_contract")
-                        .join(version.to_string());
-                    if std::fs::create_dir_all(&dir).is_err() {
-                        lost += 1;
-                        continue;
-                    }
-                    if let Err(error) = std::fs::write(dir.join("registry.wasm"), [7u8; 8]) {
-                        assert_eq!(
-                            error.kind(),
-                            std::io::ErrorKind::NotFound,
-                            "only a concurrent clean may interrupt a cache write"
-                        );
-                        lost += 1;
+                for _ in 0..200 {
+                    for (artifact, version) in catalogued() {
+                        let dir = entry_dir(&root, artifact, version);
+                        if std::fs::create_dir_all(&dir).is_err() {
+                            continue;
+                        }
+                        let name = format!("{}.wasm", artifact.metadata().cargo_target_name);
+                        // Losing to the clean is the expected outcome, not an error.
+                        let _ = std::fs::write(dir.join(name), [7u8; 8]);
                     }
                 }
-                lost
             }
         });
 
         let removed = clean_at(&root).expect("clean never fails against a live writer");
-        let lost: u32 = writer.join().expect("writer thread never panics");
+        writer.join().expect("writer thread never panics");
 
         assert!(
-            !root.join("near/templar_market_contract").exists(),
-            "the pre-existing entry was removed"
+            removed.files <= catalogued().count(),
+            "reported {} files for {} catalogued entries",
+            removed.files,
+            catalogued().count()
         );
-        // Whatever the rename captured, it can only be what was really there.
-        assert!(removed.files <= 501, "reported {} files", removed.files);
-        assert!(lost <= 500, "lost {lost} writes");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleaning_collects_a_leaked_staging_file_beside_a_release() {
+        // `write_atomically` stages a sibling `.tmp`; a process killed mid-write
+        // leaks one, and removing only `cache_path` would orphan it forever.
+        let root = scratch_root("leaked-tmp");
+        seed(&root, "templar_market_contract", "1.3.0", &[0u8; 16]);
+        let dir = entry_dir(&root, ArtifactId::Market, "1.3.0");
+        std::fs::write(
+            dir.join(".templar_market_contract.wasm.999.0.tmp"),
+            [1u8; 8],
+        )
+        .expect("scratch staging file");
+
+        let removed = clean_at(&root).expect("clean succeeds");
+
+        assert_eq!(removed.files, 2, "the release and its leaked staging file");
+        assert!(!dir.exists(), "the entry directory was pruned");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cleaning_leaves_anything_the_catalog_does_not_name() {
+        // The property the whole design buys: only catalogue-derived paths are
+        // ever unlinked, so a misaimed root cannot take unrelated files.
+        let root = scratch_root("uncatalogued");
+        seed(&root, "templar_market_contract", "1.3.0", &[0u8; 16]);
+        let stranger = root.join("near").join("not_an_artifact").join("9.9.9");
+        std::fs::create_dir_all(&stranger).expect("scratch directory");
+        std::fs::write(stranger.join("keep.wasm"), b"not ours").expect("scratch file");
+
+        let removed = clean_at(&root).expect("clean succeeds");
+
+        assert_eq!(removed.files, 1, "only the catalogued release was removed");
+        assert!(stranger.join("keep.wasm").exists(), "stranger untouched");
         let _ = std::fs::remove_dir_all(&root);
     }
 

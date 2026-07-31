@@ -5,7 +5,6 @@ edition = "2021"
 rust-version.workspace = true
 license.workspace = true
 description = "Soroban effect interpreter and runtime for Templar Protocol vaults"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

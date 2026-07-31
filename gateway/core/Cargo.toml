@@ -40,7 +40,11 @@ workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
-templar-gateway-methods-dispatch.workspace = true
+# Path-only, deliberately not `workspace = true`: methods-dispatch depends on
+# this crate, so carrying the workspace pin's `version` would keep the
+# dev-dependency in the published manifest and leave neither crate publishable
+# first. Cargo strips a versionless path dev-dependency on publish.
+templar-gateway-methods-dispatch = { path = "../methods-dispatch" }
 templar-gateway-methods-spec.workspace = true
 near-sandbox.workspace = true
 near-token.workspace = true

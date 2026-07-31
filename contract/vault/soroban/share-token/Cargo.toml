@@ -5,7 +5,6 @@ edition = "2021"
 rust-version.workspace = true
 license.workspace = true
 description = "Soroban vault share token with vault-controlled mint/burn and user-authorized transfers"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

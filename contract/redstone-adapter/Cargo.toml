@@ -5,7 +5,6 @@ license.workspace = true
 name = "templar-redstone-adapter-contract"
 repository.workspace = true
 version = "0.2.0"
-publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

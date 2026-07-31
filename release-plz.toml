@@ -2,15 +2,18 @@
 ## blocked are documented in RELEASING.md — this file only encodes the settings.
 
 [workspace]
-# Tier B defaults. Versions come from git tags rather than a registry lookup,
-# and `cargo publish` is skipped. Applies to every crate not overridden below.
-git_only = true
-
-# Must be stated explicitly: release-plz validates its own `publish` setting
-# against each `Cargo.toml`, and errors on any crate that has `publish = false`
-# there while the config still defaults to `true` — `git_only` alone does not
-# satisfy that check.
+# Nothing is uploaded to a registry. This single line is what defers crates.io
+# publishing for Tiers A and B — their `Cargo.toml`s no longer carry
+# `publish = false`, because release-plz skips such crates entirely and Tier B
+# would get no versions and no tags. `no_tier_can_reach_a_registry` in
+# contract/artifacts/src/catalog.rs asserts this stays false.
 publish = false
+
+# `git_only` is deliberately unset. It derives baselines by checking each tag
+# out and running `cargo package`, which cannot succeed while `templar-common`
+# depends on RedStone by git — so enabling it fails the whole release-PR job,
+# not merely publishing. Baselines therefore come from the registry, where
+# these crates are simply absent.
 
 # Batch changes into a Release PR instead of releasing on every merge to `dev`.
 release_always = false

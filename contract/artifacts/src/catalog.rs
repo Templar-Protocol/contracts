@@ -24,30 +24,99 @@ fn mocks_are_never_released() {
     }
 }
 
-/// Read `release-plz.toml`.
-fn release_plz_toml() -> String {
+/// Parsed `release-plz.toml`.
+fn release_plz_config() -> toml::Value {
     let path = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("release-plz.toml");
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Nothing reaches a registry unless this is flipped.
+///
+/// Tier A and B crates are publishable in their own `Cargo.toml` so release-plz
+/// will version and tag them at all — which means this one line, rather than 52
+/// manifests, is what stands between a release and an upload.
+#[test]
+fn no_tier_can_reach_a_registry() {
+    let publish = release_plz_config()
+        .get("workspace")
+        .and_then(|workspace| workspace.get("publish"))
+        .and_then(toml::Value::as_bool);
+
+    assert_eq!(
+        publish,
+        Some(false),
+        "release-plz.toml must set `[workspace] publish = false`. Without it \
+         every Tier A and B crate is uploaded on release, and crates.io \
+         publishing is deliberately deferred — see RELEASING.md.",
+    );
+}
+
+/// Packages `release-plz.toml` marks `release = false`.
+///
+/// Parsed, not searched: a commented-out `# release = false` satisfies a
+/// substring check while release-plz applies its `release = true` default.
+fn release_false_packages() -> std::collections::BTreeSet<String> {
+    release_plz_config()
+        .get("package")
+        .and_then(toml::Value::as_array)
+        .map(|packages| {
+            packages
+                .iter()
+                .filter(|package| {
+                    package.get("release").and_then(toml::Value::as_bool) == Some(false)
+                })
+                .filter_map(|package| package.get("name").and_then(toml::Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `release = true` is release-plz's default, so an unclassified crate gets
 /// tagged and released — that is how the `templar-gateway-testing` harness ended
 /// up Tier B, and later `templar-gateway-catalog`.
 ///
-/// Two signals, because neither covers the other. Names catch helpers that are
-/// consumed (`test-utils` has dependents); the dependency graph catches ones
-/// that are not, whatever they are called — which is what `catalog` needed, and
-/// what a marker list could never have expressed.
+/// Two layers. The authoritative Tier C set is asserted exactly, so a crate
+/// cannot drop out of it by a typo, a rename, or a commented-out line. The
+/// classification below is the net for a *newly added* crate that nobody
+/// thought to classify — it flags candidates the exact set would not know to
+/// expect.
 #[test]
 #[cfg(feature = "workspace-loader")]
 #[ignore = "requires cargo metadata and workspace access"]
 fn scaffolding_crates_are_excluded_from_releases() {
+    /// Tier C, as documented in RELEASING.md. Editing this list is the
+    /// deliberate act of reclassifying a crate.
+    const TIER_C: [&str; 11] = [
+        "mock-ft",
+        "mock-mt",
+        "mock-oracle",
+        "mock-receiver",
+        "mock-ref",
+        "templar-contract-artifacts",
+        "templar-fuzz",
+        "templar-gateway-catalog",
+        "templar-gateway-testing",
+        "templar-proxy-oracle-soroban-integration-tests",
+        "test-utils",
+    ];
     const SCAFFOLDING_MARKERS: [&str; 5] = ["test", "mock", "fuzz", "harness", "fixture"];
     /// Directories whose crates ship somewhere: a WASM blob, a service, a CLI.
     /// A crate outside them that nothing consumes is scaffolding.
     const DELIVERABLE_DIRS: [&str; 4] = ["contract/", "service/", "tools/", "client/"];
 
-    let manifest = release_plz_toml();
+    let excluded = release_false_packages();
+    let expected = TIER_C
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        excluded, expected,
+        "release-plz.toml's `release = false` set has drifted from Tier C. \
+         Anything missing gets tagged, changelogged and released by default."
+    );
+
     let workspace_root = std::path::Path::new(env!("CARGO_WORKSPACE_DIR"));
     let metadata = crate::workspace_loader::get_metadata(workspace_root)
         .unwrap_or_else(|e| panic!("Failed to read cargo metadata: {e}"));
@@ -83,17 +152,11 @@ fn scaffolding_crates_are_excluded_from_releases() {
             continue;
         };
 
-        // A `[[package]]` block naming it, followed by `release = false` before
-        // the next block starts.
-        let excluded = manifest.split("[[package]]").any(|block| {
-            block.contains(&format!("name = \"{name}\"")) && block.contains("release = false")
-        });
-
         assert!(
-            excluded,
-            "`{name}` is internal — {reason} — but has no `release = false` block \
-             in release-plz.toml, so release-plz will tag it, write it a \
-             changelog, and cut it a GitHub Release.",
+            excluded.contains(name),
+            "`{name}` is internal — {reason} — but is not in release-plz.toml's \
+             `release = false` set, so release-plz will tag it, write it a \
+             changelog, and cut it a GitHub Release. Add it there and to TIER_C.",
         );
     }
 }

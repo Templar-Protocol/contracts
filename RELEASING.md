@@ -62,7 +62,8 @@ not days ahead.
 ## Release tiers
 
 Tier C is set per-package in `release-plz.toml`; Tiers A and B share the
-`[workspace]` default.
+`[workspace]` default. Registry uploads are switched off there for everything —
+see the crates.io section below — so A and B differ today only in intent.
 
 | Tier | Crates | Tag | CHANGELOG | GitHub Release | Registry |
 |---|---|---|---|---|---|
@@ -74,6 +75,13 @@ Tier B crates are real deliverables that ship somewhere other than a Rust build 
 a deployed service, an on-chain WASM blob, a CLI image. They get a citable
 version even though nobody `cargo add`s them. Tier C is build and test
 scaffolding, where a version number would be noise.
+
+Only Tier C carries `publish = false` in its own `Cargo.toml`. Tiers A and B
+must not: release-plz skips a crate whose manifest forbids publishing, so
+marking contracts and services that way left them with no versions, no
+changelogs and no tags — and with no `*-contract-v*` tag, no canonical WASM
+either. Uploads are prevented centrally by `[workspace] publish = false`
+instead.
 
 ## ⚠️ Publishing to crates.io is currently blocked
 
@@ -94,16 +102,22 @@ over pinning a raw commit:
 templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts", tag = "templar-gateway-client-v0.1.0" }
 ```
 
-**To unblock**, once RedStone publishes the SDK (or we depend on a published
-fork): set `redstone`'s workspace dependency to a registry version, then add a
-`[[package]]` block per Tier A crate with `git_only = false` and
-`publish = true`, and enable `semver_check` at the workspace level. No code
-changes are required.
+The blocker is wider than publishing. `git_only`, which would have derived Tier
+B versions from tags instead of a registry, resolves each baseline by checking
+its tag out and running `cargo package` — impossible while the git dependency is
+there. Enabling it fails the entire release-PR job, so it stays off and
+baselines come from the registry, where these crates are simply absent.
 
-**Flipping those flags is not enough on its own.** Every Tier A crate already
-has a baseline tag at its current version, and release-plz reads an existing tag
-as "already released" without consulting the registry — so today's versions
-would be skipped and the first upload would be some later bump.
+**To unblock**, once RedStone publishes the SDK (or we depend on a published
+fork): set `redstone`'s workspace dependency to a registry version, add a
+`[[package]]` block per Tier A crate with `publish = true` to override the
+workspace default, and enable `semver_check`. No code changes are required.
+
+**Check what the first run would actually upload before enabling it.** Every
+Tier A crate already carries a baseline tag at its current version, so verify
+with `release-plz update` on a scratch clone that the versions it proposes are
+the ones you mean to publish — bumping past the baselines first is the
+predictable route.
 
 **Bump every Tier A crate past its tag, and let the first Release PR carry them
 up.** Do not hand-publish the current versions to close the gap: those tags

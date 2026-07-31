@@ -128,18 +128,29 @@ jobs:
           # Never `--clobber`: the catalog pins the digest of whatever was
           # uploaded first, so replacing an asset strands every fetch on a hash
           # that no longer exists. Identical bytes replay; different bytes fail.
+          #
+          # Compare *every* asset before uploading any. Interleaving the two
+          # would let an upload land before a later file's conflict is found —
+          # `dist/*` visits checksums.txt first, so a divergent WASM would be
+          # detected only after its checksum had already been published, leaving
+          # the release describing bytes it does not serve.
           existing=$(mktemp -d)
+          missing=()
           for file in dist/*; do
             name=$(basename "$file")
-            if gh release download "$REF_NAME" --pattern "$name" --dir "$existing" 2>/dev/null; then
-              if cmp -s "$file" "$existing/$name"; then
-                echo "::notice::${name} is already published with identical bytes."
-                continue
-              fi
+            if ! gh release download "$REF_NAME" --pattern "$name" --dir "$existing" 2>/dev/null; then
+              missing+=("$file")
+              continue
+            fi
+            if ! cmp -s "$file" "$existing/$name"; then
               echo "::error::${name} is already published with different bytes. \
           Released assets are immutable; cut a new version rather than replacing one." >&2
               exit 1
             fi
+            echo "::notice::${name} is already published with identical bytes."
+          done
+
+          for file in "${missing[@]+"${missing[@]}"}"; do
             gh release upload "$REF_NAME" "$file"
           done
 
