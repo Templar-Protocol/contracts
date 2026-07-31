@@ -25,17 +25,32 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
     let mut visiting = BTreeSet::new();
     let merged = resolve(path, &mut visiting)?;
 
+    // Read before deserializing. Every struct here is `deny_unknown_fields`, so
+    // a document from a newer build fails on the first field this one does not
+    // know — and the author reads "unknown field `x`" when the real answer is
+    // that their spec is a version this build cannot speak.
+    if let Some(schema) = merged.get("schema").and_then(toml::Value::as_integer) {
+        anyhow::ensure!(
+            schema == i64::from(SCHEMA_VERSION),
+            "{} declares schema {schema} but this build understands \
+             {SCHEMA_VERSION}. Re-generate it with `market export`, or use a \
+             build that speaks it.",
+            path.display(),
+        );
+    }
+
     let mut spec: MarketSpec = merged
         .try_into()
         .with_context(|| format!("invalid market spec {}", path.display()))?;
 
-    if spec.schema != SCHEMA_VERSION {
-        anyhow::bail!(
-            "{} declares schema {} but this build understands {SCHEMA_VERSION}",
-            path.display(),
-            spec.schema
-        );
-    }
+    // Unreachable via the check above unless `schema` was absent or not an
+    // integer, in which case deserialization has now produced the real value.
+    anyhow::ensure!(
+        spec.schema == SCHEMA_VERSION,
+        "{} declares schema {} but this build understands {SCHEMA_VERSION}",
+        path.display(),
+        spec.schema,
+    );
 
     // The chain is fully applied; leaving the paths in would imply otherwise to
     // anything that re-serializes the spec (e.g. `market export`).

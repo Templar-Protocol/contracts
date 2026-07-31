@@ -168,7 +168,11 @@ impl ReferencePriceSource for CoinGecko {
     async fn prices(&self, ids: &[String]) -> anyhow::Result<BTreeMap<String, f64>> {
         #[derive(Deserialize)]
         struct Quote {
-            usd: f64,
+            /// Optional: a coin CoinGecko tracks without a USD quote omits the
+            /// field or returns null. Decoding it as `f64` failed the whole
+            /// response, so one such coin skipped the comparison for every
+            /// other id in the same request.
+            usd: Option<f64>,
         }
 
         let quotes: BTreeMap<String, Quote> = self
@@ -185,9 +189,11 @@ impl ReferencePriceSource for CoinGecko {
             .await
             .context("decode prices")?;
 
+        // Ids without a quote are dropped rather than defaulted; `compare`
+        // already reports a missing id as Skipped.
         Ok(quotes
             .into_iter()
-            .map(|(id, quote)| (id, quote.usd))
+            .filter_map(|(id, quote)| Some((id, quote.usd?)))
             .collect())
     }
 

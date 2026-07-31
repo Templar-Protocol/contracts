@@ -222,6 +222,25 @@ fn unknown_fields_are_rejected() {
     );
 }
 
+/// A newer document reports its *version*, not the first field this build does
+/// not know. `deny_unknown_fields` otherwise fired first and told the author
+/// about `a_field_from_the_future` when the real answer is the schema.
+#[test]
+fn a_future_schema_reports_the_version_not_an_unknown_field() {
+    let error = extends::load(&fixture("invalid/future-schema.toml"))
+        .expect_err("a schema this build cannot speak must be refused");
+
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema 99"),
+        "the error must name the declared version: {rendered}"
+    );
+    assert!(
+        !rendered.contains("a_field_from_the_future"),
+        "the unknown field is a symptom, not the finding: {rendered}"
+    );
+}
+
 #[test]
 fn extends_cycles_are_rejected() {
     let error =

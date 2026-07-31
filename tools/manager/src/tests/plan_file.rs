@@ -96,7 +96,7 @@ fn plan_file(steps: Vec<(String, PlannedTransaction)>) -> PlanFile {
             creates_its_own_oracle: true,
             market_id: spec.market_id().expect("market id"),
             oracle_id: spec.oracle_id().expect("oracle id"),
-            governance_id: spec.governance_id().expect("governance id"),
+            governance_id: Some(spec.governance_id().expect("governance id")),
             collateral_decimals: spec.collateral.decimals,
             borrow_decimals: spec.borrow.decimals,
         },
@@ -267,7 +267,7 @@ fn a_failure_tolerating_step_is_refused() {
             creates_its_own_oracle: true,
             market_id: "m.near".parse().expect("valid account"),
             oracle_id: "o.near".parse().expect("valid account"),
-            governance_id: "g.near".parse().expect("valid account"),
+            governance_id: Some("g.near".parse().expect("valid account")),
             collateral_decimals: Some(6),
             borrow_decimals: Some(7),
         },
@@ -307,7 +307,7 @@ fn a_non_function_call_action_is_refused() {
             creates_its_own_oracle: true,
             market_id: "m.near".parse().expect("valid account"),
             oracle_id: "o.near".parse().expect("valid account"),
-            governance_id: "g.near".parse().expect("valid account"),
+            governance_id: Some("g.near".parse().expect("valid account")),
             collateral_decimals: Some(6),
             borrow_decimals: Some(7),
         },
@@ -635,7 +635,17 @@ mod journal {
         file.steps = vec![deploy("gov"), deploy("oracle"), deploy("market")];
 
         let all = crate::dispatch::plan::planned_targets(&file).expect("targets");
-        assert_eq!(all.len(), 3, "three deploys, three accounts");
+        let names = |targets: &[near_api::AccountId]| -> Vec<String> {
+            targets.iter().map(ToString::to_string).collect()
+        };
+        assert_eq!(
+            names(&all),
+            [
+                "gov.templar-alpha.near",
+                "oracle.templar-alpha.near",
+                "market.templar-alpha.near"
+            ]
+        );
 
         // Step 0 completed, so its target already exists and must not be asked
         // to be free.
@@ -646,10 +656,14 @@ mod journal {
         let remaining_targets =
             crate::dispatch::plan::planned_targets(&outstanding).expect("targets");
 
-        assert!(
-            remaining_targets.len() < all.len(),
-            "a completed deploy's target must drop out of the freeness check: \
-             {all:?} vs {remaining_targets:?}"
+        // The exact set, not a smaller count: `len() < 3` also passes for zero,
+        // and an under-broad freeness check is the dangerous direction — it lets
+        // `apply` reach a registry deploy against an account that already
+        // exists, after the earlier deposits are spent.
+        assert_eq!(
+            names(&remaining_targets),
+            ["oracle.templar-alpha.near", "market.templar-alpha.near"],
+            "exactly the completed step's target drops out"
         );
     }
 

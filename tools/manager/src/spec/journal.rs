@@ -95,6 +95,14 @@ impl Journal {
     /// whole-file format: a truncating write re-risks the entire history on
     /// every step, and a crash inside that window — precisely the scenario this
     /// module exists for — would leave unparseable JSON and no record at all.
+    ///
+    /// The temporary file is fsynced before the rename and the directory after
+    /// it. A rename alone survives a *process* crash, because the page cache
+    /// outlives the process; it does not survive the machine loss this module
+    /// names as its reason to exist, where the journal can reappear truncated
+    /// or the directory entry be lost entirely. The consequence is the one this
+    /// module opens with: a submitted step reads as one that never ran, and
+    /// re-sending a registry deploy strands its deposit.
     pub fn record(&mut self, path: &Path, entry: Entry) -> anyhow::Result<()> {
         match self
             .entries
@@ -107,10 +115,32 @@ impl Journal {
 
         let rendered = serde_json::to_string_pretty(self).context("render the journal")?;
         let temporary = path.with_extension("tmp");
-        std::fs::write(&temporary, format!("{rendered}\n"))
-            .with_context(|| format!("write {}", temporary.display()))?;
+
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::File::create(&temporary)
+                .with_context(|| format!("create {}", temporary.display()))?;
+            file.write_all(format!("{rendered}\n").as_bytes())
+                .with_context(|| format!("write {}", temporary.display()))?;
+            file.sync_all()
+                .with_context(|| format!("flush {}", temporary.display()))?;
+        }
+
         std::fs::rename(&temporary, path)
-            .with_context(|| format!("replace the journal at {}", path.display()))
+            .with_context(|| format!("replace the journal at {}", path.display()))?;
+
+        // Durability of the rename itself. Best-effort: a directory that cannot
+        // be opened or synced (some filesystems refuse it) must not fail a step
+        // whose record is already written and renamed into place.
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            if let Ok(dir) = std::fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+        Ok(())
     }
 
     /// Which steps of `file` still have to run.

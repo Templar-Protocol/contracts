@@ -4,7 +4,7 @@ A market is described by one spec file and deployed in two commands. There is
 no shell script: the spec is the source of truth, and everything that used to
 live in `env.sh`, `market-args.json` and `proxy-*.json` is derived from it.
 
-```
+```sh
 tmplrmgr market plan  deployments/alpha/<market>.toml --out plan.json \
     --signer-id <you> --public-key ed25519:…
 $EDITOR plan.json          # optional
@@ -51,7 +51,7 @@ storage registration per NEP-141 asset, rather than one.
 
 ## Checking before and after
 
-```
+```sh
 tmplrmgr spec check   deployments/alpha/<market>.toml       # before deploying
 tmplrmgr market verify <account-id> --governance-admin <account-id> \
     --against deployments/alpha/<market>.toml               # after

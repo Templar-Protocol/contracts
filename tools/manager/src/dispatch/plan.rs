@@ -90,8 +90,19 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
             // The oracle the market will read, which for a direct market is
             // not the proxy id this spec would otherwise derive. Naming the
             // wrong one misstates the most safety-critical fact in the file.
-            oracle_id: spec.oracle.account_id(spec.oracle_id()?),
-            governance_id: spec.governance_id()?,
+            //
+            // Derived only when a proxy is actually created: the prefixed ids
+            // are longer than the market's own, so eagerly deriving them
+            // rejected direct plans whose market name was perfectly valid.
+            oracle_id: match &spec.oracle {
+                crate::spec::OracleMode::Direct { account_id } => account_id.clone(),
+                crate::spec::OracleMode::Proxy => spec.oracle_id()?,
+            },
+            governance_id: if spec.oracle.is_direct() {
+                None
+            } else {
+                Some(spec.governance_id()?)
+            },
             collateral_decimals: spec.collateral.decimals,
             borrow_decimals: spec.borrow.decimals,
         },
@@ -779,7 +790,7 @@ async fn occupied_targets(
 
 /// How many of the market's two assets are top-level NEP-141, and therefore
 /// need the market registered with them.
-fn nep141_assets(file: &PlanFile) -> usize {
+fn nep141_assets(file: &PlanFile) -> BTreeSet<String> {
     file.steps
         .iter()
         .flat_map(|step| &step.function_calls)
@@ -789,16 +800,17 @@ fn nep141_assets(file: &PlanFile) -> usize {
             Some(
                 ["collateral_asset", "borrow_asset"]
                     .into_iter()
-                    .filter(|key| {
+                    .filter_map(|key| {
                         configuration
-                            .get(key)
-                            .and_then(|asset| asset.get("Nep141"))
-                            .is_some()
+                            .get(key)?
+                            .get("Nep141")?
+                            .as_str()
+                            .map(ToOwned::to_owned)
                     })
-                    .count(),
+                    .collect(),
             )
         })
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 /// A deployment must still be a deployment.
@@ -846,23 +858,33 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     // steps deleted and its market renamed pass, since the renamed market's
     // derived proxy is not the one its configuration references.
     // A market must be registered with each NEP-141 it holds, or it cannot
-    // receive that asset. The gateway plans one `storage_deposit` per such
-    // asset; deleting one passed every check, because completeness counted only
-    // deploys and proposals and coherence validates a registration only when it
-    // is still there. Derived from the encoded configuration, so it is the
-    // market's own assets that decide how many are required.
+    // receive that asset. Matched against the token contracts the encoded
+    // configuration names, not counted: a two-asset market carrying two
+    // registrations against the *same* token satisfied a count while leaving
+    // the other asset unreceivable.
     let expected = nep141_assets(file);
-    let registrations = file
+    let registered: BTreeSet<String> = file
         .steps
         .iter()
-        .flat_map(|step| &step.function_calls)
-        .filter(|call| matches!(storage_registration_target(call), Ok(Some(_))))
-        .count();
+        .flat_map(|step| {
+            step.function_calls
+                .iter()
+                .filter_map(|call| match storage_registration_target(call) {
+                    // The receiver is the token; the argument is the account
+                    // being registered with it, which coherence checks
+                    // separately.
+                    Ok(Some(_)) => Some(step.receiver_id.to_string()),
+                    _ => None,
+                })
+        })
+        .collect();
+
+    let missing: Vec<_> = expected.difference(&registered).cloned().collect();
     anyhow::ensure!(
-        registrations >= expected,
-        "this market holds {expected} NEP-141 asset(s) but the plan carries \
-         {registrations} storage registration(s). A market that is not \
-         registered with a token cannot receive it."
+        missing.is_empty(),
+        "this market holds NEP-141 asset(s) the plan never registers it with: \
+         {}. A market that is not registered with a token cannot receive it.",
+        missing.join(", "),
     );
 
     if !file.derived.creates_its_own_oracle {
@@ -889,11 +911,13 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
              skipped when the step they validate is absent."
         );
     }
+    // Which feeds those proposals configure is checked per feed by
+    // `ensure_proposals_are_runnable`; a bare count here would pass a plan
+    // carrying two proposals for one feed and none for the other.
     anyhow::ensure!(
-        proposals >= 2,
-        "a deployment plan configures both price feeds, which needs at least a \
-         create and an execute per feed; this one has {proposals} proposal \
-         step(s). A market whose feeds are never set prices nothing."
+        proposals > 0,
+        "a deployment plan configures both price feeds; this one carries no \
+         proposal steps at all. A market whose feeds are never set prices nothing."
     );
     Ok(())
 }
@@ -908,6 +932,10 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
 /// step still reports success.
 fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
     let mut created: BTreeSet<u64> = BTreeSet::new();
+    // Which feed each created proposal configures, and which were executed —
+    // so completeness can be asked per feed rather than as a total.
+    let mut configures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    let mut executed: BTreeSet<u64> = BTreeSet::new();
 
     for step in &file.steps {
         for call in &step.function_calls {
@@ -943,6 +971,14 @@ fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
                      so the second would be rejected.",
                     step.label,
                 );
+                if let Some(feed) = args
+                    .get("operation")
+                    .and_then(|operation| operation.get("SetProxy"))
+                    .and_then(|set_proxy| set_proxy.get("id"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    configures.insert(id, feed.to_owned());
+                }
             } else {
                 anyhow::ensure!(
                     created.contains(&id),
@@ -951,8 +987,39 @@ fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
                      exist yet, leaving the feed unconfigured.",
                     step.label,
                 );
+                executed.insert(id);
             }
         }
+    }
+
+    if !file.derived.creates_its_own_oracle {
+        return Ok(());
+    }
+
+    // Per feed, not in total. Counting proposal steps let a plan with its two
+    // borrow steps deleted pass on the collateral pair alone, and every other
+    // guard here is satisfied by a coherent subset — so the market deployed
+    // with a borrow feed that was never configured.
+    for (feed, side) in [
+        (hex::encode(COLLATERAL_PRICE_ID.0), "collateral"),
+        (hex::encode(BORROW_PRICE_ID.0), "borrow"),
+    ] {
+        let proposal = configures
+            .iter()
+            .find(|(_, configured)| **configured == feed)
+            .map(|(id, _)| *id);
+        let Some(proposal) = proposal else {
+            anyhow::bail!(
+                "this plan never proposes the {side} feed ({feed}). A market whose \
+                 {side} feed is never set prices nothing, and `admin_set_proxy` is \
+                 dispatched detached, so nothing later would report it."
+            );
+        };
+        anyhow::ensure!(
+            executed.contains(&proposal),
+            "this plan creates proposal {proposal} for the {side} feed but never \
+             executes it, so the feed would stay unconfigured."
+        );
     }
     Ok(())
 }
@@ -1508,6 +1575,7 @@ mod tests {
     use crate::spec::check::{Check, Status};
     use crate::spec::plan::PlanArgs;
     use crate::spec::plan::{Derived, PlanFile};
+    use crate::spec::{BORROW_PRICE_ID, COLLATERAL_PRICE_ID};
 
     fn checks() -> Vec<Check> {
         vec![
@@ -1573,7 +1641,7 @@ mod tests {
                 creates_its_own_oracle: true,
                 market_id: "m.near".parse().expect("valid account"),
                 oracle_id: "o.near".parse().expect("valid account"),
-                governance_id: "g.near".parse().expect("valid account"),
+                governance_id: Some("g.near".parse().expect("valid account")),
                 collateral_decimals: Some(6),
                 borrow_decimals: Some(7),
             },
@@ -2049,6 +2117,158 @@ mod tests {
         let error = super::ensure_plan_is_complete(&file).expect_err("incomplete");
         assert!(
             format!("{error:#}").contains("proxy-oracle deploy"),
+            "{error:#}"
+        );
+    }
+
+    /// Registrations are matched to the tokens the configuration names, not
+    /// counted. Two registrations against the same token satisfied a count
+    /// while the other asset stayed unreceivable.
+    #[test]
+    fn a_registration_against_the_wrong_token_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let register = |token: &str| PlanStep {
+            label: format!("register with {token}"),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: token.parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "storage_deposit".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "account_id": "m.templar-alpha.near",
+                    "registration_only": true,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_millinear(10),
+            }],
+        };
+
+        let init = serde_json::json!({
+            "configuration": {
+                "collateral_asset": { "Nep141": "collateral.near" },
+                "borrow_asset": { "Nep141": "borrow.near" },
+            }
+        });
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy market".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "m",
+                    "version_key": "v1",
+                    "init_args": base64::engine::general_purpose::STANDARD
+                        .encode(serde_json::to_vec(&init).expect("encode")),
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        });
+        // Two registrations, both against the collateral token.
+        file.steps.push(register("collateral.near"));
+        file.steps.push(register("collateral.near"));
+
+        let error = super::ensure_plan_is_complete(&file).expect_err("borrow is unregistered");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("borrow.near"),
+            "the refusal must name the token that was never registered: {rendered}"
+        );
+    }
+
+    /// Both feeds must be proposed *and* executed, per feed.
+    ///
+    /// Deleting the two borrow-feed steps leaves the collateral create/execute
+    /// pair, which satisfied the old `proposals >= 2` total. Every other guard
+    /// is satisfied by that coherent subset, so the market deployed with a
+    /// borrow feed nothing ever configured — and `admin_set_proxy` is
+    /// dispatched detached, so nothing later reports it either.
+    #[test]
+    fn a_plan_missing_one_feeds_proposals_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let proposal = |label: &str, args: serde_json::Value| PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "create_proposal".to_owned(),
+                args: PlanArgs::Json(args),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_yoctonear(1),
+            }],
+        };
+
+        let collateral = hex::encode(COLLATERAL_PRICE_ID.0);
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.derived.creates_its_own_oracle = true;
+        // Only the collateral pair — the borrow pair was deleted.
+        file.steps.push(proposal(
+            "propose collateral",
+            serde_json::json!({
+                "id": 1,
+                "requested_ttl": "0",
+                "operation": { "SetProxy": { "id": collateral } },
+            }),
+        ));
+        file.steps.push(proposal(
+            "execute collateral",
+            serde_json::json!({ "id": 1 }),
+        ));
+
+        let error = super::ensure_proposals_are_runnable(&file).expect_err("one feed is not both");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("borrow") && rendered.contains(&hex::encode(BORROW_PRICE_ID.0)),
+            "the refusal must name the feed that was never proposed: {rendered}"
+        );
+    }
+
+    /// A created proposal that is never executed leaves its feed unconfigured.
+    #[test]
+    fn a_feed_proposed_but_never_executed_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let proposal = |label: &str, args: serde_json::Value| PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "create_proposal".to_owned(),
+                args: PlanArgs::Json(args),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_yoctonear(1),
+            }],
+        };
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.derived.creates_its_own_oracle = true;
+        for (id, feed) in [
+            (1u64, hex::encode(COLLATERAL_PRICE_ID.0)),
+            (2, hex::encode(BORROW_PRICE_ID.0)),
+        ] {
+            file.steps.push(proposal(
+                "propose",
+                serde_json::json!({
+                    "id": id,
+                    "requested_ttl": "0",
+                    "operation": { "SetProxy": { "id": feed } },
+                }),
+            ));
+        }
+        // Only the collateral proposal is executed.
+        file.steps.push(proposal(
+            "execute collateral",
+            serde_json::json!({ "id": 1 }),
+        ));
+
+        let error = super::ensure_proposals_are_runnable(&file).expect_err("borrow never executes");
+        assert!(
+            format!("{error:#}").contains("never \n             executes it")
+                || format!("{error:#}").contains("never executes it"),
             "{error:#}"
         );
     }

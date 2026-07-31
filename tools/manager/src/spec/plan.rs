@@ -25,7 +25,7 @@ use super::check::Check;
 /// Bumped when this artifact's shape changes. `apply` hard-refuses a mismatch:
 /// every struct here is `deny_unknown_fields`, and this file authorizes spending
 /// real NEAR.
-pub const PLAN_SCHEMA_VERSION: u32 = 2;
+pub const PLAN_SCHEMA_VERSION: u32 = 3;
 
 /// A function call's arguments, in whichever form a human can actually edit.
 ///
@@ -199,8 +199,15 @@ pub struct Derived {
     /// refused outright rather than misread.
     pub creates_its_own_oracle: bool,
     pub market_id: AccountId,
+    /// The oracle the market will read — the proxy this plan creates, or the
+    /// existing account a direct market points at.
     pub oracle_id: AccountId,
-    pub governance_id: AccountId,
+    /// `None` for a direct market, which creates no governance contract.
+    /// Absent rather than derived: `proxy-gov-<name>.<registry>` can exceed
+    /// NEAR's account-id limit for a name that is itself perfectly valid, and
+    /// deriving an id nothing will create failed such a plan for no reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance_id: Option<AccountId>,
     pub collateral_decimals: Option<u8>,
     pub borrow_decimals: Option<u8>,
 }
@@ -219,10 +226,15 @@ pub struct PlanFile {
     /// actionable.
     pub step_digests: Vec<String>,
     /// Digest over everything this file states except the steps themselves —
-    /// provenance, derived ids, check results. Without it, editing a check from
-    /// `failed` to `passed`, repointing `derived.market_id`, or rewriting the
-    /// `spec_digest` that `render` presents as the plan's source all report the
-    /// plan as unmodified.
+    /// provenance, derived ids, check results, and the step digests. Without
+    /// it, editing a check from `failed` to `passed`, repointing
+    /// `derived.market_id`, or rewriting the `spec_digest` that `render`
+    /// presents as the plan's source all report the plan as unmodified.
+    ///
+    /// It covers `step_digests` because `drift` detects a removed step only by
+    /// comparing lengths: deleting a step *and* its digest entry otherwise
+    /// reported "unmodified since generation" on the line `review` prints above
+    /// the confirmation prompt.
     pub summary_digest: String,
     pub derived: Derived,
     pub checks: Vec<Check>,
@@ -320,6 +332,7 @@ impl PlanFile {
             &spec_digest,
             &derived,
             &checks,
+            &step_digests,
         )?;
 
         Ok(Self {
@@ -362,6 +375,7 @@ impl PlanFile {
                 &self.spec_digest,
                 &self.derived,
                 &self.checks,
+                &self.step_digests,
             )? != self.summary_digest,
         })
     }
@@ -385,8 +399,17 @@ fn summary_digest(
     spec_digest: &str,
     derived: &Derived,
     checks: &[Check],
+    step_digests: &[String],
 ) -> anyhow::Result<String> {
-    digest(&(schema, tool_version, network, spec_digest, derived, checks))
+    digest(&(
+        schema,
+        tool_version,
+        network,
+        spec_digest,
+        derived,
+        checks,
+        step_digests,
+    ))
 }
 
 /// `sha256:…` over a value's *canonical* JSON encoding.

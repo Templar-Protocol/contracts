@@ -297,11 +297,12 @@ mod tests {
             10_000,
         );
 
-        // 10_000 bytes × 1e19 yocto = 0.1 NEAR staked.
+        // 10_000 bytes × 1e19 yocto = 0.1 NEAR staked, and nothing is locked
+        // to offset it.
         assert_eq!(
             available(&account),
             NearToken::from_millinear(13_900),
-            "storage staking and locked balance are both excluded"
+            "the storage stake is not spendable"
         );
     }
 
