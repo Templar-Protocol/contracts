@@ -558,6 +558,15 @@ async fn occupied_targets(
 }
 
 /// Refuse a plan whose targets are taken.
+///
+/// Best-effort, and deliberately so. `account::Get` cannot see a target another
+/// deploy has *reserved* but not yet created: `deploy_market` writes
+/// `RegistryEntry::Reserved` before scheduling `create_account`, and no registry
+/// view exposes it — `get_deployment` and `list_deployments` both filter to
+/// `Deployed`. Seeing it would need an additive view, the same contract change
+/// the soft-deleted-version gap needs (see `preflight::versions`). The registry
+/// itself is the authoritative guard and rejects the second deploy, so the
+/// unseen case costs a failed step, not a corrupted deployment.
 async fn ensure_targets_free(ctx: &CliContext, targets: &[AccountId]) -> anyhow::Result<()> {
     let occupied = occupied_targets(ctx, targets).await?;
     anyhow::ensure!(
@@ -651,8 +660,7 @@ fn render(file: &PlanFile) {
 
 /// One field of a registry deploy's decoded `init_args`, as a string.
 fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<String> {
-    let decoded: serde_json::Value = serde_json::from_str(&decoded_init_args(call)?).ok()?;
-    Some(decoded.get(field)?.as_str()?.to_owned())
+    Some(decoded_init_args(call)?.get(field)?.as_str()?.to_owned())
 }
 
 /// A registry deploy's `init_args`, decoded.
@@ -664,18 +672,19 @@ fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<S
 /// it is decoded for display. It stays base64 in the file: expanding it there
 /// would have to survive a byte-exact round trip, which is a schema change
 /// rather than a rendering one.
-fn decoded_init_args(call: &crate::spec::plan::PlanFunctionCall) -> Option<String> {
+/// Works from the call's bytes, like [`planned_targets`], so re-encoding the
+/// *outer* args as base64 cannot hide the payload from either the display or
+/// the `admin_id` guard built on it.
+fn decoded_init_args(call: &crate::spec::plan::PlanFunctionCall) -> Option<serde_json::Value> {
     use base64::Engine as _;
 
-    let crate::spec::plan::PlanArgs::Json(args) = &call.args else {
-        return None;
-    };
+    let bytes = call.args.to_bytes().ok()?;
+    let args: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let encoded = args.get("init_args")?.as_str()?;
-    let bytes = base64::engine::general_purpose::STANDARD
+    let init = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .ok()?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    serde_json::to_string(&value).ok()
+    serde_json::from_slice(&init).ok()
 }
 
 /// Ask before spending real NEAR. Anything but `y` aborts.
@@ -921,6 +930,40 @@ mod tests {
         assert!(
             format!("{error:#}").contains("cannot be checked for a collision"),
             "{error:#}"
+        );
+    }
+
+    /// The `admin_id` guard reads the same bytes the executor sends, so
+    /// re-encoding the outer args as base64 cannot hide a stale admin — the
+    /// exact bypass that `planned_targets` had.
+    #[test]
+    fn the_admin_guard_sees_through_base64_args() {
+        use crate::spec::plan::PlanFunctionCall;
+        use base64::Engine as _;
+
+        let init = serde_json::to_vec(&serde_json::json!({
+            "proxy_oracle_id": "o.near",
+            "admin_id": "someone-else.near",
+        }))
+        .expect("encode init args");
+        let outer = serde_json::to_vec(&serde_json::json!({
+            "name": "gov",
+            "version_key": "v1",
+            "init_args": base64::engine::general_purpose::STANDARD.encode(&init),
+        }))
+        .expect("encode outer args");
+
+        let call = PlanFunctionCall {
+            method_name: "deploy_market".to_owned(),
+            args: PlanArgs::Base64(templar_gateway_types::Base64Bytes(outer)),
+            gas: 300_000_000_000_000,
+            deposit: near_api::types::NearToken::from_near(3),
+        };
+
+        assert_eq!(
+            super::init_arg(&call, "admin_id").as_deref(),
+            Some("someone-else.near"),
+            "the seated admin must be visible regardless of arg representation"
         );
     }
 
