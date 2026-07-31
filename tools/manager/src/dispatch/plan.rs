@@ -802,20 +802,6 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
-/// The oracle the market step is configured to read, if it can be read off the
-/// encoded step.
-fn market_oracle(file: &PlanFile) -> Option<String> {
-    file.steps
-        .iter()
-        .flat_map(|step| &step.function_calls)
-        .filter_map(decoded_init_args)
-        .find_map(|init| {
-            init.pointer("/configuration/price_oracle_configuration/account_id")?
-                .as_str()
-                .map(ToOwned::to_owned)
-        })
-}
-
 /// A deployment must still be a deployment.
 ///
 /// Every coherence check below is conditional on finding the component it
