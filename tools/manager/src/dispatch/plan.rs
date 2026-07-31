@@ -815,12 +815,20 @@ fn market_oracle(file: &PlanFile) -> Option<String> {
         })
 }
 
-/// Whether the market reads an oracle named the way this tool names the ones it
-/// creates. A market pointing at `pyth-oracle.near` does not; one pointing at
-/// `proxy-oracle-…` does, and a plan carrying no oracle deploy therefore lost
-/// the steps that would have made it.
-fn reads_a_proxy_this_tool_creates(file: &PlanFile) -> bool {
-    market_oracle(file).is_some_and(|oracle| oracle.starts_with("proxy-oracle-"))
+/// Whether the market reads the proxy *this* plan would have created.
+///
+/// Not "is it named `proxy-oracle-…`": two migrated markets legitimately read a
+/// proxy someone else deployed (`proxy-oracle-cetes-usdc`,
+/// `proxy-oracle-ustry-usdc`), and a name prefix would refuse them. The only
+/// account whose absence means steps were deleted is the one derived from
+/// *this* plan's own market id.
+fn reads_the_proxy_this_plan_would_create(file: &PlanFile) -> bool {
+    let market = file.derived.market_id.as_str();
+    let Some((label, registry)) = market.split_once('.') else {
+        return false;
+    };
+    market_oracle(file)
+        .is_some_and(|oracle| oracle == format!("{}.{registry}", crate::spec::oracle_name(label)))
 }
 
 /// A deployment must still be a deployment.
@@ -871,11 +879,11 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
              {market}."
         );
         anyhow::ensure!(
-            !reads_a_proxy_this_tool_creates(file),
-            "this plan deploys only a market, but that market is configured to \
-             read `{}` — a proxy-oracle name this tool creates, and nothing here \
-             creates it. The proxy steps have been removed; the market would \
-             price against an account that will never exist.",
+            !reads_the_proxy_this_plan_would_create(file),
+            "this plan deploys only a market, but that market reads `{}` — the \
+             proxy this very plan would create, and nothing here creates it. \
+             The proxy steps have been removed; the market would price against \
+             an account that will never exist.",
             market_oracle(file).unwrap_or_default()
         );
         return Ok(());

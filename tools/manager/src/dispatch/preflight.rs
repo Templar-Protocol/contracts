@@ -334,6 +334,14 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .collect()
 }
 
+/// Whether the contract simply has no such method, as opposed to rejecting the
+/// call. Matched on the runtime's own wording, since `GatewayError` carries
+/// contract failures as text.
+fn is_missing_method(error: &templar_gateway_core::GatewayError) -> bool {
+    let rendered = error.to_string();
+    rendered.contains("MethodNotFound") || rendered.contains("doesn't exist")
+}
+
 /// A direct market's oracle gets none of the validation a proxy's does.
 ///
 /// A proxy spec is checked three ways — the sources exist, they aggregate, the
@@ -393,6 +401,19 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                      wrong one — and it cannot be corrected after init."
                 )),
                 Ok(_) => Status::passed(format!("{hex} on {account_id}")),
+                // The four oracles these specs read do not share one method
+                // surface: `pyth-oracle.near` answers `get_price`, while the
+                // LST and proxy oracles expose their own. A missing method is
+                // "this build cannot probe that oracle kind", which is not
+                // evidence the identifier is wrong — and reporting it as such
+                // would fail every spec reading those three.
+                Err(error) if is_missing_method(&error) => Status::Skipped {
+                    reason: format!(
+                        "`{account_id}` does not answer `get_price`, so this build \
+                         cannot confirm it serves {hex}. Probing the LST and \
+                         proxy oracle surfaces is not implemented."
+                    ),
+                },
                 Err(error) => Status::failed(format!(
                     "`{account_id}` did not answer for {hex}: {error}. A mistyped \
                      `price_id` cannot be corrected after init."
