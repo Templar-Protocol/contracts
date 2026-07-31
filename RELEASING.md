@@ -86,8 +86,17 @@ templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts"
 **To unblock**, once RedStone publishes the SDK (or we depend on a published
 fork): set `redstone`'s workspace dependency to a registry version, then add a
 `[[package]]` block per Tier A crate with `git_only = false` and
-`publish = true`, and enable `semver_check` at the workspace level. No code changes are required.
-Verify with `cargo publish --dry-run -p <crate>` bottom-up through the closure.
+`publish = true`, and enable `semver_check` at the workspace level. No code
+changes are required.
+
+**Flipping those flags is not enough on its own.** Every Tier A crate already
+has a baseline tag at its current version, and release-plz reads an existing tag
+as "already released" without consulting the registry — so today's versions
+would be skipped and the first upload would be some later bump. Bootstrap
+either by publishing the current versions by hand bottom-up
+(`cargo publish -p <crate>`) before flipping, or by bumping every Tier A crate
+past its tag first. `--dry-run` validates but uploads nothing, so it cannot
+seed the registry.
 
 ## Contract WASM artifacts
 

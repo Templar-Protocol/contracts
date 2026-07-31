@@ -100,6 +100,12 @@ pub enum FetchError {
     #[error("no cache directory: set TEMPLAR_ARTIFACT_CACHE, XDG_CACHE_HOME, or HOME")]
     NoCacheDir,
 
+    #[error(
+        "{path} holds no {MARKER} marker, so it was not created by this tool. \
+         Refusing to delete anything in it — check TEMPLAR_ARTIFACT_CACHE."
+    )]
+    NotACache { path: PathBuf },
+
     #[error("a prefetch task failed to complete: {0}")]
     Join(String),
 
@@ -251,11 +257,30 @@ pub struct CacheUsage {
     pub bytes: u64,
 }
 
+/// Written at the cache root the first time anything is cached there, so
+/// [`clean`] can tell a directory this tool created from one it was merely
+/// pointed at. `near/` is a plausible name for someone else's directory;
+/// this is not.
+const MARKER: &str = ".templar-artifact-cache";
+
+/// Create the cache root and identify it as ours.
+fn mark_root(root: &Path) -> Result<(), FetchError> {
+    let marker = root.join(MARKER);
+    if marker.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root)
+        .and_then(|()| std::fs::write(&marker, "templar-contract-artifacts cache\n"))
+        .map_err(|source| FetchError::Cache {
+            path: marker,
+            source,
+        })
+}
+
 /// Empty the artifact cache, reporting what was removed.
 ///
-/// Only the `near/` subtree is removed recursively — the root survives unless
-/// that left it empty — so a `TEMPLAR_ARTIFACT_CACHE` pointed at a shared
-/// directory cannot take anything else with it.
+/// Refuses a root without the [`MARKER`] file, so a misaimed
+/// `TEMPLAR_ARTIFACT_CACHE` cannot delete an unrelated `near/` directory.
 ///
 /// Safe to run while another worktree is fetching: the subtree is renamed aside
 /// before it is walked, so a concurrent fetch rebuilds a fresh `near/`.
@@ -266,6 +291,14 @@ pub fn clean() -> Result<CacheUsage, FetchError> {
 /// [`clean`] against an explicit root, so tests need not mutate the environment.
 fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
     let near = root.join("near");
+
+    // An unmarked directory is not ours to empty, however this tool was pointed
+    // at it. A root that does not exist at all is simply an empty cache.
+    if root.exists() && !root.join(MARKER).exists() {
+        return Err(FetchError::NotACache {
+            path: root.to_owned(),
+        });
+    }
 
     // `remove_dir_all` is a readdir/unlink/rmdir walk, so a concurrent fetch can
     // leave it with `ENOTEMPTY` or lose its own directory to `ENOENT`. Renaming
@@ -284,6 +317,8 @@ fn clean_at(root: &Path) -> Result<CacheUsage, FetchError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => CacheUsage::default(),
         Err(source) => return Err(FetchError::Cache { path: near, source }),
     };
+
+    let _ = std::fs::remove_file(root.join(MARKER));
 
     // Non-recursive, and failure is fine: it only succeeds when the root holds
     // nothing but the subtree we just removed.
@@ -418,6 +453,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
         source,
     };
 
+    mark_root(&cache_root()?)?;
     let dir = path.parent().unwrap_or(path);
     std::fs::create_dir_all(dir).map_err(cache)?;
 
@@ -449,6 +485,7 @@ mod tests {
     }
 
     fn seed(root: &Path, target: &str, version: &str, bytes: &[u8]) {
+        mark_root(root).expect("scratch cache root");
         let dir = root.join("near").join(target).join(version);
         std::fs::create_dir_all(&dir).expect("scratch cache directory");
         std::fs::write(dir.join(format!("{target}.wasm")), bytes).expect("scratch cache entry");
@@ -522,6 +559,23 @@ mod tests {
             Some(PathBuf::from("/tmp/cache"))
         );
         assert_eq!(non_empty_path(None), None);
+    }
+
+    #[test]
+    fn cleaning_refuses_a_directory_this_tool_did_not_create() {
+        // `TEMPLAR_ARTIFACT_CACHE=.` used to delete an unrelated `./near`.
+        let root = scratch_root("not-a-cache");
+        let victim = root.join("near").join("someone-elses");
+        std::fs::create_dir_all(&victim).expect("scratch directory");
+        std::fs::write(victim.join("important.txt"), b"not ours").expect("scratch file");
+
+        let error = clean_at(&root).expect_err("an unmarked directory is not ours to empty");
+        assert!(matches!(error, FetchError::NotACache { .. }), "{error}");
+        assert!(
+            victim.join("important.txt").exists(),
+            "refusing to clean must leave the directory untouched"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -16,10 +16,23 @@ fn main() {
 
     let dir = std::fs::read_dir(SOURCE).unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
     for entry in dir {
-        let path = entry.unwrap_or_else(|e| panic!("{SOURCE}: {e}")).path();
+        let entry = entry.unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
+        let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "tsv") {
             continue;
         }
+        // `DirEntry::file_type` does not follow links. A symlink's target lives
+        // outside `releases/`, where the append-only CI check does not look, so
+        // its digest could be changed later without touching a guarded path.
+        let kind = entry
+            .file_type()
+            .unwrap_or_else(|e| panic!("{SOURCE}: {e}"));
+        assert!(
+            kind.is_file(),
+            "{} must be a regular file: only a file's own contents are covered \
+             by the append-only check.",
+            path.display(),
+        );
         let release = parse(&path);
         by_artifact
             .entry(pascal_case(&release.artifact))

@@ -142,10 +142,10 @@ jobs:
             # A Cargo.toml version edit can drop a crate below a release that
             # is already recorded, without touching contract `src/**`.
             artifact_manifests:
-              - 'Cargo.toml'
-              - 'contract/**/Cargo.toml'
+              # Every manifest: the release-policy checks read the whole
+              # metadata graph, so renaming any crate can stale release-plz.toml.
+              - '**/Cargo.toml'
               - 'contract/artifacts/releases/*.tsv'
-              - 'mock/**/Cargo.toml'
               # scaffolding_crates_are_excluded_from_releases is the only check
               # on this file, and it is #[ignore]d out of the fast gate.
               - 'release-plz.toml'

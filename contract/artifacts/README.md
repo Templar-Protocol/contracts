@@ -92,9 +92,10 @@ cache. `TEMPLAR_ARTIFACT_CACHE` relocates it — point it inside a checkout if y
 would rather each one kept its own.
 
 Cleaning is never destructive: entries are immutable release assets, so the only
-cost is a re-download. `artifacts-clean` removes the `near/` subtree it owns and
-the root only if that leaves it empty, so a misaimed `TEMPLAR_ARTIFACT_CACHE`
-cannot take unrelated files with it.
+cost is a re-download. The cache root carries a `.templar-artifact-cache` marker
+written when anything is first cached there, and `artifacts-clean` refuses a
+directory that lacks it — so a misaimed `TEMPLAR_ARTIFACT_CACHE` fails loudly
+instead of deleting someone else's `near/`.
 
 Sharing one cache across worktrees is safe because entries are verified against
 the in-repo pin on **every read**, not just on download. A branch whose catalog
