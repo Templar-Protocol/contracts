@@ -401,12 +401,18 @@ pub(crate) async fn build(
     public_key: &PublicKey,
     signer_id: &AccountId,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
+    // A direct market reads an oracle that already exists, so a deployment
+    // creates only the market: no governance to seat, no proxy to own, no
+    // proposals to configure. The guards for those steps are skipped rather
+    // than satisfied with placeholders.
+    let direct = spec.oracle.is_direct();
+
     // A plan is a fixed list of transactions; it cannot encode "wait". With a
     // non-zero TTL the two proxy proposals are not executable when they are
     // created, and the alternative — emitting the creates and dropping the
     // executes — would deploy a market pointing at an unconfigured oracle.
     anyhow::ensure!(
-        spec.governance.ttl_default == Nanoseconds::from_ns(0),
+        direct || spec.governance.ttl_default == Nanoseconds::from_ns(0),
         "`governance.ttl_default` is {}ns, so the proxy proposals would not be \
          executable when created, and a plan cannot wait. Deploy with \
          `ttl_default = \"0s\"` and raise the TTL afterwards with a `set-action-ttl` \
@@ -421,7 +427,7 @@ pub(crate) async fn build(
     // exactly the orphaned half-deployment this tool exists to prevent.
     // `deploy.sh` made this unrepresentable by passing `--admin-id $SIGNER_ID`.
     anyhow::ensure!(
-        &spec.governance.admin == signer_id,
+        direct || &spec.governance.admin == signer_id,
         "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
          which would not hold the Admin role. Every proxy proposal would revert \
          after the governance and oracle deploys had already spent their \
@@ -453,24 +459,32 @@ pub(crate) async fn build(
         .clone()
         .into_market_configuration(i32::from(collateral_decimals), i32::from(borrow_decimals))?;
 
-    let mut steps = oracle_stack(client, signer_id, spec, public_key).await?;
+    let mut steps = if direct {
+        Vec::new()
+    } else {
+        oracle_stack(client, signer_id, spec, public_key).await?
+    };
 
     // Both sides project to the same `Proxy<Source>`, so one loop covers them
     // even though `AssetSpec` is generic over the asset class.
-    for (side, price_id, proposal_id, proxy) in [
-        (
-            "collateral",
-            COLLATERAL_PRICE_ID,
-            collateral_proposal,
-            spec.collateral.clone().into_proxy(price_maximum_age),
-        ),
-        (
-            "borrow",
-            BORROW_PRICE_ID,
-            borrow_proposal,
-            spec.borrow.clone().into_proxy(price_maximum_age),
-        ),
-    ] {
+    for (side, price_id, proposal_id, proxy) in if direct {
+        Vec::new()
+    } else {
+        vec![
+            (
+                "collateral",
+                COLLATERAL_PRICE_ID,
+                collateral_proposal,
+                spec.collateral.clone().into_proxy(price_maximum_age),
+            ),
+            (
+                "borrow",
+                BORROW_PRICE_ID,
+                borrow_proposal,
+                spec.borrow.clone().into_proxy(price_maximum_age),
+            ),
+        ]
+    } {
         steps.extend(set_proxy(client, signer_id, spec, side, price_id, proposal_id, proxy).await?);
     }
 
@@ -817,6 +831,19 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
                 market += 1;
             }
         }
+    }
+
+    // A direct-oracle deployment creates only the market. Recognised by the
+    // absence of every proxy component rather than by a flag, because the steps
+    // are all this function can see — and demanding the proxy components of a
+    // plan that legitimately has none would refuse every direct market.
+    if governance == 0 && oracle == 0 && proposals == 0 {
+        anyhow::ensure!(
+            market == 1,
+            "a deployment plan needs exactly one market deploy; this one has \
+             {market}."
+        );
+        return Ok(());
     }
 
     for (what, found) in [

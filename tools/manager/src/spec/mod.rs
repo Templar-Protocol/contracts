@@ -62,7 +62,7 @@ pub fn default_reference_tolerance() -> Decimal {
 /// 3: `reference` and `reference_tolerance` on each asset, and
 ///    `market.reference_tolerance`, for the third-party cross-check. Export
 ///    always emits the market tolerance, so every exported spec carries it.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
@@ -84,11 +84,55 @@ pub struct MarketSpec {
     pub name: String,
 
     pub versions: Versions,
+
+    /// Which oracle the market reads, and therefore what a deployment creates.
+    #[serde(default)]
+    pub oracle: OracleMode,
+
     pub governance: GovernanceSpec,
 
     pub collateral: AssetSpec<CollateralAsset>,
     pub borrow: AssetSpec<BorrowAsset>,
     pub market: MarketParams,
+}
+
+/// Which oracle a market reads.
+///
+/// `Proxy` deploys a dedicated proxy oracle and a governance contract to own
+/// it, aggregating the sources each asset names. `Direct` points the market at
+/// an oracle that already exists — 16 of the 18 alpha markets do this, reading
+/// `pyth-oracle.near`, the LST oracle, or a proxy someone else deployed — so a
+/// deployment creates only the market, and each asset names the oracle's own
+/// price identifier instead of sources.
+///
+/// A mode rather than optional fields on one shape, so a spec cannot
+/// half-describe either: a direct market has no aggregator to configure, and a
+/// proxy market has no external identifier to name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum OracleMode {
+    /// Deploy a dedicated proxy oracle for this market.
+    #[default]
+    Proxy,
+    /// Read an oracle that already exists.
+    Direct { account_id: AccountId },
+}
+
+impl OracleMode {
+    /// The oracle the market points at, given the proxy this spec would
+    /// otherwise create.
+    #[must_use]
+    pub fn account_id(&self, proxy_id: AccountId) -> AccountId {
+        match self {
+            Self::Proxy => proxy_id,
+            Self::Direct { account_id } => account_id.clone(),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_direct(&self) -> bool {
+        matches!(self, Self::Direct { .. })
+    }
 }
 
 /// Registry version keys for the three contracts a deployment creates.
@@ -277,6 +321,31 @@ impl MarketSpec {
         governance_account_id(&self.name, &self.registry)
     }
 
+    /// The price identifiers the market will use.
+    ///
+    /// A proxy oracle serves the two constants this tool owns, so a proxy spec
+    /// need not state them. A pre-existing oracle serves whatever identifiers it
+    /// was given, so a direct spec must name them: there is nothing to derive
+    /// them from, and guessing would point the market at someone else's feed.
+    pub fn price_identifiers(&self) -> anyhow::Result<(PriceIdentifier, PriceIdentifier)> {
+        if !self.oracle.is_direct() {
+            return Ok((COLLATERAL_PRICE_ID, BORROW_PRICE_ID));
+        }
+        let named = |side: &str, id: Option<PriceIdentifier>| {
+            id.with_context(|| {
+                format!(
+                    "`{side}.price_id` is required when `oracle` is `direct`: a \
+                     pre-existing oracle serves its own identifiers, and this \
+                     spec has nothing to derive one from"
+                )
+            })
+        };
+        Ok((
+            named("collateral", self.collateral.price_id)?,
+            named("borrow", self.borrow.price_id)?,
+        ))
+    }
+
     /// Build the on-chain market configuration.
     ///
     /// Decimals are supplied by the caller because resolving them reads the
@@ -288,7 +357,8 @@ impl MarketSpec {
         collateral_decimals: i32,
         borrow_decimals: i32,
     ) -> anyhow::Result<MarketConfiguration> {
-        let oracle_id = self.oracle_id()?;
+        let oracle_id = self.oracle.account_id(self.oracle_id()?);
+        let (collateral_price_id, borrow_price_id) = self.price_identifiers()?;
         let price_maximum_age_s = u32::try_from(exact_units(
             self.market.price_maximum_age,
             1_000_000_000,
@@ -313,9 +383,9 @@ impl MarketSpec {
             collateral_asset: self.collateral.asset,
             price_oracle_configuration: PriceOracleConfiguration {
                 account_id: oracle_id,
-                collateral_asset_price_id: COLLATERAL_PRICE_ID,
+                collateral_asset_price_id: collateral_price_id,
                 collateral_asset_decimals: collateral_decimals,
-                borrow_asset_price_id: BORROW_PRICE_ID,
+                borrow_asset_price_id: borrow_price_id,
                 borrow_asset_decimals: borrow_decimals,
                 price_maximum_age_s,
             },

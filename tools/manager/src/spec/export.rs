@@ -46,6 +46,9 @@ impl MarketSpec {
         let oracle = &deployed.configuration.price_oracle_configuration;
 
         let spec = Self {
+            // Export reconstructs proxy deployments; `reconstruct` refuses a
+            // market whose oracle it did not create.
+            oracle: super::OracleMode::Proxy,
             schema: SCHEMA_VERSION,
             extends: Vec::new(),
             registry,
@@ -134,6 +137,9 @@ fn asset_spec<A: AssetClass>(
     );
 
     Ok(AssetSpec {
+        // A proxy serves the constants this tool owns; there is no external
+        // identifier to recover.
+        price_id: None,
         asset,
         // Never reaches the chain, so it cannot be recovered. Left unset for a
         // human to fill in; inventing a plausible ticker would be worse, since

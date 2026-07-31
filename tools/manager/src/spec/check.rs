@@ -165,6 +165,18 @@ fn assets_distinct(spec: &MarketSpec) -> Check {
 /// set whose weights are all zero has no median to take.
 fn sources(spec: &MarketSpec) -> Check {
     let id = "config.sources";
+    // A direct market aggregates nothing — whoever owns the oracle it reads
+    // configured that — so there are no sources here to be unsatisfiable.
+    if spec.oracle.is_direct() {
+        return Check::new(
+            id,
+            Status::Skipped {
+                reason: "this market reads an existing oracle, which aggregates \
+                         on its own behalf"
+                    .to_owned(),
+            },
+        );
+    }
     let mut problems = Vec::new();
     // The two sides are distinct types (`AssetSpec<CollateralAsset>` /
     // `AssetSpec<BorrowAsset>`), so they cannot share a loop.

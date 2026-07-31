@@ -42,6 +42,24 @@ pub(super) async fn checks(
     spec: &MarketSpec,
     deployed_oracle: Option<&near_account_id::AccountId>,
 ) -> (Vec<Check>, Option<Price>, Option<Price>) {
+    // Nothing to dry-run for a direct market: this reproduces a *proxy's*
+    // aggregation, and an oracle we did not configure has none of ours to
+    // reproduce. Reported as not run rather than silently passing.
+    if spec.oracle.is_direct() {
+        return (
+            vec![Check::new(
+                "oracle.aggregate",
+                Status::Skipped {
+                    reason: "this market reads an existing oracle; there is no \
+                             proxy aggregation to reproduce"
+                        .to_owned(),
+                },
+            )],
+            None,
+            None,
+        );
+    }
+
     let collateral = fetch_all(ctx, &spec.collateral).await;
     let borrow = fetch_all(ctx, &spec.borrow).await;
 

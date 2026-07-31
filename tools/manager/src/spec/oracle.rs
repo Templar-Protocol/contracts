@@ -42,6 +42,12 @@ pub struct AssetSpec<A: AssetClass> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<ReferenceAsset>,
 
+    /// The identifier this asset's price is served under, when `oracle` is
+    /// `direct`. Unused for a proxy, which serves the constants this tool owns.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "price_id")]
+    #[schemars(with = "Option<String>")]
+    pub price_id: Option<templar_common::oracle::pyth::PriceIdentifier>,
+
     /// Overrides `market.reference_tolerance` for this asset.
     ///
     /// Not a nicety: one flat band false-positives on an LST trading at a
@@ -61,6 +67,7 @@ pub struct AssetSpec<A: AssetClass> {
     /// Minimum sources that must resolve for a price to be produced.
     pub min_sources: u32,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceSpec>,
 
     /// Defaults to the market's `price_maximum_age`, so the market-side and
@@ -226,5 +233,35 @@ impl<A: AssetClass> AssetSpec<A> {
                 Some(self.max_clock_drift.unwrap_or(DEFAULT_MAX_CLOCK_DRIFT)),
             ),
         )
+    }
+}
+
+/// A Pyth price identifier as hex, matching the form the chain stores.
+mod price_id {
+    use serde::{Deserialize as _, Deserializer, Serializer};
+    use templar_common::oracle::pyth::PriceIdentifier;
+
+    #[expect(clippy::ref_option, reason = "serde's serialize_with signature")]
+    pub fn serialize<S: Serializer>(
+        value: &Option<PriceIdentifier>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(id) => serializer.serialize_str(&hex::encode(id.0)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<PriceIdentifier>, D::Error> {
+        let Some(text) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| serde::de::Error::custom("a price identifier is 32 bytes of hex"))?;
+        Ok(Some(PriceIdentifier(bytes)))
     }
 }

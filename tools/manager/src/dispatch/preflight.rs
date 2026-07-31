@@ -277,11 +277,17 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 /// contract change ENG-463/464 wants for ABI validation). Until then a
 /// soft-deleted version passes here and fails mid-deploy.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
-    let labelled = [
-        ("market", &spec.versions.market),
-        ("oracle", &spec.versions.proxy_oracle),
-        ("governance", &spec.versions.proxy_governance),
-    ];
+    // A direct market deploys only itself, so the proxy versions it never uses
+    // need not be registered.
+    let labelled: Vec<_> = if spec.oracle.is_direct() {
+        vec![("market", &spec.versions.market)]
+    } else {
+        vec![
+            ("market", &spec.versions.market),
+            ("oracle", &spec.versions.proxy_oracle),
+            ("governance", &spec.versions.proxy_governance),
+        ]
+    };
 
     let registered = match ctx
         .client
