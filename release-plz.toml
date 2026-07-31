@@ -2,10 +2,10 @@
 ## blocked are documented in RELEASING.md — this file only encodes the settings.
 
 [workspace]
-# Nothing is uploaded to a registry. This single line is what defers crates.io
-# publishing for Tiers A and B — their `Cargo.toml`s no longer carry
-# `publish = false`, because release-plz skips such crates entirely and Tier B
-# would get no versions and no tags. `no_tier_can_reach_a_registry` in
+# Nothing is uploaded to a registry. This is the only thing deferring crates.io
+# for Tiers A and B: their manifests must stay publishable, because release-plz
+# skips a crate whose own `Cargo.toml` forbids publishing, and Tier B would then
+# get no versions and no tags. `no_tier_can_reach_a_registry` in
 # contract/artifacts/src/catalog.rs asserts this stays false.
 publish = false
 

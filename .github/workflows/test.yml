@@ -532,10 +532,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          # Only the append-only check needs history, and only on a PR. This job
-          # also fires on any manifest change, where a full clone of a ~100 MB
-          # object store would be pure cost.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # Full history: the append-only check below diffs against the base
+          # commit.
+          fetch-depth: 0
           persist-credentials: false
 
       # `record-release` only ever creates files, so nothing in-tree stops a hand
@@ -551,8 +550,10 @@ jobs:
           # new file" rather than a list of the statuses we thought of. Naming
           # them missed `T`: swapping a release for a symlink to a new file is a
           # typechange, which build.rs follows and an M/D/R filter never sees.
+          # A diff that cannot run must fail the job: suppressing the error
+          # would turn "history is missing" into "nothing was touched".
           touched=$(git diff --name-status --diff-filter=a "$BASE_SHA"...HEAD \
-            -- contract/artifacts/releases/ || true)
+            -- contract/artifacts/releases/)
           if [ -n "$touched" ]; then
             echo "::error::Released versions are immutable — this PR changes one:" >&2
             echo "$touched" >&2

@@ -73,10 +73,6 @@ fn release_false_packages() -> std::collections::BTreeSet<String> {
         .unwrap_or_default()
 }
 
-/// `release = true` is release-plz's default, so an unclassified crate gets
-/// tagged and released — that is how the `templar-gateway-testing` harness ended
-/// up Tier B, and later `templar-gateway-catalog`.
-///
 /// `release-artifacts.yml` only fires on tags matching `*-contract-v*`, and
 /// release-plz builds tags as `{package}-v{version}`. A catalogued contract
 /// whose package name does not end in `-contract` would therefore be released
@@ -96,6 +92,9 @@ fn every_catalogued_artifact_matches_the_release_tag_glob() {
     }
 }
 
+/// `release = true` is release-plz's default, so an unclassified crate is
+/// tagged, changelogged and released.
+///
 /// Tier C is derived, not listed: RELEASING.md makes `publish = false` in a
 /// crate's own manifest the defining property, so the workspace already states
 /// the set. A literal copy here, or a name/path heuristic guessing at new

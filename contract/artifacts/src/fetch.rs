@@ -165,8 +165,8 @@ pub fn asset_url(release: &ArtifactRelease) -> String {
 /// Verified bytes, per process and keyed by the catalog's own `&'static str`.
 ///
 /// The catalog is compile-time constant, so this cannot serve bytes a fresh read
-/// would reject. Without it the gateway re-reads and re-hashes several hundred
-/// KB on every `GetArtifact`, where it used to serve a `&'static [u8]`.
+/// would reject. Without it every `GetArtifact` re-reads and re-hashes several
+/// hundred KB.
 type Memo = Mutex<HashMap<(ArtifactId, &'static str), Arc<[u8]>>>;
 
 fn memo() -> &'static Memo {

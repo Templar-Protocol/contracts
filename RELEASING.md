@@ -20,11 +20,25 @@ If you never merge the Release PR, nothing is ever released.
 
 ### Choosing version numbers
 
-Bumps are proposed automatically from the commit messages since each crate's
-last tag: `feat` → minor, `!` in the title → major, anything else → patch. Any
-crate with a commit since its tag gets *some* bump — `chore` and `docs` included
-— so a release batch is usually wider than the work you were thinking of. See
-[Commit And PR Titles](AGENTS.md#commit-and-pr-titles).
+> **Automatic bumps are not active in the current configuration.** release-plz
+> reads a crate's current version from the registry, and nothing is published,
+> so every crate looks unreleased and keeps the version its `Cargo.toml` already
+> states — commit messages do not move it. Set the version yourself on the
+> Release PR branch with `release-plz set-version`; it updates the crate, its
+> dependents and the lockfile together, and release-plz tags, changelogs and
+> releases whatever you chose.
+>
+> This is a configuration gap, not a dead end. Running the CLI with
+> `--registry-manifest-path` pointed at a checkout of the last release commit
+> supplies the baseline the registry cannot, and bumps then work normally. It
+> needs the CLI rather than the GitHub Action, which exposes no input for that
+> flag.
+
+Once baselines work, bumps are proposed from the commit messages since each
+crate's last tag: `feat` → minor, `!` in the title → major, anything else →
+patch. Any crate with a commit since its tag gets *some* bump — `chore` and
+`docs` included — so a release batch is usually wider than the work you were
+thinking of. See [Commit And PR Titles](AGENTS.md#commit-and-pr-titles).
 
 Pre-1.0 crates follow Cargo's semver rules, where the minor position carries
 breakage: `!` goes `0.1.0` → `0.2.0`, and a plain `feat` goes `0.1.0` → `0.1.1`
@@ -102,11 +116,20 @@ over pinning a raw commit:
 templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts", tag = "templar-gateway-client-v0.1.0" }
 ```
 
-The blocker is wider than publishing. `git_only`, which would have derived Tier
-B versions from tags instead of a registry, resolves each baseline by checking
-its tag out and running `cargo package` — impossible while the git dependency is
-there. Enabling it fails the entire release-PR job, so it stays off and
-baselines come from the registry, where these crates are simply absent.
+**The blocker is wider than publishing: it also costs automatic version bumps.**
+`git_only` would derive baselines from tags rather than a registry, which is
+what this repo needs. It resolves each baseline by checking the tag out and
+running `cargo package`, and packaging rewrites a git dependency into a registry
+one — so it demands a `redstone` on crates.io that does not exist. Giving the
+dependency a `version` alongside its `git` does not help; packaging still
+resolves that version against crates.io, where `redstone` is an unrelated
+`0.1.0`. So `git_only` stays off, baselines come from the empty registry, and
+every crate reads as unreleased at its manifest version.
+
+Resolving RedStone would buy crates.io publishing and tag-based baselines
+together. Automatic bumps do **not** have to wait for it: see the note under
+[Choosing version numbers](#choosing-version-numbers) — supplying the baseline
+from a local checkout avoids packaging entirely.
 
 **To unblock**, once RedStone publishes the SDK (or we depend on a published
 fork): set `redstone`'s workspace dependency to a registry version, add a
