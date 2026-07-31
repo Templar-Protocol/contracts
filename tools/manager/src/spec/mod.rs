@@ -202,20 +202,8 @@ pub struct MarketParams {
     pub supply_withdrawal_range: AmountRange<BorrowAsset>,
 }
 
-/// The account ids a deployment creates, derived from the market's name and
-/// registry.
-///
-/// Free functions, not just methods: `market export` derives them *before* it
-/// has a spec to call methods on, and a second hand-rolled copy of the naming
-/// convention is exactly the duplication this whole epic exists to remove.
-pub fn market_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
-    derived_id(name, registry)
-}
-
-pub fn oracle_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
-    derived_id(&oracle_name(name), registry)
-}
-
+/// `proxy-gov-<name>.<registry>`, as a free function because `market export`
+/// derives it *before* it has a spec to call methods on.
 pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
     derived_id(&governance_name(name), registry)
 }
@@ -289,12 +277,12 @@ impl MarketSpec {
 
     /// `<name>.<registry>` — where the market contract lands.
     pub fn market_id(&self) -> anyhow::Result<AccountId> {
-        market_account_id(&self.name, &self.registry)
+        derived_id(&self.name, &self.registry)
     }
 
     /// `proxy-oracle-<name>.<registry>` — the market's dedicated oracle.
     pub fn oracle_id(&self) -> anyhow::Result<AccountId> {
-        oracle_account_id(&self.name, &self.registry)
+        derived_id(&oracle_name(&self.name), &self.registry)
     }
 
     /// `proxy-gov-<name>.<registry>` — owns the oracle, so it must be deployed

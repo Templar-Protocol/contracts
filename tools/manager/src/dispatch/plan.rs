@@ -1269,14 +1269,19 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
     for (label, account_id) in targets {
         checks.push(Check::new(
             format!("deployment.available.{label}"),
-            match super::preflight::exists(ctx, &account_id).await {
-                Ok(false) => Status::passed(format!("`{account_id}` is free")),
-                Ok(true) => Status::failed(format!(
-                    "`{account_id}` already exists; the {label} deploy would fail. \
-                     Pick another `name`, or tear the existing deployment down."
-                )),
-                Err(error) => Status::failed(format!("{error:#}")),
-            },
+            super::preflight::exists_check(
+                ctx,
+                &account_id,
+                || {
+                    Status::failed(format!(
+                        "`{account_id}` already exists; the {label} deploy would \
+                         fail. Pick another `name`, or tear the existing \
+                         deployment down."
+                    ))
+                },
+                || Status::passed(format!("`{account_id}` is free")),
+            )
+            .await,
         ));
     }
     Ok(checks)

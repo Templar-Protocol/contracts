@@ -162,11 +162,13 @@ async fn asset_checks<A: AssetClass>(
     let contract_id = spec.asset.contract_id().to_owned();
     let mut checks = vec![Check::new(
         format!("asset.exists.{side}"),
-        match exists(ctx, &contract_id).await {
-            Ok(true) => Status::passed(spec.asset.to_string()),
-            Ok(false) => Status::failed(format!("`{contract_id}` does not exist")),
-            Err(error) => Status::failed(format!("{error:#}")),
-        },
+        exists_check(
+            ctx,
+            &contract_id,
+            || Status::passed(spec.asset.to_string()),
+            || Status::failed(format!("`{contract_id}` does not exist")),
+        )
+        .await,
     )];
 
     let (status, resolved) = match underlying_decimals(ctx, side, &spec.asset).await {
@@ -191,11 +193,13 @@ async fn asset_checks<A: AssetClass>(
 /// here as well would round-trip every source twice.
 async fn source_status(ctx: &CliContext, source: &SourceSpec) -> Status {
     let oracle_id = source.oracle_id();
-    match exists(ctx, oracle_id).await {
-        Ok(true) => Status::passed(format!("{} on {oracle_id}", source.describe())),
-        Ok(false) => Status::failed(format!("adapter `{oracle_id}` does not exist")),
-        Err(error) => Status::failed(format!("{error:#}")),
-    }
+    exists_check(
+        ctx,
+        oracle_id,
+        || Status::passed(format!("{} on {oracle_id}", source.describe())),
+        || Status::failed(format!("adapter `{oracle_id}` does not exist")),
+    )
+    .await
 }
 
 /// The NEP-141 account whose `ft_metadata` defines this asset's decimals.
@@ -375,14 +379,18 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
 
     let mut checks = vec![Check::new(
         "oracle.exists",
-        match exists(ctx, account_id).await {
-            Ok(true) => Status::passed(account_id.to_string()),
-            Ok(false) => Status::failed(format!(
-                "`{account_id}` does not exist, so this market would read an \
-                 oracle that is not there"
-            )),
-            Err(error) => Status::failed(format!("{error:#}")),
-        },
+        exists_check(
+            ctx,
+            account_id,
+            || Status::passed(account_id.to_string()),
+            || {
+                Status::failed(format!(
+                    "`{account_id}` does not exist, so this market would read an \
+                     oracle that is not there"
+                ))
+            },
+        )
+        .await,
     )];
 
     let Ok((collateral, borrow)) = spec.price_identifiers() else {
@@ -492,6 +500,24 @@ async fn account_check(ctx: &CliContext, label: &str, account_id: &AccountId) ->
             Err(error) => Status::failed(format!("{error:#}")),
         },
     )
+}
+
+/// An existence check as a verdict, with the caller naming both outcomes.
+///
+/// Shared so the `Err` policy is decided once: a read that failed is a failed
+/// *check*, never a pass. Four call sites had it written out separately, and
+/// two of them read the polarity the other way round.
+pub(super) async fn exists_check(
+    ctx: &CliContext,
+    account_id: &AccountId,
+    present: impl FnOnce() -> Status,
+    absent: impl FnOnce() -> Status,
+) -> Status {
+    match exists(ctx, account_id).await {
+        Ok(true) => present(),
+        Ok(false) => absent(),
+        Err(error) => Status::failed(format!("{error:#}")),
+    }
 }
 
 /// Whether the account exists.
