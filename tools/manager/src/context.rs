@@ -79,6 +79,23 @@ impl CliContext {
         Ok((account_id, client))
     }
 
+    /// The public key the configured backend will actually sign with.
+    ///
+    /// Distinct from [`SignerArgs::public_key`], which for an external backend
+    /// returns the key the operator *asserted* via `--public-key`. Verifying a
+    /// full-access grant against an assertion verifies nothing, so this resolves
+    /// the backend and asks it.
+    pub(crate) async fn signing_public_key(
+        &self,
+        signer: &SignerArgs,
+    ) -> anyhow::Result<near_api::PublicKey> {
+        let (_, signing) = signer.resolve(&self.network).await?;
+        signing
+            .get_public_key()
+            .await
+            .context("ask the signing backend which key it will sign with")
+    }
+
     /// Dispatch a read and print its JSON result.
     pub(crate) async fn read<S>(&self, request: S) -> anyhow::Result<()>
     where
@@ -110,6 +127,20 @@ impl CliContext {
 
         let (account_id, client) = self.signing_client_for(&signer).await?;
         let output = client.execute_as(account_id, body).await?;
+        self.finish_write(&output)
+    }
+
+    /// Execute a write through a caller-chosen dispatcher, then report it.
+    ///
+    /// The execute half of [`CliContext::write`], without the `--print` branch:
+    /// `market apply` has a plan in hand and nothing left to print.
+    pub(crate) async fn execute_via<D, S>(&self, signer: &SignerArgs, body: S) -> anyhow::Result<()>
+    where
+        S: MethodSpec<Output = WriteOperationResult>,
+        D: PlanWrite<S, GatewayContext>,
+    {
+        let (account_id, client) = self.signing_client_for(signer).await?;
+        let output = client.via::<D>().execute_as(account_id, body).await?;
         self.finish_write(&output)
     }
 
@@ -257,7 +288,7 @@ fn print_plan(format: PrintFormat, plan: OperationPlan) -> anyhow::Result<()> {
     }
 }
 
-fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction> {
+pub(crate) fn single_transaction(plan: OperationPlan) -> anyhow::Result<PlannedTransaction> {
     let [transaction] = plan.steps.try_into().map_err(|steps: Vec<_>| {
         anyhow::anyhow!(
             "--print requires exactly one planned transaction; planned {}",

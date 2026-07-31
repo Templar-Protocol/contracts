@@ -7,6 +7,7 @@
 mod aggregate;
 mod export;
 pub(crate) mod generic;
+pub(crate) mod plan;
 mod preflight;
 mod proposals;
 mod reference;
@@ -115,6 +116,8 @@ async fn market(ctx: CliContext, ns: MarketNs) -> anyhow::Result<()> {
     match ns {
         MarketNs::Create(a) => ctx.write(a.signer.clone(), a.try_into_spec()?).await,
         MarketNs::Export(a) => export::market(ctx, a).await,
+        MarketNs::Plan(a) => plan::plan(ctx, a).await,
+        MarketNs::Apply(a) => plan::apply(ctx, a).await,
         MarketNs::Remove(a) => {
             // `market remove` is self-signed: the signer is the market account
             // being torn down.

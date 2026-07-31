@@ -14,6 +14,7 @@ mod ft;
 mod market;
 mod oracle;
 mod plan;
+mod plan_file;
 mod proxy_oracle;
 mod redstone;
 mod registry;

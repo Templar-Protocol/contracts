@@ -23,9 +23,39 @@ use crate::spec::{
 /// failed, so it is usable as a gate in CI or a pre-deploy script.
 pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
+    let checks = run_all(&ctx, &mut spec, args.offline, args.accept_decimals_mismatch).await?;
+
+    let price_maximum_age = spec.market.price_maximum_age;
+    print_json(&serde_json::json!({
+        "market_id": spec.market_id()?,
+        "oracle_id": spec.oracle_id()?,
+        "governance_id": spec.governance_id()?,
+        "network": spec.network()?.to_string(),
+        "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
+        "borrow_proxy": spec.borrow.clone().into_proxy(price_maximum_age),
+        "checks": checks,
+    }))?;
+
+    let failed = crate::spec::check::failures(&checks);
+    anyhow::ensure!(failed == 0, "{failed} check(s) failed");
+    Ok(())
+}
+
+/// Every check, online then offline, writing resolved decimals back into the
+/// spec as it goes.
+///
+/// Shared with `market plan` (ENG-544), which embeds the same results in its
+/// artifact — running a *different* set of checks there would let a plan be
+/// written for a spec `spec check` rejects.
+pub(super) async fn run_all(
+    ctx: &CliContext,
+    spec: &mut MarketSpec,
+    offline: bool,
+    accept_decimals_mismatch: bool,
+) -> anyhow::Result<Vec<Check>> {
     let mut checks = Vec::new();
 
-    if args.offline {
+    if offline {
         checks.push(Check::new(
             "preflight.online",
             Status::Skipped {
@@ -48,28 +78,11 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
         // Online first, writing resolved decimals back into the spec. Otherwise
         // `config.validate` reports itself skipped for want of decimals this
         // very run just read off the chain.
-        checks.extend(run(&ctx, &mut spec, args.accept_decimals_mismatch).await);
+        checks.extend(run(ctx, spec, accept_decimals_mismatch).await);
     }
     // Offline checks run last so they see those decimals.
-    checks.extend(crate::spec::check::run_offline(&spec));
-
-    let price_maximum_age = spec.market.price_maximum_age;
-    print_json(&serde_json::json!({
-        "market_id": spec.market_id()?,
-        "oracle_id": spec.oracle_id()?,
-        "governance_id": spec.governance_id()?,
-        "network": spec.network()?.to_string(),
-        "collateral_proxy": spec.collateral.clone().into_proxy(price_maximum_age),
-        "borrow_proxy": spec.borrow.clone().into_proxy(price_maximum_age),
-        "checks": checks,
-    }))?;
-
-    let failed = checks
-        .iter()
-        .filter(|check| check.status.is_failure())
-        .count();
-    anyhow::ensure!(failed == 0, "{failed} check(s) failed");
-    Ok(())
+    checks.extend(crate::spec::check::run_offline(spec));
+    Ok(checks)
 }
 
 /// Every check that needs the chain, in a stable order so two runs of the same
@@ -240,6 +253,15 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 
 /// Every version key must already be registered, or the deploy fails partway —
 /// which is how `deploy.sh` leaves an orphaned governance contract today.
+///
+/// Membership is all this can check. `remove_version` soft-deletes: it sets
+/// `VersionEntry::Code.code = None` but keeps the key, and `code_hash()` still
+/// answers with the stored hash — so `list_versions` and `get_version_code_hash`
+/// both report a removed version as present, while `deploy` aborts with
+/// "Version code has been deleted". No registry view distinguishes the two, so
+/// closing this needs an additive view reporting code availability (the same
+/// contract change ENG-463/464 wants for ABI validation). Until then a
+/// soft-deleted version passes here and fails mid-deploy.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let labelled = [
         ("market", &spec.versions.market),
@@ -322,7 +344,7 @@ async fn account_check(ctx: &CliContext, label: &str, account_id: &AccountId) ->
 /// Only `AccountNotFound` means "no"; every other failure propagates. A timed-out
 /// RPC reported as "this account does not exist" would send an operator off to
 /// create an account that is already there.
-async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result<bool> {
+pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result<bool> {
     match ctx
         .client
         .read(account::Get {

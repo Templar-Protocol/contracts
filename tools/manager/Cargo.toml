@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# Decoding `registry.deploy` init args for display (ENG-544).
+base64.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
@@ -33,6 +35,8 @@ reqwest = { workspace = true, features = ["json"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Stable digests: plan/spec hashing must not depend on map iteration order.
+serde_json_canonicalizer.workspace = true
 sputnikdao2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
