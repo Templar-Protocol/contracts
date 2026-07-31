@@ -124,7 +124,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // Reconciled before anything else that reads the steps: if the journal and
     // the plan disagree, nothing below is meaningful.
     let journal_path = journal::path_for(&args.plan);
-    let mut journal = Journal::load(&journal_path)?;
+    let journal = Journal::load(&journal_path)?;
     let remaining = journal.remaining(&file)?;
 
     if remaining.len() < file.steps.len() {
@@ -146,8 +146,159 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         .iter()
         .filter_map(|index| file.steps.get(*index).cloned())
         .collect();
-    render(&file);
-    report_checks(&file);
+    let (credential, targets) =
+        review(&ctx, &file, &args, &outstanding, &remaining, &journal_path).await?;
+
+    // Whoever holds these keys controls the three new accounts. A mistyped or
+    // substituted `--public-key` at plan time is invisible in the artifact —
+    // the keys live inside the encoded args — so where the applier's own key is
+    // derivable it must be the one being granted.
+    // Asked of the backend, not taken from `--public-key`: for an external
+    // backend the flag is only what the operator *asserted*, and checking a
+    // grant against an assertion checks nothing. Errors propagate — an applier
+    // who cannot say which key they hold cannot verify the one being handed
+    // control of three new accounts, and that is a refusal, not a pass.
+    {
+        let mine = ctx.signing_public_key(&args.signer).await?;
+        // Compared through the JSON encoding, which is the form the args carry.
+        let mine = serde_json::to_value(mine)
+            .ok()
+            .and_then(|key| key.as_str().map(ToOwned::to_owned))
+            .unwrap_or_default();
+        for step in &file.steps {
+            for call in &step.function_calls {
+                let granted = granted_keys(call)?;
+                anyhow::ensure!(
+                    granted.is_empty() || granted.iter().any(|key| key == &mine),
+                    "`{}` grants full access to {}, not to `{mine}`. Applying this \
+                     would hand control of the new account to a key you do not \
+                     hold; re-plan with your own --public-key, or pass the key \
+                     that is named.",
+                    step.label,
+                    granted
+                        .iter()
+                        .map(|key| format!("`{key}`"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+        }
+    }
+
+    if !args.yes {
+        confirm(&format!(
+            "Send {} transaction(s) as {credential}?",
+            remaining.len(),
+        ))?;
+    }
+
+    let mut funding = super::funding::checks(&ctx, &outstanding).await?;
+    let matched = apply_skips(&mut funding, &args.skip_check);
+    ensure_every_skip_matched(&args.skip_check, &matched)?;
+    let short = crate::spec::check::failures(&funding);
+    for check in &funding {
+        eprintln!("  {} — {:?}", check.id, check.status);
+    }
+    anyhow::ensure!(
+        short == 0,
+        "{short} signer(s) cannot cover this plan. Top up and re-run, or pass \
+         `--skip-check` if the check is wrong; stopping now costs nothing, \
+         stopping at step 4 does not."
+    );
+
+    // Again, immediately before sending: the prompt above has no time limit, and
+    // the check is only worth what it is worth at the moment of the send.
+    ensure_targets_free(&ctx, &targets).await?;
+
+    send(&ctx, &file, &args, remaining, journal, &journal_path).await
+}
+
+/// Send the outstanding steps, journalling each as it lands.
+async fn send(
+    ctx: &CliContext,
+    file: &PlanFile,
+    args: &Apply,
+    remaining: Vec<usize>,
+    mut journal: Journal,
+    journal_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    // One transaction per call, so every outcome is journalled as it happens.
+    // Batching would leave an interrupted run with nothing recorded — the only
+    // run a journal exists for.
+    let plan = file.clone().into_operation_plan()?;
+    // One signing client for the whole run: near-api caches nonces on the
+    // `Signer`, and rebuilding it per step would start each from an empty cache
+    // and risk signing a nonce the chain has already consumed.
+    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
+
+    for index in remaining {
+        let step = &file.steps[index];
+        eprintln!("\n[{index}] {}", step.label);
+
+        // Recorded before submission. A step that was sent and never resolved
+        // must not read as one that never ran: re-sending a registry deploy
+        // that actually succeeded strands its deposit, since the failed
+        // `create_account` refunds to the registry, not to the operator.
+        let entry = journal::Entry {
+            step: index,
+            digest: journal::executable_digest(step)?,
+            label: step.label.clone(),
+            outcome: journal::Outcome::Attempted,
+            tx_hash: None,
+        };
+        journal.record(journal_path, entry.clone())?;
+
+        let output = client
+            .via::<PlanDispatch>()
+            .execute_as(
+                signer.clone(),
+                PreparedPlan {
+                    steps: vec![plan.steps[index].clone()],
+                },
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "step {index} (`{}`) did not complete. It is recorded as \
+                     attempted in {}; re-run `market apply`, which will stop and \
+                     ask you to confirm what happened to it.",
+                    step.label,
+                    journal_path.display(),
+                )
+            })?;
+        ctx.finish_write(&output)?;
+
+        journal.record(
+            journal_path,
+            journal::Entry {
+                outcome: journal::Outcome::Completed,
+                tx_hash: output
+                    .operation
+                    .latest_tx_hash()
+                    .map(|hash| hash.to_string()),
+                ..entry
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// Show the plan, then everything that must hold before it is sent.
+///
+/// Extracted from `apply` as one unit because it is one phase — nothing here
+/// sends anything, and every check is a reason not to. Returns the two values
+/// the send itself needs: who is signing, and the accounts that must still be
+/// free at the moment of the send.
+async fn review(
+    ctx: &CliContext,
+    file: &PlanFile,
+    args: &Apply,
+    outstanding: &[crate::spec::plan::PlanStep],
+    remaining: &[usize],
+    journal_path: &std::path::Path,
+) -> anyhow::Result<(AccountId, Vec<AccountId>)> {
+    render(file);
+    report_checks(file);
 
     // Re-read, rather than trusting the plan's own `deployment.available.*`. A
     // plan is written to be reviewed, and a target free at plan time can be
@@ -161,13 +312,13 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // Scoping rather than skipping keeps the guard where it still bites: a step
     // whose outcome was ambiguous is not journalled, so it stays outstanding and
     // its target is still checked.
-    ensure_targets_are_distinct(&planned_targets(&file)?)?;
+    ensure_targets_are_distinct(&planned_targets(file)?)?;
     let outstanding_file = PlanFile {
-        steps: outstanding.clone(),
+        steps: outstanding.to_vec(),
         ..file.clone()
     };
     let targets = planned_targets(&outstanding_file)?;
-    ensure_targets_free(&ctx, &targets).await?;
+    ensure_targets_free(ctx, &targets).await?;
 
     // Provenance is reported, not enforced.
     let drift = file.drift()?;
@@ -229,131 +380,12 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         );
     }
 
-    ensure_plan_is_complete(&file)?;
-    ensure_plan_is_coherent(&file)?;
-    ensure_initializers_are_sound(&file)?;
-    ensure_proposals_are_runnable(&file)?;
+    ensure_plan_is_complete(file)?;
+    ensure_plan_is_coherent(file)?;
+    ensure_initializers_are_sound(file)?;
+    ensure_proposals_are_runnable(file)?;
 
-    // Whoever holds these keys controls the three new accounts. A mistyped or
-    // substituted `--public-key` at plan time is invisible in the artifact —
-    // the keys live inside the encoded args — so where the applier's own key is
-    // derivable it must be the one being granted.
-    // Asked of the backend, not taken from `--public-key`: for an external
-    // backend the flag is only what the operator *asserted*, and checking a
-    // grant against an assertion checks nothing. Errors propagate — an applier
-    // who cannot say which key they hold cannot verify the one being handed
-    // control of three new accounts, and that is a refusal, not a pass.
-    {
-        let mine = ctx.signing_public_key(&args.signer).await?;
-        // Compared through the JSON encoding, which is the form the args carry.
-        let mine = serde_json::to_value(&mine)
-            .ok()
-            .and_then(|key| key.as_str().map(ToOwned::to_owned))
-            .unwrap_or_default();
-        for step in &file.steps {
-            for call in &step.function_calls {
-                let granted = granted_keys(call)?;
-                anyhow::ensure!(
-                    granted.is_empty() || granted.iter().any(|key| key == &mine),
-                    "`{}` grants full access to {}, not to `{mine}`. Applying this \
-                     would hand control of the new account to a key you do not \
-                     hold; re-plan with your own --public-key, or pass the key \
-                     that is named.",
-                    step.label,
-                    granted
-                        .iter()
-                        .map(|key| format!("`{key}`"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-            }
-        }
-    }
-
-    if !args.yes {
-        confirm(&format!(
-            "Send {} transaction(s) as {credential}?",
-            remaining.len(),
-        ))?;
-    }
-
-    let mut funding = super::funding::checks(&ctx, &outstanding).await?;
-    let matched = apply_skips(&mut funding, &args.skip_check);
-    ensure_every_skip_matched(&args.skip_check, &matched)?;
-    let short = crate::spec::check::failures(&funding);
-    for check in &funding {
-        eprintln!("  {} — {:?}", check.id, check.status);
-    }
-    anyhow::ensure!(
-        short == 0,
-        "{short} signer(s) cannot cover this plan. Top up and re-run, or pass \
-         `--skip-check` if the check is wrong; stopping now costs nothing, \
-         stopping at step 4 does not."
-    );
-
-    // Again, immediately before sending: the prompt above has no time limit, and
-    // the check is only worth what it is worth at the moment of the send.
-    ensure_targets_free(&ctx, &targets).await?;
-
-    // One transaction per call, so every outcome is journalled as it happens.
-    // Batching would leave an interrupted run with nothing recorded — the only
-    // run a journal exists for.
-    let plan = file.clone().into_operation_plan()?;
-    // One signing client for the whole run: near-api caches nonces on the
-    // `Signer`, and rebuilding it per step would start each from an empty cache
-    // and risk signing a nonce the chain has already consumed.
-    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
-
-    for index in remaining {
-        let step = &file.steps[index];
-        eprintln!("\n[{index}] {}", step.label);
-
-        // Recorded before submission. A step that was sent and never resolved
-        // must not read as one that never ran: re-sending a registry deploy
-        // that actually succeeded strands its deposit, since the failed
-        // `create_account` refunds to the registry, not to the operator.
-        let entry = journal::Entry {
-            step: index,
-            digest: journal::executable_digest(step)?,
-            label: step.label.clone(),
-            outcome: journal::Outcome::Attempted,
-            tx_hash: None,
-        };
-        journal.record(&journal_path, entry.clone())?;
-
-        let output = client
-            .via::<PlanDispatch>()
-            .execute_as(
-                signer.clone(),
-                PreparedPlan {
-                    steps: vec![plan.steps[index].clone()],
-                },
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "step {index} (`{}`) did not complete. It is recorded as \
-                     attempted in {}; re-run `market apply`, which will stop and \
-                     ask you to confirm what happened to it.",
-                    step.label,
-                    journal_path.display(),
-                )
-            })?;
-        ctx.finish_write(&output)?;
-
-        journal.record(
-            &journal_path,
-            journal::Entry {
-                outcome: journal::Outcome::Completed,
-                tx_hash: output
-                    .operation
-                    .latest_tx_hash()
-                    .map(|hash| hash.to_string()),
-                ..entry
-            },
-        )?;
-    }
-    Ok(())
+    Ok((credential, targets))
 }
 
 /// The deployment, in the order `deploy.sh` runs it.
@@ -1596,9 +1628,9 @@ mod tests {
         use crate::spec::plan::{PlanFunctionCall, PlanStep};
         use base64::Engine as _;
 
-        fn deploy(label: &str, name: &str, init: serde_json::Value) -> PlanStep {
+        fn deploy(label: &str, name: &str, init: &serde_json::Value) -> PlanStep {
             let encoded = base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_vec(&init).expect("encode init"));
+                .encode(serde_json::to_vec(init).expect("encode init"));
             PlanStep {
                 label: label.to_owned(),
                 signer_id: "operator.near".parse().expect("valid account"),
@@ -1621,13 +1653,13 @@ mod tests {
         file.steps.push(deploy(
             "deploy oracle",
             "renamed-oracle",
-            serde_json::json!({ "owner_id": "gov.templar-alpha.near" }),
+            &serde_json::json!({ "owner_id": "gov.templar-alpha.near" }),
         ));
         // ...but the market still points at the original.
         file.steps.push(deploy(
             "deploy market",
             "mkt",
-            serde_json::json!({
+            &serde_json::json!({
                 "configuration": {
                     "price_oracle_configuration": {
                         "account_id": "proxy-oracle-original.templar-alpha.near"

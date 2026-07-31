@@ -35,10 +35,14 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
         .map(|path| crate::spec::extends::load(path))
         .transpose()?;
     if let Some(intended) = &intended {
-        spec.collateral.symbol = intended.collateral.symbol.clone();
-        spec.collateral.reference = intended.collateral.reference.clone();
-        spec.borrow.symbol = intended.borrow.symbol.clone();
-        spec.borrow.reference = intended.borrow.reference.clone();
+        spec.collateral
+            .symbol
+            .clone_from(&intended.collateral.symbol);
+        spec.collateral
+            .reference
+            .clone_from(&intended.collateral.reference);
+        spec.borrow.symbol.clone_from(&intended.borrow.symbol);
+        spec.borrow.reference.clone_from(&intended.borrow.reference);
     }
 
     // The same checks `spec check` runs, against the reconstructed spec — not a
