@@ -123,6 +123,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // succeed and the market deploy fails, which is the half-spent deploy the
     // plan-time check exists to prevent.
     let targets = planned_targets(&file)?;
+    ensure_targets_are_distinct(&targets)?;
     ensure_targets_free(&ctx, &targets).await?;
 
     // Provenance is reported, not enforced.
@@ -189,6 +190,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     }
 
     ensure_plan_is_coherent(&file)?;
+    ensure_initializers_are_sound(&file)?;
 
     // Whoever holds these keys controls the three new accounts. A mistyped or
     // substituted `--public-key` at plan time is invisible in the artifact —
@@ -612,6 +614,57 @@ async fn occupied_targets(
     Ok(occupied)
 }
 
+/// Re-apply, against the encoded steps, the plan-time guards whose subject an
+/// edit can change.
+///
+/// `build` refuses an oracle version that ignores `owner_id` and a non-zero
+/// governance TTL, but both live in step arguments an operator may rewrite, and
+/// a plan-time refusal does not bind the file. This is the third guard in this
+/// PR whose executing value was editable after the check (`admin_id` was the
+/// first), so all of them are re-verified here rather than one at a time.
+fn ensure_initializers_are_sound(file: &PlanFile) -> anyhow::Result<()> {
+    for step in &file.steps {
+        for call in &step.function_calls {
+            let Some(init) = decoded_init_args(call) else {
+                continue;
+            };
+
+            // The oracle: its `new` must honour the owner it is given, or the
+            // registry stays owner and governance can never configure a proxy.
+            if let Some(owner_id) = init.get("owner_id").and_then(|id| id.as_str()) {
+                let bytes = call.args.to_bytes()?;
+                let args: serde_json::Value = serde_json::from_slice(&bytes)
+                    .context("a registry deploy's arguments are not JSON")?;
+                let version_key = args
+                    .get("version_key")
+                    .and_then(|key| key.as_str())
+                    .context("the oracle deploy names no version")?;
+                crate::commands::proxy_oracle::check_owner_id_is_honored(
+                    version_key,
+                    &owner_id
+                        .parse()
+                        .context("the oracle's owner is not an account")?,
+                )?;
+            }
+
+            // Governance: a non-zero TTL makes the proposals in this plan
+            // unexecutable when created, and a plan cannot wait.
+            if let Some(ttls) = init.get("ttls").and_then(|ttls| ttls.as_object()) {
+                for (kind, ttl) in ttls {
+                    anyhow::ensure!(
+                        ttl.as_str() == Some("0") || ttl.as_u64() == Some(0),
+                        "`{}` seats a {kind} TTL of {ttl}, so the proposals this \
+                         plan creates would not be executable when it runs them. \
+                         Deploy with zero TTLs and raise them afterwards.",
+                        step.label,
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The accounts a deployment creates are named in more places than they are
 /// created, and an edit to one is not an edit to the others.
 ///
@@ -817,6 +870,23 @@ fn deploy_target(
             step.label
         )
     })?))
+}
+
+/// Refuse a plan that creates the same account twice.
+///
+/// Coherent edits can still collide with each other: renaming two deploys to
+/// the same name keeps every reference consistent, and the second deploy fails
+/// after the first has spent its deposit.
+fn ensure_targets_are_distinct(targets: &[AccountId]) -> anyhow::Result<()> {
+    let mut seen = BTreeSet::new();
+    for target in targets {
+        anyhow::ensure!(
+            seen.insert(target),
+            "this plan creates `{target}` more than once; the second deploy would \
+             fail against the account the first just made"
+        );
+    }
+    Ok(())
 }
 
 /// Refuse a plan whose targets are taken.
@@ -1463,6 +1533,53 @@ mod tests {
             format!("{error:#}").contains("mkt-renamed.templar-alpha.near"),
             "{error:#}"
         );
+    }
+
+    /// A non-zero governance TTL makes this plan's own proposals unexecutable
+    /// when it runs them. Refused at plan time, and again here because the
+    /// value lives in editable step arguments.
+    #[test]
+    fn a_non_zero_ttl_in_an_edited_plan_is_refused() {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let init = base64::engine::general_purpose::STANDARD.encode(
+            serde_json::to_vec(&serde_json::json!({
+                "proxy_oracle_id": "o.near",
+                "admin_id": "a.near",
+                "ttls": { "set_proxy": "600000000000", "rearm": "0" },
+            }))
+            .expect("encode"),
+        );
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy governance".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "gov", "version_key": "v1", "init_args": init,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(3),
+            }],
+        });
+
+        let error = super::ensure_initializers_are_sound(&file).expect_err("non-zero ttl");
+        assert!(format!("{error:#}").contains("set_proxy"), "{error:#}");
+    }
+
+    /// Two deploys renamed to the same account keep every reference coherent
+    /// and still collide with each other.
+    #[test]
+    fn duplicate_targets_are_refused() {
+        let shared: near_account_id::AccountId =
+            "same.templar-alpha.near".parse().expect("valid account");
+        let error = super::ensure_targets_are_distinct(&[shared.clone(), shared])
+            .expect_err("two deploys, one account");
+
+        assert!(format!("{error:#}").contains("more than once"), "{error:#}");
     }
 
     /// A coherent plan passes.
