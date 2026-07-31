@@ -383,7 +383,7 @@ async fn an_oracle_version_that_ignores_owner_id_is_refused() {
     );
 }
 
-/// The deployment `deploy.sh` performs, in the order it performs it.
+/// The full proxy deployment, in order.
 ///
 /// The order is a safety property: `registry deploy` fails when the account
 /// already exists, so governance must be created before the oracle names it as
@@ -407,11 +407,11 @@ async fn requires_network_plans_the_deploy_script_in_order() {
     // whose proposals revert after the deposits are already spent.
     let spec = alpha_market();
     let admin = spec.governance.admin.clone();
-    let labelled = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
+    let labeled = crate::dispatch::plan::build(&client, &spec, &public_key, &admin)
         .await
         .expect("the alpha fixture should plan");
 
-    let sequence: Vec<_> = labelled
+    let sequence: Vec<_> = labeled
         .iter()
         .map(|(label, transaction)| {
             let method = match transaction.actions.as_slice() {
@@ -464,7 +464,7 @@ async fn requires_network_plans_the_deploy_script_in_order() {
                 "deploy market iethfxrp-ixlmusdc.templar-alpha.near"
             ),
         ],
-        "the plan must reproduce deploy.sh"
+        "the plan must deploy governance, then the oracle it owns, then the market"
     );
 }
 

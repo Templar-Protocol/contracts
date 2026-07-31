@@ -702,7 +702,7 @@ mod tests {
     /// must widen its band — otherwise the pair check contradicts a leg check
     /// the operator deliberately configured.
     #[tokio::test]
-    async fn the_pair_band_honours_either_leg_override() {
+    async fn the_pair_band_honors_either_leg_override() {
         let mut spec = spec();
         spec.borrow.reference_tolerance = Some(templar_common::dec!("0.5"));
 

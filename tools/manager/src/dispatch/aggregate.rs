@@ -280,7 +280,7 @@ fn leg<A: AssetClass>(
     (price, checks)
 }
 
-/// The collateral/borrow price ratio — the number a human recognises.
+/// The collateral/borrow price ratio — the number a human recognizes.
 ///
 /// Deliberately *not* decimals-adjusted. Decimals convert a raw token amount
 /// into a value when the market sizes a position; they play no part in the ratio

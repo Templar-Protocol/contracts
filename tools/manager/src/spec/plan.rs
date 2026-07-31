@@ -279,7 +279,7 @@ impl Drift {
 }
 
 impl PlanFile {
-    /// Build the artifact from labelled transactions, canonicalizing JSON args.
+    /// Build the artifact from labeled transactions, canonicalizing JSON args.
     #[cfg(test)]
     pub fn new(
         network: String,

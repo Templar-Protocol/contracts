@@ -275,7 +275,7 @@ fn public_key_cannot_override_the_signing_key() {
     let error = call
         .signer
         .public_key()
-        .expect_err("a contradicting --public-key must not be honoured");
+        .expect_err("a contradicting --public-key must not be honored");
 
     assert!(
         error.to_string().contains("a key you do not hold"),

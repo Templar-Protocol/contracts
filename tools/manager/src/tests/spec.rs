@@ -30,7 +30,7 @@ fn alpha_market() -> MarketSpec {
 
 /// The load-bearing test: the spec must reproduce a market we already run
 /// before it is allowed to create new ones. Compared against the very
-/// `market-args.json` that `script/deploy.sh` deploys today.
+/// `market-args.json` each market was deployed with.
 ///
 /// Both sides are compared as parsed `MarketConfiguration`s, not as JSON text.
 /// `Decimal` does not round-trip its own decimal representation — `"1.2"`
@@ -59,7 +59,7 @@ fn reproduces_the_live_alpha_market_configuration() {
     );
 }
 
-/// The three ids `deploy.sh` derives by string interpolation, now derived once.
+/// Three ids that were string-interpolated per market, now derived once.
 #[test]
 fn derives_account_ids_from_the_registry_and_name() {
     let spec = alpha_market();
@@ -111,7 +111,7 @@ fn price_identifiers_are_constant() {
 /// `SourceSpec` is a deliberate parallel model of the three-level
 /// externally-tagged on-chain enum. This is what keeps it honest.
 ///
-/// Compared against the checked-in `proxy-*.json` that `script/deploy.sh`
+/// Compared against the checked-in `proxy-*.json` that the retired deploy
 /// actually configures, rather than an inline literal — an inline expectation
 /// would only assert that this module agrees with itself, which is how the
 /// `max_clock_drift` default was wrong here in the first place.

@@ -35,7 +35,7 @@ use crate::spec::{
 };
 
 /// Deposits funding each new account's storage and balance, matching
-/// `script/deploy.sh`. Constants rather than spec fields: these size a
+/// the deployment this replaces. Constants rather than spec fields: these size a
 /// *contract's* storage staking, which follows from the code being deployed
 /// rather than from the market. A deployment needing more can raise one by
 /// editing the plan.
@@ -392,7 +392,7 @@ async fn review(
     Ok((credential, targets))
 }
 
-/// The deployment, in the order `deploy.sh` runs it.
+/// The deployment, in order.
 ///
 /// The order is a safety property, not a preference: `registry deploy` fails the
 /// whole transaction when the account already exists, and the governance
@@ -429,7 +429,8 @@ pub(crate) async fn build(
     // `governance.admin` is granted the Admin role at init. Mismatched, the two
     // registry deploys succeed and every proposal reverts — 8.5 NEAR spent on
     // exactly the orphaned half-deployment this tool exists to prevent.
-    // `deploy.sh` made this unrepresentable by passing `--admin-id $SIGNER_ID`.
+    // The retired shell deploy made this unrepresentable: it passed the
+    // signer as the admin.
     anyhow::ensure!(
         direct || &spec.governance.admin == signer_id,
         "`governance.admin` is `{}` but this plan is signed by `{signer_id}`, \
@@ -751,7 +752,7 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
 ///
 /// Works from each call's *bytes*, so re-encoding a deploy's args as `base64`
 /// (equally valid in this schema, and executed verbatim) cannot hide its target.
-/// A registry deploy is recognised by its argument shape — `name` beside a
+/// A registry deploy is recognized by its argument shape — `name` beside a
 /// `version_key` — and creates `{name}` beneath the registry it is addressed to.
 ///
 /// Fails closed. A call carrying a `version_key` whose target cannot be derived
@@ -1001,7 +1002,7 @@ fn ensure_initializers_are_sound(file: &PlanFile) -> anyhow::Result<()> {
                 continue;
             };
 
-            // The oracle: its `new` must honour the owner it is given, or the
+            // The oracle: its `new` must honor the owner it is given, or the
             // registry stays owner and governance can never configure a proxy.
             if let Some(owner_id) = init.get("owner_id").and_then(|id| id.as_str()) {
                 let bytes = call.args.to_bytes()?;

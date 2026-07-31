@@ -136,7 +136,7 @@ impl Default for ReferenceAsset {
 /// sources and has no `min_sources`, so a spec naming it would silently discard
 /// both fields — precisely the class of mistake this tool exists to catch. No
 /// alpha market uses it. Adding it means giving it validation that rejects the
-/// fields it cannot honour, not just another variant here.
+/// fields it cannot honor, not just another variant here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AggregatorSpec {

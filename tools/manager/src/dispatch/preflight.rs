@@ -267,7 +267,7 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 }
 
 /// Every version key must already be registered, or the deploy fails partway —
-/// which is how `deploy.sh` leaves an orphaned governance contract today.
+/// which is how the retired shell deploy left orphaned governance contracts.
 ///
 /// Membership is all this can check. `remove_version` soft-deletes: it sets
 /// `VersionEntry::Code.code = None` but keeps the key, and `code_hash()` still
@@ -280,7 +280,7 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
-    let labelled: Vec<_> = if spec.oracle.is_direct() {
+    let labeled: Vec<_> = if spec.oracle.is_direct() {
         vec![("market", &spec.versions.market)]
     } else {
         vec![
@@ -301,7 +301,7 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         Ok(registered) => registered.values,
         // One failed read must not swallow the rest of the report.
         Err(error) => {
-            return labelled
+            return labeled
                 .into_iter()
                 .map(|(label, _)| {
                     Check::new(
@@ -316,7 +316,7 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         }
     };
 
-    labelled
+    labeled
         .into_iter()
         .map(|(label, key)| {
             Check::new(

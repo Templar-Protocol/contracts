@@ -1,6 +1,6 @@
 //! The declarative market deployment spec.
 //!
-//! One TOML file replaces the four that `script/deploy.sh` reads (`env.sh`,
+//! One TOML file replaces the four the retired deploy read (`env.sh`,
 //! `market-args.json`, `proxy-collateral.json`, `proxy-borrow.json`). The point
 //! is not brevity — it is that every value which must agree is now written
 //! exactly once. Anything derivable is derived here rather than declared:
@@ -159,7 +159,7 @@ pub struct GovernanceSpec {
 
 /// [`MarketConfiguration`] minus everything this module derives.
 ///
-/// The on-chain types are embedded rather than re-modelled, so a field added
+/// The on-chain types are embedded rather than re-modeled, so a field added
 /// there surfaces here as a compile error instead of silently going unset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -240,7 +240,7 @@ pub fn governance_account_id(name: &str, registry: &AccountId) -> anyhow::Result
 /// The sub-account *label* a registry deploy creates, as distinct from the full
 /// account id. `registry.deploy` takes the label and derives the id itself, so
 /// both forms are needed — and deriving one from the other by string surgery is
-/// how the two drifted apart in `deploy.sh`.
+/// how the two drifted apart before.
 pub fn oracle_name(name: &str) -> String {
     format!("proxy-oracle-{name}")
 }

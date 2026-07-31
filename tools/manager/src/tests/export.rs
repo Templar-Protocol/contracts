@@ -14,7 +14,7 @@ use templar_common::market::MarketConfiguration;
 
 use crate::spec::{export::Deployed, GovernanceSpec, MarketSpec, Versions};
 
-/// The two markets `script/deploy.sh` builds — the only in-scope topology.
+/// The two markets that deploy their own proxy oracle.
 const IN_SCOPE: [&str; 2] = ["iethfxrp-ixlmusdc", "iethwbtc-ixlmusdc"];
 
 fn alpha(relative: &str) -> PathBuf {

@@ -131,7 +131,7 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
             spec.borrow.max_clock_drift,
         ),
     ] {
-        // The omission that silently changes behaviour: no aggregator deploys
+        // The omission that silently changes behavior: no aggregator deploys
         // `median_low`, where every deployed borrow feed reads `median_high`.
         if !direct && aggregator.is_none() {
             problems.push(format!(
