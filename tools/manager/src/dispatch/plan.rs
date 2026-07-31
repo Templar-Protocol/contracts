@@ -816,40 +816,6 @@ fn market_oracle(file: &PlanFile) -> Option<String> {
         })
 }
 
-/// Whether the market reads the proxy *this* plan would have created.
-///
-/// Not "is it named `proxy-oracle-…`": two migrated markets legitimately read a
-/// proxy someone else deployed (`proxy-oracle-cetes-usdc`,
-/// `proxy-oracle-ustry-usdc`), and a name prefix would refuse them. The only
-/// account whose absence means steps were deleted is the one derived from
-/// *this* plan's own market id.
-fn reads_the_proxy_this_plan_would_create(file: &PlanFile) -> bool {
-    // Derived from the market deploy *step*, not from `derived`: renaming the
-    // market is a supported edit and leaves that metadata stale, so comparing
-    // against it would ask about a market this plan no longer creates.
-    let Some((label, registry)) = market_deploy_name(file) else {
-        return false;
-    };
-    market_oracle(file)
-        .is_some_and(|oracle| oracle == format!("{}.{registry}", crate::spec::oracle_name(&label)))
-}
-
-/// The sub-account label and registry of the step that deploys the market.
-fn market_deploy_name(file: &PlanFile) -> Option<(String, String)> {
-    file.steps.iter().find_map(|step| {
-        step.function_calls.iter().find_map(|call| {
-            let init = decoded_init_args(call)?;
-            init.get("configuration")?;
-            let bytes = call.args.to_bytes().ok()?;
-            let args: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-            Some((
-                args.get("name")?.as_str()?.to_owned(),
-                step.receiver_id.to_string(),
-            ))
-        })
-    })
-}
-
 /// A deployment must still be a deployment.
 ///
 /// Every coherence check below is conditional on finding the component it
@@ -891,6 +857,11 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     // prevent. The two are told apart by the oracle the market is configured to
     // read: a name this tool would have created means the steps that create it
     // are missing, not absent by design.
+    // The plan states which shape it is, so neither branch guesses. A proxy
+    // plan requires every proxy component *unconditionally*: falling through to
+    // a name check when the flag says "proxy" is what let a plan with its proxy
+    // steps deleted and its market renamed pass, since the renamed market's
+    // derived proxy is not the one its configuration references.
     if !file.derived.creates_its_own_oracle {
         anyhow::ensure!(
             market == 1 && governance == 0 && oracle == 0 && proposals == 0,
@@ -898,23 +869,6 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
              governance, {oracle} oracle and {proposals} proposal step(s) \
              alongside {market} market deploy(s). A direct deployment creates \
              only the market."
-        );
-        return Ok(());
-    }
-
-    if governance == 0 && oracle == 0 && proposals == 0 {
-        anyhow::ensure!(
-            market == 1,
-            "a deployment plan needs exactly one market deploy; this one has \
-             {market}."
-        );
-        anyhow::ensure!(
-            !reads_the_proxy_this_plan_would_create(file),
-            "this plan deploys only a market, but that market reads `{}` — the \
-             proxy this very plan would create, and nothing here creates it. \
-             The proxy steps have been removed; the market would price against \
-             an account that will never exist.",
-            market_oracle(file).unwrap_or_default()
         );
         return Ok(());
     }
