@@ -61,7 +61,12 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
     )
     .await?;
 
-    checks.push(admin_holds_the_role(&ctx, &spec, &args.governance_admin).await?);
+    // Only meaningful for a proxy market: a direct market reads an oracle it
+    // does not own, and governing it is somebody else's business.
+    if !spec.oracle.is_direct() {
+        checks.push(admin_holds_the_role(&ctx, &spec, &args.governance_admin).await?);
+        checks.extend(governance_controls_the_oracle(&ctx, &spec).await?);
+    }
 
     if let (Some(intended), Some(path)) = (&intended, &args.against) {
         checks.push(matches_intent(&spec, intended, path));
@@ -98,6 +103,78 @@ struct Projection {
 struct VerifiedMarket {
     market_id: AccountId,
     oracle_id: AccountId,
+}
+
+/// Does governance actually control the oracle this market reads?
+///
+/// `governance.admin` proves only that the supplied admin holds the role on the
+/// account a spec *derives*. It says nothing about whether that account owns the
+/// deployed oracle. A legacy deployment can leave a correctly named oracle owned
+/// by the registry — nine of the eleven v1 proxy oracles are exactly that — so
+/// without this the whole governance chain verifies clean while nobody named in
+/// the spec can configure the feed.
+///
+/// Both directions are asked: the oracle's owner must be the governance
+/// contract, and the governance contract must govern that oracle.
+async fn governance_controls_the_oracle(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+) -> anyhow::Result<Vec<Check>> {
+    use templar_gateway_methods_spec::{owner, proxy_oracle_governance as gov};
+
+    let governance_id = spec.governance_id()?;
+    let oracle_id = spec.oracle_id()?;
+
+    let owner_status = match ctx
+        .client
+        .read(owner::GetOwner {
+            contract_id: oracle_id.clone(),
+        })
+        .await
+    {
+        Ok(result) => match result.owner {
+            Some(owner) if owner == governance_id => {
+                Status::passed(format!("`{oracle_id}` is owned by `{governance_id}`"))
+            }
+            Some(owner) => Status::failed(format!(
+                "`{oracle_id}` is owned by `{owner}`, not by `{governance_id}`. \
+                 Governance cannot configure this oracle, and `admin_set_proxy` \
+                 is dispatched detached, so a proposal against it would still \
+                 report success."
+            )),
+            None => Status::failed(format!(
+                "`{oracle_id}` has no owner, so nothing can configure its feeds"
+            )),
+        },
+        Err(error) => Status::failed(format!(
+            "could not read the owner of `{oracle_id}`: {error}"
+        )),
+    };
+
+    let governs_status = match ctx
+        .client
+        .read(gov::GetProxyOracleId {
+            governance_id: governance_id.clone(),
+        })
+        .await
+    {
+        Ok(result) if result.proxy_oracle_id == oracle_id => {
+            Status::passed(format!("`{governance_id}` governs `{oracle_id}`"))
+        }
+        Ok(result) => Status::failed(format!(
+            "`{governance_id}` governs `{}`, not `{oracle_id}`. Proposals made \
+             through it would configure a different oracle.",
+            result.proxy_oracle_id
+        )),
+        Err(error) => Status::failed(format!(
+            "could not read which oracle `{governance_id}` governs: {error}"
+        )),
+    };
+
+    Ok(vec![
+        Check::new("governance.owns_oracle", owner_status),
+        Check::new("governance.governs_oracle", governs_status),
+    ])
 }
 
 /// Is `--governance-admin` actually the admin?

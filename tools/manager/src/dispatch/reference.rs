@@ -71,15 +71,58 @@ pub trait ReferencePriceSource {
 /// a network blip and exit zero.
 type Resolved = Result<Listing, Status>;
 
+/// Which CoinGecko plan a key belongs to. The two are not interchangeable: a
+/// pro key must go to `pro-api.coingecko.com` under a different header, and
+/// sending it to the demo host returns 401 for every request — which this tool
+/// would report as three `Skipped` checks and a green preflight where no
+/// cross-check ran at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Plan {
+    Demo,
+    Pro,
+}
+
+impl Plan {
+    const fn host(self) -> &'static str {
+        match self {
+            Self::Demo => "https://api.coingecko.com/api/v3",
+            Self::Pro => "https://pro-api.coingecko.com/api/v3",
+        }
+    }
+
+    const fn header(self) -> &'static str {
+        match self {
+            Self::Demo => "x-cg-demo-api-key",
+            Self::Pro => "x-cg-pro-api-key",
+        }
+    }
+}
+
 pub struct CoinGecko {
     client: reqwest::Client,
     api_key: Option<String>,
+    plan: Plan,
+    /// The full catalogue, fetched at most once per run.
+    ///
+    /// `candidates` is called per leg, and the catalogue is several megabytes
+    /// against a rate limit — a spec pinning no `reference` on either side
+    /// downloaded it twice per preflight.
+    coin_list: tokio::sync::OnceCell<Vec<Listing>>,
 }
 
 impl CoinGecko {
     /// `COINGECKO_API_KEY` is optional; the demo tier is ample for the two calls
     /// a preflight makes.
+    ///
+    /// `COINGECKO_PRO` selects the paid host and header. Explicit rather than
+    /// sniffed from the key's shape, which CoinGecko does not document as
+    /// stable.
     pub fn from_env() -> anyhow::Result<Self> {
+        let plan = if std::env::var_os("COINGECKO_PRO").is_some() {
+            Plan::Pro
+        } else {
+            Plan::Demo
+        };
         Ok(Self {
             client: reqwest::Client::builder()
                 .user_agent("tmplrmgr")
@@ -87,15 +130,36 @@ impl CoinGecko {
                 .build()
                 .context("build HTTP client")?,
             api_key: std::env::var("COINGECKO_API_KEY").ok(),
+            plan,
+            coin_list: tokio::sync::OnceCell::new(),
         })
     }
 
-    fn get(&self, url: &str) -> reqwest::RequestBuilder {
-        let request = self.client.get(url);
+    fn get(&self, path: &str) -> reqwest::RequestBuilder {
+        let request = self.client.get(format!("{}{path}", self.plan.host()));
         match &self.api_key {
-            Some(key) => request.header("x-cg-demo-api-key", key),
+            Some(key) => request.header(self.plan.header(), key),
             None => request,
         }
+    }
+
+    /// The catalogue, fetched once and reused.
+    async fn coin_list(&self) -> anyhow::Result<&Vec<Listing>> {
+        self.coin_list
+            .get_or_try_init(|| async {
+                let listings: Vec<CoinGeckoListing> = self
+                    .get("/coins/list")
+                    .send()
+                    .await
+                    .context("request the coin list")?
+                    .error_for_status()
+                    .context("coin list request rejected")?
+                    .json()
+                    .await
+                    .context("decode the coin list")?;
+                Ok(listings.into_iter().map(Listing::from).collect())
+            })
+            .await
     }
 }
 
@@ -123,9 +187,8 @@ impl ReferencePriceSource for CoinGecko {
         // wanted, and the full document is orders of magnitude larger.
         let response = self
             .get(&format!(
-                "https://api.coingecko.com/api/v3/coins/{id}?localization=false\
-                 &tickers=false&market_data=false&community_data=false\
-                 &developer_data=false&sparkline=false"
+                "/coins/{id}?localization=false&tickers=false&market_data=false\
+                 &community_data=false&developer_data=false&sparkline=false"
             ))
             .send()
             .await
@@ -146,22 +209,14 @@ impl ReferencePriceSource for CoinGecko {
 
     async fn candidates(&self, symbol: &str) -> anyhow::Result<Vec<Listing>> {
         // The whole catalogue, because only the complete set proves a ticker is
-        // unambiguous. Paid for only when a spec declines to pin an id.
-        let listings: Vec<CoinGeckoListing> = self
-            .get("https://api.coingecko.com/api/v3/coins/list")
-            .send()
-            .await
-            .context("request the coin list")?
-            .error_for_status()
-            .context("coin list request rejected")?
-            .json()
-            .await
-            .context("decode the coin list")?;
-
-        Ok(listings
-            .into_iter()
-            .map(Listing::from)
+        // unambiguous. Paid for only when a spec declines to pin an id, and
+        // fetched once per run however many legs ask.
+        Ok(self
+            .coin_list()
+            .await?
+            .iter()
             .filter(|listing| listing.symbol.eq_ignore_ascii_case(symbol))
+            .cloned()
             .collect())
     }
 
@@ -177,7 +232,7 @@ impl ReferencePriceSource for CoinGecko {
 
         let quotes: BTreeMap<String, Quote> = self
             .get(&format!(
-                "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
+                "/simple/price?ids={}&vs_currencies=usd",
                 ids.join(",")
             ))
             .send()

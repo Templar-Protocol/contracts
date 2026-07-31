@@ -167,6 +167,21 @@ impl SignerArgs {
             None => Signer::from_secret_key(self.secret()?.clone())
                 .context("build a signer from --secret-key")?,
             Some(SigningBackend::Keychain) => {
+                // Said out loud rather than made a parse error. `SECRET_KEY` is
+                // commonly exported, and clap's `conflicts_with` fires on
+                // environment values too — so declaring these mutually
+                // exclusive would break the documented `--sign-with keychain`
+                // flow until the operator unset a variable the backend ignores.
+                // The failure worth preventing is *silent* shadowing, and a
+                // warning prevents that without failing a valid invocation.
+                if self.secret_key.is_some() {
+                    eprintln!(
+                        "warning: --sign-with keychain is set, so the supplied \
+                         --secret-key/$SECRET_KEY is ignored; this transaction \
+                         is signed by the key the keychain holds for {}.",
+                        self.signer_id,
+                    );
+                }
                 Signer::from_keystore_with_search_for_keys(self.signer_id.clone(), network)
                     .await
                     .context("find a usable key for this account in the OS keychain")?

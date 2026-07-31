@@ -79,21 +79,32 @@ impl CliContext {
         Ok((account_id, client))
     }
 
-    /// The public key the configured backend will actually sign with.
+    /// A signing client together with the public key that client will actually
+    /// sign with, from **one** resolution of the backend.
     ///
-    /// Distinct from [`SignerArgs::public_key`], which for an external backend
-    /// returns the key the operator *asserted* via `--public-key`. Verifying a
-    /// full-access grant against an assertion verifies nothing, so this resolves
-    /// the backend and asks it.
-    pub(crate) async fn signing_public_key(
+    /// The key is distinct from [`SignerArgs::public_key`], which for an
+    /// external backend returns what the operator *asserted* via
+    /// `--public-key`; verifying a full-access grant against an assertion
+    /// verifies nothing, so this asks the resolved backend.
+    ///
+    /// One resolution, because the keychain backend discovers the account's
+    /// keys on chain and may prompt: resolving separately for the check and for
+    /// the send repeats that, and — worse — lets the key that was checked
+    /// differ from the key that signs.
+    pub(crate) async fn signing_client_and_key(
         &self,
         signer: &SignerArgs,
-    ) -> anyhow::Result<near_api::PublicKey> {
-        let (_, signing) = signer.resolve(&self.network).await?;
-        signing
+    ) -> anyhow::Result<(ManagedAccountId, Client, near_api::PublicKey)> {
+        let (account_id, signing) = signer.resolve(&self.network).await?;
+        let public_key = signing
             .get_public_key()
             .await
-            .context("ask the signing backend which key it will sign with")
+            .context("ask the signing backend which key it will sign with")?;
+        let client = Client::builder(self.network.clone())
+            .with_signer(account_id.clone(), signing)
+            .build()
+            .context("build signing client")?;
+        Ok((account_id, client, public_key))
     }
 
     /// Dispatch a read and print its JSON result.

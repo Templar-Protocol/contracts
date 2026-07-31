@@ -132,7 +132,7 @@ async fn governance_ttl(
             // A kind the deployment does not have has no TTL to recover, which
             // is not the same as a failed read: matched on the contract's own
             // "unknown variant" so a genuine RPC failure still propagates.
-            Err(error) if is_unknown_variant(&error) => continue,
+            Err(error) if is_unknown_kind(&error, *kind) => continue,
             Err(error) => {
                 return Err(anyhow::Error::new(error)
                     .context(format!("read {kind:?} TTL from {governance_id}")))
@@ -157,10 +157,27 @@ async fn governance_ttl(
         .context("governance exposes no operation kinds to read a TTL from")
 }
 
-/// Whether the contract rejected the *argument* as a variant it does not know,
-/// rather than failing for any other reason.
-fn is_unknown_variant(error: &templar_gateway_core::GatewayError) -> bool {
-    error.to_string().contains("unknown variant")
+/// Operation kinds this build knows may postdate a deployed governance
+/// contract, and whose absence is therefore expected rather than suspicious.
+///
+/// An allowlist, because skipping a kind removes it from the uniformity check
+/// — and a *wrongly* skipped kind is how a per-operation timelock gets
+/// flattened into a single `ttl_default` and then removed by the next deploy.
+const POSTDATED_KINDS: [OperationKind; 1] = [OperationKind::SelfUpgrade];
+
+/// Whether the contract rejected `kind` as a variant it does not know.
+///
+/// Narrow on both axes: only kinds known to postdate a deployment are
+/// skippable, and the error must name the kind that was asked for. A bare
+/// "unknown variant" match would also swallow a genuine query failure whose
+/// message happened to contain that phrase, and every swallowed kind silently
+/// widens what `ttl_default` claims to cover.
+fn is_unknown_kind(error: &templar_gateway_core::GatewayError, kind: OperationKind) -> bool {
+    if !POSTDATED_KINDS.contains(&kind) {
+        return false;
+    }
+    let rendered = error.to_string();
+    rendered.contains("unknown variant") && rendered.contains(&format!("{kind:?}"))
 }
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is
@@ -257,4 +274,53 @@ async fn version_key(
         .deployment
         .with_context(|| format!("`{registry_id}` has no deployment record for {account_id}"))?
         .version_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_unknown_kind, OperationKind};
+    use templar_gateway_core::GatewayError;
+
+    fn error(message: &str) -> GatewayError {
+        GatewayError::NearQuery(message.to_owned())
+    }
+
+    /// The case the skip exists for: a governance contract older than this
+    /// build does not know `SelfUpgrade`.
+    #[test]
+    fn a_postdated_kind_the_contract_rejects_is_skippable() {
+        assert!(is_unknown_kind(
+            &error("unknown variant `SelfUpgrade`, expected one of `SetProxy`, ..."),
+            OperationKind::SelfUpgrade,
+        ));
+    }
+
+    /// A kind that does not postdate any deployment is never absent by design,
+    /// so its rejection is a real failure.
+    #[test]
+    fn a_kind_every_deployment_has_is_not_skippable() {
+        assert!(!is_unknown_kind(
+            &error("unknown variant `SetProxy`, expected one of ..."),
+            OperationKind::SetProxy,
+        ));
+    }
+
+    /// An error that does not name the kind asked for is a different failure,
+    /// and swallowing it would drop that kind from the uniformity check.
+    #[test]
+    fn an_error_naming_another_variant_is_not_skippable() {
+        assert!(!is_unknown_kind(
+            &error("unknown variant `Something`, expected one of ..."),
+            OperationKind::SelfUpgrade,
+        ));
+    }
+
+    /// Any other failure propagates, however it is worded.
+    #[test]
+    fn an_unrelated_failure_is_not_skippable() {
+        assert!(!is_unknown_kind(
+            &error("timed out talking to the RPC"),
+            OperationKind::SelfUpgrade,
+        ));
+    }
 }

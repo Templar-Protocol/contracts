@@ -164,6 +164,11 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     let (credential, targets) =
         review(&ctx, &file, &args, &outstanding, &remaining, &journal_path).await?;
 
+    // Resolved once, here, and carried through to the send: the keychain
+    // backend discovers keys on chain and may prompt, and a second resolution
+    // could hand back a different key than the one checked below.
+    let (signer, client, signing_key) = ctx.signing_client_and_key(&args.signer).await?;
+
     // Whoever holds these keys controls the three new accounts. A mistyped or
     // substituted `--public-key` at plan time is invisible in the artifact —
     // the keys live inside the encoded args — so where the applier's own key is
@@ -174,9 +179,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // who cannot say which key they hold cannot verify the one being handed
     // control of three new accounts, and that is a refusal, not a pass.
     {
-        let mine = ctx.signing_public_key(&args.signer).await?;
         // Compared through the JSON encoding, which is the form the args carry.
-        let mine = serde_json::to_value(mine)
+        let mine = serde_json::to_value(signing_key)
             .ok()
             .and_then(|key| key.as_str().map(ToOwned::to_owned))
             .unwrap_or_default();
@@ -225,14 +229,24 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // the check is only worth what it is worth at the moment of the send.
     ensure_targets_free(&ctx, &targets).await?;
 
-    send(&ctx, &file, &args, remaining, journal, &journal_path).await
+    send(
+        &ctx,
+        &client,
+        &signer,
+        &file,
+        remaining,
+        journal,
+        &journal_path,
+    )
+    .await
 }
 
 /// Send the outstanding steps, journalling each as it lands.
 async fn send(
     ctx: &CliContext,
+    client: &Client,
+    signer: &templar_gateway_types::ManagedAccountId,
     file: &PlanFile,
-    args: &Apply,
     remaining: Vec<usize>,
     mut journal: Journal,
     journal_path: &std::path::Path,
@@ -241,10 +255,6 @@ async fn send(
     // Batching would leave an interrupted run with nothing recorded — the only
     // run a journal exists for.
     let plan = file.clone().into_operation_plan()?;
-    // One signing client for the whole run: near-api caches nonces on the
-    // `Signer`, and rebuilding it per step would start each from an empty cache
-    // and risk signing a nonce the chain has already consumed.
-    let (signer, client) = ctx.signing_client_for(&args.signer).await?;
 
     for index in remaining {
         let step = &file.steps[index];
