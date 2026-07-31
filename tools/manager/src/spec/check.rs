@@ -130,6 +130,15 @@ fn mode_is_fully_described(spec: &MarketSpec) -> Check {
                  it would be ignored"
             ));
         }
+        // Required, and checked here rather than left to `config.validate`:
+        // that check skips itself when decimals are unresolved, so an offline
+        // run of a direct spec missing a `price_id` exited zero.
+        if direct && price_id.is_none() {
+            problems.push(format!(
+                "{side} states no `price_id`; a pre-existing oracle serves its \
+                 own identifiers and this spec has nothing to derive one from"
+            ));
+        }
         if direct && sources > 0 {
             problems.push(format!(
                 "{side} names {sources} source(s), but this market reads an \

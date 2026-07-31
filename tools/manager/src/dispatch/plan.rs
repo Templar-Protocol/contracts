@@ -823,12 +823,30 @@ fn market_oracle(file: &PlanFile) -> Option<String> {
 /// account whose absence means steps were deleted is the one derived from
 /// *this* plan's own market id.
 fn reads_the_proxy_this_plan_would_create(file: &PlanFile) -> bool {
-    let market = file.derived.market_id.as_str();
-    let Some((label, registry)) = market.split_once('.') else {
+    // Derived from the market deploy *step*, not from `derived`: renaming the
+    // market is a supported edit and leaves that metadata stale, so comparing
+    // against it would ask about a market this plan no longer creates.
+    let Some((label, registry)) = market_deploy_name(file) else {
         return false;
     };
     market_oracle(file)
-        .is_some_and(|oracle| oracle == format!("{}.{registry}", crate::spec::oracle_name(label)))
+        .is_some_and(|oracle| oracle == format!("{}.{registry}", crate::spec::oracle_name(&label)))
+}
+
+/// The sub-account label and registry of the step that deploys the market.
+fn market_deploy_name(file: &PlanFile) -> Option<(String, String)> {
+    file.steps.iter().find_map(|step| {
+        step.function_calls.iter().find_map(|call| {
+            let init = decoded_init_args(call)?;
+            init.get("configuration")?;
+            let bytes = call.args.to_bytes().ok()?;
+            let args: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            Some((
+                args.get("name")?.as_str()?.to_owned(),
+                step.receiver_id.to_string(),
+            ))
+        })
+    })
 }
 
 /// A deployment must still be a deployment.

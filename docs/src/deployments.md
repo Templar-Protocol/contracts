@@ -32,7 +32,7 @@ Shared values live in `specs/alpha/profiles/`. A market file names the profiles
 it extends and states only what differs:
 
 ```toml
-extends = ["profiles/alpha-mainnet.toml", "profiles/irs-0.toml"]
+extends = ["profiles/alpha-mainnet.toml", "profiles/irs-standard.toml"]
 name = "my-market"
 
 [oracle.direct]                    # reads an oracle that already exists
