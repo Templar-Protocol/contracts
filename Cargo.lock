@@ -13485,6 +13485,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "sputnikdao2",
  "templar-common",
  "templar-contract-artifacts",

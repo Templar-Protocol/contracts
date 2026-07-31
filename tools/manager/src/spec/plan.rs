@@ -52,10 +52,24 @@ impl PlanArgs {
         }
     }
 
-    fn into_bytes(self) -> anyhow::Result<Vec<u8>> {
+    /// The bytes this will send.
+    ///
+    /// Borrowing rather than consuming, because the collision check has to read
+    /// the same bytes the executor will. Re-checks representability: `from_bytes`
+    /// runs at generation, but it is the *edited* file that gets sent, and a
+    /// hand-written number too large for `u64` would otherwise be re-encoded in
+    /// exponent form — a value nobody wrote.
+    pub(crate) fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         match self {
-            Self::Json(value) => serde_json::to_vec(&value).context("encode JSON args"),
-            Self::Base64(bytes) => Ok(bytes.0),
+            Self::Json(value) => {
+                anyhow::ensure!(
+                    exactly_representable(value),
+                    "these args carry a number that cannot be re-encoded exactly; \
+                     it would be sent in a different form than written"
+                );
+                serde_json::to_vec(value).context("encode JSON args")
+            }
+            Self::Base64(bytes) => Ok(bytes.0.clone()),
         }
     }
 }
@@ -149,7 +163,7 @@ impl PlanStep {
             .map(|call| {
                 Ok(Action::FunctionCall(Box::new(FunctionCallAction {
                     method_name: call.method_name,
-                    args: call.args.into_bytes()?,
+                    args: call.args.to_bytes()?,
                     gas: NearGas::from_gas(call.gas),
                     deposit: call.deposit,
                 })))
@@ -343,9 +357,14 @@ fn summary_digest(
     digest(&(schema, tool_version, network, spec_digest, derived, checks))
 }
 
-/// `sha256:…` over a value's JSON encoding.
+/// `sha256:…` over a value's *canonical* JSON encoding.
+///
+/// Canonical because a spec's `yield_weights.static` is a `HashMap`, whose
+/// iteration order is randomized per process — hashing the plain encoding gave
+/// the same spec a different `spec_digest` on every invocation, which is the
+/// opposite of the traceability the field exists for.
 pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
-    let bytes = serde_json::to_vec(value).context("serialize for digest")?;
+    let bytes = serde_json_canonicalizer::to_vec(value).context("serialize for digest")?;
     Ok(format!(
         "sha256:{}",
         templar_contract_artifacts::sha256_hex(&bytes)
