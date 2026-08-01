@@ -24,6 +24,7 @@ maximum_usage_ratio = "0.99000000000000000000000000000000000001"
 liquidation_maximum_spread = "0.1"
 origination_fee = { Proportional = "0.00099999999999999999999999999999999999" }
 yield_weights = { static = { "revenue.tmplr.near" = 1, "rewards.tmplr.near" = 1 }, supply = 1 }
+price_maximum_age = "60s"
 borrow_range = { minimum = "1" }
 supply_range = { minimum = "40000" }
 supply_withdrawal_range = { minimum = "40000" }

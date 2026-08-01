@@ -27,7 +27,6 @@ mcr_maintenance = "1.2"
 mcr_liquidation = "1.15"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.1"
-price_maximum_age = "120s"
 borrow_range = { minimum = "1" }
 supply_range = { minimum = "40000" }
 supply_withdrawal_range = { minimum = "40000" }

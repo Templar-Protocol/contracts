@@ -20,7 +20,7 @@ ttl_default = "0s"
 
 [market]
 time_chunk = "10m"
-price_maximum_age = "60s"
+price_maximum_age = "120s"
 # 1.5% band for the third-party price cross-check.
 reference_tolerance = "0.015"
 origination_fee = { Flat = "0" }
