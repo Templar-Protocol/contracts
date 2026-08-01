@@ -409,6 +409,7 @@ async fn review(
     ensure_plan_is_coherent(file)?;
     ensure_initializers_are_sound(file)?;
     ensure_proposals_are_runnable(file)?;
+    ensure_steps_are_ordered(file)?;
 
     Ok((credential, targets))
 }
@@ -929,6 +930,80 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
         "a deployment plan configures both price feeds; this one carries no \
          proposal steps at all. A market whose feeds are never set prices nothing."
     );
+    Ok(())
+}
+
+/// The generated order is a safety property, so an edited plan must keep it.
+///
+/// `build` documents why: governance must own the oracle before any feed can be
+/// configured, and the market must not exist until its feeds are. Every other
+/// guard here asks *what* a plan contains — counts, references, arguments — and
+/// none of them look at position, so moving the market deploy ahead of the
+/// oracle satisfies all of them while `send` executes the array order. The
+/// market then goes live pointing at an oracle that is missing or unconfigured,
+/// and because `admin_set_proxy` is dispatched detached, nothing later reports
+/// it.
+fn ensure_steps_are_ordered(file: &PlanFile) -> anyhow::Result<()> {
+    if !file.derived.creates_its_own_oracle {
+        return Ok(());
+    }
+
+    let (mut governance, mut oracle, mut market) = (None, None, None);
+    let mut proposals = Vec::new();
+
+    for (index, step) in file.steps.iter().enumerate() {
+        for call in &step.function_calls {
+            if is_governance_proposal(call)? {
+                proposals.push((index, step.label.clone()));
+                continue;
+            }
+            let Some(init) = decoded_init_args(call)? else {
+                continue;
+            };
+            if init.get("admin_id").is_some() {
+                governance = Some((index, step.label.clone()));
+            }
+            if init.get("owner_id").is_some() {
+                oracle = Some((index, step.label.clone()));
+            }
+            if init.get("configuration").is_some() {
+                market = Some((index, step.label.clone()));
+            }
+        }
+    }
+
+    // Completeness is established before this runs, so all three are present.
+    let (Some(governance), Some(oracle), Some(market)) = (governance, oracle, market) else {
+        return Ok(());
+    };
+
+    let mut required = vec![(
+        governance,
+        oracle.clone(),
+        "an oracle cannot be handed to a governance contract that does not exist yet",
+    )];
+    required.extend(proposals.iter().map(|proposal| {
+        (
+            oracle.clone(),
+            proposal.clone(),
+            "a feed cannot be configured on an oracle that does not exist yet",
+        )
+    }));
+    required.extend(proposals.iter().map(|proposal| {
+        (
+            proposal.clone(),
+            market.clone(),
+            "the market would go live reading a feed this plan has not configured yet",
+        )
+    }));
+
+    for ((first, first_label), (second, second_label), why) in required {
+        anyhow::ensure!(
+            first < second,
+            "`{first_label}` (step {first}) must run before `{second_label}` \
+             (step {second}): {why}."
+        );
+    }
     Ok(())
 }
 
@@ -1586,6 +1661,7 @@ mod tests {
     use crate::spec::plan::PlanArgs;
     use crate::spec::plan::{Derived, PlanFile};
     use crate::spec::{BORROW_PRICE_ID, COLLATERAL_PRICE_ID};
+    use rstest::rstest;
 
     fn checks() -> Vec<Check> {
         vec![
@@ -2187,6 +2263,80 @@ mod tests {
             rendered.contains("borrow.near"),
             "the refusal must name the token that was never registered: {rendered}"
         );
+    }
+
+    /// A plan that keeps every component but reorders them is refused.
+    ///
+    /// Counts, references and arguments all still check out when the market
+    /// deploy is moved ahead of the oracle — none of those guards looks at
+    /// position — and `send` executes the array order, so the market goes live
+    /// reading an oracle that does not exist yet.
+    #[rstest]
+    #[case(&[0, 1, 2, 3], None)]
+    #[case(&[3, 0, 1, 2], Some("has not configured yet"))]
+    #[case(&[0, 3, 1, 2], Some("has not configured yet"))]
+    #[case(&[1, 0, 2, 3], Some("does not exist yet"))]
+    fn a_reordered_plan_is_refused(#[case] order: &[usize], #[case] expected: Option<&str>) {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+        use base64::Engine as _;
+
+        let deploy = |label: &str, init: serde_json::Value| PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": label,
+                    "version_key": "v1",
+                    "init_args": base64::engine::general_purpose::STANDARD
+                        .encode(serde_json::to_vec(&init).expect("encode")),
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        };
+        let proposal = |label: &str, args: serde_json::Value| PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "create_proposal".to_owned(),
+                args: PlanArgs::Json(args),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_yoctonear(1),
+            }],
+        };
+
+        // The generated order: governance, oracle, one proposal, market.
+        let generated = vec![
+            deploy("gov", serde_json::json!({ "admin_id": "a.near" })),
+            deploy("oracle", serde_json::json!({ "owner_id": "gov.near" })),
+            proposal(
+                "propose collateral",
+                serde_json::json!({
+                    "id": 1,
+                    "requested_ttl": "0",
+                    "operation": { "SetProxy": { "id": hex::encode(COLLATERAL_PRICE_ID.0) } },
+                }),
+            ),
+            deploy("market", serde_json::json!({ "configuration": { "x": 1 } })),
+        ];
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.derived.creates_its_own_oracle = true;
+        file.steps = order
+            .iter()
+            .map(|index| generated[*index].clone())
+            .collect();
+
+        match expected {
+            None => super::ensure_steps_are_ordered(&file).expect("the generated order stands"),
+            Some(fragment) => {
+                let error = super::ensure_steps_are_ordered(&file).expect_err("out of order");
+                assert!(format!("{error:#}").contains(fragment), "{error:#}");
+            }
+        }
     }
 
     /// Both feeds must be proposed *and* executed, per feed.

@@ -105,6 +105,16 @@ impl SignerArgs {
         ManagedAccountId::from(self.signer_id.clone())
     }
 
+    /// The key the operator *asserted* via `--public-key`, unvalidated.
+    ///
+    /// Distinct from [`Self::public_key`], which for the in-process backend
+    /// derives the real one. For an external backend nothing here can check the
+    /// assertion — only a resolved signer can — so the caller that resolves is
+    /// the one that must.
+    pub const fn asserted_public_key(&self) -> Option<CliPublicKey> {
+        self.public_key
+    }
+
     /// The requested plan-only output format.
     pub const fn print(&self) -> Option<PrintFormat> {
         self.print

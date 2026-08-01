@@ -71,11 +71,7 @@ impl CliContext {
         &self,
         signer: &SignerArgs,
     ) -> anyhow::Result<(ManagedAccountId, Client)> {
-        let (account_id, signing) = signer.resolve(&self.network).await?;
-        let client = Client::builder(self.network.clone())
-            .with_signer(account_id.clone(), signing)
-            .build()
-            .context("build signing client")?;
+        let (account_id, client, _) = self.signing_client_and_key(signer).await?;
         Ok((account_id, client))
     }
 
@@ -100,6 +96,28 @@ impl CliContext {
             .get_public_key()
             .await
             .context("ask the signing backend which key it will sign with")?;
+
+        // Every write flows through here, which is the only place an asserted
+        // `--public-key` can be checked against the key that will actually
+        // sign. `SignerArgs::public_key` validates the in-process backend
+        // against the secret it derives from, but for an external backend it
+        // can only hand back what the operator typed — and a deploy embeds that
+        // value as the full access key on an account it is creating. A typo, or
+        // a keychain holding a different one of the account's keys, would grant
+        // control to a key the operator does not have while omitting the one
+        // that signed.
+        if let Some(asserted) = signer.asserted_public_key() {
+            anyhow::ensure!(
+                asserted == public_key,
+                "--public-key is `{asserted}`, but `{}` will sign with \
+                 `{public_key}`. A deploy embeds `--public-key` as the full access \
+                 key on the account it creates, so this would hand control to a \
+                 key you do not hold. Drop --public-key to use the signing key, \
+                 or pass the one the backend holds.",
+                *signer.account_id(),
+            );
+        }
+
         let client = Client::builder(self.network.clone())
             .with_signer(account_id.clone(), signing)
             .build()

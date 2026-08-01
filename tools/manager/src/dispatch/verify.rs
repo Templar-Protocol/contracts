@@ -46,6 +46,19 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
             .clone_from(&intended.collateral.reference);
         spec.borrow.symbol.clone_from(&intended.borrow.symbol);
         spec.borrow.reference.clone_from(&intended.borrow.reference);
+        // The tolerances travel with them. `market export` cannot recover a
+        // judgement call either, so it emits the default — leaving these behind
+        // verifies a deliberately wider band against 1.5% and fails it, or
+        // verifies a narrower one against 1.5% and passes it.
+        spec.market
+            .reference_tolerance
+            .clone_from(&intended.market.reference_tolerance);
+        spec.collateral
+            .reference_tolerance
+            .clone_from(&intended.collateral.reference_tolerance);
+        spec.borrow
+            .reference_tolerance
+            .clone_from(&intended.borrow.reference_tolerance);
     }
 
     // The same checks `spec check` runs, against the reconstructed spec — not a
