@@ -1,12 +1,4 @@
-# hemiBTC on Ethereum, held through NEAR Intents (`iethhemibtc`), as the
-# collateral asset of a v1 market that deploys its own proxy oracle.
-#
-# Priced as plain BTC, and not by assumption: its deployed sources are the BTC
-# feed and RedStone's `BTC`, so the oracle configuration already asserts it.
-#
-# `iethhemibtc-iethusdc` is the only v1 market holding it today, and this
-# profile does not describe it: that market still reads the Pyth oracle, which
-# is being retired in favor of Lazer. Adopting this profile is the migration.
+# hemiBTC on Ethereum, held through NEAR Intents. Priced as BTC.
 [collateral]
 asset = "nep245:intents.near:nep141:eth-0x06ea695b91700071b161a434fed42d1dcbad9f00.omft.near"
 symbol = "hemiBTC"

@@ -1,9 +1,4 @@
-# LTC, held through NEAR Intents (`iltc`), as the collateral asset of a v1
-# market that deploys its own proxy oracle.
-#
-# `iltc-ixlmusdc` is the only v1 market holding it today, and this profile
-# does not describe it: that market still reads the Pyth oracle, which is
-# being retired in favor of Lazer. Adopting this profile is the migration.
+# LTC, held through NEAR Intents.
 [collateral]
 asset = "nep245:intents.near:nep141:ltc.omft.near"
 symbol = "LTC"

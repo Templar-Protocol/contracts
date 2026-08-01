@@ -1,13 +1,4 @@
-# USDC on Stellar, held through NEAR Intents (`ixlmusdc`), as the borrow asset
-# of a v1 market that deploys its own proxy oracle.
-#
-# Named for the token, not the ticker: v1 borrows three distinct tokens all
-# called USDC — this one, native `usdc.near`, and `iethusdc`. A profile named
-# for the ticker would silently pin the wrong one.
-#
-# This is the shape the current-generation proxy markets use — the two on
-# proxy oracle 0.3.0. The six older markets borrowing this same token read it
-# through a `pyth` source under `median_low`, and do not match this profile.
+# USDC on Stellar, held through NEAR Intents.
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 symbol = "USDC"

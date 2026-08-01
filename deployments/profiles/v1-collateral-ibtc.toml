@@ -1,9 +1,4 @@
-# BTC, held through NEAR Intents (`ibtc`), as the collateral asset of a v1
-# market that deploys its own proxy oracle.
-#
-# `ibtc-ixlmusdc` is the only v1 market holding it today, and this profile
-# does not describe it: that market still reads the Pyth oracle, which is
-# being retired in favor of Lazer. Adopting this profile is the migration.
+# BTC, held through NEAR Intents.
 [collateral]
 asset = "nep245:intents.near:nep141:btc.omft.near"
 symbol = "BTC"
