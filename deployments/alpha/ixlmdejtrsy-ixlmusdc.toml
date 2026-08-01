@@ -9,11 +9,15 @@ account_id = "pyth-oracle.near"
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5y5yhcUCbDKaCx4zNjEHQbwLAdvwucCecVzC5Ub7uNKEb"
 price_id = "0210be8d6073809a6b26cede532b7e60bacd4478a0f9f1c3f2e6d86a7f0bdce6"
+symbol = "DEJTRSY"
+reference = { unlisted = { reason = "no CoinGecko listing for this tokenized treasury fund" } }
 decimals = 18
 
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 
 [market]

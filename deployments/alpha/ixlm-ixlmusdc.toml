@@ -9,11 +9,15 @@ account_id = "pyth-oracle.near"
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
 price_id = "b7a8eba68a997cd0210c2e1e4ee811ad2d174b3611c22d9ebf16f4cb7e9ba850"
+symbol = "XLM"
+reference = { coin_gecko = { id = "stellar" } }
 decimals = 7
 
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 
 [market]

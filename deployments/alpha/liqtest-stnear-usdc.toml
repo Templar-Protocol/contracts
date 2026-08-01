@@ -9,11 +9,15 @@ account_id = "lst.oracle.tmplr.near"
 [collateral]
 asset = "nep141:meta-pool.near"
 price_id = "c23cb2430c81d475fbd1c235324d4987f2dd01431bf7ab3e7b9d69b9f6701470"
+symbol = "stNEAR"
+reference = { coin_gecko = { id = "staked-near" } }
 decimals = 24
 
 [borrow]
 asset = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
 price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 6
 
 [market]

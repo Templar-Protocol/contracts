@@ -9,11 +9,15 @@ account_id = "pyth-oracle.near"
 [collateral]
 asset = "nep245:intents.near:nep141:cardano.omft.near"
 price_id = "2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d"
+symbol = "ADA"
+reference = { coin_gecko = { id = "cardano" } }
 decimals = 6
 
 [borrow]
 asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"
 price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 6
 
 [market]

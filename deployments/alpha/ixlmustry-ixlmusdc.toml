@@ -9,11 +9,15 @@ account_id = "proxy-oracle-ustry-usdc.templar-alpha.near"
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5yT2A5maKJqJQsuNg7BA6VG4S4ZATpqmKYLwYBsfEfh6e"
 price_id = "5553545259000000000000000000000000000000000000000000000000000000"
+symbol = "USTRY"
+reference = { unlisted = { reason = "no CoinGecko listing for this tokenized treasury product" } }
 decimals = 7
 
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 price_id = "5553444300000000000000000000000000000000000000000000000000000000"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 
 [market]

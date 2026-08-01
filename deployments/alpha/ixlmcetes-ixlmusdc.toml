@@ -9,11 +9,15 @@ account_id = "proxy-oracle-cetes-usdc.templar-alpha.near"
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5uBD3Wrr7pthp8XhJsreEcwTVnmjQ1wpbzkvHLEQf3ygS"
 price_id = "4345544553000000000000000000000000000000000000000000000000000000"
+symbol = "CETES"
+reference = { coin_gecko = { id = "cetes" } }
 decimals = 7
 
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 price_id = "5553444300000000000000000000000000000000000000000000000000000000"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 
 [market]

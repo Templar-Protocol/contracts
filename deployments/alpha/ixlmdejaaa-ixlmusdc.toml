@@ -9,11 +9,15 @@ account_id = "pyth-oracle.near"
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB66Lr9d7WU1sDna78SqG5x1ZraFjkpPdiYXjHFRnZJUhuV"
 price_id = "5ca9c34d00214bf9416439970caf29eb7f379536fcb82ee21e7d7cf69acadf2a"
+symbol = "DEJAAA"
+reference = { coin_gecko = { id = "defi-janus-henderson-anemoy-aaa-clo-fund" } }
 decimals = 18
 
 [borrow]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
 price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
 decimals = 7
 
 [market]
