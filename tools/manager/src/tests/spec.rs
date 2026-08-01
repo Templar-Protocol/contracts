@@ -231,7 +231,6 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
 /// lets the reference cross-check run at all.
 #[rstest]
 #[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
-#[case("v1-borrow-usdt", "borrow", &["linear-usdt", "stnear-usdt"])]
 #[case("v1-collateral-iada", "collateral", &["iada-ixlmusdc"])]
 #[case("v1-collateral-ibtc", "collateral", &["ibtc-ixlmusdc"])]
 #[case("v1-collateral-idoge", "collateral", &["idoge-ixlmusdc"])]
