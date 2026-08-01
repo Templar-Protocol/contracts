@@ -1,7 +1,9 @@
 # ZEC, held through NEAR Intents (`izec`), as the collateral asset of a v1
 # market that deploys its own proxy oracle.
 #
-# Matches `izec-ixlmusdc`, the only v1 market holding it today.
+# `izec-ixlmusdc` is the only v1 market holding it today, and this profile
+# does not describe it: that market still reads the Pyth oracle, which is
+# being retired in favor of Lazer. Adopting this profile is the migration.
 [collateral]
 asset = "nep245:intents.near:nep141:zec.omft.near"
 symbol = "ZEC"
@@ -10,6 +12,6 @@ decimals = 8
 aggregator = "median_low"
 min_sources = 1
 sources = [
-    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "be9b59d178f0d6a97ab4c343bff2aa69caa1eaae3e9048a65788c529b125bb24", weight = 8 },
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 66, weight = 8 },
     { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "ZEC", weight = 2 },
 ]

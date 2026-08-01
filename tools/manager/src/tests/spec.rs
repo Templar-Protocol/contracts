@@ -211,18 +211,24 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
     );
 }
 
-/// Each shared asset profile must reproduce the asset leg of every deployed
-/// market it claims to represent.
+/// Every shared asset profile must name one token consistently and carry the
+/// standard source pair.
 ///
-/// Compared as the parsed TOML section against the migrated specs, not against
-/// an inline literal: a profile asserted only against itself would prove
-/// nothing, and the whole point of factoring one out is that a market can adopt
-/// it without changing what it deploys.
+/// Two separate obligations, because they hold against different things:
 ///
-/// `symbol` and `reference` are removed before comparing, and their presence
-/// asserted separately. Neither reaches the chain, so `market export` cannot
-/// recover them and no migrated spec has them — supplying them is what these
-/// profiles add, and without them the reference cross-check cannot run at all.
+/// * The token identity — asset, decimals, aggregator, `min_sources` — must
+///   still agree with the market that holds it. Those are properties of the
+///   asset, and a profile that disagreed would redeploy a different market.
+/// * The sources must be exactly one Lazer leg at weight 8 and one RedStone leg
+///   at weight 2. This deliberately does *not* match every deployed market:
+///   Pyth is being retired, so seven of these profiles are a migration target
+///   rather than a description. Asserting the shape is what keeps a stray
+///   `pyth` source or a mistyped weight from creeping back in.
+///
+/// `symbol` and `reference` are removed before the first comparison and their
+/// presence asserted separately: neither reaches the chain, so `market export`
+/// cannot recover them and no migrated spec has them. Supplying them is what
+/// lets the reference cross-check run at all.
 #[rstest]
 #[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
 #[case("v1-borrow-usdt", "borrow", &["linear-usdt", "stnear-usdt"])]
@@ -235,39 +241,60 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
 #[case("v1-collateral-ixlm", "collateral", &["ixlm-ixlmusdc-1"])]
 #[case("v1-collateral-ixrp", "collateral", &["ixrp-ixlmusdc"])]
 #[case("v1-collateral-izec", "collateral", &["izec-ixlmusdc"])]
-fn a_shared_asset_profile_matches_the_markets_it_represents(
+fn a_shared_asset_profile_is_standard_and_names_its_token_consistently(
     #[case] profile: &str,
     #[case] side: &str,
     #[case] markets: &[&str],
 ) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let section = |path: PathBuf| -> toml::Value {
+    let section = |path: PathBuf| -> toml::Table {
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let mut document: toml::Table = toml::from_str(&text)
             .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
         document
             .remove(side)
-            .unwrap_or_else(|| panic!("{} states no `[{side}]`", path.display()))
+            .and_then(|value| value.as_table().cloned())
+            .unwrap_or_else(|| panic!("{} states no `[{side}]` table", path.display()))
     };
 
     let mut from_profile = section(root.join(format!("deployments/profiles/{profile}.toml")));
-    let table = from_profile
-        .as_table_mut()
-        .unwrap_or_else(|| panic!("`{profile}` `[{side}]` is not a table"));
     for field in ["symbol", "reference"] {
         assert!(
-            table.remove(field).is_some(),
+            from_profile.remove(field).is_some(),
             "`{profile}` must carry `{field}`; it is the cross-check metadata no \
              exported spec can recover"
         );
     }
 
+    let sources = from_profile
+        .remove("sources")
+        .unwrap_or_else(|| panic!("`{profile}` states no sources"));
+    let sources = sources
+        .as_array()
+        .unwrap_or_else(|| panic!("`{profile}` sources is not an array"));
+    let shape: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            (
+                source.get("kind").and_then(toml::Value::as_str),
+                source.get("weight").and_then(toml::Value::as_integer),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![(Some("lazer"), Some(8)), (Some("red_stone"), Some(2))],
+        "`{profile}` must read one Lazer leg at weight 8 and one RedStone leg at \
+         weight 2; Pyth is being retired"
+    );
+
     for market in markets {
+        let mut deployed = section(root.join(format!("deployments/v1/{market}.toml")));
+        deployed.remove("sources");
         assert_eq!(
-            from_profile,
-            section(root.join(format!("deployments/v1/{market}.toml"))),
-            "`{profile}` would deploy a different {side} leg than `{market}` runs"
+            from_profile, deployed,
+            "`{profile}` names a different token than `{market}` holds"
         );
     }
 }

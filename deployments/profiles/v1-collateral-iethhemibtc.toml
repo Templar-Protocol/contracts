@@ -1,18 +1,20 @@
 # hemiBTC on Ethereum, held through NEAR Intents (`iethhemibtc`), as the
 # collateral asset of a v1 market that deploys its own proxy oracle.
 #
-# Priced as plain BTC, and not by assumption: the sources below are the BTC
-# Pyth feed and RedStone's `BTC`, so the deployed oracle already asserts it.
+# Priced as plain BTC, and not by assumption: its deployed sources are the BTC
+# feed and RedStone's `BTC`, so the oracle configuration already asserts it.
 #
-# Matches `iethhemibtc-iethusdc`, the only v1 market holding it today.
+# `iethhemibtc-iethusdc` is the only v1 market holding it today, and this
+# profile does not describe it: that market still reads the Pyth oracle, which
+# is being retired in favor of Lazer. Adopting this profile is the migration.
 [collateral]
 asset = "nep245:intents.near:nep141:eth-0x06ea695b91700071b161a434fed42d1dcbad9f00.omft.near"
 symbol = "hemiBTC"
-reference = { coin_gecko = { id = "bitcoin" } }
+reference = { coin_gecko = { id = "hemi-bitcoin" } }
 decimals = 8
 aggregator = "median_low"
 min_sources = 1
 sources = [
-    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43", weight = 8 },
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1, weight = 8 },
     { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "BTC", weight = 2 },
 ]

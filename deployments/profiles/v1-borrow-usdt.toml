@@ -1,11 +1,10 @@
 # Native NEAR USDT as the borrow asset of a v1 market that deploys its own
-# proxy oracle. Shared by `linear-usdt` and `stnear-usdt`.
+# proxy oracle.
 #
-# Deliberately not shaped like `v1-borrow-ixlmusdc.toml`: no deployed v1
-# market prices USDT through Lazer, so there is no feed id to name here and no
-# second source to weigh against. A single Pyth source under `median_low` is
-# what is actually deployed; inventing a Lazer leg would put a feed nobody has
-# configured into every market that extends this.
+# `linear-usdt` and `stnear-usdt` are the v1 markets borrowing it today, and
+# this profile does not describe either: both read a single Pyth source, which
+# is being retired in favor of Lazer. Adopting this profile is the migration,
+# and it adds the RedStone leg those markets have never had.
 [borrow]
 asset = "nep141:usdt.tether-token.near"
 symbol = "USDT"
@@ -14,5 +13,6 @@ decimals = 6
 aggregator = "median_low"
 min_sources = 1
 sources = [
-    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b", weight = 1 },
+    { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 8, weight = 8 },
+    { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "USDT", weight = 2 },
 ]

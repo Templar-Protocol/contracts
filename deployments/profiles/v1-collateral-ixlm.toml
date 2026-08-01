@@ -1,7 +1,8 @@
 # XLM, held through NEAR Intents (`ixlm`), as the collateral asset of a v1
 # market that deploys its own proxy oracle.
 #
-# Matches `ixlm-ixlmusdc-1`, the only v1 market holding it today.
+# Matches `ixlm-ixlmusdc-1`, the only v1 market holding it today — it is
+# already on Lazer.
 [collateral]
 asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
 symbol = "XLM"
