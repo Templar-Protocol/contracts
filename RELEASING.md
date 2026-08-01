@@ -20,25 +20,11 @@ If you never merge the Release PR, nothing is ever released.
 
 ### Choosing version numbers
 
-> **Automatic bumps are not active in the current configuration.** release-plz
-> reads a crate's current version from the registry, and nothing is published,
-> so every crate looks unreleased and keeps the version its `Cargo.toml` already
-> states — commit messages do not move it. Set the version yourself on the
-> Release PR branch with `release-plz set-version`; it updates the crate, its
-> dependents and the lockfile together, and release-plz tags, changelogs and
-> releases whatever you chose.
->
-> This is a configuration gap, not a dead end. Running the CLI with
-> `--registry-manifest-path` pointed at a checkout of the last release commit
-> supplies the baseline the registry cannot, and bumps then work normally. It
-> needs the CLI rather than the GitHub Action, which exposes no input for that
-> flag.
-
-Once baselines work, bumps are proposed from the commit messages since each
-crate's last tag: `feat` → minor, `!` in the title → major, anything else →
-patch. Any crate with a commit since its tag gets *some* bump — `chore` and
-`docs` included — so a release batch is usually wider than the work you were
-thinking of. See [Commit And PR Titles](AGENTS.md#commit-and-pr-titles).
+Bumps are proposed from the commit messages since each crate's last tag: `feat`
+→ minor, `!` in the title → major, anything else → patch. Any crate with a
+commit since its tag gets *some* bump — `chore` and `docs` included — so a
+release batch is usually wider than the work you were thinking of. See
+[Commit And PR Titles](AGENTS.md#commit-and-pr-titles).
 
 Pre-1.0 crates follow Cargo's semver rules, where the minor position carries
 breakage: `!` goes `0.1.0` → `0.2.0`, and a plain `feat` goes `0.1.0` → `0.1.1`
@@ -72,6 +58,35 @@ force-pushes to keep it current. As soon as you push a **human** commit it stops
 force-pushing — if more work lands on `dev`, it closes that PR and opens a fresh
 one rather than overwrite your edits. So make hand-edits shortly before merging,
 not days ahead.
+
+## How release-plz knows what changed
+
+To decide whether a crate needs a release, release-plz diffs it against its own
+released source, which it normally downloads from the registry. Nothing here is
+published, so that source comes from a checkout instead: the `release-baseline`
+tag marks the tree of the last release, and the Release PR job hands its
+`Cargo.toml` to `--registry-manifest-path`.
+
+This matters more than it sounds. Without a baseline release-plz reads *every*
+crate as an initial release: it never proposes a bump, and it writes a changelog
+replaying the crate's entire history — while the `release` step, finding each
+proposed tag already present, releases nothing. A Release PR that looks like a
+58-crate release and ships none of it.
+
+The tag is a lower bound on released state. Too old costs only a wider diff,
+because the per-crate walk still stops at the crate's own version tag. Too new
+is the failure that matters: the commits it skipped past are treated as already
+shipped, and nothing will bump or changelog them afterwards. The release job
+therefore advances it only when a release actually happened.
+
+Two consequences worth knowing:
+
+- **Dropping a crate from a Release PR forfeits its pending commits.** The
+  baseline moves past them with the rest of the batch. Bump it in the batch, or
+  release it later from a commit the baseline has not reached.
+- **`--registry-manifest-path` is a CLI-only flag.** `release-plz/action`
+  exposes no input for it, which is why that job installs the CLI directly while
+  the `release` job still uses the action.
 
 ## Release tiers
 
@@ -116,20 +131,9 @@ over pinning a raw commit:
 templar-gateway-client = { git = "https://github.com/Templar-Protocol/contracts", tag = "templar-gateway-client-v0.1.0" }
 ```
 
-**The blocker is wider than publishing: it also costs automatic version bumps.**
-`git_only` would derive baselines from tags rather than a registry, which is
-what this repo needs. It resolves each baseline by checking the tag out and
-running `cargo package`, and packaging rewrites a git dependency into a registry
-one — so it demands a `redstone` on crates.io that does not exist. Giving the
-dependency a `version` alongside its `git` does not help; packaging still
-resolves that version against crates.io, where `redstone` is an unrelated
-`0.1.0`. So `git_only` stays off, baselines come from the empty registry, and
-every crate reads as unreleased at its manifest version.
-
-Resolving RedStone would buy crates.io publishing and tag-based baselines
-together. Automatic bumps do **not** have to wait for it: see the note under
-[Choosing version numbers](#choosing-version-numbers) — supplying the baseline
-from a local checkout avoids packaging entirely.
+The blocker is confined to uploads. Version bumps and changelogs work, because
+they never need the registry — see
+[How release-plz knows what changed](#how-release-plz-knows-what-changed).
 
 **To unblock**, once RedStone publishes the SDK (or we depend on a published
 fork): set `redstone`'s workspace dependency to a registry version, add a
@@ -216,8 +220,9 @@ Release names the account its bytes came from.
 
 ## Setup
 
-Both one-time steps are already done; they are recorded here because they are
-what makes the rest work, not because anyone needs to repeat them.
+These are the one-time steps the rest of this document assumes. The first two
+are done; they are recorded because they are what makes the rest work, not
+because anyone needs to repeat them.
 
 - **Baseline tags.** Every crate was tagged at its then-current `Cargo.toml`
   version (`templar-common-v1.4.0`, …) so release-plz has a starting point.
@@ -226,11 +231,22 @@ what makes the rest work, not because anyone needs to repeat them.
 - **Historical releases.** The 17 versions genuinely deployed to mainnet were
   published as GitHub Releases, tagged at their build commits. Nothing can fetch
   a released artifact that has no Release to fetch it from.
+- **The `release-baseline` tag — still to be cut.** It belongs at the commit the
+  baseline tags were made from, the point at which every crate was, by
+  declaration, released at the version it stated. The release job moves it from
+  there on. Until it exists the Release PR job fails rather than fall back to
+  the no-baseline behaviour described
+  [above](#how-release-plz-knows-what-changed):
+
+  ```bash
+  git tag release-baseline 92d0c332 && git push origin refs/tags/release-baseline
+  ```
 
 Two secrets must be present:
 
 - **`RELEASE_PLZ_TOKEN`** (required). A PR opened with the default
   `GITHUB_TOKEN` does not trigger other workflows, so without a PAT the Release
   PR never runs `test.yml` and the release tags never run the artifact/CLI
-  workflows. Both release-plz jobs fail fast if it is unset.
-- **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A leaves `git_only` mode.
+  workflows. Both release-plz jobs fail fast if it is unset. The release job also
+  pushes `release-baseline` with it.
+- **`CARGO_REGISTRY_TOKEN`.** Only consulted once Tier A starts publishing.

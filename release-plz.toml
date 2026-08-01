@@ -9,11 +9,13 @@
 # contract/artifacts/src/catalog.rs asserts this stays false.
 publish = false
 
-# `git_only` is deliberately unset. It derives baselines by checking each tag
-# out and running `cargo package`, which cannot succeed while `templar-common`
-# depends on RedStone by git — so enabling it fails the whole release-PR job,
-# not merely publishing. Baselines therefore come from the registry, where
-# these crates are simply absent.
+# `git_only` is deliberately unset. It is the other way to get baselines
+# without a registry, but it derives them by checking each tag out and running
+# `cargo package`, which cannot succeed while `templar-common` depends on
+# RedStone by git — so enabling it fails the whole release-PR job, not merely
+# publishing. `.github/workflows/release-plz.yml` passes
+# `--registry-manifest-path` instead: it reads the baseline workspace with
+# `cargo metadata`, so no packaging step ever resolves that git dependency.
 
 # Batch changes into a Release PR instead of releasing on every merge to `dev`.
 release_always = false

@@ -62,7 +62,7 @@ jobs:
             echo "::notice::${REF_NAME} has no catalogued WASM artifact; nothing to build."
             exit 0
           elif [ "$status" -ne 0 ]; then
-            echo "::error::could not resolve ${REF_NAME} against the artifact catalog." >&2
+            echo "::error::${REF_NAME} names a catalogued artifact but cannot be built; see the error above." >&2
             exit "$status"
           fi
 

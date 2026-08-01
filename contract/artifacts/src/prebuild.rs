@@ -73,7 +73,7 @@ pub fn main() -> ExitCode {
         // version immediately before creating the tag.
         let version = match workspace_loader::get_metadata(&args.workspace_root).map(|workspace| {
             workspace_loader::find_package(&workspace, metadata.package_name)
-                .map(|package| package.version.to_string())
+                .map(|package| package.version.clone())
         }) {
             Ok(Some(version)) => version,
             Ok(None) => {
@@ -85,6 +85,22 @@ pub fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
+
+        // The catalog names files `<artifact>@<version>.tsv` and orders
+        // releases by `major.minor.patch`, so a prerelease or build-metadata
+        // version has no entry it could be recorded under. Refusing it here is
+        // what keeps that state unreachable: the build and the asset upload
+        // both come after this step, and a published Release cannot be
+        // withdrawn once its bytes are cited.
+        if !version.pre.is_empty() || !version.build.is_empty() {
+            eprintln!(
+                "{} {version} is not `major.minor.patch`; the artifact catalog \
+                 cannot record it, so this release would produce bytes no \
+                 consumer could verify",
+                metadata.package_name,
+            );
+            return ExitCode::FAILURE;
+        }
 
         // The catalog key, and the name of the file `record-release` writes.
         println!("artifact={artifact}");

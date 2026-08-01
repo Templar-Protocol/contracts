@@ -125,6 +125,10 @@ mod tests {
     /// A mock has no released version, so there are no canonical bytes to
     /// serve. This is a precondition failure, not an upstream fetch failure —
     /// and it needs no network to establish.
+    ///
+    /// A mock is the only artifact this can be asserted of permanently:
+    /// `mocks_are_never_released` in the artifacts catalog holds it true, while
+    /// any real contract acquires a release the day it ships.
     #[tokio::test]
     async fn test_dispatch_get_artifact_rejects_unreleased_mock() {
         let error = Dispatch::dispatch(
@@ -139,25 +143,6 @@ mod tests {
         assert!(
             matches!(error, GatewayError::RequestPreconditionFailed(ref message)
                 if message.contains("never been released")),
-            "{error}"
-        );
-    }
-
-    /// The NEAR vault has never been deployed, so it has no canonical bytes —
-    /// same precondition failure as a mock, for a different reason.
-    #[tokio::test]
-    async fn test_dispatch_get_artifact_rejects_never_released_contract() {
-        let error = Dispatch::dispatch(
-            GetArtifact {
-                artifact: ArtifactId::Vault,
-            },
-            (),
-        )
-        .await
-        .expect_err("no NEAR vault has shipped");
-
-        assert!(
-            matches!(error, GatewayError::RequestPreconditionFailed(_)),
             "{error}"
         );
     }

@@ -541,11 +541,23 @@ jobs:
       # edit or deletion — which would silently move `current()` with every other
       # check still green.
       - name: Released versions are append-only
-        if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Whatever this run is adding to, whichever event delivered it: a PR's
+          # base, or the branch tip a push moved off. Gating on `pull_request`
+          # instead would leave a direct push to `dev` free to rewrite a
+          # released digest with every other catalog check still green, since
+          # they validate the resulting catalog rather than its history.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           set -euo pipefail
+          # An all-zero (branch creation) or absent (`workflow_dispatch`) base
+          # is not a base this run introduced changes on top of.
+          case "$BASE_SHA" in
+            "" | 0000000000000000000000000000000000000000)
+              echo "::notice::no base commit to diff against; nothing was introduced here."
+              exit 0
+              ;;
+          esac
           # Lowercase `a` excludes additions, so this is "anything that is not a
           # new file" rather than a list of the statuses we thought of. Naming
           # them missed `T`: swapping a release for a symlink to a new file is a
@@ -597,6 +609,11 @@ jobs:
         uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
         with:
           tool: cargo-llvm-cov,nextest,just
+
+      # Coverage runs the same `fast_filter` as the fast gate, so it inherits
+      # its need for the cache: artifacts-dispatch serves real released bytes.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
 
       - name: Run tests with coverage
         env:
