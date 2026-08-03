@@ -5,6 +5,10 @@ inputs:
     description: cargo-near release to install
     required: false
     default: 0.19.2
+  sha256:
+    description: SHA-256 of that release's x86_64-unknown-linux-gnu tarball
+    required: false
+    default: 4be2fef36808d94fbe224277add6183cb42f395bb2ce272aa35be8cc09bf3206
 runs:
   using: composite
   steps:
@@ -12,4 +16,19 @@ runs:
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
-      run: curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/near/cargo-near/releases/download/cargo-near-v${VERSION}/cargo-near-installer.sh" | sh
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        target=x86_64-unknown-linux-gnu
+        tarball="$(mktemp -d)/cargo-near.tar.gz"
+        bin="${HOME}/.cargo/bin"
+
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$tarball" \
+          "https://github.com/near/cargo-near/releases/download/cargo-near-v${VERSION}/cargo-near-${target}.tar.gz"
+        # Upstream's own .sha256 gets replaced alongside a replaced tarball; the pin has to be ours.
+        echo "${SHA256}  ${tarball}" | sha256sum -c -
+
+        mkdir -p "$bin"
+        tar -xzf "$tarball" --strip-components=1 -C "$bin" "cargo-near-${target}/cargo-near"
+        echo "$bin" >> "$GITHUB_PATH"
+        "${bin}/cargo-near" --version
