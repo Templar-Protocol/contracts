@@ -309,6 +309,14 @@ impl MarketSpec {
         }
     }
 
+    /// The governance contract this deployment creates, if it creates one.
+    pub fn own_governance_id(&self) -> anyhow::Result<Option<AccountId>> {
+        match &self.oracle {
+            OracleMode::Direct { .. } => Ok(None),
+            OracleMode::Proxy => self.governance_id().map(Some),
+        }
+    }
+
     /// `proxy-gov-<name>.<registry>` — owns the oracle, so it must be deployed
     /// before the oracle names it at init.
     pub fn governance_id(&self) -> anyhow::Result<AccountId> {

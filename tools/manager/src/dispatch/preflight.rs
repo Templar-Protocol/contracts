@@ -37,7 +37,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
     print_json(&crate::spec::check::Report {
         subject: CheckedSpec {
             oracle_id: spec.reads_oracle_id()?,
-            governance_id: spec.governance_id()?,
+            governance_id: spec.own_governance_id()?,
             network: spec.network()?.to_string(),
             collateral_proxy: spec.collateral.clone().into_proxy(price_maximum_age),
             borrow_proxy: spec.borrow.clone().into_proxy(price_maximum_age),
@@ -55,7 +55,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
 struct CheckedSpec {
     market_id: AccountId,
     oracle_id: AccountId,
-    governance_id: AccountId,
+    governance_id: Option<AccountId>,
     network: String,
     collateral_proxy:
         templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,

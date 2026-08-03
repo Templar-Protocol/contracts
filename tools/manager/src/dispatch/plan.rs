@@ -88,11 +88,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
             creates_its_own_oracle: !spec.oracle.is_direct(),
             market_id: spec.market_id()?,
             oracle_id: spec.reads_oracle_id()?,
-            governance_id: if spec.oracle.is_direct() {
-                None
-            } else {
-                Some(spec.governance_id()?)
-            },
+            governance_id: spec.own_governance_id()?,
             collateral_decimals: spec.collateral.decimals,
             borrow_decimals: spec.borrow.decimals,
         },
@@ -167,24 +163,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             .ok()
             .and_then(|key| key.as_str().map(ToOwned::to_owned))
             .unwrap_or_default();
-        for step in &file.steps {
-            for call in &step.function_calls {
-                let granted = granted_keys(call)?;
-                anyhow::ensure!(
-                    granted.is_empty() || granted.iter().any(|key| key == &mine),
-                    "`{}` grants full access to {}, not to `{mine}`. Applying this \
-                     would hand control of the new account to a key you do not \
-                     hold; re-plan with your own --public-key, or pass the key \
-                     that is named.",
-                    step.label,
-                    granted
-                        .iter()
-                        .map(|key| format!("`{key}`"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-            }
-        }
+        ensure_granted_keys_are_yours(&file, &mine)?;
     }
 
     if !args.yes {
@@ -1422,6 +1401,33 @@ fn render(file: &PlanFile) {
     }
 }
 
+/// Refuse a plan that would leave the applier without a key on an account it
+/// creates.
+///
+/// Presence, not exclusivity: `--with-full-access-key` grants co-owners
+/// deliberately, and `render` prints every granted key before the confirmation
+/// prompt. The irreversible loss is paying to create an account you cannot use.
+fn ensure_granted_keys_are_yours(file: &PlanFile, mine: &str) -> anyhow::Result<()> {
+    for step in &file.steps {
+        for call in &step.function_calls {
+            let granted = granted_keys(call)?;
+            anyhow::ensure!(
+                granted.is_empty() || granted.iter().any(|key| key == mine),
+                "`{}` grants full access to {}, none of which you hold. Applying \
+                 this would hand control of the new account to a key you do not \
+                 have; re-plan with your own --public-key.",
+                step.label,
+                granted
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// The keys a deploy grants full access to on the account it creates.
 ///
 /// Rendered because they are otherwise invisible: they sit inside the call's
@@ -2167,6 +2173,46 @@ mod tests {
             rendered.contains("borrow.near"),
             "the refusal must name the token that was never registered: {rendered}"
         );
+    }
+
+    /// The applier must hold a key on every account the plan creates.
+    ///
+    /// A co-owner alongside is accepted: `--with-full-access-key` grants extra
+    /// keys deliberately, and `render` shows them before the prompt.
+    #[rstest]
+    #[case(&["mine"], true)]
+    #[case(&[], true)]
+    #[case(&["mine", "theirs"], true)]
+    #[case(&["theirs", "mine"], true)]
+    #[case(&["theirs"], false)]
+    fn every_granted_key_must_be_the_appliers(#[case] granted: &[&str], #[case] accepted: bool) {
+        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps.push(PlanStep {
+            label: "deploy market".to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({
+                    "name": "m",
+                    "version_key": "v1",
+                    "full_access_keys": granted,
+                })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        });
+
+        let result = super::ensure_granted_keys_are_yours(&file, "mine");
+        assert_eq!(result.is_ok(), accepted, "{granted:?}: {result:?}");
+        if !accepted {
+            assert!(
+                format!("{:#}", result.expect_err("refused")).contains("theirs"),
+                "the refusal must name the keys that were granted"
+            );
+        }
     }
 
     /// A plan that keeps every component but reorders them is refused.
