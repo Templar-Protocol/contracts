@@ -3,9 +3,7 @@ use templar_proxy_oracle_governance_kernel as kernel;
 
 use crate::OperationKind;
 
-/// `create_proposal`'s arguments as one type. Borsh decodes positionally, so the field order *is* the
-/// wire format of `create_proposal_borsh` — clients encode this rather than reproducing an argument
-/// order by hand. Byte-identical to the JSON entrypoint's three named arguments.
+/// Borsh decodes positionally, so this field order is `create_proposal_borsh`'s wire format.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[near(serializers = [json, borsh])]
 pub struct CreateProposalArgs<O> {
@@ -92,13 +90,8 @@ macro_rules! gen_ext_governance {
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
             ) -> $crate::interface::Proposal<$operation_ty>;
-            /// Borsh-argument twin of `create_proposal`, for wasm-carrying payloads that base64-in-JSON
-            /// makes too costly to parse or too large for a transaction. Returns nothing; read the
-            /// stored body with `get_proposal`.
-            ///
-            /// The only entrypoint that warrants a borsh twin: `cancel_proposal` and
-            /// `execute_proposal` take a `u32`, and `get_effective_proposal_ttl` is a view, so neither
-            /// is bounded by transaction size.
+            /// Borsh-argument twin of `create_proposal`, for payloads too large or too costly to send
+            /// as base64-in-JSON. Returns nothing; read the stored body with `get_proposal`.
             fn create_proposal_borsh(
                 &mut self,
                 #[serializer(borsh)] args: $crate::interface::CreateProposalArgs<$operation_ty>,

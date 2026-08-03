@@ -105,7 +105,6 @@ impl Governed {
         self.govern_with(operation, Encoding::Json).await
     }
 
-    /// [`Self::govern`] driven through `create_proposal_borsh`.
     async fn govern_borsh(&mut self, operation: Operation) -> Result<()> {
         self.govern_with(operation, Encoding::Borsh).await
     }
@@ -328,7 +327,6 @@ async fn admin_upgrade_replaces_the_oracle_code(
     Ok(())
 }
 
-/// `create_proposal_borsh` drives real governed effects, not just a stored body.
 #[rstest]
 #[tokio::test]
 async fn borsh_entrypoint_drives_target_and_reflexive_operations(

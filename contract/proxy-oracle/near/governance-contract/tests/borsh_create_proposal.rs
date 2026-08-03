@@ -1,5 +1,4 @@
-//! `create_proposal_borsh` against a real node: parity with the JSON entrypoint, the gas it saves,
-//! and the payload sizes only it can carry.
+//! `create_proposal_borsh` against a real node: parity, gas, and payload size.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -19,9 +18,8 @@ use common::{
     ONE_YOCTO,
 };
 
-/// Base64 puts the JSON transaction past `max_transaction_size` (1,572,864) while borsh stays under.
-/// The RPC's own body cap rejects it first (`413`, since the JSON-RPC envelope base64s the signed
-/// transaction again), so the assertion below requires only *an* error.
+/// The RPC's body cap answers 413 before the node applies `max_transaction_size`, so the assertion
+/// below requires only an error.
 const OVERSIZED_CODE_LEN: usize = 1_250_000;
 
 /// `proxy_oracle_id` is never called: these tests only create proposals.
@@ -53,7 +51,6 @@ async fn stored_operation(
     )
 }
 
-/// Measured on a representative upgrade payload: the saving this entrypoint exists for.
 #[rstest]
 #[tokio::test]
 async fn borsh_stores_the_same_operation_for_less_gas(
@@ -114,7 +111,6 @@ async fn borsh_stores_the_same_operation_for_less_gas(
     Ok(())
 }
 
-/// The payload class the JSON entrypoint cannot reach at all.
 #[rstest]
 #[tokio::test]
 async fn borsh_carries_a_payload_json_cannot(#[future(awt)] harness: SandboxHarness) -> Result<()> {

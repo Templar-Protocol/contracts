@@ -102,7 +102,6 @@ pub async fn call(
     call_raw(network, contract_id, method, args, signer_id, deposit).await
 }
 
-/// [`call`] against a borsh-argument entrypoint such as `create_proposal_borsh`.
 pub async fn call_borsh(
     network: &NetworkConfig,
     contract_id: &AccountId,

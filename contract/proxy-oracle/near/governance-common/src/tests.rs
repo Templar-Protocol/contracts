@@ -478,13 +478,10 @@ fn operation_borsh_and_json_round_trip() {
     );
 }
 
-/// A signed transaction may not exceed this (NEAR `max_transaction_size`), and the proposal travels
-/// inside one as function-call arguments.
+/// NEAR's cap on one signed transaction, which the proposal travels inside.
 const MAX_TRANSACTION_SIZE: usize = 1_572_864;
 
-/// The size claim behind `create_proposal_borsh`, checked directly rather than inferred from a
-/// sandbox rejection: base64 puts a wasm of this class past the transaction limit as JSON while borsh
-/// leaves headroom. Encoded sizes only — no node, no protocol behaviour.
+/// Base64 puts an upgrade payload of this class past the cap; borsh leaves headroom.
 #[test]
 fn borsh_fits_an_upgrade_payload_json_cannot() {
     let args = CreateProposalArgs {

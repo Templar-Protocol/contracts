@@ -315,8 +315,7 @@ fn role_mismatch_cannot_create_proposal() {
     }));
 }
 
-/// The borsh entrypoint delegates to the same body, so authorization, validation and the `Created`
-/// event come along with it. Decoding is not exercised here — these are plain Rust calls.
+/// Plain Rust calls, so this covers delegation and not the decoder.
 #[test]
 fn borsh_and_json_entrypoints_produce_the_same_proposal() {
     let operation = admin_upgrade();

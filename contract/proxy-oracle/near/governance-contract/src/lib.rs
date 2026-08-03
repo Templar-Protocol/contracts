@@ -80,9 +80,7 @@ impl Contract {
         u32::try_from(id).unwrap_or_else(|_| env::panic_str("Proposal ID exceeds u32"))
     }
 
-    /// Shared body of both `create_proposal` entrypoints, which differ only in argument encoding.
-    ///
-    /// Returns a borrow so the borsh entrypoint, whose payload is the large one, never copies it.
+    /// Returns a borrow so the borsh entrypoint never copies the payload it exists to carry cheaply.
     fn create_proposal_inner(
         &mut self,
         id: u32,
