@@ -74,7 +74,7 @@ HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
 LABEL org.opencontainers.image.title="Templar Liquidator Bot"
 LABEL org.opencontainers.image.description="Inventory-based liquidator bot for Templar Protocol"
 LABEL org.opencontainers.image.vendor="Templar Protocol"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="GPL-3.0-only"
 LABEL org.opencontainers.image.source="https://github.com/templar-protocol/contracts"
 
 # Default command

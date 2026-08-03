@@ -156,4 +156,4 @@ See [IMPLEMENTATION.md](./IMPLEMENTATION.md) for detailed architecture, developm
 
 ## License
 
-MIT
+GPL-3.0-only

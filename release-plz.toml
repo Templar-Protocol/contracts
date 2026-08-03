@@ -1,0 +1,118 @@
+## Release automation. Policy, tiers, and why crates.io publishing is currently
+## blocked are documented in RELEASING.md — this file only encodes the settings.
+
+[workspace]
+# Nothing is uploaded to a registry. This is the only thing deferring crates.io
+# for Tiers A and B: their manifests must stay publishable, because release-plz
+# skips a crate whose own `Cargo.toml` forbids publishing, and Tier B would then
+# get no versions and no tags. `no_tier_can_reach_a_registry` in
+# contract/artifacts/src/catalog.rs asserts this stays false.
+publish = false
+
+# `git_only` is deliberately unset. It is the other way to get baselines
+# without a registry, but it derives them by checking each tag out and running
+# `cargo package`, which cannot succeed while `templar-common` depends on
+# RedStone by git — so enabling it fails the whole release-PR job, not merely
+# publishing. `.github/workflows/release-plz.yml` passes
+# `--registry-manifest-path` instead: it reads the baseline workspace with
+# `cargo metadata`, so no packaging step ever resolves that git dependency.
+
+# Batch changes into a Release PR instead of releasing on every merge to `dev`.
+release_always = false
+
+# Fixed. The default only differs when a single crate is releasing
+# (`chore(<crate>): release v<version>`), which is the rare case here — and a
+# title that is informative only sometimes is one no runbook or search can rely
+# on. What shipped lives in the tag, the PR body's version table, and the
+# changelog; the title's job is to make the release lever recognisable.
+pr_name = "chore: release"
+
+# Per-crate tags: `templar-gateway-client-v0.2.0`. Required for independent
+# versioning — a bare `v0.2.0` cannot say which crate it refers to.
+git_tag_name = "{{ package }}-v{{ version }}"
+git_tag_enable = true
+git_release_enable = true
+
+changelog_update = true
+
+# cargo-semver-checks needs a published baseline to diff against, and nothing is
+# published yet. Turn this on for the Tier A crates at the same time as
+# `publish` — it is the guard that stops a breaking change reaching consumers.
+semver_check = false
+
+# `cargo update` on every release PR would churn the lockfile independently of
+# the actual changes being released.
+dependencies_update = false
+
+# Internal scaffolding: no tag, no changelog, no release. `release` defaults to
+# true, so these blocks are load-bearing — without them, mocks and test helpers
+# would get tags and changelog entries.
+
+[[package]]
+name = "templar-contract-artifacts"
+release = false
+
+[[package]]
+name = "templar-fuzz"
+release = false
+
+[[package]]
+name = "test-utils"
+release = false
+
+[[package]]
+name = "templar-gateway-testing"
+release = false
+
+# Regenerates and checks gateway/METHODS.md. Nothing depends on it.
+[[package]]
+name = "templar-gateway-catalog"
+release = false
+
+[[package]]
+name = "templar-proxy-oracle-soroban-integration-tests"
+release = false
+
+[[package]]
+name = "mock-ft"
+release = false
+
+[[package]]
+name = "mock-mt"
+release = false
+
+[[package]]
+name = "mock-oracle"
+release = false
+
+[[package]]
+name = "mock-receiver"
+release = false
+
+[[package]]
+name = "mock-ref"
+release = false
+
+# ---------------------------------------------------------------------------
+# Changelog rendering. Groups mirror the commit types the PR-title lint accepts
+# (.github/workflows/pr-title.yml) — keep the two in sync.
+# ---------------------------------------------------------------------------
+
+[changelog]
+protect_breaking_commits = true
+sort_commits = "oldest"
+
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^deploy", group = "Deployments" },
+  { message = "^docs", group = "Documentation" },
+  # Housekeeping that does not change shipped behaviour. Kept out of the
+  # changelog, but still counted for the version bump.
+  { message = "^test", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^build", skip = true },
+  { message = "^chore", skip = true },
+]

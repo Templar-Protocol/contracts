@@ -2,6 +2,7 @@
 name = "templar-gateway-artifacts-dispatch"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -12,7 +13,7 @@ near-contract-standards.workspace = true
 serde.workspace = true
 sha2.workspace = true
 templar-common = { workspace = true, features = ["non-contract-usage"] }
-templar-contract-artifacts = { workspace = true, features = ["embedded-wasm"] }
+templar-contract-artifacts = { workspace = true, features = ["fetch"] }
 templar-gateway-artifacts-spec.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-types.workspace = true

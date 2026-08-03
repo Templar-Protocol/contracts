@@ -1,0 +1,51 @@
+name: PR Title
+
+# Squash-merged PR titles become the commit messages release-plz reads to decide
+# each crate's next version, so an unconventional title means no bump and no
+# changelog entry. Only the type is enforced: release-plz picks the crate from
+# the files a commit touches, not from the scope. See AGENTS.md.
+
+# `pull_request`, not `pull_request_target`: the title is already in the event
+# payload, so there is no reason to run in the base-repo context with secrets on
+# a public repo. Nothing here checks out PR code.
+on:
+  pull_request:
+    # `synchronize` so every head SHA gets a result, not just edited titles.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate conventional commit title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with the `commit_parsers` in `release-plz.toml`.
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            ci
+            build
+            chore
+            deploy
+          requireScope: false
+          # A leading Linear ID breaks inference; a trailing one is fine.
+          subjectPattern: ^(?![A-Z]{2,}-\d+).+$
+          subjectPatternError: |
+            The subject "{subject}" of PR title "{title}" is invalid.
+            Put the Linear issue ID in the PR description, not the title —
+            a title like "ENG-123: do the thing" breaks release version
+            inference. Write "feat(gateway): do the thing" instead.

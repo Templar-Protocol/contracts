@@ -2,8 +2,10 @@
 name = "templar-gateway-testing"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [dependencies]
 anyhow.workspace = true
@@ -21,7 +23,13 @@ rstest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
-templar-contract-artifacts = { workspace = true, features = ["workspace-loader"] }
+# `fetch` backs `wasm::released()`: migration and upgrade tests deploy the real
+# historical bytes, downloaded from each version's GitHub Release and verified
+# against the catalog's SHA-256 pin.
+templar-contract-artifacts = { workspace = true, features = [
+    "workspace-loader",
+    "fetch",
+] }
 templar-gateway-client.workspace = true
 templar-gateway-core.workspace = true
 templar-gateway-methods-dispatch.workspace = true

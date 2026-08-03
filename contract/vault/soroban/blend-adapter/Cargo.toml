@@ -2,7 +2,8 @@
 name = "templar-soroban-blend-adapter"
 version = "1.0.0"
 edition = "2021"
-license = "GPL-3.0-only"
+rust-version.workspace = true
+license.workspace = true
 description = "Soroban adapter contract for Blend v2 pool integration"
 
 [lib]

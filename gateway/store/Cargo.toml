@@ -2,8 +2,10 @@
 name = "templar-gateway-store"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Durable operation, idempotency, and persistence adapters for the Templar gateway"
 
 [dependencies]
 async-trait.workspace = true

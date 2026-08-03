@@ -25,6 +25,7 @@ sandbox_filter := '((kind(test) & (' + sandbox_package_filter + ')) | (' + sandb
 fast_filter := 'not ' + network_filter + ' and not ' + sandbox_filter
 sandbox_test_filter := 'not ' + network_filter + ' and ' + sandbox_filter
 sandbox_test_threads := '4'
+artifacts_bin := 'cargo run --quiet -p templar-contract-artifacts --features fetch,clap --bin fetch-artifacts --'
 
 # Show available recipes.
 default:
@@ -167,3 +168,28 @@ coverage-lcov:
 # Build the docs.
 docs:
     ./script/build-docs.sh
+
+# Warm the shared cache of released contract WASM.
+#
+# Downloads every release pinned in contract/artifacts/releases/ and verifies
+# its SHA-256; migration and upgrade tests deploy these bytes. The cache is
+# outside the repo (override with TEMPLAR_ARTIFACT_CACHE;
+# TEMPLAR_ARTIFACT_OFFLINE=1 forbids downloads).
+artifacts-fetch:
+    {{ artifacts_bin }}
+
+# Print the resolved artifact cache directory.
+artifacts-cache-path:
+    @{{ artifacts_bin }} --print-path
+
+# Delete the artifact cache. Entries are immutable, so this only costs the next
+# `just artifacts-fetch` a re-download.
+artifacts-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$({{ artifacts_bin }} --print-path)"
+    # The crate resolves the path, so this cannot delete a directory it does not
+    # manage — but an empty expansion would make the `rm` unbounded.
+    [ -n "$dir" ] || { echo "could not resolve the artifact cache directory" >&2; exit 1; }
+    rm -rf -- "$dir"
+    echo "deleted $dir"

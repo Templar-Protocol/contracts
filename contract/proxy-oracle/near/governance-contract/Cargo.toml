@@ -1,9 +1,10 @@
 [package]
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 name = "templar-proxy-oracle-near-governance-contract"
 repository.workspace = true
-version = "0.1.0"
+version = "0.2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

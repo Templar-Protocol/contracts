@@ -12907,7 +12907,9 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata 0.23.1",
  "clap",
+ "dirs 6.0.0",
  "hex",
+ "reqwest 0.12.28",
  "rstest",
  "schemars 0.8.22",
  "serde",
@@ -12915,6 +12917,8 @@ dependencies = [
  "sha2 0.10.9",
  "strum 0.27.2",
  "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -13548,7 +13552,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-contract"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13584,7 +13588,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-governance-contract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
