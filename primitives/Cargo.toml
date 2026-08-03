@@ -4,7 +4,7 @@ license.workspace = true
 repository.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-version = "0.1.0"
+version = "0.1.1"
 description = "Chain-agnostic numeric and decimal primitives for Templar Protocol"
 
 [dependencies]
