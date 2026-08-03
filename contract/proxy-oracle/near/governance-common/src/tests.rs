@@ -478,6 +478,60 @@ fn operation_borsh_and_json_round_trip() {
     );
 }
 
+/// Round-trip tests move encoder and decoder together; only literal bytes catch a field reorder.
+#[test]
+fn create_proposal_args_wire_format_is_pinned() {
+    let args = CreateProposalArgs {
+        id: 7,
+        operation: Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
+            kind: ReflexiveKind::SetRole,
+            ttl: Nanoseconds::from_secs(1),
+        }),
+        requested_ttl: Nanoseconds::from_secs(2),
+    };
+
+    assert_eq!(
+        near_sdk::borsh::to_vec(&args).unwrap(),
+        [
+            [7, 0, 0, 0].as_slice(),         // id
+            &[0],                            // Operation::Reflexive
+            &[0],                            // ReflexiveOperation::SetReflexiveTtl
+            &[1],                            // ReflexiveKind::SetRole
+            &1_000_000_000u64.to_le_bytes(), // ttl
+            &2_000_000_000u64.to_le_bytes(), // requested_ttl
+        ]
+        .concat(),
+    );
+}
+
+/// NEAR's cap on one signed transaction, which the proposal travels inside.
+const MAX_TRANSACTION_SIZE: usize = 1_572_864;
+
+/// Base64 puts an upgrade payload of this class past the cap; borsh leaves headroom.
+#[test]
+fn borsh_fits_an_upgrade_payload_json_cannot() {
+    let args = CreateProposalArgs {
+        id: 0,
+        operation: Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+            code: UpgradeSource::Code(Base64VecU8(vec![0u8; 1_250_000])),
+            migrate_args: Base64VecU8(Vec::new()),
+        }),
+        requested_ttl: Nanoseconds::zero(),
+    };
+
+    let json = near_sdk::serde_json::to_vec(&args).unwrap().len();
+    let borsh = near_sdk::borsh::to_vec(&args).unwrap().len();
+
+    assert!(
+        json > MAX_TRANSACTION_SIZE,
+        "json encoding was {json} bytes"
+    );
+    assert!(
+        borsh < MAX_TRANSACTION_SIZE,
+        "borsh encoding was {borsh} bytes"
+    );
+}
+
 /// Pre-restructure JSON is rejected rather than converted: the old typed classification carried its
 /// own authorization (`AdminFunctionCall` was Admin-only whatever it called, `SetActionTtl` edited a
 /// TTL without touching roles), and silently reinterpreting it under the method-driven policy would

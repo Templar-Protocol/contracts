@@ -4,10 +4,12 @@
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
+use near_api::types::transaction::result::ExecutionSuccess;
 use near_api::types::AccountId;
 use near_api::{Account, Contract, NetworkConfig};
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
+use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation};
 
 pub use templar_gateway_testing::test_signer as signer;
 use templar_gateway_testing::TEST_FINALITY_POLICY;
@@ -45,6 +47,27 @@ pub async fn deploy_global_contract(
     Ok(Base58CryptoHash::from(hash))
 }
 
+/// Deploy `code` to `account` via its full-access key, atomically calling `method` (`new` to init,
+/// `migrate` to bootstrap-upgrade).
+pub async fn deploy_with_init(
+    network: &NetworkConfig,
+    account: &AccountId,
+    code: Vec<u8>,
+    method: &str,
+    args: near_sdk::serde_json::Value,
+) -> Result<()> {
+    Contract::deploy(account.clone())
+        .use_code(code)
+        .with_init_call(method, args)?
+        .max_gas()
+        .with_signer(signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(network)
+        .await?
+        .assert_success();
+    Ok(())
+}
+
 /// Deploy raw wasm to `account` via its full-access key, with no init call (a bare code refresh).
 pub async fn deploy_code(
     network: &NetworkConfig,
@@ -74,9 +97,33 @@ pub async fn call(
     args: impl Serialize,
     signer_id: &AccountId,
     deposit: near_sdk::NearToken,
-) -> Result<()> {
+) -> Result<ExecutionSuccess> {
+    let args = near_sdk::serde_json::to_vec(&args)?;
+    call_raw(network, contract_id, method, args, signer_id, deposit).await
+}
+
+pub async fn call_borsh(
+    network: &NetworkConfig,
+    contract_id: &AccountId,
+    method: &str,
+    args: impl near_sdk::borsh::BorshSerialize,
+    signer_id: &AccountId,
+    deposit: near_sdk::NearToken,
+) -> Result<ExecutionSuccess> {
+    let args = near_sdk::borsh::to_vec(&args)?;
+    call_raw(network, contract_id, method, args, signer_id, deposit).await
+}
+
+async fn call_raw(
+    network: &NetworkConfig,
+    contract_id: &AccountId,
+    method: &str,
+    args: Vec<u8>,
+    signer_id: &AccountId,
+    deposit: near_sdk::NearToken,
+) -> Result<ExecutionSuccess> {
     let outcome = Contract(contract_id.clone())
-        .call_function(method, args)
+        .call_function_raw(method, args)
         .transaction()
         .deposit(deposit)
         .gas(near_sdk::Gas::from_tgas(300))
@@ -93,17 +140,19 @@ pub async fn call(
         failures.is_empty(),
         "{method} left failed receipts: {failures:#?}"
     );
-    Ok(())
+    Ok(outcome)
 }
 
-/// `create_proposal` named args (no typed struct is exported by the contract's ABI). Generic over the
-/// operation so the pre-restructure `LegacyOperation` wire and the current `Operation` share one.
-#[derive(Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct CreateProposalArgs<O> {
-    pub id: u32,
-    pub operation: O,
-    pub requested_ttl: templar_common::Nanoseconds,
+pub use templar_proxy_oracle_near_governance_common::CreateProposalArgs;
+
+pub const ONE_YOCTO: near_sdk::NearToken = near_sdk::NearToken::from_yoctonear(1);
+
+/// A `SelfUpgrade` with nothing for `migrate` to do — the state version is already current.
+pub fn self_upgrade(code: templar_common::upgrade::UpgradeSource) -> Operation {
+    Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+        code,
+        migrate_args: near_sdk::json_types::Base64VecU8(Vec::new()),
+    })
 }
 
 #[derive(Serialize)]
