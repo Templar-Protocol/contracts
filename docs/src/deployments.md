@@ -4,11 +4,15 @@ A market is described by one spec file and deployed in two commands. There is
 no shell script: the spec is the source of truth, and everything that used to
 live in `env.sh`, `market-args.json` and `proxy-*.json` is derived from it.
 
+`deployments/alpha` targets a mainnet registry, so both commands need
+`--network mainnet` — the CLI defaults to testnet. `NETWORK` and `SIGNER_ID`
+work in place of the flags.
+
 ```sh
 tmplrmgr market plan  deployments/alpha/<market>.toml --out plan.json \
-    --signer-id <you> --public-key ed25519:…
-$EDITOR plan.json          # optional
-tmplrmgr market apply --plan plan.json --sign-with keychain
+    --network mainnet --signer-id <you> --public-key ed25519:…
+tmplrmgr market apply --plan plan.json \
+    --network mainnet --signer-id <you> --sign-with keychain
 ```
 
 `plan` reads the chain and writes a file; it sends nothing and takes no
@@ -21,15 +25,19 @@ market configuration for reading, names the keys each new account will grant,
 and carries the results of every preflight check. Reviewing a deployment no
 longer means reading a shell script and trusting it matches four JSON files.
 
-It is also editable, for when the spec cannot express something. `apply`
-re-derives what it can from the steps that will actually execute — the accounts
-being created, the oracle each step references, the admin being seated — so an
-edit that makes the deployment incoherent is refused by name rather than sent.
+It is a record of a derivation, not an input: the file carries the spec it came
+from, and `apply` re-derives the steps and refuses anything that does not match.
+Editing the plan is therefore not a way to change a deployment — change the spec
+and re-plan. For something no spec can express, run the transaction yourself
+with the command that performs it (`registry deploy`, `proxy-oracle governance
+create-proposal`, `storage deposit`); each is typed and validated on its own.
 
 ## Writing a spec
 
 Shared values live in `deployments/profiles/`. A market file names the profiles
-it extends and states only what differs:
+it extends and states only what differs. Abbreviated — a market also needs a
+`[borrow]` leg and the `[market]` parameters the profiles above do not set; see
+any file under `deployments/` for a complete one:
 
 ```toml
 extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
@@ -73,5 +81,5 @@ witness that a market can price anything.
 
 `apply` journals each step beside the plan as it lands. If a run is
 interrupted, re-running it skips what completed and continues from the first
-incomplete step. Editing a step that has already run is refused; editing one
-that has not is allowed, which is the point.
+incomplete step. A plan truncated to its completed prefix is refused rather than
+reported complete: the re-derivation runs before the journal is consulted.

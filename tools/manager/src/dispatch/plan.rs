@@ -1,6 +1,6 @@
 //! `market plan` / `market apply` — generate a deployment as a file, then send
-//! that file. Splitting the two puts a reviewable, editable artifact between
-//! them; the artifact itself is [`crate::spec::plan`].
+//! that file. Splitting the two puts a reviewable artifact between them; the
+//! artifact itself is [`crate::spec::plan`].
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
@@ -30,15 +30,14 @@ use crate::context::{print_json, CliContext};
 use crate::spec::journal::{self, Journal};
 use crate::spec::{
     check::{Check, Status},
-    plan::{Derived, PlanFile, PLAN_SCHEMA_VERSION},
+    plan::{PlanFile, PLAN_SCHEMA_VERSION},
     MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
 /// Deposits funding each new account's storage and balance, matching
 /// the deployment this replaces. Constants rather than spec fields: these size a
 /// *contract's* storage staking, which follows from the code being deployed
-/// rather than from the market. A deployment needing more can raise one by
-/// editing the plan.
+/// rather than from the market.
 const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_millinear(3_500);
 const ORACLE_DEPOSIT: NearToken = NearToken::from_near(5);
 const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_500);
@@ -46,7 +45,6 @@ const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_500);
 /// `market plan` — run the preflight, then write the deployment as a file.
 pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
-    let spec_digest = crate::spec::plan::digest(&spec)?;
 
     let mut checks =
         super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch, None)
@@ -64,14 +62,9 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     // first would replace a full check report with a single unrelated error.
     gate(&checks, spec.market_id()?.as_str())?;
 
-    let steps = build(
-        &ctx.client,
-        &spec,
-        &PublicKey::from(args.public_key),
-        &args.signer_id,
-    )
-    .await?;
-    let steps = PlanFile::steps_from(steps)?;
+    let public_key = PublicKey::from(args.public_key);
+    let steps =
+        PlanFile::steps_from(build(&ctx.client, &spec, &public_key, &args.signer_id).await?)?;
 
     // After the steps exist, because it reads them; before the plan is written,
     // because a signer that cannot pay is a reason not to write one.
@@ -81,20 +74,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     checks.extend(funding);
     gate(&checks, spec.market_id()?.as_str())?;
 
-    let file = PlanFile::from_steps(
-        spec.network()?.to_string(),
-        spec_digest,
-        Derived {
-            creates_its_own_oracle: !spec.oracle.is_direct(),
-            market_id: spec.market_id()?,
-            oracle_id: spec.reads_oracle_id()?,
-            governance_id: spec.own_governance_id()?,
-            collateral_decimals: spec.collateral.decimals,
-            borrow_decimals: spec.borrow.decimals,
-        },
-        checks,
-        steps,
-    )?;
+    let file = PlanFile::from_steps(spec.network()?.to_string(), spec, public_key, checks, steps);
 
     let rendered = serde_json::to_string_pretty(&file).context("render the plan")?;
     match &args.out {
@@ -116,17 +96,29 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         serde_json::from_str(&text).with_context(|| format!("parse {}", args.plan.display()))?;
 
     ensure_compatible(&file, &ctx.network().to_string())?;
-    // Otherwise every guard below passes vacuously and a truncated file applies
-    // cleanly, reporting success for having deployed nothing.
-    anyhow::ensure!(
-        !file.steps.is_empty(),
-        "this plan has no steps; nothing would be deployed"
-    );
+
+    // Each step names its own signer; `execute_as` only labels the store record.
+    // A credential for some other account fails at step 0 with an opaque
+    // executor error, so it is resolved here and checked below.
+    let credential = args.signer.account_id().0;
+    ensure_signed_by(&file, &credential)?;
+
+    // What the spec derives right now. Re-derived rather than inspected: a plan
+    // is a record of this derivation, so anything an edit could break is caught
+    // by one comparison instead of a guard per property.
+    let expected =
+        PlanFile::steps_from(build(&ctx.client, &file.spec, &file.public_key, &credential).await?)?;
+
     // Reconciled before anything else that reads the steps: if the journal and
     // the plan disagree, nothing below is meaningful.
     let journal_path = journal::path_for(&args.plan);
     let journal = Journal::load(&journal_path)?;
     let remaining = journal.remaining(&file)?;
+
+    // Before the early return: a plan truncated to exactly its completed prefix
+    // leaves nothing outstanding, and would otherwise report success for having
+    // deployed part of a market.
+    ensure_matches_spec(&file, &expected, &remaining)?;
 
     if remaining.len() < file.steps.len() {
         eprintln!(
@@ -147,8 +139,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         .iter()
         .filter_map(|index| file.steps.get(*index).cloned())
         .collect();
-    let (credential, targets) =
-        review(&ctx, &file, &args, &outstanding, &remaining, &journal_path).await?;
+    let targets = review(&ctx, &file, &outstanding, &remaining, &journal_path).await?;
 
     // Resolved once, here, and carried through to the send: the keychain
     // backend discovers keys on chain and may prompt, and a second resolution
@@ -279,72 +270,18 @@ async fn send(
 async fn review(
     ctx: &CliContext,
     file: &PlanFile,
-    args: &Apply,
     outstanding: &[crate::spec::plan::PlanStep],
     remaining: &[usize],
     journal_path: &std::path::Path,
-) -> anyhow::Result<(AccountId, Vec<AccountId>)> {
+) -> anyhow::Result<Vec<AccountId>> {
     render(file);
     report_checks(file);
 
     // Re-read, not trusted from the plan: a target free at plan time can be
-    // claimed while the plan is being reviewed.
-    // Distinctness over the whole plan; freeness over outstanding steps only,
+    // claimed while the plan is being reviewed. Over the outstanding steps only,
     // since a resume has already created what its completed steps made.
-    ensure_targets_are_distinct(&planned_targets(file)?)?;
-    let outstanding_file = PlanFile {
-        steps: outstanding.to_vec(),
-        ..file.clone()
-    };
-    let targets = planned_targets(&outstanding_file)?;
+    let targets = planned_targets(outstanding)?;
     ensure_targets_free(ctx, &targets).await?;
-
-    // Provenance is reported, not enforced.
-    let drift = file.drift()?;
-    eprintln!("\n{}", drift.describe());
-    if !drift.is_clean() {
-        eprintln!(
-            "An edited plan bypasses every spec-level check above — its arguments \
-             are already encoded. Read the steps before confirming."
-        );
-    }
-
-    // Each step names its own signer; `execute_as` only labels the store
-    // record. A credential for some other account fails at step 0 with an
-    // opaque executor error, so it is caught here instead.
-    let credential = args.signer.account_id().0;
-    let signers: BTreeSet<&AccountId> = file.steps.iter().map(|step| &step.signer_id).collect();
-    anyhow::ensure!(
-        signers.iter().all(|signer| **signer == credential),
-        "this plan is signed by {}, but the credential given is for `{credential}`. \
-         Re-run with a matching --signer-id, or re-plan.",
-        signers
-            .iter()
-            .map(|signer| format!("`{signer}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-
-    // `build` enforces this at plan time, but the value that executes lives in
-    // step 0's encoded `init_args`, not in `signer_id`. Guard 7's own advice —
-    // "re-run with a matching --signer-id" — invites rewriting the signer
-    // fields, which would satisfy it while leaving a stale `admin_id` that
-    // makes every proposal revert after the deposits are spent.
-    for step in &file.steps {
-        for call in &step.function_calls {
-            ensure_init_args_readable(step, call)?;
-            let Some(admin_id) = init_arg(call, "admin_id") else {
-                continue;
-            };
-            anyhow::ensure!(
-                admin_id == credential.as_str(),
-                "`{}` seats `{admin_id}` as governance admin, but this plan is \
-                 applied by `{credential}`, which would not hold the Admin role. \
-                 Re-plan with a spec whose `governance.admin` matches.",
-                step.label,
-            );
-        }
-    }
 
     // Still worth stating before the money moves: the operator should know a
     // partial run is recoverable *and* where the record lives, rather than
@@ -359,13 +296,65 @@ async fn review(
         );
     }
 
-    ensure_plan_is_complete(file)?;
-    ensure_plan_is_coherent(file)?;
-    ensure_initializers_are_sound(file)?;
-    ensure_proposals_are_runnable(file)?;
-    ensure_steps_are_ordered(file)?;
+    Ok(targets)
+}
 
-    Ok((credential, targets))
+/// Refuse a plan somebody else is meant to send.
+///
+/// Ahead of the re-derivation, which takes the credential as an input: a
+/// mismatch there surfaces as every step differing, which is true but says
+/// nothing about the one thing that is actually wrong.
+fn ensure_signed_by(file: &PlanFile, credential: &AccountId) -> anyhow::Result<()> {
+    let signers: BTreeSet<&AccountId> = file.steps.iter().map(|step| &step.signer_id).collect();
+    anyhow::ensure!(
+        signers.iter().all(|signer| *signer == credential),
+        "this plan is signed by {}, but the credential given is for `{credential}`. \
+         Re-run with a matching --signer-id, or re-plan.",
+        signers
+            .iter()
+            .map(|signer| format!("`{signer}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    Ok(())
+}
+
+/// Refuse a plan that is not what its spec derives.
+///
+/// A step the spec no longer derives is accepted only where the journal says it
+/// already ran: the gateway stops planning a storage registration once the
+/// account is registered, which is what this plan's own completed steps did.
+fn ensure_matches_spec(
+    file: &PlanFile,
+    expected: &[crate::spec::plan::PlanStep],
+    remaining: &[usize],
+) -> anyhow::Result<()> {
+    let mut derived = expected.iter().peekable();
+    for (index, step) in file.steps.iter().enumerate() {
+        if derived.peek().is_some_and(|next| *next == step) {
+            derived.next();
+            continue;
+        }
+        anyhow::ensure!(
+            !remaining.contains(&index),
+            "step {index} (`{}`) is not what `{}` derives. This artifact records \
+             a derivation rather than driving one, so it cannot be edited: change \
+             the spec and re-plan, or run the step yourself with the `tmplrmgr` \
+             command that performs it.",
+            step.label,
+            file.spec.name,
+        );
+    }
+
+    match derived.next() {
+        None => Ok(()),
+        Some(missing) => anyhow::bail!(
+            "this plan is missing `{}`, which `{}` derives. Applying it would \
+             deploy part of a market and report success; re-plan.",
+            missing.label,
+            file.spec.name,
+        ),
+    }
 }
 
 /// The deployment, in order. Governance first, because it must own the oracle
@@ -437,6 +426,14 @@ pub(crate) async fn build(
     let configuration = spec
         .clone()
         .into_market_configuration(i32::from(collateral_decimals), i32::from(borrow_decimals))?;
+
+    // Re-run here, not left to the `config.validate` check: that check is
+    // skippable, and the market enforces this at init. Skipping it can only buy
+    // an 8.5 NEAR half-deployment that reverts on the last step.
+    configuration
+        .validate()
+        .map_err(|error| anyhow::anyhow!("{error}"))
+        .context("the market contract would reject this configuration at init")?;
 
     let mut steps = if direct {
         Vec::new()
@@ -710,12 +707,12 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The accounts this plan's steps would create, read off the steps rather than
-/// `derived`: renaming a deploy is a supported edit, and `derived` is metadata
-/// the executor never consults.
-pub(crate) fn planned_targets(file: &PlanFile) -> anyhow::Result<Vec<AccountId>> {
+/// The accounts these steps would create.
+pub(crate) fn planned_targets(
+    steps: &[crate::spec::plan::PlanStep],
+) -> anyhow::Result<Vec<AccountId>> {
     let mut targets = Vec::new();
-    for step in &file.steps {
+    for step in steps {
         for call in &step.function_calls {
             targets.extend(deploy_target(step, call)?);
         }
@@ -735,505 +732,6 @@ async fn occupied_targets(
         }
     }
     Ok(occupied)
-}
-
-/// How many of the market's two assets are top-level NEP-141, and therefore
-/// need the market registered with them.
-fn nep141_assets(file: &PlanFile) -> BTreeSet<String> {
-    file.steps
-        .iter()
-        .flat_map(|step| &step.function_calls)
-        .filter_map(|call| decoded_init_args(call).ok().flatten())
-        .find_map(|init| {
-            let configuration = init.get("configuration")?.clone();
-            Some(
-                ["collateral_asset", "borrow_asset"]
-                    .into_iter()
-                    .filter_map(|key| {
-                        configuration
-                            .get(key)?
-                            .get("Nep141")?
-                            .as_str()
-                            .map(ToOwned::to_owned)
-                    })
-                    .collect(),
-            )
-        })
-        .unwrap_or_default()
-}
-
-/// A deployment must still be a deployment.
-///
-/// Every coherence check is conditional on finding the component it validates,
-/// so deleting a step disables its guard rather than tripping it. Completeness
-/// is therefore established first.
-fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
-    let (mut governance, mut oracle, mut market, mut proposals) = (0, 0, 0, 0);
-
-    for step in &file.steps {
-        for call in &step.function_calls {
-            if is_governance_proposal(call)? {
-                proposals += 1;
-                continue;
-            }
-            let Some(init) = decoded_init_args(call)? else {
-                continue;
-            };
-            if init.get("admin_id").is_some() {
-                governance += 1;
-            }
-            if init.get("owner_id").is_some() {
-                oracle += 1;
-            }
-            if init.get("configuration").is_some() {
-                market += 1;
-            }
-        }
-    }
-
-    // Matched against the tokens the encoded configuration names, not counted:
-    // two registrations against one token would satisfy a count while leaving
-    // the market's other asset unreceivable.
-    let expected = nep141_assets(file);
-    let registered: BTreeSet<String> = file
-        .steps
-        .iter()
-        .flat_map(|step| {
-            step.function_calls
-                .iter()
-                .filter_map(|call| match storage_registration_target(call) {
-                    // The receiver is the token; the argument is the account
-                    // being registered with it, which coherence checks
-                    // separately.
-                    Ok(Some(_)) => Some(step.receiver_id.to_string()),
-                    _ => None,
-                })
-        })
-        .collect();
-
-    let missing: Vec<_> = expected.difference(&registered).cloned().collect();
-    anyhow::ensure!(
-        missing.is_empty(),
-        "this market holds NEP-141 asset(s) the plan never registers it with: \
-         {}. A market that is not registered with a token cannot receive it.",
-        missing.join(", "),
-    );
-
-    if !file.derived.creates_its_own_oracle {
-        anyhow::ensure!(
-            market == 1 && governance == 0 && oracle == 0 && proposals == 0,
-            "this plan says it reads an existing oracle, but carries {governance} \
-             governance, {oracle} oracle and {proposals} proposal step(s) \
-             alongside {market} market deploy(s). A direct deployment creates \
-             only the market."
-        );
-        return Ok(());
-    }
-
-    for (what, found) in [
-        ("governance deploy", governance),
-        ("proxy-oracle deploy", oracle),
-        ("market deploy", market),
-    ] {
-        anyhow::ensure!(
-            found == 1,
-            "a deployment plan needs exactly one {what}; this one has {found}. \
-             A missing component is not a smaller deployment — the remaining \
-             steps still reference it, and the checks that would catch that are \
-             skipped when the step they validate is absent."
-        );
-    }
-    // Which feeds those proposals configure is checked per feed by
-    // `ensure_proposals_are_runnable`; a bare count here would pass a plan
-    // carrying two proposals for one feed and none for the other.
-    anyhow::ensure!(
-        proposals > 0,
-        "a deployment plan configures both price feeds; this one carries no \
-         proposal steps at all. A market whose feeds are never set prices nothing."
-    );
-    Ok(())
-}
-
-/// The generated order is a safety property, so an edited plan must keep it.
-///
-/// Every other guard asks what a plan contains, never where, while `send`
-/// executes the array order — so a reordered plan can put a market live against
-/// a feed nothing has configured.
-fn ensure_steps_are_ordered(file: &PlanFile) -> anyhow::Result<()> {
-    if !file.derived.creates_its_own_oracle {
-        return Ok(());
-    }
-
-    let (mut governance, mut oracle, mut market) = (None, None, None);
-    let mut proposals = Vec::new();
-
-    for (index, step) in file.steps.iter().enumerate() {
-        for call in &step.function_calls {
-            if is_governance_proposal(call)? {
-                proposals.push((index, step.label.clone()));
-                continue;
-            }
-            let Some(init) = decoded_init_args(call)? else {
-                continue;
-            };
-            if init.get("admin_id").is_some() {
-                governance = Some((index, step.label.clone()));
-            }
-            if init.get("owner_id").is_some() {
-                oracle = Some((index, step.label.clone()));
-            }
-            if init.get("configuration").is_some() {
-                market = Some((index, step.label.clone()));
-            }
-        }
-    }
-
-    // Completeness is established before this runs, so all three are present.
-    let (Some(governance), Some(oracle), Some(market)) = (governance, oracle, market) else {
-        return Ok(());
-    };
-
-    let mut required = vec![(
-        governance,
-        oracle.clone(),
-        "an oracle cannot be handed to a governance contract that does not exist yet",
-    )];
-    required.extend(proposals.iter().map(|proposal| {
-        (
-            oracle.clone(),
-            proposal.clone(),
-            "a feed cannot be configured on an oracle that does not exist yet",
-        )
-    }));
-    required.extend(proposals.iter().map(|proposal| {
-        (
-            proposal.clone(),
-            market.clone(),
-            "the market would go live reading a feed this plan has not configured yet",
-        )
-    }));
-
-    for ((first, first_label), (second, second_label), why) in required {
-        anyhow::ensure!(
-            first < second,
-            "`{first_label}` (step {first}) must run before `{second_label}` \
-             (step {second}): {why}."
-        );
-    }
-    Ok(())
-}
-
-/// The proposals must be executable, in this plan, in this order: an oracle
-/// that is never configured still reports success, because `admin_set_proxy` is
-/// dispatched detached.
-fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
-    let mut created: BTreeSet<u64> = BTreeSet::new();
-    // Which feed each created proposal configures, and which were executed —
-    // so completeness can be asked per feed rather than as a total.
-    let mut configures: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
-    let mut executed: BTreeSet<u64> = BTreeSet::new();
-
-    for step in &file.steps {
-        for call in &step.function_calls {
-            if !is_governance_proposal(call)? {
-                continue;
-            }
-            let args = json_args(call)?.context("parse a proposal's arguments")?;
-            let id = args
-                .get("id")
-                .and_then(serde_json::Value::as_u64)
-                .context("a proposal carries no numeric id")?;
-
-            // `operation` marks a create; its absence marks an execute.
-            if args.get("operation").is_some() {
-                let ttl = args.get("requested_ttl");
-                let zero = ttl.is_none()
-                    || ttl.and_then(|ttl| ttl.as_str()) == Some("0")
-                    || ttl.and_then(serde_json::Value::as_u64) == Some(0);
-                anyhow::ensure!(
-                    zero,
-                    "`{}` requests a TTL of {}, so the proposal would not be \
-                     executable when the next step tries to run it. The effective \
-                     TTL is the larger of the requested and configured values, so \
-                     raising it here delays execution regardless of the \
-                     contract's own zero TTLs.",
-                    step.label,
-                    ttl.map_or_else(|| "?".to_owned(), ToString::to_string),
-                );
-                anyhow::ensure!(
-                    created.insert(id),
-                    "`{}` creates proposal {id}, which this plan already creates. \
-                     The governance contract requires each id to be the next one, \
-                     so the second would be rejected.",
-                    step.label,
-                );
-                if let Some(feed) = args
-                    .get("operation")
-                    .and_then(|operation| operation.get("SetProxy"))
-                    .and_then(|set_proxy| set_proxy.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    configures.insert(id, feed.to_owned());
-                }
-            } else {
-                anyhow::ensure!(
-                    created.contains(&id),
-                    "`{}` executes proposal {id}, but this plan does not create it \
-                     beforehand. It would run against a proposal that does not \
-                     exist yet, leaving the feed unconfigured.",
-                    step.label,
-                );
-                executed.insert(id);
-            }
-        }
-    }
-
-    if !file.derived.creates_its_own_oracle {
-        return Ok(());
-    }
-
-    // Per feed, not in total. Counting proposal steps let a plan with its two
-    // borrow steps deleted pass on the collateral pair alone, and every other
-    // guard here is satisfied by a coherent subset — so the market deployed
-    // with a borrow feed that was never configured.
-    for (feed, side) in [
-        (hex::encode(COLLATERAL_PRICE_ID.0), "collateral"),
-        (hex::encode(BORROW_PRICE_ID.0), "borrow"),
-    ] {
-        let proposal = configures
-            .iter()
-            .find(|(_, configured)| **configured == feed)
-            .map(|(id, _)| *id);
-        let Some(proposal) = proposal else {
-            anyhow::bail!(
-                "this plan never proposes the {side} feed ({feed}). A market whose \
-                 {side} feed is never set prices nothing, and `admin_set_proxy` is \
-                 dispatched detached, so nothing later would report it."
-            );
-        };
-        anyhow::ensure!(
-            executed.contains(&proposal),
-            "this plan creates proposal {proposal} for the {side} feed but never \
-             executes it, so the feed would stay unconfigured."
-        );
-    }
-    Ok(())
-}
-
-/// Re-apply, against the encoded steps, the plan-time guards whose subject an
-/// edit can change.
-///
-/// `build` refuses an oracle version that ignores `owner_id` and a non-zero
-/// governance TTL, but both live in step arguments an operator may rewrite, and
-/// a plan-time refusal does not bind the file.
-fn ensure_initializers_are_sound(file: &PlanFile) -> anyhow::Result<()> {
-    for step in &file.steps {
-        for call in &step.function_calls {
-            let Some(init) = decoded_init_args(call)? else {
-                continue;
-            };
-
-            // The oracle: its `new` must honor the owner it is given, or the
-            // registry stays owner and governance can never configure a proxy.
-            if let Some(owner_id) = init.get("owner_id").and_then(|id| id.as_str()) {
-                let args = json_args(call)?.context("parse a registry deploy's arguments")?;
-                let version_key = args
-                    .get("version_key")
-                    .and_then(|key| key.as_str())
-                    .context("the oracle deploy names no version")?;
-                crate::commands::proxy_oracle::check_owner_id_is_honored(
-                    version_key,
-                    &owner_id
-                        .parse()
-                        .context("the oracle's owner is not an account")?,
-                )?;
-            }
-
-            // Governance: a non-zero TTL makes the proposals in this plan
-            // unexecutable when created, and a plan cannot wait.
-            if let Some(ttls) = init.get("ttls").and_then(|ttls| ttls.as_object()) {
-                for (kind, ttl) in ttls {
-                    anyhow::ensure!(
-                        ttl.as_str() == Some("0") || ttl.as_u64() == Some(0),
-                        "`{}` seats a {kind} TTL of {ttl}, so the proposals this \
-                         plan creates would not be executable when it runs them. \
-                         Deploy with zero TTLs and raise them afterwards.",
-                        step.label,
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The accounts a deployment creates are named in more places than they are
-/// created, and an edit to one is not an edit to the others: a renamed account
-/// is deployed and collision-checked correctly while every stale reference
-/// still points at one the plan never creates.
-fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
-    let (mut oracle, mut governance, mut market) = (None, None, None);
-    let (mut governance_says, mut market_says, mut oracle_says) = (None, None, None);
-
-    for step in &file.steps {
-        for call in &step.function_calls {
-            let Some(init) = decoded_init_args(call)? else {
-                continue;
-            };
-            // The oracle's initializer seats an owner; governance's seats an admin.
-            if let Some(owner) = init.get("owner_id").and_then(|id| id.as_str()) {
-                oracle = deploy_target(step, call)?;
-                oracle_says = Some(owner.to_owned());
-            }
-            if init.get("admin_id").is_some() {
-                governance = deploy_target(step, call)?;
-            }
-            if let Some(named) = init.get("proxy_oracle_id").and_then(|id| id.as_str()) {
-                governance_says = Some(named.to_owned());
-            }
-            if let Some(named) = init
-                .pointer("/configuration/price_oracle_configuration/account_id")
-                .and_then(|id| id.as_str())
-            {
-                market_says = Some(named.to_owned());
-            }
-            // The market is the deploy whose initializer carries a configuration.
-            if init.get("configuration").is_some() {
-                market = deploy_target(step, call)?;
-            }
-        }
-    }
-
-    for (created, label, references) in [
-        (
-            oracle.as_ref(),
-            "oracle",
-            vec![
-                ("the governance initializer", governance_says),
-                ("the market configuration", market_says),
-            ],
-        ),
-        (
-            governance.as_ref(),
-            "governance contract",
-            vec![("the oracle's owner", oracle_says)],
-        ),
-    ] {
-        let Some(created) = created else { continue };
-        for (who, named) in references {
-            if let Some(named) = named {
-                anyhow::ensure!(
-                    named == created.as_str(),
-                    "this plan deploys the {label} as `{created}`, but {who} points \
-                     at `{named}`. One was edited without the other, so the \
-                     deployment would reference an account this plan never creates."
-                );
-            }
-        }
-    }
-
-    // A NEP-141 market also registers storage *for the market account*, named
-    // in the registration's own args. Editing the market deploy's `name` leaves
-    // those registrations pointing at an account this plan never creates, so the
-    // new market would be unable to receive its own assets.
-    if let Some(market) = market {
-        for step in &file.steps {
-            for call in &step.function_calls {
-                let Some(registered) = storage_registration_target(call)? else {
-                    continue;
-                };
-                anyhow::ensure!(
-                    registered == market.as_str(),
-                    "`{}` registers storage for `{registered}`, but this plan \
-                     deploys the market as `{market}`. One was edited without the \
-                     other, so the market would not be registered with its own \
-                     token.",
-                    step.label,
-                );
-            }
-        }
-    }
-
-    // Governance proposals must address the governance account this plan
-    // deploys. Identified positively — by carrying a numeric proposal `id` —
-    // rather than as "not a deploy": a NEP-141 market also plans a
-    // `storage_deposit` addressed to the *token*, which is neither a deploy nor
-    // a proposal, and an exclusion rule would refuse every NEP-141 market.
-    if let Some(governance) = governance {
-        for step in &file.steps {
-            for call in &step.function_calls {
-                if !is_governance_proposal(call)? {
-                    continue;
-                }
-                anyhow::ensure!(
-                    step.receiver_id == governance,
-                    "`{}` is addressed to `{}`, but this plan deploys governance \
-                     as `{governance}`. The proposal would be sent to an account \
-                     this plan never creates.",
-                    step.label,
-                    step.receiver_id,
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A registry deploy must carry `init_args` this build can decode.
-///
-/// Otherwise every guard reading them — the seated `admin_id`, the oracle and
-/// governance coherence checks — skips the step silently rather than refusing
-/// it.
-fn ensure_init_args_readable(
-    step: &crate::spec::plan::PlanStep,
-    call: &crate::spec::plan::PlanFunctionCall,
-) -> anyhow::Result<()> {
-    let Some(args) = json_args(call)? else {
-        return Ok(());
-    };
-    if args.get("version_key").is_none() {
-        return Ok(());
-    }
-    anyhow::ensure!(
-        decoded_init_args(call)?.is_some(),
-        "`{}` deploys from a registry but its `init_args` cannot be decoded, so \
-         what the new contract is initialized with cannot be checked or shown",
-        step.label,
-    );
-    Ok(())
-}
-
-/// The account a `storage_deposit` registers, if this call is one.
-fn storage_registration_target(
-    call: &crate::spec::plan::PlanFunctionCall,
-) -> anyhow::Result<Option<String>> {
-    let Some(args) = json_args(call)? else {
-        return Ok(None);
-    };
-    // Keyed on the pair, so an unrelated `account_id` argument cannot be
-    // mistaken for a registration.
-    if args.get("registration_only").is_none() {
-        return Ok(None);
-    }
-    let Some(account_id) = args.get("account_id") else {
-        return Ok(None);
-    };
-    Ok(Some(
-        account_id
-            .as_str()
-            .context("a storage registration names a non-string account")?
-            .to_owned(),
-    ))
-}
-
-/// Whether a call is a governance proposal: a numeric proposal `id`, and not a
-/// registry deploy.
-fn is_governance_proposal(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<bool> {
-    let Some(args) = json_args(call)? else {
-        return Ok(false);
-    };
-    Ok(args.get("version_key").is_none()
-        && args.get("id").is_some_and(serde_json::Value::is_number))
 }
 
 /// The account a single registry-deploy call would create, recognized by `name`
@@ -1263,23 +761,6 @@ fn deploy_target(
             step.label
         )
     })?))
-}
-
-/// Refuse a plan that creates the same account twice.
-///
-/// Coherent edits can still collide with each other: renaming two deploys to
-/// the same name keeps every reference consistent, and the second deploy fails
-/// after the first has spent its deposit.
-fn ensure_targets_are_distinct(targets: &[AccountId]) -> anyhow::Result<()> {
-    let mut seen = BTreeSet::new();
-    for target in targets {
-        anyhow::ensure!(
-            seen.insert(target),
-            "this plan creates `{target}` more than once; the second deploy would \
-             fail against the account the first just made"
-        );
-    }
-    Ok(())
 }
 
 /// Refuse a plan whose targets are taken.
@@ -1335,6 +816,36 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
             )
             .await,
         ));
+
+        // A free account is not a free name. `registry.deploy` refuses any id
+        // its deployment map still holds, and `market remove` deletes the
+        // account without removing that entry — so a torn-down name passes the
+        // existence check and collides on the last step, after 8.5 NEAR of
+        // governance and oracle deposits.
+        checks.push(Check::new(
+            format!("deployment.unclaimed.{label}"),
+            match ctx
+                .client
+                .read(registry::GetDeployment {
+                    registry_id: spec.registry.clone(),
+                    account_id: account_id.clone(),
+                })
+                .await
+            {
+                Ok(result) if result.deployment.is_some() => Status::failed(format!(
+                    "`{}` still records a deployment for `{account_id}`, so the \
+                     {label} deploy would be refused as a collision even though \
+                     the account is gone. Pick another `name`.",
+                    spec.registry,
+                )),
+                Ok(_) => Status::passed(format!("`{account_id}` is unclaimed")),
+                Err(error) => Status::failed(format!(
+                    "could not read `{}`'s deployment record for `{account_id}`: \
+                     {error}",
+                    spec.registry,
+                )),
+            },
+        ));
     }
     Ok(checks)
 }
@@ -1370,8 +881,8 @@ fn report_checks(file: &PlanFile) {
 /// The plan, for a human about to authorize it.
 fn render(file: &PlanFile) {
     eprintln!(
-        "Plan for {} on {} (spec {})",
-        file.derived.market_id, file.network, file.spec_digest
+        "Plan for {}.{} on {}",
+        file.spec.name, file.spec.registry, file.network
     );
     for (index, step) in file.steps.iter().enumerate() {
         eprintln!("\n  [{index}] {}", step.label);
@@ -1457,17 +968,6 @@ fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Ve
         .collect()
 }
 
-/// One field of a registry deploy's decoded `init_args`, as a string.
-fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<String> {
-    Some(
-        decoded_init_args(call)
-            .ok()??
-            .get(field)?
-            .as_str()?
-            .to_owned(),
-    )
-}
-
 /// A registry deploy's `init_args`, decoded for display and for the guards built
 /// on it. Stays base64 in the file: expanding it there would need a byte-exact
 /// round trip, which is a schema change.
@@ -1520,9 +1020,9 @@ fn confirm(question: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A plan that is already built, so an edited plan file rides the same executor
-/// as every other write — store, idempotency and recovery come along rather than
-/// being reimplemented here.
+/// A plan that is already built, so it rides the same executor as every other
+/// write — store, idempotency and recovery come along rather than being
+/// reimplemented here.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct PreparedPlan {
     steps: Vec<PlannedTransaction>,
@@ -1568,9 +1068,8 @@ impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
 mod tests {
     use super::{apply_skips, ensure_compatible, PLAN_SCHEMA_VERSION};
     use crate::spec::check::{Check, Status};
-    use crate::spec::plan::PlanArgs;
-    use crate::spec::plan::{Derived, PlanFile};
-    use crate::spec::{BORROW_PRICE_ID, COLLATERAL_PRICE_ID};
+    use crate::spec::plan::testing::{alpha_market, public_key};
+    use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
     use rstest::rstest;
 
     fn checks() -> Vec<Check> {
@@ -1630,59 +1129,124 @@ mod tests {
             schema,
             tool_version: "0.1.0".to_owned(),
             network: network.to_owned(),
-            spec_digest: "sha256:test".to_owned(),
-            step_digests: Vec::new(),
-            summary_digest: "sha256:test".to_owned(),
-            derived: Derived {
-                creates_its_own_oracle: true,
-                market_id: "m.near".parse().expect("valid account"),
-                oracle_id: "o.near".parse().expect("valid account"),
-                governance_id: Some("g.near".parse().expect("valid account")),
-                collateral_decimals: Some(6),
-                borrow_decimals: Some(7),
-            },
+            spec: alpha_market(),
+            public_key: public_key(),
             checks: Vec::new(),
             steps: Vec::new(),
         }
     }
 
-    /// Editing a deploy's `name` is a supported hand edit, and the steps are
-    /// what executes — so the collision check must follow the edit, not the
-    /// `derived` metadata that `into_operation_plan` never reads.
-    #[test]
-    fn targets_come_from_the_steps_not_the_metadata() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
+    /// A step whose only distinguishing feature is its label.
+    fn step(label: &str) -> PlanStep {
+        PlanStep {
+            label: label.to_owned(),
+            signer_id: "operator.near".parse().expect("valid account"),
+            receiver_id: "templar-alpha.near".parse().expect("valid account"),
+            function_calls: vec![PlanFunctionCall {
+                method_name: "deploy_market".to_owned(),
+                args: PlanArgs::Json(serde_json::json!({ "name": label })),
+                gas: 300_000_000_000_000,
+                deposit: near_api::types::NearToken::from_near(5),
+            }],
+        }
+    }
 
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
+    /// `ensure_targets_free` acts on what executes, which is the steps.
+    #[test]
+    fn targets_come_from_the_steps() {
+        let steps = vec![PlanStep {
             label: "deploy market".to_owned(),
             signer_id: "operator.near".parse().expect("valid account"),
             receiver_id: "templar-alpha.near".parse().expect("valid account"),
             function_calls: vec![PlanFunctionCall {
                 method_name: "deploy_market".to_owned(),
                 args: PlanArgs::Json(serde_json::json!({
-                    "name": "edited-by-hand",
+                    "name": "some-market",
                     "version_key": "v1.3.0",
                 })),
                 gas: 300_000_000_000_000,
                 deposit: near_api::types::NearToken::from_near(5),
             }],
-        });
+        }];
 
         assert_eq!(
-            super::planned_targets(&file)
+            super::planned_targets(&steps)
                 .expect("derivable")
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
-            vec!["edited-by-hand.templar-alpha.near"],
-            "the edited name is what gets deployed, so it is what gets checked"
+            vec!["some-market.templar-alpha.near"],
         );
-        assert_ne!(
-            file.derived.market_id.as_str(),
-            "edited-by-hand.templar-alpha.near",
-            "and it deliberately disagrees with the stale metadata"
+    }
+
+    /// The comparison that replaced the guard suite. Every shape below used to
+    /// need a guard of its own; each is now the same mismatch.
+    #[rstest]
+    #[case::unchanged(&["a", "b", "c"], &[], None)]
+    #[case::truncated(&["a", "b"], &[], Some("missing `c`"))]
+    #[case::reordered(&["b", "a", "c"], &[0, 1, 2], Some("step 0"))]
+    #[case::added(&["a", "x", "b", "c"], &[0, 1, 2, 3], Some("step 1"))]
+    #[case::rewritten(&["a", "edited", "c"], &[0, 1, 2], Some("step 1"))]
+    fn a_plan_must_be_what_its_spec_derives(
+        #[case] steps: &[&str],
+        #[case] remaining: &[usize],
+        #[case] refusal: Option<&str>,
+    ) {
+        let expected: Vec<_> = ["a", "b", "c"].into_iter().map(step).collect();
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps = steps.iter().copied().map(step).collect();
+
+        let result = super::ensure_matches_spec(&file, &expected, remaining);
+        match refusal {
+            None => result.expect("this plan is exactly what the spec derives"),
+            Some(fragment) => {
+                let error = format!("{:#}", result.expect_err("not the derived plan"));
+                assert!(error.contains(fragment), "{error}");
+            }
+        }
+    }
+
+    /// A truncated plan whose journal calls it complete: the case that used to
+    /// report success for a market that was never created.
+    #[test]
+    fn a_plan_truncated_to_its_completed_prefix_is_refused() {
+        let expected: Vec<_> = ["a", "b", "c"].into_iter().map(step).collect();
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps = vec![step("a")];
+
+        let error = format!(
+            "{:#}",
+            super::ensure_matches_spec(&file, &expected, &[]).expect_err("incomplete")
         );
+        assert!(error.contains("missing `b`"), "{error}");
+    }
+
+    /// The one legitimate divergence: the gateway stops planning a storage
+    /// registration once the account is registered, which is what this plan's
+    /// own completed step did.
+    #[test]
+    fn a_completed_step_the_spec_no_longer_derives_is_accepted() {
+        let expected = vec![step("a"), step("c")];
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps = vec![step("a"), step("register b"), step("c")];
+
+        super::ensure_matches_spec(&file, &expected, &[2])
+            .expect("`register b` has already run, so it is no longer planned");
+    }
+
+    /// The same absence, but the step never ran — a plan that would skip work
+    /// the spec calls for.
+    #[test]
+    fn an_outstanding_step_the_spec_does_not_derive_is_refused() {
+        let expected = vec![step("a"), step("c")];
+        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
+        file.steps = vec![step("a"), step("register b"), step("c")];
+
+        let error = format!(
+            "{:#}",
+            super::ensure_matches_spec(&file, &expected, &[1, 2]).expect_err("never ran")
+        );
+        assert!(error.contains("register b"), "{error}");
     }
 
     /// Re-encoding a deploy's args as base64 is legal in this schema and is
@@ -1711,7 +1275,7 @@ mod tests {
         });
 
         assert_eq!(
-            super::planned_targets(&file)
+            super::planned_targets(&file.steps)
                 .expect("derivable")
                 .iter()
                 .map(ToString::to_string)
@@ -1743,435 +1307,10 @@ mod tests {
             }],
         });
 
-        let error = super::planned_targets(&file).expect_err("must not skip silently");
+        let error = super::planned_targets(&file.steps).expect_err("must not skip silently");
         assert!(
             format!("{error:#}").contains("cannot be checked for a collision"),
             "{error:#}"
-        );
-    }
-
-    /// The `admin_id` guard reads the same bytes the executor sends, so
-    /// re-encoding the outer args as base64 cannot hide a stale admin — the
-    /// exact bypass that `planned_targets` had.
-    #[test]
-    fn the_admin_guard_sees_through_base64_args() {
-        use crate::spec::plan::PlanFunctionCall;
-        use base64::Engine as _;
-
-        let init = serde_json::to_vec(&serde_json::json!({
-            "proxy_oracle_id": "o.near",
-            "admin_id": "someone-else.near",
-        }))
-        .expect("encode init args");
-        let outer = serde_json::to_vec(&serde_json::json!({
-            "name": "gov",
-            "version_key": "v1",
-            "init_args": base64::engine::general_purpose::STANDARD.encode(&init),
-        }))
-        .expect("encode outer args");
-
-        let call = PlanFunctionCall {
-            method_name: "deploy_market".to_owned(),
-            args: PlanArgs::Base64(templar_gateway_types::Base64Bytes(outer)),
-            gas: 300_000_000_000_000,
-            deposit: near_api::types::NearToken::from_near(3),
-        };
-
-        assert_eq!(
-            super::init_arg(&call, "admin_id").as_deref(),
-            Some("someone-else.near"),
-            "the seated admin must be visible regardless of arg representation"
-        );
-    }
-
-    /// Editing the oracle deploy's `name` without updating the two places that
-    /// reference it produces a live market wired to an oracle nobody deployed.
-    #[test]
-    fn an_inconsistently_renamed_oracle_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        fn deploy(label: &str, name: &str, init: &serde_json::Value) -> PlanStep {
-            let encoded = base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_vec(init).expect("encode init"));
-            PlanStep {
-                label: label.to_owned(),
-                signer_id: "operator.near".parse().expect("valid account"),
-                receiver_id: "templar-alpha.near".parse().expect("valid account"),
-                function_calls: vec![PlanFunctionCall {
-                    method_name: "deploy_market".to_owned(),
-                    args: PlanArgs::Json(serde_json::json!({
-                        "name": name,
-                        "version_key": "v1",
-                        "init_args": encoded,
-                    })),
-                    gas: 300_000_000_000_000,
-                    deposit: near_api::types::NearToken::from_near(5),
-                }],
-            }
-        }
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        // The oracle is renamed...
-        file.steps.push(deploy(
-            "deploy oracle",
-            "renamed-oracle",
-            &serde_json::json!({ "owner_id": "gov.templar-alpha.near" }),
-        ));
-        // ...but the market still points at the original.
-        file.steps.push(deploy(
-            "deploy market",
-            "mkt",
-            &serde_json::json!({
-                "configuration": {
-                    "price_oracle_configuration": {
-                        "account_id": "proxy-oracle-original.templar-alpha.near"
-                    }
-                }
-            }),
-        ));
-
-        let error = super::ensure_plan_is_coherent(&file).expect_err("inconsistent");
-        assert!(
-            format!("{error:#}").contains("renamed-oracle.templar-alpha.near"),
-            "{error:#}"
-        );
-        assert!(
-            format!("{error:#}").contains("market configuration"),
-            "{error:#}"
-        );
-    }
-
-    /// Renaming the governance deploy leaves the oracle owned by, and the
-    /// proposals addressed to, an account the plan never creates.
-    #[test]
-    fn a_renamed_governance_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let encode = |init: &serde_json::Value| {
-            base64::engine::general_purpose::STANDARD
-                .encode(serde_json::to_vec(init).expect("encode init"))
-        };
-        let deploy = |label: &str, name: &str, init: serde_json::Value| PlanStep {
-            label: label.to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": name,
-                    "version_key": "v1",
-                    "init_args": encode(&init),
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        };
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(deploy(
-            "deploy governance",
-            "gov-renamed",
-            serde_json::json!({ "proxy_oracle_id": "o.templar-alpha.near", "admin_id": "a.near" }),
-        ));
-        // The oracle still names the *old* governance as its owner.
-        file.steps.push(deploy(
-            "deploy oracle",
-            "o",
-            serde_json::json!({ "owner_id": "gov.templar-alpha.near" }),
-        ));
-
-        let error = super::ensure_plan_is_coherent(&file).expect_err("inconsistent");
-        assert!(
-            format!("{error:#}").contains("gov-renamed.templar-alpha.near"),
-            "{error:#}"
-        );
-    }
-
-    /// A NEP-141 market plans a `storage_deposit` addressed to the *token* —
-    /// neither a deploy nor a proposal. An exclusion rule ("everything that is
-    /// not a deploy must address governance") refused every such market, which
-    /// is the case this plan builder was fixed to support in the first place.
-    #[test]
-    fn a_token_storage_deposit_does_not_have_to_address_governance() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let init = base64::engine::general_purpose::STANDARD.encode(
-            serde_json::to_vec(&serde_json::json!({
-                "proxy_oracle_id": "o.templar-alpha.near",
-                "admin_id": "a.near",
-            }))
-            .expect("encode"),
-        );
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
-            label: "deploy governance".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "gov", "version_key": "v1", "init_args": init,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(3),
-            }],
-        });
-        file.steps.push(PlanStep {
-            label: "register storage for usdc.near".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "usdc.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "storage_deposit".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "account_id": "mkt.templar-alpha.near",
-                    "registration_only": true,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_millinear(10),
-            }],
-        });
-
-        super::ensure_plan_is_coherent(&file)
-            .expect("a token storage deposit is not a misrouted proposal");
-    }
-
-    /// Editing the market deploy's `name` leaves its storage registrations
-    /// pointing at an account the plan never creates, so the market could not
-    /// receive its own assets.
-    #[test]
-    fn a_renamed_market_orphans_its_storage_registrations() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let init = base64::engine::general_purpose::STANDARD.encode(
-            serde_json::to_vec(&serde_json::json!({ "configuration": { "x": 1 } }))
-                .expect("encode"),
-        );
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
-            label: "deploy market".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "mkt-renamed", "version_key": "v1", "init_args": init,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        });
-        file.steps.push(PlanStep {
-            label: "register storage".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "usdc.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "storage_deposit".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "account_id": "mkt.templar-alpha.near",
-                    "registration_only": true,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_millinear(10),
-            }],
-        });
-
-        let error = super::ensure_plan_is_coherent(&file).expect_err("stale registration");
-        assert!(
-            format!("{error:#}").contains("mkt-renamed.templar-alpha.near"),
-            "{error:#}"
-        );
-    }
-
-    /// A non-zero governance TTL makes this plan's own proposals unexecutable
-    /// when it runs them. Refused at plan time, and again here because the
-    /// value lives in editable step arguments.
-    #[test]
-    fn a_non_zero_ttl_in_an_edited_plan_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let init = base64::engine::general_purpose::STANDARD.encode(
-            serde_json::to_vec(&serde_json::json!({
-                "proxy_oracle_id": "o.near",
-                "admin_id": "a.near",
-                "ttls": { "set_proxy": "600000000000", "rearm": "0" },
-            }))
-            .expect("encode"),
-        );
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
-            label: "deploy governance".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "gov", "version_key": "v1", "init_args": init,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(3),
-            }],
-        });
-
-        let error = super::ensure_initializers_are_sound(&file).expect_err("non-zero ttl");
-        assert!(format!("{error:#}").contains("set_proxy"), "{error:#}");
-    }
-
-    /// Two deploys renamed to the same account keep every reference coherent
-    /// and still collide with each other.
-    #[test]
-    fn duplicate_targets_are_refused() {
-        let shared: near_account_id::AccountId =
-            "same.templar-alpha.near".parse().expect("valid account");
-        let error = super::ensure_targets_are_distinct(&[shared.clone(), shared])
-            .expect_err("two deploys, one account");
-
-        assert!(format!("{error:#}").contains("more than once"), "{error:#}");
-    }
-
-    /// Proposal arguments decide whether the oracle is ever configured, and an
-    /// unconfigured oracle still reports success (`admin_set_proxy` is
-    /// dispatched detached), so these are refused rather than discovered later.
-    #[rstest::rstest]
-    #[case::raised_ttl(
-        serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "600000000000" }),
-        None,
-        "not be executable"
-    )]
-    #[case::execute_without_create(serde_json::json!({ "id": 7 }), None, "does not create it")]
-    #[case::duplicate_create(
-        serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "0" }),
-        Some(serde_json::json!({ "id": 0, "operation": {}, "requested_ttl": "0" })),
-        "already creates"
-    )]
-    fn unrunnable_proposals_are_refused(
-        #[case] first: serde_json::Value,
-        #[case] second: Option<serde_json::Value>,
-        #[case] expected: &str,
-    ) {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-
-        let proposal = |args: serde_json::Value| PlanStep {
-            label: "proposal".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "gov.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "create_proposal".to_owned(),
-                args: PlanArgs::Json(args),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_yoctonear(1),
-            }],
-        };
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(proposal(first));
-        if let Some(second) = second {
-            file.steps.push(proposal(second));
-        }
-
-        let error = super::ensure_proposals_are_runnable(&file).expect_err("unrunnable");
-        assert!(format!("{error:#}").contains(expected), "{error:#}");
-    }
-
-    /// Deleting a step disables the guard that validates it, so completeness is
-    /// checked before coherence.
-    #[test]
-    fn a_truncated_plan_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let deploy = |init: serde_json::Value| PlanStep {
-            label: "deploy".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "x",
-                    "version_key": "v1",
-                    "init_args": base64::engine::general_purpose::STANDARD
-                        .encode(serde_json::to_vec(&init).expect("encode")),
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        };
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        // Governance and market, but no oracle: the two survivors reference an
-        // oracle nothing deploys, and every oracle check would be skipped.
-        file.steps.push(deploy(
-            serde_json::json!({ "proxy_oracle_id": "o.near", "admin_id": "a.near" }),
-        ));
-        file.steps
-            .push(deploy(serde_json::json!({ "configuration": { "x": 1 } })));
-
-        let error = super::ensure_plan_is_complete(&file).expect_err("incomplete");
-        assert!(
-            format!("{error:#}").contains("proxy-oracle deploy"),
-            "{error:#}"
-        );
-    }
-
-    /// Registrations are matched to the tokens the configuration names, not
-    /// counted. Two registrations against the same token satisfied a count
-    /// while the other asset stayed unreceivable.
-    #[test]
-    fn a_registration_against_the_wrong_token_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let register = |token: &str| PlanStep {
-            label: format!("register with {token}"),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: token.parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "storage_deposit".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "account_id": "m.templar-alpha.near",
-                    "registration_only": true,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_millinear(10),
-            }],
-        };
-
-        let init = serde_json::json!({
-            "configuration": {
-                "collateral_asset": { "Nep141": "collateral.near" },
-                "borrow_asset": { "Nep141": "borrow.near" },
-            }
-        });
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
-            label: "deploy market".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "m",
-                    "version_key": "v1",
-                    "init_args": base64::engine::general_purpose::STANDARD
-                        .encode(serde_json::to_vec(&init).expect("encode")),
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        });
-        // Two registrations, both against the collateral token.
-        file.steps.push(register("collateral.near"));
-        file.steps.push(register("collateral.near"));
-
-        let error = super::ensure_plan_is_complete(&file).expect_err("borrow is unregistered");
-        let rendered = format!("{error:#}");
-        assert!(
-            rendered.contains("borrow.near"),
-            "the refusal must name the token that was never registered: {rendered}"
         );
     }
 
@@ -2215,198 +1354,6 @@ mod tests {
         }
     }
 
-    /// A plan that keeps every component but reorders them is refused.
-    ///
-    /// Counts, references and arguments all still check out when the market
-    /// deploy is moved ahead of the oracle — none of those guards looks at
-    /// position — and `send` executes the array order, so the market goes live
-    /// reading an oracle that does not exist yet.
-    #[rstest]
-    #[case(&[0, 1, 2, 3], None)]
-    #[case(&[3, 0, 1, 2], Some("has not configured yet"))]
-    #[case(&[0, 3, 1, 2], Some("has not configured yet"))]
-    #[case(&[1, 0, 2, 3], Some("does not exist yet"))]
-    fn a_reordered_plan_is_refused(#[case] order: &[usize], #[case] expected: Option<&str>) {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let deploy = |label: &str, init: serde_json::Value| PlanStep {
-            label: label.to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": label,
-                    "version_key": "v1",
-                    "init_args": base64::engine::general_purpose::STANDARD
-                        .encode(serde_json::to_vec(&init).expect("encode")),
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        };
-        let proposal = |label: &str, args: serde_json::Value| PlanStep {
-            label: label.to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "create_proposal".to_owned(),
-                args: PlanArgs::Json(args),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_yoctonear(1),
-            }],
-        };
-
-        // The generated order: governance, oracle, one proposal, market.
-        let generated = vec![
-            deploy("gov", serde_json::json!({ "admin_id": "a.near" })),
-            deploy("oracle", serde_json::json!({ "owner_id": "gov.near" })),
-            proposal(
-                "propose collateral",
-                serde_json::json!({
-                    "id": 1,
-                    "requested_ttl": "0",
-                    "operation": { "SetProxy": { "id": hex::encode(COLLATERAL_PRICE_ID.0) } },
-                }),
-            ),
-            deploy("market", serde_json::json!({ "configuration": { "x": 1 } })),
-        ];
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.derived.creates_its_own_oracle = true;
-        file.steps = order
-            .iter()
-            .map(|index| generated[*index].clone())
-            .collect();
-
-        match expected {
-            None => super::ensure_steps_are_ordered(&file).expect("the generated order stands"),
-            Some(fragment) => {
-                let error = super::ensure_steps_are_ordered(&file).expect_err("out of order");
-                assert!(format!("{error:#}").contains(fragment), "{error:#}");
-            }
-        }
-    }
-
-    /// Both feeds must be proposed *and* executed, per feed: a total of two is
-    /// satisfied by the collateral pair alone, leaving borrow unconfigured.
-    #[test]
-    fn a_plan_missing_one_feeds_proposals_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-
-        let proposal = |label: &str, args: serde_json::Value| PlanStep {
-            label: label.to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "create_proposal".to_owned(),
-                args: PlanArgs::Json(args),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_yoctonear(1),
-            }],
-        };
-
-        let collateral = hex::encode(COLLATERAL_PRICE_ID.0);
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.derived.creates_its_own_oracle = true;
-        // Only the collateral pair — the borrow pair was deleted.
-        file.steps.push(proposal(
-            "propose collateral",
-            serde_json::json!({
-                "id": 1,
-                "requested_ttl": "0",
-                "operation": { "SetProxy": { "id": collateral } },
-            }),
-        ));
-        file.steps.push(proposal(
-            "execute collateral",
-            serde_json::json!({ "id": 1 }),
-        ));
-
-        let error = super::ensure_proposals_are_runnable(&file).expect_err("one feed is not both");
-        let rendered = format!("{error:#}");
-        assert!(
-            rendered.contains("borrow") && rendered.contains(&hex::encode(BORROW_PRICE_ID.0)),
-            "the refusal must name the feed that was never proposed: {rendered}"
-        );
-    }
-
-    /// A created proposal that is never executed leaves its feed unconfigured.
-    #[test]
-    fn a_feed_proposed_but_never_executed_is_refused() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-
-        let proposal = |label: &str, args: serde_json::Value| PlanStep {
-            label: label.to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "gov.templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "create_proposal".to_owned(),
-                args: PlanArgs::Json(args),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_yoctonear(1),
-            }],
-        };
-
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.derived.creates_its_own_oracle = true;
-        for (id, feed) in [
-            (1u64, hex::encode(COLLATERAL_PRICE_ID.0)),
-            (2, hex::encode(BORROW_PRICE_ID.0)),
-        ] {
-            file.steps.push(proposal(
-                "propose",
-                serde_json::json!({
-                    "id": id,
-                    "requested_ttl": "0",
-                    "operation": { "SetProxy": { "id": feed } },
-                }),
-            ));
-        }
-        // Only the collateral proposal is executed.
-        file.steps.push(proposal(
-            "execute collateral",
-            serde_json::json!({ "id": 1 }),
-        ));
-
-        let error = super::ensure_proposals_are_runnable(&file).expect_err("borrow never executes");
-        assert!(
-            format!("{error:#}").contains("never \n             executes it")
-                || format!("{error:#}").contains("never executes it"),
-            "{error:#}"
-        );
-    }
-
-    /// A coherent plan passes.
-    #[test]
-    fn a_coherent_oracle_reference_is_accepted() {
-        use crate::spec::plan::{PlanFunctionCall, PlanStep};
-        use base64::Engine as _;
-
-        let encoded = base64::engine::general_purpose::STANDARD.encode(
-            serde_json::to_vec(&serde_json::json!({ "owner_id": "gov.near" })).expect("encode"),
-        );
-        let mut file = bare_plan(PLAN_SCHEMA_VERSION, "mainnet");
-        file.steps.push(PlanStep {
-            label: "deploy oracle".to_owned(),
-            signer_id: "operator.near".parse().expect("valid account"),
-            receiver_id: "templar-alpha.near".parse().expect("valid account"),
-            function_calls: vec![PlanFunctionCall {
-                method_name: "deploy_market".to_owned(),
-                args: PlanArgs::Json(serde_json::json!({
-                    "name": "o",
-                    "version_key": "v1",
-                    "init_args": encoded,
-                })),
-                gas: 300_000_000_000_000,
-                deposit: near_api::types::NearToken::from_near(5),
-            }],
-        });
-
-        super::ensure_plan_is_coherent(&file).expect("nothing contradicts it");
-    }
-
     /// A governance proposal creates no account, so it contributes no target.
     #[test]
     fn only_registry_deploys_are_targets() {
@@ -2425,7 +1372,9 @@ mod tests {
             }],
         });
 
-        assert!(super::planned_targets(&file).expect("derivable").is_empty());
+        assert!(super::planned_targets(&file.steps)
+            .expect("derivable")
+            .is_empty());
     }
 
     #[test]

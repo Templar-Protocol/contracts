@@ -43,13 +43,18 @@ pub struct SignerArgs {
     #[arg(long, env = "SIGNER_ID", value_name = "ACCOUNT_ID")]
     signer_id: AccountId,
     /// Hold the signing key outside this process. Omit to use `--secret-key`.
-    #[arg(long, value_enum, value_name = "BACKEND")]
+    #[arg(long, value_enum, value_name = "BACKEND", conflicts_with = "print")]
     sign_with: Option<SigningBackend>,
     /// Private key for `--signer-id`, in `ed25519:…` form.
     ///
     /// Required only for the default `secret-key` backend: naming any
     /// `--sign-with` backend lifts the requirement, and `--print` needs no
     /// credential at all.
+    ///
+    /// Held as text and parsed on use. Clap validates an env value during
+    /// parsing whatever else was passed, and `SECRET_KEY` is a name other tools
+    /// use — an unrelated ambient value would otherwise fail every write,
+    /// including the ones that never touch it.
     #[arg(
         long,
         env = "SECRET_KEY",
@@ -59,9 +64,8 @@ pub struct SignerArgs {
         // means some other credential source was chosen.
         required_unless_present_any = ["print", "sign_with"],
         conflicts_with = "print",
-        value_parser = SecretKeyParser
     )]
-    secret_key: Option<Box<SecretKey>>,
+    secret_key: Option<String>,
     /// Plan the write without executing it, then print the selected representation.
     #[arg(long, value_enum, value_name = "FORMAT")]
     print: Option<PrintFormat>,
@@ -176,10 +180,14 @@ impl SignerArgs {
 
     /// Both callers reject print mode before reaching here, so this only has to
     /// account for a credential that clap left absent.
-    fn secret(&self) -> anyhow::Result<&SecretKey> {
+    ///
+    /// The source text never reaches the error.
+    fn secret(&self) -> anyhow::Result<SecretKey> {
         self.secret_key
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("missing --secret-key"))
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing --secret-key"))?
+            .parse()
+            .map_err(|_| anyhow::anyhow!("--secret-key/$SECRET_KEY is not a valid `ed25519:…` key"))
     }
 }
 
@@ -287,6 +295,54 @@ mod tests {
         );
     }
 
+    /// `SECRET_KEY` is a name other tools use. Parsing it eagerly meant an
+    /// unrelated ambient value failed every write, including the ones that never
+    /// read it.
+    #[test]
+    fn an_ambient_invalid_secret_key_does_not_block_an_external_backend() {
+        let harness = Harness::try_parse_from([
+            "tmplrmgr",
+            "--signer-id",
+            "signer.testnet",
+            "--sign-with",
+            "keychain",
+            "--secret-key",
+            "not-a-near-key",
+        ])
+        .expect("the keychain backend never reads the secret");
+
+        let error = harness
+            .signer
+            .secret()
+            .expect_err("but asking for it still fails, and says why")
+            .to_string();
+
+        assert!(error.contains("not a valid"), "{error}");
+        assert!(
+            !error.contains("not-a-near-key"),
+            "the source text must not reach the error: {error}"
+        );
+    }
+
+    /// Print mode wins over `--sign-with`, so accepting both silently ignored
+    /// the backend the operator named.
+    #[test]
+    fn a_backend_cannot_be_named_alongside_print() {
+        assert!(
+            Harness::try_parse_from([
+                "tmplrmgr",
+                "--signer-id",
+                "signer.testnet",
+                "--sign-with",
+                "keychain",
+                "--print",
+                "json",
+            ])
+            .is_err(),
+            "print mode signs nothing, so a backend is a contradiction"
+        );
+    }
+
     #[tokio::test]
     async fn plan_mode_rejects_credential_resolution() {
         let signer = SignerArgs {
@@ -333,7 +389,7 @@ mod tests {
         let signer = SignerArgs {
             signer_id: "signer.testnet".parse().expect("valid account"),
             sign_with: None,
-            secret_key: Some(Box::new(secret_key)),
+            secret_key: Some(SECRET.to_owned()),
             print: None,
             public_key: None,
         };

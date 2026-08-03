@@ -34,8 +34,11 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
     }
 
     let mut spec: MarketSpec = merged
+        .clone()
         .try_into()
         .with_context(|| format!("invalid market spec {}", path.display()))?;
+
+    ensure_every_key_was_read(&merged, &spec, path)?;
 
     // Unreachable via the check above unless `schema` was absent or not an
     // integer, in which case deserialization has now produced the real value.
@@ -50,6 +53,58 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
     // anything that re-serializes the spec (e.g. `market export`).
     spec.extends.clear();
     Ok(spec)
+}
+
+/// Refuse a document carrying a key the spec did not take.
+///
+/// `deny_unknown_fields` covers this crate's own structs, but not the on-chain
+/// types they embed — `AmountRange`, the interest-rate strategies, the fees,
+/// `YieldWeights`. A typo in one of those deserializes to that field's default:
+/// `maximim` leaves a range unbounded and deploys.
+fn ensure_every_key_was_read(merged: &Value, spec: &MarketSpec, path: &Path) -> anyhow::Result<()> {
+    let read = Value::try_from(spec).context("re-serialize the spec to find unread keys")?;
+
+    let mut unread = Vec::new();
+    collect_unread(merged, &read, "", &mut unread);
+    anyhow::ensure!(
+        unread.is_empty(),
+        "{} states {} that nothing reads: {}. A key spelled wrongly is dropped \
+         silently and its field takes its default value.",
+        path.display(),
+        if unread.len() == 1 { "a key" } else { "keys" },
+        unread.join(", "),
+    );
+    Ok(())
+}
+
+/// Keys present in `input` and absent from `read`. Keys only: `Decimal` does not
+/// round-trip its text (`"1.2"` re-serializes as `"1.199…9"`), so comparing
+/// values would report every market as broken.
+fn collect_unread(input: &Value, read: &Value, path: &str, unread: &mut Vec<String>) {
+    let join = |key: &str| {
+        if path.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{path}.{key}")
+        }
+    };
+
+    match (input, read) {
+        (Value::Table(input), Value::Table(read)) => {
+            for (key, value) in input {
+                match read.get(key) {
+                    Some(read) => collect_unread(value, read, &join(key), unread),
+                    None => unread.push(join(key)),
+                }
+            }
+        }
+        (Value::Array(input), Value::Array(read)) => {
+            for (index, (value, read)) in input.iter().zip(read).enumerate() {
+                collect_unread(value, read, &format!("{path}[{index}]"), unread);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The merged `toml::Value` for `path`, with its `extends` chain applied.
@@ -128,5 +183,42 @@ fn merge_to_depth(base: &mut Value, overlay: Value, depth: usize) {
             }
         }
         (base, overlay) => *base = overlay,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure_every_key_was_read, Path, Value};
+    use crate::spec::plan::testing::alpha_market;
+
+    /// The case `deny_unknown_fields` cannot see: `AmountRange` is an on-chain
+    /// type, so a misspelled `maximum` deserializes to `None` — an unbounded
+    /// range — and the market deploys with it.
+    #[test]
+    fn a_typo_inside_an_embedded_on_chain_type_is_refused() {
+        let spec = alpha_market();
+        let mut merged = Value::try_from(&spec).expect("a spec serializes");
+        merged["market"]["borrow_range"]
+            .as_table_mut()
+            .expect("a range is a table")
+            .insert("maximim".to_owned(), Value::String("1".to_owned()));
+
+        let error = ensure_every_key_was_read(&merged, &spec, Path::new("m.toml"))
+            .expect_err("nothing reads `maximim`");
+
+        assert!(
+            format!("{error:#}").contains("market.borrow_range.maximim"),
+            "the refusal must name the key by its full path: {error:#}"
+        );
+    }
+
+    /// And a spec that states only what it means passes. The 45 checked-in
+    /// specs are the wider proof; this one names the mechanism.
+    #[test]
+    fn a_spec_stating_only_what_it_means_is_accepted() {
+        let spec = alpha_market();
+        let merged = Value::try_from(&spec).expect("a spec serializes");
+
+        ensure_every_key_was_read(&merged, &spec, Path::new("m.toml")).expect("nothing is unread");
     }
 }

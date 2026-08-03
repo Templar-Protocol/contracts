@@ -372,6 +372,27 @@ impl MarketSpec {
             "`time_chunk` must be at least 1ms; a zero-length chunk has no snapshot schedule"
         );
 
+        // `total_weight` panics on overflow and nothing on the deploy path calls
+        // it, so an oversized set deploys and then bricks the first supply.
+        let weights = &self.market.yield_weights;
+        let total = weights
+            .r#static
+            .values()
+            .try_fold(u16::from(weights.supply), |sum, weight| {
+                sum.checked_add(*weight)
+            });
+        anyhow::ensure!(
+            total.is_some(),
+            "`yield_weights` sum past u16: supply is {} and the static weights add \
+             {}. Every yield calculation would panic.",
+            weights.supply,
+            weights
+                .r#static
+                .values()
+                .map(|w| u32::from(*w))
+                .sum::<u32>(),
+        );
+
         Ok(MarketConfiguration {
             time_chunk_configuration: TimeChunkConfiguration::new(time_chunk_ms),
             borrow_asset: self.borrow.asset,

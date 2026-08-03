@@ -6,31 +6,20 @@
 //! registry's source metadata — so the one test that calls it is named
 //! `requires_network_*` and is excluded from both the fast and sandbox gates.
 
-use std::path::Path;
-
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use near_api::types::NearToken;
 use templar_gateway_client::{Client, Network, NetworkConfigBuilder};
 use templar_gateway_core::{OperationPlan, PlannedTransaction};
-use templar_gateway_types::primitive::PublicKey;
 use templar_gateway_types::NearGas;
 
 use crate::spec::{
     check::{Check, Status},
-    plan::{Derived, PlanArgs, PlanFile},
-    MarketSpec,
+    plan::{
+        testing::{alpha_market, public_key},
+        PlanArgs, PlanFile,
+    },
 };
-
-const PUBLIC_KEY: &str = "ed25519:H9k5eiU4xXS3M4z8HzKJSLaZdqGdGwBG49o7orNC4eZW";
-
-fn alpha_market() -> MarketSpec {
-    crate::spec::extends::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
-    )
-    .expect("fixture spec should load")
-}
 
 fn signer_id() -> AccountId {
     "operator.near".parse().expect("valid account")
@@ -88,18 +77,10 @@ fn borsh_args() -> Vec<u8> {
 }
 
 fn plan_file(steps: Vec<(String, PlannedTransaction)>) -> PlanFile {
-    let spec = alpha_market();
     PlanFile::new(
         "mainnet".to_owned(),
-        "sha256:test".to_owned(),
-        Derived {
-            creates_its_own_oracle: true,
-            market_id: spec.market_id().expect("market id"),
-            oracle_id: spec.oracle_id().expect("oracle id"),
-            governance_id: Some(spec.governance_id().expect("governance id")),
-            collateral_decimals: spec.collateral.decimals,
-            borrow_decimals: spec.borrow.decimals,
-        },
+        alpha_market(),
+        public_key(),
         vec![Check {
             id: "config.validate".to_owned(),
             status: Status::passed("MarketConfiguration::validate"),
@@ -132,14 +113,14 @@ fn round_trips_through_json() {
     );
 }
 
-/// JSON args stay editable; borsh stays opaque and survives byte-for-byte.
+/// JSON args stay legible; borsh stays opaque and survives byte-for-byte.
 #[test]
 fn args_are_classified_by_probing_the_bytes() {
     let file = plan_file(sample_steps());
 
     assert!(
         matches!(file.steps[0].function_calls[0].args, PlanArgs::Json(_)),
-        "JSON args must stay editable: {:?}",
+        "JSON args must stay legible: {:?}",
         file.steps[0].function_calls[0].args
     );
     assert!(
@@ -159,78 +140,6 @@ fn args_are_classified_by_probing_the_bytes() {
     );
 }
 
-/// Editing is the feature, so an edit is reported rather than refused — and
-/// named precisely enough to confirm it was the only one.
-#[test]
-fn an_edited_plan_names_the_steps_that_changed() {
-    let mut file = plan_file(sample_steps());
-    assert!(
-        file.drift().expect("digest").is_clean(),
-        "a freshly generated plan is unmodified"
-    );
-
-    file.steps[1].function_calls[0].gas += 1;
-    let drift = file.drift().expect("digest");
-
-    assert_eq!(drift.changed, vec![1], "only step 1 was touched");
-    assert_eq!(drift.delta, 0);
-    assert!(
-        drift.describe().contains("1 step(s) differ (#1)"),
-        "the operator must be told which step: {}",
-        drift.describe()
-    );
-}
-
-/// Removing a step is an edit too, and must not read as unmodified.
-#[test]
-fn a_removed_step_is_reported() {
-    let mut file = plan_file(sample_steps());
-    file.steps.pop();
-
-    let drift = file.drift().expect("digest");
-    assert_eq!(drift.delta, -1);
-    assert!(!drift.is_clean());
-    assert!(
-        drift.describe().contains("1 step(s) removed"),
-        "{}",
-        drift.describe()
-    );
-}
-
-/// Editing a check from `failed` to `passed`, or repointing a derived id, must
-/// not report the plan as unmodified — `render` shows those values, so a clean
-/// verdict over them is worth more than it should be.
-#[test]
-fn editing_the_summary_is_drift_too() {
-    let mut file = plan_file(sample_steps());
-
-    file.checks[0].status = Status::failed("actually broken");
-    let drift = file.drift().expect("digest");
-    assert!(drift.summary, "a rewritten check verdict is an edit");
-    assert!(!drift.is_clean());
-    assert!(
-        drift.describe().contains("check results differ"),
-        "{}",
-        drift.describe()
-    );
-
-    let mut file = plan_file(sample_steps());
-    file.derived.market_id = "elsewhere.near".parse().expect("valid account");
-    assert!(
-        file.drift().expect("digest").summary,
-        "a repointed market id is an edit"
-    );
-
-    // `render` presents `spec_digest` as the plan's source, so rewriting it
-    // must not read as unmodified either.
-    let mut file = plan_file(sample_steps());
-    file.spec_digest = "sha256:something-else".to_owned();
-    assert!(
-        file.drift().expect("digest").summary,
-        "a rewritten spec digest is an edit"
-    );
-}
-
 /// A number too large for `u64` decodes as `f64` and would re-encode in
 /// exponent form — a different value than the operator reviewed. Such args stay
 /// opaque instead.
@@ -244,7 +153,7 @@ fn args_that_would_not_survive_re_encoding_stay_opaque() {
 
     assert!(
         matches!(file.steps[0].function_calls[0].args, PlanArgs::Base64(_)),
-        "a value that cannot round-trip must not be presented as editable JSON"
+        "a value that cannot round-trip must not be presented as plain JSON"
     );
     assert_eq!(
         file.into_operation_plan().expect("convert").steps[0].actions,
@@ -253,8 +162,8 @@ fn args_that_would_not_survive_re_encoding_stay_opaque() {
     );
 }
 
-/// A step that tolerates its own failure would let a hand-edit turn a reverted
-/// governance call into `apply` exiting zero.
+/// A step that tolerates its own failure would turn a reverted governance call
+/// into `apply` exiting zero.
 #[test]
 fn a_failure_tolerating_step_is_refused() {
     let mut tolerant = transaction("deploy_market", b"{}".to_vec());
@@ -262,15 +171,8 @@ fn a_failure_tolerating_step_is_refused() {
 
     let error = PlanFile::new(
         "mainnet".to_owned(),
-        "sha256:test".to_owned(),
-        Derived {
-            creates_its_own_oracle: true,
-            market_id: "m.near".parse().expect("valid account"),
-            oracle_id: "o.near".parse().expect("valid account"),
-            governance_id: Some("g.near".parse().expect("valid account")),
-            collateral_decimals: Some(6),
-            borrow_decimals: Some(7),
-        },
+        alpha_market(),
+        public_key(),
         Vec::new(),
         vec![("tolerant".to_owned(), tolerant)],
     )
@@ -302,15 +204,8 @@ fn a_non_function_call_action_is_refused() {
 
     let error = PlanFile::new(
         "mainnet".to_owned(),
-        "sha256:test".to_owned(),
-        Derived {
-            creates_its_own_oracle: true,
-            market_id: "m.near".parse().expect("valid account"),
-            oracle_id: "o.near".parse().expect("valid account"),
-            governance_id: Some("g.near".parse().expect("valid account")),
-            collateral_decimals: Some(6),
-            borrow_decimals: Some(7),
-        },
+        alpha_market(),
+        public_key(),
         Vec::new(),
         vec![("tear down".to_owned(), plan.steps[0].clone())],
     )
@@ -330,11 +225,7 @@ async fn a_signer_that_is_not_the_governance_admin_is_refused() {
     let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
         .build()
         .expect("build client");
-    let public_key = PublicKey::from(
-        PUBLIC_KEY
-            .parse::<near_api::PublicKey>()
-            .expect("valid key"),
-    );
+    let public_key = public_key();
     let spec = alpha_market();
     assert_ne!(
         spec.governance_spec().expect("proxy fixture").admin,
@@ -362,11 +253,7 @@ async fn an_oracle_version_that_ignores_owner_id_is_refused() {
     let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
         .build()
         .expect("build client");
-    let public_key = PublicKey::from(
-        PUBLIC_KEY
-            .parse::<near_api::PublicKey>()
-            .expect("valid key"),
-    );
+    let public_key = public_key();
     let mut spec = alpha_market();
     let admin = spec.governance_spec().expect("proxy fixture").admin.clone();
     // Well-formed key, pre-0.3.0 version: the guard must reject it for what the
@@ -399,11 +286,7 @@ async fn requires_network_plans_the_deploy_script_in_order() {
     let client = Client::builder(NetworkConfigBuilder::new(Network::Mainnet).build())
         .build()
         .expect("build client");
-    let public_key = PublicKey::from(
-        PUBLIC_KEY
-            .parse::<near_api::PublicKey>()
-            .expect("valid key"),
-    );
+    let public_key = public_key();
 
     // Signed by the spec's `governance.admin`: any other account would not hold
     // the Admin role, and `build` refuses that rather than plan a deployment
@@ -634,7 +517,7 @@ mod journal {
         let mut file = plan_file(sample_steps());
         file.steps = vec![deploy("gov"), deploy("oracle"), deploy("market")];
 
-        let all = crate::dispatch::plan::planned_targets(&file).expect("targets");
+        let all = crate::dispatch::plan::planned_targets(&file.steps).expect("targets");
         let names = |targets: &[near_api::AccountId]| -> Vec<String> {
             targets.iter().map(ToString::to_string).collect()
         };
@@ -654,7 +537,7 @@ mod journal {
             ..file.clone()
         };
         let remaining_targets =
-            crate::dispatch::plan::planned_targets(&outstanding).expect("targets");
+            crate::dispatch::plan::planned_targets(&outstanding.steps).expect("targets");
 
         // The exact set, not a smaller count: `len() < 3` also passes for zero,
         // and an under-broad freeness check is the dangerous direction — it lets

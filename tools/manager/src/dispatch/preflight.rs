@@ -339,6 +339,16 @@ fn is_missing_method(error: &templar_gateway_core::GatewayError) -> bool {
     rendered.contains("MethodNotFound") || rendered.contains("doesn't exist")
 }
 
+/// Whether the contract tried to make a cross-contract call during a view.
+///
+/// The LST oracle's `price_feed_exists` forwards to the underlying oracle for
+/// any identifier it does not transform, which a view call cannot do. The
+/// market's own price call is promise-backed and works, so this bounds what a
+/// view can confirm — it is not evidence against the oracle.
+fn is_prohibited_in_view(error: &templar_gateway_core::GatewayError) -> bool {
+    error.to_string().contains("ProhibitedInView")
+}
+
 /// A direct market skips the three checks a proxy gets, which left the oracle
 /// it does read checked by nothing. `MarketConfiguration` is immutable after
 /// init, so a mistyped `price_id` would be permanent.
@@ -412,14 +422,18 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                             "`{account_id}` serves no feed for {hex}. It cannot be \
                              corrected after init."
                         )),
-                        Err(inner) if is_missing_method(&inner) => Status::Skipped {
-                            reason: format!(
-                                "`{account_id}` answers neither `get_price` nor \
-                                 `price_feed_exists`, so this build cannot confirm \
-                                 it serves {hex}. Check it by hand before \
-                                 deploying — this is not a pass."
-                            ),
-                        },
+                        Err(inner) if is_missing_method(&inner) => Status::skipped(format!(
+                            "`{account_id}` answers neither `get_price` nor \
+                             `price_feed_exists`, so this build cannot confirm \
+                             it serves {hex}. Check it by hand before \
+                             deploying — this is not a pass."
+                        )),
+                        Err(inner) if is_prohibited_in_view(&inner) => Status::skipped(format!(
+                            "`{account_id}` answers `price_feed_exists` for {hex} \
+                             with a cross-contract call, which a view cannot make. \
+                             The market's own price call is promise-backed and is \
+                             unaffected; confirm the feed by hand."
+                        )),
                         Err(inner) => Status::failed(format!(
                             "`{account_id}` did not answer for {hex}: {inner}"
                         )),
@@ -502,8 +516,37 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
 
 #[cfg(test)]
 mod tests {
-    use super::underlying_ft;
+    use super::{is_missing_method, is_prohibited_in_view, underlying_ft};
     use templar_common::asset::{CollateralAsset, FungibleAsset};
+
+    /// The LST oracle forwards `price_feed_exists` for an untransformed feed,
+    /// which a view rejects. Treated as a failure, it fails three shipped specs
+    /// (`stnear-usdc`, `stnear-usdc-1`, `liqtest-stnear-usdc`) whose markets
+    /// price perfectly well — the real call is promise-backed.
+    #[test]
+    fn a_view_prohibited_promise_is_not_a_missing_method() {
+        let error = templar_gateway_core::GatewayError::NearQuery(
+            "wasm execution failed: ProhibitedInView { method_name: \"promise_create\" }"
+                .to_owned(),
+        );
+
+        assert!(is_prohibited_in_view(&error));
+        assert!(
+            !is_missing_method(&error),
+            "the two must not overlap, or the fallback ladder short-circuits"
+        );
+    }
+
+    /// And an ordinary query failure is still a failure.
+    #[test]
+    fn an_unrelated_failure_is_neither() {
+        let error = templar_gateway_core::GatewayError::NearQuery(
+            "timed out talking to the RPC".to_owned(),
+        );
+
+        assert!(!is_prohibited_in_view(&error));
+        assert!(!is_missing_method(&error));
+    }
 
     /// Which token defines an asset's decimals is not obvious, and getting it
     /// wrong silently mis-scales every price the market sees.

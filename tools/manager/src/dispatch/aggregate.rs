@@ -67,6 +67,11 @@ pub(super) async fn checks(
     let collateral_breakers = breakers(ctx, deployed_oracle, COLLATERAL_PRICE_ID).await;
     let borrow_breakers = breakers(ctx, deployed_oracle, BORROW_PRICE_ID).await;
 
+    // A deployed oracle means `market verify`, not `market plan`: feeds that
+    // resolve to nothing are a market that cannot price, not one awaiting its
+    // first push.
+    let live_market = deployed_oracle.is_some();
+
     let (collateral_price, mut checks) = leg(
         "collateral",
         &spec.collateral,
@@ -74,9 +79,17 @@ pub(super) async fn checks(
         collateral,
         now,
         collateral_breakers,
+        live_market,
     );
-    let (borrow_price, borrow_checks) =
-        leg("borrow", &spec.borrow, spec, borrow, now, borrow_breakers);
+    let (borrow_price, borrow_checks) = leg(
+        "borrow",
+        &spec.borrow,
+        spec,
+        borrow,
+        now,
+        borrow_breakers,
+        live_market,
+    );
     checks.extend(borrow_checks);
     checks.push(pair(collateral_price, borrow_price));
     (checks, collateral_price, borrow_price)
@@ -138,6 +151,7 @@ fn leg<A: AssetClass>(
     fetched_sources: Vec<anyhow::Result<Option<Price>>>,
     now: Nanoseconds,
     breakers: anyhow::Result<CircuitBreakerSet<CircuitBreaker>>,
+    live_market: bool,
 ) -> (Option<Price>, Vec<Check>) {
     let mut checks = Vec::new();
     let mut prices = Vec::with_capacity(asset.sources.len());
@@ -243,6 +257,17 @@ fn leg<A: AssetClass>(
                  The deployed proxy would fail on the same inputs — check \
                  `min_sources`, the freshness bounds, and the failed \
                  `oracle.price.{side}.*` above.",
+                aggregator_label(asset)
+            )),
+            None,
+        ),
+        // Nothing to judge is expected before the first push, but this market is
+        // already live: its oracle cannot price the {side} asset right now.
+        Err(error) if live_market => (
+            Status::failed(format!(
+                "{} has no live sources ({error:?}), so the deployed oracle cannot \
+                 price the {side} asset. Every borrow, repay and liquidation on \
+                 this market is blocked until a source publishes.",
                 aggregator_label(asset)
             )),
             None,
@@ -380,48 +405,66 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
             method,
             decimals,
             ..
-        } => {
-            let underlying = ctx
-                .client
-                .read(templar_gateway_methods_spec::pyth::ListEmaPricesUnsafe {
-                    oracle_id: oracle.clone(),
-                    price_ids: vec![*price_id],
-                })
-                .await
-                .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
-                .prices
-                .into_iter()
-                .next()
-                .and_then(|entry| entry.price);
-
-            // Scaled by the same `Action` the contract applies, not by a second
-            // implementation of the same arithmetic here.
-            match underlying {
-                None => None,
-                Some(underlying) => {
-                    let rate = ctx
-                        .client
-                        .read(contract::ViewFunction {
-                            contract_id: contract.clone(),
-                            method_name: method.clone().into(),
-                            args: ContractArgs::Json(serde_json::Value::Null),
-                        })
-                        .await
-                        .with_context(|| format!("read `{contract}.{method}`"))?;
-                    let rate: templar_common::Decimal =
-                        serde_json::from_value::<near_sdk::json_types::U128>(rate.value)
-                            .context("decode the LST exchange rate")?
-                            .0
-                            .into();
-
-                    Action::NormalizeNativeLstPrice {
-                        decimals: *decimals,
-                    }
-                    .apply(underlying, rate)
-                }
-            }
-        }
+        } => lst(ctx, oracle, *price_id, contract, method, *decimals).await?,
     };
 
     Ok(pyth_price.as_ref().and_then(pyth_price_try_to_kernel))
+}
+
+/// The underlying asset's price, scaled by the exchange rate a view on the
+/// staking contract returns.
+async fn lst(
+    ctx: &CliContext,
+    oracle: &near_account_id::AccountId,
+    price_id: templar_common::oracle::pyth::PriceIdentifier,
+    contract_id: &near_account_id::AccountId,
+    method: &str,
+    decimals: u32,
+) -> anyhow::Result<Option<pyth::Price>> {
+    let underlying = ctx
+        .client
+        .read(templar_gateway_methods_spec::pyth::ListEmaPricesUnsafe {
+            oracle_id: oracle.clone(),
+            price_ids: vec![price_id],
+        })
+        .await
+        .with_context(|| format!("read pyth `{}` from {oracle}", hex::encode(price_id.0)))?
+        .prices
+        .into_iter()
+        .next()
+        .and_then(|entry| entry.price);
+
+    let Some(underlying) = underlying else {
+        return Ok(None);
+    };
+
+    let rate = ctx
+        .client
+        .read(contract::ViewFunction {
+            contract_id: contract_id.clone(),
+            method_name: method.to_owned().into(),
+            args: ContractArgs::Json(serde_json::Value::Null),
+        })
+        .await
+        .with_context(|| format!("read `{contract_id}.{method}`"))?;
+    let rate: templar_common::Decimal =
+        serde_json::from_value::<near_sdk::json_types::U128>(rate.value)
+            .context("decode the LST exchange rate")?
+            .0
+            .into();
+
+    // Scaled by the same `Action` the contract applies, not by a second
+    // implementation of the same arithmetic here. The underlying answered, so a
+    // `None` from it is the transform failing — `decimals >= 39` overflows its
+    // scaling factor — not a feed awaiting its first push.
+    Action::NormalizeNativeLstPrice { decimals }
+        .apply(underlying, rate)
+        .map(Some)
+        .with_context(|| {
+            format!(
+                "`{contract_id}.{method}` returned {rate}, but scaling the \
+                 underlying price by it at {decimals} decimals overflowed. This \
+                 source can never produce a price."
+            )
+        })
 }

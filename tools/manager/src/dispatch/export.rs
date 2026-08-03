@@ -26,6 +26,14 @@ use crate::spec::{
 pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> {
     let spec = reconstruct(&ctx, &args.market_id, &args.governance_admin).await?;
 
+    // Here rather than in `reconstruct`: `market verify` shares that function and
+    // reports the same fact as a `governance.admin` check, so failing hard inside
+    // it would turn a monitoring run into an abort. An export is a record, and a
+    // record naming the wrong admin is worse than none.
+    if spec.governance.is_some() {
+        ensure_admin_holds_the_role(&ctx, &spec.governance_id()?, &args.governance_admin).await?;
+    }
+
     let rendered = toml::to_string_pretty(&spec).context("render spec as TOML")?;
     match &args.out {
         Some(path) => {
@@ -100,6 +108,43 @@ pub(super) async fn reconstruct(
         market_id: market_id.clone(),
         configuration,
     })
+}
+
+/// `--governance-admin` is supplied, not read, so it is checked against the role
+/// before it enters a spec that presents itself as a record of what is deployed.
+/// A typo would otherwise re-deploy control to the wrong account.
+async fn ensure_admin_holds_the_role(
+    ctx: &CliContext,
+    governance_id: &AccountId,
+    admin: &AccountId,
+) -> anyhow::Result<()> {
+    let holders = ctx
+        .client
+        .read(governance::ListRole {
+            governance_id: governance_id.clone(),
+            role: templar_proxy_oracle_near_governance_common::Role::Admin,
+            offset: None,
+            count: None,
+        })
+        .await
+        .with_context(|| format!("list the Admin role on {governance_id}"))?
+        .members;
+
+    anyhow::ensure!(
+        holders.contains(admin),
+        "`{admin}` does not hold Admin on `{governance_id}`; it is held by {}. \
+         Re-run `--governance-admin` with one of those.",
+        if holders.is_empty() {
+            "nobody".to_owned()
+        } else {
+            holders
+                .iter()
+                .map(|holder| format!("`{holder}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    );
+    Ok(())
 }
 
 /// The governance contract's default proposal TTL. Stored per operation kind,

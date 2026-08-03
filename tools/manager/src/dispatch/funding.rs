@@ -1,6 +1,6 @@
 //! Whether every account that signs can pay, reported before anything is sent.
 //!
-//! Reads the plan's *steps*, so it still means something after a hand edit.
+//! Reads the plan's *steps*: the deposits and gas that will actually be sent.
 
 use std::collections::BTreeMap;
 

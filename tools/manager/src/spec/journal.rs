@@ -1,9 +1,9 @@
 //! An append-only record of what a deploy actually did, so an interrupted one
 //! can be resumed instead of restarted.
 //!
-//! Entries key on the digest of the step they completed, not on the spec:
-//! editing an unrun step is the artifact's purpose, while an edit *under* a
-//! completed step is named rather than silently re-run or skipped.
+//! Entries key on the digest of the step they completed, so a plan that has
+//! moved on under a completed step is named rather than silently re-run or
+//! skipped.
 
 use std::path::{Path, PathBuf};
 
@@ -122,7 +122,7 @@ impl Journal {
     /// Refuses rather than guessing when the journal and the plan disagree:
     /// every recorded step must still exist and still hash the same. Silently
     /// re-running a completed step would double-spend a deposit; silently
-    /// skipping an edited one would deploy something nobody reviewed.
+    /// skipping a changed one would deploy something nobody reviewed.
     pub fn remaining(&self, file: &PlanFile) -> anyhow::Result<Vec<usize>> {
         for entry in &self.entries {
             let step = file.steps.get(entry.step).with_context(|| {
@@ -177,10 +177,10 @@ impl Journal {
             self.entries.iter().map(|entry| entry.step).collect();
 
         // Steps run in order and only completions are recorded, so the done set
-        // is always a prefix. A journal that skips one — hand-edited, or
-        // partially recovered — would make `apply` step over work that never
-        // happened, and every plan-level check would still pass because the
-        // *plan* is intact. Only the executed set is wrong.
+        // is always a prefix. A journal that skips one — partially recovered,
+        // or written by hand — would make `apply` step over work that never
+        // happened while the plan itself still matches its spec. Only the
+        // executed set is wrong.
         anyhow::ensure!(
             done.iter().copied().eq(0..done.len()),
             "this journal records steps {done:?} as done, which is not a prefix \

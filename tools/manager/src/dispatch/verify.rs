@@ -1,9 +1,9 @@
 //! `market verify` — re-run the preflight against a market that already exists.
 //!
-//! A hand-edited plan bypasses every spec-level check. The market contract
-//! backstops its own configuration at init; the oracle wiring has no backstop,
-//! and `admin_set_proxy` is dispatched detached, so a proposal reports success
-//! even when the oracle rejected it. Deployed state is the only witness.
+//! The market contract backstops its own configuration at init; the oracle
+//! wiring has no backstop, and `admin_set_proxy` is dispatched detached, so a
+//! proposal reports success even when the oracle rejected it. Deployed state is
+//! the only witness.
 //!
 //! Exits non-zero on failure, so it can also run on a schedule.
 
@@ -104,6 +104,10 @@ struct Projection {
         templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
     borrow_proxy:
         templar_proxy_oracle_kernel::proxy::Proxy<templar_proxy_oracle_near_common::input::Source>,
+    /// Recoverable, so it is compared: a timelock lowered to zero on a live
+    /// oracle is exactly the drift this check exists to catch. `admin` is left
+    /// out — on the deployed side it is the CLI flag, checked separately.
+    governance_ttl: Option<templar_common::Nanoseconds>,
 }
 
 /// What `market verify` reports alongside its checks.
@@ -116,8 +120,8 @@ struct VerifiedMarket {
 /// Does governance actually control the oracle this market reads?
 ///
 /// `governance.admin` proves only that the admin holds the role on the account
-/// a spec *derives*. Nine of the eleven v1 proxy oracles are owned by the
-/// registry instead, which would otherwise verify clean.
+/// a spec *derives*. An oracle owned by anything else answers to that owner with
+/// no timelock, and would otherwise verify clean.
 async fn governance_controls_the_oracle(
     ctx: &CliContext,
     spec: &MarketSpec,
@@ -233,6 +237,7 @@ fn matches_intent(deployed: &MarketSpec, intended: &MarketSpec, path: &std::path
                 .into_market_configuration(i32::from(collateral), i32::from(borrow))?,
             collateral_proxy: spec.collateral.clone().into_proxy(age),
             borrow_proxy: spec.borrow.clone().into_proxy(age),
+            governance_ttl: spec.governance.as_ref().map(|it| it.ttl_default),
         })
         .context("project the spec")
     };

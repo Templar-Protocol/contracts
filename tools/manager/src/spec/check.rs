@@ -37,6 +37,12 @@ impl Status {
         }
     }
 
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        Self::Skipped {
+            reason: reason.into(),
+        }
+    }
+
     pub const fn is_failure(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }

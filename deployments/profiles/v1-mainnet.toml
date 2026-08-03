@@ -1,10 +1,7 @@
 # Shared by every v1 market.
 #
-# `versions` is the topology a re-apply would create, not a record of every
-# deployed one: nine of the eleven v1 proxy oracles predate governance and are
-# owned directly by `tmplr.near`. Their market configurations are unaffected —
-# the market names the oracle account, not its owner — so these specs still
-# reproduce what is deployed.
+# `versions` is the topology a re-apply would create, not a record of what each
+# market was deployed with.
 schema = 4
 
 registry = "v1.tmplr.near"

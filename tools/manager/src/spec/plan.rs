@@ -1,10 +1,11 @@
-//! The plan artifact: a serializable, hand-editable form of an
-//! [`OperationPlan`], for when the spec cannot express what a market needs.
+//! The plan artifact: a serializable form of an [`OperationPlan`], carrying the
+//! spec it was derived from. `apply` re-derives and refuses a file that does not
+//! match, so a plan cannot say something its spec does not.
 //!
 //! JSON args are canonicalized on conversion, since re-encoding through
 //! [`serde_json::Value`] cannot preserve the gateway's key order. The canonical
-//! form is what gets digested, displayed and executed, so what `apply` sends is
-//! what `plan` showed.
+//! form is what gets displayed and executed, so what `apply` sends is what
+//! `plan` showed.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -12,17 +13,17 @@ use near_api::types::transaction::actions::{Action, FunctionCallAction};
 use near_api::types::NearToken;
 use serde::{Deserialize, Serialize};
 use templar_gateway_core::{OperationPlan, PlannedTransaction};
-use templar_gateway_types::{Base64Bytes, ManagedAccountId, NearGas};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, ManagedAccountId, NearGas};
 
 use super::check::Check;
 
 /// Bumped when this artifact's shape changes. `apply` hard-refuses a mismatch:
 /// every struct here is `deny_unknown_fields`, and this file authorizes spending
 /// real NEAR.
-pub const PLAN_SCHEMA_VERSION: u32 = 3;
+pub const PLAN_SCHEMA_VERSION: u32 = 4;
 
-/// A function call's arguments, in whichever form a human can actually edit.
-/// Not `ContractArgs`, whose `{"encoding": …, "value": …}` is worse to hand-edit.
+/// A function call's arguments, in whichever form a human can actually read.
+/// Not `ContractArgs`, whose `{"encoding": …, "value": …}` buries them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanArgs {
@@ -42,8 +43,8 @@ impl PlanArgs {
         }
     }
 
-    /// The bytes this will send. Re-checks representability, because it is the
-    /// *edited* file that gets sent.
+    /// The bytes this will send. Re-checks representability: these came back
+    /// through `serde_json`, which is where a number loses precision.
     pub(crate) fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Json(value) => {
@@ -78,11 +79,9 @@ fn exactly_representable(value: &serde_json::Value) -> bool {
 pub struct PlanFunctionCall {
     pub method_name: String,
     pub args: PlanArgs,
-    /// Gas units, as a plain integer so editing needs no knowledge of
-    /// `NearGas`'s parse format.
+    /// Gas units.
     pub gas: u64,
-    /// In yoctoNEAR (1 NEAR = 10^24). `render` prints the human form; this is
-    /// the raw value, and editing it by eye is how you send 6 yoctoNEAR.
+    /// In yoctoNEAR (1 NEAR = 10^24); `render` prints the human form.
     pub deposit: NearToken,
 }
 
@@ -91,8 +90,8 @@ pub struct PlanFunctionCall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanStep {
-    /// Manager-only, so a diff of an edited plan is legible. The executor never
-    /// reads it, which is why it lives here and not in [`PlannedTransaction`].
+    /// Manager-only, so a rendered plan is legible. The executor never reads
+    /// it, which is why it lives here and not in [`PlannedTransaction`].
     pub label: String,
     pub signer_id: AccountId,
     pub receiver_id: AccountId,
@@ -118,8 +117,8 @@ impl PlanStep {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        // Editable, it would let a hand-edit turn a reverted governance call
-        // into `apply` exiting zero. Nothing a deployment plans sets it.
+        // It would turn a reverted governance call into `apply` exiting zero.
+        // Nothing a deployment plans sets it.
         anyhow::ensure!(
             !transaction.continue_on_failure,
             "`{label}` tolerates its own failure, which a deployment plan must \
@@ -157,101 +156,25 @@ impl PlanStep {
     }
 }
 
-/// Values the spec implies rather than states, so a reviewer can see what the
-/// tool concluded without re-deriving them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Derived {
-    /// Whether this deployment creates its own proxy oracle.
-    ///
-    /// Recorded rather than inferred: a direct plan is shape-identical to a
-    /// proxy plan whose proxy steps were deleted. Deliberately not
-    /// `#[serde(default)]` — `false` would read as "direct" and skip the
-    /// completeness requirement.
-    pub creates_its_own_oracle: bool,
-    pub market_id: AccountId,
-    /// The oracle the market will read — the proxy this plan creates, or the
-    /// existing account a direct market points at.
-    pub oracle_id: AccountId,
-    /// `None` for a direct market, which creates no governance contract.
-    /// Absent rather than derived: `proxy-gov-<name>.<registry>` can exceed
-    /// NEAR's account-id limit for a name that is itself perfectly valid, and
-    /// deriving an id nothing will create failed such a plan for no reason.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub governance_id: Option<AccountId>,
-    pub collateral_decimals: Option<u8>,
-    pub borrow_decimals: Option<u8>,
-}
-
+/// A plan and the spec it came from.
+///
+/// `apply` re-derives the steps from `spec` and refuses a file that does not
+/// match, so every property a deployment needs — feed coverage, step order,
+/// proposal numbering — holds by construction rather than by inspection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanFile {
     pub schema: u32,
     pub tool_version: String,
     pub network: String,
-    /// Digest of the spec this plan came from, so a plan can be traced back to
-    /// its source after the spec has moved on.
-    pub spec_digest: String,
-    /// Per-step digests as generated. One per step rather than a single
-    /// whole-file digest: with seven steps, "something changed" is not
-    /// actionable.
-    pub step_digests: Vec<String>,
-    /// Digest over everything but the steps themselves, so editing a check to
-    /// `passed` or repointing `derived.market_id` reports as drift. Covers
-    /// `step_digests` too, since `drift` detects a removed step only by length.
-    pub summary_digest: String,
-    pub derived: Derived,
+    /// Fully resolved: `extends` applied, decimals filled in by the preflight.
+    /// Re-derivation must not depend on files beside the plan.
+    pub spec: super::MarketSpec,
+    /// The key the deploys grant full access to. An input to `build`, so it is
+    /// recorded rather than re-supplied at apply time.
+    pub public_key: PublicKey,
     pub checks: Vec<Check>,
     pub steps: Vec<PlanStep>,
-}
-
-/// What changed between a plan as generated and the file as it stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Drift {
-    /// Indices whose content differs from the recorded digest.
-    pub changed: Vec<usize>,
-    /// Steps added (positive) or removed (negative).
-    pub delta: isize,
-    /// The derived values or check results differ.
-    pub summary: bool,
-}
-
-impl Drift {
-    pub fn is_clean(&self) -> bool {
-        self.changed.is_empty() && self.delta == 0 && !self.summary
-    }
-
-    /// A plain sentence for the confirmation prompt.
-    pub fn describe(&self) -> String {
-        if self.is_clean() {
-            return "plan is unmodified since generation".to_owned();
-        }
-
-        let mut parts = Vec::new();
-        if !self.changed.is_empty() {
-            parts.push(format!(
-                "{} step(s) differ (#{})",
-                self.changed.len(),
-                self.changed
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", #")
-            ));
-        }
-        match self.delta {
-            0 => {}
-            added if added > 0 => parts.push(format!("{added} step(s) added")),
-            removed => parts.push(format!("{} step(s) removed", -removed)),
-        }
-        if self.summary {
-            parts.push("the derived values or check results differ".to_owned());
-        }
-        format!(
-            "plan has been edited since generation: {}",
-            parts.join(", ")
-        )
-    }
 }
 
 impl PlanFile {
@@ -259,18 +182,23 @@ impl PlanFile {
     #[cfg(test)]
     pub fn new(
         network: String,
-        spec_digest: String,
-        derived: Derived,
+        spec: super::MarketSpec,
+        public_key: PublicKey,
         checks: Vec<Check>,
         steps: Vec<(String, PlannedTransaction)>,
     ) -> anyhow::Result<Self> {
-        let steps = Self::steps_from(steps)?;
-        Self::from_steps(network, spec_digest, derived, checks, steps)
+        Ok(Self::from_steps(
+            network,
+            spec,
+            public_key,
+            checks,
+            Self::steps_from(steps)?,
+        ))
     }
 
     /// The artifact's steps, converted but not yet sealed into a file — so a
-    /// check that has to read them (funding, ENG-545) can run before the digests
-    /// that must cover its result are computed.
+    /// check that has to read them (funding, ENG-545) can run first, and so
+    /// `apply` can convert a re-derived plan for comparison.
     pub fn steps_from(steps: Vec<(String, PlannedTransaction)>) -> anyhow::Result<Vec<PlanStep>> {
         steps
             .into_iter()
@@ -280,68 +208,20 @@ impl PlanFile {
 
     pub fn from_steps(
         network: String,
-        spec_digest: String,
-        derived: Derived,
+        spec: super::MarketSpec,
+        public_key: PublicKey,
         checks: Vec<Check>,
         steps: Vec<PlanStep>,
-    ) -> anyhow::Result<Self> {
-        let step_digests = steps
-            .iter()
-            .map(digest)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let summary_digest = summary_digest(
-            PLAN_SCHEMA_VERSION,
-            env!("CARGO_PKG_VERSION"),
-            &network,
-            &spec_digest,
-            &derived,
-            &checks,
-            &step_digests,
-        )?;
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             schema: PLAN_SCHEMA_VERSION,
             tool_version: env!("CARGO_PKG_VERSION").to_owned(),
             network,
-            spec_digest,
-            step_digests,
-            summary_digest,
-            derived,
+            spec,
+            public_key,
             checks,
             steps,
-        })
-    }
-
-    /// How the file differs from what was generated.
-    ///
-    /// Reported, never enforced: editing the plan is the feature, so refusing an
-    /// edited plan would block the case this artifact exists for.
-    pub fn drift(&self) -> anyhow::Result<Drift> {
-        let current = self
-            .steps
-            .iter()
-            .map(digest)
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        Ok(Drift {
-            changed: current
-                .iter()
-                .zip(&self.step_digests)
-                .enumerate()
-                .filter_map(|(index, (now, then))| (now != then).then_some(index))
-                .collect(),
-            delta: isize::try_from(current.len()).unwrap_or(isize::MAX)
-                - isize::try_from(self.step_digests.len()).unwrap_or(isize::MAX),
-            summary: summary_digest(
-                self.schema,
-                &self.tool_version,
-                &self.network,
-                &self.spec_digest,
-                &self.derived,
-                &self.checks,
-                &self.step_digests,
-            )? != self.summary_digest,
-        })
+        }
     }
 
     /// The transactions this plan will send.
@@ -354,26 +234,6 @@ impl PlanFile {
                 .collect::<anyhow::Result<Vec<_>>>()?,
         })
     }
-}
-
-fn summary_digest(
-    schema: u32,
-    tool_version: &str,
-    network: &str,
-    spec_digest: &str,
-    derived: &Derived,
-    checks: &[Check],
-    step_digests: &[String],
-) -> anyhow::Result<String> {
-    digest(&(
-        schema,
-        tool_version,
-        network,
-        spec_digest,
-        derived,
-        checks,
-        step_digests,
-    ))
 }
 
 /// `sha256:…` over a value's *canonical* JSON encoding: `yield_weights.static`
@@ -390,6 +250,24 @@ pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
 pub mod testing {
     use near_api::types::NearToken;
     use templar_gateway_methods_spec::account;
+    use templar_gateway_types::primitive::PublicKey;
+
+    /// A checked-in proxy-mode spec, for tests that need a real one.
+    pub fn alpha_market() -> super::super::MarketSpec {
+        crate::spec::extends::load(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
+        )
+        .expect("fixture spec should load")
+    }
+
+    pub fn public_key() -> PublicKey {
+        PublicKey::from(
+            "ed25519:H9k5eiU4xXS3M4z8HzKJSLaZdqGdGwBG49o7orNC4eZW"
+                .parse::<near_api::PublicKey>()
+                .expect("valid key"),
+        )
+    }
 
     /// An `account.get` result with only the fields the funding check reads.
     pub fn account(amount: NearToken, locked: NearToken, storage_usage: u64) -> account::GetResult {

@@ -382,15 +382,18 @@ fn read_command_rejects_credentials() {
     assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
+/// Deliberately not a parse error. Clap validates an env value whatever else was
+/// passed, and `SECRET_KEY` is a name other tools use — validating it here failed
+/// every write, including `--print` and `--sign-with`, which never read it. It is
+/// parsed on use instead; see `commands::signer::tests`.
 #[test]
-fn invalid_secret_key_error_does_not_echo_input() {
+fn an_invalid_secret_key_is_not_a_parse_error() {
     let secret = "not-a-real-secret-key";
-    let error = try_parse_write(["--signer-id", "signer.testnet", "--secret-key", secret])
-        .expect_err("invalid secret key should fail at the clap boundary");
+    let cli = try_parse_write(["--signer-id", "signer.testnet", "--secret-key", secret])
+        .expect("an unusable credential must not fail the parse");
 
-    let message = error.to_string();
-    assert!(message.contains("invalid --secret-key"), "{message}");
-    assert!(!message.contains(secret), "secret leaked: {message}");
+    let rendered = format!("{cli:?}");
+    assert!(!rendered.contains(secret), "secret leaked: {rendered}");
 }
 
 #[test]
