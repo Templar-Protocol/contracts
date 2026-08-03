@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.0...templar-redstone-adapter-contract-v0.3.0) - 2026-08-03
+## [0.2.1](https://github.com/Templar-Protocol/contracts/compare/templar-redstone-adapter-contract-v0.2.0...templar-redstone-adapter-contract-v0.2.1) - 2026-08-03
 
 ### Added
 

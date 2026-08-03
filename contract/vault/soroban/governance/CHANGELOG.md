@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-governance-v1.0.0...templar-soroban-governance-v2.0.0) - 2026-08-03
+## [1.0.1](https://github.com/Templar-Protocol/contracts/compare/templar-soroban-governance-v1.0.0...templar-soroban-governance-v1.0.1) - 2026-08-03
 
 ### Added
 

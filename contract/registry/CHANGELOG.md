@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0](https://github.com/Templar-Protocol/contracts/compare/templar-registry-contract-v1.2.1...templar-registry-contract-v2.0.0) - 2026-08-03
+## [1.2.2](https://github.com/Templar-Protocol/contracts/compare/templar-registry-contract-v1.2.1...templar-registry-contract-v1.2.2) - 2026-08-03
 
 ### Added
 

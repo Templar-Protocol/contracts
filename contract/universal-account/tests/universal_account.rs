@@ -197,7 +197,7 @@ async fn execute_advances_nonce(
     assert_eq!(key_entry.chain_id, Some(NEAR_TESTNET_CHAIN_ID.into()));
     assert_eq!(key_entry.name, Some("Templar Universal Account".into()));
     assert_eq!(key_entry.verifying_contract, to_sdk(&ua));
-    assert_eq!(key_entry.version, Some("1.2.1".into()));
+    assert_eq!(key_entry.version, Some("1.2.2".into()));
     assert_eq!(
         key_entry.salt,
         Some(
