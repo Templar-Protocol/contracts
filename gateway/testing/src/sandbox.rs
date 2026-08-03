@@ -905,17 +905,17 @@ impl SandboxHarness {
         )
         .await?;
 
-        // Governance accepts ownership via an AdminFunctionCall proposal (id 0),
+        // Governance accepts ownership via a target-function-call proposal (id 0),
         // which fires `own_accept_owner` on the oracle as the governance contract.
-        self.governance_admin_function_call(&governance_id, &admin_id, 0, "own_accept_owner")
+        self.governance_target_call(&governance_id, &admin_id, 0, "own_accept_owner")
             .await?;
 
         Ok(governance_id)
     }
 
-    /// Create and immediately execute an `AdminFunctionCall` governance proposal
+    /// Create and immediately execute a target-function-call governance proposal
     /// that calls `method_name` (no args, 1 yocto) on the proxy oracle.
-    async fn governance_admin_function_call(
+    async fn governance_target_call(
         &self,
         governance_id: &AccountId,
         admin_id: &AccountId,
