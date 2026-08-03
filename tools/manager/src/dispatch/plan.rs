@@ -39,12 +39,10 @@ use crate::spec::{
 /// rather than from the market.
 ///
 /// The registry refuses a deposit below `1e19 * code.len()`, and the market's is
-/// the last step — undersized there, it fails after 8.5 NEAR is spent. Each was
-/// measured against its pinned release to keep ~50 KB of headroom: governance
-/// 347 KB, oracle 484 KB, market 521 KB. Nothing re-checks that automatically —
-/// released artifacts are fetched, not in the tree — so a version bump that
-/// grows a contract past its headroom needs these raised with it.
-/// Over-provisioning burns nothing: the deposit is forwarded to the new account.
+/// the last step — undersized there, it fails after 8.5 NEAR is spent. Each keeps
+/// 50 KB of headroom over its pinned release, held there by
+/// `requires_network_deposits_cover_the_released_artifacts`. Over-provisioning
+/// burns nothing: the deposit is forwarded to the account being created.
 const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_near(4);
 const ORACLE_DEPOSIT: NearToken = NearToken::from_millinear(5_400);
 const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_800);
@@ -1075,10 +1073,12 @@ impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
 #[cfg(test)]
 mod tests {
     use super::{apply_skips, ensure_compatible, Network, PLAN_SCHEMA_VERSION};
+    use super::{GOVERNANCE_DEPOSIT, MARKET_DEPOSIT, ORACLE_DEPOSIT};
     use crate::spec::check::{Check, Status};
     use crate::spec::plan::testing::{alpha_market, public_key};
     use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
     use rstest::rstest;
+    use templar_contract_artifacts::ArtifactId;
 
     fn checks() -> Vec<Check> {
         vec![
@@ -1166,6 +1166,45 @@ mod tests {
     /// The steps of a plan carrying one deploy with the given args.
     fn steps_with(args: PlanArgs) -> Vec<PlanStep> {
         vec![step_with("deploy market", args)]
+    }
+
+    /// The registry refuses `deposit < 1e19 * code.len()`, so a contract that
+    /// outgrows its constant fails the deploy — the market's on the last step,
+    /// after 8.5 NEAR is spent. Releasing a larger contract must therefore break
+    /// a test, not a deployment.
+    ///
+    /// Network-gated: the released bytes are fetched, not vendored. Cached after
+    /// the first run.
+    #[rstest]
+    #[case(ArtifactId::ProxyGovernance, GOVERNANCE_DEPOSIT)]
+    #[case(ArtifactId::ProxyOracle, ORACLE_DEPOSIT)]
+    #[case(ArtifactId::Market, MARKET_DEPOSIT)]
+    #[tokio::test]
+    async fn requires_network_deposits_cover_the_released_artifacts(
+        #[case] artifact: ArtifactId,
+        #[case] deposit: near_api::types::NearToken,
+    ) {
+        const YOCTO_PER_BYTE: u128 = 10u128.pow(19);
+        const HEADROOM_BYTES: u128 = 50_000;
+
+        let version = artifact
+            .metadata()
+            .version()
+            .expect("a released version is catalogued for this artifact");
+        let bytes = templar_contract_artifacts::fetch::released_bytes(artifact, version)
+            .await
+            .expect("fetch the released wasm");
+
+        let required = bytes.len() as u128 * YOCTO_PER_BYTE;
+        let covered = deposit.as_yoctonear();
+
+        assert!(
+            covered >= required + HEADROOM_BYTES * YOCTO_PER_BYTE,
+            "{artifact:?} {version} is {} bytes, needing {required} yocto, and the \
+             deposit is {covered}; raise the constant so it keeps 50 KB of room \
+             to grow",
+            bytes.len(),
+        );
     }
 
     /// `ensure_targets_free` acts on what executes, which is the steps.

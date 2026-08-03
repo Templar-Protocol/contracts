@@ -61,10 +61,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
-# `embedded-wasm` only here: `deposits_cover_the_pinned_artifacts` needs the
-# blobs' sizes, and the released binary must not carry 1.4 MB of wasm to hold a
-# constant to account.
-templar-contract-artifacts = { workspace = true, features = ["embedded-wasm"] }
+# `fetch` only here: `requires_network_deposits_cover_the_released_artifacts`
+# downloads the pinned releases to size them, and no other code path needs the
+# bytes.
+templar-contract-artifacts = { workspace = true, features = ["fetch"] }
 
 [lints]
 workspace = true
