@@ -133,8 +133,13 @@ async fn borsh_carries_a_payload_json_cannot(#[future(awt)] harness: SandboxHarn
         ONE_YOCTO,
     )
     .await
-    .expect_err("a json transaction this large should be rejected");
-    println!("json rejected as expected: {error}");
+    .expect_err("a json transaction this large should be rejected")
+    .to_string();
+
+    // Rejected for its size, before execution — an auth or decode regression would panic instead,
+    // and would otherwise satisfy this test while proving nothing about the limit it is named for.
+    let by_size = error.contains("413") || error.to_lowercase().contains("size");
+    assert!(by_size, "expected a size rejection, got: {error}");
 
     // The rejected transaction never reached the contract, so id 0 is still next.
     call_borsh(
