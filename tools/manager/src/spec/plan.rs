@@ -22,7 +22,7 @@ use super::check::Check;
 /// real NEAR. Held to the shape by `the_plan_shape_is_pinned_to_its_version`,
 /// so forgetting the bump is a test failure rather than a resume that dies on
 /// an unknown field.
-pub const PLAN_SCHEMA_VERSION: u32 = 5;
+pub const PLAN_SCHEMA_VERSION: u32 = 6;
 
 /// A function call's arguments, in whichever form a human can actually read.
 /// Not `ContractArgs`, whose `{"encoding": …, "value": …}` buries them.
@@ -175,6 +175,11 @@ pub struct PlanFile {
     /// The key the deploys grant full access to. An input to `build`, so it is
     /// recorded rather than re-supplied at apply time.
     pub public_key: PublicKey,
+    /// Whether planning accepted a token whose on-chain decimals disagree with
+    /// the spec. Recorded for the same reason as `public_key`: it is a decision
+    /// made and reviewed once, and re-running the checks at apply without it
+    /// would refuse a plan that was deliberately written.
+    pub accepted_decimals_mismatch: bool,
     pub checks: Vec<Check>,
     pub steps: Vec<PlanStep>,
 }
@@ -191,6 +196,7 @@ impl PlanFile {
         Ok(Self::from_steps(
             spec,
             public_key,
+            false,
             checks,
             Self::steps_from(steps)?,
         ))
@@ -209,6 +215,7 @@ impl PlanFile {
     pub fn from_steps(
         spec: super::MarketSpec,
         public_key: PublicKey,
+        accepted_decimals_mismatch: bool,
         checks: Vec<Check>,
         steps: Vec<PlanStep>,
     ) -> Self {
@@ -217,6 +224,7 @@ impl PlanFile {
             tool_version: env!("CARGO_PKG_VERSION").to_owned(),
             spec,
             public_key,
+            accepted_decimals_mismatch,
             checks,
             steps,
         }

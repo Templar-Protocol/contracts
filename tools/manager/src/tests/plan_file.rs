@@ -134,8 +134,8 @@ fn the_plan_shape_is_pinned_to_its_version() {
     assert_eq!(
         (crate::spec::plan::PLAN_SCHEMA_VERSION, fingerprint.as_str()),
         (
-            5,
-            "d032675fbbcfdfc34079282bf2649f4b484acebf12d20220bd3f6b5065b3d6b4"
+            6,
+            "497eb0e8a1fa128800b4609e2492db7d28b5f12475425350e69d0bfe12a37885"
         ),
         "the plan artifact's shape changed. Bump PLAN_SCHEMA_VERSION and update \
          this pin, so a plan from another build is refused by name rather than \

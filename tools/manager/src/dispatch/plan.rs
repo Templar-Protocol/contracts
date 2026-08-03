@@ -79,7 +79,13 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     checks.extend(funding);
     gate(&checks, spec.market_id()?.as_str())?;
 
-    let file = PlanFile::from_steps(spec, public_key, checks, steps);
+    let file = PlanFile::from_steps(
+        spec,
+        public_key,
+        args.accept_decimals_mismatch,
+        checks,
+        steps,
+    );
 
     let rendered = serde_json::to_string_pretty(&file).context("render the plan")?;
     match &args.out {
@@ -144,13 +150,28 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         .iter()
         .filter_map(|index| file.steps.get(*index).cloned())
         .collect();
+    // A resume past the oracle deploy is verifying a live oracle, not planning
+    // one: its breakers decide whether the market can price at all, and an empty
+    // set trips on nothing. Probed rather than derived from the journal, which
+    // would mean mapping completed step indices back onto the oracle deploy.
+    let deployed_oracle = match file.spec.own_proxy_id()? {
+        Some(oracle_id) if super::preflight::exists(&ctx, &oracle_id).await? => Some(oracle_id),
+        _ => None,
+    };
+
     // Re-run against the chain as it is now, not replayed from the artifact.
     // `file.checks` records what was true when the plan was written, and a feed
     // can go stale or a version be removed while a plan is being read — every
     // one of those is a reason not to send. It is also what makes a non-funding
     // `--skip-check` mean anything here, which `Apply`'s own help promises.
-    let mut checks =
-        super::preflight::run_all(&ctx, &mut file.spec.clone(), false, false, None).await?;
+    let mut checks = super::preflight::run_all(
+        &ctx,
+        &mut file.spec.clone(),
+        false,
+        file.accepted_decimals_mismatch,
+        deployed_oracle.as_ref(),
+    )
+    .await?;
     checks.extend(super::funding::checks(&ctx, &outstanding).await?);
     let matched = apply_skips(&mut checks, &args.skip_check);
     ensure_every_skip_matched(&args.skip_check, &matched)?;
@@ -1152,6 +1173,7 @@ mod tests {
             tool_version: "0.1.0".to_owned(),
             spec: alpha_market(),
             public_key: public_key(),
+            accepted_decimals_mismatch: false,
             checks: Vec::new(),
             steps: Vec::new(),
         }

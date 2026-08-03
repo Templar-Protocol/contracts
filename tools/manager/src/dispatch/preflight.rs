@@ -13,7 +13,6 @@ use templar_gateway_methods_spec::{account, contract, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
-use templar_proxy_oracle_near_common::request::OracleRequest;
 
 use crate::commands::spec::Check as CheckArgs;
 use crate::context::{print_json, CliContext};
@@ -370,9 +369,13 @@ async fn direct_oracle(
     (checks, collateral_price, borrow_price)
 }
 
-/// Make the market's own price call: both identifiers, one call, its own
-/// `price_maximum_age`. An oracle that answers a per-feed probe but not this is
-/// one the market cannot read, and the configuration naming it is immutable.
+/// Ask the configured oracle for the pair, through the gateway's own resolution.
+///
+/// `oracle.getPrices` runs what the market will run: an LST wrapper's exchange-rate
+/// transform, a proxy's aggregation and circuit breakers, a plain oracle's read.
+/// Resolving the underlying feed here instead and reading it directly would
+/// confirm a price the market never sees — the raw NEAR feed behind a stNEAR
+/// market, or one source of a proxy whose breaker is tripped.
 ///
 /// The prices come back too: the reference cross-check is the only thing that
 /// judges what a feed *says* rather than that it answered.
@@ -385,65 +388,65 @@ async fn serves_pair(
 ) -> (Status, Option<Price>, Option<Price>) {
     let age = spec.market.price_maximum_age.as_secs();
 
-    let mut sides = Vec::with_capacity(2);
-    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
-        match resolves_to(ctx, oracle_id, id).await {
-            Ok(resolved) => sides.push((side, id, resolved)),
-            Err(error) => return (Status::failed(format!("{error:#}")), None, None),
+    let resolved = match ctx
+        .client
+        .read(templar_gateway_methods_spec::oracle::GetPrices {
+            oracle_id: oracle_id.clone(),
+            price_ids: vec![collateral, borrow],
+            age,
+        })
+        .await
+    {
+        Ok(result) => result.prices,
+        Err(error) => {
+            return (
+                Status::failed(format!(
+                    "`{oracle_id}` did not answer the market's price call: {error}. \
+                     A mistyped `price_id` cannot be corrected after init."
+                )),
+                None,
+                None,
+            )
         }
-    }
+    };
 
-    // One call per answering oracle. A direct oracle answers both feeds itself;
-    // an LST wrapper's two feeds can resolve to different accounts.
-    let (mut unserved, mut stale, mut found) = (Vec::new(), Vec::new(), Vec::new());
-    for (side, id, (answering, dispatched)) in sides {
-        let named = if dispatched == id {
-            format!("{side} ({id})")
-        } else {
-            format!("{side} ({id}, served as {dispatched} by `{answering}`)")
-        };
-        let prices = match list_ema_prices(ctx, &answering, &[dispatched], age).await {
-            Ok(prices) => prices,
-            Err(error) => {
-                return (
-                    Status::failed(format!(
-                        "`{answering}` did not answer the market's price call for \
-                         {named}: {error}. A mistyped `price_id` cannot be \
-                         corrected after init."
-                    )),
-                    None,
-                    None,
-                )
-            }
-        };
-
-        match prices.iter().find(|entry| entry.price_id == dispatched) {
-            None => unserved.push(named),
-            Some(entry) => match entry.price.as_ref() {
-                None => stale.push(named),
-                Some(price) => found.push(pyth_price_try_to_kernel(price)),
+    let (mut unpriced, mut unrepresentable, mut found) = (Vec::new(), Vec::new(), Vec::new());
+    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
+        let named = format!("{side} ({id})");
+        match resolved
+            .iter()
+            .find(|entry| entry.price_id == id)
+            .and_then(|entry| entry.price.as_ref())
+        {
+            None => unpriced.push(named),
+            // A price the kernel cannot represent is not a price. Flattening it
+            // away would report the feed healthy and drop it from the
+            // cross-check in the same breath.
+            Some(price) => match pyth_price_try_to_kernel(price) {
+                Some(price) => found.push(price),
+                None => unrepresentable.push(named),
             },
         }
     }
 
-    if !unserved.is_empty() {
+    if !unpriced.is_empty() {
         return (
             Status::failed(format!(
-                "no feed is served for {}. This deployment does not configure that \
-                 oracle, so an identifier it does not know is a wrong one — and the \
-                 market configuration naming it is immutable after init.",
-                unserved.join(" and "),
+                "`{oracle_id}` resolves no price within {age}s for {}. Either the \
+                 identifier is wrong — which cannot be corrected after init — or \
+                 nothing has published to it recently.",
+                unpriced.join(" and "),
             )),
             None,
             None,
         );
     }
-    if !stale.is_empty() {
+    if !unrepresentable.is_empty() {
         return (
             Status::failed(format!(
-                "no price within {age}s for {}. The market reads with the same \
-                 bound, so it would price nothing until something publishes.",
-                stale.join(" and "),
+                "`{oracle_id}` returned a price for {} that does not fit the \
+                 kernel's representation, so the market could not consume it.",
+                unrepresentable.join(" and "),
             )),
             None,
             None,
@@ -452,62 +455,10 @@ async fn serves_pair(
 
     let mut found = found.into_iter();
     (
-        Status::passed(format!("both feeds priced within {age}s")),
-        found.next().flatten(),
-        found.next().flatten(),
+        Status::passed(format!("both feeds priced within {age}s by `{oracle_id}`")),
+        found.next(),
+        found.next(),
     )
-}
-
-/// Which account answers a price call, and under which identifier.
-///
-/// Asked of the gateway rather than reconstructed here: it resolves the oracle's
-/// *kind* and, for an LST wrapper, reads the transformer that maps the market's
-/// identifier onto the underlying feed. Probing instead — call, see it fail,
-/// guess why — turns a transient RPC error into "this oracle does not serve that
-/// feed", which is the one verdict that reads as a permanent spec mistake.
-async fn resolves_to(
-    ctx: &CliContext,
-    oracle_id: &AccountId,
-    price_id: PriceIdentifier,
-) -> anyhow::Result<(AccountId, PriceIdentifier)> {
-    let resolved = ctx
-        .client
-        .read(
-            templar_gateway_methods_spec::oracle::GetPriceResolutionDependencies {
-                oracle_id: oracle_id.clone(),
-                price_id,
-            },
-        )
-        .await
-        .with_context(|| format!("resolve how `{oracle_id}` serves {price_id}"))?;
-
-    // One Pyth request for a direct oracle and for an LST wrapper, which carries
-    // the underlying id. A proxy fans out to several, and this market does not
-    // configure it, so its own identifier is the one to ask for.
-    let pyth = resolved.requests.iter().find_map(|request| match request {
-        OracleRequest::Pyth(pyth) => Some((pyth.oracle_id.clone(), pyth.price_id)),
-        _ => None,
-    });
-
-    Ok(pyth.unwrap_or_else(|| (oracle_id.clone(), price_id)))
-}
-
-async fn list_ema_prices(
-    ctx: &CliContext,
-    oracle_id: &AccountId,
-    price_ids: &[PriceIdentifier],
-    age: u64,
-) -> Result<Vec<templar_gateway_methods_spec::pyth::PriceEntry>, GatewayError> {
-    ctx.client
-        .read(
-            templar_gateway_methods_spec::pyth::ListEmaPricesNoOlderThan {
-                oracle_id: oracle_id.clone(),
-                price_ids: price_ids.to_vec(),
-                age,
-            },
-        )
-        .await
-        .map(|result| result.prices)
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.
