@@ -36,9 +36,11 @@ const RELEASE_REPO: &str = "Templar-Protocol/contracts";
 
 /// Download attempts before giving up. Assets are immutable, so a retry can
 /// only ever fetch the same bytes.
-const DOWNLOAD_ATTEMPTS: u32 = 3;
+const DOWNLOAD_ATTEMPTS: u32 = 5;
 
-const RETRY_BACKOFF: Duration = Duration::from_millis(500);
+/// Doubled per attempt: 1 + 2 + 4 + 8 = 15s of backoff. A GitHub 500 on a
+/// release asset outlasts a sub-second window.
+const RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Per-request ceiling. `reqwest`'s async client has no default timeout, so
 /// without this a stalled connection hangs a CI job for its whole budget
@@ -77,8 +79,12 @@ pub enum FetchError {
         source: reqwest::Error,
     },
 
-    #[error("{url} returned HTTP {status}")]
-    Status { url: String, status: u16 },
+    #[error("{url} returned HTTP {status} on each of {attempts} attempts")]
+    Status {
+        url: String,
+        status: u16,
+        attempts: u32,
+    },
 
     #[error(
         "{artifact}@{version} downloaded from {url} hashes to {actual}, but the \
@@ -306,6 +312,7 @@ async fn download(url: &str) -> Result<Vec<u8>, FetchError> {
         None => FetchError::Status {
             url: url.to_owned(),
             status: last_status.unwrap_or(0),
+            attempts: DOWNLOAD_ATTEMPTS,
         },
     })
 }
@@ -339,6 +346,7 @@ async fn try_download(url: &str) -> Result<Vec<u8>, FetchError> {
         return Err(FetchError::Status {
             url: url.to_owned(),
             status: status.as_u16(),
+            attempts: 1,
         });
     }
 
