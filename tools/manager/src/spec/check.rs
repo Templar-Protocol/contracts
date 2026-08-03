@@ -352,6 +352,21 @@ fn source_problems<A: templar_common::asset::AssetClass>(
         return;
     }
 
+    // Structural, so it is caught offline rather than by a dry run that reports
+    // "no price yet" for a source that can never produce one: the transformer
+    // scales by `10^decimals` in a `u128`, which overflows at 39.
+    for source in &asset.sources {
+        if let super::oracle::SourceSpec::Lst { decimals, .. } = source {
+            if *decimals >= 39 {
+                problems.push(format!(
+                    "{side} names an LST source with {decimals} decimals; its \
+                     transformer scales by 10^decimals in a u128, so anything \
+                     from 39 up can never produce a price"
+                ));
+            }
+        }
+    }
+
     let count = u32::try_from(asset.sources.len()).unwrap_or(u32::MAX);
     if asset.min_sources > count {
         problems.push(format!(

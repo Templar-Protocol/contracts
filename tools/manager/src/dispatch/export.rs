@@ -218,7 +218,7 @@ async fn governance_ttl(
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is
 /// not a proxy-oracle deployment, and the spec cannot express it.
-async fn proxy(
+pub(super) async fn proxy(
     ctx: &CliContext,
     oracle_id: &AccountId,
     id: PriceIdentifier,

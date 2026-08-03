@@ -426,10 +426,10 @@ async fn lst(
         .next()
         .and_then(|entry| entry.price);
 
-    let Some(underlying) = underlying else {
-        return Ok(None);
-    };
-
+    // Read before the underlying is required: a feed awaiting its first push is
+    // expected, but a rate method that does not exist or answers with the wrong
+    // shape is a source that can never produce a price, and the skip for the
+    // former would hide the latter until after the market is live.
     let rate = ctx
         .client
         .read(contract::ViewFunction {
@@ -444,6 +444,10 @@ async fn lst(
             .context("decode the LST exchange rate")?
             .0
             .into();
+
+    let Some(underlying) = underlying else {
+        return Ok(None);
+    };
 
     // Scaled by the same `Action` the contract applies, not by a second
     // implementation of the same arithmetic here. The underlying answered, so a

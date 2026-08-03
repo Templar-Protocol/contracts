@@ -79,13 +79,7 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     checks.extend(funding);
     gate(&checks, spec.market_id()?.as_str())?;
 
-    let file = PlanFile::from_steps(
-        spec,
-        public_key,
-        args.accept_decimals_mismatch,
-        checks,
-        steps,
-    );
+    let file = PlanFile::from_steps(spec, public_key, checks, steps);
 
     let rendered = serde_json::to_string_pretty(&file).context("render the plan")?;
     match &args.out {
@@ -168,7 +162,11 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         &ctx,
         &mut file.spec.clone(),
         false,
-        file.accepted_decimals_mismatch,
+        // The spec states `decimals` explicitly or it does not, and a declared
+        // value disagreeing with the token was reviewed when the plan was
+        // written. `apply` cannot re-ask, and its job is catching what *changed*,
+        // so the mismatch is reported rather than refused.
+        true,
         deployed_oracle.as_ref(),
     )
     .await?;
@@ -233,7 +231,16 @@ async fn send(
     // run a journal exists for.
     let plan = file.clone().into_operation_plan()?;
 
+    let last = remaining.last().copied();
     for index in remaining {
+        // `execute_proposal` dispatches `admin_set_proxy` detached, so a proposal
+        // reports success even when the oracle rejected it — and the market
+        // deploy is the last step, after 8.5 NEAR is spent. Read the feeds back
+        // before it rather than discovering a dead oracle from `market verify`.
+        if Some(index) == last {
+            ensure_feeds_are_configured(ctx, &file.spec).await?;
+        }
+
         let step = &file.steps[index];
         eprintln!("\n[{index}] {}", step.label);
 
@@ -321,6 +328,41 @@ async fn review(
     }
 
     Ok(targets)
+}
+
+/// Refuse to create the market unless its oracle serves what the spec says.
+async fn ensure_feeds_are_configured(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<()> {
+    if spec.oracle.is_direct() {
+        return Ok(());
+    }
+    let oracle_id = spec.oracle_id()?;
+    let age = spec.market.price_maximum_age;
+
+    for (side, id, intended) in [
+        (
+            "collateral",
+            COLLATERAL_PRICE_ID,
+            spec.collateral.clone().into_proxy(age),
+        ),
+        (
+            "borrow",
+            BORROW_PRICE_ID,
+            spec.borrow.clone().into_proxy(age),
+        ),
+    ] {
+        let deployed = super::export::proxy(ctx, &oracle_id, id)
+            .await
+            .with_context(|| format!("read the {side} proxy back from `{oracle_id}`"))?;
+        anyhow::ensure!(
+            deployed == intended,
+            "`{oracle_id}` does not serve the {side} feed this plan configured. \
+             The proposal reported success because `admin_set_proxy` is dispatched \
+             detached; creating the market now would put it live against an oracle \
+             that cannot price it. Re-run the proposal by hand with \
+             `proxy-oracle governance create-proposal --execute-when-ready`."
+        );
+    }
+    Ok(())
 }
 
 /// Refuse a plan somebody else is meant to send.
@@ -1173,7 +1215,6 @@ mod tests {
             tool_version: "0.1.0".to_owned(),
             spec: alpha_market(),
             public_key: public_key(),
-            accepted_decimals_mismatch: false,
             checks: Vec::new(),
             steps: Vec::new(),
         }
