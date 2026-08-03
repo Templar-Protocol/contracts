@@ -13874,7 +13874,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-vault-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -13925,7 +13925,7 @@ dependencies = [
 
 [[package]]
 name = "templar-universal-account"
-version = "1.2.2"
+version = "1.2.1"
 dependencies = [
  "alloy",
  "alloy-primitives",
