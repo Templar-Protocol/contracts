@@ -7,6 +7,9 @@ use near_sdk::{
 pub const NEAR_MAINNET_CHAIN_ID: u128 = 397;
 pub const NEAR_TESTNET_CHAIN_ID: u128 = 398;
 
+/// Deliberately not the package version: changing this invalidates every existing signature.
+const EIP712_DOMAIN_VERSION: &str = "1.2.1";
+
 pub mod authentication;
 pub mod encoding;
 mod event;
@@ -209,7 +212,7 @@ impl PayloadExecutionParametersBuilder<(), (), (), (), ()> {
             index: (),
             nonce: (),
             name: Some("Templar Universal Account".to_string()),
-            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+            version: Some(EIP712_DOMAIN_VERSION.to_owned()),
             chain_id: Some(chain_id),
             verifying_contract: (),
             salt: (),
