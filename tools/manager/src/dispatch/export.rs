@@ -13,6 +13,7 @@ use templar_gateway_methods_spec::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
+use templar_proxy_oracle_near_governance_common::{GovernancePolicy, GovernancePolicyWire};
 
 use crate::commands::market::Export;
 use crate::context::CliContext;
@@ -163,16 +164,17 @@ async fn ensure_admin_holds_the_role(
 
 /// The governance contract's single proposal TTL, or a refusal.
 ///
-/// The policy carries an independent timelock per reflexive bucket, one for the
-/// target default, and one per method override. A spec carries a single
-/// `ttl_default`, so a policy that is not uniform cannot be expressed and is
-/// refused rather than flattened — flattening would drop a real timelock on the
-/// next deploy.
+/// A spec carries one `ttl_default`, which deploys as
+/// [`GovernancePolicy::uniform`]: that TTL everywhere, `Admin` on every method,
+/// no overrides. Comparing against exactly what a deploy would build is the only
+/// way to be sure the export round-trips — checking the TTLs alone accepted the
+/// bootstrap policy, whose overrides delegate proxy configuration and circuit
+/// breakers to non-admin roles that the redeploy would then drop.
 async fn governance_ttl(
     ctx: &CliContext,
     governance_id: &AccountId,
 ) -> anyhow::Result<Nanoseconds> {
-    let policy = ctx
+    let wire = ctx
         .client
         .read(governance::GetGovernancePolicy {
             governance_id: governance_id.clone(),
@@ -181,39 +183,30 @@ async fn governance_ttl(
         .with_context(|| format!("read the governance policy from {governance_id}"))?
         .policy;
 
-    let labeled = [
-        ("reflexive.set_policy", policy.reflexive_ttls.set_policy),
-        ("reflexive.set_role", policy.reflexive_ttls.set_role),
-        ("reflexive.self_upgrade", policy.reflexive_ttls.self_upgrade),
-        ("default_target", policy.default_target.ttl),
-    ]
-    .into_iter()
-    .map(|(label, ttl)| (label.to_owned(), ttl))
-    .chain(
-        policy
-            .method_policies
-            .iter()
-            .map(|(method, entry)| (format!("method_policies.{method}"), entry.ttl)),
+    expressible_ttl(governance_id, &wire)
+}
+
+/// The pure half of [`governance_ttl`], so the refusal is testable offline.
+pub(crate) fn expressible_ttl(
+    governance_id: &AccountId,
+    wire: &GovernancePolicyWire,
+) -> anyhow::Result<Nanoseconds> {
+    let ttl = wire.default_target.ttl;
+    let deployed = GovernancePolicy::try_from(wire.clone())
+        .with_context(|| format!("parse the governance policy from `{governance_id}`"))?;
+    let expressible = GovernancePolicy::uniform(ttl)
+        .with_context(|| format!("build the uniform policy for `{governance_id}`"))?;
+
+    anyhow::ensure!(
+        deployed == expressible,
+        "`{governance_id}` runs a policy no spec can express: a spec carries one \
+         `ttl_default`, which deploys as that TTL everywhere, `Admin` on every \
+         method, and no overrides. Exporting it anyway would drop the difference \
+         on the next deploy. Deployed policy:\n{}",
+        serde_json::to_string_pretty(&wire).unwrap_or_else(|_| format!("{wire:?}")),
     );
 
-    let mut uniform: Option<(String, Nanoseconds)> = None;
-    for (label, ttl) in labeled {
-        match &uniform {
-            None => uniform = Some((label, ttl)),
-            Some((first_label, first)) => anyhow::ensure!(
-                *first == ttl,
-                "`{governance_id}` uses per-operation TTLs ({first_label} is {}ns, \
-                 {label} is {}ns). A spec carries a single `ttl_default` and cannot \
-                 express that, so this market cannot be exported.",
-                first.as_ns(),
-                ttl.as_ns(),
-            ),
-        }
-    }
-
-    uniform
-        .map(|(_, ttl)| ttl)
-        .context("governance exposes no TTLs to read")
+    Ok(ttl)
 }
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is

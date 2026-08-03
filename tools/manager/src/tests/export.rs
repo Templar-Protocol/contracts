@@ -294,3 +294,53 @@ fn a_direct_market_resolves_to_the_oracle_it_reads() {
         "the derived proxy must differ, or this proves nothing"
     );
 }
+
+/// The bootstrap policy this repo ships
+/// (`contract/proxy-oracle/governance-policy.bootstrap.example.json`) is uniform
+/// in TTL but delegates proxy configuration and circuit breakers to non-admin
+/// roles. A spec carries only `ttl_default` and deploys
+/// `GovernancePolicy::uniform`, which has neither, so accepting such a policy
+/// would strip those operators' authority on the next deploy.
+#[test]
+fn a_policy_that_delegates_roles_cannot_be_exported() {
+    use templar_common::Nanoseconds;
+    use templar_proxy_oracle_near_governance_common::{
+        GovernancePolicyWire, MethodPolicy, ReflexiveTtls, Role,
+    };
+
+    let governance_id = "gov.templar-alpha.near".parse().expect("valid account id");
+    let ttl = Nanoseconds::from_ns(0);
+    let mut wire = GovernancePolicyWire {
+        reflexive_ttls: ReflexiveTtls {
+            set_policy: ttl,
+            set_role: ttl,
+            self_upgrade: ttl,
+        },
+        default_target: MethodPolicy {
+            ttl,
+            role: Role::Admin,
+        },
+        method_policies: std::collections::BTreeMap::new(),
+    };
+
+    assert_eq!(
+        crate::dispatch::export::expressible_ttl(&governance_id, &wire)
+            .expect("a uniform policy is what a spec deploys"),
+        ttl,
+        "or the refusal below proves nothing"
+    );
+
+    wire.method_policies.insert(
+        "admin_set_proxy".to_owned(),
+        MethodPolicy {
+            ttl,
+            role: Role::ProxyConfigurationManager,
+        },
+    );
+    let error = crate::dispatch::export::expressible_ttl(&governance_id, &wire)
+        .expect_err("a role delegation a spec cannot express must be refused, not flattened");
+    assert!(
+        error.to_string().contains("no spec can express"),
+        "unexpected refusal: {error:#}"
+    );
+}

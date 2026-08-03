@@ -5,7 +5,7 @@
 //! this file stays a readable index of the command surface.
 
 mod aggregate;
-mod export;
+pub(crate) mod export;
 mod funding;
 pub(crate) mod generic;
 pub(crate) mod plan;

@@ -8,11 +8,14 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_common::oracle::pyth::PriceIdentifier;
+use templar_common::price::PricePair;
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::{account, contract, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_proxy_oracle_kernel::Price;
-use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
+use templar_proxy_oracle_near_common::convert::{
+    pyth_price_try_from_kernel, pyth_price_try_to_kernel,
+};
 
 use crate::commands::spec::Check as CheckArgs;
 use crate::context::{print_json, CliContext};
@@ -134,6 +137,19 @@ async fn run(
     // cross-check is the only thing that judges the *value* rather than its
     // presence, so a direct market needs it just as much.
     let (collateral, borrow) = (collateral.or(direct_collateral), borrow.or(direct_borrow));
+    checks.push(Check::new(
+        "oracle.prices_are_usable",
+        prices_are_usable(
+            Leg {
+                price: collateral.as_ref(),
+                decimals: spec.collateral.decimals,
+            },
+            Leg {
+                price: borrow.as_ref(),
+                decimals: spec.borrow.decimals,
+            },
+        ),
+    ));
 
     match super::reference::CoinGecko::from_env() {
         Ok(source) => {
@@ -149,6 +165,55 @@ async fn run(
         )),
     }
     checks
+}
+
+/// One side of the pair as preflight resolved it. Either half can be absent:
+/// the checks that report those failures have already run.
+#[derive(Clone, Copy)]
+struct Leg<'a> {
+    price: Option<&'a Price>,
+    decimals: Option<u8>,
+}
+
+/// Whether the market could build a `PricePair` out of what the oracle said.
+///
+/// The kernel represents prices the market rejects: negative or zero, a
+/// confidence interval at least as wide as the price, an exponent that
+/// underflows the token's decimals. Both modes otherwise report their feeds
+/// healthy for a market on which every price-dependent operation fails.
+fn prices_are_usable(collateral: Leg, borrow: Leg) -> Status {
+    let skipped = |reason: &str| Status::Skipped {
+        reason: reason.to_owned(),
+    };
+
+    let (Some(collateral_price), Some(borrow_price)) = (collateral.price, borrow.price) else {
+        return skipped("no pair to build: a leg produced no price, which its own check reports");
+    };
+    let (Some(collateral_decimals), Some(borrow_decimals)) = (collateral.decimals, borrow.decimals)
+    else {
+        return skipped("decimals are unresolved, and they set the exponent this would check");
+    };
+    let (Some(collateral_price), Some(borrow_price)) = (
+        pyth_price_try_from_kernel(collateral_price),
+        pyth_price_try_from_kernel(borrow_price),
+    ) else {
+        return Status::failed(
+            "a resolved price carries a publish time outside Pyth's range".to_owned(),
+        );
+    };
+
+    match PricePair::new(
+        &collateral_price,
+        i32::from(collateral_decimals),
+        &borrow_price,
+        i32::from(borrow_decimals),
+    ) {
+        Ok(_) => Status::passed("both prices convert to the market's `PricePair`".to_owned()),
+        Err(error) => Status::failed(format!(
+            "`{error}` — the oracle answered, but the market would reject what it \
+             said, so every price-dependent operation would fail."
+        )),
+    }
 }
 
 /// Existence, decimals, and source checks for one side of the pair.
@@ -528,8 +593,55 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
 
 #[cfg(test)]
 mod tests {
-    use super::underlying_ft;
+    use super::{prices_are_usable, underlying_ft, Leg, Price, Status};
     use templar_common::asset::{CollateralAsset, FungibleAsset};
+
+    fn price(value: i64, conf: u64) -> Price {
+        Price {
+            price: value,
+            conf,
+            expo: -8,
+            publish_time_ns: templar_common::Nanoseconds::from_ns(1_700_000_000_000_000_000),
+        }
+    }
+
+    fn leg(price: &Price) -> Leg<'_> {
+        Leg {
+            price: Some(price),
+            decimals: Some(6),
+        }
+    }
+
+    /// The kernel's `Price` is laxer than the market's `PricePair`, so a feed can
+    /// answer, satisfy `oracle.serves_pair`, and still leave a market on which
+    /// every price-dependent operation fails.
+    #[test]
+    fn a_price_the_market_would_reject_fails_the_check() {
+        let healthy = price(3_000_000_000, 1_000_000);
+        assert!(
+            matches!(
+                prices_are_usable(leg(&healthy), leg(&healthy)),
+                Status::Passed { .. }
+            ),
+            "a well-formed pair must pass, or the rejections below prove nothing"
+        );
+
+        // Zero satisfies `conf >= price` on its own, so an unpublished feed
+        // reporting nothing looks identical to one reporting a real price.
+        for (label, bad) in [
+            ("negative", price(-1, 0)),
+            ("zero", price(0, 0)),
+            ("confidence wider than the price", price(100, 100)),
+        ] {
+            assert!(
+                matches!(
+                    prices_are_usable(leg(&bad), leg(&healthy)),
+                    Status::Failed { .. }
+                ),
+                "a {label} price must fail"
+            );
+        }
+    }
 
     /// Which token defines an asset's decimals is not obvious, and getting it
     /// wrong silently mis-scales every price the market sees.
