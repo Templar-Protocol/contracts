@@ -76,7 +76,7 @@ jobs:
         with:
           filters: |
             near_integration:
-              # This job is the only consumer of the cargo-near action.
+              # Every other cargo-near consumer gates on contract paths or tags.
               - '.github/actions/cargo-near/**'
               - '.github/workflows/test.yml'
               - '.config/nextest.toml'
