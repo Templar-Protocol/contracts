@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-governance-kernel-v0.1.1...templar-proxy-oracle-governance-kernel-v0.2.0) - 2026-08-03
+
+### Added
+
+- *(proxy-oracle-governance)* [**breaking**] reflexive vs. target-function-call operations (ENG-516) ([#527](https://github.com/Templar-Protocol/contracts/pull/527))
+
 ## [0.1.1](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-governance-kernel-v0.1.0...templar-proxy-oracle-governance-kernel-v0.1.1) - 2026-08-03
 
 ### Added
