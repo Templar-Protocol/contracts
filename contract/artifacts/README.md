@@ -22,122 +22,162 @@ Templar Protocol smart contracts.
 |----------------------|-------------------------------------------------------------------|
 | *(default)*          | Artifact IDs and metadata only. No dependencies beyond `sha2`, `hex`, `thiserror`. No WASM bytes. |
 | `workspace-loader`   | Read WASM from `target/near/{name}/{name}.wasm` at runtime. Provides `cargo near build` helper. |
-| `embedded-wasm`      | Compile-time WASM blobs via `include_bytes!`. Blobs are pinned at build time. |
+| `fetch`              | Download *released* WASM from its GitHub Release into a shared local cache, verified against the catalog's SHA-256 pin. |
 | `clap`               | CLI-friendly `ValueEnum` parsing for artifact IDs and package-name aliases. |
 
 Default features do **not** embed WASM bytes or depend on heavy build
 tooling. Consumers opt into the byte source they need.
 
-## Why no `build.rs`
+## What the build script does — and does not
 
-This crate deliberately does **not** compile contracts in a build script.
-Contract compilation is performed by `./script/prebuild-test-contracts.sh`
-or by `cargo near build`. The crate only *reads* the resulting artifacts.
+`build.rs` compiles `releases/` into the release lists and validates every
+row, so a malformed record fails the build rather than a download. It does
+**not** compile contracts: that is `./script/prebuild-test-contracts.sh` or
+`cargo near build`. This crate only *reads* the resulting artifacts.
 
-## Embedded WASM and staleness
+## Versioned releases
 
-When the `embedded-wasm` feature is active, every `include_bytes!` call
-reads from **checked-in files** under `contract/artifacts/res/near/`.
-These blobs are pinned in version control and treated as versioned, immutable
-release artifacts: source is free to move ahead of a shipped blob, and a blob is
-only replaced when you deliberately cut new bytes (see below).
+Released bytes are **GitHub Release assets, not repository content**. Each
+release records the tag that carries it and the asset on that tag, in
+[`releases/`](releases/) — one row per release, appended by CI.
+
+Releases are **immutable**: cutting a new one *adds* a catalog entry and never
+rewrites an existing one. Historical bytes are what the migration and upgrade
+tests deploy — `contract/universal-account/tests/migration.rs` upgrades from the
+exact `0.2.0` binary that ran on mainnet — so rewriting one silently invalidates
+those tests.
+
+`ArtifactMetadata::releases()` returns them oldest first;
+`ArtifactMetadata::current()` is the newest — what the gateway deploys, and what
+`version()` refers to. It is `None` for an artifact that has never shipped:
+mocks, and (today) the NEAR vault.
+
+The tag and asset are **recorded, not derived**. They name objects that already
+exist on GitHub, and this repo has used three tag schemes over its life, so
+reconstructing them from a template would assume a uniformity that has never
+held. Changing release-plz's `git_tag_name` governs the *next* tag and cannot
+strand the ones already cut.
+
+**A release means a release tag was cut and its WASM published, not that a
+version was bumped.**
+Those diverge, routinely — market's crate version reached 1.4.0 while 1.3.0 was
+the newest release, and registry reached 1.2.1 against a released 1.1.0. So
+source is *expected* to run ahead of the newest release, and the catalog is
+appended to by CI when a release tag is cut, never by hand.
+
+An entry is the canonical build for a released version, **not** evidence that
+those bytes run anywhere: nothing consults a chain. The 17 historical entries
+are the exception — they predate this workflow and were recovered from the
+accounts running them, which is why their releases name the source account.
+
+```rust
+// Requires: features = ["fetch"]
+use templar_contract_artifacts::{fetch, ArtifactId};
+
+// A specific historical release, for upgrade tests.
+let old = fetch::released_bytes(ArtifactId::UniversalAccount, "0.2.0").await?;
+```
+
+### The cache
+
+Bytes are cached outside the repository so every worktree shares one copy:
+
+```text
+${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-artifacts
+  └── near/<cargo_target_name>/<version>/<cargo_target_name>.wasm
+```
+
+| Command | Does |
+|---|---|
+| `just artifacts-fetch` | Download every pinned release into the cache |
+| `just artifacts-cache-path` | Print the resolved cache directory |
+| `just artifacts-clean` | Delete it |
+
+`TEMPLAR_ARTIFACT_OFFLINE=1` forbids downloads and restricts lookups to the
+cache. `TEMPLAR_ARTIFACT_CACHE` relocates it — point it inside a checkout if you
+would rather each one kept its own. Like `XDG_CACHE_HOME`, it names the
+*parent*: the `templar-contract-artifacts` directory is always appended.
+
+Cleaning is never destructive: entries are immutable release assets, so the only
+cost is a re-download. `artifacts-clean` is a `rm -rf` on the directory
+`artifacts-cache-path` prints — the cache is disposable, so it needs no code of
+its own, and deleting it cannot be aimed anywhere the crate did not choose.
+
+Sharing one cache across worktrees is safe because entries are verified against
+the in-repo pin on **every read**, not just on download. A branch whose catalog
+disagrees with a cached entry discards it and re-downloads — or, under
+`TEMPLAR_ARTIFACT_OFFLINE=1`, fails. Either way the cache can never serve bytes
+the current checkout did not ask for.
+
+### Trust
+
+Downloaded bytes are verified against the SHA-256 pinned in the catalog and
+discarded on mismatch. That pin is a reviewed, in-repo value, so artifact
+integrity does **not** rest on GitHub serving the right file — the same standard
+git already gives the source, whose objects are content-addressed and mirrored
+by every clone.
+
+A version that has not been recorded as a release cannot be fetched at all:
+there is no reviewed hash to check it against.
 
 ### The prebuild helper (test artifacts)
 
 `./script/prebuild-test-contracts.sh` builds contracts into Cargo's
 `target/near/` for the **test suite** (via `TEST_CONTRACTS_PREBUILT=1`). It uses
-fast, non-reproducible `cargo near build` and never touches the checked-in
-`res/near/` blobs.
+fast, non-reproducible `cargo near build`; these artifacts are never released.
 
-Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control how many contract builds run
-concurrently. If unset, it uses a bounded default based on available CPU
-parallelism. Set `PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass
-`--timeout-secs <n>` to override the per-contract build timeout; the default is
-30 minutes. Pass `--artifact <name>` to build a subset (repeatable or
-comma-separated).
+Set `PREBUILD_TEST_CONTRACTS_JOBS=<n>` to control build concurrency. Set
+`PREBUILD_TEST_CONTRACTS_TIMEOUT_SECS=<n>` or pass `--timeout-secs <n>` to
+override the per-contract timeout (default 30 minutes). Pass `--artifact <name>`
+to build a subset (repeatable or comma-separated). Pass `--check` to report which
+artifacts are missing from `target/near` and exit non-zero without building.
 
 ```bash
 ./script/prebuild-test-contracts.sh --artifact market
 ./script/prebuild-test-contracts.sh --artifact market,mock-ft
 ```
 
-All catalogued artifacts (production and mock) have embedded bytes available.
+## Cutting a release
 
-### ⚠️ Refreshing a checked-in blob — READ THIS
+**There is nothing to do by hand.** Merging the release PR tags the version;
+`.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
+tag, uploads it, and opens a PR adding one file under `releases/`. Until that
+PR merges, `fetch` will not serve the version — an unrecorded release has no
+reviewed hash to check downloaded bytes against.
 
-**The embedded blobs do NOT track your source automatically.** They are pinned,
-versioned *release* artifacts: the bytes the gateway will deploy on-chain. The
-contract source is free to move ahead of them, and **CI will not tell you a blob
-is stale**:
+Why the build happens at the tag, and why the catalog row necessarily lands one
+commit later, are explained in [RELEASING.md](../../RELEASING.md#contract-wasm-artifacts).
 
-- The **hash-pin check** only verifies `sha256(blob) == expected_sha256`. It
-  never looks at source.
-- The **version-drift check** only verifies the catalog `version` matches the
-  contract's `Cargo.toml` version. It never looks at the blob's bytes.
+Releases predating this workflow were recovered from the chain and are
+reproducible on the same terms. Several were built from paths that have since
+moved (proxy-oracle from `contract/proxy-oracle`, the LST oracle from
+`contract/lst-oracle`); a verifier reads the historical path from the WASM's own
+`build_info`, not from `source_path`.
 
-So a contract source change at the **same version** passes CI with a stale blob.
-Keeping blobs fresh is a **deliberate, manual step** — this section is the only
-thing standing between you and shipping outdated contract bytes.
-
-#### WHEN to refresh
-
-Refresh an artifact's blob **whenever you want that contract's current source to
-become what the gateway deploys** — i.e. you are promoting a source change to a
-shipped/deployed release. Do **not** refresh for every source edit; unreleased
-work-in-progress is *meant* to lag the blob.
-
-Enforced tripwire: **bump the contract's `Cargo.toml` `version` whenever you make
-a change you intend to ship.** That bump fails the version-drift check (catalog
-`version` ≠ `Cargo.toml` version) and forces you back to this catalog — which is
-exactly when you should do the full refresh below. Note the check only forces the
-`version` *string* to line up; it does not verify you rebuilt the blob, so when
-it fires, do the **whole** procedure, not just the version edit.
-
-#### HOW to refresh (exact steps, per affected artifact)
-
-1. **Commit your source change first — the git tree must be clean.**
-   `cargo near build reproducible-wasm` builds from the committed git state; on a
-   dirty tree it either hard-errors or embeds the wrong state and produces
-   non-reproducible bytes. (For a merge: commit the merge, *then* refresh.)
-2. Build reproducibly (`<source_path>` and `<target>` are the entry's
-   `source_path` and `cargo_target_name` in `ids.rs`):
-   ```bash
-   cargo near build reproducible-wasm --manifest-path <source_path>/Cargo.toml
-   ```
-3. Copy the output into `res/near/`:
-   ```bash
-   cp target/near/<target>/<target>.wasm \
-      contract/artifacts/res/near/<target>/<target>.wasm
-   ```
-4. In `contract/artifacts/src/ids.rs`, set that entry's `expected_sha256` to the
-   new hash (printed by the build, or `sha256sum` the copied file) — and its
-   `version` if the crate version changed.
-5. Verify: `./script/check-artifact-drift.sh` (must be green).
-6. Commit the blob **and** the `ids.rs` change together, so the bytes and their
-   pinned hash always land in one reviewable diff.
-
-### Checking for stale bytes
-
-Run the drift check — pure, in-memory, no builds:
+## Checking consistency
 
 ```bash
 ./script/check-artifact-drift.sh
 ```
 
-It runs:
+Seconds, no contract builds:
 
-```bash
-cargo test -p templar-contract-artifacts --features embedded-wasm,workspace-loader drift_check -- --include-ignored --nocapture
-```
+| Check | Catches |
+|---|---|
+| `no_release_is_ahead_of_its_source` | a release claiming a version the crate never reached (the reverse — source ahead of the newest release — is normal) |
+| `mocks_are_never_released` | a mock that acquired a release |
+| `every_catalogued_artifact_matches_the_release_tag_glob` | a contract whose tag would not fire the artifact workflow |
+| `internal_crates_are_excluded_from_releases` | a crate whose manifest forbids publishing that release-plz would still tag |
+| `no_tier_can_reach_a_registry` | `release-plz.toml` losing the one setting that defers crates.io |
 
-which covers both the **blob hash-pin check** (every embedded blob hashes to its
-catalog `expected_sha256`) and the **version drift check** (catalog versions
-match `Cargo.toml`), since `drift_check` is a substring filter matching
-`embedded_drift_check` and `embedded_version_drift_check`.
+Each file's own shape — column count, canonical artifact and version spelling,
+URL-safe tag and asset, digest, and agreement with its filename — is checked by
+`build.rs`, so a malformed record fails the build rather than a download.
 
-If either fails, update the offending catalog entry: for a blob change, refresh
-the bytes and `expected_sha256` as above; for a version mismatch, update the
-`version` field.
+What this does **not** check is whether the bytes match what the source actually
+compiles to. That needs a reproducible rebuild, which runs on release tags in
+`.github/workflows/release-artifacts.yml`.
+
 
 ## Usage examples
 
@@ -192,19 +232,5 @@ artifact: templar_contract_artifacts::ArtifactId,
 
 ## Artifact list
 
-| Artifact ID         | Cargo package                          | `target/near` directory             |
-|---------------------|----------------------------------------|-------------------------------------|
-| registry            | templar-registry-contract              | templar_registry_contract           |
-| market              | templar-market-contract                | templar_market_contract             |
-| vault               | templar-vault-contract                 | templar_vault_contract              |
-| universal-account   | templar-universal-account-contract      | templar_universal_account_contract  |
-| proxy-oracle        | templar-proxy-oracle-near-contract     | templar_proxy_oracle_near_contract  |
-| proxy-governance    | templar-proxy-oracle-near-governance-contract | templar_proxy_oracle_near_governance_contract |
-| lst-oracle          | templar-lst-oracle-contract            | templar_lst_oracle_contract         |
-| redstone-adapter    | templar-redstone-adapter-contract      | templar_redstone_adapter_contract   |
-| pyth-lazer-adapter  | templar-pyth-lazer-adapter-contract     | templar_pyth_lazer_adapter_contract |
-| mock-ft             | mock-ft                                | mock_ft                             |
-| mock-mt             | mock-mt                                | mock_mt                             |
-| mock-oracle         | mock-oracle                            | mock_oracle                         |
-| mock-ref-finance    | mock-ref                               | mock_ref                            |
-| mock-receiver       | mock-receiver                          | mock_receiver                       |
+See `ArtifactId::ALL` in `src/ids.rs` — the catalog is the single source of
+truth, and a table here would have no drift check behind it.

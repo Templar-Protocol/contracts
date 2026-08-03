@@ -20,7 +20,7 @@ A NEAR-centric treasury management service with cross-chain deposits and withdra
 
 ### Prerequisites
 
-- Rust 1.85 or higher
+- Rust 1.86 or higher (the workspace `rust-version`)
 - NEAR CLI (for key management)
 - Access to NEAR RPC endpoint
 
@@ -553,7 +553,7 @@ src/
 ### Docker (Recommended)
 
 ```dockerfile
-FROM rust:1.85 as builder
+FROM rust:1.86 as builder
 WORKDIR /app
 COPY . .
 RUN cargo build --release -p templar-funding-bridge

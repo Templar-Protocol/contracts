@@ -13,8 +13,9 @@
 //! empty map; each upgraded contract is then probed with a domain view to prove it still answers,
 //! not merely that its code hash changed.
 //!
-//! Fixtures are the real on-chain blobs (`PROXY_ORACLE_0_3_0`, state v1; `PROXY_GOVERNANCE_0_1_0`,
-//! pre-versioned-state), pinned from mainnet.
+//! Fixtures are the real on-chain blobs (proxy-oracle `0.3.0`, state v1;
+//! proxy-governance `0.1.0`, pre-versioned-state), pinned from mainnet and
+//! catalogued as releases in `contract/artifacts/releases/`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
@@ -28,7 +29,7 @@ use near_sdk::NearToken;
 use serde_json::{json, Value};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
-use templar_gateway_testing::{wasm, SandboxHarness, TEST_FINALITY_POLICY};
+use templar_gateway_testing::{wasm, ArtifactId, SandboxHarness, TEST_FINALITY_POLICY};
 use templar_proxy_oracle_near_governance_common::{LegacyOperation, Operation, Proposal};
 
 use common::{call, code_hash, deploy_code, signer, view};
@@ -113,14 +114,14 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
         deploy_with_init(
             network,
             &oracle,
-            wasm::PROXY_ORACLE_0_3_0.to_vec(),
+            wasm::released(ArtifactId::ProxyOracle, "0.3.0").await,
             "new",
             json!({ "owner_id": gov }),
         ),
         deploy_with_init(
             network,
             &gov,
-            wasm::PROXY_GOVERNANCE_0_1_0.to_vec(),
+            wasm::released(ArtifactId::ProxyGovernance, "0.1.0").await,
             "new",
             json!({ "proxy_oracle_id": oracle, "admin_id": admin, "ttls": old_ttls() }),
         ),

@@ -22,7 +22,7 @@ pub mod universal_account;
 pub mod vault;
 
 /// Invoke `$callback!($spec)` once for every **read** method served by
-/// [`templar_gateway_methods_dispatch::Dispatch`].
+/// `templar_gateway_methods_dispatch::Dispatch`.
 ///
 /// **Whenever you add or remove a gateway read method, add or remove its line
 /// here.** Together with [`for_each_write_method`] this is the single canonical
@@ -133,7 +133,7 @@ macro_rules! for_each_read_method {
 }
 
 /// Invoke `$callback!($spec)` once for every **write** method served by
-/// [`templar_gateway_methods_dispatch::Dispatch`]. Add or remove a line here
+/// `templar_gateway_methods_dispatch::Dispatch`. Add or remove a line here
 /// whenever you add or remove a write method — see [`for_each_read_method`].
 #[macro_export]
 macro_rules! for_each_write_method {

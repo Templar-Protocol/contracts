@@ -2,8 +2,10 @@
 name = "templar-gateway-types"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Shared wire, block, and error types for the Templar gateway"
 
 [dependencies]
 base64.workspace = true

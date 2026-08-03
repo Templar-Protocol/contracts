@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+pub mod bench;
 pub mod controller;
 pub mod ops;
 pub mod sandbox;
@@ -8,7 +9,11 @@ pub mod wasm;
 
 pub use controller::TestController;
 pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
-pub use sandbox::{test_secret_key, test_signer, SandboxHarness};
+pub use sandbox::{sandbox_config, test_secret_key, test_signer, SandboxHarness};
+pub use sandbox_ext::node_is_serving;
+/// Re-exported so tests can name a historical release for [`wasm::released`]
+/// without taking their own dependency on the artifacts catalog.
+pub use templar_contract_artifacts::ArtifactId;
 pub use templar_gateway_types::ManagedAccountId;
 pub use test_utils::test_signer::TestSigner;
 
@@ -30,7 +35,7 @@ pub async fn harness() -> SandboxHarness {
         .expect("failed to start sandbox harness")
 }
 
-/// Like [`harness`], but always on a dedicated `neard`. Use only when the suite
+/// Like [`harness()`], but always on a dedicated `neard`. Use only when the suite
 /// genuinely cannot share a pooled node — see [`SandboxHarness::start_owned`]
 /// for the one situation that requires it. It costs a node boot per test.
 #[rstest::fixture]

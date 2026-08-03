@@ -43,7 +43,7 @@ ARG STELLAR_CLI_VERSION
 LABEL org.opencontainers.image.title="Templar Soroban Vault CLI"
 LABEL org.opencontainers.image.description="Operator image for deploying and managing Templar Soroban vault stacks"
 LABEL org.opencontainers.image.vendor="Templar Protocol"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="GPL-3.0-only"
 LABEL org.opencontainers.image.source="https://github.com/Templar-Protocol/contracts"
 LABEL org.opencontainers.image.documentation="https://github.com/Templar-Protocol/contracts/tree/dev/tools/soroban-vault-cli"
 LABEL org.opencontainers.image.stellar-cli.version="${STELLAR_CLI_VERSION}"

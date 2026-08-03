@@ -348,25 +348,26 @@ impl SandboxHarness {
         customize_market: impl FnOnce(&mut MarketConfiguration),
         customize_vault: impl FnOnce(&mut VaultConfiguration),
     ) -> Result<DeployedVault> {
-        let market = self.deploy_full_market_with(customize_market).await?;
-        self.set_asset_prices(&market, 1.0, 1.0).await?;
-
-        // The market must be registered to receive its own assets — the vault
-        // transfers underlying to it on allocation (mirrors `setup_everything`'s
-        // `c.storage_deposits(mkt)`).
-        let ft_registration = NearToken::from_near(1).saturating_div(100);
-        let market_account = ManagedAccountId(market.market_id.clone());
-        self.storage_deposit(&market_account, &market.borrow_ft_id, ft_registration)
-            .await?;
-        self.storage_deposit(&market_account, &market.collateral_ft_id, ft_registration)
-            .await?;
-
+        // The market and the vault's six accounts are independent — only the
+        // configuration built below needs both — so deploy the market and mint
+        // the accounts concurrently rather than one after the other.
         let operator = NearToken::from_near(100);
-        let (owner_id, _) = self.create_account("vault-owner", operator).await?;
-        let (curator_id, _) = self.create_account("vault-curator", operator).await?;
-        let (sentinel_id, _) = self.create_account("vault-sentinel", operator).await?;
-        let (skim_id, _) = self.create_account("vault-skim", operator).await?;
-        let (fee_id, _) = self.create_account("vault-fee", operator).await?;
+        let vault_accounts = [
+            ("vault-owner", operator),
+            ("vault-curator", operator),
+            ("vault-sentinel", operator),
+            ("vault-skim", operator),
+            ("vault-fee", operator),
+            ("vault", operator),
+        ];
+        let (market, accounts) = futures::try_join!(
+            self.deploy_full_market_with(customize_market),
+            self.create_accounts(&vault_accounts),
+        )?;
+        let [(owner_id, _), (curator_id, _), (sentinel_id, _), (skim_id, _), (fee_id, _), (vault_id, vault_signer)] =
+            accounts.try_into().map_err(|_| {
+                anyhow::anyhow!("create_accounts returned the wrong number of accounts")
+            })?;
 
         // The vault's underlying MUST be the market's borrow asset for the two to
         // integrate. Guardian is unused by the ported tests, so reuse `owner`.
@@ -381,28 +382,44 @@ impl SandboxHarness {
         );
         customize_vault(&mut configuration);
 
-        let (vault_id, signer) = self.create_account("vault", operator).await?;
-        crate::sandbox::deploy_contract(
-            &self.network,
-            vault_id.clone(),
-            signer,
-            crate::wasm::vault().await.to_vec(),
-            "new",
-            serde_json::json!({ "configuration": configuration.clone() }),
-        )
-        .await?;
+        // The market must be registered to receive its own assets — the vault
+        // transfers underlying to it on allocation (mirrors `setup_everything`'s
+        // `c.storage_deposits(mkt)`). Neither that nor the oracle prices involve
+        // the vault, so all three run alongside its deployment; the calls within
+        // each share one signer, so they stay ordered.
+        let ft_registration = NearToken::from_near(1).saturating_div(100);
+        let market_account = ManagedAccountId(market.market_id.clone());
+        futures::try_join!(
+            crate::sandbox::deploy_contract(
+                &self.network,
+                vault_id.clone(),
+                vault_signer,
+                crate::wasm::vault().await.to_vec(),
+                "new",
+                serde_json::json!({ "configuration": configuration.clone() }),
+            ),
+            self.set_asset_prices(&market, 1.0, 1.0),
+            async {
+                self.storage_deposit(&market_account, &market.borrow_ft_id, ft_registration)
+                    .await?;
+                self.storage_deposit(&market_account, &market.collateral_ft_id, ft_registration)
+                    .await?;
+                Ok(())
+            },
+        )?;
 
         // Storage opt-ins (mirrors `UnifiedVaultController::storage_deposits`): the
         // vault itself and the fee/skim recipients must be registered on the vault
-        // share ledger, the market, and both FTs.
+        // share ledger, the market, and both FTs. One participant per task — each
+        // signs as a different account, so they do not share a nonce.
         let owner = ManagedAccountId(owner_id);
         let vault_account = ManagedAccountId(vault_id.clone());
-        for account in [
-            &vault_account,
-            &ManagedAccountId(skim_id),
-            &ManagedAccountId(fee_id),
-        ] {
-            self.register_for_vault(account, &vault_id, &market).await?;
+        let skim = ManagedAccountId(skim_id);
+        let fee = ManagedAccountId(fee_id);
+        let registrations = [&vault_account, &skim, &fee]
+            .map(|account| self.register_for_vault(account, &vault_id, &market));
+        for result in futures::future::join_all(registrations).await {
+            result?;
         }
 
         // Cap and enqueue the market through the gateway, owner-signed.
@@ -1793,7 +1810,8 @@ impl SandboxHarness {
 
     /// Total gas burnt across every transaction an operation produced (each
     /// transaction plus its receipts), summed over the operation's steps. Read
-    /// directly from each step's inline [`ExecutionOutcome`], whose
+    /// directly from each step's inline
+    /// [`ExecutionOutcome`](templar_gateway_types::operation::ExecutionOutcome), whose
     /// `total_gas_burnt` already covers the transaction and all its receipts — no
     /// follow-up `tx` query needed. Used by the gas-regression tests.
     pub fn operation_gas_burnt(&self, result: &WriteOperationResult) -> u64 {
@@ -1987,7 +2005,8 @@ impl SandboxHarness {
 
 /// Every receipt in the operation that failed.
 ///
-/// Top-level success is not receipt-level success (see [`ExecutionOutcome`] and
+/// Top-level success is not receipt-level success (see
+/// [`ExecutionOutcome`](templar_gateway_types::operation::ExecutionOutcome) and
 /// `OperationStatus`): a rejected inner receipt can be refunded by the token
 /// while the transaction still reports success. Tests asserting that a call was
 /// *rejected* should check this rather than the operation status, which would be

@@ -7,12 +7,13 @@ use crate::governance_abi::{
     SupplyQueueProposalEntry, TimelockKind, Timelocks,
 };
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, IntoVal,
-    InvokeError, String, Symbol, TryFromVal, Val, Vec,
+    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, Executable,
+    IntoVal, InvokeError, String, Symbol, TryFromVal, Val, Vec,
 };
 use templar_soroban_shared_types::{
     EmptyReceipt, I128Receipt, ProxyPreviewFields, ProxyViewFields, ProxyViewResponse,
-    VaultCommand as WireVaultCommand,
+    RuntimeVersionResponse, VaultCommand as WireVaultCommand, RUNTIME_V1_FEATURE_FLAGS,
+    RUNTIME_V1_VERSION,
 };
 
 use crate::error::ContractError;
@@ -167,6 +168,8 @@ pub struct ProxyDataKey;
 impl ProxyDataKey {
     pub const VaultAddress: Symbol = symbol_short!("vault");
     pub const GovernanceAddress: Symbol = symbol_short!("gov");
+    pub const LegacyV1WasmHash: Symbol = symbol_short!("v1_hash");
+    pub const InitializationAuthority: Symbol = symbol_short!("init_auth");
     pub const Initialized: Symbol = symbol_short!("init");
 }
 
@@ -175,30 +178,54 @@ pub struct SorobanCuratorProxyContract;
 
 #[contractimpl]
 impl SorobanCuratorProxyContract {
+    /// Pin the only address allowed to complete one-time proxy initialization.
+    ///
+    /// The constructor runs atomically with deployment, closing the first-claim
+    /// gap while preserving retryability for the intended deployer.
+    pub fn __constructor(env: Env, initialization_authority: Address) {
+        env.storage().instance().set(
+            &ProxyDataKey::InitializationAuthority,
+            &initialization_authority,
+        );
+        extend_instance_ttl(&env);
+    }
+
     pub fn initialize(
         env: Env,
         vault_address: Address,
         governance_address: Address,
     ) -> Result<(), ContractError> {
-        if is_initialized(&env) {
-            return Err(ContractError::AlreadyInitialized);
-        }
+        initialize_proxy(&env, vault_address, governance_address, None)
+    }
 
-        env.storage()
-            .instance()
-            .set(&ProxyDataKey::VaultAddress, &vault_address);
-        env.storage()
-            .instance()
-            .set(&ProxyDataKey::GovernanceAddress, &governance_address);
-        env.storage()
-            .instance()
-            .set(&ProxyDataKey::Initialized, &true);
-        extend_instance_ttl(&env);
-        Ok(())
+    /// Configure a proxy for a verified, versionless v1 runtime artifact.
+    ///
+    /// The supplied hash must match the vault's current Wasm executable. The
+    /// fallback remains valid only while that exact artifact stays installed.
+    pub fn initialize_legacy_v1(
+        env: Env,
+        vault_address: Address,
+        governance_address: Address,
+        legacy_v1_wasm_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        initialize_proxy(
+            &env,
+            vault_address,
+            governance_address,
+            Some(legacy_v1_wasm_hash),
+        )
     }
 
     pub fn vault(env: Env) -> Result<Address, ContractError> {
         read_vault_address(&env)
+    }
+
+    /// Return the configured vault runtime version and compiled action capabilities.
+    ///
+    /// The artifact pinned by `initialize_legacy_v1` returns the approved v1
+    /// semantics directly. Every other artifact must answer `version`.
+    pub fn vault_version(env: Env) -> Result<(String, u64), ContractError> {
+        call_vault_version(&env)
     }
 
     pub fn governance(env: Env) -> Result<Address, ContractError> {
@@ -699,6 +726,46 @@ pub(crate) fn is_initialized(env: &Env) -> bool {
         .unwrap_or(false)
 }
 
+fn initialize_proxy(
+    env: &Env,
+    vault_address: Address,
+    governance_address: Address,
+    legacy_v1_wasm_hash: Option<BytesN<32>>,
+) -> Result<(), ContractError> {
+    if is_initialized(env) {
+        return Err(ContractError::AlreadyInitialized);
+    }
+    let initialization_authority: Address = env
+        .storage()
+        .instance()
+        .get(&ProxyDataKey::InitializationAuthority)
+        .ok_or(ContractError::NotInitialized)?;
+    initialization_authority.require_auth();
+    if let Some(expected_hash) = legacy_v1_wasm_hash.as_ref() {
+        require_matching_wasm_hash(&vault_address, expected_hash)?;
+    }
+
+    env.storage()
+        .instance()
+        .set(&ProxyDataKey::VaultAddress, &vault_address);
+    env.storage()
+        .instance()
+        .set(&ProxyDataKey::GovernanceAddress, &governance_address);
+    env.storage()
+        .instance()
+        .remove(&ProxyDataKey::InitializationAuthority);
+    if let Some(legacy_v1_wasm_hash) = legacy_v1_wasm_hash {
+        env.storage()
+            .instance()
+            .set(&ProxyDataKey::LegacyV1WasmHash, &legacy_v1_wasm_hash);
+    }
+    env.storage()
+        .instance()
+        .set(&ProxyDataKey::Initialized, &true);
+    extend_instance_ttl(env);
+    Ok(())
+}
+
 pub(crate) fn require_initialized(env: &Env) -> Result<(), ContractError> {
     if !is_initialized(env) {
         return Err(ContractError::NotInitialized);
@@ -727,6 +794,32 @@ pub(crate) fn read_governance_address(env: &Env) -> Result<Address, ContractErro
         .instance()
         .get(&ProxyDataKey::GovernanceAddress)
         .ok_or(ContractError::NotInitialized)
+}
+
+fn read_legacy_v1_wasm_hash(env: &Env) -> Result<Option<BytesN<32>>, ContractError> {
+    require_initialized(env)?;
+    Ok(env
+        .storage()
+        .instance()
+        .get(&ProxyDataKey::LegacyV1WasmHash))
+}
+
+fn require_matching_wasm_hash(
+    vault_address: &Address,
+    expected_hash: &BytesN<32>,
+) -> Result<(), ContractError> {
+    if has_matching_wasm_hash(vault_address, expected_hash) {
+        Ok(())
+    } else {
+        Err(ContractError::InvalidInput)
+    }
+}
+
+fn has_matching_wasm_hash(vault_address: &Address, expected_hash: &BytesN<32>) -> bool {
+    matches!(
+        vault_address.executable(),
+        Some(Executable::Wasm(actual_hash)) if actual_hash == *expected_hash
+    )
 }
 
 pub(crate) fn invoke_vault_execute(
@@ -770,6 +863,29 @@ fn call_proxy_view_full(
         Ok(Err(_)) => Err(ContractError::VaultError),
         Err(Ok(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
         Err(Err(invoke_error)) => Err(map_vault_invoke_error(invoke_error)),
+    }
+}
+
+fn call_vault_version(env: &Env) -> Result<RuntimeVersionResponse, ContractError> {
+    let vault_address = read_vault_address(env)?;
+    if read_legacy_v1_wasm_hash(env)?
+        .is_some_and(|expected_hash| has_matching_wasm_hash(&vault_address, &expected_hash))
+    {
+        return Ok((
+            String::from_str(env, RUNTIME_V1_VERSION),
+            RUNTIME_V1_FEATURE_FLAGS,
+        ));
+    }
+
+    let result = env.try_invoke_contract::<RuntimeVersionResponse, InvokeError>(
+        &vault_address,
+        &symbol_short!("version"),
+        ().into_val(env),
+    );
+
+    match result {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(_)) | Err(Ok(_)) | Err(Err(_)) => Err(ContractError::VaultError),
     }
 }
 

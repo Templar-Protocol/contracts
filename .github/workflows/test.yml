@@ -54,7 +54,7 @@ env:
 jobs:
   changes:
     name: Change Detection
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     outputs:
       near_integration: ${{ steps.filter.outputs.near_integration }}
       soroban: ${{ steps.filter.outputs.soroban }}
@@ -81,7 +81,10 @@ jobs:
               - 'justfile'
               - 'common/src/**'
               - 'contract/artifacts/Cargo.toml'
-              - 'contract/artifacts/res/**'
+              - 'contract/artifacts/build.rs'
+              # CI's own catalog PR touches only this file; without it, the
+              # one PR that records a release would run no tests.
+              - 'contract/artifacts/releases/*.tsv'
               - 'contract/artifacts/src/**'
               - 'contract/market/src/**'
               - 'contract/market/tests/**'
@@ -136,13 +139,16 @@ jobs:
               - 'contract/proxy-oracle/governance-kernel/**'
               - 'contract/proxy-oracle/kernel/**'
               - 'primitives/**'
-            # A version bump can change catalog version keys without touching
-            # contract `src/**`. The drift check's version guard must run on these
-            # too, or a stale catalog `version` could merge.
+            # A Cargo.toml version edit can drop a crate below a release that
+            # is already recorded, without touching contract `src/**`.
             artifact_manifests:
-              - 'Cargo.toml'
-              - 'contract/**/Cargo.toml'
-              - 'mock/**/Cargo.toml'
+              # Every manifest: the release-policy checks read the whole
+              # metadata graph, so renaming any crate can stale release-plz.toml.
+              - '**/Cargo.toml'
+              - 'contract/artifacts/releases/*.tsv'
+              # scaffolding_crates_are_excluded_from_releases is the only check
+              # on this file, and it is #[ignore]d out of the fast gate.
+              - 'release-plz.toml'
 
       - name: Plan CI surface
         id: plan
@@ -195,7 +201,7 @@ jobs:
 
   code-formatting:
     name: Code Formatting
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -205,7 +211,7 @@ jobs:
 
   code-linter:
     name: Code Linter
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -218,9 +224,23 @@ jobs:
         run: |
           cargo clippy --all-features --workspace --tests -- -D warnings
 
+  documentation:
+    name: Documentation
+    runs-on: warp-ubuntu-latest-x64-4x
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - name: Build rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
   binary-build:
     name: Binary Build
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -241,7 +261,7 @@ jobs:
 
   soroban:
     name: Soroban
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     timeout-minutes: 30
     if: ${{ needs.changes.outputs.run_soroban == 'true' }}
@@ -275,6 +295,9 @@ jobs:
       - name: Enforce Soroban runtime size budget
         run: just -f contract/vault/soroban/justfile size-budget-check
 
+      - name: Verify ENG-484 Soroban release ABIs
+        run: just -f contract/vault/soroban/justfile verify-release-wasm-abi
+
       - name: Enforce proxy-oracle Soroban size budgets
         run: just -f contract/proxy-oracle/soroban/justfile size-check
 
@@ -295,7 +318,7 @@ jobs:
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     if: ${{ needs.changes.outputs.run_feature_matrix == 'true' }}
     strategy:
@@ -399,7 +422,7 @@ jobs:
   fast-tests:
     name: Fast Tests
     timeout-minutes: 25
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     services:
       # The relayer / gateway-store `#[sqlx::test]` tests provision a fresh
       # database per test, so they need a reachable postgres at runtime.
@@ -432,6 +455,12 @@ jobs:
         with:
           tool: nextest,just
 
+      # artifacts-dispatch serves real released bytes, so this partition needs
+      # the cache warm even though it runs no node. Fetching up front makes a
+      # network failure one red step rather than scattered test failures.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
+
       - name: Run fast tests
         env:
           DATABASE_URL: &postgres_url postgres://relayeruser:password@localhost:5432/relayer
@@ -444,7 +473,7 @@ jobs:
     # prebuild's ABI pass is skipped and rust-cache is dev-seeded. The headroom
     # over 40 avoids a cold-run variance kill wasting a whole run.
     timeout-minutes: 45
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     services:
       # The relayer's node-backed `#[sqlx::test]` fixtures need Postgres.
       postgres: *postgres_service
@@ -469,10 +498,23 @@ jobs:
       - name: Install cargo-near
         run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.19.2/cargo-near-installer.sh | sh
 
+      # Migration and upgrade tests deploy real historical bytes. Not an
+      # `actions/cache` entry: a couple of MB from GitHub's own CDN, and the
+      # repo cache is already at the 10 GB eviction cap.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
+
       - name: Run node-backed tests on a pooled neard sandbox
         env:
           DATABASE_URL: *postgres_url
-        run: just test-sandbox
+          # Stock cadence: the harness default is faster (a big local win) but a
+          # shared 4-vCPU runner can't sustain it — block production falls behind
+          # and finality waits time out.
+          NEAR_SANDBOX_BLOCK_MS: "120"
+        # CI-only stopgap for occasional node-starvation flakes on the shared
+        # runner; max-fail still aborts a systemic failure fast. Local runs stay
+        # strict.
+        run: just test-sandbox --retries=1 --max-fail=5
 
       - name: Cleanup Docker resources
         if: always()
@@ -483,14 +525,52 @@ jobs:
   artifact-drift-check:
     name: Artifact Drift Check
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     if: ${{ needs.changes.outputs.run_near_integration == 'true' || needs.changes.outputs.artifact_manifests == 'true' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
+          # Full history: the append-only check below diffs against the base
+          # commit.
+          fetch-depth: 0
           persist-credentials: false
+
+      # `record-release` only ever creates files, so nothing in-tree stops a hand
+      # edit or deletion — which would silently move `current()` with every other
+      # check still green.
+      - name: Released versions are append-only
+        env:
+          # Whatever this run is adding to, whichever event delivered it: a PR's
+          # base, or the branch tip a push moved off. Gating on `pull_request`
+          # instead would leave a direct push to `dev` free to rewrite a
+          # released digest with every other catalog check still green, since
+          # they validate the resulting catalog rather than its history.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          # An all-zero (branch creation) or absent (`workflow_dispatch`) base
+          # is not a base this run introduced changes on top of.
+          case "$BASE_SHA" in
+            "" | 0000000000000000000000000000000000000000)
+              echo "::notice::no base commit to diff against; nothing was introduced here."
+              exit 0
+              ;;
+          esac
+          # Lowercase `a` excludes additions, so this is "anything that is not a
+          # new file" rather than a list of the statuses we thought of. Naming
+          # them missed `T`: swapping a release for a symlink to a new file is a
+          # typechange, which build.rs follows and an M/D/R filter never sees.
+          # A diff that cannot run must fail the job: suppressing the error
+          # would turn "history is missing" into "nothing was touched".
+          touched=$(git diff --name-status --diff-filter=a "$BASE_SHA"...HEAD \
+            -- contract/artifacts/releases/)
+          if [ -n "$touched" ]; then
+            echo "::error::Released versions are immutable — this PR changes one:" >&2
+            echo "$touched" >&2
+            exit 1
+          fi
 
       - uses: ./.github/actions/rust
 
@@ -499,7 +579,7 @@ jobs:
 
   coverage:
     name: Coverage
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: changes
     timeout-minutes: 40
     permissions:
@@ -530,6 +610,11 @@ jobs:
         with:
           tool: cargo-llvm-cov,nextest,just
 
+      # Coverage runs the same `fast_filter` as the fast gate, so it inherits
+      # its need for the cache: artifacts-dispatch serves real released bytes.
+      - name: Warm the released-artifact cache
+        run: just artifacts-fetch
+
       - name: Run tests with coverage
         env:
           DATABASE_URL: *postgres_url
@@ -559,12 +644,13 @@ jobs:
 
   full-required-gate:
     name: Full Required Gate
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     if: ${{ always() }}
     needs:
       - changes
       - code-formatting
       - code-linter
+      - documentation
       - binary-build
       - soroban
       - feature-matrix
@@ -582,6 +668,7 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           FORMAT_RESULT: ${{ needs['code-formatting'].result }}
           LINTER_RESULT: ${{ needs['code-linter'].result }}
+          DOCUMENTATION_RESULT: ${{ needs.documentation.result }}
           BINARY_BUILD_RESULT: ${{ needs['binary-build'].result }}
           FAST_TEST_RESULT: ${{ needs['fast-tests'].result }}
           NEAR_TEST_RESULT: ${{ needs['near-integration-tests'].result }}
@@ -613,6 +700,7 @@ jobs:
           require_success "Change Detection" "$CHANGES_RESULT"
           require_success "Code Formatting" "$FORMAT_RESULT"
           require_success "Code Linter" "$LINTER_RESULT"
+          require_success "Documentation" "$DOCUMENTATION_RESULT"
           require_success "Binary Build" "$BINARY_BUILD_RESULT"
           require_success "Fast Tests" "$FAST_TEST_RESULT"
 

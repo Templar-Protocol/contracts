@@ -65,7 +65,6 @@ impl BlendAdapterContract {
         pool: Address,
     ) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
-        require_contract_address(&admin, AdapterError::InvalidInput)?;
         require_contract_address(&vault, AdapterError::InvalidInput)?;
         require_contract_address(&pool, AdapterError::InvalidInput)?;
 
@@ -261,7 +260,6 @@ impl BlendAdapterContract {
     pub fn set_admin(env: Env, caller: Address, admin: Address) -> Result<(), AdapterError> {
         extend_instance_ttl(&env);
         require_admin(&env, &caller)?;
-        require_contract_address(&admin, AdapterError::InvalidInput)?;
         env.storage().instance().set(&DataKey::PendingAdmin, &admin);
         env.events()
             .publish((symbol_short!("admin_set"), caller), admin);
@@ -463,14 +461,16 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Error(Contract, #2)")]
-    fn constructor_rejects_non_contract_admin() {
+    fn constructor_accepts_account_admin() {
         let env = Env::default();
         let admin = account_address(&env);
         let vault = register_dummy_contract(&env);
         let pool = register_dummy_contract(&env);
 
-        env.register(BlendAdapterContract, (&admin, &vault, &pool));
+        let contract_id = env.register(BlendAdapterContract, (&admin, &vault, &pool));
+        env.as_contract(&contract_id, || {
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), admin);
+        });
     }
 
     #[test]
@@ -749,18 +749,27 @@ mod tests {
     }
 
     #[test]
-    fn set_admin_rejects_non_contract_admin() {
+    fn set_admin_accepts_account_admin() {
         let env = Env::default();
         env.mock_all_auths();
         let (contract_id, admin, _vault, _pool) = setup_adapter(&env);
         let account = account_address(&env);
         env.as_contract(&contract_id, || {
-            let result = BlendAdapterContract::set_admin(env.clone(), admin, account);
-            assert_eq!(result, Err(AdapterError::InvalidInput));
+            BlendAdapterContract::set_admin(env.clone(), admin, account.clone()).unwrap();
+        });
+        env.as_contract(&contract_id, || {
             assert_eq!(
-                BlendAdapterContract::pending_admin(env.clone()),
-                Err(AdapterError::MissingConfig)
+                BlendAdapterContract::pending_admin(env.clone()).unwrap(),
+                account
             );
+        });
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::accept_admin(env.clone(), account.clone()).unwrap();
+        });
+        env.as_contract(&contract_id, || {
+            BlendAdapterContract::set_paused(env.clone(), account.clone(), true).unwrap();
+            assert_eq!(BlendAdapterContract::admin(env.clone()).unwrap(), account);
+            assert!(BlendAdapterContract::paused(env.clone()));
         });
     }
 

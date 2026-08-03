@@ -1,9 +1,9 @@
-//! The original sleeps real
-//! wall-clock to cross time-chunk boundaries; here we advance with `fast_forward`.
-//! Generous advances are safe: `partial::check` skips snapshots that match the
-//! previous expected state, so the extra (no-op) snapshots a large advance
-//! produces are ignored — only the ordered sequence of *state changes* matters.
-//! The `partial::check` / `states!` DSL is reused from `test-utils`.
+//! Snapshot tests. A snapshot finalizes only when an operation runs in a later
+//! time chunk, so each state we want observed gets its own chunk: `fast_forward`
+//! before the operation rather than relying on incidental per-transaction time,
+//! which varies with block cadence. Generous advances are safe — `partial::check`
+//! skips snapshots matching the previous expected state, so only the ordered
+//! sequence of *state changes* matters. `check` / `states!` come from `test-utils`.
 
 use anyhow::{Context, Result};
 use rstest::rstest;
@@ -34,15 +34,17 @@ async fn snapshot_captures_borrow_and_collateral_state(
         .supply_and_harvest_until_activation(&supply_user, &market, 2_000_000)
         .await?;
 
+    // The final collateralize only triggers finalization of the prior one; its
+    // own state stays the unfinalized current snapshot and isn't checked.
+    harness.fast_forward(100).await?;
     harness
         .collateralize(&borrow_user, &market, 1_000_000)
         .await?;
-    harness.borrow(&borrow_user, &market, 500_000).await?;
-
     harness.fast_forward(100).await?;
-    // Snapshot updating occurs before the collateral deposit is recorded, so do
-    // it twice to observe the preceding state in a finalized snapshot.
+    harness.borrow(&borrow_user, &market, 500_000).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
 
     let snapshots = harness.list_finalized_snapshots(&market).await?;
@@ -175,6 +177,9 @@ async fn snapshot_handles_zero_operations(#[future(awt)] harness: SandboxHarness
     let final_len = harness.list_finalized_snapshots(&market).await?.len();
     assert!(final_len > initial);
 
+    // Cross a chunk boundary so the following harvest finalizes the activated
+    // `+1` rather than merging into its chunk.
+    harness.fast_forward(100).await?;
     harness
         .harvest_yield(&supply_user, &market, Some(supply_user.0.clone()))
         .await?;
@@ -253,24 +258,26 @@ async fn snapshot_field_validation(#[future(awt)] harness: SandboxHarness) -> Re
     harness.fund_user(&supply_user, &market).await?;
     harness.fund_user(&borrow_user, &market).await?;
 
+    // Each op in its own chunk (see module docs); the final op only triggers the
+    // previous one's finalization and is not itself checked.
     harness
         .supply_and_harvest_until_activation(&supply_user, &market, 1_500_000)
         .await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
+    harness.fast_forward(100).await?;
     harness
         .collateralize(&borrow_user, &market, 800_000)
         .await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
+    harness.fast_forward(100).await?;
     harness.borrow(&borrow_user, &market, 400_000).await?;
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
-
     harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
+    harness.fast_forward(100).await?;
     harness.collateralize(&borrow_user, &market, 1).await?;
 
     let snapshots = harness.list_finalized_snapshots(&market).await?;
@@ -337,10 +344,12 @@ async fn many_users_different_snapshots(#[future(awt)] harness: SandboxHarness) 
         harness.fund_user(user, &market).await?;
     }
 
-    // Two suppliers, each activating in its own snapshot.
+    // Two suppliers, each activating in its own snapshot — so a chunk boundary
+    // must fall between them rather than being left to incidental timing.
     harness
         .supply_and_harvest_until_activation(&supply_1, &market, 2_000_000)
         .await?;
+    harness.fast_forward(100).await?;
     harness
         .supply_and_harvest_until_activation(&supply_2, &market, 1_500_000)
         .await?;

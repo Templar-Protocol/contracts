@@ -2,9 +2,10 @@
 //!
 //! Each helper yields the bytes of a workspace contract, either read from a
 //! prebuilt artifact (when `TEST_CONTRACTS_PREBUILT` is set) or freshly built
-//! via `cargo near build`. Bytes are cached per-artifact for the process. The
-//! three legacy blobs (embedded `include_bytes!`) are exposed as consts for
-//! migration tests.
+//! via `cargo near build`. Bytes are cached per-artifact for the process.
+//!
+//! [`released`] is the other source: the exact bytes a *past* version shipped
+//! as, downloaded from that version's GitHub Release rather than built here.
 
 use std::path::Path;
 
@@ -69,17 +70,20 @@ wasm_fns! {
     vault => Vault,
 }
 
-/// Legacy `0.2.0` universal-account WASM (pinned blob), for migration tests.
-pub const UNIVERSAL_ACCOUNT_0_2_0: &[u8] = include_bytes!("wasm/uac_0_2_0.wasm");
-/// Legacy `0.4.0` universal-account WASM (pinned blob), for migration tests.
-pub const UNIVERSAL_ACCOUNT_0_4_0: &[u8] = include_bytes!("wasm/uac_0_4_0.wasm");
-/// Legacy (`0.1.0`, pre-kernelization) proxy-oracle WASM (pinned blob).
-pub const PROXY_ORACLE_V0: &[u8] = include_bytes!("wasm/proxy_oracle_v0.wasm");
-/// Currently-deployed proxy-oracle WASM (`0.3.0`, on-chain state version 1), pinned from
-/// `proxy-oracle-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob, for
-/// cross-version upgrade tests.
-pub const PROXY_ORACLE_0_3_0: &[u8] = include_bytes!("wasm/proxy_oracle_0_3_0.wasm");
-/// Currently-deployed proxy-oracle-governance WASM (`0.1.0`, no versioned state / no `migrate`),
-/// pinned from `proxy-gov-iethhemibtc-iethusdc.v1.tmplr.near`. The pre-standardized-upgrade blob,
-/// for cross-version upgrade tests.
-pub const PROXY_GOVERNANCE_0_1_0: &[u8] = include_bytes!("wasm/proxy_governance_0_1_0.wasm");
+/// Bytes of a specific *released* version of a contract, for migration and
+/// upgrade tests that must deploy the real historical binary.
+///
+/// Downloaded from that version's GitHub Release into a shared on-disk cache
+/// and verified against the catalog's SHA-256 pin, so a swapped asset fails here
+/// rather than silently changing what a migration test deploys. A cold cache
+/// needs network; `just artifacts-fetch` warms it (CI does this first).
+///
+/// # Panics
+/// If `version` is not a catalogued release of `artifact` (a test bug — the
+/// available versions are in `contract/artifacts/releases/`), or if the bytes
+/// can be neither found in the cache nor downloaded.
+pub async fn released(artifact: ArtifactId, version: &str) -> Vec<u8> {
+    templar_contract_artifacts::fetch::released_bytes(artifact, version)
+        .await
+        .unwrap_or_else(|error| panic!("could not load {artifact}@{version}: {error}"))
+}

@@ -23,7 +23,7 @@ pub const DEFAULT_MAX_COMPLETED_OPERATIONS: usize = 4096;
 ///
 /// Completed operations are retained up to a bounded window
 /// ([`MemoryStore::with_capacity`], default
-/// [`DEFAULT_MAX_COMPLETED_OPERATIONS`]) so a long-running consumer that streams
+/// `DEFAULT_MAX_COMPLETED_OPERATIONS`) so a long-running consumer that streams
 /// un-keyed operations does not grow without bound. Consumers needing durable
 /// idempotency/replay beyond this window use `PostgresStore`.
 pub struct MemoryStore {

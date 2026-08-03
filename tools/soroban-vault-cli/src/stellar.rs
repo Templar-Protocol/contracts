@@ -1,16 +1,20 @@
 use std::{
     collections::BTreeSet,
     fmt::Write as _,
-    fs,
-    path::PathBuf,
+    fs::{self, OpenOptions},
+    io::Write as _,
+    path::{Path, PathBuf},
     process::Command,
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Context;
+use ed25519_dalek::SigningKey;
+use ed25519_dalek_bip32::{ChildIndex, ExtendedSigningKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use stellar_strkey::Strkey;
 use tracing::{debug, info, warn};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
@@ -119,7 +123,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "preparing stellar command"
         );
         let result = if self.cli.dry_run {
-            println!("dry-run: {command_display}");
+            eprintln!("dry-run: {command_display}");
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
@@ -165,11 +169,32 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             .collect()
     }
 
-    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
-        let (args, redacted_args) = keys_address_source_account_args(
-            self.cli.source_account.as_ref(),
-            std::env::var_os("STELLAR_ACCOUNT").is_some(),
-        )?;
+    /// Resolves the configured signing identity to its public Stellar account address.
+    pub fn source_public_address(&self) -> anyhow::Result<String> {
+        let stellar_account = if self.cli.source_account.is_none() {
+            match std::env::var("STELLAR_ACCOUNT") {
+                Ok(value) => Some(Zeroizing::new(value)),
+                Err(std::env::VarError::NotPresent) => None,
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    anyhow::bail!("STELLAR_ACCOUNT must be valid UTF-8")
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(account) = stellar_account.as_ref() {
+            if let Some(address) = public_address_from_stellar_identity(account.as_str())? {
+                return Ok(address);
+            }
+        }
+        let source = self
+            .cli
+            .source_account
+            .as_ref()
+            .map(SourceAccount::as_secret_str)
+            .or_else(|| stellar_account.as_ref().map(|account| account.as_str()));
+        let (args, redacted_args) =
+            keys_address_source_account_args(source, self.cli.config_dir.as_deref());
         let out = self.run(args, &redacted_args, Vec::new())?;
         if self.cli.dry_run {
             return Ok("GDRYRUNSOURCEACCOUNT".to_string());
@@ -179,6 +204,11 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
             "stellar keys address returned no address"
         );
         Ok(out.stdout)
+    }
+
+    /// Backward-compatible alias for [`Self::source_public_address`].
+    pub fn keys_address_source_account(&self) -> anyhow::Result<String> {
+        self.source_public_address()
     }
 
     pub fn invoke(
@@ -315,20 +345,46 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         Ok(())
     }
 
-    pub fn native_asset_id(&self) -> anyhow::Result<String> {
+    pub fn asset_contract_id(&self, asset: &str) -> anyhow::Result<String> {
         let mut args = vec![
             "contract".to_string(),
             "id".to_string(),
             "asset".to_string(),
             "--asset".to_string(),
-            "native".to_string(),
+            asset.to_string(),
         ];
         args.extend(self.network_args());
         let out = self.run(args, &[], Vec::new())?;
         if self.cli.dry_run {
-            return Ok("CDRYRUNNATIVEASSET".to_string());
+            return Ok(if asset == "native" {
+                "CDRYRUNNATIVEASSET".to_string()
+            } else {
+                "CDRYRUNASSETCONTRACT".to_string()
+            });
         }
         parse_contract_id(&out.stdout)
+    }
+
+    pub fn native_asset_id(&self) -> anyhow::Result<String> {
+        self.asset_contract_id("native")
+    }
+
+    pub fn contract_interface_functions(
+        &self,
+        contract_id: &str,
+    ) -> anyhow::Result<BTreeSet<String>> {
+        let mut args = vec![
+            "contract".to_string(),
+            "info".to_string(),
+            "interface".to_string(),
+            "--contract-id".to_string(),
+            contract_id.to_string(),
+            "--output".to_string(),
+            "json".to_string(),
+        ];
+        args.extend(self.network_args());
+        let out = self.run(args, &[], Vec::new())?;
+        contract_interface_function_names(&out.stdout)
     }
 
     pub fn build_package(
@@ -435,17 +491,23 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
                     !xdr.is_empty(),
                     "preflight build-only produced empty transaction XDR for {build_display}"
                 );
-                let mut simulate_args = vec!["tx".to_string(), "simulate".to_string(), xdr];
-                simulate_args.extend(self.network_args());
-                let simulate_display = display_command("stellar", &simulate_args, &[], env);
-                info!(command = %simulate_display, "running stellar preflight simulation");
-                let output = self
-                    .executor
-                    .run("stellar", &simulate_args, &[], env)
-                    .with_context(|| {
-                        format!("preflight simulation failed for {simulate_display}")
-                    })?;
-                (simulate_display, output)
+                with_preflight_xdr_file(&xdr, |xdr_path| {
+                    let mut simulate_args = vec![
+                        "tx".to_string(),
+                        "simulate".to_string(),
+                        xdr_path.display().to_string(),
+                    ];
+                    simulate_args.extend(self.network_args());
+                    let simulate_display = display_command("stellar", &simulate_args, &[], env);
+                    info!(command = %simulate_display, "running stellar preflight simulation");
+                    let output = self
+                        .executor
+                        .run("stellar", &simulate_args, &[], env)
+                        .with_context(|| {
+                            format!("preflight simulation failed for {simulate_display}")
+                        })?;
+                    Ok((simulate_display, output))
+                })?
             }
         };
         eprintln!("Preflight simulation succeeded: {command_display}");
@@ -504,6 +566,7 @@ impl<'a, E: CommandExecutor> Stellar<'a, E> {
         let mut args = vec![
             "tx".to_string(),
             "fetch".to_string(),
+            "result".to_string(),
             "--hash".to_string(),
             tx_hash.to_string(),
             "--output".to_string(),
@@ -581,6 +644,23 @@ fn should_confirm_transaction(args: &[String]) -> bool {
     }
 }
 
+fn contract_interface_function_names(stdout: &str) -> anyhow::Result<BTreeSet<String>> {
+    let entries: Vec<Value> =
+        serde_json::from_str(stdout).context("parse Stellar contract interface JSON")?;
+    let functions = entries
+        .iter()
+        .filter_map(|entry| entry.get("function_v0"))
+        .filter_map(|function| function.get("name"))
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        !functions.is_empty(),
+        "Stellar contract interface did not contain any function names"
+    );
+    Ok(functions)
+}
+
 enum PreflightPlan {
     Invoke(Vec<String>),
     BuildAndSimulate(Vec<String>),
@@ -591,8 +671,11 @@ fn preflight_plan(args: &[String]) -> Option<PreflightPlan> {
         [first, second, ..] if first == "contract" && second == "invoke" => {
             invoke_preflight_args(args).map(PreflightPlan::Invoke)
         }
+        // Stellar CLI 26 rejects `contract deploy --wasm-hash ... --build-only`
+        // even though the real deploy path accepts the hash and simulates before signing.
+        [first, second, ..] if first == "contract" && second == "deploy" => None,
         [first, second, ..]
-            if first == "contract" && matches!(second.as_str(), "deploy" | "extend" | "upload") =>
+            if first == "contract" && matches!(second.as_str(), "extend" | "upload") =>
         {
             build_only_preflight_args(args).map(PreflightPlan::BuildAndSimulate)
         }
@@ -647,11 +730,109 @@ fn temp_wasm_path(contract_id: &str) -> PathBuf {
     ))
 }
 
+struct TemporaryFileCleanup {
+    path: PathBuf,
+    active: bool,
+}
+
+impl TemporaryFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            active: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn activate(&mut self) {
+        self.active = true;
+    }
+}
+
+impl Drop for TemporaryFileCleanup {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Err(error) = fs::remove_file(&self.path) {
+            warn!(
+                path = %self.path.display(),
+                error = %error,
+                "failed to remove preflight transaction file"
+            );
+        }
+    }
+}
+
+fn with_preflight_xdr_file<T>(
+    xdr: &str,
+    operation: impl FnOnce(&Path) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut cleanup = TemporaryFileCleanup::new(std::env::temp_dir().join(format!(
+        "tmplr-soroban-vault-cli-{}-{nanos}.tx.xdr",
+        std::process::id()
+    )));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options.open(cleanup.path()).with_context(|| {
+        format!(
+            "create preflight transaction file {}",
+            cleanup.path().display()
+        )
+    })?;
+    cleanup.activate();
+    if let Err(error) = file.write_all(xdr.as_bytes()) {
+        return Err(error).with_context(|| {
+            format!(
+                "write preflight transaction file {}",
+                cleanup.path().display()
+            )
+        });
+    }
+    drop(file);
+
+    operation(cleanup.path())
+}
+
 fn first_tx_hash(stdout: &str, stderr: &str) -> Option<String> {
-    parse_tx_hashes(stdout)
+    parse_labeled_tx_hashes(stdout)
         .into_iter()
-        .chain(parse_tx_hashes(stderr))
+        .chain(parse_labeled_tx_hashes(stderr))
         .next()
+}
+
+pub(crate) fn parse_labeled_tx_hashes(value: &str) -> Vec<String> {
+    const MARKERS: [&str; 6] = [
+        "signing transaction:",
+        "transaction hash:",
+        "tx hash:",
+        "transaction submitted successfully:",
+        "transaction submitted:",
+        "/tx/",
+    ];
+
+    value
+        .lines()
+        .flat_map(|line| {
+            let normalized = line.to_ascii_lowercase();
+            MARKERS
+                .iter()
+                .filter_map(move |marker| normalized.find(marker).map(|index| index + marker.len()))
+                .flat_map(move |start| parse_tx_hashes(&line[start..]))
+        })
+        .collect()
 }
 
 fn parse_tx_hashes(value: &str) -> Vec<String> {
@@ -700,6 +881,9 @@ fn find_transaction_status(value: &Value) -> Option<TransactionConfirmationStatu
     match value {
         Value::Object(fields) => {
             for (key, value) in fields {
+                if let Some(status) = transaction_status_from_result_variant(key) {
+                    return Some(status);
+                }
                 if key.eq_ignore_ascii_case("status") {
                     if let Some(status) = value.as_str().and_then(transaction_status_from_text) {
                         return Some(status);
@@ -717,14 +901,40 @@ fn find_transaction_status(value: &Value) -> Option<TransactionConfirmationStatu
     }
 }
 
+fn transaction_status_from_result_variant(key: &str) -> Option<TransactionConfirmationStatus> {
+    let normalized = key.to_ascii_lowercase();
+    match normalized.as_str() {
+        "tx_success" | "tx_fee_bump_inner_success" => Some(TransactionConfirmationStatus::Success),
+        "tx_fee_bump_inner_failed"
+        | "tx_failed"
+        | "tx_too_early"
+        | "tx_too_late"
+        | "tx_missing_operation"
+        | "tx_bad_seq"
+        | "tx_bad_auth"
+        | "tx_insufficient_balance"
+        | "tx_no_account"
+        | "tx_insufficient_fee"
+        | "tx_bad_auth_extra"
+        | "tx_internal_error"
+        | "tx_not_supported"
+        | "tx_bad_sponsorship"
+        | "tx_bad_min_seq_age_or_gap"
+        | "tx_malformed"
+        | "tx_soroban_invalid"
+        | "tx_frozen_key_accessed" => Some(TransactionConfirmationStatus::Failed),
+        _ => None,
+    }
+}
+
 fn transaction_status_from_text(text: &str) -> Option<TransactionConfirmationStatus> {
     let normalized = text.to_ascii_uppercase();
-    if normalized.contains("SUCCESS") {
+    if normalized.contains("NOT_FOUND") || normalized.contains("NOT FOUND") {
+        Some(TransactionConfirmationStatus::NotFound)
+    } else if normalized.contains("SUCCESS") {
         Some(TransactionConfirmationStatus::Success)
     } else if normalized.contains("FAILED") || normalized.contains("ERROR") {
         Some(TransactionConfirmationStatus::Failed)
-    } else if normalized.contains("NOT_FOUND") || normalized.contains("NOT FOUND") {
-        Some(TransactionConfirmationStatus::NotFound)
     } else {
         None
     }
@@ -789,21 +999,76 @@ fn shell_escape(value: &str) -> String {
     }
 }
 
-fn keys_address_source_account_args(
-    source_account: Option<&SourceAccount>,
-    stellar_account_env_is_set: bool,
-) -> anyhow::Result<(Vec<String>, Vec<usize>)> {
+pub(crate) fn keys_address_source_account_args(
+    source_account: Option<&str>,
+    config_dir: Option<&Path>,
+) -> (Vec<String>, Vec<usize>) {
     let mut args = vec!["keys".to_string(), "address".to_string()];
     let mut redacted_args = Vec::new();
     if let Some(source) = source_account {
         redacted_args.push(args.len());
-        args.push(source.clone_secret());
-    } else if stellar_account_env_is_set {
-        anyhow::bail!(
-            "cannot derive a public address from STELLAR_ACCOUNT without exposing it to child argv; pass --admin/--caller explicitly or use a Stellar keystore/default identity"
-        );
+        args.push(source.to_string());
     }
-    Ok((args, redacted_args))
+    if let Some(config_dir) = config_dir {
+        args.extend(["--config-dir".to_string(), config_dir.display().to_string()]);
+    }
+    (args, redacted_args)
+}
+
+fn public_address_from_stellar_identity(value: &str) -> anyhow::Result<Option<String>> {
+    match Strkey::from_string(value) {
+        Ok(Strkey::PrivateKeyEd25519(mut private_key)) => {
+            let signing_key = SigningKey::from_bytes(&private_key.0);
+            private_key.0.zeroize();
+            Ok(Some(stellar_public_key(
+                signing_key.verifying_key().to_bytes(),
+            )))
+        }
+        Ok(Strkey::PublicKeyEd25519(public_key)) => Ok(Some(public_key.to_string().to_string())),
+        Ok(Strkey::MuxedAccountEd25519(muxed_account)) => {
+            Ok(Some(stellar_public_key(muxed_account.ed25519)))
+        }
+        Ok(_) => anyhow::bail!("STELLAR_ACCOUNT is not a supported account source"),
+        Err(_) if value.split_whitespace().count() > 1 => {
+            let mnemonic = bip39::Mnemonic::parse(value)
+                .context("STELLAR_ACCOUNT contains an invalid seed phrase")?;
+            let seed = Zeroizing::new(mnemonic.to_seed(""));
+            let mut root = ExtendedSigningKey::from_seed(seed.as_ref())
+                .context("derive STELLAR_ACCOUNT seed phrase root key")?;
+            let path = [
+                ChildIndex::Hardened(44),
+                ChildIndex::Hardened(148),
+                ChildIndex::Hardened(0),
+            ];
+            let mut derived = root
+                .derive(&path)
+                .context("derive STELLAR_ACCOUNT default Stellar account")?;
+            root.chain_code.zeroize();
+            drop(root);
+            let public_key = derived.verifying_key().to_bytes();
+            derived.chain_code.zeroize();
+            drop(derived);
+            Ok(Some(stellar_public_key(public_key)))
+        }
+        Err(_) => {
+            anyhow::ensure!(
+                !value.is_empty()
+                    && value.len() < 56
+                    && value
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric()
+                            || "-_.".contains(character)),
+                "STELLAR_ACCOUNT is neither a valid account key nor a safe Stellar identity name"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn stellar_public_key(bytes: [u8; 32]) -> String {
+    stellar_strkey::ed25519::PublicKey(bytes)
+        .to_string()
+        .to_string()
 }
 
 #[cfg(test)]
@@ -830,6 +1095,19 @@ mod tests {
         assert_eq!(
             hash,
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn parses_contract_interface_function_names() {
+        let functions = contract_interface_function_names(
+            r#"[{"function_v0":{"name":"deposit"}},{"function_v0":{"name":"atomic_withdraw"}},{"udt_error_enum_v0":{"name":"ContractError"}}]"#,
+        )
+        .expect("parse interface functions");
+
+        assert_eq!(
+            functions,
+            BTreeSet::from(["atomic_withdraw".to_string(), "deposit".to_string()])
         );
     }
 
@@ -867,13 +1145,56 @@ mod tests {
     }
 
     #[test]
-    fn refuses_env_secret_for_source_address_derivation() {
-        let err = keys_address_source_account_args(None, true)
-            .expect_err("STELLAR_ACCOUNT should not be converted into argv");
+    fn derives_env_secret_for_source_address_without_argv() {
+        let address = public_address_from_stellar_identity(
+            "SBU2RRGLXH3E5CQHTD3ODLDF2BWDCYUSSBLLZ5GNW7JXHDIYKXZWHOKR",
+        )
+        .expect("derive secret key")
+        .expect("public address");
 
-        assert!(err
-            .to_string()
-            .contains("without exposing it to child argv"));
+        assert_eq!(
+            address,
+            "GA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQHES5"
+        );
+    }
+
+    #[test]
+    fn derives_env_seed_phrase_for_source_address_without_argv() {
+        let address = public_address_from_stellar_identity(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("derive seed phrase")
+        .expect("public address");
+
+        assert_eq!(
+            address,
+            "GB3JDWCQJCWMJ3IILWIGDTQJJC5567PGVEVXSCVPEQOTDN64VJBDQBYX"
+        );
+    }
+
+    #[test]
+    fn derives_underlying_account_from_env_muxed_address() {
+        let address = public_address_from_stellar_identity(
+            "MA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJUAAAAAAAAAAAACJUQ",
+        )
+        .expect("derive muxed account")
+        .expect("public address");
+
+        assert_eq!(
+            address,
+            "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ"
+        );
+    }
+
+    #[test]
+    fn accepts_env_keystore_identity_for_redacted_lookup() {
+        assert_eq!(
+            public_address_from_stellar_identity("operator").expect("accept identity name"),
+            None
+        );
+        let (args, redacted_args) = keys_address_source_account_args(Some("operator"), None);
+        assert_eq!(args, vec!["keys", "address", "operator"]);
+        assert_eq!(redacted_args, vec![2]);
     }
 
     #[test]
@@ -898,6 +1219,10 @@ mod tests {
         assert!(should_confirm_transaction(&[
             "tx".to_string(),
             "send".to_string()
+        ]));
+        assert!(should_confirm_transaction(&[
+            "contract".to_string(),
+            "upload".to_string()
         ]));
         assert!(!should_confirm_transaction(&[
             "contract".to_string(),
@@ -1017,6 +1342,7 @@ mod tests {
                 "GADMIN"
             ]
         );
+        assert!(preflight_plan(&args).is_none());
     }
 
     #[test]
@@ -1059,6 +1385,55 @@ mod tests {
     }
 
     #[test]
+    fn stages_large_preflight_transactions_in_a_temporary_file() {
+        let xdr = "A".repeat(200_000);
+        let mut staged_path = None;
+
+        with_preflight_xdr_file(&xdr, |path| {
+            staged_path = Some(path.to_path_buf());
+            assert_eq!(fs::read_to_string(path).expect("read staged XDR"), xdr);
+            Ok(())
+        })
+        .expect("stage preflight XDR");
+
+        assert!(!staged_path.expect("staged path").exists());
+    }
+
+    #[test]
+    fn removes_preflight_transaction_file_when_operation_panics() {
+        let staged_path = std::sync::Mutex::new(None);
+
+        let panic = std::panic::catch_unwind(|| {
+            with_preflight_xdr_file("AAAA", |path| -> anyhow::Result<()> {
+                *staged_path.lock().expect("lock staged path") = Some(path.to_path_buf());
+                panic!("forced operation panic");
+            })
+            .expect("operation should panic before returning");
+        });
+
+        assert!(panic.is_err());
+        assert!(!staged_path
+            .into_inner()
+            .expect("staged path mutex")
+            .expect("staged path")
+            .exists());
+    }
+
+    #[test]
+    fn inactive_temporary_file_cleanup_preserves_unowned_file() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("existing.tx.xdr");
+        fs::write(&path, "existing").expect("write existing file");
+
+        drop(TemporaryFileCleanup::new(path.clone()));
+
+        assert_eq!(
+            fs::read_to_string(path).expect("read existing file"),
+            "existing"
+        );
+    }
+
+    #[test]
     fn parses_transaction_hashes_from_command_text() {
         let hashes = parse_tx_hashes(
             "tx hash: 0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -1071,12 +1446,47 @@ mod tests {
     }
 
     #[test]
+    fn selects_labeled_transaction_hash_over_wasm_hash() {
+        let stderr = "ℹ️  Deploying contract using wasm hash 4d24790f3ea2a02e521b84d583dab00bfa246cdfd06ee858f1f656a831cccc83\nℹ️  Signing transaction: 56d4f7c5f5391c6520834c6a53a66a991e786f1693bad90a6c360f07b5386084\n🔗 https://stellar.expert/explorer/testnet/tx/56d4f7c5f5391c6520834c6a53a66a991e786f1693bad90a6c360f07b5386084";
+
+        assert_eq!(
+            first_tx_hash(
+                "CAUOEITD3BZ6VW6TFQAGI2VWIBXG5YRJL6VOL6V4AWETXUCHX2M3YXSZ",
+                stderr
+            ),
+            Some("56d4f7c5f5391c6520834c6a53a66a991e786f1693bad90a6c360f07b5386084".to_string())
+        );
+    }
+
+    #[test]
     fn parses_transaction_status_from_json() {
         let status = transaction_status_from_output(r#"{"status":"SUCCESS"}"#);
         assert_eq!(status, Some(TransactionConfirmationStatus::Success));
 
         let status = transaction_status_from_output(r#"{"result":{"status":"FAILED"}}"#);
         assert_eq!(status, Some(TransactionConfirmationStatus::Failed));
+
+        let status = transaction_status_from_output(
+            r#"{"fee_charged":"23048","result":{"tx_success":[{"op_inner":{"invoke_host_function":{"success":"00"}}}]},"ext":"v0"}"#,
+        );
+        assert_eq!(status, Some(TransactionConfirmationStatus::Success));
+
+        let status = transaction_status_from_output(
+            r#"{"fee_charged":"113610","result":{"tx_failed":[{"op_inner":{"invoke_host_function":"trapped"}}]},"ext":"v0"}"#,
+        );
+        assert_eq!(status, Some(TransactionConfirmationStatus::Failed));
+
+        let status = transaction_status_from_output(
+            r#"{"a":{"tx_hash":"0123456789abcdef"},"z":{"tx_success":[]}}"#,
+        );
+        assert_eq!(status, Some(TransactionConfirmationStatus::Success));
+        assert_eq!(transaction_status_from_result_variant("tx_hash"), None);
+        assert_eq!(transaction_status_from_result_variant("tx_envelope"), None);
+
+        let status = transaction_status_from_text(
+            "command failed: transaction 00 not found on testnet network",
+        );
+        assert_eq!(status, Some(TransactionConfirmationStatus::NotFound));
     }
 
     #[test]

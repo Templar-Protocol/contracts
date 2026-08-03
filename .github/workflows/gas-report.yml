@@ -10,7 +10,7 @@ jobs:
   # Add a job to check if relevant files changed
   check-changes:
     name: Check for relevant changes
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     outputs:
       should-run: ${{ steps.changes.outputs.contracts }}
     steps:
@@ -32,7 +32,7 @@ jobs:
 
   gas-report:
     name: Gas report
-    runs-on: ubuntu-latest
+    runs-on: warp-ubuntu-latest-x64-4x
     needs: check-changes
     # Only run if there are relevant changes
     if: needs.check-changes.outputs.should-run == 'true'

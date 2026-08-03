@@ -131,7 +131,7 @@ mod tests {
     use templar_gateway_core::{CreateOperationResult, GatewayContext, GatewayError};
     use templar_gateway_methods_dispatch::Dispatch;
     use templar_gateway_methods_spec::tx;
-    use templar_gateway_testing::TEST_FINALITY_POLICY;
+    use templar_gateway_testing::{sandbox_config, TEST_FINALITY_POLICY};
     use templar_gateway_types::{
         common::{ContractArgs, WriteRequest},
         ContractMethodName, IdempotencyKey, MethodSpec, NearGas, NearToken, OperationStatus,
@@ -144,7 +144,9 @@ mod tests {
     }
 
     async fn start_service() -> Result<(TestHarness, GatewayService)> {
-        let sandbox = Sandbox::start_sandbox().await?;
+        // Share the harness's launch config so this owned node runs the same
+        // block cadence as the rest of the gate rather than the default.
+        let sandbox = Sandbox::start_sandbox_with_config(sandbox_config()).await?;
         let network = NetworkConfig::from_rpc_url("sandbox", sandbox.rpc_addr.parse()?);
 
         let gateway_signer_account_id = ManagedAccountId("gateway.near".parse()?);

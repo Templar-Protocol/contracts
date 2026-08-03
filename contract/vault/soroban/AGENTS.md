@@ -11,6 +11,7 @@ Soroban-side companion contracts:
 - `templar-soroban-governance` in `contract/vault/soroban/governance`
 - `templar-soroban-share-token` in `contract/vault/soroban/share-token`
 - `templar-soroban-blend-adapter` in `contract/vault/soroban/blend-adapter`
+- `templar-soroban-custodial-adapter` in `contract/vault/soroban/custodial-adapter`
 - shared ABI/types in `contract/vault/soroban/shared-types`
 
 Read these first before making non-trivial changes:
@@ -46,6 +47,10 @@ measured, and re-verified:
   `execute_governance(env, caller, payload)`.
 - The share token only allows vault-authorized `mint()` and `burn()`. User transfers still require
   `from.require_auth()`.
+- A Blend adapter admin may be a Soroban account or contract. It must authenticate pause, admin
+  rotation, TTL extension, and upgrade calls; the vault and Blend pool remain contract-only.
+  Deployment tooling rejects the configured vault governance contract as adapter admin because the
+  shipped governance contract cannot dispatch companion administration calls.
 - Read-only preview and getter surfaces must stay non-authoritative.
 - Serialized `VaultState` remains a practical resource boundary because Soroban persists a single
   `StateBlob`. Pending withdrawals are the main long-lived growth vector.
@@ -59,6 +64,7 @@ Use these commands:
 
 - `just -f contract/vault/soroban/justfile build`
 - `just -f contract/vault/soroban/justfile size-budget-check`
+- `just -f contract/vault/soroban/justfile verify-release-wasm-abi`
 - `just -f contract/vault/soroban/justfile wasm-analyze 250 120`
 - `just -f contract/vault/soroban/justfile wasm-analyze-print all 120`
 
@@ -68,8 +74,8 @@ Important details:
 - `build` emits the optimized runtime WASM and uses that same artifact for deployment. It keeps
   contractspec metadata so standard Stellar CLI invocation and explorer source-attestation tooling
   can inspect the deployed WASM.
-- Recent local evidence records the unstripped deploy artifact at `128955` bytes (`125.9 KiB`),
-  leaving roughly `2.1 KiB` of headroom under the `131072` byte gate.
+- Current local evidence records the optimized deploy artifact at `129507` bytes (`126.47 KiB`),
+  leaving `1565` bytes of headroom under the `131072` byte gate.
 
 Common growth pitfalls:
 
@@ -256,6 +262,8 @@ Practical order of attack:
 
 - `initialize()` is highly sensitive because front-running it would seize governance/curator
   control. Keep deployment and initialization assumptions explicit.
+- Curator-proxy deployments pin a one-time initialization authority in `__constructor` and remove
+  it after successful initialization. Do not reintroduce an unauthenticated first-claim window.
 - Review auth on every privileged Soroban entrypoint. Do not rely on outer routing alone.
 - Soroban transactions are atomic, but adapter correctness, state ordering, and accepted external
   asset snapshots still matter for accounting safety.
@@ -291,10 +299,26 @@ Minimum runtime verification:
 - `cargo test -p templar-soroban-runtime --test integration_tests -- --nocapture`
 - `cargo test -p templar-soroban-runtime --test property_tests -- --nocapture`
 
+Custodial adapter ABI changes:
+
+- `cargo test -p templar-soroban-custodial-adapter -- --nocapture`
+- `just -f contract/vault/soroban/justfile verify-custodial-adapter-release-abi`
+
+The release-ABI gate builds the optimized adapter, checks the exact contract interface, and invokes
+the real Wasm artifact to ensure the exported method decodes and executes as expected.
+
 Size verification:
 
 - `just -f contract/vault/soroban/justfile build`
 - `just -f contract/vault/soroban/justfile size-budget-check`
+
+Release ABI and capability-mask verification:
+
+- `just -f contract/vault/soroban/justfile verify-release-wasm-abi`
+
+This gate checks the isolated runtime feature matrix, exact optimized contract interfaces for
+`version`, `vault_version`, `initialize_legacy_v1`, and `reported_at`, plus the real-WASM proxy
+transition from pinned v1 semantics to the upgraded runtime response.
 
 When relevant, also run:
 

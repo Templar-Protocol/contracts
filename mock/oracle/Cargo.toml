@@ -1,5 +1,6 @@
 [package]
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 name = "mock-oracle"
 publish = false

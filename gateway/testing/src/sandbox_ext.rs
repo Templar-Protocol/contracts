@@ -10,7 +10,7 @@ use near_api::{types::AccountId, NetworkConfig, SecretKey};
 use near_jsonrpc_client::{
     methods::{
         query::RpcQueryRequest, sandbox_fast_forward::RpcSandboxFastForwardRequest,
-        sandbox_patch_state::RpcSandboxPatchStateRequest,
+        sandbox_patch_state::RpcSandboxPatchStateRequest, status::RpcStatusRequest,
     },
     JsonRpcClient,
 };
@@ -29,30 +29,48 @@ const ACCOUNT_STORAGE_USAGE: u64 = 182;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The custom client is what carries [`RPC_TIMEOUT`] — `connect`'s default sets
-/// none — and so must also set the content-type header it would have: the node
-/// answers 415 without it.
-fn client(network: &NetworkConfig) -> JsonRpcClient {
+/// A JSON-RPC client for `rpc_url` carrying `timeout` — `connect`'s default sets
+/// none — with the content-type header the node needs (it answers 415 without
+/// it).
+fn build_client(rpc_url: &str, timeout: Duration) -> JsonRpcClient {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),
     );
     let http = reqwest::Client::builder()
-        .timeout(RPC_TIMEOUT)
+        .timeout(timeout)
         .default_headers(headers)
         .build()
         .expect("reqwest client builds");
-    JsonRpcClient::with(http).connect(network.rpc_endpoints[0].url.as_str())
+    JsonRpcClient::with(http).connect(rpc_url)
 }
 
-/// Mint `account_id` with `balance` and a full-access key over `secret_key` by
-/// writing state records directly — zero blocks, and no funder is debited.
-pub(crate) async fn create_account(
+fn client(network: &NetworkConfig) -> JsonRpcClient {
+    build_client(network.rpc_endpoints[0].url.as_str(), RPC_TIMEOUT)
+}
+
+/// Whether the sandbox node at `rpc_url` answers a `status` query within
+/// `timeout`. A short `timeout` lets the out-of-band host's supervisor notice a
+/// hung node promptly, unlike `RPC_TIMEOUT`.
+pub async fn node_is_serving(rpc_url: &str, timeout: Duration) -> bool {
+    build_client(rpc_url, timeout)
+        .call(RpcStatusRequest)
+        .await
+        .is_ok()
+}
+
+/// Mint each account with its balance and a full-access key over `secret_key` by
+/// writing state records directly — no blocks spent producing them, and no
+/// funder is debited.
+///
+/// One call, however many accounts: a `sandbox_patch_state` call costs ~200ms
+/// regardless of how many records it carries, so minting N accounts one call at
+/// a time costs N times as much as minting them together.
+pub(crate) async fn create_accounts(
     network: &NetworkConfig,
-    account_id: &AccountId,
+    accounts: &[(AccountId, NearToken)],
     secret_key: &SecretKey,
-    balance: NearToken,
 ) -> Result<()> {
     // near-api and `near_primitives` use different `PublicKey` types; cross the
     // boundary by the canonical `ed25519:…` string.
@@ -63,24 +81,34 @@ pub(crate) async fn create_account(
         .context("parse public key")?;
     // Nonce 0 is safe: the block-height nonce floor applies only to keys added by a
     // transaction, not to patched state.
-    let records = vec![
-        StateRecord::Account {
-            account_id: account_id.clone(),
-            account: ChainAccount::new(
-                balance,
-                NearToken::from_yoctonear(0),
-                AccountContract::None,
-                ACCOUNT_STORAGE_USAGE,
-            ),
-        },
-        StateRecord::AccessKey {
-            account_id: account_id.clone(),
-            public_key: public_key.clone(),
-            access_key: AccessKey::full_access(),
-        },
-    ];
+    let records = accounts
+        .iter()
+        .flat_map(|(account_id, balance)| {
+            [
+                StateRecord::Account {
+                    account_id: account_id.clone(),
+                    account: ChainAccount::new(
+                        *balance,
+                        NearToken::from_yoctonear(0),
+                        AccountContract::None,
+                        ACCOUNT_STORAGE_USAGE,
+                    ),
+                },
+                StateRecord::AccessKey {
+                    account_id: account_id.clone(),
+                    public_key: public_key.clone(),
+                    access_key: AccessKey::full_access(),
+                },
+            ]
+        })
+        .collect();
     patch_records(network, records).await?;
-    wait_until_final(network, account_id, &public_key).await
+    // One patch applies as a unit in one block, so any one account reaching
+    // final finality means every account in the batch has.
+    match accounts.last() {
+        Some((account_id, _)) => wait_until_final(network, account_id, &public_key).await,
+        None => Ok(()),
+    }
 }
 
 /// Patch raw contract storage entries (key/value byte pairs) on `account_id`.
@@ -117,6 +145,21 @@ pub(crate) async fn fast_forward(network: &NetworkConfig, delta_height: u64) -> 
     Ok(())
 }
 
+/// How long a patched key gets to reach `Final`.
+///
+/// Finality is a couple of blocks on an idle node, but this has to hold on a
+/// CPU-starved CI runner where several nodes compete for a core and block
+/// production stretches far past its target. Erring long costs nothing on a
+/// healthy node — the wait ends as soon as the key is visible — while erring
+/// short turns load into a spurious, confusing test failure.
+const FINALITY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Poll backoff bounds. Starts tight so an idle node is not slowed down, then
+/// backs off: a flat fast poll from every test process piles RPC load onto the
+/// very node that is already struggling.
+const FINALITY_POLL_MIN: Duration = Duration::from_millis(25);
+const FINALITY_POLL_MAX: Duration = Duration::from_millis(500);
+
 /// Block until the patched key is visible at `Final`.
 ///
 /// A patch lands at optimistic finality, but near-api's signer reads the nonce at
@@ -137,11 +180,18 @@ async fn wait_until_final(
     };
     // Every error retries: not-yet-final, node backpressure and transport blips all
     // clear on a later block.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(FINALITY_TIMEOUT, async {
+        let mut backoff = FINALITY_POLL_MIN;
         while client.call(&request).await.is_err() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(FINALITY_POLL_MAX);
         }
     })
     .await
-    .with_context(|| format!("patched account {account_id} never reached final finality"))
+    .with_context(|| {
+        format!(
+            "patched account {account_id} never reached final finality within \
+             {FINALITY_TIMEOUT:?} — the sandbox node is likely overloaded or down"
+        )
+    })
 }

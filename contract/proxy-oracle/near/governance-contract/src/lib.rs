@@ -29,7 +29,7 @@ pub(crate) enum StorageKey {
     Proposals,
 }
 
-/// Wraps the versioned governance [`State`] (kernel ledger header, proposal bodies, governed oracle
+/// Wraps the versioned governance `State` (kernel ledger header, proposal bodies, governed oracle
 /// account). Role membership lives in `near-sdk-contract-tools` RBAC storage, separate from `state`.
 #[derive(Debug, Rbac, PanicOnDefault)]
 #[rbac(roles = "Role")]

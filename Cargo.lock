@@ -1637,6 +1637,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -12906,7 +12907,9 @@ version = "0.1.0"
 dependencies = [
  "cargo_metadata 0.23.1",
  "clap",
+ "dirs 6.0.0",
  "hex",
+ "reqwest 0.12.28",
  "rstest",
  "schemars 0.8.22",
  "serde",
@@ -12914,6 +12917,8 @@ dependencies = [
  "sha2 0.10.9",
  "strum 0.27.2",
  "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -12935,7 +12940,7 @@ dependencies = [
 
 [[package]]
 name = "templar-curator-proxy-soroban"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "soroban-sdk",
  "templar-soroban-governance",
@@ -13302,6 +13307,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "futures",
  "near-api",
  "near-crypto",
  "near-jsonrpc-client",
@@ -13546,7 +13552,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-contract"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13582,7 +13588,7 @@ dependencies = [
 
 [[package]]
 name = "templar-proxy-oracle-near-governance-contract"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13811,7 +13817,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-custodial-adapter"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
@@ -13831,7 +13837,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-runtime"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "blend-contract-sdk",
  "derive_more 1.0.0",
@@ -13850,7 +13856,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-share-token"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "soroban-sdk",
  "stellar-contract-utils",
@@ -13859,7 +13865,7 @@ dependencies = [
 
 [[package]]
 name = "templar-soroban-shared-types"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "postcard",
  "serde",
@@ -13871,10 +13877,13 @@ name = "templar-soroban-vault-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bip39",
  "clap",
  "clap_complete",
  "clap_mangen",
  "dirs 6.0.0",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
  "hex",
  "indicatif",
  "secrecy",

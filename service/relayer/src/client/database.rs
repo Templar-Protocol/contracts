@@ -380,7 +380,7 @@ WHERE
     /// never reached the chain. Only clears the ledger row; the allowance was never
     /// debited at lock time, so nothing is refunded.
     ///
-    /// Idempotent, like [`Database::settle`].
+    /// Idempotent, like `Database::settle`.
     ///
     /// # Errors
     ///

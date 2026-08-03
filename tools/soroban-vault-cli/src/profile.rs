@@ -19,6 +19,7 @@ pub struct ProfileConfig {
     pub contract_source_repo: Option<String>,
     pub config_dir: Option<PathBuf>,
     pub admin: Option<String>,
+    pub adapter_admin: Option<String>,
     pub caller: Option<String>,
     pub operator: Option<String>,
 }
@@ -183,6 +184,15 @@ fn push_leaf_profile_args(
             profile.admin.as_deref(),
         );
     }
+    if needs_adapter_admin(raw_args) {
+        push_profile_arg(
+            expanded,
+            raw_args,
+            "--adapter-admin",
+            "SOROBAN_ADAPTER_ADMIN",
+            profile.adapter_admin.as_deref(),
+        );
+    }
     if needs_caller(raw_args) {
         push_profile_arg(
             expanded,
@@ -272,6 +282,13 @@ fn needs_caller(raw_args: &[String]) -> bool {
     .any(|command| raw_args.iter().any(|arg| arg == command))
 }
 
+fn needs_adapter_admin(raw_args: &[String]) -> bool {
+    primary_command(raw_args).as_deref() == Some("deploy")
+        && ["stack", "resume", "adapters"]
+            .into_iter()
+            .any(|command| raw_args.iter().any(|arg| arg == command))
+}
+
 fn needs_operator(raw_args: &[String]) -> bool {
     ["deposit", "mint", "withdraw", "execute-withdraw"]
         .into_iter()
@@ -356,6 +373,7 @@ workspace_path = "."
 # config_dir = "/home/operator/.config/stellar"
 # contract_source_repo = "github:Templar-Protocol/contracts"
 # admin = "G..."
+# adapter_admin = "G..." # or "vault" when capability 0x40 is advertised
 # caller = "G..."
 # operator = "G..."
 "#
@@ -414,6 +432,38 @@ admin = "GADMIN"
         assert!(expanded
             .windows(2)
             .any(|pair| pair == ["--admin", "GADMIN"]));
+    }
+
+    #[test]
+    fn profile_expansion_injects_explicit_adapter_admin_for_deploy_flows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            dir.path().join("testnet.toml"),
+            r#"
+network = "testnet"
+adapter_admin = "vault"
+"#,
+        )
+        .expect("write profile");
+
+        let expanded = expand_args_with_dir(
+            &[
+                "tmplr-soroban-vault".to_string(),
+                "--profile".to_string(),
+                "testnet".to_string(),
+                "deploy".to_string(),
+                "plan".to_string(),
+                "adapters".to_string(),
+                "--blend-pool".to_string(),
+                "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX".to_string(),
+            ],
+            dir.path(),
+        )
+        .expect("expand args");
+
+        assert!(expanded
+            .windows(2)
+            .any(|pair| pair == ["--adapter-admin", "vault"]));
     }
 
     #[test]
