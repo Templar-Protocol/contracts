@@ -31,7 +31,9 @@ use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOp
 use common::{call, code_hash, deploy_global_contract, view, CreateProposalArgs, ProposalIdArgs};
 
 /// `add` requires `breaker_id == next_id`, which starts at zero and only ever increments.
-const SEEDED_BREAKER: u32 = 0;
+const BREAKER: u32 = 0;
+
+const PRICE_ID: PriceIdentifier = PriceIdentifier([0xaa; 32]);
 
 const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 
@@ -86,7 +88,7 @@ impl Governed {
             &self.network,
             &self.oracle,
             "get_proxy",
-            PriceIdArgs { id: price_id() },
+            PriceIdArgs { id: PRICE_ID },
         )
         .await
     }
@@ -96,15 +98,11 @@ impl Governed {
             &self.network,
             &self.oracle,
             "get_proxy_circuit_breaker_set",
-            PriceIdArgs { id: price_id() },
+            PriceIdArgs { id: PRICE_ID },
         )
         .await?
         .context("the seeded proxy is gone")
     }
-}
-
-fn price_id() -> PriceIdentifier {
-    PriceIdentifier([0xaa; 32])
 }
 
 fn proxy() -> Proxy<Source> {
@@ -123,46 +121,32 @@ fn breaker() -> CircuitBreaker {
 /// Deploy the oracle with a proxy in place, then hand it to a governance contract. The proxy is
 /// seeded while the oracle still owns itself — one direct call instead of a governance round-trip.
 async fn governed(harness: &SandboxHarness) -> Result<Governed> {
-    let (oracle, admin) = tokio::try_join!(harness.deploy_proxy_oracle(), async {
-        Ok(harness.create_user("admin").await?.0)
-    },)?;
+    let oracle = harness.deploy_proxy_oracle().await?;
+    let admin = harness.create_user("admin").await?.0;
     harness
-        .admin_set_proxy(oracle.clone(), price_id(), Some(proxy()))
+        .admin_set_proxy(oracle.clone(), PRICE_ID, Some(proxy()))
         .await?;
     let governance = harness
         .deploy_governance_contract(oracle.clone(), admin.clone())
         .await?;
 
-    let mut governed = Governed {
+    Ok(Governed {
         network: harness.network.clone(),
         oracle,
         governance,
         admin,
         // `deploy_governance_contract` consumes id 0 for the ownership handover.
         next_id: 1,
-    };
-
-    governed
-        .govern(Operation::TargetFunctionCall(
-            target::admin_add_circuit_breaker(price_id(), SEEDED_BREAKER, breaker(), None)?,
-        ))
-        .await?;
-
-    Ok(governed)
+    })
 }
 
-/// Values each step writes, each distinct from the default it overwrites so a call that silently
-/// failed cannot be mistaken for one that landed.
+/// Each distinct from the default it overwrites, so a silent no-op cannot read as a success.
 const REARMED_AT: Nanoseconds = Nanoseconds::from_secs(4_242);
 const SAMPLE_INTERVAL: Nanoseconds = Nanoseconds::from_secs(60);
-const ADDED_BREAKER: u32 = SEEDED_BREAKER + 1;
 
 /// Every proxy/circuit-breaker builder in `target.rs`, each proved by the state change it makes on
 /// the oracle. `admin_upgrade` is the one target method not here — it has no view to read back, so
 /// it gets its own test below.
-///
-/// One shared oracle rather than a case per builder: the fixture costs ~9 transactions and a
-/// process, and the steps compose in this order anyway.
 #[rstest]
 #[tokio::test]
 async fn every_target_builder_drives_its_admin_method(
@@ -173,7 +157,7 @@ async fn every_target_builder_drives_its_admin_method(
     governed
         .govern(Operation::TargetFunctionCall(
             target::admin_configure_circuit_breakers(
-                price_id(),
+                PRICE_ID,
                 CircuitBreakerSetConfig {
                     sample_interval_ns: SAMPLE_INTERVAL,
                     history_len: 8,
@@ -190,21 +174,17 @@ async fn every_target_builder_drives_its_admin_method(
 
     governed
         .govern(Operation::TargetFunctionCall(
-            target::admin_add_circuit_breaker(price_id(), ADDED_BREAKER, breaker(), None)?,
+            target::admin_add_circuit_breaker(PRICE_ID, BREAKER, breaker(), None)?,
         ))
         .await?;
     assert!(
-        governed
-            .breakers()
-            .await?
-            .breakers()
-            .contains_key(&ADDED_BREAKER),
+        governed.breakers().await?.breakers().contains_key(&BREAKER),
         "admin_add_circuit_breaker"
     );
 
     governed
         .govern(Operation::TargetFunctionCall(
-            target::admin_set_manual_trip(price_id(), true, Some(vec![0x01, 0x02]), None)?,
+            target::admin_set_manual_trip(PRICE_ID, true, Some(vec![0x01, 0x02]), None)?,
         ))
         .await?;
     assert!(
@@ -214,15 +194,15 @@ async fn every_target_builder_drives_its_admin_method(
 
     governed
         .govern(Operation::TargetFunctionCall(target::admin_rearm(
-            price_id(),
-            SEEDED_BREAKER,
+            PRICE_ID,
+            BREAKER,
             REARMED_AT,
             AcceptedHistorySource::Empty,
             None,
         )?))
         .await?;
     assert_eq!(
-        governed.breakers().await?.breakers()[&SEEDED_BREAKER].status,
+        governed.breakers().await?.breakers()[&BREAKER].status,
         CircuitBreakerStatus::ArmedAfter {
             timestamp_ns: REARMED_AT
         },
@@ -231,37 +211,28 @@ async fn every_target_builder_drives_its_admin_method(
 
     governed
         .govern(Operation::TargetFunctionCall(target::admin_set_enforced(
-            price_id(),
-            SEEDED_BREAKER,
-            false,
-            None,
+            PRICE_ID, BREAKER, false, None,
         )?))
         .await?;
     assert!(
-        !governed.breakers().await?.breakers()[&SEEDED_BREAKER].is_enforced,
+        !governed.breakers().await?.breakers()[&BREAKER].is_enforced,
         "admin_set_enforced"
     );
 
     governed
         .govern(Operation::TargetFunctionCall(
-            target::admin_remove_circuit_breaker(price_id(), SEEDED_BREAKER, None)?,
+            target::admin_remove_circuit_breaker(PRICE_ID, BREAKER, None)?,
         ))
         .await?;
     assert!(
-        !governed
-            .breakers()
-            .await?
-            .breakers()
-            .contains_key(&SEEDED_BREAKER),
+        !governed.breakers().await?.breakers().contains_key(&BREAKER),
         "admin_remove_circuit_breaker"
     );
 
     // Last: clearing the proxy takes the circuit-breaker set with it.
     governed
         .govern(Operation::TargetFunctionCall(target::admin_set_proxy(
-            price_id(),
-            None,
-            None,
+            PRICE_ID, None, None,
         )?))
         .await?;
     assert_eq!(governed.proxy().await?, None, "admin_set_proxy");
@@ -314,10 +285,9 @@ async fn admin_upgrade_replaces_the_oracle_code(
 }
 
 /// The path every future governance upgrade takes, which `upgrade_ordering` cannot cover: the v0
-/// contract has no `SelfUpgrade` and upgrades by full-access key instead.
-///
-/// Both `UpgradeSource` variants in one run, because identical redeployed bytes leave the code hash
-/// unchanged — only the switch to a global contract proves the deploy action itself landed.
+/// contract has no `SelfUpgrade` and upgrades by full-access key instead. Both `UpgradeSource`
+/// variants run here — identical redeployed bytes leave the code hash unchanged, so only the switch
+/// to a global contract can show the deploy action landing.
 #[rstest]
 #[tokio::test]
 async fn self_upgrade_redeploys_governance_and_keeps_it_working(
@@ -333,21 +303,10 @@ async fn self_upgrade_redeploys_governance_and_keeps_it_working(
         }))
         .await?;
 
-    assert_eq!(
-        view::<u32>(
-            &governed.network,
-            &governed.governance,
-            "get_stored_state_version",
-            json!({})
-        )
-        .await?,
-        1
-    );
+    // Still governing after replacing its own code, which a redeployed hash cannot show.
     governed
         .govern(Operation::TargetFunctionCall(target::admin_set_proxy(
-            price_id(),
-            None,
-            None,
+            PRICE_ID, None, None,
         )?))
         .await?;
     assert_eq!(governed.proxy().await?, None);

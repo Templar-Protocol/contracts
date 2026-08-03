@@ -238,8 +238,7 @@ mod tests {
         }
     }
 
-    /// The edge this module's doc calls out, and the only way one reaches the queue. Executing it
-    /// reverts: `tests::set_method_policy_above_default_reverts_at_execute_until_the_default_is_raised`.
+    /// The edge this module's doc calls out, and the only way one reaches the queue.
     #[test]
     fn a_pending_ttl_raise_above_the_seeded_default_migrates_over_the_ceiling() {
         testing_env!(VMContextBuilder::new().build());

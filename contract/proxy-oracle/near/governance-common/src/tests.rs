@@ -528,7 +528,7 @@ fn legacy_target_args_encode_bytes_as_base64() {
     assert_eq!(args["migrate_args"], near_sdk::serde_json::json!("vu8="));
 
     let trip = target_call(LegacyOperation::SetManualTrip {
-        id: pid(),
+        id: PRICE_ID,
         is_manually_tripped: true,
         metadata: Some(vec![0x01, 0x02, 0x03]),
     });
@@ -541,10 +541,10 @@ fn legacy_target_args_encode_bytes_as_base64() {
 #[test]
 fn target_builders_apply_gas_default_and_override() {
     // No override → the method default.
-    let default = target::admin_set_proxy(pid(), None, None).unwrap();
+    let default = target::admin_set_proxy(PRICE_ID, None, None).unwrap();
     assert_eq!(default.gas, target::GAS_FOR_TARGET_DEFAULT);
     // An override lands on the built call.
-    let overridden = target::admin_set_proxy(pid(), None, Some(Gas::from_tgas(120))).unwrap();
+    let overridden = target::admin_set_proxy(PRICE_ID, None, Some(Gas::from_tgas(120))).unwrap();
     assert_eq!(overridden.gas, Gas::from_tgas(120));
     // `admin_upgrade` keeps its own (280 Tgas) default.
     let upgrade = target::admin_upgrade(
@@ -556,9 +556,7 @@ fn target_builders_apply_gas_default_and_override() {
     assert_eq!(upgrade.gas, GAS_FOR_ADMIN_UPGRADE);
 }
 
-fn pid() -> PriceIdentifier {
-    PriceIdentifier([0xaa; 32])
-}
+const PRICE_ID: PriceIdentifier = PriceIdentifier([0xaa; 32]);
 
 fn target_call(legacy: LegacyOperation) -> FunctionCall {
     match Operation::try_from(legacy).unwrap() {
@@ -569,12 +567,6 @@ fn target_call(legacy: LegacyOperation) -> FunctionCall {
 
 fn json_args(call: &FunctionCall) -> near_sdk::serde_json::Value {
     near_sdk::serde_json::from_slice(&call.args.0).unwrap()
-}
-
-fn breaker() -> CircuitBreaker {
-    CircuitBreaker::StepwiseChange(StepwiseChange {
-        max_relative_change: Decimal::ONE_HALF,
-    })
 }
 
 const EDIT_TTL_SECS: u64 = 7;
@@ -591,33 +583,37 @@ fn method_edit(method: &str, role: Role) -> ReflexiveOperation {
 /// produce are proved against the real oracle in `tests/governed_operations.rs`. Exhaustive over
 /// [`LegacyOperation`], which describes the released `0.1.0` wire and can never gain a variant.
 #[rstest]
-#[case::set_proxy(LegacyOperation::SetProxy { id: pid(), proxy: None }, "admin_set_proxy", target::GAS_FOR_TARGET_DEFAULT)]
+#[case::set_proxy(LegacyOperation::SetProxy { id: PRICE_ID, proxy: None }, "admin_set_proxy", target::GAS_FOR_TARGET_DEFAULT)]
 #[case::configure_circuit_breakers(
     LegacyOperation::ConfigureCircuitBreakers {
-        id: pid(),
+        id: PRICE_ID,
         config: CircuitBreakerSetConfig { sample_interval_ns: Nanoseconds::from_secs(60), history_len: 8 },
     },
     "admin_configure_circuit_breakers",
     target::GAS_FOR_TARGET_DEFAULT
 )]
 #[case::add_circuit_breaker(
-    LegacyOperation::AddCircuitBreaker { id: pid(), breaker_id: 1, breaker: breaker() },
+    LegacyOperation::AddCircuitBreaker {
+        id: PRICE_ID,
+        breaker_id: 1,
+        breaker: CircuitBreaker::StepwiseChange(StepwiseChange { max_relative_change: Decimal::ONE_HALF }),
+    },
     "admin_add_circuit_breaker",
     target::GAS_FOR_TARGET_DEFAULT
 )]
 #[case::remove_circuit_breaker(
-    LegacyOperation::RemoveCircuitBreaker { id: pid(), breaker_id: 1 },
+    LegacyOperation::RemoveCircuitBreaker { id: PRICE_ID, breaker_id: 1 },
     "admin_remove_circuit_breaker",
     target::GAS_FOR_TARGET_DEFAULT
 )]
 #[case::set_manual_trip(
-    LegacyOperation::SetManualTrip { id: pid(), is_manually_tripped: true, metadata: None },
+    LegacyOperation::SetManualTrip { id: PRICE_ID, is_manually_tripped: true, metadata: None },
     "admin_set_manual_trip",
     target::GAS_FOR_TARGET_DEFAULT
 )]
 #[case::rearm(
     LegacyOperation::Rearm {
-        id: pid(),
+        id: PRICE_ID,
         breaker_id: 1,
         armed_after_ns: Nanoseconds::from_secs(5),
         accepted_history_source: AcceptedHistorySource::Empty,
@@ -626,7 +622,7 @@ fn method_edit(method: &str, role: Role) -> ReflexiveOperation {
     target::GAS_FOR_TARGET_DEFAULT
 )]
 #[case::set_enforced(
-    LegacyOperation::SetEnforced { id: pid(), breaker_id: 1, is_enforced: false },
+    LegacyOperation::SetEnforced { id: PRICE_ID, breaker_id: 1, is_enforced: false },
     "admin_set_enforced",
     target::GAS_FOR_TARGET_DEFAULT
 )]

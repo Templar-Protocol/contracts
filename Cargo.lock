@@ -13599,7 +13599,6 @@ dependencies = [
  "near-token",
  "rstest",
  "serde_json",
- "sha2 0.10.9",
  "templar-common",
  "templar-gateway-testing",
  "templar-proxy-oracle-governance-kernel",

@@ -8,7 +8,6 @@ use near_api::types::AccountId;
 use near_api::{Account, Contract, NetworkConfig};
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
-use sha2::{Digest, Sha256};
 
 pub use templar_gateway_testing::test_signer as signer;
 use templar_gateway_testing::TEST_FINALITY_POLICY;
@@ -35,7 +34,7 @@ pub async fn deploy_global_contract(
     account_id: &AccountId,
     code: Vec<u8>,
 ) -> Result<Base58CryptoHash> {
-    let hash: [u8; 32] = Sha256::digest(&code).into();
+    let hash = near_api::types::CryptoHash::hash(&code).0;
     Contract::deploy_global_contract_code(code)
         .as_hash()
         .with_signer(account_id.clone(), signer())
@@ -64,7 +63,10 @@ pub async fn deploy_code(
 }
 
 /// Submit a mutating call to `contract_id` signed as `signer_id` (all harness accounts share the
-/// test key), attaching `deposit`. Gas is always the 1000 Tgas maximum; the surplus is refunded.
+/// test key), attaching `deposit`.
+///
+/// 300 Tgas, not the protocol's 1000, because that is what the gateway attaches
+/// (`proxy_oracle_governance_impl`) and so what an `admin_upgrade` forwarding 280 Tgas has to fit in.
 pub async fn call(
     network: &NetworkConfig,
     contract_id: &AccountId,
@@ -77,7 +79,7 @@ pub async fn call(
         .call_function(method, args)
         .transaction()
         .deposit(deposit)
-        .gas(near_sdk::Gas::from_tgas(1000))
+        .gas(near_sdk::Gas::from_tgas(300))
         .with_signer(signer_id.clone(), signer())
         .wait_until(TEST_FINALITY_POLICY.transaction_status())
         .send_to(network)
