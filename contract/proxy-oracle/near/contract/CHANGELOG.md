@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(proxy-oracle)* `new` accepts an optional owner id (ENG-440) ([#504](https://github.com/Templar-Protocol/contracts/pull/504))
 - *(gateway)* configure transaction finality policy (ENG-468) ([#517](https://github.com/Templar-Protocol/contracts/pull/517))
 - *(proxy-oracle)* standardize contract self-upgrade (ENG-481) ([#519](https://github.com/Templar-Protocol/contracts/pull/519))
-- *(release)* [**breaking**] automate per-crate releases and version contract artifacts (ENG-522) ([#528](https://github.com/Templar-Protocol/contracts/pull/528))
+- *(release)* automate per-crate releases and version contract artifacts (ENG-522) ([#528](https://github.com/Templar-Protocol/contracts/pull/528))
 
 ### Changed
 
