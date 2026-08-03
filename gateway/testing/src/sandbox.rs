@@ -24,8 +24,7 @@ use templar_common::{
     vault::VaultConfiguration,
     Nanoseconds,
 };
-use templar_gateway_core::NearClient;
-use templar_gateway_runtime::ManagedSigner;
+use templar_gateway_core::{NearClient, PooledSigner};
 use templar_gateway_types::ManagedAccountId;
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
@@ -75,7 +74,7 @@ pub struct SandboxHarness {
     /// a test (users, contracts). Used both to seed the gateway service under
     /// test (see [`Self::gateway_signers`]) and to drive the direct
     /// [`Client`](templar_gateway_client::Client).
-    signers: Mutex<HashMap<ManagedAccountId, ManagedSigner>>,
+    signers: Mutex<HashMap<ManagedAccountId, PooledSigner>>,
     /// Monotonic counter for minting unique account ids within this harness.
     account_seq: AtomicU64,
 }
@@ -254,11 +253,7 @@ impl SandboxHarness {
     /// optimistic test transactions.
     fn register_account(&self, account_id: AccountId) -> (AccountId, Arc<Signer>) {
         let signer = test_signer();
-        let managed = ManagedSigner {
-            signer: signer.clone(),
-            key_count: 1,
-        };
-        self.register_signer(ManagedAccountId(account_id.clone()), managed);
+        self.register_signer(ManagedAccountId(account_id.clone()), test_pooled_signer());
         (account_id, signer)
     }
 
@@ -278,21 +273,21 @@ impl SandboxHarness {
     }
 
     /// Snapshot of the gateway operator signers (and any on-demand accounts) as
-    /// the [`ManagedSigner`] map the runtime [`GatewayService`] expects.
+    /// the [`PooledSigner`] map the runtime [`GatewayService`] expects.
     ///
     /// [`GatewayService`]: templar_gateway_runtime
     #[must_use]
-    pub fn gateway_signers(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+    pub fn gateway_signers(&self) -> HashMap<ManagedAccountId, PooledSigner> {
         self.signers.lock().expect("signers mutex poisoned").clone()
     }
 
     /// Snapshot of every (account, signer) the harness can sign as.
-    pub(crate) fn signers_snapshot(&self) -> HashMap<ManagedAccountId, ManagedSigner> {
+    pub(crate) fn signers_snapshot(&self) -> HashMap<ManagedAccountId, PooledSigner> {
         self.gateway_signers()
     }
 
     /// Register a signer for an on-demand account.
-    pub(crate) fn register_signer(&self, account_id: ManagedAccountId, signer: ManagedSigner) {
+    pub(crate) fn register_signer(&self, account_id: ManagedAccountId, signer: PooledSigner) {
         self.signers
             .lock()
             .expect("signers mutex poisoned")
@@ -1291,4 +1286,17 @@ pub fn test_signer() -> Arc<Signer> {
     });
 
     Arc::clone(&SIGNER)
+}
+
+/// [`test_signer`] as a single gateway lane. Keeps the key paired with the
+/// signer that holds it, and shares that signer's nonce cache with direct
+/// near-api use.
+#[must_use]
+pub fn test_pooled_signer() -> PooledSigner {
+    PooledSigner::from_signer(
+        test_signer(),
+        test_secret_key()
+            .expect("fixed test secret key is valid")
+            .public_key(),
+    )
 }

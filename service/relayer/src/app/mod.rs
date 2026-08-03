@@ -14,7 +14,7 @@ use templar_common::{
 };
 use templar_gateway_client::{collect_paginated, Client as GatewayClient, NetworkConfigBuilder};
 use templar_gateway_core::{
-    FinalityPolicy, GatewayContext, GatewayError, GatewayResult, PlanWrite,
+    FinalityPolicy, GatewayContext, GatewayError, GatewayResult, PlanWrite, PooledSigner,
 };
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::{chain, contract, market, registry, storage};
@@ -84,7 +84,7 @@ impl App {
         args: args::Configuration,
         kill: watch::Sender<()>,
         finality_policy: FinalityPolicy,
-        signers: impl IntoIterator<Item = (near_api::types::AccountId, Arc<near_api::Signer>)>,
+        signers: impl IntoIterator<Item = (near_api::types::AccountId, PooledSigner)>,
     ) -> anyhow::Result<Self> {
         // Build through `NetworkConfigBuilder` so a FastNear-style `?apiKey=…`
         // embedded in `RPC_URL` is routed to the endpoint's auth header instead of
@@ -97,21 +97,19 @@ impl App {
         let gateway_store = templar_gateway_store::PostgresStore::new(&args.database_url)?;
         gateway_store.migrate().await?;
 
-        // The relay account signs with a rotating multi-key pool; the UA account
-        // is registered for the universal-account creation path.
+        // The relay account signs across one nonce lane per configured key; the
+        // UA account is registered for the universal-account creation path.
         let mut builder = GatewayClient::builder(network)
             .finality_policy(finality_policy)
             .store(Arc::new(gateway_store));
         let signers: HashMap<_, _> = signers.into_iter().collect();
         if !signers.contains_key(&args.relay.account_id) && !args.relay.secret_key.is_empty() {
             builder = builder
-                .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())
-                .await?;
+                .secret_keys(args.relay.account_id.clone(), args.relay.secret_key.clone())?;
         }
         if !signers.contains_key(&args.ua.account_id) && !args.ua.secret_key.is_empty() {
-            builder = builder
-                .secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())
-                .await?;
+            builder =
+                builder.secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())?;
         }
         for (account_id, signer) in signers {
             builder = builder.with_signer(account_id, signer);

@@ -17,7 +17,6 @@ pub mod ref_finance;
 pub mod registry;
 pub mod storage;
 pub mod token;
-pub mod tx;
 pub mod universal_account;
 pub mod vault;
 
@@ -45,7 +44,6 @@ use storage::StorageClient;
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_types::{ManagedAccountId, NearGas, NearToken};
 use token::TokenClient;
-use tx::TxClient;
 use universal_account::UniversalAccountClient;
 use vault::VaultClient;
 
@@ -259,18 +257,6 @@ impl NearClient {
         UniversalAccountClient {
             inner: self,
             contract_id,
-        }
-    }
-
-    pub fn tx(
-        &self,
-        signer_account_id: ManagedAccountId,
-        signer: Arc<near_api::Signer>,
-    ) -> TxClient<'_> {
-        TxClient {
-            inner: self,
-            signer_account_id,
-            signer,
         }
     }
 }

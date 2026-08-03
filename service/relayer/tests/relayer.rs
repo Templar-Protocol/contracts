@@ -413,8 +413,14 @@ async fn init_relayer_app(
         watch::Sender::default(),
         templar_gateway_testing::TEST_FINALITY_POLICY,
         [
-            (relay_user.clone(), templar_gateway_testing::test_signer()),
-            (ua_account.clone(), templar_gateway_testing::test_signer()),
+            (
+                relay_user.clone(),
+                templar_gateway_testing::test_pooled_signer(),
+            ),
+            (
+                ua_account.clone(),
+                templar_gateway_testing::test_pooled_signer(),
+            ),
         ],
     )
     .await

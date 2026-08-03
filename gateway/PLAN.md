@@ -47,6 +47,7 @@ Responsibilities:
 - NEAR client/query surface used by planning
 - shared contract/query helpers used by dispatch and workflow
 - shared traits such as the oracle payload source abstraction
+- signer ownership and per-access-key write execution lanes
 
 Requirements:
 
@@ -55,6 +56,18 @@ Requirements:
 - no actor lifecycle management
 - no durable store implementation
 - keep gateway planning and workflow semantics together unless `PlanWrite` stops returning workflow-native types
+
+#### Write execution lanes
+
+A NEAR nonce is per access key, not per account, and the network rejects any transaction whose nonce is not above the key's current one. So each access key is a serialized lane: `PooledSigner` holds one single-key `near_api::Signer` per key, and the driver leases a lane across signing and broadcast. Writes on different keys stay fully parallel, which is what makes access-key pooling a throughput multiplier rather than a correctness mechanism.
+
+Three consequences worth keeping in mind:
+
+- The lanes are process-local, so this assumes no other process holds the same `(account_id, private_key)` pair. Making that safe across processes means moving the lock to shared state (e.g. a Postgres advisory lock keyed on the access key), not changing the lease.
+- A step that is already `Prepared` carries a nonce bound to the key that signed it, so resubmission must take *that* lane rather than the next idle one.
+- The driver holds a lane until the step's on-chain outcome is recorded, not merely until broadcast. That is wider than the nonce invariant requires and caps a key at one write per finality round-trip; narrowing it needs a submit path that returns before execution, which `FinalityPolicy` deliberately does not expose today.
+
+Prior art: `client/vault/src/key_pool/` solves the same problem one level further along (health tracking, load-aware selection) on a different stack — `near_crypto::InMemorySigner` rather than `near_api::Signer`, in a `cdylib` crate — so the two cannot share code today. Port from it rather than writing a third implementation if this pool grows.
 
 Internal structure direction:
 
@@ -105,8 +118,6 @@ This crate owns runtime-hosted execution.
 
 Responsibilities:
 
-- signer ownership
-- write execution lanes
 - actor/message-passing execution scaffolding
 - transaction submission orchestration
 - runtime startup and lifecycle

@@ -11,10 +11,11 @@ use templar_gateway_types::{
     IdempotencyKey, MethodSpec, OperationId,
 };
 
+use crate::operation::SigningTarget;
 use crate::{
     CreateOperationResult, CurrentStep, CurrentStepRef, GatewayError, GatewayResult,
     HasIdempotencyKey, HasSignerAccountId, OperationPlan, PlanWrite, SharedExecuteOperation,
-    SharedOperationStore, SharedSignTransaction, StoredOperation,
+    SharedOperationStore, SharedSignTransaction, SigningKeyLease, StoredOperation,
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
@@ -379,10 +380,14 @@ impl OperationDriver {
             .await?
             .unwrap_or(operation);
 
+        let Some(lease) = self.lease_step_signing_key(&operation).await? else {
+            return Ok(operation);
+        };
+
         if let Some(pending) = operation.begin_next_preparation(self.store.clone()) {
             let prepared = self
                 .transaction_signer
-                .sign_transaction(pending.transaction().clone())
+                .sign_transaction(&lease, pending.transaction().clone())
                 .await?;
             pending.finish(prepared).await?;
         }
@@ -400,6 +405,39 @@ impl OperationDriver {
         Ok(operation)
     }
 
+    /// Lease the access key this step needs, or `None` when it needs none. NEAR
+    /// rejects any nonce not above the access key's current one, so a key's
+    /// transactions must reach the network in allocation order — the caller
+    /// holds the lease from signing until the step has been broadcast.
+    ///
+    /// Callers in fact hold it until the step's on-chain outcome is recorded,
+    /// which is wider than the invariant needs and caps a key at one write per
+    /// finality round-trip. Narrowing that to the broadcast itself needs a
+    /// submit path that returns before execution (see `FinalityPolicy`).
+    async fn lease_step_signing_key(
+        &self,
+        operation: &StoredOperation,
+    ) -> GatewayResult<Option<SigningKeyLease>> {
+        let lease = match operation.signing_target() {
+            Some(SigningTarget::Bound {
+                signer_account_id,
+                public_key,
+            }) => {
+                self.transaction_signer
+                    .lease_signing_key(signer_account_id, &public_key)
+                    .await?
+            }
+            Some(SigningTarget::Next { signer_account_id }) => {
+                self.transaction_signer
+                    .lease_next_signing_key(signer_account_id)
+                    .await?
+            }
+            None => return Ok(None),
+        };
+
+        Ok(Some(lease))
+    }
+
     async fn execute_next_step(
         &self,
         mut operation: StoredOperation,
@@ -408,10 +446,14 @@ impl OperationDriver {
             return Ok(operation);
         }
 
+        let Some(lease) = self.lease_step_signing_key(&operation).await? else {
+            return Ok(operation);
+        };
+
         if let Some(pending) = operation.begin_next_preparation(self.store.clone()) {
             let prepared = self
                 .transaction_signer
-                .sign_transaction(pending.transaction().clone())
+                .sign_transaction(&lease, pending.transaction().clone())
                 .await?;
             pending.finish(prepared).await?;
         }

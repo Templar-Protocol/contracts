@@ -74,8 +74,8 @@ impl SandboxHarness {
     pub fn client(&self) -> Result<Client> {
         let mut builder =
             Client::builder(self.network.clone()).finality_policy(TEST_FINALITY_POLICY);
-        for (account_id, managed) in self.signers_snapshot() {
-            builder = builder.with_signer(account_id, managed.signer.clone());
+        for (account_id, pooled) in self.signers_snapshot() {
+            builder = builder.with_signer(account_id, pooled.clone());
         }
         builder
             .build()

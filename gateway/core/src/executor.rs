@@ -18,7 +18,7 @@ use near_api::{
             PrepopulateTransaction, SignedTransaction,
         },
     },
-    SecretKey,
+    PublicKey, SecretKey,
 };
 use std::collections::HashMap;
 
@@ -26,7 +26,7 @@ use templar_gateway_types::{operation::ExecutionOutcome, CryptoHash, ManagedAcco
 
 use crate::{
     read::is_unknown_transaction, FinalityPolicy, GatewayError, GatewayResult, PlannedTransaction,
-    PreparedTransactionResult,
+    PooledSigner, PreparedTransactionResult, SigningKeyLease,
 };
 
 pub type SharedExecuteOperation = Arc<dyn ExecuteOperation>;
@@ -34,8 +34,24 @@ pub type SharedSignTransaction = Arc<dyn SignTransaction>;
 
 #[async_trait]
 pub trait SignTransaction: Send + Sync {
+    /// Lease the account's next idle access key.
+    async fn lease_next_signing_key(
+        &self,
+        signer_account_id: &ManagedAccountId,
+    ) -> GatewayResult<SigningKeyLease>;
+
+    /// Lease the specific key a transaction was already signed with.
+    async fn lease_signing_key(
+        &self,
+        signer_account_id: &ManagedAccountId,
+        public_key: &PublicKey,
+    ) -> GatewayResult<SigningKeyLease>;
+
+    /// Allocates the nonce, so the caller must hold `lease` at least until the
+    /// signed transaction has been broadcast.
     async fn sign_transaction(
         &self,
+        lease: &SigningKeyLease,
         transaction: PlannedTransaction,
     ) -> GatewayResult<PreparedTransactionResult>;
 }
@@ -82,24 +98,21 @@ pub trait ExecuteOperation: Send + Sync {
 #[derive(Clone)]
 pub struct NearTransactionSigner {
     network: NetworkConfig,
-    signers: HashMap<ManagedAccountId, Arc<near_api::Signer>>,
+    /// Shared so clones lease against the same key slots.
+    signers: Arc<HashMap<ManagedAccountId, PooledSigner>>,
 }
 
 impl NearTransactionSigner {
-    pub fn new(
-        network: NetworkConfig,
-        signers: HashMap<ManagedAccountId, Arc<near_api::Signer>>,
-    ) -> Self {
-        Self { network, signers }
+    pub fn new(network: NetworkConfig, signers: HashMap<ManagedAccountId, PooledSigner>) -> Self {
+        Self {
+            network,
+            signers: Arc::new(signers),
+        }
     }
 
-    fn signer_for(
-        &self,
-        signer_account_id: &ManagedAccountId,
-    ) -> GatewayResult<Arc<near_api::Signer>> {
+    fn signer_for(&self, signer_account_id: &ManagedAccountId) -> GatewayResult<&PooledSigner> {
         self.signers
             .get(signer_account_id)
-            .cloned()
             .ok_or_else(|| GatewayError::UnsupportedSignerAccount(signer_account_id.0.to_string()))
     }
 }
@@ -144,18 +157,33 @@ impl near_api::advanced::Transactionable for PrepopulatedTransactionCarrier {
 
 #[async_trait]
 impl SignTransaction for NearTransactionSigner {
+    async fn lease_next_signing_key(
+        &self,
+        signer_account_id: &ManagedAccountId,
+    ) -> GatewayResult<SigningKeyLease> {
+        Ok(self.signer_for(signer_account_id)?.lease_next().await)
+    }
+
+    async fn lease_signing_key(
+        &self,
+        signer_account_id: &ManagedAccountId,
+        public_key: &PublicKey,
+    ) -> GatewayResult<SigningKeyLease> {
+        self.signer_for(signer_account_id)?.lease(public_key).await
+    }
+
     async fn sign_transaction(
         &self,
+        lease: &SigningKeyLease,
         transaction: PlannedTransaction,
     ) -> GatewayResult<PreparedTransactionResult> {
-        let signer = self.signer_for(&transaction.signer_account_id)?;
         let presigned = near_api::Transaction::use_transaction(
             PrepopulateTransaction {
                 signer_id: transaction.signer_account_id.0.clone(),
                 receiver_id: transaction.receiver_id.clone(),
                 actions: transaction.actions.clone(),
             },
-            signer,
+            lease.signer(),
         )
         .presign_with(&self.network)
         .await

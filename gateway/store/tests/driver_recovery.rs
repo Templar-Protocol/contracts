@@ -6,7 +6,7 @@
 //! step.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
@@ -15,16 +15,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, TimeDelta, Utc};
+use near_api::types::crypto::secret_key::ED25519SecretKey;
 use near_api::types::transaction::{
     actions::{Action, TransferAction},
     SignedTransaction, Transaction, TransactionV0,
 };
 use near_api::types::CryptoHash as NearCryptoHash;
+use near_api::{PublicKey, SecretKey};
 use rstest::rstest;
 use templar_gateway_core::{
     CompletedStep, CreateOperationResult, CurrentStep, ExecuteOperation, GatewayError,
     GatewayResult, OperationDriver, OperationPlan, OperationStore, PlannedTransaction,
-    PreparedTransactionResult, SignTransaction, StepOutcome, StoredOperation, SucceededStep,
+    PooledSigner, PreparedTransactionResult, SignTransaction, SigningKeyLease, StepOutcome,
+    StoredOperation, SucceededStep,
 };
 use templar_gateway_store::MemoryStore;
 use templar_gateway_types::{
@@ -103,13 +106,22 @@ fn is_submitted(step: Option<&CurrentStep>) -> bool {
     matches!(step, Some(CurrentStep::Submitted { .. }))
 }
 
+fn pool_secret_key(index: u8) -> SecretKey {
+    SecretKey::ED25519(ED25519SecretKey::from_secret_key([index + 1; 32]))
+}
+
+fn pool_public_key(index: u8) -> PublicKey {
+    pool_secret_key(index).public_key()
+}
+
 // A well-formed (not cryptographically valid) signed transaction for the fake
-// signer; only stored and handed to the fake executor, never broadcast.
-fn dummy_signed_transaction() -> SignedTransaction {
+// signer; only stored and handed to the fake executor, never broadcast. The key
+// and nonce are the observable the concurrency tests assert on.
+fn dummy_signed_transaction(public_key: PublicKey, nonce: u64) -> SignedTransaction {
     let transaction = Transaction::V0(TransactionV0 {
         signer_id: "signer.near".parse().unwrap(),
-        public_key: "ed25519:11111111111111111111111111111111".parse().unwrap(),
-        nonce: 1,
+        public_key,
+        nonce,
         receiver_id: "receiver.near".parse().unwrap(),
         block_hash: NearCryptoHash::default(),
         actions: vec![],
@@ -120,18 +132,62 @@ fn dummy_signed_transaction() -> SignedTransaction {
     SignedTransaction::new(signature, transaction)
 }
 
-struct FakeSigner;
+/// Leases against a real [`PooledSigner`], so tests exercise the production
+/// per-key serialization; only the signed transaction is fabricated. Nonces are
+/// allocated per key, mirroring near-api's cache.
+struct FakeSigner {
+    pool: PooledSigner,
+    nonces: Mutex<HashMap<PublicKey, u64>>,
+}
+
+impl FakeSigner {
+    fn with_keys(count: u8) -> Self {
+        Self {
+            pool: PooledSigner::new((0..count).map(pool_secret_key)).unwrap(),
+            nonces: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for FakeSigner {
+    fn default() -> Self {
+        Self::with_keys(1)
+    }
+}
 
 #[async_trait]
 impl SignTransaction for FakeSigner {
+    async fn lease_next_signing_key(
+        &self,
+        _signer_account_id: &ManagedAccountId,
+    ) -> GatewayResult<SigningKeyLease> {
+        Ok(self.pool.lease_next().await)
+    }
+
+    async fn lease_signing_key(
+        &self,
+        _signer_account_id: &ManagedAccountId,
+        public_key: &PublicKey,
+    ) -> GatewayResult<SigningKeyLease> {
+        self.pool.lease(public_key).await
+    }
+
     async fn sign_transaction(
         &self,
+        lease: &SigningKeyLease,
         transaction: PlannedTransaction,
     ) -> GatewayResult<PreparedTransactionResult> {
+        let public_key = lease.public_key();
+        let nonce = {
+            let mut nonces = self.nonces.lock().unwrap();
+            let next = nonces.entry(public_key).or_default();
+            *next += 1;
+            *next
+        };
         Ok(PreparedTransactionResult {
             transaction,
             tx_hash: CryptoHash(NearCryptoHash::default()),
-            signed_transaction: dummy_signed_transaction(),
+            signed_transaction: dummy_signed_transaction(public_key, nonce),
         })
     }
 }
@@ -206,6 +262,93 @@ impl ExecuteOperation for ProbeExecutor {
     }
 }
 
+#[derive(Default)]
+struct BroadcastState {
+    /// `(public_key, nonce)` in the order the executor received them.
+    order: Vec<(PublicKey, u64)>,
+    active: HashMap<PublicKey, usize>,
+    max_active_per_key: usize,
+    active_total: usize,
+    max_active_total: usize,
+}
+
+/// Records what actually reached the network, and how much of it overlapped.
+#[derive(Default)]
+struct BroadcastLog {
+    state: Mutex<BroadcastState>,
+}
+
+impl BroadcastLog {
+    fn enter(&self, public_key: PublicKey, nonce: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.order.push((public_key, nonce));
+
+        let per_key = state.active.entry(public_key).or_default();
+        *per_key += 1;
+        let per_key = *per_key;
+        state.max_active_per_key = state.max_active_per_key.max(per_key);
+
+        state.active_total += 1;
+        state.max_active_total = state.max_active_total.max(state.active_total);
+    }
+
+    fn exit(&self, public_key: PublicKey) {
+        let mut state = self.state.lock().unwrap();
+        *state.active.entry(public_key).or_default() -= 1;
+        state.active_total -= 1;
+    }
+
+    fn nonces_for(&self, public_key: PublicKey) -> Vec<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .order
+            .iter()
+            .filter(|(key, _)| *key == public_key)
+            .map(|(_, nonce)| *nonce)
+            .collect()
+    }
+
+    fn broadcasts(&self) -> usize {
+        self.state.lock().unwrap().order.len()
+    }
+
+    fn max_active_per_key(&self) -> usize {
+        self.state.lock().unwrap().max_active_per_key
+    }
+
+    fn max_active_total(&self) -> usize {
+        self.state.lock().unwrap().max_active_total
+    }
+}
+
+struct BroadcastExecutor {
+    log: Arc<BroadcastLog>,
+    broadcast_delay: Duration,
+}
+
+#[async_trait]
+impl ExecuteOperation for BroadcastExecutor {
+    async fn submit_transaction(
+        &self,
+        signed: SignedTransaction,
+    ) -> GatewayResult<Option<StepOutcome>> {
+        let public_key = signed.transaction.public_key();
+        self.log.enter(public_key, signed.transaction.nonce());
+        sleep(self.broadcast_delay).await;
+        self.log.exit(public_key);
+        Ok(Some(step_outcome(true)))
+    }
+
+    async fn query_transaction(
+        &self,
+        _signer: &ManagedAccountId,
+        _tx_hash: CryptoHash,
+    ) -> GatewayResult<StepOutcome> {
+        panic!("unexpected query_transaction")
+    }
+}
+
 impl FakeExecutor {
     fn new(
         submits: Vec<GatewayResult<Option<StepOutcome>>>,
@@ -245,14 +388,14 @@ impl ExecuteOperation for FakeExecutor {
 }
 
 fn driver(store: Arc<MemoryStore>, executor: FakeExecutor) -> OperationDriver {
-    OperationDriver::new(store, Arc::new(FakeSigner), Arc::new(executor))
+    OperationDriver::new(store, Arc::new(FakeSigner::default()), Arc::new(executor))
 }
 
 fn driver_with_executor(
     store: Arc<MemoryStore>,
     executor: Arc<dyn ExecuteOperation>,
 ) -> OperationDriver {
-    OperationDriver::new(store, Arc::new(FakeSigner), executor)
+    OperationDriver::new(store, Arc::new(FakeSigner::default()), executor)
 }
 
 fn stored(
@@ -689,4 +832,143 @@ async fn non_fallible_revert_fails_operation_and_stops() {
     ));
     assert_eq!(result.remaining_steps.len(), 1, "step 1 must not have run");
     assert!(result.completed_steps.is_empty());
+}
+
+// ---- per-key nonce serialization (ENG-530) ----
+
+fn broadcast_driver(
+    store: Arc<MemoryStore>,
+    log: Arc<BroadcastLog>,
+    keys: u8,
+    broadcast_delay: Duration,
+) -> OperationDriver {
+    OperationDriver::new(
+        store,
+        Arc::new(FakeSigner::with_keys(keys)),
+        Arc::new(BroadcastExecutor {
+            log,
+            broadcast_delay,
+        }),
+    )
+}
+
+/// A distinct single-step operation, so concurrent writers contend only on the
+/// signing key and never on the per-operation lock.
+async fn seed_operation(store: &Arc<MemoryStore>, index: usize) -> StoredOperation {
+    let mut op = stored(true, None, vec![sample_transaction()], vec![]);
+    op.id = OperationId(format!("op-{index}"));
+    store.save_operation(op.clone()).await.unwrap();
+    op
+}
+
+async fn drive_concurrently(
+    store: &Arc<MemoryStore>,
+    driver: &OperationDriver,
+    writers: usize,
+) -> Vec<StoredOperation> {
+    let mut handles = Vec::with_capacity(writers);
+    for index in 0..writers {
+        let op = seed_operation(store, index).await;
+        let driver = driver.clone();
+        handles.push(tokio::spawn(async move {
+            driver.execute_remaining_steps(op).await
+        }));
+    }
+
+    let mut results = Vec::with_capacity(writers);
+    for handle in handles {
+        results.push(handle.await.unwrap().unwrap());
+    }
+    results
+}
+
+fn assert_ascending(nonces: &[u64]) {
+    assert!(
+        nonces.windows(2).all(|pair| pair[0] < pair[1]),
+        "broadcast out of nonce order: {nonces:?}"
+    );
+}
+
+/// NEAR rejects any transaction whose nonce is not above the access key's
+/// current one, so concurrent writers sharing a key must broadcast in nonce
+/// order. Before per-key leasing they raced and a fraction were rejected.
+#[tokio::test]
+async fn concurrent_writers_on_one_key_broadcast_in_nonce_order() {
+    const WRITERS: usize = 8;
+
+    let store = Arc::new(MemoryStore::new());
+    let log = Arc::new(BroadcastLog::default());
+    let driver = broadcast_driver(store.clone(), log.clone(), 1, Duration::from_millis(20));
+
+    for operation in drive_concurrently(&store, &driver, WRITERS).await {
+        assert_eq!(operation.status(), OperationStatus::Succeeded);
+    }
+
+    assert_eq!(log.broadcasts(), WRITERS);
+    assert_eq!(
+        log.max_active_per_key(),
+        1,
+        "one access key must never broadcast concurrently"
+    );
+    assert_ascending(&log.nonces_for(pool_public_key(0)));
+}
+
+/// Pooling stays a throughput multiplier: separate keys run in parallel, each
+/// still in nonce order.
+#[tokio::test]
+async fn pooled_keys_broadcast_in_parallel() {
+    const KEYS: u8 = 2;
+    const WRITERS: usize = 8;
+
+    let store = Arc::new(MemoryStore::new());
+    let log = Arc::new(BroadcastLog::default());
+    let driver = broadcast_driver(store.clone(), log.clone(), KEYS, Duration::from_millis(50));
+
+    for operation in drive_concurrently(&store, &driver, WRITERS).await {
+        assert_eq!(operation.status(), OperationStatus::Succeeded);
+    }
+
+    assert_eq!(log.broadcasts(), WRITERS);
+    assert_eq!(log.max_active_per_key(), 1);
+    assert_eq!(
+        log.max_active_total(),
+        usize::from(KEYS),
+        "pooled keys must broadcast in parallel"
+    );
+    for index in 0..KEYS {
+        assert_ascending(&log.nonces_for(pool_public_key(index)));
+    }
+}
+
+/// A step signed in an earlier pass carries a nonce bound to the key that signed
+/// it, so resubmission takes *that* key. Leasing a fresh one would let a new
+/// allocation — reading an on-chain nonce this step has not yet advanced — pick
+/// the same nonce.
+#[tokio::test]
+async fn prepared_step_resubmits_under_the_key_that_signed_it() {
+    let store = Arc::new(MemoryStore::new());
+    let log = Arc::new(BroadcastLog::default());
+    let driver = broadcast_driver(store.clone(), log.clone(), 2, Duration::ZERO);
+
+    let signing_key = pool_public_key(1);
+    let op = stored(
+        true,
+        Some(CurrentStep::Prepared {
+            transaction: sample_transaction(),
+            signed_transaction: Box::new(dummy_signed_transaction(signing_key, 42)),
+            tx_hash: CryptoHash(NearCryptoHash::default()),
+        }),
+        vec![],
+        vec![],
+    );
+    store.save_operation(op.clone()).await.unwrap();
+
+    let result = driver.execute_remaining_steps(op).await.unwrap();
+
+    assert_eq!(result.status(), OperationStatus::Succeeded);
+    assert_eq!(log.nonces_for(signing_key), vec![42]);
+    assert!(
+        log.nonces_for(pool_public_key(0)).is_empty(),
+        "must not resign the step on a different key"
+    );
 }

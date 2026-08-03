@@ -9,7 +9,9 @@ pub mod wasm;
 
 pub use controller::TestController;
 pub use ops::{failed_receipts, DeployedMarket, DeployedVault};
-pub use sandbox::{sandbox_config, test_secret_key, test_signer, SandboxHarness};
+pub use sandbox::{
+    sandbox_config, test_pooled_signer, test_secret_key, test_signer, SandboxHarness,
+};
 pub use sandbox_ext::node_is_serving;
 /// Re-exported so tests can name a historical release for [`wasm::released`]
 /// without taking their own dependency on the artifacts catalog.
