@@ -8,25 +8,18 @@ use rstest::rstest;
 use serde_json::Value;
 use templar_common::market::MarketConfiguration;
 
+use crate::spec::plan::testing::alpha_market;
 use crate::spec::{
     check::{self, OnChainDecimals, Status},
     extends,
     oracle::SourceSpec,
-    MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
+    BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
 fn fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures/spec")
         .join(relative)
-}
-
-fn alpha_market() -> MarketSpec {
-    extends::load(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
-    )
-    .expect("fixture spec should load")
 }
 
 /// The spec must reproduce a market we already run before creating new ones.

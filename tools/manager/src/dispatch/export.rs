@@ -117,6 +117,23 @@ async fn ensure_admin_holds_the_role(
     governance_id: &AccountId,
     admin: &AccountId,
 ) -> anyhow::Result<()> {
+    // The contract's own membership test, not a client-side scan of a paginated
+    // list. The list is read only to say who *does* hold it.
+    let holds = ctx
+        .client
+        .read(governance::HasRole {
+            governance_id: governance_id.clone(),
+            account_id: admin.clone(),
+            role: templar_proxy_oracle_near_governance_common::Role::Admin,
+        })
+        .await
+        .with_context(|| format!("check the Admin role on {governance_id}"))?
+        .has_role;
+
+    if holds {
+        return Ok(());
+    }
+
     let holders = ctx
         .client
         .read(governance::ListRole {
@@ -129,8 +146,7 @@ async fn ensure_admin_holds_the_role(
         .with_context(|| format!("list the Admin role on {governance_id}"))?
         .members;
 
-    anyhow::ensure!(
-        holders.contains(admin),
+    anyhow::bail!(
         "`{admin}` does not hold Admin on `{governance_id}`; it is held by {}. \
          Re-run `--governance-admin` with one of those.",
         if holders.is_empty() {
@@ -142,8 +158,7 @@ async fn ensure_admin_holds_the_role(
                 .collect::<Vec<_>>()
                 .join(", ")
         },
-    );
-    Ok(())
+    )
 }
 
 /// The governance contract's single proposal TTL, or a refusal.

@@ -211,8 +211,8 @@ impl Journal {
              removed or invented; resuming would skip a step that never ran.",
         );
 
-        Ok((0..file.steps.len())
-            .filter(|index| !done.contains(index))
-            .collect())
+        // The guard above proves `done` is exactly `0..done.len()`, so what is
+        // left is the suffix.
+        Ok((done.len()..file.steps.len()).collect())
     }
 }

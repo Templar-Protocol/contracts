@@ -127,14 +127,15 @@ fn the_plan_shape_is_pinned_to_its_version() {
     let mut paths = Vec::new();
     key_paths(&rendered, "", &mut paths);
     paths.sort();
-    paths.dedup();
 
-    let fingerprint = crate::spec::plan::digest(paths.join("\n").as_bytes());
+    // Hashed directly, not through `plan::digest`: that carries the journal's
+    // format tag, and renaming it for journal reasons must not fail this.
+    let fingerprint = templar_contract_artifacts::sha256_hex(paths.join("\n").as_bytes());
     assert_eq!(
         (crate::spec::plan::PLAN_SCHEMA_VERSION, fingerprint.as_str()),
         (
             5,
-            "sha256-wire:d032675fbbcfdfc34079282bf2649f4b484acebf12d20220bd3f6b5065b3d6b4"
+            "d032675fbbcfdfc34079282bf2649f4b484acebf12d20220bd3f6b5065b3d6b4"
         ),
         "the plan artifact's shape changed. Bump PLAN_SCHEMA_VERSION and update \
          this pin, so a plan from another build is refused by name rather than \

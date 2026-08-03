@@ -626,13 +626,7 @@ mod tests {
         }
     }
 
-    fn spec() -> crate::spec::MarketSpec {
-        crate::spec::extends::load(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../deployments/alpha/iethfxrp-ixlmusdc.toml"),
-        )
-        .expect("fixture spec should load")
-    }
+    use crate::spec::plan::testing::alpha_market as spec;
 
     fn price(value: i64, expo: i32) -> templar_proxy_oracle_kernel::Price {
         templar_proxy_oracle_kernel::Price {

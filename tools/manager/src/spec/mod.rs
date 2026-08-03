@@ -338,14 +338,14 @@ pub fn governance_name(name: &str) -> String {
     format!("proxy-gov-{name}")
 }
 
-/// Milliseconds since the Unix epoch, standing in for the deploying block's
-/// clock. Only ever grows, so a spec this accepts stays accepted.
-fn unix_now_ms() -> u64 {
-    std::time::SystemTime::now()
+/// Wall-clock since the Unix epoch. The one clock this tool reads: the oracle
+/// kernel takes `now` explicitly rather than reading one, which is what makes it
+/// testable, so every caller here gets its reading from the same place.
+pub fn wall_clock() -> Nanoseconds {
+    let since_epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(u64::MAX, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
+        .unwrap_or_default();
+    Nanoseconds::from_ns(u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
@@ -512,7 +512,7 @@ impl MarketSpec {
              snapshot schedule"
         );
         anyhow::ensure!(
-            time_chunk_ms <= unix_now_ms(),
+            time_chunk_ms <= wall_clock().as_ns() / 1_000_000,
             "`time_chunk` is {time_chunk_ms}ms, longer than the time since the \
              Unix epoch, so the market's first snapshot would precede chunk zero \
              and initialization would panic"

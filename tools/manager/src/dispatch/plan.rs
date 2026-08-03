@@ -31,7 +31,7 @@ use crate::spec::journal::{self, Journal};
 use crate::spec::{
     check::{Check, Status},
     plan::{PlanFile, PLAN_SCHEMA_VERSION},
-    MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
+    GovernanceSpec, MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
 /// Deposits funding each new account's storage and balance. These size a
@@ -155,15 +155,7 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     let matched = apply_skips(&mut checks, &args.skip_check);
     ensure_every_skip_matched(&args.skip_check, &matched)?;
 
-    let targets = review(
-        &ctx,
-        &file,
-        &checks,
-        &outstanding,
-        &remaining,
-        &journal_path,
-    )
-    .await?;
+    let targets = review(&ctx, &file, &checks, &outstanding, &journal_path).await?;
     gate(&checks, file.spec.market_id()?.as_str())?;
 
     // Resolved once, here, and carried through to the send: the keychain
@@ -283,7 +275,6 @@ async fn review(
     file: &PlanFile,
     checks: &[Check],
     outstanding: &[crate::spec::plan::PlanStep],
-    remaining: &[usize],
     journal_path: &std::path::Path,
 ) -> anyhow::Result<Vec<AccountId>> {
     render(file);
@@ -298,12 +289,12 @@ async fn review(
     // Still worth stating before the money moves: the operator should know a
     // partial run is recoverable *and* where the record lives, rather than
     // discovering both after an interruption.
-    if remaining.len() > 1 {
+    if outstanding.len() > 1 {
         eprintln!(
             "\nThis sends {} transactions in sequence. Each is recorded in {} as \
              it lands, so an interruption resumes from the next incomplete step \
              rather than restarting.",
-            remaining.len(),
+            outstanding.len(),
             journal_path.display(),
         );
     }
@@ -437,8 +428,17 @@ pub(crate) async fn build(
     // creates only the market: no governance to seat, no proxy to own, no
     // proposals to configure.
     let mut steps = Vec::new();
-    if let Some((governance, _, _)) = spec.proxy() {
-        steps = oracle_stack(client, signer_id, spec, public_key).await?;
+    if let Some((governance, oracle_version, governance_version)) = spec.proxy() {
+        steps = oracle_stack(
+            client,
+            signer_id,
+            spec,
+            public_key,
+            governance,
+            oracle_version,
+            governance_version,
+        )
+        .await?;
 
         // Proposal ids start at zero because this plan creates the governance
         // contract they run against. Both sides project to the same
@@ -498,6 +498,9 @@ async fn oracle_stack(
     signer_id: &AccountId,
     spec: &MarketSpec,
     public_key: &PublicKey,
+    governance: &GovernanceSpec,
+    oracle_version: &str,
+    governance_version: &str,
 ) -> anyhow::Result<Vec<(String, PlannedTransaction)>> {
     let full_access_keys = Some(vec![public_key.clone()]);
     let governance_id = spec.governance_id()?;
@@ -509,9 +512,6 @@ async fn oracle_stack(
     // cannot configure either proxy — and because `admin_set_proxy` is
     // dispatched detached, the proposals still *report* success and the deploy
     // reaches market creation with an unconfigured oracle.
-    let (governance, oracle_version, governance_version) = spec
-        .proxy()
-        .context("the oracle stack is only deployed for a proxy market")?;
     crate::commands::proxy_oracle::check_owner_id_is_honored(oracle_version, &governance_id)?;
 
     let governance_init = serde_json::to_vec(&GovernanceInit {
@@ -532,7 +532,7 @@ async fn oracle_stack(
         registry::Deploy {
             registry_id: spec.registry.clone(),
             name: crate::spec::governance_name(&spec.name),
-            version_key: governance_version.clone(),
+            version_key: governance_version.to_owned(),
             init_args: Base64Bytes(governance_init),
             full_access_keys: full_access_keys.clone(),
             deposit: GOVERNANCE_DEPOSIT,
@@ -547,7 +547,7 @@ async fn oracle_stack(
             proxy_oracle::Create {
                 registry_id: spec.registry.clone(),
                 name: crate::spec::oracle_name(&spec.name),
-                version_key: oracle_version.clone(),
+                version_key: oracle_version.to_owned(),
                 owner_id: Some(governance_id),
                 full_access_keys: full_access_keys.clone(),
                 deposit: ORACLE_DEPOSIT,

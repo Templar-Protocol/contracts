@@ -58,7 +58,7 @@ pub(super) async fn checks(
     // Sampled after the fetches, not before. Sequential RPCs can outlast the
     // drift allowance, and a feed updated mid-sweep would then read as
     // future-drifted against a clock taken before it was even requested.
-    let now = wall_clock();
+    let now = crate::spec::wall_clock();
 
     // Against the oracle's own breakers when one is deployed. An empty set is
     // right for `market plan` — the oracle does not exist yet — and wrong for
@@ -120,16 +120,6 @@ async fn breakers(
     Ok(result
         .circuit_breaker_set
         .unwrap_or_else(CircuitBreakerSet::empty))
-}
-
-/// Wall-clock, for freshness. The kernel takes `now` explicitly rather than
-/// reading a clock, which is what makes it testable; this is the one place a
-/// clock is read.
-fn wall_clock() -> Nanoseconds {
-    let since_epoch = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    Nanoseconds::from_ns(u64::try_from(since_epoch.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// Every source's current price, in spec order.

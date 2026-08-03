@@ -9,10 +9,11 @@ use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::GatewayError;
-use templar_gateway_methods_spec::{account, contract, lst_oracle, registry};
+use templar_gateway_methods_spec::{account, contract, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
 use templar_proxy_oracle_kernel::Price;
 use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
+use templar_proxy_oracle_near_common::request::OracleRequest;
 
 use crate::commands::spec::Check as CheckArgs;
 use crate::context::{print_json, CliContext};
@@ -120,7 +121,7 @@ async fn run(
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
-    let (direct_checks, direct_prices) = direct_oracle(ctx, spec).await;
+    let (direct_checks, direct_collateral, direct_borrow) = direct_oracle(ctx, spec).await;
     checks.extend(direct_checks);
     checks.extend(accounts(ctx, spec).await);
     // Aggregation before the cross-check: it produces the prices the reference
@@ -133,7 +134,7 @@ async fn run(
     // dry-run, a direct one from the call `oracle.serves_pair` already made. The
     // cross-check is the only thing that judges the *value* rather than its
     // presence, so a direct market needs it just as much.
-    let (collateral, borrow) = (collateral.or(direct_prices.0), borrow.or(direct_prices.1));
+    let (collateral, borrow) = (collateral.or(direct_collateral), borrow.or(direct_borrow));
 
     match super::reference::CoinGecko::from_env() {
         Ok(source) => {
@@ -336,16 +337,12 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
 /// A direct market skips the three checks a proxy gets, which left the oracle
 /// it does read checked by nothing. `MarketConfiguration` is immutable after
 /// init, so a mistyped `price_id` would be permanent.
-#[allow(
-    clippy::type_complexity,
-    reason = "one price per side, beside the checks"
-)]
 async fn direct_oracle(
     ctx: &CliContext,
     spec: &MarketSpec,
-) -> (Vec<Check>, (Option<Price>, Option<Price>)) {
+) -> (Vec<Check>, Option<Price>, Option<Price>) {
     let crate::spec::OracleMode::Direct { account_id } = &spec.oracle else {
-        return (Vec::new(), (None, None));
+        return (Vec::new(), None, None);
     };
 
     let mut checks = vec![Check::new(
@@ -365,154 +362,134 @@ async fn direct_oracle(
     )];
 
     let Ok((collateral, borrow)) = spec.price_identifiers() else {
-        return (checks, (None, None));
+        return (checks, None, None);
     };
-    let (status, prices) = serves_pair(ctx, spec, account_id, collateral, borrow).await;
+    let (status, collateral_price, borrow_price) =
+        serves_pair(ctx, spec, account_id, collateral, borrow).await;
     checks.push(Check::new("oracle.serves_pair", status));
-    (checks, prices)
+    (checks, collateral_price, borrow_price)
 }
 
 /// Make the market's own price call: both identifiers, one call, its own
 /// `price_maximum_age`. An oracle that answers a per-feed probe but not this is
 /// one the market cannot read, and the configuration naming it is immutable.
-#[allow(
-    clippy::type_complexity,
-    reason = "one price per side, beside the verdict"
-)]
+///
+/// The prices come back too: the reference cross-check is the only thing that
+/// judges what a feed *says* rather than that it answered.
 async fn serves_pair(
     ctx: &CliContext,
     spec: &MarketSpec,
     oracle_id: &AccountId,
     collateral: PriceIdentifier,
     borrow: PriceIdentifier,
-) -> (Status, (Option<Price>, Option<Price>)) {
+) -> (Status, Option<Price>, Option<Price>) {
     let age = spec.market.price_maximum_age.as_secs();
 
-    let asked = match answering_oracle(ctx, oracle_id, &[collateral, borrow]).await {
-        Ok(asked) => asked,
-        Err(error) => return (Status::failed(format!("{error:#}")), (None, None)),
-    };
-    let prices = match list_ema_prices(ctx, &asked.oracle_id, &asked.dispatched, age).await {
-        Ok(prices) => prices,
-        Err(error) => {
-            return (
-                Status::failed(format!(
-                    "`{}` did not answer the market's price call: {error}. A mistyped \
-                     `price_id` cannot be corrected after init.",
-                    asked.oracle_id,
-                )),
-                (None, None),
-            )
+    let mut sides = Vec::with_capacity(2);
+    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
+        match resolves_to(ctx, oracle_id, id).await {
+            Ok(resolved) => sides.push((side, id, resolved)),
+            Err(error) => return (Status::failed(format!("{error:#}")), None, None),
         }
-    };
+    }
 
-    // Absent and stale are different problems with different remedies, so the
-    // oracle's own answer decides which: it omits an identifier it does not
-    // serve and returns a served-but-stale one with no price.
-    let (mut unserved, mut stale) = (Vec::new(), Vec::new());
-    for ((side, id), dispatched) in [("collateral", collateral), ("borrow", borrow)]
-        .into_iter()
-        .zip(&asked.dispatched)
-    {
-        let named = if *dispatched == id {
+    // One call per answering oracle. A direct oracle answers both feeds itself;
+    // an LST wrapper's two feeds can resolve to different accounts.
+    let (mut unserved, mut stale, mut found) = (Vec::new(), Vec::new(), Vec::new());
+    for (side, id, (answering, dispatched)) in sides {
+        let named = if dispatched == id {
             format!("{side} ({id})")
         } else {
-            format!("{side} ({id}, served as {dispatched})")
+            format!("{side} ({id}, served as {dispatched} by `{answering}`)")
         };
-        match prices.iter().find(|entry| entry.price_id == *dispatched) {
+        let prices = match list_ema_prices(ctx, &answering, &[dispatched], age).await {
+            Ok(prices) => prices,
+            Err(error) => {
+                return (
+                    Status::failed(format!(
+                        "`{answering}` did not answer the market's price call for \
+                         {named}: {error}. A mistyped `price_id` cannot be \
+                         corrected after init."
+                    )),
+                    None,
+                    None,
+                )
+            }
+        };
+
+        match prices.iter().find(|entry| entry.price_id == dispatched) {
             None => unserved.push(named),
-            Some(entry) if entry.price.is_none() => stale.push(named),
-            Some(_) => {}
+            Some(entry) => match entry.price.as_ref() {
+                None => stale.push(named),
+                Some(price) => found.push(pyth_price_try_to_kernel(price)),
+            },
         }
     }
 
     if !unserved.is_empty() {
         return (
             Status::failed(format!(
-                "`{}` serves no feed for {}. This deployment does not configure that \
+                "no feed is served for {}. This deployment does not configure that \
                  oracle, so an identifier it does not know is a wrong one — and the \
                  market configuration naming it is immutable after init.",
-                asked.oracle_id,
                 unserved.join(" and "),
             )),
-            (None, None),
+            None,
+            None,
         );
     }
     if !stale.is_empty() {
         return (
             Status::failed(format!(
-                "`{}` has no price within {age}s for {}. The market reads it with the \
-                 same bound, so it would price nothing until something publishes.",
-                asked.oracle_id,
+                "no price within {age}s for {}. The market reads with the same \
+                 bound, so it would price nothing until something publishes.",
                 stale.join(" and "),
             )),
-            (None, None),
+            None,
+            None,
         );
     }
 
-    // Handed back for the reference cross-check, which is the only thing that
-    // judges what these feeds *say* rather than that they answered.
-    let of = |dispatched: &PriceIdentifier| {
-        prices
-            .iter()
-            .find(|entry| entry.price_id == *dispatched)
-            .and_then(|entry| entry.price.as_ref())
-            .and_then(pyth_price_try_to_kernel)
-    };
-    let found = (of(&asked.dispatched[0]), of(&asked.dispatched[1]));
+    let mut found = found.into_iter();
     (
-        Status::passed(format!(
-            "both feeds priced within {age}s by `{}`",
-            asked.oracle_id
-        )),
-        found,
+        Status::passed(format!("both feeds priced within {age}s")),
+        found.next().flatten(),
+        found.next().flatten(),
     )
 }
 
-/// Which account actually answers a price call, and under which identifiers.
-struct Answering {
-    oracle_id: AccountId,
-    /// Parallel to the ids asked for, in order.
-    dispatched: Vec<PriceIdentifier>,
-}
-
-/// Resolve who answers, by asking rather than assuming.
+/// Which account answers a price call, and under which identifier.
 ///
-/// An LST wrapper answers every price call with a cross-contract call, which a
-/// view cannot make. It serves each identifier out of the oracle it wraps —
-/// under that oracle's own identifier for a transformed feed, and under the
-/// original for a pass-through — so the mapping is read from the wrapper rather
-/// than reproduced here.
-async fn answering_oracle(
+/// Asked of the gateway rather than reconstructed here: it resolves the oracle's
+/// *kind* and, for an LST wrapper, reads the transformer that maps the market's
+/// identifier onto the underlying feed. Probing instead — call, see it fail,
+/// guess why — turns a transient RPC error into "this oracle does not serve that
+/// feed", which is the one verdict that reads as a permanent spec mistake.
+async fn resolves_to(
     ctx: &CliContext,
     oracle_id: &AccountId,
-    price_ids: &[PriceIdentifier],
-) -> anyhow::Result<Answering> {
-    let Some(wrapped) = wrapped_oracle(ctx, oracle_id).await else {
-        return Ok(Answering {
-            oracle_id: oracle_id.clone(),
-            dispatched: price_ids.to_vec(),
-        });
-    };
-
-    let mut dispatched = Vec::with_capacity(price_ids.len());
-    for price_id in price_ids {
-        let transformer = ctx
-            .client
-            .read(lst_oracle::GetTransformer {
+    price_id: PriceIdentifier,
+) -> anyhow::Result<(AccountId, PriceIdentifier)> {
+    let resolved = ctx
+        .client
+        .read(
+            templar_gateway_methods_spec::oracle::GetPriceResolutionDependencies {
                 oracle_id: oracle_id.clone(),
-                price_identifier: *price_id,
-            })
-            .await
-            .with_context(|| format!("read `{oracle_id}`'s transformer for {price_id}"))?
-            .transformer;
-        dispatched.push(transformer.map_or(*price_id, |it| it.price_id));
-    }
+                price_id,
+            },
+        )
+        .await
+        .with_context(|| format!("resolve how `{oracle_id}` serves {price_id}"))?;
 
-    Ok(Answering {
-        oracle_id: wrapped,
-        dispatched,
-    })
+    // One Pyth request for a direct oracle and for an LST wrapper, which carries
+    // the underlying id. A proxy fans out to several, and this market does not
+    // configure it, so its own identifier is the one to ask for.
+    let pyth = resolved.requests.iter().find_map(|request| match request {
+        OracleRequest::Pyth(pyth) => Some((pyth.oracle_id.clone(), pyth.price_id)),
+        _ => None,
+    });
+
+    Ok(pyth.unwrap_or_else(|| (oracle_id.clone(), price_id)))
 }
 
 async fn list_ema_prices(
@@ -531,18 +508,6 @@ async fn list_ema_prices(
         )
         .await
         .map(|result| result.prices)
-}
-
-/// The oracle an LST wrapper forwards to. `None` when the account is not one,
-/// which is how the caller tells a wrapper from a plain oracle.
-async fn wrapped_oracle(ctx: &CliContext, oracle_id: &AccountId) -> Option<AccountId> {
-    ctx.client
-        .read(lst_oracle::GetOracleId {
-            oracle_id: oracle_id.clone(),
-        })
-        .await
-        .ok()
-        .map(|result| result.pyth_oracle_id)
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.
