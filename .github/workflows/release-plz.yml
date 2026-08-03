@@ -79,7 +79,12 @@ jobs:
 
   release-plz-pr:
     name: Release PR
-    needs: require-token
+    # Ordered after the release, not merely after the token check: the push that
+    # merges a Release PR runs both, and this job reads the baseline that one
+    # advances. Racing it would recompute the next PR against a baseline that
+    # still predates the release, proposing work that is in the act of shipping
+    # — and nothing guarantees a later push to `dev` to correct it.
+    needs: [require-token, release-plz-release]
     runs-on: ubuntu-latest
     permissions:
       contents: write
