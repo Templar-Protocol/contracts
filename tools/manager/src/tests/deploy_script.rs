@@ -252,6 +252,7 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
         "proxy.registry.testnet",
         "--id",
         "0",
+        "oracle",
         "set-proxy",
         "--price-id",
         COLLATERAL_PRICE_ID,
@@ -267,11 +268,22 @@ fn governance_create_proposal_reshapes_legacy_proxy_file() {
 
     std::fs::remove_file(&proxy_file).expect("remove proxy fixture");
 
-    let params_json = serde_json::to_value(&params).unwrap();
-    let proxy = &params_json["operation"]["SetProxy"]["proxy"];
+    // The set-proxy subcommand now builds a generic admin_set_proxy target call; the reshaped proxy
+    // lives in the (base64) call args.
+    let proxy = match &params.operation {
+        templar_proxy_oracle_near_governance_common::Operation::TargetFunctionCall(call) => {
+            assert_eq!(call.method_name, "admin_set_proxy");
+            let args: Value = serde_json::from_slice(&call.args.0).expect("valid json args");
+            args["proxy"].clone()
+        }
+        reflexive @ templar_proxy_oracle_near_governance_common::Operation::Reflexive(_) => {
+            panic!("expected admin_set_proxy target call, got {reflexive:?}")
+        }
+    };
     assert_eq!(proxy["aggregator"]["MedianLow"]["sources"], legacy_entries);
     assert_eq!(proxy["aggregator"]["MedianLow"]["min_sources"], json!(1));
 
+    let params_json = serde_json::to_value(&params).unwrap();
     serde_json::from_value::<templar_gateway_methods_spec::proxy_oracle_governance::CreateProposal>(
         params_json,
     )
@@ -315,7 +327,7 @@ fn create_proposal_set_proxy_requires_price_id() {
         ]
         .into_iter()
         .chain(CREDS)
-        .chain(["set-proxy"]),
+        .chain(["oracle", "set-proxy"]),
     )
     .expect_err("set-proxy should require --price-id");
 
@@ -333,7 +345,7 @@ fn json_fallback_still_works_for_create_proposal() {
             "write",
             "proxyOracleGovernance.createProposal",
             "--json",
-            r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"SetProxy":{"id":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","proxy":{"aggregator":{"MedianLow":{"sources":[],"min_sources":1}},"freshness_filter":{"max_age_ns":"1","max_clock_drift_ns":"1"}}}},"requested_ttl":"0"}"#,
+            r#"{"governance_id":"proxy.registry.testnet","id":0,"operation":{"TargetFunctionCall":{"method_name":"admin_set_proxy","args":"e30=","attached_deposit":"0","gas":"30000000000000"}},"requested_ttl":"0"}"#,
         ]
         .into_iter()
         .chain(CREDS),

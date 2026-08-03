@@ -87,6 +87,11 @@ operator() {
 # contract deployed and orphaned — delete $GOVERNANCE_ID before re-running.
 # Validating up front needs a preflight this CLI has no flag for; ENG-463 removes
 # the version check altogether by reading the contract's ABI.
+# --ttl-default 0s builds a uniform, override-free policy: every target method is
+# Admin-only with no timelock, which is what lets the configuration proposals below
+# execute immediately. That is a bring-up policy, not a production one -- harden to
+# contract/proxy-oracle/governance-policy.example.json afterwards (see the README's
+# "Bring-up and hardening" section for the required ordering).
 echo "Deploying governance ($GOVERNANCE_ID)..."
 operator proxy-oracle governance create \
     --registry-id "$REGISTRY_ID" \
@@ -111,7 +116,7 @@ echo "Configuring collateral proxy..."
 operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
-    set-proxy \
+    oracle set-proxy \
     --price-id "$COLLATERAL_PRICE_ID" \
     --proxy-file "$PROXY_COLLATERAL_ARGS_FILE"
 
@@ -119,7 +124,7 @@ echo "Configuring borrow proxy..."
 operator proxy-oracle governance create-proposal \
     --governance-id "$GOVERNANCE_ID" \
     --execute-when-ready \
-    set-proxy \
+    oracle set-proxy \
     --price-id "$BORROW_PRICE_ID" \
     --proxy-file "$PROXY_BORROW_ARGS_FILE"
 

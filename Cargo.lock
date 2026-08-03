@@ -13597,6 +13597,7 @@ dependencies = [
  "near-sdk",
  "near-sdk-contract-tools",
  "near-token",
+ "rstest",
  "serde_json",
  "templar-common",
  "templar-gateway-testing",

@@ -1,135 +1,470 @@
 pub mod interface;
+pub mod legacy;
+pub mod target;
+
+use std::collections::BTreeMap;
 
 use near_sdk::{
     json_types::{Base64VecU8, U128},
     near, AccountId, BorshStorageKey, Gas,
 };
-use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::upgrade::UpgradeSource;
-use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig},
-    Proxy,
-};
-use templar_proxy_oracle_near_common::input::Source;
 
 pub use interface::{error, Event, Governance, OperationPolicy, Proposal, Validatable};
+pub use legacy::{LegacyOperation, LegacyOperationKind, LegacyTtlConfig};
 pub use templar_common::Nanoseconds;
 
-pub const MAX_CIRCUIT_BREAKER_HISTORY_LEN: u32 = 32;
-pub const MAX_CIRCUIT_BREAKERS_PER_PROXY: usize = 16;
+/// The longest timelock any proposal may carry (180 days). Bounds both target-method and reflexive
+/// TTLs written into [`GovernancePolicy`].
 pub const MAX_PROPOSAL_TTL: Nanoseconds = Nanoseconds::from_secs(180 * 24 * 60 * 60);
 
-macro_rules! governance_operations {
-    (
-        $(
-            $variant:ident => $ttl_field:ident {
-                $($field:ident : $field_ty:ty),+ $(,)?
-            }
-        ),+ $(,)?
-    ) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-        #[near(serializers = [json, borsh])]
-        pub enum OperationKind {
-            $($variant),+
-        }
+/// Cap on per-method policy overrides, keeping the single-slot policy blob bounded.
+pub const MAX_METHOD_POLICIES: usize = 64;
 
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        #[near(serializers = [json, borsh])]
-        pub enum Operation {
-            $(
-                $variant {
-                    $($field: $field_ty),+
-                }
-            ),+
-        }
+/// Gas a governance-driven `admin_upgrade` target call needs (a full contract self-deploy + migrate).
+pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
 
-        impl Operation {
-            pub fn kind(&self) -> OperationKind {
-                match self {
-                    $(Operation::$variant { .. } => OperationKind::$variant),+
-                }
-            }
-        }
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        #[near(serializers = [json, borsh])]
-        pub struct TtlConfig {
-            $(pub $ttl_field: Nanoseconds),+
-        }
-
-impl TtlConfig {
-            pub fn get(&self, kind: OperationKind) -> Nanoseconds {
-                match kind {
-                    $(OperationKind::$variant => self.$ttl_field),+
-                }
-            }
-
-            pub fn set(&mut self, kind: OperationKind, ttl: Nanoseconds) {
-                match kind {
-                    $(OperationKind::$variant => self.$ttl_field = ttl),+
-                }
-            }
-        }
-    };
+/// A raw call dispatched to the governed proxy oracle. The generic form every target operation now
+/// takes: governance validates only that the method is named and gas is non-zero — semantic
+/// validation is the target contract's responsibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct FunctionCall {
+    pub method_name: String,
+    pub args: Base64VecU8,
+    pub attached_deposit: U128,
+    pub gas: Gas,
 }
 
-governance_operations! {
-    SetProxy => set_proxy {
-        id: PriceIdentifier,
-        proxy: Option<Proxy<Source>>,
+/// The timelock and role required to run a target method. Per-method overrides live in
+/// [`GovernancePolicy::method_policies`]; unlisted methods resolve to
+/// [`GovernancePolicy::default_target`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct MethodPolicy {
+    pub ttl: Nanoseconds,
+    pub role: Role,
+}
+
+/// The three reflexive timelock buckets. The policy-editing variants (`SetReflexiveTtl`,
+/// `SetTargetDefault`, `SetMethodPolicy`) share the `SetPolicy` bucket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+#[near(serializers = [json, borsh])]
+pub enum ReflexiveKind {
+    SetPolicy,
+    SetRole,
+    SelfUpgrade,
+}
+
+/// Independent per-kind timelocks for reflexive operations. Each field is set independently, so e.g.
+/// `self_upgrade` can be strictly longer than `set_role`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct ReflexiveTtls {
+    pub set_policy: Nanoseconds,
+    pub set_role: Nanoseconds,
+    pub self_upgrade: Nanoseconds,
+}
+
+impl ReflexiveTtls {
+    #[must_use]
+    pub fn get(&self, kind: ReflexiveKind) -> Nanoseconds {
+        match kind {
+            ReflexiveKind::SetPolicy => self.set_policy,
+            ReflexiveKind::SetRole => self.set_role,
+            ReflexiveKind::SelfUpgrade => self.self_upgrade,
+        }
+    }
+
+    pub fn set(&mut self, kind: ReflexiveKind, ttl: Nanoseconds) {
+        match kind {
+            ReflexiveKind::SetPolicy => self.set_policy = ttl,
+            ReflexiveKind::SetRole => self.set_role = ttl,
+            ReflexiveKind::SelfUpgrade => self.self_upgrade = ttl,
+        }
+    }
+}
+
+/// Operations that mutate governance's own state (the policy table, roles, self-upgrade). These all
+/// govern governance itself and require `Admin`, so `required_role` never resolves them through the
+/// policy table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum ReflexiveOperation {
+    /// Set one reflexive kind's timelock.
+    SetReflexiveTtl {
+        kind: ReflexiveKind,
+        ttl: Nanoseconds,
     },
-    ConfigureCircuitBreakers => configure_circuit_breakers {
-        id: PriceIdentifier,
-        config: CircuitBreakerSetConfig,
+    /// Set the conservative default policy applied to unlisted target methods.
+    SetTargetDefault { policy: MethodPolicy },
+    /// Add, update (`Some`), or reset to default (`None`) a per-method policy override.
+    SetMethodPolicy {
+        method: String,
+        policy: Option<MethodPolicy>,
     },
-    AddCircuitBreaker => add_circuit_breaker {
-        id: PriceIdentifier,
-        breaker_id: u32,
-        breaker: CircuitBreaker,
-    },
-    RemoveCircuitBreaker => remove_circuit_breaker {
-        id: PriceIdentifier,
-        breaker_id: u32,
-    },
-    SetManualTrip => set_manual_trip {
-        id: PriceIdentifier,
-        is_manually_tripped: bool,
-        metadata: Option<Vec<u8>>,
-    },
-    Rearm => rearm {
-        id: PriceIdentifier,
-        breaker_id: u32,
-        armed_after_ns: Nanoseconds,
-        accepted_history_source: AcceptedHistorySource,
-    },
-    SetEnforced => set_enforced {
-        id: PriceIdentifier,
-        breaker_id: u32,
-        is_enforced: bool,
-    },
-    SetActionTtl => set_action_ttl {
-        kind: OperationKind,
-        new_ttl: Nanoseconds,
-    },
-    SetRole => set_role {
+    /// Grant (`set = true`) or revoke (`set = false`) a role for an account.
+    SetRole {
         account_id: AccountId,
         role: Role,
         set: bool,
     },
-    AdminUpgrade => admin_upgrade {
+    /// Upgrade the governance contract itself.
+    SelfUpgrade {
         code: UpgradeSource,
         migrate_args: Base64VecU8,
     },
-    AdminFunctionCall => admin_function_call {
-        method_name: String,
-        args: Base64VecU8,
-        attached_deposit: U128,
-        gas: Gas,
+}
+
+impl ReflexiveOperation {
+    #[must_use]
+    pub fn kind(&self) -> ReflexiveKind {
+        match self {
+            ReflexiveOperation::SetReflexiveTtl { .. }
+            | ReflexiveOperation::SetTargetDefault { .. }
+            | ReflexiveOperation::SetMethodPolicy { .. } => ReflexiveKind::SetPolicy,
+            ReflexiveOperation::SetRole { .. } => ReflexiveKind::SetRole,
+            ReflexiveOperation::SelfUpgrade { .. } => ReflexiveKind::SelfUpgrade,
+        }
+    }
+
+    /// For an op that edits a timelock, that lock's `(current, new)` values; `None` for ops that edit
+    /// no lock. The match is exhaustive, so a future lock-editing variant must declare its lock here —
+    /// and is therefore subject to the shortening rule in [`OperationPolicy::minimum_ttl`] rather than
+    /// silently escaping it.
+    fn lock_edit(&self, policy: &GovernancePolicy) -> Option<(Nanoseconds, Nanoseconds)> {
+        match self {
+            ReflexiveOperation::SetReflexiveTtl { kind, ttl } => {
+                Some((policy.reflexive_ttls.get(*kind), *ttl))
+            }
+            ReflexiveOperation::SetTargetDefault { policy: new } => {
+                Some((policy.default_target.ttl, new.ttl))
+            }
+            ReflexiveOperation::SetMethodPolicy {
+                method,
+                policy: Some(new),
+            } => Some((policy.resolve(method).ttl, new.ttl)),
+            // A reset (`SetMethodPolicy { policy: None }`) restores `default_target`; the ceiling
+            // invariant keeps every override `<= default_target`, so it never shortens. Role changes
+            // and self-upgrade edit no lock.
+            ReflexiveOperation::SetMethodPolicy { policy: None, .. }
+            | ReflexiveOperation::SetRole { .. }
+            | ReflexiveOperation::SelfUpgrade { .. } => None,
+        }
+    }
+}
+
+/// A governance operation: either self-mutating ([`ReflexiveOperation`]) or a generic call dispatched
+/// to the governed proxy oracle ([`FunctionCall`]).
+///
+/// Only this shape is accepted on the wire. Pre-restructure JSON (`{"SetProxy":{…}}`, …) is not:
+/// converting it would resolve authorization from the method name rather than the old typed
+/// classification, so an operation could be created under a different role than the client that
+/// wrote it intended. [`LegacyOperation`] is still converted for the v0 state migration, where the
+/// seeded policy's roles are exactly the old ones and the mapping is therefore faithful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub enum Operation {
+    Reflexive(ReflexiveOperation),
+    TargetFunctionCall(FunctionCall),
+}
+
+/// Coarse operation classification carried on governance events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[near(serializers = [json, borsh])]
+pub enum OperationKind {
+    SetPolicy,
+    SetRole,
+    SelfUpgrade,
+    TargetFunctionCall,
+}
+
+impl Operation {
+    #[must_use]
+    pub fn kind(&self) -> OperationKind {
+        match self {
+            Operation::Reflexive(reflexive) => match reflexive.kind() {
+                ReflexiveKind::SetPolicy => OperationKind::SetPolicy,
+                ReflexiveKind::SetRole => OperationKind::SetRole,
+                ReflexiveKind::SelfUpgrade => OperationKind::SelfUpgrade,
+            },
+            Operation::TargetFunctionCall(_) => OperationKind::TargetFunctionCall,
+        }
+    }
+
+    /// The target method name, for target calls only. Carried on events so an indexer can see which
+    /// method a `TargetFunctionCall` proposal invokes without fetching the full body.
+    #[must_use]
+    pub fn method(&self) -> Option<String> {
+        match self {
+            Operation::TargetFunctionCall(call) => Some(call.method_name.clone()),
+            Operation::Reflexive(_) => None,
+        }
+    }
+
+    /// The role a caller must hold to create/execute this operation. Every reflexive op governs
+    /// governance itself (the policy table, roles, self-upgrade) and requires `Admin`; target roles
+    /// are resolved through the policy table.
+    #[must_use]
+    pub fn required_role(&self, policy: &GovernancePolicy) -> Role {
+        match self {
+            Operation::Reflexive(_) => Role::Admin,
+            Operation::TargetFunctionCall(call) => policy.resolve(&call.method_name).role,
+        }
+    }
+}
+
+/// The table-driven governance policy: independent reflexive timelocks, a conservative default for
+/// target methods, and a whitelist of per-method overrides that may be sped up or given a lower role.
+///
+/// Invariant: every `method_policies` entry's `ttl` stays `<= default_target.ttl`, no TTL exceeds
+/// [`MAX_PROPOSAL_TTL`], and there are at most [`MAX_METHOD_POLICIES`] overrides. Maintained by the
+/// mutators below on every write, so an unlisted method (including one introduced by a future target
+/// upgrade) can never buy a shorter timelock or lower role than the conservative default.
+///
+/// A policy arriving from outside — contract init args, `--policy-file` — is parsed from
+/// [`GovernancePolicyWire`] rather than deserialized directly, so a value of this type is already
+/// within bounds and needs no separate validation step. That matters because an out-of-range policy
+/// bricks governance rather than merely being wrong: `create_proposal` rejects any effective TTL above
+/// [`MAX_PROPOSAL_TTL`], so a `set_policy` lock seeded above it makes every policy-repair proposal
+/// unopenable.
+///
+/// The fields are private so that parsing is the only way in from outside this crate: a
+/// `GovernancePolicy` in hand always satisfies the invariants, and the code that trusts them
+/// ([`Self::resolve`], the TTL/role checks) cannot be handed a struct literal that skips the checks.
+/// [`Self::uniform`] parses through the wire form too; [`LegacyTtlConfig::into_policy`] (the v0
+/// migration) is the one builder that constructs a policy directly — see it for why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+#[serde(try_from = "GovernancePolicyWire")]
+pub struct GovernancePolicy {
+    reflexive_ttls: ReflexiveTtls,
+    default_target: MethodPolicy,
+    method_policies: BTreeMap<String, MethodPolicy>,
+}
+
+/// The wire form of [`GovernancePolicy`]: the same fields carrying no invariants. Every policy
+/// deserialized from JSON lands here first and is parsed into a [`GovernancePolicy`] or rejected, so
+/// the bounds are checked once, at the point untrusted input enters, rather than at each use.
+///
+/// Borsh state reads bypass this — stored policies were parsed or built through the mutators when
+/// they were written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json])]
+pub struct GovernancePolicyWire {
+    pub reflexive_ttls: ReflexiveTtls,
+    pub default_target: MethodPolicy,
+    pub method_policies: BTreeMap<String, MethodPolicy>,
+}
+
+impl TryFrom<GovernancePolicyWire> for GovernancePolicy {
+    type Error = PolicyError;
+
+    /// # Errors
+    ///
+    /// If any reflexive or default TTL exceeds [`MAX_PROPOSAL_TTL`], there are more than
+    /// [`MAX_METHOD_POLICIES`] overrides, or an override's `ttl` exceeds `default_target.ttl`.
+    fn try_from(wire: GovernancePolicyWire) -> Result<Self, Self::Error> {
+        let GovernancePolicyWire {
+            // Destructured so a new reflexive bucket has to be bounded here too.
+            reflexive_ttls:
+                ReflexiveTtls {
+                    set_policy,
+                    set_role,
+                    self_upgrade,
+                },
+            default_target,
+            method_policies,
+        } = wire;
+
+        for ttl in [set_policy, set_role, self_upgrade, default_target.ttl] {
+            if ttl > MAX_PROPOSAL_TTL {
+                return Err(PolicyError::TtlExceedsMaximum {
+                    maximum: MAX_PROPOSAL_TTL,
+                    actual: ttl,
+                });
+            }
+        }
+        if method_policies.len() > MAX_METHOD_POLICIES {
+            return Err(PolicyError::TooManyMethodPolicies {
+                maximum: MAX_METHOD_POLICIES,
+            });
+        }
+        if let Some((_, entry)) = method_policies
+            .iter()
+            .find(|(_, entry)| entry.ttl > default_target.ttl)
+        {
+            return Err(PolicyError::MethodTtlExceedsDefault {
+                default: default_target.ttl,
+                actual: entry.ttl,
+            });
+        }
+
+        Ok(Self {
+            reflexive_ttls: ReflexiveTtls {
+                set_policy,
+                set_role,
+                self_upgrade,
+            },
+            default_target,
+            method_policies,
+        })
+    }
+}
+
+impl GovernancePolicy {
+    /// A uniform policy: every reflexive timelock and the target default set to `ttl`, `Admin` as the
+    /// default target role, and no per-method overrides.
+    ///
+    /// Goes through [`GovernancePolicyWire`] so the bounds are enforced in exactly one place.
+    ///
+    /// # Errors
+    ///
+    /// If `ttl` exceeds [`MAX_PROPOSAL_TTL`].
+    pub fn uniform(ttl: Nanoseconds) -> Result<Self, PolicyError> {
+        GovernancePolicyWire {
+            reflexive_ttls: ReflexiveTtls {
+                set_policy: ttl,
+                set_role: ttl,
+                self_upgrade: ttl,
+            },
+            default_target: MethodPolicy {
+                ttl,
+                role: Role::Admin,
+            },
+            method_policies: BTreeMap::new(),
+        }
+        .try_into()
+    }
+
+    #[must_use]
+    pub fn reflexive_ttls(&self) -> ReflexiveTtls {
+        self.reflexive_ttls
+    }
+
+    #[must_use]
+    pub fn default_target(&self) -> MethodPolicy {
+        self.default_target
+    }
+
+    #[must_use]
+    pub fn method_policies(&self) -> &BTreeMap<String, MethodPolicy> {
+        &self.method_policies
+    }
+
+    /// The policy governing `method`: its override if listed, otherwise [`Self::default_target`].
+    #[must_use]
+    pub fn resolve(&self, method: &str) -> MethodPolicy {
+        self.method_policies
+            .get(method)
+            .copied()
+            .unwrap_or(self.default_target)
+    }
+
+    /// Add/update (`Some`) or reset to default (`None`) a per-method policy.
+    ///
+    /// # Errors
+    ///
+    /// If the entry's `ttl` exceeds `default_target.ttl`, or adding a new entry would exceed
+    /// [`MAX_METHOD_POLICIES`].
+    pub fn set_method_policy(
+        &mut self,
+        method: String,
+        policy: Option<MethodPolicy>,
+    ) -> Result<(), PolicyError> {
+        match policy {
+            Some(policy) => {
+                if policy.ttl > self.default_target.ttl {
+                    return Err(PolicyError::MethodTtlExceedsDefault {
+                        default: self.default_target.ttl,
+                        actual: policy.ttl,
+                    });
+                }
+                if !self.method_policies.contains_key(&method)
+                    && self.method_policies.len() >= MAX_METHOD_POLICIES
+                {
+                    return Err(PolicyError::TooManyMethodPolicies {
+                        maximum: MAX_METHOD_POLICIES,
+                    });
+                }
+                self.method_policies.insert(method, policy);
+            }
+            None => {
+                self.method_policies.remove(&method);
+            }
+        }
+        Ok(())
+    }
+
+    /// Set the conservative default target policy.
+    ///
+    /// # Errors
+    ///
+    /// If `policy.ttl` exceeds [`MAX_PROPOSAL_TTL`], or lowering it below an existing method entry
+    /// would violate the ceiling invariant.
+    pub fn set_target_default(&mut self, policy: MethodPolicy) -> Result<(), PolicyError> {
+        if policy.ttl > MAX_PROPOSAL_TTL {
+            return Err(PolicyError::TtlExceedsMaximum {
+                maximum: MAX_PROPOSAL_TTL,
+                actual: policy.ttl,
+            });
+        }
+        if let Some((method, entry)) = self
+            .method_policies
+            .iter()
+            .find(|(_, entry)| entry.ttl > policy.ttl)
+        {
+            return Err(PolicyError::DefaultBelowExistingMethod {
+                default: policy.ttl,
+                method: method.clone(),
+                method_ttl: entry.ttl,
+            });
+        }
+        self.default_target = policy;
+        Ok(())
+    }
+
+    /// Set one reflexive kind's timelock.
+    ///
+    /// # Errors
+    ///
+    /// If `ttl` exceeds [`MAX_PROPOSAL_TTL`].
+    pub fn set_reflexive_ttl(
+        &mut self,
+        kind: ReflexiveKind,
+        ttl: Nanoseconds,
+    ) -> Result<(), PolicyError> {
+        if ttl > MAX_PROPOSAL_TTL {
+            return Err(PolicyError::TtlExceedsMaximum {
+                maximum: MAX_PROPOSAL_TTL,
+                actual: ttl,
+            });
+        }
+        self.reflexive_ttls.set(kind, ttl);
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PolicyError {
+    #[error("Method TTL {actual} exceeds the default target TTL {default}")]
+    MethodTtlExceedsDefault {
+        default: Nanoseconds,
+        actual: Nanoseconds,
     },
-    SelfUpgrade => self_upgrade {
-        code: UpgradeSource,
-        migrate_args: Base64VecU8,
+    #[error("Default target TTL {default} is below method {method}'s TTL {method_ttl}")]
+    DefaultBelowExistingMethod {
+        default: Nanoseconds,
+        method: String,
+        method_ttl: Nanoseconds,
+    },
+    #[error("Too many method policies: maximum {maximum}")]
+    TooManyMethodPolicies { maximum: usize },
+    #[error("TTL exceeds maximum allowed: maximum {maximum}, got {actual}")]
+    TtlExceedsMaximum {
+        maximum: Nanoseconds,
+        actual: Nanoseconds,
     },
 }
 
@@ -139,34 +474,40 @@ impl Validatable for Operation {
 
     fn on_create(&self) -> Result<(), Self::OnCreateError> {
         match self {
-            Operation::SetProxy {
-                proxy: Some(proxy), ..
-            } if proxy.sources().is_empty() => Err(ValidationError::EmptyProxyDefinition),
-            Operation::ConfigureCircuitBreakers { config, .. }
-                if config.history_len > MAX_CIRCUIT_BREAKER_HISTORY_LEN =>
-            {
-                Err(ValidationError::CircuitBreakerHistoryTooLong {
-                    maximum: MAX_CIRCUIT_BREAKER_HISTORY_LEN,
-                    actual: config.history_len,
-                })
+            Operation::TargetFunctionCall(call) if call.method_name.trim().is_empty() => {
+                Err(ValidationError::EmptyFunctionCallMethodName)
             }
-            Operation::SetActionTtl { new_ttl, .. } if *new_ttl > MAX_PROPOSAL_TTL => {
-                Err(ValidationError::TtlExceedsMaximum {
-                    maximum: MAX_PROPOSAL_TTL,
-                    actual: *new_ttl,
-                })
+            Operation::TargetFunctionCall(call) if call.gas.is_zero() => {
+                Err(ValidationError::ZeroFunctionCallGas)
             }
-            Operation::AdminUpgrade { code, .. } | Operation::SelfUpgrade { code, .. }
+            Operation::Reflexive(ReflexiveOperation::SelfUpgrade { code, .. })
                 if code.is_empty_code() =>
             {
                 Err(ValidationError::EmptyUpgradeCode)
             }
-            Operation::AdminFunctionCall { gas, .. } if gas.is_zero() => {
-                Err(ValidationError::ZeroAdminFunctionCallGas)
+            Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl { ttl, .. })
+                if *ttl > MAX_PROPOSAL_TTL =>
+            {
+                Err(ValidationError::TtlExceedsMaximum {
+                    maximum: MAX_PROPOSAL_TTL,
+                    actual: *ttl,
+                })
             }
-            Operation::AdminFunctionCall { method_name, .. } if method_name.trim().is_empty() => {
-                Err(ValidationError::EmptyAdminFunctionCallMethodName)
+            Operation::Reflexive(ReflexiveOperation::SetTargetDefault { policy })
+                if policy.ttl > MAX_PROPOSAL_TTL =>
+            {
+                Err(ValidationError::TtlExceedsMaximum {
+                    maximum: MAX_PROPOSAL_TTL,
+                    actual: policy.ttl,
+                })
             }
+            Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+                policy: Some(policy),
+                ..
+            }) if policy.ttl > MAX_PROPOSAL_TTL => Err(ValidationError::TtlExceedsMaximum {
+                maximum: MAX_PROPOSAL_TTL,
+                actual: policy.ttl,
+            }),
             _ => Ok(()),
         }
     }
@@ -176,22 +517,8 @@ impl Validatable for Operation {
     }
 }
 
-impl templar_proxy_oracle_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
-    fn get(&self, kind: OperationKind) -> Nanoseconds {
-        self.get(kind)
-    }
-
-    fn set(&mut self, kind: OperationKind, ttl: Nanoseconds) {
-        self.set(kind, ttl);
-    }
-}
-
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ValidationError {
-    #[error("Empty proxy definition is not allowed")]
-    EmptyProxyDefinition,
-    #[error("Circuit breaker history length is too long: maximum {maximum}, got {actual}")]
-    CircuitBreakerHistoryTooLong { maximum: u32, actual: u32 },
     #[error("TTL exceeds maximum allowed: maximum {maximum}, got {actual}")]
     TtlExceedsMaximum {
         maximum: Nanoseconds,
@@ -199,10 +526,10 @@ pub enum ValidationError {
     },
     #[error("Upgrade code must not be empty")]
     EmptyUpgradeCode,
-    #[error("Admin function call method name must not be empty")]
-    EmptyAdminFunctionCallMethodName,
-    #[error("Admin function call gas must not be zero")]
-    ZeroAdminFunctionCallGas,
+    #[error("Function call method name must not be empty")]
+    EmptyFunctionCallMethodName,
+    #[error("Function call gas must not be zero")]
+    ZeroFunctionCallGas,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, BorshStorageKey)]
@@ -224,36 +551,37 @@ impl Role {
     ];
 }
 
-impl Operation {
-    pub fn required_role(&self) -> Role {
-        match self {
-            Operation::SetManualTrip { .. } => Role::ManualTripper,
-            Operation::Rearm { .. } | Operation::SetEnforced { .. } => Role::CircuitBreakerOperator,
-            Operation::SetProxy { .. }
-            | Operation::ConfigureCircuitBreakers { .. }
-            | Operation::AddCircuitBreaker { .. }
-            | Operation::RemoveCircuitBreaker { .. }
-            | Operation::SetActionTtl { .. } => Role::ProxyConfigurationManager,
-            Operation::SetRole { .. }
-            | Operation::AdminUpgrade { .. }
-            | Operation::SelfUpgrade { .. }
-            | Operation::AdminFunctionCall { .. } => Role::Admin,
-        }
+/// The minimum timelock for a reflexive edit that changes a lock from `current` to `new`, given the
+/// policy-edit lock `edit_lock`. Shortening a lock must itself mature under at least that lock, so a
+/// timelock can never be weakened faster than it currently protects; raising or holding a lock needs
+/// only `edit_lock`.
+fn lock_edit_ttl(edit_lock: Nanoseconds, current: Nanoseconds, new: Nanoseconds) -> Nanoseconds {
+    if new < current {
+        edit_lock.max(current)
+    } else {
+        edit_lock
     }
 }
 
-impl OperationPolicy<TtlConfig> for Operation {
+impl OperationPolicy<GovernancePolicy> for Operation {
     type OnCreateError = ValidationError;
     type OnExecuteError = ValidationError;
 
-    fn minimum_ttl(&self, ttls: &TtlConfig) -> Nanoseconds {
+    fn minimum_ttl(&self, policy: &GovernancePolicy) -> Nanoseconds {
         match self {
-            Operation::SetActionTtl { kind, .. } => {
-                let set_action_ttl = ttls.get(OperationKind::SetActionTtl);
-                let target_ttl = ttls.get(*kind);
-                std::cmp::max(set_action_ttl, target_ttl)
+            Operation::Reflexive(reflexive) => {
+                // The op's own reflexive bucket is the base lock. If it also shortens a lock, it must
+                // additionally mature under at least that lock. Evaluated once, when the proposal is
+                // created, and then fixed for its lifetime (create-time binding, as in OpenZeppelin's
+                // TimelockController) — so this gates against the policy in force at creation, not at
+                // execution.
+                let base = policy.reflexive_ttls.get(reflexive.kind());
+                match reflexive.lock_edit(policy) {
+                    Some((current, new)) => lock_edit_ttl(base, current, new),
+                    None => base,
+                }
             }
-            _ => ttls.get(self.kind()),
+            Operation::TargetFunctionCall(call) => policy.resolve(&call.method_name).ttl,
         }
     }
 
@@ -267,606 +595,4 @@ impl OperationPolicy<TtlConfig> for Operation {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use templar_proxy_oracle_kernel::proxy::{Aggregator, FreshnessFilter};
-
-    fn invalid_operation() -> Operation {
-        Operation::SetProxy {
-            id: PriceIdentifier([0xaa; 32]),
-            proxy: Some(Proxy::new(
-                Aggregator::median_low([]),
-                FreshnessFilter::empty(),
-            )),
-        }
-    }
-
-    fn valid_operation() -> Operation {
-        Operation::SetProxy {
-            id: PriceIdentifier([0xff; 32]),
-            proxy: Some(Proxy::new(
-                Aggregator::median_low([crate::test_request::pyth(
-                    "pyth-oracle.near".parse().unwrap(),
-                    PriceIdentifier([0xdd; 32]),
-                )
-                .into()]),
-                FreshnessFilter::empty(),
-            )),
-        }
-    }
-
-    #[rstest::rstest]
-    #[case::valid(valid_operation())]
-    #[should_panic = "EmptyProxyDefinition"]
-    #[case::invalid(invalid_operation())]
-    fn on_create(#[case] operation: Operation) {
-        operation.on_create().unwrap();
-    }
-
-    #[rstest::rstest]
-    #[case::valid(valid_operation())]
-    #[should_panic = "EmptyProxyDefinition"]
-    #[case::invalid(invalid_operation())]
-    fn on_execute(#[case] operation: Operation) {
-        operation.on_execute().unwrap();
-    }
-
-    #[test]
-    fn configure_circuit_breakers_rejects_excessive_history_len() {
-        let operation = Operation::ConfigureCircuitBreakers {
-            id: PriceIdentifier([0xaa; 32]),
-            config: CircuitBreakerSetConfig {
-                sample_interval_ns: Nanoseconds::zero(),
-                history_len: MAX_CIRCUIT_BREAKER_HISTORY_LEN + 1,
-            },
-        };
-
-        assert_eq!(
-            operation.on_create(),
-            Err(ValidationError::CircuitBreakerHistoryTooLong {
-                maximum: MAX_CIRCUIT_BREAKER_HISTORY_LEN,
-                actual: MAX_CIRCUIT_BREAKER_HISTORY_LEN + 1,
-            })
-        );
-        assert_eq!(operation.on_execute(), operation.on_create());
-    }
-
-    #[test]
-    fn circuit_breaker_operations_require_operator_role() {
-        assert_eq!(
-            Operation::Rearm {
-                id: PriceIdentifier([0xaa; 32]),
-                breaker_id: 0,
-                armed_after_ns: Nanoseconds::zero(),
-                accepted_history_source: AcceptedHistorySource::Empty,
-            }
-            .required_role(),
-            Role::CircuitBreakerOperator
-        );
-
-        assert_eq!(
-            Operation::SetEnforced {
-                id: PriceIdentifier([0xaa; 32]),
-                breaker_id: 0,
-                is_enforced: false,
-            }
-            .required_role(),
-            Role::CircuitBreakerOperator
-        );
-    }
-
-    #[test]
-    fn proxy_configuration_operations_require_manager_role() {
-        let id = PriceIdentifier([0xaa; 32]);
-        let config = CircuitBreakerSetConfig {
-            sample_interval_ns: Nanoseconds::zero(),
-            history_len: 1,
-        };
-
-        assert_eq!(
-            Operation::SetProxy { id, proxy: None }.required_role(),
-            Role::ProxyConfigurationManager
-        );
-        assert_eq!(
-            Operation::ConfigureCircuitBreakers { id, config }.required_role(),
-            Role::ProxyConfigurationManager
-        );
-        assert_eq!(
-            Operation::AddCircuitBreaker {
-                id,
-                breaker_id: 0,
-                breaker: CircuitBreaker::StepwiseChange(
-                    templar_proxy_oracle_kernel::proxy::circuit_breaker::StepwiseChange {
-                        max_relative_change: "0.1".parse().unwrap(),
-                    },
-                ),
-            }
-            .required_role(),
-            Role::ProxyConfigurationManager
-        );
-        assert_eq!(
-            Operation::RemoveCircuitBreaker { id, breaker_id: 0 }.required_role(),
-            Role::ProxyConfigurationManager
-        );
-        assert_eq!(
-            Operation::SetActionTtl {
-                kind: OperationKind::SetProxy,
-                new_ttl: Nanoseconds::zero(),
-            }
-            .required_role(),
-            Role::ProxyConfigurationManager
-        );
-    }
-
-    #[test]
-    fn role_json_uses_new_names() {
-        assert_eq!(
-            near_sdk::serde_json::to_value(Role::ManualTripper).unwrap(),
-            near_sdk::serde_json::json!("ManualTripper")
-        );
-        assert_eq!(
-            near_sdk::serde_json::to_value(Role::CircuitBreakerOperator).unwrap(),
-            near_sdk::serde_json::json!("CircuitBreakerOperator")
-        );
-        assert_eq!(
-            near_sdk::serde_json::to_value(Role::ProxyConfigurationManager).unwrap(),
-            near_sdk::serde_json::json!("ProxyConfigurationManager")
-        );
-        assert_eq!(
-            near_sdk::serde_json::to_value(Role::Admin).unwrap(),
-            near_sdk::serde_json::json!("Admin")
-        );
-    }
-
-    #[test]
-    fn operation_kind_mappings_cover_all_operations() {
-        let id = PriceIdentifier([0xaa; 32]);
-        let breaker = CircuitBreaker::StepwiseChange(
-            templar_proxy_oracle_kernel::proxy::circuit_breaker::StepwiseChange {
-                max_relative_change: "0.1".parse().unwrap(),
-            },
-        );
-        let config = CircuitBreakerSetConfig {
-            sample_interval_ns: Nanoseconds::zero(),
-            history_len: 1,
-        };
-
-        let cases = [
-            (
-                Operation::SetProxy { id, proxy: None },
-                OperationKind::SetProxy,
-            ),
-            (
-                Operation::ConfigureCircuitBreakers { id, config },
-                OperationKind::ConfigureCircuitBreakers,
-            ),
-            (
-                Operation::AddCircuitBreaker {
-                    id,
-                    breaker_id: 0,
-                    breaker,
-                },
-                OperationKind::AddCircuitBreaker,
-            ),
-            (
-                Operation::RemoveCircuitBreaker { id, breaker_id: 0 },
-                OperationKind::RemoveCircuitBreaker,
-            ),
-            (
-                Operation::SetManualTrip {
-                    id,
-                    is_manually_tripped: true,
-                    metadata: Some(vec![1, 2, 3]),
-                },
-                OperationKind::SetManualTrip,
-            ),
-            (
-                Operation::Rearm {
-                    id,
-                    breaker_id: 0,
-                    armed_after_ns: Nanoseconds::zero(),
-                    accepted_history_source: AcceptedHistorySource::Empty,
-                },
-                OperationKind::Rearm,
-            ),
-            (
-                Operation::SetEnforced {
-                    id,
-                    breaker_id: 0,
-                    is_enforced: true,
-                },
-                OperationKind::SetEnforced,
-            ),
-            (
-                Operation::SetActionTtl {
-                    kind: OperationKind::SetProxy,
-                    new_ttl: Nanoseconds::from_secs(1),
-                },
-                OperationKind::SetActionTtl,
-            ),
-            (
-                Operation::SetRole {
-                    account_id: "operator.near".parse().unwrap(),
-                    role: Role::CircuitBreakerOperator,
-                    set: true,
-                },
-                OperationKind::SetRole,
-            ),
-            (
-                Operation::AdminUpgrade {
-                    code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
-                    migrate_args: Base64VecU8(vec![0xbe, 0xef]),
-                },
-                OperationKind::AdminUpgrade,
-            ),
-            (
-                Operation::AdminFunctionCall {
-                    method_name: "own_accept_owner".to_string(),
-                    args: Base64VecU8(b"{}".to_vec()),
-                    attached_deposit: U128(0),
-                    gas: Gas::from_gas(20_000_000_000_000),
-                },
-                OperationKind::AdminFunctionCall,
-            ),
-            (
-                Operation::SelfUpgrade {
-                    code: UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from(
-                        [9u8; 32],
-                    )),
-                    migrate_args: Base64VecU8(vec![0xbe, 0xef]),
-                },
-                OperationKind::SelfUpgrade,
-            ),
-        ];
-
-        for (operation, expected) in cases {
-            assert_eq!(operation.kind(), expected);
-        }
-    }
-
-    #[test]
-    fn ttl_config_get_set_cover_all_operation_kinds() {
-        let mut config = TtlConfig {
-            set_proxy: Nanoseconds::from_secs(1),
-            configure_circuit_breakers: Nanoseconds::from_secs(2),
-            add_circuit_breaker: Nanoseconds::from_secs(3),
-            remove_circuit_breaker: Nanoseconds::from_secs(4),
-            set_manual_trip: Nanoseconds::from_secs(5),
-            rearm: Nanoseconds::from_secs(6),
-            set_enforced: Nanoseconds::from_secs(7),
-            set_action_ttl: Nanoseconds::from_secs(8),
-            set_role: Nanoseconds::from_secs(9),
-            admin_upgrade: Nanoseconds::from_secs(10),
-            admin_function_call: Nanoseconds::from_secs(11),
-            self_upgrade: Nanoseconds::from_secs(12),
-        };
-        let cases = [
-            (OperationKind::SetProxy, Nanoseconds::from_secs(1)),
-            (
-                OperationKind::ConfigureCircuitBreakers,
-                Nanoseconds::from_secs(2),
-            ),
-            (OperationKind::AddCircuitBreaker, Nanoseconds::from_secs(3)),
-            (
-                OperationKind::RemoveCircuitBreaker,
-                Nanoseconds::from_secs(4),
-            ),
-            (OperationKind::SetManualTrip, Nanoseconds::from_secs(5)),
-            (OperationKind::Rearm, Nanoseconds::from_secs(6)),
-            (OperationKind::SetEnforced, Nanoseconds::from_secs(7)),
-            (OperationKind::SetActionTtl, Nanoseconds::from_secs(8)),
-            (OperationKind::SetRole, Nanoseconds::from_secs(9)),
-            (OperationKind::AdminUpgrade, Nanoseconds::from_secs(10)),
-            (OperationKind::AdminFunctionCall, Nanoseconds::from_secs(11)),
-            (OperationKind::SelfUpgrade, Nanoseconds::from_secs(12)),
-        ];
-
-        for (kind, expected) in cases {
-            assert_eq!(config.get(kind), expected);
-        }
-
-        for (index, (kind, _)) in cases.into_iter().enumerate() {
-            let ttl = Nanoseconds::from_secs(100 + index as u64);
-            config.set(kind, ttl);
-            assert_eq!(config.get(kind), ttl);
-        }
-    }
-
-    #[test]
-    fn operation_and_ttl_json_shape_stays_named() {
-        assert_eq!(
-            near_sdk::serde_json::to_value(OperationKind::SetProxy).unwrap(),
-            near_sdk::serde_json::json!("SetProxy")
-        );
-
-        let config = TtlConfig {
-            set_proxy: Nanoseconds::from_secs(1),
-            configure_circuit_breakers: Nanoseconds::from_secs(2),
-            add_circuit_breaker: Nanoseconds::from_secs(3),
-            remove_circuit_breaker: Nanoseconds::from_secs(4),
-            set_manual_trip: Nanoseconds::from_secs(5),
-            rearm: Nanoseconds::from_secs(6),
-            set_enforced: Nanoseconds::from_secs(7),
-            set_action_ttl: Nanoseconds::from_secs(8),
-            set_role: Nanoseconds::from_secs(9),
-            admin_upgrade: Nanoseconds::from_secs(10),
-            admin_function_call: Nanoseconds::from_secs(11),
-            self_upgrade: Nanoseconds::from_secs(12),
-        };
-        let config_json = near_sdk::serde_json::to_value(config).unwrap();
-        let config_fields = config_json.as_object().unwrap();
-        assert!(config_fields.contains_key("set_proxy"));
-        assert!(config_fields.contains_key("configure_circuit_breakers"));
-        assert!(config_fields.contains_key("add_circuit_breaker"));
-        assert!(config_fields.contains_key("remove_circuit_breaker"));
-        assert!(config_fields.contains_key("set_manual_trip"));
-        assert!(config_fields.contains_key("rearm"));
-        assert!(config_fields.contains_key("set_enforced"));
-        assert!(config_fields.contains_key("set_action_ttl"));
-        assert!(config_fields.contains_key("set_role"));
-        assert!(config_fields.contains_key("admin_upgrade"));
-        assert!(config_fields.contains_key("admin_function_call"));
-        assert!(config_fields.contains_key("self_upgrade"));
-
-        let operation = Operation::SetRole {
-            account_id: "operator.near".parse().unwrap(),
-            role: Role::CircuitBreakerOperator,
-            set: false,
-        };
-        assert_eq!(
-            near_sdk::serde_json::to_value(operation).unwrap(),
-            near_sdk::serde_json::json!({
-                "SetRole": {
-                    "account_id": "operator.near",
-                    "role": "CircuitBreakerOperator",
-                    "set": false,
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn set_role_requires_admin_and_has_independent_ttl() {
-        let operation = Operation::SetRole {
-            account_id: "operator.near".parse().unwrap(),
-            role: Role::CircuitBreakerOperator,
-            set: true,
-        };
-
-        assert_eq!(operation.required_role(), Role::Admin);
-        assert_eq!(operation.kind(), OperationKind::SetRole);
-
-        let mut config = TtlConfig {
-            set_proxy: Nanoseconds::from_secs(1),
-            configure_circuit_breakers: Nanoseconds::from_secs(1),
-            add_circuit_breaker: Nanoseconds::from_secs(1),
-            remove_circuit_breaker: Nanoseconds::from_secs(1),
-            set_manual_trip: Nanoseconds::from_secs(1),
-            rearm: Nanoseconds::from_secs(1),
-            set_enforced: Nanoseconds::from_secs(1),
-            set_action_ttl: Nanoseconds::from_secs(999),
-            set_role: Nanoseconds::from_secs(42),
-            admin_upgrade: Nanoseconds::from_secs(43),
-            admin_function_call: Nanoseconds::from_secs(44),
-            self_upgrade: Nanoseconds::from_secs(45),
-        };
-
-        assert_eq!(
-            config.get(OperationKind::SetRole),
-            Nanoseconds::from_secs(42)
-        );
-        assert_eq!(
-            config.get(OperationKind::SetActionTtl),
-            Nanoseconds::from_secs(999)
-        );
-
-        config.set(OperationKind::SetRole, Nanoseconds::from_secs(100));
-        assert_eq!(
-            config.get(OperationKind::SetRole),
-            Nanoseconds::from_secs(100)
-        );
-        assert_eq!(
-            config.get(OperationKind::SetActionTtl),
-            Nanoseconds::from_secs(999)
-        );
-
-        config.set(OperationKind::SetActionTtl, Nanoseconds::from_secs(200));
-        assert_eq!(
-            config.get(OperationKind::SetRole),
-            Nanoseconds::from_secs(100)
-        );
-        assert_eq!(
-            config.get(OperationKind::SetActionTtl),
-            Nanoseconds::from_secs(200)
-        );
-    }
-
-    #[test]
-    fn admin_upgrade_requires_admin_role() {
-        let operation = Operation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
-            migrate_args: Base64VecU8(vec![0xbe, 0xef]),
-        };
-        assert_eq!(operation.required_role(), Role::Admin);
-        assert_eq!(operation.kind(), OperationKind::AdminUpgrade);
-    }
-
-    #[test]
-    fn admin_upgrade_rejects_empty_code() {
-        let operation = Operation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![])),
-            migrate_args: Base64VecU8(vec![0x00]),
-        };
-        assert_eq!(
-            operation.on_create(),
-            Err(ValidationError::EmptyUpgradeCode)
-        );
-        assert_eq!(operation.on_execute(), operation.on_create());
-    }
-
-    #[test]
-    fn admin_upgrade_accepts_valid_code() {
-        let operation = Operation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
-            migrate_args: Base64VecU8(vec![]),
-        };
-        assert_eq!(operation.on_create(), Ok(()));
-        assert_eq!(operation.on_execute(), Ok(()));
-    }
-
-    #[test]
-    fn admin_upgrade_ttl_is_independent() {
-        let mut config = TtlConfig {
-            set_proxy: Nanoseconds::from_secs(1),
-            configure_circuit_breakers: Nanoseconds::from_secs(1),
-            add_circuit_breaker: Nanoseconds::from_secs(1),
-            remove_circuit_breaker: Nanoseconds::from_secs(1),
-            set_manual_trip: Nanoseconds::from_secs(1),
-            rearm: Nanoseconds::from_secs(1),
-            set_enforced: Nanoseconds::from_secs(1),
-            set_action_ttl: Nanoseconds::from_secs(1),
-            set_role: Nanoseconds::from_secs(1),
-            admin_upgrade: Nanoseconds::from_secs(3600),
-            admin_function_call: Nanoseconds::from_secs(1),
-            self_upgrade: Nanoseconds::from_secs(1),
-        };
-        assert_eq!(
-            config.get(OperationKind::AdminUpgrade),
-            Nanoseconds::from_secs(3600)
-        );
-        config.set(OperationKind::AdminUpgrade, Nanoseconds::from_secs(7200));
-        assert_eq!(
-            config.get(OperationKind::AdminUpgrade),
-            Nanoseconds::from_secs(7200)
-        );
-    }
-
-    #[test]
-    fn admin_upgrade_json_roundtrip() {
-        let operation = Operation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
-            migrate_args: Base64VecU8(vec![0xca, 0xfe]),
-        };
-        let json_value = near_sdk::serde_json::to_value(&operation).unwrap();
-        // `UpgradeSource::Code` is untagged in JSON, so `source` is a bare base64 string — matching
-        // the pre-`UpgradeSource` `code` wire.
-        assert_eq!(
-            json_value,
-            near_sdk::serde_json::json!({
-                "AdminUpgrade": {
-                    "code": "3q2+7w==",
-                    "migrate_args": "yv4=",
-                }
-            })
-        );
-        let deserialized: Operation = near_sdk::serde_json::from_value(json_value).unwrap();
-        assert_eq!(deserialized, operation);
-    }
-
-    #[test]
-    fn admin_function_call_requires_admin_role() {
-        let operation = Operation::AdminFunctionCall {
-            method_name: "own_accept_owner".to_string(),
-            args: Base64VecU8(b"{}".to_vec()),
-            attached_deposit: U128(0),
-            gas: Gas::from_gas(20_000_000_000_000),
-        };
-        assert_eq!(operation.required_role(), Role::Admin);
-        assert_eq!(operation.kind(), OperationKind::AdminFunctionCall);
-    }
-
-    #[test]
-    fn admin_function_call_json_roundtrip() {
-        let operation = Operation::AdminFunctionCall {
-            method_name: "own_accept_owner".to_string(),
-            args: Base64VecU8(b"{}".to_vec()),
-            attached_deposit: U128(1),
-            gas: Gas::from_gas(20_000_000_000_000),
-        };
-        let json_value = near_sdk::serde_json::to_value(&operation).unwrap();
-        assert_eq!(
-            json_value,
-            near_sdk::serde_json::json!({
-                "AdminFunctionCall": {
-                    "method_name": "own_accept_owner",
-                    "args": "e30=",
-                    "attached_deposit": "1",
-                    "gas": "20000000000000",
-                }
-            })
-        );
-        let deserialized: Operation = near_sdk::serde_json::from_value(json_value).unwrap();
-        assert_eq!(deserialized, operation);
-    }
-
-    #[test]
-    fn admin_function_call_rejects_empty_method_name() {
-        let operation = Operation::AdminFunctionCall {
-            method_name: "   ".to_string(),
-            args: Base64VecU8(vec![]),
-            attached_deposit: U128(0),
-            gas: Gas::from_gas(20_000_000_000_000),
-        };
-        assert_eq!(
-            operation.on_create(),
-            Err(ValidationError::EmptyAdminFunctionCallMethodName)
-        );
-        assert_eq!(operation.on_execute(), operation.on_create());
-    }
-
-    #[test]
-    fn admin_function_call_rejects_zero_gas() {
-        let operation = Operation::AdminFunctionCall {
-            method_name: "own_accept_owner".to_string(),
-            args: Base64VecU8(vec![]),
-            attached_deposit: U128(0),
-            gas: Gas::from_gas(0),
-        };
-        assert_eq!(
-            operation.on_create(),
-            Err(ValidationError::ZeroAdminFunctionCallGas)
-        );
-        assert_eq!(operation.on_execute(), operation.on_create());
-    }
-
-    #[test]
-    fn admin_upgrade_borsh_roundtrip() {
-        let operation = Operation::AdminUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
-            migrate_args: Base64VecU8(vec![0xca, 0xfe]),
-        };
-        let bytes = near_sdk::borsh::to_vec(&operation).unwrap();
-        let deserialized: Operation = near_sdk::borsh::from_slice(&bytes).unwrap();
-        assert_eq!(deserialized, operation);
-    }
-
-    #[test]
-    fn self_upgrade_requires_admin_and_validates_code() {
-        let operation = Operation::SelfUpgrade {
-            code: UpgradeSource::GlobalHash(near_sdk::json_types::Base58CryptoHash::from(
-                [7u8; 32],
-            )),
-            migrate_args: Base64VecU8(vec![]),
-        };
-        assert_eq!(operation.required_role(), Role::Admin);
-        assert_eq!(operation.kind(), OperationKind::SelfUpgrade);
-        assert_eq!(operation.on_create(), Ok(()));
-
-        let empty = Operation::SelfUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(vec![])),
-            migrate_args: Base64VecU8(vec![]),
-        };
-        assert_eq!(empty.on_create(), Err(ValidationError::EmptyUpgradeCode));
-    }
-}
-
-#[cfg(test)]
-mod test_request {
-    use near_sdk::AccountId;
-    use templar_common::oracle::pyth::PriceIdentifier;
-    use templar_proxy_oracle_near_common::request::OracleRequest;
-
-    pub fn pyth(oracle_id: AccountId, price_id: PriceIdentifier) -> OracleRequest {
-        OracleRequest::pyth(oracle_id, price_id)
-    }
-}
+mod tests;

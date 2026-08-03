@@ -15,7 +15,7 @@ use crate::context::{print_json, CliContext};
 
 /// Plan or create a governance proposal. Resolves the proposal id (fetching the
 /// governance contract's next id when `--id` was omitted) and, for an
-/// `add-circuit-breaker` proposal without `--breaker-id`, the set's next breaker
+/// `oracle add-circuit-breaker` proposal without `--breaker-id`, the set's next breaker
 /// id. Print mode emits the selected plan representation without sending.
 /// Execution mode logs the resolved id, and `--execute-when-ready` waits for the
 /// proposal's TTL to elapse before executing it.
@@ -24,7 +24,7 @@ pub(super) async fn create(ctx: CliContext, mut args: CreateProposal) -> anyhow:
     let signer_args = args.signer.clone();
     let governance_id = args.target.resolve(&ctx).await?;
 
-    // Auto-fill the next breaker id for add-circuit-breaker, resolving the proxy
+    // Auto-fill the next breaker id for oracle add-circuit-breaker, resolving the proxy
     // oracle (whose set holds the breakers) through the governance contract. This
     // reads the committed set's next id; if a concurrent proposal advances it
     // before this one executes, the contract rejects the stale id (no corruption)
