@@ -1983,7 +1983,7 @@ impl SandboxHarness {
         method_name: &str,
         args: impl serde::Serialize,
     ) -> Result<WriteOperationResult> {
-        self.execute(signer, Self::function_call(contract_id, method_name, args)?)
+        self.execute(signer, Self::json_call(contract_id, method_name, args)?)
             .await
     }
 
@@ -1996,7 +1996,7 @@ impl SandboxHarness {
         method_name: &str,
         args: impl serde::Serialize,
     ) -> Result<WriteOperationResult> {
-        self.try_execute(signer, Self::function_call(contract_id, method_name, args)?)
+        self.try_execute(signer, Self::json_call(contract_id, method_name, args)?)
             .await
     }
 
@@ -2023,18 +2023,69 @@ impl SandboxHarness {
             .with_context(|| format!("failed to decode {contract_id}.{method_name} return value"))
     }
 
-    fn function_call(
+    /// [`call_function`](Self::call_function) attaching `deposit`, for the
+    /// confirmation-deposit methods (governance writes take 1 yocto).
+    pub async fn call_function_payable(
+        &self,
+        signer: &ManagedAccountId,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+        deposit: near_token::NearToken,
+    ) -> Result<WriteOperationResult> {
+        let args = ContractArgs::Json(serde_json::to_value(args)?);
+        self.execute(
+            signer,
+            Self::function_call(contract_id, method_name, args, deposit),
+        )
+        .await
+    }
+
+    /// [`call_function_payable`](Self::call_function_payable) with borsh-encoded
+    /// arguments, for the `#[serializer(borsh)]` entrypoints. Borsh decodes
+    /// positionally, so `args` must be the entrypoint's own argument struct.
+    pub async fn call_function_borsh(
+        &self,
+        signer: &ManagedAccountId,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl near_sdk::borsh::BorshSerialize,
+        deposit: near_token::NearToken,
+    ) -> Result<WriteOperationResult> {
+        let args = ContractArgs::Raw(Base64Bytes(near_sdk::borsh::to_vec(&args)?));
+        self.execute(
+            signer,
+            Self::function_call(contract_id, method_name, args, deposit),
+        )
+        .await
+    }
+
+    fn json_call(
         contract_id: &AccountId,
         method_name: &str,
         args: impl serde::Serialize,
     ) -> Result<tx::FunctionCall> {
-        Ok(tx::FunctionCall {
+        Ok(Self::function_call(
+            contract_id,
+            method_name,
+            ContractArgs::Json(serde_json::to_value(args)?),
+            near_token::NearToken::from_yoctonear(0),
+        ))
+    }
+
+    fn function_call(
+        contract_id: &AccountId,
+        method_name: &str,
+        args: ContractArgs,
+        deposit: near_token::NearToken,
+    ) -> tx::FunctionCall {
+        tx::FunctionCall {
             receiver_id: contract_id.clone(),
             method_name: ContractMethodName(method_name.to_owned()),
-            args: ContractArgs::Json(serde_json::to_value(args)?),
+            args,
             gas: NearGas::from_tgas(300),
-            deposit: near_token::NearToken::from_yoctonear(0),
-        })
+            deposit,
+        }
     }
 
     /// Read an account's borrow status given an oracle response.

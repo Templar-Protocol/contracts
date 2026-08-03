@@ -11,10 +11,9 @@ use templar_common::{
     versioned_state::{impl_versioned_state, StateVersion, VersionedState},
     Nanoseconds, UnwrapReject,
 };
-use templar_proxy_oracle_near_common::governance::ext_proxy_oracle_admin;
 use templar_proxy_oracle_near_governance_common::{
-    gen_ext_governance, Event, Operation, OperationKind, Proposal, Role, TtlConfig,
-    MAX_PROPOSAL_TTL,
+    gen_ext_governance, CreateProposalArgs, Event, GovernancePolicy, Operation, Proposal,
+    ReflexiveOperation, Role, MAX_PROPOSAL_TTL,
 };
 
 mod state;
@@ -56,12 +55,11 @@ impl DerefMut for Contract {
 impl_versioned_state!(Contract, State, state::migration::Migration);
 
 impl Contract {
-    pub const GAS_FOR_ADMIN_UPGRADE: Gas = Gas::from_tgas(280);
     /// Gas for the `migrate` call batched onto a `SelfUpgrade` self-deploy of this contract.
     pub const GAS_FOR_MIGRATE: Gas = Gas::from_tgas(250);
 
-    fn assert_authorized(operation: &Operation) {
-        let required = operation.required_role();
+    fn assert_authorized(&self, operation: &Operation) {
+        let required = operation.required_role(&self.header.ttls);
         let caller = env::predecessor_account_id();
         let has_role = <Self as Rbac>::has_role(&caller, &Role::Admin)
             || <Self as Rbac>::has_role(&caller, &required);
@@ -80,6 +78,38 @@ impl Contract {
 
     fn id_to_u32(id: u64) -> u32 {
         u32::try_from(id).unwrap_or_else(|_| env::panic_str("Proposal ID exceeds u32"))
+    }
+
+    /// Returns a borrow so the borsh entrypoint never copies the payload it exists to carry cheaply.
+    fn create_proposal_inner(
+        &mut self,
+        id: u32,
+        operation: Operation,
+        requested_ttl: Nanoseconds,
+    ) -> &Proposal<Operation> {
+        near_sdk::assert_one_yocto();
+        self.assert_authorized(&operation);
+
+        let effective_ttl = self.header.effective_ttl(&operation, requested_ttl);
+        if effective_ttl > MAX_PROPOSAL_TTL {
+            env::panic_str("Proposal TTL exceeds maximum allowed");
+        }
+
+        let proposal = self
+            .header
+            .create(
+                u64::from(id),
+                operation,
+                Nanoseconds::near_timestamp(),
+                env::predecessor_account_id(),
+                effective_ttl,
+            )
+            .unwrap_or_reject();
+        let kind = proposal.operation.kind();
+        let method = proposal.operation.method();
+        self.proposals.insert(id, proposal);
+        Event::Created { id, kind, method }.emit();
+        &self.proposals[&id]
     }
 }
 
@@ -117,8 +147,8 @@ impl ProxyGovernanceInterface for Contract {
         self.header.effective_ttl(&operation, requested_ttl)
     }
 
-    fn get_operation_ttl(&self, kind: OperationKind) -> Nanoseconds {
-        self.header.ttls.get(kind)
+    fn get_governance_policy(&self) -> GovernancePolicy {
+        self.header.ttls.clone()
     }
 
     #[payable]
@@ -128,57 +158,42 @@ impl ProxyGovernanceInterface for Contract {
         operation: Operation,
         requested_ttl: Nanoseconds,
     ) -> Proposal<Operation> {
-        near_sdk::assert_one_yocto();
-        Self::assert_authorized(&operation);
+        self.create_proposal_inner(id, operation, requested_ttl)
+            .clone()
+    }
 
-        let effective_ttl = self.header.effective_ttl(&operation, requested_ttl);
-        if effective_ttl > MAX_PROPOSAL_TTL {
-            env::panic_str("Proposal TTL exceeds maximum allowed");
-        }
-
-        let proposal = self
-            .header
-            .create(
-                u64::from(id),
-                operation,
-                Nanoseconds::near_timestamp(),
-                env::predecessor_account_id(),
-                effective_ttl,
-            )
-            .unwrap_or_reject();
-        let kind = proposal.operation.kind();
-        self.proposals.insert(id, proposal.clone());
-        Event::Created { id, kind }.emit();
-        proposal
+    #[payable]
+    fn create_proposal_borsh(&mut self, #[serializer(borsh)] args: CreateProposalArgs<Operation>) {
+        self.create_proposal_inner(args.id, args.operation, args.requested_ttl);
     }
 
     #[payable]
     fn cancel_proposal(&mut self, id: u32) {
         near_sdk::assert_one_yocto();
         let operation = self.proposals.get(&id).unwrap_or_reject().operation.clone();
-        Self::assert_authorized(&operation);
+        self.assert_authorized(&operation);
 
         self.header.cancel(u64::from(id)).unwrap_or_reject();
         let proposal = self.proposals.remove(&id).unwrap_or_reject();
         Event::Cancelled {
             id,
             kind: proposal.operation.kind(),
+            method: proposal.operation.method(),
         }
         .emit();
     }
 
     #[payable]
-    #[allow(clippy::too_many_lines)]
     fn execute_proposal(&mut self, id: u32) {
         near_sdk::assert_one_yocto();
 
         let proposal = self.proposals.get(&id).unwrap_or_reject().clone();
-        Self::assert_authorized(&proposal.operation);
-        if let Operation::SetRole {
+        self.assert_authorized(&proposal.operation);
+        if let Operation::Reflexive(ReflexiveOperation::SetRole {
             account_id,
             role,
             set,
-        } = &proposal.operation
+        }) = &proposal.operation
         {
             Self::assert_can_set_role(account_id, *role, *set);
         }
@@ -189,112 +204,64 @@ impl ProxyGovernanceInterface for Contract {
             .execute(u64::from(id), &proposal, Nanoseconds::near_timestamp())
             .unwrap_or_reject();
         let operation = self.proposals.remove(&id).unwrap_or_reject().operation;
-        Event::Executed {
-            id,
-            kind: operation.kind(),
-        }
-        .emit();
+        let kind = operation.kind();
+        let method = operation.method();
 
         let proxy_oracle_id = self.proxy_oracle_id.clone();
 
         match operation {
-            Operation::SetProxy { id, proxy } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_set_proxy(id, proxy)
-                    .detach();
-            }
-            Operation::ConfigureCircuitBreakers { id, config } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_configure_circuit_breakers(id, config)
-                    .detach();
-            }
-            Operation::AddCircuitBreaker {
-                id,
-                breaker_id,
-                breaker,
-            } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_add_circuit_breaker(id, breaker_id, breaker)
-                    .detach();
-            }
-            Operation::RemoveCircuitBreaker { id, breaker_id } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_remove_circuit_breaker(id, breaker_id)
-                    .detach();
-            }
-            Operation::SetManualTrip {
-                id,
-                is_manually_tripped,
-                metadata,
-            } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_set_manual_trip(
-                        id,
-                        is_manually_tripped,
-                        metadata.map(near_sdk::json_types::Base64VecU8),
-                    )
-                    .detach();
-            }
-            Operation::Rearm {
-                id,
-                breaker_id,
-                armed_after_ns,
-                accepted_history_source,
-            } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_rearm(id, breaker_id, armed_after_ns, accepted_history_source)
-                    .detach();
-            }
-            Operation::SetEnforced {
-                id,
-                breaker_id,
-                is_enforced,
-            } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .admin_set_enforced(id, breaker_id, is_enforced)
-                    .detach();
-            }
-            Operation::SetActionTtl { kind, new_ttl } => {
-                self.header.ttls.set(kind, new_ttl);
-            }
-            Operation::SetRole {
-                account_id,
-                role,
-                set,
-            } => {
-                Self::assert_can_set_role(&account_id, role, set);
-                if set {
-                    <Self as Rbac>::add_role(self, &account_id, &role);
-                } else {
-                    <Self as Rbac>::remove_role(self, &account_id, &role);
+            Operation::Reflexive(reflexive) => match reflexive {
+                ReflexiveOperation::SetReflexiveTtl { kind, ttl } => {
+                    self.header
+                        .ttls
+                        .set_reflexive_ttl(kind, ttl)
+                        .unwrap_or_reject();
                 }
-            }
-            Operation::AdminUpgrade { code, migrate_args } => {
-                ext_proxy_oracle_admin::ext(proxy_oracle_id)
-                    .with_static_gas(Self::GAS_FOR_ADMIN_UPGRADE)
-                    .admin_upgrade(code, migrate_args)
-                    .detach();
-            }
-            Operation::AdminFunctionCall {
-                method_name,
-                args,
-                attached_deposit,
-                gas,
-            } => {
+                ReflexiveOperation::SetTargetDefault { policy } => {
+                    self.header
+                        .ttls
+                        .set_target_default(policy)
+                        .unwrap_or_reject();
+                }
+                ReflexiveOperation::SetMethodPolicy { method, policy } => {
+                    self.header
+                        .ttls
+                        .set_method_policy(method, policy)
+                        .unwrap_or_reject();
+                }
+                ReflexiveOperation::SetRole {
+                    account_id,
+                    role,
+                    set,
+                } => {
+                    Self::assert_can_set_role(&account_id, role, set);
+                    if set {
+                        <Self as Rbac>::add_role(self, &account_id, &role);
+                    } else {
+                        <Self as Rbac>::remove_role(self, &account_id, &role);
+                    }
+                }
+                ReflexiveOperation::SelfUpgrade { code, migrate_args } => {
+                    code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
+                        .detach();
+                }
+            },
+            Operation::TargetFunctionCall(call) => {
                 Promise::new(proxy_oracle_id)
                     .function_call(
-                        method_name,
-                        args.0,
-                        NearToken::from_yoctonear(attached_deposit.0),
-                        gas,
+                        call.method_name,
+                        call.args.0,
+                        NearToken::from_yoctonear(call.attached_deposit.0),
+                        call.gas,
                     )
-                    .detach();
-            }
-            Operation::SelfUpgrade { code, migrate_args } => {
-                code.deploy_and_migrate(MIGRATE_METHOD, migrate_args, Self::GAS_FOR_MIGRATE)
                     .detach();
             }
         }
+
+        // Emitted last: the reflexive mutations above are fallible, and a failed one reverts state
+        // while leaving its logs on the receipt. Emitting first would advertise an execution that
+        // did not happen.
+        Event::Executed { id, kind, method }.emit();
     }
 }
 
@@ -302,9 +269,11 @@ impl ProxyGovernanceInterface for Contract {
 #[allow(clippy::needless_pass_by_value)]
 impl Contract {
     #[init]
-    pub fn new(proxy_oracle_id: AccountId, admin_id: AccountId, ttls: TtlConfig) -> Self {
+    pub fn new(proxy_oracle_id: AccountId, admin_id: AccountId, policy: GovernancePolicy) -> Self {
+        // `policy` deserialized through `GovernancePolicyWire`, so it is already within bounds —
+        // an out-of-range init policy is rejected while parsing the args, before reaching here.
         let mut self_ = Self {
-            state: State::new((proxy_oracle_id, ttls)),
+            state: State::new((proxy_oracle_id, policy)),
         };
 
         <Self as Rbac>::add_role(&mut self_, &admin_id, &Role::Admin);

@@ -1,9 +1,10 @@
 [package]
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 name = "templar-universal-account-contract"
 repository.workspace = true
-version = "0.5.0"
+version = "0.5.2"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

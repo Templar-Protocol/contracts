@@ -148,16 +148,6 @@ macro_rules! governance_operations {
     };
 }
 
-impl templar_proxy_oracle_governance_kernel::TtlConfig<OperationKind> for TtlConfig {
-    fn get(&self, kind: OperationKind) -> Nanoseconds {
-        self.get(kind)
-    }
-
-    fn set(&mut self, kind: OperationKind, ttl: Nanoseconds) {
-        self.set(kind, ttl);
-    }
-}
-
 governance_operations! {
     SetProxy(Asset, ProxyConfig) => set_proxy,
     RemoveProxy(Asset) => remove_proxy,

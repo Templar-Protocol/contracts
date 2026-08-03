@@ -155,7 +155,7 @@
 | `proxyOracleGovernance.cancelProposal` | write | `CancelProposal` → `WriteOperationResult` | Cancel a governance proposal. |
 | `proxyOracleGovernance.createProposal` | write | `CreateProposal` → `WriteOperationResult` | Create a governance proposal. |
 | `proxyOracleGovernance.executeProposal` | write | `ExecuteProposal` → `WriteOperationResult` | Execute a governance proposal. |
-| `proxyOracleGovernance.getOperationTtl` | read | `GetOperationTtl` → `GetOperationTtlResult` | Get the configured proposal TTL for an operation kind. |
+| `proxyOracleGovernance.getGovernancePolicy` | read | `GetGovernancePolicy` → `GetGovernancePolicyResult` | Get the governance policy table (reflexive timelocks, the conservative target default, and per-method overrides). |
 | `proxyOracleGovernance.getProposal` | read | `GetProposal` → `GetProposalResult` | Get a governance proposal. |
 | `proxyOracleGovernance.getProxyOracleId` | read | `GetProxyOracleId` → `GetProxyOracleIdResult` | Get the account id of the proxy oracle this governance contract governs. |
 | `proxyOracleGovernance.getRoles` | read | `GetRoles` → `GetRolesResult` | Get every governance role an account holds. |

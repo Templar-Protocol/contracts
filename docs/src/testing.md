@@ -12,8 +12,8 @@ Use `just test-fast` for the complete non-node gate, including non-node
 integration targets, or `just test-sandbox` for the node-backed gate. The sandbox recipe prebuilds NEAR contracts before
 starting its pooled `neard` instances; pass `--stale` to reuse the contracts already built into `target/near`.
 
-Run the artifact drift check separately when validating checked-in WASM blobs —
-a pure hash/version check with no builds:
+Run the artifact drift check separately when validating the release catalog —
+pure in-memory invariant checks, no builds:
 
 ```bash
 ./script/check-artifact-drift.sh

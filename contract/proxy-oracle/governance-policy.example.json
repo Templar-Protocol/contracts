@@ -1,0 +1,45 @@
+{
+  "reflexive_ttls": {
+    "set_policy": "172800000000000",
+    "set_role": "172800000000000",
+    "self_upgrade": "604800000000000"
+  },
+  "default_target": {
+    "ttl": "259200000000000",
+    "role": "Admin"
+  },
+  "method_policies": {
+    "admin_set_proxy": {
+      "ttl": "86400000000000",
+      "role": "ProxyConfigurationManager"
+    },
+    "admin_configure_circuit_breakers": {
+      "ttl": "86400000000000",
+      "role": "ProxyConfigurationManager"
+    },
+    "admin_add_circuit_breaker": {
+      "ttl": "86400000000000",
+      "role": "ProxyConfigurationManager"
+    },
+    "admin_remove_circuit_breaker": {
+      "ttl": "86400000000000",
+      "role": "ProxyConfigurationManager"
+    },
+    "admin_set_manual_trip": {
+      "ttl": "0",
+      "role": "ManualTripper"
+    },
+    "admin_rearm": {
+      "ttl": "0",
+      "role": "CircuitBreakerOperator"
+    },
+    "admin_set_enforced": {
+      "ttl": "0",
+      "role": "CircuitBreakerOperator"
+    },
+    "admin_upgrade": {
+      "ttl": "259200000000000",
+      "role": "Admin"
+    }
+  }
+}

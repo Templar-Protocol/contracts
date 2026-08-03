@@ -47,6 +47,10 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
    governance contract enforces timelocks and applies changes immediately once the handler confirms
    the caller is the configured governance contract.
 9. **Vault contract ↔ Share token contract** — Share token enforces vault auth for `mint()`/`burn()` and `from.require_auth()` for user `transfer()` (while allowing vault-driven internal transfers). The vault address is immutable in the share token after initialization.
+10. **Blend adapter administrator ↔ Blend adapter contract** — The explicit administrator may be
+    a Soroban account or contract. Every administrative call requires its authentication. It can
+    pause or unpause the adapter, rotate administration through a two-step handoff, extend instance
+    TTL, and upgrade adapter Wasm; vault-only asset movement remains separately authenticated.
 
 ### Privilege Hierarchy
 
@@ -59,6 +63,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | **Guardian** | Curator (via RBAC config) | Pause/unpause vault. **Note**: Same as allocator — no separate guardian wired in production. |
 | **User** | Any signed account | Deposit, request async withdrawal, or atomically withdraw/redeem idle assets. Subject to restrictions (whitelist/blacklist/pause). |
 | **Keeper/Allocator** | Curator-configured operational account | Execute queued withdrawals after cooldown once enough assets are idle; allocate/withdraw from markets to make liquidity available. |
+| **Blend adapter administrator** | Adapter constructor or two-step `set_admin` / `accept_admin` handoff | Pause or unpause the adapter, rotate administration, extend instance TTL, and upgrade adapter Wasm. The administrator may be an authenticated Soroban account or contract; it does not receive vault-only supply, withdrawal, or rescue authority. |
 
 ### High-Level Dataflow
 
@@ -135,6 +140,7 @@ This document captures a Soroban-specific STRIDE threat model for `contract/vaul
 | I23 | Governance contract → `submit()` / `approve()` / `consume()` | Yes | `require_auth(admin)` + timelock maturity | Governance contract internal state |
 | I24 | Governance contract → `abdicate(kind)` | Yes | `require_auth(admin)` | Governance contract storage (irreversible) |
 | I25 | Vault/User ↔ Share token (`transfer`/`mint`/`burn`) | Yes | `require_vault_invoker()` for `mint`/`burn`; `from.require_auth()` for user `transfer` | Vault/User ↔ Share token contract |
+| I26 | Blend adapter administrator → `set_paused` / `set_admin` / `accept_admin` / `extend_ttl` / `upgrade` | Yes | `require_auth(caller)` + configured-admin check; pending admin authenticates acceptance | Administrator ↔ Blend adapter contract |
 
 ---
 
@@ -194,6 +200,7 @@ Interaction: I24. |
 | | **Elevation.7** — If `has_role` for `Role::Sentinel` falls back to curator when no sentinel is set, the curator implicitly gains sentinel powers. This may be acceptable for bootstrapping but should be an explicit documented decision. Interaction: I20. |
 | | **Elevation.8** — Share token vault address is set at initialization and enforced for privileged operations (`mint`/`burn`). If the share token contract is upgradeable and the vault address is mutable post-init, an attacker who gains upgrade access could redirect privileged share operations to a different contract. Interaction: I25. |
 | | **Elevation.9** — Governance timelock kind/decision function mappings in `soroban/governance` must match the sensitivity of each action. A misconfigured mapping (e.g., `Skim` using an immediate timelock instead of a delayed one) reduces the governance friction intended for high-impact actions. Interaction: I23. |
+| | **Elevation.10** — Compromise or misconfiguration of a Blend adapter administrator, whether an account or contract, permits pause changes, admin rotation, and arbitrary adapter Wasm upgrades. The current implementation keeps asset movement vault-only, but upgraded code can change future adapter behavior. Interaction: I26. |
 
 ---
 
@@ -244,8 +251,9 @@ emit admin events via the existing `emit_admin_event()` pattern. |
 | | **Elevation.7.R.1** — ✅ **Implemented**: `SorobanAuth::has_role` checks the sentinel address distinctly from the curator. When no sentinel is set (`VaultDataKey::Sentinel` absent), `Role::Sentinel` checks fall back to curator as a bootstrap convenience. **Elevation.7.R.2** — Operational: deploy with an explicit sentinel address from day one. Use
 `execute_governance(payload)` with a sentinel appointment command to establish a distinct
 sentinel as soon as operational key infrastructure is ready. |
-| | **Elevation.8.R.1** — ✅ **Implemented**: Share token stores the vault address at initialization; `require_vault_invoker()` is enforced on `mint`/`burn`, while user transfers require `from.require_auth()`. **Elevation.8.R.2** — The share token contract has no admin endpoint to change the vault address post-initialization. **Elevation.8.R.3** — If the share token contract is made upgradeable in the future, ensure the vault address remains immutable across migrations. |
+| | **Elevation.8.R.1** — ✅ **Implemented**: Share token stores the vault address at initialization; `require_vault_invoker()` is enforced on `mint`/`burn`, while user transfers require `from.require_auth()`. **Elevation.8.R.2** — The share token contract has no admin endpoint to change the vault address post-initialization. Administrative pause, restriction, upgrade, TTL, and two-step rotation authority is assigned to a separate explicit admin; constructors and rotations reject the vault and share token itself as admin. **Elevation.8.R.3** — The CLI records the initial admin as constructor provenance and reconciles the immutable vault binding; admin rotation makes the current admin mutable state. Because the admin can upgrade the token implementation, it remains an ultimate trust boundary over token behavior. Future upgrades must preserve the intended vault-only mint/burn invariant. |
 | | **Elevation.9.R.1** — ✅ **Implemented**: `soroban/governance` maps each `GovernanceActionKind` to a `TimelockKind` with appropriate sensitivity levels. Decision functions from `curator-primitives` enforce directional timelocks (e.g., fee increases are timelocked, decreases are immediate). **Elevation.9.R.2** — Add integration tests that verify timelock kind mappings for all governance action kinds (partially done: 7 governance tests cover sentinel, cap, and core actions). |
+| | **Elevation.10.R.1** — ✅ **Implemented**: every Blend adapter administrative action authenticates the configured administrator, and rotation requires separate acceptance by the pending administrator. **Elevation.10.R.2** — Treat the administrator as an adapter upgrade trust boundary: use an independently controlled multisig/HSM account or reviewed contract and monitor pause, rotation, and upgrade events. **Elevation.10.R.3** — Deployment tooling rejects the configured vault governance contract as administrator and capability-gates use of the vault itself; future adapter upgrades must preserve vault-only asset movement. |
 
 ---
 

@@ -1,5 +1,6 @@
 [package]
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 name = "templar-contract-artifacts"
 publish = false
@@ -11,29 +12,46 @@ description = "Canonical contract artifact IDs, metadata, and byte-loading helpe
 default = []
 # workspace-loader: read WASM bytes from target/near/{name}/{name}.wasm at runtime.
 workspace-loader = ["dep:cargo_metadata"]
-# embedded-wasm: include_bytes!-based blobs for each contract.
-embedded-wasm = []
+# fetch: download released WASM from GitHub Releases into a shared local cache.
+fetch = ["dep:dirs", "dep:reqwest", "dep:tokio"]
 # clap: optional parsing helpers for command-line argument handling.
 clap = ["dep:clap"]
 
 [dependencies]
 cargo_metadata = { version = "0.23", optional = true }
+dirs = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 hex.workspace = true
+reqwest = { workspace = true, optional = true }
 schemars.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 rstest.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
+# Release policy is asserted against parsed TOML, not a substring search: a
+# commented-out `# release = false` reads as present to the latter.
+toml = "0.8"
 
 [[bin]]
 name = "prebuild-test-contracts"
 path = "src/bin/prebuild-test-contracts.rs"
 required-features = ["workspace-loader", "clap"]
+
+[[bin]]
+name = "fetch-artifacts"
+path = "src/bin/fetch-artifacts.rs"
+required-features = ["fetch", "clap"]
+
+[[bin]]
+name = "record-release"
+path = "src/bin/record-release.rs"
+required-features = ["clap"]
 
 [lints]
 workspace = true

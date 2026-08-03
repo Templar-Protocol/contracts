@@ -70,13 +70,33 @@ flow. The manifest stores these as `custodial_adapter_0`, `custodial_adapter_1`,
 the `admin`, `vault`, `custodian`, and bound `asset` constructor args recorded for reconciliation
 and status. Custodial adapters are single-asset; `deploy adapters --custodian ...` requires
 `asset_token` in the manifest or `--asset-token`.
+Every deployment that requests a Blend or custodial adapter must also pass
+`--adapter-admin <address|vault>` (or `SOROBAN_ADAPTER_ADMIN`). Governance is never selected
+implicitly. The `vault` alias, and an explicit address equal to the vault, are accepted only after
+the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`. The current default
+runtime does not advertise that capability. Blend and custodial adapter admins may be
+independently controlled accounts or contracts.
+
+For a new stack, `--admin` is passed explicitly to the governance contract, the initial vault
+curator configuration, and the share-token constructor. The share token keeps a separate immutable
+`vault` binding for mint and burn; it rejects deployments or later admin rotations that set
+`admin == vault`. The manifest records the initial admin as constructor provenance, while
+reconciliation checks only the immutable vault binding because the token admin can rotate. For a
+replacement stack, pass global `--fresh-state` with a new `--state` path. The CLI reserves that path
+before any network call and refuses to overwrite an existing file. Omit `--fresh-state` when
+resuming an interrupted deployment from its reserved manifest.
 
 ```sh
-tmplr-soroban-vault deploy stack \
+tmplr-soroban-vault \
+  --state contract/vault/soroban/.deploy-state/new-vault.manifest.json \
+  --fresh-state \
+  deploy stack \
+  --admin GADMIN... \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --blend-pool CPOOL2... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To add adapters later without redeploying the stack, use `deploy adapters`. If the manifest already
@@ -90,7 +110,8 @@ tmplr-soroban-vault deploy adapters \
   --governance CGOV... \
   --asset-token CASSET... \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
@@ -132,13 +153,15 @@ manifest changes:
 tmplr-soroban-vault deploy plan stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault deploy plan adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
@@ -151,7 +174,8 @@ tmplr-soroban-vault deploy repair --json
 tmplr-soroban-vault deploy resume \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian G...
+  --custodian G... \
+  --adapter-admin GADAPTERADMIN...
 ```
 
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
@@ -163,7 +187,9 @@ The CLI uses the contract name `governance admin` for the address that controls 
 contract, but operationally that address can represent several curator models. It can be a single
 operator key, a multisig contract, or a governance contract controlled by an external process. A new
 stack uses `--admin` as both the governance admin and the initial vault curator. After deployment,
-governance proposals can split that into separate curator, sentinel, and allocator identities.
+the same address is also the share-token administrator, while the installed token implementation
+reserves mint/burn authority for the immutable vault binding. Governance proposals can split the
+runtime roles into separate curator, sentinel, and allocator identities.
 
 Common role terms:
 
@@ -171,6 +197,10 @@ Common role terms:
   governance proposals. For multisig governance, this is the multisig contract address.
 - `vault curator`: the runtime curator address. It starts as the deployment `--admin` and can be
   changed with `governance submit-set-curator`.
+- `share-token admin`: the deployment `--admin`. It controls token pause, restrictions, upgrades,
+  TTL maintenance, and two-step admin rotation. The installed token code reserves mint and burn for
+  the immutable vault, but the admin can replace that code through an upgrade. Treat the admin as
+  the ultimate trust boundary for all share-token behavior and keep it reachable and recoverable.
 - `sentinel`: an emergency backstop configured with `governance submit-set-sentinel`. It can only
   take protective actions such as pausing or tightening restrictions; governance admin is still
   required to relax or unpause.
@@ -258,18 +288,23 @@ NAV through `total_assets(asset)`, and the vault incorporates that value when al
 run `curator refresh-markets`. `curator allocate-withdraw` does not refresh route NAV; it verifies
 the realized Stellar token-balance delta and subtracts that amount from stored principal.
 
-Withdrawals use two different CLI surfaces:
+Withdrawals use distinct CLI surfaces:
 
 - `curator allocate-withdraw` is an allocator operation. It pulls liquidity back from the adapter
   bound to a market id by calling the adapter's `progress_withdrawal(vault, asset, amount)`. The
   `amount` is the requested adapter withdrawal amount; the vault accounts the assets actually
   returned by the adapter without calling adapter `total_assets`.
-- `user request-withdraw` starts a user exit; `user execute-withdraw` is the allocator/keeper step
-  that completes it. `request-withdraw` queues and escrows shares immediately; the configured
-  cooldown gates `execute-withdraw`. Execution attempts to pay the next ready request from idle
-  vault assets and requires an allocator-authorized operator. If idle assets are not sufficient, an
+- `user withdraw` and `user redeem` preserve the ERC-4626 proxy's asynchronous compatibility
+  methods. `user request-withdraw` is the lower-level direct vault request with explicit share and
+  minimum-asset inputs. These paths queue and escrow shares immediately; the configured cooldown
+  gates `user execute-withdraw`. Execution attempts to pay the next ready request from idle vault
+  assets and requires an allocator-authorized operator. If idle assets are not sufficient, an
   allocator first uses `curator allocate-withdraw` to bring liquidity back from one or more market
   adapters, then `user execute-withdraw` can settle the queued request.
+- `user atomic-withdraw` and `user atomic-redeem` are the synchronous, slippage-protected idle
+  liquidity exits. They verify that a recorded ERC-4626 proxy exposes both atomic entrypoints before
+  calling it. A legacy recorded proxy is rejected with a replacement instruction; the direct vault
+  fallback is used only when `proxy_4626` is absent from the manifest.
 - `curator abort-withdrawing` is the recovery operation for a stale in-flight withdrawal operation.
   Use it only when the vault is stuck in `Withdrawing` and operators have identified the operation id
   to abort.
@@ -319,7 +354,8 @@ the simplest testnet or custodial setup.
 tmplr-soroban-vault deploy stack \
   --admin GCURATOR... \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --adapter-admin GCURATOR...
 
 tmplr-soroban-vault governance submit-set-allowed-adapters \
   --admin GCURATOR... \
@@ -381,7 +417,8 @@ governance caller, while the Stellar source account supplies the transaction env
 tmplr-soroban-vault deploy stack \
   --admin CMULTISIG... \
   --governance-timelock-ns 86400000000000 \
-  --blend-pool CPOOL...
+  --blend-pool CPOOL... \
+  --adapter-admin CMULTISIG...
 
 tmplr-soroban-vault governance plan-submit-set-supply-queue \
   --admin CMULTISIG... \
@@ -499,7 +536,8 @@ tmplr-soroban-vault deploy stack \
   --admin GCURATOR_OR_MULTISIG... \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
-  --custodian GCUSTODIAN...
+  --custodian GCUSTODIAN... \
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault governance submit-set-sentinel \
   --admin GCURATOR_OR_MULTISIG... \
@@ -549,7 +587,8 @@ accounting views. `curator allocate-supply` observes adapter `total_assets` afte
 `curator allocate-withdraw` verifies the realized token balance delta and subtracts that amount from
 stored principal; it does not refresh route NAV.
 
-For custodial adapters, use `deploy adapters --custodian <address>` to append custodial routes,
+For custodial adapters, use
+`deploy adapters --custodian <address> --adapter-admin <address|vault>` to append custodial routes,
 then allow the deployed adapter, set a nonzero market cap, refresh reported NAV, and add it to the
 supply queue before allocating to it. Each custodial adapter is bound to the manifest asset token at
 deployment and rejects calls for any other asset. The custodian, adapter admin, or vault can
@@ -573,6 +612,13 @@ stellar contract invoke \
 
 - Mainnet write commands require `--allow-mainnet-write`.
 - Zero governance timelocks require `--allow-zero-timelock`.
+- Existing manifests must record a nonempty network label matching `--network`. This label check does not authenticate custom network passphrases; do not reuse one network label with a different passphrase.
+- Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
+- Blend and custodial adapter admins may be accounts or contracts, but must differ from the
+  configured governance contract. Custodial adapter admins must also differ from the bound asset
+  token.
+- Share-token deployment rejects `admin == vault`; the manifest retains the initial admin as constructor provenance and reconciliation verifies the immutable vault binding.
+- `--fresh-state deploy stack` atomically reserves an unused manifest path before network calls; planning and dry-run modes require the path to be absent without creating it.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.
 - `--json` emits stable machine-readable envelopes with `type`, `ok`, `network`, `manifest`, `commands`, `tx_hashes`, `warnings`, and command-specific `data`.
 - `--json-lines` emits the same envelope format as newline-delimited JSON for long-running automation.
@@ -647,7 +693,7 @@ the environment.
 ## Common Operations
 
 ```sh
-# User deposit through ERC-4626 proxy when configured, using decimal asset units.
+# Slippage-protected user deposit. A configured proxy is invoked through deposit_with_min.
 tmplr-soroban-vault user deposit \
   --operator G... \
   --assets 1.25 \
@@ -656,6 +702,17 @@ tmplr-soroban-vault user deposit \
 
 # Exact raw units remain available for automation.
 tmplr-soroban-vault user deposit --operator G... --assets-raw 12500000
+
+# Queue an asynchronous exact-asset withdrawal through the ERC-4626 proxy.
+tmplr-soroban-vault user withdraw --operator G... --assets 1 --asset-decimals 7
+
+# Exit synchronously from idle liquidity with an explicit maximum share burn.
+tmplr-soroban-vault user atomic-withdraw \
+  --operator G... \
+  --assets 1 \
+  --asset-decimals 7 \
+  --max-shares-burned 1.01 \
+  --share-decimals manifest
 
 # Allocator supply through the vault compact command ABI.
 tmplr-soroban-vault curator allocate-supply \

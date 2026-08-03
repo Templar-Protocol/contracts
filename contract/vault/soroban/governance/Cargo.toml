@@ -1,8 +1,9 @@
 [package]
 name = "templar-soroban-governance"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
-license = "GPL-3.0-only"
+rust-version.workspace = true
+license.workspace = true
 description = "Timelocked governance executor for the Soroban vault"
 
 [lib]

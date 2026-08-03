@@ -47,6 +47,10 @@ measured, and re-verified:
   `execute_governance(env, caller, payload)`.
 - The share token only allows vault-authorized `mint()` and `burn()`. User transfers still require
   `from.require_auth()`.
+- A Blend adapter admin may be a Soroban account or contract. It must authenticate pause, admin
+  rotation, TTL extension, and upgrade calls; the vault and Blend pool remain contract-only.
+  Deployment tooling rejects the configured vault governance contract as adapter admin because the
+  shipped governance contract cannot dispatch companion administration calls.
 - Read-only preview and getter surfaces must stay non-authoritative.
 - Serialized `VaultState` remains a practical resource boundary because Soroban persists a single
   `StateBlob`. Pending withdrawals are the main long-lived growth vector.

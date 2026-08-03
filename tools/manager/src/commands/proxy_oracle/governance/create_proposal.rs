@@ -15,9 +15,11 @@ use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_governance_common::Operation;
+use templar_proxy_oracle_near_governance_common::{
+    target, FunctionCall, MethodPolicy, Operation, ReflexiveOperation,
+};
 
-use super::{decode_base64, load_json_file, OperationKind, Role};
+use super::{decode_base64, load_json_file, ReflexiveKind, Role};
 use crate::commands::duration::parse_duration;
 use crate::commands::proxy_oracle::parse_price_identifier;
 use crate::commands::signer::SignerArgs;
@@ -55,18 +57,23 @@ impl CreateProposal {
         self.execute_when_ready
     }
 
-    /// When this is an `add-circuit-breaker` proposal with no explicit
+    /// When this is an `oracle add-circuit-breaker` proposal with no explicit
     /// `--breaker-id`, the price id whose next breaker id must be fetched.
     pub fn unresolved_breaker_price_id(&self) -> Option<PriceIdentifier> {
         match &self.operation {
-            ProposalOperation::AddCircuitBreaker(a) if a.breaker_id.is_none() => Some(a.price_id),
+            ProposalOperation::Oracle {
+                op: OracleOp::AddCircuitBreaker(a),
+            } if a.breaker_id.is_none() => Some(a.price_id),
             _ => None,
         }
     }
 
-    /// Fill in an auto-fetched breaker id for an `add-circuit-breaker` proposal.
+    /// Fill in an auto-fetched breaker id for an `oracle add-circuit-breaker` proposal.
     pub fn set_breaker_id(&mut self, id: u32) {
-        if let ProposalOperation::AddCircuitBreaker(a) = &mut self.operation {
+        if let ProposalOperation::Oracle {
+            op: OracleOp::AddCircuitBreaker(a),
+        } = &mut self.operation
+        {
             a.breaker_id.get_or_insert(id);
         }
     }
@@ -86,12 +93,39 @@ impl CreateProposal {
     }
 }
 
-/// One variant per `templar_proxy_oracle_near_governance_common::Operation`.
-/// Complex nested payloads (circuit breakers, history sources) are supplied as
-/// JSON files that deserialize into the real kernel types.
+/// The proposal target: an operation dispatched to the governed proxy `oracle`, or one that changes
+/// governance itself (`self`). The two groups make the final target of a proposal explicit.
+#[derive(Subcommand, Debug)]
+pub enum ProposalOperation {
+    /// Operation dispatched to the governed proxy oracle (a `TargetFunctionCall`).
+    Oracle {
+        #[command(subcommand)]
+        op: OracleOp,
+    },
+    /// Operation that changes the governance contract itself (a reflexive operation).
+    #[command(name = "self")]
+    Governance {
+        #[command(subcommand)]
+        op: SelfOp,
+    },
+}
+
+impl ProposalOperation {
+    fn into_operation(self) -> anyhow::Result<Operation> {
+        match self {
+            ProposalOperation::Oracle { op } => op.into_operation(),
+            ProposalOperation::Governance { op } => op.into_operation(),
+        }
+    }
+}
+
+/// Operations dispatched to the governed proxy oracle. Each builds the generic `TargetFunctionCall`
+/// directly via the shared `target::admin_*` builders (correct `admin_*` method name + gas default).
+/// Complex nested payloads (circuit breakers, history sources) are supplied as JSON files that
+/// deserialize into the real kernel types.
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "kebab-case")]
-pub enum ProposalOperation {
+pub enum OracleOp {
     /// Set or clear a feed's proxy configuration.
     SetProxy(SetProxyArgs),
     /// Configure a feed's circuit-breaker sampling.
@@ -106,21 +140,15 @@ pub enum ProposalOperation {
     Rearm(RearmArgs),
     /// Enable or disable enforcement of a circuit breaker.
     SetEnforced(SetEnforcedArgs),
-    /// Set the TTL for an operation kind.
-    SetActionTtl(SetActionTtlArgs),
-    /// Grant or revoke a governance role.
-    SetRole(SetRoleArgs),
     /// Upgrade the proxy oracle's contract code.
-    AdminUpgrade(UpgradeArgs),
+    Upgrade(UpgradeArgs),
     /// Call an arbitrary method on the proxy oracle.
-    AdminFunctionCall(AdminFunctionCallArgs),
-    /// Upgrade the governance contract itself.
-    SelfUpgrade(UpgradeArgs),
+    Call(OracleCallArgs),
 }
 
-impl ProposalOperation {
+impl OracleOp {
     fn into_operation(self) -> anyhow::Result<Operation> {
-        Ok(match self {
+        Ok(Operation::TargetFunctionCall(match self {
             Self::SetProxy(a) => {
                 let proxy: Option<Proxy<Source>> = match a.proxy_file {
                     Some(path) => Some(
@@ -129,81 +157,121 @@ impl ProposalOperation {
                     ),
                     None => None,
                 };
-                Operation::SetProxy {
-                    id: a.price_id,
-                    proxy,
-                }
+                target::admin_set_proxy(a.price_id, proxy, a.gas)?
             }
-            Self::ConfigureCircuitBreakers(a) => Operation::ConfigureCircuitBreakers {
-                id: a.price_id,
-                config: CircuitBreakerSetConfig {
+            Self::ConfigureCircuitBreakers(a) => target::admin_configure_circuit_breakers(
+                a.price_id,
+                CircuitBreakerSetConfig {
                     sample_interval_ns: a.sample_interval,
                     history_len: a.history_len,
                 },
-            },
+                a.gas,
+            )?,
             Self::AddCircuitBreaker(a) => {
                 let breaker_id = a.breaker_id.context(
                     "breaker id must be resolved before building an add-circuit-breaker proposal",
                 )?;
-                Operation::AddCircuitBreaker {
-                    id: a.price_id,
-                    breaker_id,
-                    breaker: load_json_file::<CircuitBreaker>(&a.breaker_file)
-                        .context("parse circuit breaker")?,
-                }
+                let breaker = load_json_file::<CircuitBreaker>(&a.breaker_file)
+                    .context("parse circuit breaker")?;
+                target::admin_add_circuit_breaker(a.price_id, breaker_id, breaker, a.gas)?
             }
-            Self::RemoveCircuitBreaker(a) => Operation::RemoveCircuitBreaker {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-            },
-            Self::SetManualTrip(a) => Operation::SetManualTrip {
-                id: a.price_id,
-                is_manually_tripped: a.tripped,
-                metadata: a.metadata_base64.map(decode_base64).transpose()?,
-            },
-            Self::Rearm(a) => Operation::Rearm {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-                armed_after_ns: a.armed_after,
-                accepted_history_source: load_json_file::<AcceptedHistorySource>(
-                    &a.history_source_file,
-                )
-                .context("parse accepted history source")?,
-            },
-            Self::SetEnforced(a) => Operation::SetEnforced {
-                id: a.price_id,
-                breaker_id: a.breaker_id,
-                is_enforced: a.enforced,
-            },
-            Self::SetActionTtl(a) => Operation::SetActionTtl {
-                kind: a.kind,
-                new_ttl: a.new_ttl,
-            },
-            Self::SetRole(a) => Operation::SetRole {
-                account_id: a.account_id,
-                role: a.role,
-                set: !a.revoke,
-            },
-            Self::AdminUpgrade(a) => {
+            Self::RemoveCircuitBreaker(a) => {
+                target::admin_remove_circuit_breaker(a.price_id, a.breaker_id, a.gas)?
+            }
+            Self::SetManualTrip(a) => {
+                let metadata = a.metadata_base64.map(decode_base64).transpose()?;
+                target::admin_set_manual_trip(a.price_id, a.tripped, metadata, a.gas)?
+            }
+            Self::Rearm(a) => {
+                let accepted_history_source =
+                    load_json_file::<AcceptedHistorySource>(&a.history_source_file)
+                        .context("parse accepted history source")?;
+                target::admin_rearm(
+                    a.price_id,
+                    a.breaker_id,
+                    a.armed_after,
+                    accepted_history_source,
+                    a.gas,
+                )?
+            }
+            Self::SetEnforced(a) => {
+                target::admin_set_enforced(a.price_id, a.breaker_id, a.enforced, a.gas)?
+            }
+            Self::Upgrade(a) => {
                 let (code, migrate_args) = a.parts()?;
-                Operation::AdminUpgrade { code, migrate_args }
+                target::admin_upgrade(code, migrate_args, None)?
             }
-            Self::SelfUpgrade(a) => {
-                let (code, migrate_args) = a.parts()?;
-                Operation::SelfUpgrade { code, migrate_args }
-            }
-            Self::AdminFunctionCall(a) => {
-                // Fail early on malformed args rather than sending garbage bytes.
-                serde_json::from_str::<serde_json::Value>(&a.args)
-                    .context("admin-function-call --args must be valid JSON")?;
-                Operation::AdminFunctionCall {
+            Self::Call(a) => {
+                // Fail early on malformed args rather than sending garbage bytes. `IgnoredAny`
+                // validates well-formedness without materializing the parsed tree.
+                serde_json::from_str::<serde::de::IgnoredAny>(&a.args)
+                    .context("oracle call --args must be valid JSON")?;
+                FunctionCall {
                     method_name: a.method,
                     args: Base64VecU8(a.args.into_bytes()),
                     attached_deposit: U128(a.deposit.as_yoctonear()),
                     gas: a.gas,
                 }
             }
-        })
+        }))
+    }
+}
+
+/// Reflexive operations that mutate the governance contract itself — the policy table, roles, and its
+/// own upgrade.
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+pub enum SelfOp {
+    /// Set a reflexive operation kind's timelock.
+    SetReflexiveTtl(SetReflexiveTtlArgs),
+    /// Set the conservative default policy for unlisted target methods.
+    SetTargetDefault(SetTargetDefaultArgs),
+    /// Add, update, or reset a per-method policy override.
+    SetMethodPolicy(SetMethodPolicyArgs),
+    /// Grant or revoke a governance role.
+    SetRole(SetRoleArgs),
+    /// Upgrade the governance contract itself.
+    Upgrade(UpgradeArgs),
+}
+
+impl SelfOp {
+    fn into_operation(self) -> anyhow::Result<Operation> {
+        Ok(Operation::Reflexive(match self {
+            Self::SetReflexiveTtl(a) => ReflexiveOperation::SetReflexiveTtl {
+                kind: a.kind,
+                ttl: a.ttl,
+            },
+            Self::SetTargetDefault(a) => ReflexiveOperation::SetTargetDefault {
+                policy: MethodPolicy {
+                    ttl: a.ttl,
+                    role: a.role,
+                },
+            },
+            Self::SetMethodPolicy(a) => {
+                let policy = if a.reset {
+                    None
+                } else {
+                    let role = a
+                        .role
+                        .context("--role is required unless --reset is given")?;
+                    let ttl = a.ttl.context("--ttl is required unless --reset is given")?;
+                    Some(MethodPolicy { ttl, role })
+                };
+                ReflexiveOperation::SetMethodPolicy {
+                    method: a.method,
+                    policy,
+                }
+            }
+            Self::SetRole(a) => ReflexiveOperation::SetRole {
+                account_id: a.account_id,
+                role: a.role,
+                set: !a.revoke,
+            },
+            Self::Upgrade(a) => {
+                let (code, migrate_args) = a.parts()?;
+                ReflexiveOperation::SelfUpgrade { code, migrate_args }
+            }
+        }))
     }
 }
 
@@ -215,6 +283,9 @@ pub struct SetProxyArgs {
     /// Proxy definition JSON; omit to clear the feed
     #[arg(long, value_name = "PATH")]
     proxy_file: Option<PathBuf>,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -228,6 +299,9 @@ pub struct ConfigureCircuitBreakersArgs {
     /// Number of samples to retain in the breaker's history.
     #[arg(long, value_name = "N")]
     history_len: u32,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -242,6 +316,9 @@ pub struct AddCircuitBreakerArgs {
     /// CircuitBreaker definition JSON
     #[arg(long, value_name = "PATH")]
     breaker_file: PathBuf,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -252,6 +329,9 @@ pub struct RemoveCircuitBreakerArgs {
     /// Breaker id to remove.
     #[arg(long, value_name = "ID")]
     breaker_id: u32,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -265,6 +345,9 @@ pub struct SetManualTripArgs {
     /// Optional base64 metadata recorded with the trip.
     #[arg(long, value_name = "BASE64")]
     metadata_base64: Option<String>,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -281,6 +364,9 @@ pub struct RearmArgs {
     /// AcceptedHistorySource definition JSON
     #[arg(long, value_name = "PATH")]
     history_source_file: PathBuf,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
@@ -294,16 +380,45 @@ pub struct SetEnforcedArgs {
     /// Whether the breaker is enforced.
     #[arg(long)]
     enforced: bool,
+    /// Gas to attach to the dispatched proxy-oracle call (e.g. `100 Tgas`); defaults to 30 Tgas.
+    #[arg(long, value_name = "GAS")]
+    gas: Option<Gas>,
 }
 
 #[derive(Args, Debug)]
-pub struct SetActionTtlArgs {
-    /// Operation kind to set the TTL for.
+pub struct SetReflexiveTtlArgs {
+    /// Reflexive kind to set the timelock for.
     #[arg(long, value_enum)]
-    kind: OperationKind,
-    /// New TTL for the operation kind (e.g. `1h`, `86400000000000ns`).
+    kind: ReflexiveKind,
+    /// New timelock (e.g. `1h`, `86400000000000ns`).
     #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
-    new_ttl: Nanoseconds,
+    ttl: Nanoseconds,
+}
+
+#[derive(Args, Debug)]
+pub struct SetTargetDefaultArgs {
+    /// Conservative default timelock for unlisted target methods.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    ttl: Nanoseconds,
+    /// Role required to invoke an unlisted target method.
+    #[arg(long, value_enum)]
+    role: Role,
+}
+
+#[derive(Args, Debug)]
+pub struct SetMethodPolicyArgs {
+    /// Target method name (e.g. `admin_set_proxy`).
+    #[arg(long, value_name = "NAME")]
+    method: String,
+    /// Timelock for this method. Must be `<=` the target default. Required unless `--reset`.
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration, required_unless_present = "reset")]
+    ttl: Option<Nanoseconds>,
+    /// Role required to invoke this method. Required unless `--reset`.
+    #[arg(long, value_enum, required_unless_present = "reset")]
+    role: Option<Role>,
+    /// Remove the override, resetting the method to the target default.
+    #[arg(long, conflicts_with_all = ["role", "ttl"])]
+    reset: bool,
 }
 
 #[derive(Args, Debug)]
@@ -371,7 +486,7 @@ impl UpgradeArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct AdminFunctionCallArgs {
+pub struct OracleCallArgs {
     /// Method to call on the proxy oracle (e.g. `own_accept_owner`)
     #[arg(long, value_name = "NAME")]
     method: String,
@@ -382,6 +497,6 @@ pub struct AdminFunctionCallArgs {
     #[arg(long, value_name = "AMOUNT", default_value_t = NearToken::from_yoctonear(0))]
     deposit: NearToken,
     /// Gas to attach to the call (e.g. `30 Tgas`).
-    #[arg(long, value_name = "GAS", default_value_t = Gas::from_tgas(30))]
+    #[arg(long, value_name = "GAS", default_value_t = target::GAS_FOR_TARGET_DEFAULT)]
     gas: Gas,
 }

@@ -4,8 +4,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use crate::types::{
-    AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg, ShareDecimalsArg,
-    SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
+    AdapterAdminArg, AddressStr, DecimalAmount, GovernanceActionKindArg, RestrictionModeArg,
+    ShareDecimalsArg, SourceAccount, SupplyQueueEntryArg, TimelockKindArg, WasmHash,
 };
 
 pub const DEFAULT_CONTRACT_SOURCE_REPO: &str = "github:Templar-Protocol/contracts";
@@ -56,6 +56,10 @@ pub struct Cli {
         default_value = "contract/vault/soroban/.deploy-state/manifest.json"
     )]
     pub state: PathBuf,
+
+    /// Require an unused deployment manifest path for a new stack
+    #[arg(long)]
+    pub fresh_state: bool,
 
     /// Path to the workspace root
     #[arg(long, env = "WORKSPACE_PATH", default_value = ".")]
@@ -233,7 +237,7 @@ pub enum DeployPlanCommand {
 
 #[derive(Args, Debug)]
 pub struct DeployStackArgs {
-    /// Admin/curator Soroban address. Defaults to `stellar keys address <source-account>`.
+    /// Governance admin, initial vault curator, and share-token admin. Defaults to `stellar keys address <source-account>`.
     #[arg(long, env = "SOROBAN_ADMIN")]
     pub admin: Option<AddressStr>,
 
@@ -277,6 +281,10 @@ pub struct DeployStackArgs {
     #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
     pub custodians: Vec<AddressStr>,
 
+    /// Admin for every newly deployed Blend or custodial adapter. Required when adapters are requested. Use `vault` only when the runtime advertises companion-upgrade support.
+    #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
+    pub adapter_admin: Option<AdapterAdminArg>,
+
     /// Rebuild missing artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub build: bool,
@@ -307,6 +315,10 @@ pub struct DeployAdaptersArgs {
     /// Custodian or multisig address. Repeat the flag, or provide comma-separated CUSTODIAL_ADDRESS values, to append multiple custodial adapters.
     #[arg(long = "custodian", env = "CUSTODIAL_ADDRESS", value_delimiter = ',')]
     pub custodians: Vec<AddressStr>,
+
+    /// Admin for every newly deployed Blend or custodial adapter. Required for this command. Use `vault` only when the runtime advertises companion-upgrade support.
+    #[arg(long, env = "SOROBAN_ADAPTER_ADMIN")]
+    pub adapter_admin: AdapterAdminArg,
 
     /// Rebuild adapter artifacts before upload/deploy
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
@@ -415,8 +427,50 @@ pub enum UserCommand {
         #[arg(long, default_value = "manifest")]
         share_decimals: ShareDecimalsArg,
     },
-    /// Withdraw an exact asset amount through the ERC-4626 proxy.
+    /// Queue an asynchronous withdrawal by exact asset amount through the ERC-4626 proxy.
     Withdraw {
+        /// Authorized operator address. The current proxy requires --operator to equal --owner.
+        #[arg(long)]
+        operator: AddressStr,
+        /// Asset receiver address. Defaults to --operator.
+        #[arg(long)]
+        receiver: Option<AddressStr>,
+        /// Share owner address. Defaults to --operator.
+        #[arg(long)]
+        owner: Option<AddressStr>,
+        /// Asset amount in display units, converted using --asset-decimals.
+        #[arg(long, conflicts_with = "assets_raw")]
+        assets: Option<DecimalAmount>,
+        /// Asset amount in raw contract base units.
+        #[arg(long)]
+        assets_raw: Option<i128>,
+        /// Asset token decimals used for --assets.
+        #[arg(long, default_value_t = 7)]
+        asset_decimals: u32,
+    },
+    /// Queue an asynchronous redemption by exact share amount through the ERC-4626 proxy.
+    Redeem {
+        /// Authorized operator address. The current proxy requires --operator to equal --owner.
+        #[arg(long)]
+        operator: AddressStr,
+        /// Asset receiver address. Defaults to --operator.
+        #[arg(long)]
+        receiver: Option<AddressStr>,
+        /// Share owner address. Defaults to --operator.
+        #[arg(long)]
+        owner: Option<AddressStr>,
+        /// Share amount in display units, converted using --share-decimals.
+        #[arg(long, conflicts_with = "shares_raw")]
+        shares: Option<DecimalAmount>,
+        /// Share amount in raw share-token base units.
+        #[arg(long)]
+        shares_raw: Option<i128>,
+        /// Share token decimals for --shares; `manifest` reads share_token constructor args.
+        #[arg(long, default_value = "manifest")]
+        share_decimals: ShareDecimalsArg,
+    },
+    /// Atomically withdraw through the ERC-4626 proxy when deployed, otherwise through the vault.
+    AtomicWithdraw {
         /// Authorized operator address burning shares.
         #[arg(long)]
         operator: AddressStr,
@@ -445,8 +499,8 @@ pub enum UserCommand {
         #[arg(long, default_value = "manifest")]
         share_decimals: ShareDecimalsArg,
     },
-    /// Redeem an exact share amount through the ERC-4626 proxy.
-    Redeem {
+    /// Atomically redeem through the ERC-4626 proxy when deployed, otherwise through the vault.
+    AtomicRedeem {
         /// Authorized operator address burning shares.
         #[arg(long)]
         operator: AddressStr,
@@ -1125,7 +1179,9 @@ impl AdapterCommand {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, Commands, DeployCommand, ExtendTtlArgs, ReconcileArgs};
+    use super::{
+        Cli, Commands, DeployCommand, ExtendTtlArgs, ReconcileArgs, UserArgs, UserCommand,
+    };
 
     const ADMIN: &str = "GBRFSXJNPLMYJV7EBFTBZT2PU6KN5WWPX3UKHDAAQQT7BNS7QTFCS3AY";
     const POOL: &str = "CDY3B7IXFN5L4OY4UFFS2FA4MAQWJZLJD76LW37S7HFVWRS3RPQ2SIXX";
@@ -1136,6 +1192,7 @@ mod tests {
             "tmplr-soroban-vault",
             "--source-account",
             "alice",
+            "--fresh-state",
             "deploy",
             "stack",
             "--admin",
@@ -1148,8 +1205,12 @@ mod tests {
             POOL,
             "--custodian",
             ADMIN,
+            "--adapter-admin",
+            ADMIN,
         ])
         .expect("parse cli");
+
+        assert!(cli.fresh_state);
 
         match cli.command {
             Commands::Deploy(args) => match args.command {
@@ -1161,6 +1222,14 @@ mod tests {
                     assert_eq!(stack.governance_timelock_ns, Some(1000));
                     assert_eq!(stack.blend_pools.len(), 2);
                     assert_eq!(stack.custodians.len(), 1);
+                    assert_eq!(
+                        stack
+                            .adapter_admin
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .as_deref(),
+                        Some(ADMIN)
+                    );
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Resume(_)
@@ -1183,6 +1252,8 @@ mod tests {
             ADMIN,
             "--custodian",
             &format!("{ADMIN},{POOL}"),
+            "--adapter-admin",
+            "vault",
         ])
         .expect("parse cli");
 
@@ -1195,6 +1266,10 @@ mod tests {
                         .map(ToString::to_string)
                         .collect::<Vec<_>>();
                     assert_eq!(custodians, vec![ADMIN, POOL]);
+                    assert_eq!(
+                        stack.adapter_admin.as_ref().map(ToString::to_string),
+                        Some("vault".to_string())
+                    );
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Resume(_)
@@ -1223,6 +1298,8 @@ mod tests {
             POOL,
             "--custodian",
             ADMIN,
+            "--adapter-admin",
+            ADMIN,
         ])
         .expect("parse cli");
 
@@ -1235,6 +1312,7 @@ mod tests {
                     );
                     assert_eq!(args.blend_pools.len(), 1);
                     assert_eq!(args.custodians.len(), 1);
+                    assert_eq!(args.adapter_admin.to_string(), ADMIN);
                 }
                 DeployCommand::Plan(_)
                 | DeployCommand::Stack(_)
@@ -1245,6 +1323,24 @@ mod tests {
             },
             _ => panic!("expected deploy command"),
         }
+    }
+
+    #[test]
+    fn deploy_adapters_rejects_missing_explicit_admin() {
+        let error = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "deploy",
+            "adapters",
+            "--vault",
+            POOL,
+            "--governance",
+            POOL,
+            "--blend-pool",
+            POOL,
+        ])
+        .expect_err("adapter admin must be required");
+
+        assert!(error.to_string().contains("--adapter-admin"));
     }
 
     #[test]
@@ -1425,6 +1521,81 @@ mod tests {
         ])
         .expect("parse raw deposit");
         assert!(matches!(raw_cli.command, Commands::User(_)));
+    }
+
+    #[test]
+    fn parses_async_and_atomic_user_exit_commands() {
+        let async_withdraw = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "withdraw",
+            "--operator",
+            ADMIN,
+            "--assets-raw",
+            "1",
+        ])
+        .expect("parse async withdraw");
+        assert!(matches!(
+            async_withdraw.command,
+            Commands::User(UserArgs {
+                command: UserCommand::Withdraw { .. }
+            })
+        ));
+
+        let atomic_withdraw = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "atomic-withdraw",
+            "--operator",
+            ADMIN,
+            "--assets-raw",
+            "1",
+            "--max-shares-burned-raw",
+            "1",
+        ])
+        .expect("parse atomic withdraw");
+        assert!(matches!(
+            atomic_withdraw.command,
+            Commands::User(UserArgs {
+                command: UserCommand::AtomicWithdraw { .. }
+            })
+        ));
+
+        let async_redeem = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "redeem",
+            "--operator",
+            ADMIN,
+            "--shares-raw",
+            "1",
+        ])
+        .expect("parse async redeem");
+        assert!(matches!(
+            async_redeem.command,
+            Commands::User(UserArgs {
+                command: UserCommand::Redeem { .. }
+            })
+        ));
+
+        let atomic_redeem = Cli::try_parse_from([
+            "tmplr-soroban-vault",
+            "user",
+            "atomic-redeem",
+            "--operator",
+            ADMIN,
+            "--shares-raw",
+            "1",
+            "--min-assets-out-raw",
+            "1",
+        ])
+        .expect("parse atomic redeem");
+        assert!(matches!(
+            atomic_redeem.command,
+            Commands::User(UserArgs {
+                command: UserCommand::AtomicRedeem { .. }
+            })
+        ));
     }
 
     #[test]

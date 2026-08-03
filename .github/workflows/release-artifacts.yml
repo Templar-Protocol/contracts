@@ -1,0 +1,229 @@
+name: Release Artifacts
+
+# Cuts a contract's canonical WASM — the only way a release blob is produced.
+# On a release tag: build in the pinned NEP-330 image at that tag's commit,
+# upload it to the GitHub Release, then open a PR recording tag, asset and
+# digest. Why at the tag, and why the record lands a commit later, are in
+# "Contract WASM artifacts" in RELEASING.md.
+
+on:
+  push:
+    tags:
+      # Broad glob: which packages are catalogued is decided in `ids.rs`, not
+      # here. A tagged package the catalog doesn't know about exits cleanly below.
+      - "*-contract-v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  release-artifact:
+    name: Build and publish the release WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write # attach assets to the GitHub Release
+      pull-requests: write # open the catalog PR
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          # The reproducible build reads committed git state, and the catalog
+          # PR needs `dev` present to branch from.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Not `./.github/actions/rust`: the WASM build runs inside the cargo-near
+      # Docker image, so a host rust-cache entry for this job would be cold on
+      # every release tag and just add eviction pressure.
+      - uses: dtolnay/rust-toolchain@dd44c20b1206a46e25fba8503d5d7c9a33bd355a
+        with:
+          toolchain: "1.86.0"
+          components: rustfmt
+
+      - name: Resolve the artifact from the tag
+        id: catalog
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Exit 2 = not a catalogued NEAR artifact (a Soroban tag, say);
+          # 1 = a genuine failure. A skip must not look like a broken lookup.
+          status=0
+          resolved=$(cargo run --quiet -p templar-contract-artifacts \
+            --features workspace-loader,clap --bin prebuild-test-contracts -- \
+            --resolve "$REF_NAME") || status=$?
+
+          if [ "$status" -eq 2 ]; then
+            echo "::notice::${REF_NAME} has no catalogued WASM artifact; nothing to build."
+            exit 0
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::${REF_NAME} names a catalogued artifact but cannot be built; see the error above." >&2
+            exit "$status"
+          fi
+
+          {
+            echo "$resolved"
+            echo "build=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install cargo-near
+        if: steps.catalog.outputs.build == 'true'
+        uses: ./.github/actions/cargo-near
+
+      - name: Build reproducibly at the tag
+        id: build
+        if: steps.catalog.outputs.build == 'true'
+        env:
+          SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
+          TARGET: ${{ steps.catalog.outputs.target }}
+          VERSION: ${{ steps.catalog.outputs.version }}
+          ASSET: ${{ steps.catalog.outputs.asset }}
+        run: |
+          set -euo pipefail
+          cargo near build reproducible-wasm --manifest-path "${SOURCE_PATH}/Cargo.toml"
+
+          built="target/near/${TARGET}/${TARGET}.wasm"
+          mkdir -p dist
+          cp "$built" "dist/${ASSET}"
+          (cd dist && sha256sum ./*.wasm > checksums.txt)
+
+          # From checksums.txt, so the digest pinned in the catalog is by
+          # construction the one published on the Release.
+          sha=$(cut -d' ' -f1 < dist/checksums.txt)
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Built ${TARGET} ${VERSION} at $(git rev-parse HEAD): ${sha}"
+
+      - name: Attach the WASM to the release
+        if: steps.catalog.outputs.build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # release-plz creates the tag and the GitHub Release moments apart, and
+          # this job races the tag push. Wait for the release rather than failing
+          # a build that succeeded.
+          published=false
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$REF_NAME" >/dev/null 2>&1; then
+              published=true
+              break
+            fi
+            echo "Release $REF_NAME not published yet (attempt ${attempt}); waiting."
+            sleep 15
+          done
+          if [ "$published" != true ]; then
+            echo "::error::Release $REF_NAME never appeared; cannot attach the WASM." >&2
+            exit 1
+          fi
+
+          # Never `--clobber`: the catalog pins the digest of whatever was
+          # uploaded first, so replacing an asset strands every fetch on a hash
+          # that no longer exists. Identical bytes replay; different bytes fail.
+          #
+          # Compare *every* asset before uploading any. Interleaving the two
+          # would let an upload land before a later file's conflict is found —
+          # `dist/*` visits checksums.txt first, so a divergent WASM would be
+          # detected only after its checksum had already been published, leaving
+          # the release describing bytes it does not serve.
+          existing=$(mktemp -d)
+          missing=()
+          for file in dist/*; do
+            name=$(basename "$file")
+            if ! gh release download "$REF_NAME" --pattern "$name" --dir "$existing" 2>/dev/null; then
+              missing+=("$file")
+              continue
+            fi
+            if ! cmp -s "$file" "$existing/$name"; then
+              echo "::error::${name} is already published with different bytes. \
+          Released assets are immutable; cut a new version rather than replacing one." >&2
+              exit 1
+            fi
+            echo "::notice::${name} is already published with identical bytes."
+          done
+
+          for file in "${missing[@]+"${missing[@]}"}"; do
+            gh release upload "$REF_NAME" "$file"
+          done
+
+      # The hash is taken from the bytes this job just built, so the catalog
+      # entry attests the CI build output rather than a re-download.
+      - name: Open the catalog PR
+        if: steps.catalog.outputs.build == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          PACKAGE: ${{ steps.catalog.outputs.package }}
+          # The catalog key, and so the name of the file `record-release` writes.
+          ARTIFACT: ${{ steps.catalog.outputs.artifact }}
+          VERSION: ${{ steps.catalog.outputs.version }}
+          SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
+          ASSET: ${{ steps.catalog.outputs.asset }}
+          SHA256: ${{ steps.build.outputs.sha256 }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          branch="record/${REF_NAME}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch" origin/dev
+
+          # Same feature set as the catalog lookup above: a different one is a
+          # different compilation unit, and this job has no rust-cache, so it
+          # would recompile from cold rather than relink.
+          cargo run --quiet -p templar-contract-artifacts \
+            --features workspace-loader,clap --bin record-release -- \
+            "$ARTIFACT" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
+
+          # build.rs validates the row, but only at compile time — so compile,
+          # before committing rather than after.
+          cargo build --quiet -p templar-contract-artifacts
+
+          # Stage first, then ask the index: a release is a *new* file, which
+          # `git diff` does not see, so checking before staging would report
+          # "already recorded" for every release and never open the PR.
+          git add "contract/artifacts/releases/${ARTIFACT}@${VERSION}.tsv"
+          if git diff --cached --quiet; then
+            echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
+            exit 0
+          fi
+
+          git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
+          # `persist-credentials: false` above, so authenticate the push here
+          # instead of leaving a credential in the runner's git config.
+          git push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "$branch"
+
+          body=$(printf '%s\n' \
+            "Records the release of \`${PACKAGE}\` ${VERSION}, built for" \
+            "\`${REF_NAME}\`:" \
+            "" \
+            "    ${SHA256}" \
+            "" \
+            "Until this merges, \`templar-contract-artifacts\` will not serve" \
+            "${PACKAGE} ${VERSION} — an unrecorded version has no reviewed hash to" \
+            "check downloaded bytes against." \
+            "" \
+            "Reproduce the bytes from a fresh clone:" \
+            "" \
+            "    git checkout ${REF_NAME}" \
+            "    cargo near build reproducible-wasm --manifest-path ${SOURCE_PATH}/Cargo.toml")
+
+          # The force-push already updated any open PR, and GitHub rejects a
+          # second one for the same head/base.
+          if [ -n "$(gh pr list --head "$branch" --base dev --state open --json number --jq '.[].number')" ]; then
+            echo "::notice::Catalog PR for ${REF_NAME} is already open; updated it in place."
+            exit 0
+          fi
+
+          gh pr create \
+            --base dev \
+            --head "$branch" \
+            --title "chore(artifacts): record ${PACKAGE} ${VERSION} release" \
+            --body "$body"

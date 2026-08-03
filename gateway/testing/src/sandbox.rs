@@ -32,7 +32,7 @@ use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::{
     input::Source, price_transformer::PriceTransformer, state::legacy::v0,
 };
-use templar_proxy_oracle_near_governance_common::{Operation, TtlConfig};
+use templar_proxy_oracle_near_governance_common::{FunctionCall, GovernancePolicy, Operation};
 use templar_pyth_lazer_adapter_contract::{ConfigArgs, TrustedSigner};
 use templar_universal_account::{InitArgs, NEAR_TESTNET_CHAIN_ID};
 use test_utils::{market_configuration, test_signer::TestSigner, vault_configuration};
@@ -629,7 +629,7 @@ impl SandboxHarness {
             &self.network,
             account_id.clone(),
             signer,
-            crate::wasm::PROXY_ORACLE_V0.to_vec(),
+            crate::wasm::released(crate::ArtifactId::ProxyOracle, "0.1.0").await,
             "new",
             serde_json::json!({}),
         )
@@ -891,7 +891,7 @@ impl SandboxHarness {
             serde_json::json!({
                 "proxy_oracle_id": oracle_id,
                 "admin_id": admin_id,
-                "ttls": zero_ttl_config(),
+                "policy": zero_governance_policy(),
             }),
         )
         .await?;
@@ -907,29 +907,29 @@ impl SandboxHarness {
         )
         .await?;
 
-        // Governance accepts ownership via an AdminFunctionCall proposal (id 0),
+        // Governance accepts ownership via a target-function-call proposal (id 0),
         // which fires `own_accept_owner` on the oracle as the governance contract.
-        self.governance_admin_function_call(&governance_id, &admin_id, 0, "own_accept_owner")
+        self.governance_target_call(&governance_id, &admin_id, 0, "own_accept_owner")
             .await?;
 
         Ok(governance_id)
     }
 
-    /// Create and immediately execute an `AdminFunctionCall` governance proposal
+    /// Create and immediately execute a target-function-call governance proposal
     /// that calls `method_name` (no args, 1 yocto) on the proxy oracle.
-    async fn governance_admin_function_call(
+    async fn governance_target_call(
         &self,
         governance_id: &AccountId,
         admin_id: &AccountId,
         proposal_id: u32,
         method_name: &str,
     ) -> Result<()> {
-        let operation = Operation::AdminFunctionCall {
+        let operation = Operation::TargetFunctionCall(FunctionCall {
             method_name: method_name.to_string(),
             args: near_sdk::json_types::Base64VecU8(b"{}".to_vec()),
             attached_deposit: near_sdk::json_types::U128(1),
             gas: near_sdk::Gas::from_tgas(50),
-        };
+        });
 
         self.call_contract(
             governance_id,
@@ -1012,22 +1012,8 @@ impl SandboxHarness {
     }
 }
 
-fn zero_ttl_config() -> TtlConfig {
-    let zero = Nanoseconds::zero();
-    TtlConfig {
-        set_proxy: zero,
-        configure_circuit_breakers: zero,
-        add_circuit_breaker: zero,
-        remove_circuit_breaker: zero,
-        set_manual_trip: zero,
-        rearm: zero,
-        set_enforced: zero,
-        set_action_ttl: zero,
-        set_role: zero,
-        admin_upgrade: zero,
-        admin_function_call: zero,
-        self_upgrade: zero,
-    }
+fn zero_governance_policy() -> GovernancePolicy {
+    GovernancePolicy::uniform(Nanoseconds::zero()).expect("zero is within bounds")
 }
 
 /// Choose the harness mode from the environment. `NEAR_SANDBOX_RPC_URL` set →

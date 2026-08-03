@@ -3,28 +3,50 @@ use templar_proxy_oracle_governance_kernel as kernel;
 
 use crate::OperationKind;
 
+/// Borsh decodes positionally, so this field order is `create_proposal_borsh`'s wire format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct CreateProposalArgs<O> {
+    pub id: u32,
+    pub operation: O,
+    pub requested_ttl: crate::Nanoseconds,
+}
+
 pub type Proposal<T> = kernel::Proposal<T, AccountId>;
-pub type Governance = kernel::Governance<crate::TtlConfig>;
+pub type Governance = kernel::Governance<crate::GovernancePolicy>;
 
 pub use kernel::{
     CancelError, CreateError, ExecuteError, IdOutOfBoundsError, IdOutOfOrderError, OperationPolicy,
     ProposalDoesNotExistError, TtlNotElapsedError,
 };
 
-/// Governance lifecycle events. They carry only the proposal id and operation kind — never the full
-/// operation, whose payload (e.g. an `AdminUpgrade`/`SelfUpgrade` wasm blob) can exceed NEAR's
-/// per-log size limit. Fetch the full proposal body via `get_proposal`.
+/// Governance lifecycle events. They carry the proposal id, coarse operation kind, and — for target
+/// calls — the invoked `method` name, but never the full operation, whose payload (e.g. a
+/// `SelfUpgrade` wasm blob) can exceed NEAR's per-log size limit. Fetch the full body via
+/// `get_proposal`.
 #[near(event_json(standard = "templar-governance"))]
 pub enum Event {
     /// When a new proposal is created.
-    #[event_version("2.0.0")]
-    Created { id: u32, kind: OperationKind },
+    #[event_version("3.0.0")]
+    Created {
+        id: u32,
+        kind: OperationKind,
+        method: Option<String>,
+    },
     /// When a proposal is cancelled.
-    #[event_version("2.0.0")]
-    Cancelled { id: u32, kind: OperationKind },
+    #[event_version("3.0.0")]
+    Cancelled {
+        id: u32,
+        kind: OperationKind,
+        method: Option<String>,
+    },
     /// When a proposal is executed.
-    #[event_version("2.0.0")]
-    Executed { id: u32, kind: OperationKind },
+    #[event_version("3.0.0")]
+    Executed {
+        id: u32,
+        kind: OperationKind,
+        method: Option<String>,
+    },
 }
 
 pub trait Validatable {
@@ -61,13 +83,19 @@ macro_rules! gen_ext_governance {
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
             ) -> $crate::Nanoseconds;
-            fn get_operation_ttl(&self, kind: $crate::OperationKind) -> $crate::Nanoseconds;
+            fn get_governance_policy(&self) -> $crate::GovernancePolicy;
             fn create_proposal(
                 &mut self,
                 id: u32,
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
             ) -> $crate::interface::Proposal<$operation_ty>;
+            /// Borsh-argument twin of `create_proposal`, for payloads too large or too costly to send
+            /// as base64-in-JSON. Returns nothing; read the stored body with `get_proposal`.
+            fn create_proposal_borsh(
+                &mut self,
+                #[serializer(borsh)] args: $crate::interface::CreateProposalArgs<$operation_ty>,
+            );
             fn cancel_proposal(&mut self, id: u32);
             fn execute_proposal(&mut self, id: u32);
         }

@@ -9,12 +9,12 @@
 //! governance-driven cross-contract path is in use, which requires both sides already upgraded.
 //!
 //! The gov starts with a pending `AdminUpgrade` proposal, so the v0→v1 migrate must reshape a real
-//! stored proposal body on-chain (`AdminUpgrade`'s raw `code` → `UpgradeSource::Code`), not just an
-//! empty map; each upgraded contract is then probed with a domain view to prove it still answers,
-//! not merely that its code hash changed.
+//! stored proposal body on-chain, not just an empty map; each upgraded contract is then probed with
+//! a domain view to prove it still answers, not merely that its code hash changed.
 //!
-//! Fixtures are the real on-chain blobs (`PROXY_ORACLE_0_3_0`, state v1; `PROXY_GOVERNANCE_0_1_0`,
-//! pre-versioned-state), pinned from mainnet.
+//! Fixtures are the real on-chain blobs (proxy-oracle `0.3.0`, state v1;
+//! proxy-governance `0.1.0`, pre-versioned-state), pinned from mainnet and
+//! catalogued as releases in `contract/artifacts/releases/`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
@@ -24,17 +24,19 @@ use serde_json::{json, Value};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::{owner::GetOwner, proxy_oracle_governance as gov};
-use templar_gateway_testing::{wasm, SandboxHarness};
-use templar_proxy_oracle_near_governance_common::Operation;
+use templar_gateway_testing::{wasm, ArtifactId, SandboxHarness};
+use templar_proxy_oracle_near_governance_common::{
+    interface::CreateProposalArgs, LegacyOperation, Operation,
+};
 
 /// The raw blob (`0xDEADBEEF`) of the pending `AdminUpgrade` proposal seeded on the old gov, whose
-/// stored body the v0→v1 migrate must reshape into `UpgradeSource::Code`.
+/// stored body the v0→v1 migrate must reshape into a generic `admin_upgrade` target call.
 const PENDING_UPGRADE_CODE: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
 
-/// The `AdminUpgrade` seeded before migration, in the current (v1) typed form. Serializing it for the
-/// old gov also guards that the wire shape stays compatible with the immutable deployed contract.
-fn seeded_upgrade() -> Operation {
-    Operation::AdminUpgrade {
+/// The `AdminUpgrade` seeded before migration, in the pre-restructure typed form. Serializing it for
+/// the old gov also guards that the wire shape stays compatible with the immutable deployed contract.
+fn seeded_upgrade() -> LegacyOperation {
+    LegacyOperation::AdminUpgrade {
         code: UpgradeSource::Code(Base64VecU8(PENDING_UPGRADE_CODE.to_vec())),
         migrate_args: Base64VecU8(Vec::new()),
     }
@@ -57,35 +59,67 @@ fn old_ttls() -> Value {
     })
 }
 
+/// `new` args for the pinned `0.3.0` proxy oracle.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct OracleInit<'a> {
+    owner_id: &'a AccountId,
+}
+
+/// `new` args for the pinned `0.1.0` governance contract, whose `ttls` predate `GovernancePolicy`.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct LegacyGovernanceInit<'a> {
+    proxy_oracle_id: &'a AccountId,
+    admin_id: &'a AccountId,
+    ttls: Value,
+}
+
+/// `migrate` args for the v0→v1 governance bootstrap upgrade.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct MigrateFromVersion<'a> {
+    from_version: &'a str,
+}
+
 /// An OLD oracle (owned by the gov account) governed by an OLD gov. Returns `(oracle, gov)`.
 async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     let oracle = harness.create_user("oracle").await?;
-    let gov = harness.create_user("gov").await?;
+    let gov_account = harness.create_user("gov").await?;
     let admin = harness.create_user("admin").await?;
 
     // The oracle is owned by the gov account, so the gov can drive `admin_upgrade`.
     tokio::try_join!(
         harness.deploy_and_init(
             &oracle.0,
-            wasm::PROXY_ORACLE_0_3_0.to_vec(),
+            wasm::released(ArtifactId::ProxyOracle, "0.3.0").await,
             "new",
-            json!({ "owner_id": gov.0 }),
+            OracleInit {
+                owner_id: &gov_account.0
+            },
         ),
         harness.deploy_and_init(
-            &gov.0,
-            wasm::PROXY_GOVERNANCE_0_1_0.to_vec(),
+            &gov_account.0,
+            wasm::released(ArtifactId::ProxyGovernance, "0.1.0").await,
             "new",
-            json!({ "proxy_oracle_id": oracle.0, "admin_id": admin.0, "ttls": old_ttls() }),
+            LegacyGovernanceInit {
+                proxy_oracle_id: &oracle.0,
+                admin_id: &admin.0,
+                ttls: old_ttls(),
+            },
         ),
     )?;
 
     // Seed a pending AdminUpgrade proposal on the OLD gov (v0 `code` is a raw blob) so the later
-    // v0→v1 migrate must reshape a real stored proposal body, not an empty map.
+    // v0→v1 migrate must reshape a real stored proposal body, not an empty map. The typed
+    // `proxyOracleGovernance.createProposal` carries a *current* `Operation`, so seeding the legacy
+    // shape goes through the generic function-call escape hatch.
     harness
-        .execute(
+        .call_function(
             &admin,
-            gov::CreateProposal {
-                governance_id: gov.0.clone(),
+            &gov_account.0,
+            "create_proposal",
+            CreateProposalArgs {
                 id: 0,
                 operation: seeded_upgrade(),
                 requested_ttl: Nanoseconds::zero(),
@@ -93,7 +127,7 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
         )
         .await?;
 
-    Ok((oracle.0, gov.0))
+    Ok((oracle.0, gov_account.0))
 }
 
 /// Upgrade the oracle via its key: a bare deploy (unchanged v1 state layout, so no migrate). Asserts
@@ -130,28 +164,31 @@ async fn upgrade_oracle(
 
 /// Upgrade the gov via its key: deploy + v0→v1 migrate. Asserts the code was replaced and the gov is
 /// now versioned (`get_stored_state_version` — a method the old, pre-versioned-state gov lacked).
-async fn upgrade_gov(harness: &SandboxHarness, gov: &AccountId) -> Result<()> {
-    let before = harness.code_hash(gov).await?;
+async fn upgrade_gov(harness: &SandboxHarness, governance_id: &AccountId) -> Result<()> {
+    let before = harness.code_hash(governance_id).await?;
     harness
         .deploy_and_init(
-            gov,
+            governance_id,
             wasm::proxy_governance().await.to_vec(),
             "migrate",
-            json!({ "from_version": "v0" }),
+            MigrateFromVersion { from_version: "v0" },
         )
         .await?;
     assert_ne!(
         before,
-        harness.code_hash(gov).await?,
+        harness.code_hash(governance_id).await?,
         "gov code should have been replaced"
     );
-    assert_eq!(harness.contract_state_version(gov).await?.stored, 1);
+    assert_eq!(
+        harness.contract_state_version(governance_id).await?.stored,
+        1
+    );
     // The seeded proposal survived the v0→v1 borsh reshape: it still deserializes as a v1
-    // `Proposal<Operation>` from storage, and its raw `code` became `UpgradeSource::Code` intact.
+    // `Proposal<Operation>` from storage, with the legacy body restructured intact.
     let operation = harness
         .client()?
         .read(gov::GetProposal {
-            governance_id: gov.clone(),
+            governance_id: governance_id.clone(),
             id: 0,
         })
         .await?
@@ -160,8 +197,8 @@ async fn upgrade_gov(harness: &SandboxHarness, gov: &AccountId) -> Result<()> {
         .operation;
     assert_eq!(
         operation,
-        seeded_upgrade(),
-        "migrated proposal should reshape the raw code into UpgradeSource::Code"
+        Operation::try_from(seeded_upgrade()).unwrap(),
+        "migrated proposal should reshape the raw code into an admin_upgrade target call"
     );
     Ok(())
 }
@@ -169,10 +206,10 @@ async fn upgrade_gov(harness: &SandboxHarness, gov: &AccountId) -> Result<()> {
 #[tokio::test]
 async fn oracle_first_upgrade_does_not_brick() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let (oracle, gov) = setup(&harness).await?;
+    let (oracle, governance_id) = setup(&harness).await?;
 
-    upgrade_oracle(&harness, &oracle, &gov).await?;
-    upgrade_gov(&harness, &gov).await?;
+    upgrade_oracle(&harness, &oracle, &governance_id).await?;
+    upgrade_gov(&harness, &governance_id).await?;
 
     Ok(())
 }
@@ -180,10 +217,10 @@ async fn oracle_first_upgrade_does_not_brick() -> Result<()> {
 #[tokio::test]
 async fn gov_first_upgrade_does_not_brick() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let (oracle, gov) = setup(&harness).await?;
+    let (oracle, governance_id) = setup(&harness).await?;
 
-    upgrade_gov(&harness, &gov).await?;
-    upgrade_oracle(&harness, &oracle, &gov).await?;
+    upgrade_gov(&harness, &governance_id).await?;
+    upgrade_oracle(&harness, &oracle, &governance_id).await?;
 
     Ok(())
 }

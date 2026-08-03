@@ -119,7 +119,7 @@ impl SorobanShareTokenContract {
     ) {
         extend_instance_ttl(&env);
         require_contract_address(&env, &vault);
-        require_vault_admin(&env, &admin, &vault);
+        require_separate_admin(&env, &admin, &vault);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Vault, &vault);
         Base::set_metadata(&env, decimals, name.clone(), symbol.clone());
@@ -184,7 +184,7 @@ impl SorobanShareTokenContract {
         extend_instance_ttl(&env);
         require_admin(&env, &caller);
         let vault = Self::vault(env.clone());
-        require_vault_admin(&env, &admin, &vault);
+        require_separate_admin(&env, &admin, &vault);
         env.storage().instance().set(&DataKey::PendingAdmin, &admin);
         env.events()
             .publish((symbol_short!("admin_set"), caller), admin);
@@ -372,8 +372,8 @@ fn require_contract_address(env: &Env, addr: &Address) {
     }
 }
 
-fn require_vault_admin(env: &Env, admin: &Address, vault: &Address) {
-    if admin != vault {
+fn require_separate_admin(env: &Env, admin: &Address, vault: &Address) {
+    if admin == vault || admin == &env.current_contract_address() {
         panic_with_error!(env, ShareTokenError::InvalidInput);
     }
 }

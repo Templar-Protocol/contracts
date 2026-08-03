@@ -68,7 +68,11 @@ pub async fn deploy_from_patch(
     harness
         .deploy_code(
             &account_id,
-            templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
+            templar_gateway_testing::wasm::released(
+                templar_gateway_testing::ArtifactId::ProxyOracle,
+                "0.1.0",
+            )
+            .await,
         )
         .await?;
 

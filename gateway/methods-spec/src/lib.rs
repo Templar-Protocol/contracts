@@ -101,7 +101,7 @@ macro_rules! for_each_read_method {
         $callback!($crate::proxy_oracle::GetProxyCircuitBreakerSet);
         $callback!($crate::proxy_oracle_governance::NextProposalId);
         $callback!($crate::proxy_oracle_governance::ProposalCount);
-        $callback!($crate::proxy_oracle_governance::GetOperationTtl);
+        $callback!($crate::proxy_oracle_governance::GetGovernancePolicy);
         $callback!($crate::proxy_oracle_governance::ListProposals);
         $callback!($crate::proxy_oracle_governance::GetProposal);
         $callback!($crate::proxy_oracle_governance::GetProxyOracleId);
