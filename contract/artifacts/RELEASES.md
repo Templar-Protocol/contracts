@@ -22,10 +22,11 @@ so a doc edit in it would recompile the crate and everything downstream.)
 
 ## Why a file per release, rather than one table
 
-One release PR can tag several contracts, and each tag opens its own catalog PR
-from the same `dev` — so a shared file means the second to merge conflicts. That
-is the common case here, not a corner: contracts share a build, so they ship in
-batches (`1d736e62` produced three releases, `e0f3a11f` another three).
+One release PR can tag several contracts, and each tag's build records its row
+concurrently onto the same catalog branch — so a shared file means the second
+run to land rewrites what the first wrote. That is the common case here, not a
+corner: contracts share a build, so they ship in batches (`1d736e62` produced
+three releases, `e0f3a11f` another three).
 
 Ordering rows by artifact only narrows the window. `merge=union` would fix it,
 but GitHub ignores user-defined `.gitattributes` when merging a PR. Distinct

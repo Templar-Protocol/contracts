@@ -2,9 +2,9 @@ name: Release Artifacts
 
 # Cuts a contract's canonical WASM — the only way a release blob is produced.
 # On a release tag: build in the pinned NEP-330 image at that tag's commit,
-# upload it to the GitHub Release, then open a PR recording tag, asset and
-# digest. Why at the tag, and why the record lands a commit later, are in
-# "Contract WASM artifacts" in RELEASING.md.
+# upload it to the GitHub Release, then record tag, asset and digest on the
+# catalog PR every release in the batch shares. Why at the tag, and why the
+# record lands a commit later, are in "Contract WASM artifacts" in RELEASING.md.
 
 on:
   push:
@@ -153,7 +153,7 @@ jobs:
 
       # The hash is taken from the bytes this job just built, so the catalog
       # entry attests the CI build output rather than a re-download.
-      - name: Open the catalog PR
+      - name: Record the release on the catalog PR
         if: steps.catalog.outputs.build == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
@@ -161,69 +161,120 @@ jobs:
           # The catalog key, and so the name of the file `record-release` writes.
           ARTIFACT: ${{ steps.catalog.outputs.artifact }}
           VERSION: ${{ steps.catalog.outputs.version }}
-          SOURCE_PATH: ${{ steps.catalog.outputs.source_path }}
           ASSET: ${{ steps.catalog.outputs.asset }}
           SHA256: ${{ steps.build.outputs.sha256 }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          branch="record/${REF_NAME}"
+          # One standing branch, not one per tag: a release batch tags several
+          # contracts at once, and a branch each costs a PR, a commit on `dev`
+          # and a full test run each to record what is one decision.
+          branch="record/releases"
+          # `persist-credentials: false` above, so authenticate every remote
+          # operation here instead of leaving a credential in git's config.
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          body="${RUNNER_TEMP}/catalog-pr-body.md"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$branch" origin/dev
 
-          # Same feature set as the catalog lookup above: a different one is a
-          # different compilation unit, and this job has no rust-cache, so it
-          # would recompile from cold rather than relink.
-          cargo run --quiet -p templar-contract-artifacts \
-            --features workspace-loader,clap --bin record-release -- \
-            "$ARTIFACT" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
+          # Sibling runs from the same batch race for the branch. Losing the
+          # race is normal, so re-read what landed and append to it.
+          pushed=false
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet --force "$remote" "+refs/heads/dev:refs/remotes/origin/dev"
+            if git fetch --quiet --force "$remote" \
+                 "+refs/heads/${branch}:refs/remotes/origin/${branch}"; then
+              head=$(git rev-parse "origin/${branch}")
+            else
+              head=
+            fi
 
-          # build.rs validates the row, but only at compile time — so compile,
-          # before committing rather than after.
-          cargo build --quiet -p templar-contract-artifacts
+            # Reuse the branch only while it holds rows `dev` lacks. Asking the
+            # rows, not the PR, settles both cases at once: a merged PR leaves
+            # every row in `dev`, so the next release branches fresh; and a
+            # sibling's row counts the moment it is pushed, before it has had
+            # time to open the PR that would otherwise vouch for it.
+            unmerged=$(git diff --name-only --diff-filter=A origin/dev \
+              "${head:-origin/dev}" -- contract/artifacts/releases)
+            if [ -n "$unmerged" ]; then
+              git checkout -B "$branch" "$head"
+            else
+              git checkout -B "$branch" origin/dev
+            fi
 
-          # Stage first, then ask the index: a release is a *new* file, which
-          # `git diff` does not see, so checking before staging would report
-          # "already recorded" for every release and never open the PR.
-          git add "contract/artifacts/releases/${ARTIFACT}@${VERSION}.tsv"
-          if git diff --cached --quiet; then
-            echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; no PR needed."
-            exit 0
+            # Same feature set as the catalog lookup above: a different one is a
+            # different compilation unit, and this job has no rust-cache, so it
+            # would recompile from cold rather than relink.
+            cargo run --quiet -p templar-contract-artifacts \
+              --features workspace-loader,clap --bin record-release -- \
+              "$ARTIFACT" "$VERSION" "$REF_NAME" "$ASSET" "$SHA256"
+
+            # build.rs validates the row, but only at compile time — so compile,
+            # before committing rather than after.
+            cargo build --quiet -p templar-contract-artifacts
+
+            # Stage first, then ask the index: a release is a *new* file, which
+            # `git diff` does not see, so checking before staging would report
+            # "already recorded" for every release and never open the PR.
+            git add "contract/artifacts/releases/${ARTIFACT}@${VERSION}.tsv"
+            if git diff --cached --quiet; then
+              echo "::notice::${PACKAGE} ${VERSION} is already in the catalog; nothing to record."
+              exit 0
+            fi
+
+            git commit --quiet -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
+
+            # Leased against the head just read: a sibling that pushed in the
+            # meantime costs this run a retry rather than costing it its row.
+            if git push --quiet --force-with-lease="refs/heads/${branch}:${head}" \
+                 "$remote" "HEAD:refs/heads/${branch}"; then
+              pushed=true
+              break
+            fi
+            echo "::notice::${branch} moved during attempt ${attempt}; re-reading it."
+            sleep $(( attempt * 5 ))
+          done
+
+          if [ "$pushed" != true ]; then
+            echo "::error::Could not record ${PACKAGE} ${VERSION}: ${branch} kept moving." >&2
+            exit 1
           fi
 
-          git commit -m "chore(artifacts): record ${PACKAGE} ${VERSION} release"
-          # `persist-credentials: false` above, so authenticate the push here
-          # instead of leaving a credential in the runner's git config.
-          git push --force \
-            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "$branch"
+          # Rebuilt from the branch itself, so the PR describes every release on
+          # it and not just the one this run added.
+          {
+            printf '%s\n' \
+              "Records the contract WASMs CI built at their release tags and" \
+              "published, one file per release under" \
+              "\`contract/artifacts/releases/\`:" \
+              "" \
+              "| Artifact | Version | Tag | SHA-256 |" \
+              "| --- | --- | --- | --- |"
+            git diff --name-only "origin/dev...HEAD" -- contract/artifacts/releases |
+              sort |
+              while read -r file; do
+                IFS=$'\t' read -r artifact version tag _asset sha < "$file"
+                printf '| `%s` | %s | `%s` | `%s` |\n' "$artifact" "$version" "$tag" "$sha"
+              done
+            printf '%s\n' \
+              "" \
+              "Until this merges, \`templar-contract-artifacts\` will not serve these" \
+              "versions — an unrecorded version has no reviewed hash to check" \
+              "downloaded bytes against." \
+              "" \
+              "Reproduce any row from a fresh clone, against the artifact's crate" \
+              "directory:" \
+              "" \
+              "    git checkout <tag>" \
+              "    cargo near build reproducible-wasm --manifest-path <crate>/Cargo.toml"
+          } > "$body"
 
-          body=$(printf '%s\n' \
-            "Records the release of \`${PACKAGE}\` ${VERSION}, built for" \
-            "\`${REF_NAME}\`:" \
-            "" \
-            "    ${SHA256}" \
-            "" \
-            "Until this merges, \`templar-contract-artifacts\` will not serve" \
-            "${PACKAGE} ${VERSION} — an unrecorded version has no reviewed hash to" \
-            "check downloaded bytes against." \
-            "" \
-            "Reproduce the bytes from a fresh clone:" \
-            "" \
-            "    git checkout ${REF_NAME}" \
-            "    cargo near build reproducible-wasm --manifest-path ${SOURCE_PATH}/Cargo.toml")
-
-          # The force-push already updated any open PR, and GitHub rejects a
-          # second one for the same head/base.
-          if [ -n "$(gh pr list --head "$branch" --base dev --state open --json number --jq '.[].number')" ]; then
-            echo "::notice::Catalog PR for ${REF_NAME} is already open; updated it in place."
-            exit 0
-          fi
-
+          # Create-or-update: a sibling run may have opened the PR since the
+          # branch was read, and GitHub rejects a second one for the same head.
           gh pr create \
             --base dev \
             --head "$branch" \
-            --title "chore(artifacts): record ${PACKAGE} ${VERSION} release" \
-            --body "$body"
+            --title "chore(artifacts): record released contract WASMs" \
+            --body-file "$body" \
+          || gh pr edit "$branch" --body-file "$body"

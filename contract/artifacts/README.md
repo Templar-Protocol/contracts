@@ -141,9 +141,10 @@ artifacts are missing from `target/near` and exit non-zero without building.
 
 **There is nothing to do by hand.** Merging the release PR tags the version;
 `.github/workflows/release-artifacts.yml` builds the WASM reproducibly at that
-tag, uploads it, and opens a PR adding one file under `releases/`. Until that
-PR merges, `fetch` will not serve the version — an unrecorded release has no
-reviewed hash to check downloaded bytes against.
+tag, uploads it, and adds one file under `releases/` on the catalog PR every
+tag in the batch shares. Until that PR merges, `fetch` will not serve the
+version — an unrecorded release has no reviewed hash to check downloaded bytes
+against.
 
 Why the build happens at the tag, and why the catalog row necessarily lands one
 commit later, are explained in [RELEASING.md](../../RELEASING.md#contract-wasm-artifacts).

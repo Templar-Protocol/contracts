@@ -168,12 +168,15 @@ does not recognise.
    [`release-artifacts.yml`](.github/workflows/release-artifacts.yml), which
    builds the contract in the pinned NEP-330 Docker image **at that tag's
    commit**, uploads `<target>-<version>.wasm` plus `checksums.txt` to the
-   GitHub Release, and opens a PR adding one file under
-   `contract/artifacts/releases/` — the version, the tag, the asset, and the
-   digest of the bytes it just built, each recorded as observed.
+   GitHub Release, and adds one file under `contract/artifacts/releases/` — the
+   version, the tag, the asset, and the digest of the bytes it just built, each
+   recorded as observed.
 
-3. Merge that PR. Until you do, the artifacts crate will not serve the version —
-   an unrecorded release has no reviewed hash to check downloaded bytes against.
+3. Merge the catalog PR. A release batch tags several contracts, and every tag
+   in it records onto the same standing `record/releases` branch, so the batch
+   costs one PR and one test run rather than one of each per contract. Until it
+   merges, the artifacts crate will not serve those versions — an unrecorded
+   release has no reviewed hash to check downloaded bytes against.
 
 Note what is *not* in that list: nothing asks a developer to declare a release
 up front. A `Cargo.toml` bump cannot assert one, because bumps and releases

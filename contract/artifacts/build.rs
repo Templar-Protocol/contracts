@@ -1,6 +1,6 @@
 //! Compile `releases/` into the catalog's release lists.
 //!
-//! Release history is one file per release so that concurrent catalog PRs
+//! Release history is one file per release so that rows recorded concurrently
 //! cannot conflict — see `RELEASES.md`. Malformed rows fail the build
 //! rather than surfacing at runtime.
 
@@ -124,7 +124,7 @@ fn parse(path: &Path) -> Release {
         );
     }
 
-    // The filename is the uniqueness key that makes concurrent catalog PRs
+    // The filename is the uniqueness key that makes concurrently recorded rows
     // conflict-free, so it has to agree with the row it holds.
     let expected = format!("{}@{}.tsv", release.artifact, release.version);
     let actual = path
