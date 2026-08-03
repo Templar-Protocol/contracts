@@ -1,5 +1,8 @@
 use super::*;
 
+use near_sdk::json_types::Base64VecU8;
+use templar_common::upgrade::UpgradeSource;
+use templar_gateway_types::ProposalEncoding;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
 use templar_proxy_oracle_near_governance_common::{
@@ -74,6 +77,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                         .expect("build set-proxy call"),
                 ),
                 requested_ttl: Nanoseconds::zero(),
+                encoding: ProposalEncoding::Json,
             },
         })
         .await?;
@@ -146,6 +150,7 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
                     }),
                 }),
                 requested_ttl: Nanoseconds::zero(),
+                encoding: ProposalEncoding::Json,
             },
         })
         .await?;
@@ -225,6 +230,74 @@ async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
         })
         .await?;
     assert_eq!(list.proxies, vec![price_id]);
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+/// Past `max_transaction_size` as base64 JSON, so reachable only by opting into borsh. Driven
+/// in-process: the JSON-RPC envelope base64s the transaction again, so HTTP would cap first.
+const OVERSIZED_CODE_LEN: usize = 1_250_000;
+
+#[tokio::test]
+async fn borsh_encoding_carries_a_proposal_json_cannot() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    let admin_id = stack.harness.proxy_oracle_signer_account_id.0.clone();
+    let governance_id = stack
+        .harness
+        .deploy_governance_contract(oracle_id, admin_id)
+        .await?;
+
+    let oversized = Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0u8; OVERSIZED_CODE_LEN])),
+        migrate_args: Base64VecU8(Vec::new()),
+    });
+    let create = |encoding| WriteRequest {
+        signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+        idempotency_key: None,
+        body: proxy_oracle_governance::CreateProposal {
+            governance_id: governance_id.clone(),
+            id: 1,
+            operation: oversized.clone(),
+            requested_ttl: Nanoseconds::zero(),
+            encoding,
+        },
+    };
+
+    stack
+        .controller
+        .request::<proxy_oracle_governance::CreateProposal>(&create(ProposalEncoding::Json))
+        .await
+        .expect_err("a json transaction this large should be rejected");
+
+    // The rejected transaction never reached the contract, so id 1 is still next.
+    let _ = stack
+        .controller
+        .request::<proxy_oracle_governance::CreateProposal>(&create(ProposalEncoding::Borsh))
+        .await?;
+
+    let proposal = stack
+        .controller
+        .request::<proxy_oracle_governance::GetProposal>(&proxy_oracle_governance::GetProposal {
+            governance_id: governance_id.clone(),
+            id: 1,
+        })
+        .await?;
+    assert_eq!(proposal.proposal.map(|p| p.operation), Some(oversized));
+
+    // Release the ~12.5 NEAR of storage the blob staked on the shared node.
+    let _ = stack
+        .controller
+        .request::<proxy_oracle_governance::CancelProposal>(&WriteRequest {
+            signer_account_id: stack.harness.proxy_oracle_signer_account_id.clone(),
+            idempotency_key: None,
+            body: proxy_oracle_governance::CancelProposal {
+                governance_id,
+                id: 1,
+            },
+        })
+        .await?;
 
     stack.shutdown().await;
     Ok(())

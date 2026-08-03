@@ -595,6 +595,54 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
     );
 }
 
+/// Borsh is opt-in: an invocation that predates `--encoding` keeps sending JSON.
+#[test]
+fn create_proposal_defaults_to_json_encoding() {
+    let spec = create_proposal(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "oracle",
+        "set-manual-trip",
+        "--price-id",
+        PRICE_ID,
+        "--tripped",
+    ])
+    .expect("into spec");
+
+    assert_eq!(spec.encoding, templar_gateway_types::ProposalEncoding::Json);
+    // Absent, not `"json"`: the serialized request must stay byte-identical to one written before
+    // this field existed, so its idempotency fingerprint does not move.
+    assert!(serde_json::to_value(&spec)
+        .unwrap()
+        .get("encoding")
+        .is_none());
+}
+
+#[test]
+fn create_proposal_accepts_borsh_encoding() {
+    let spec = create_proposal(&[
+        "--governance-id",
+        "gov.testnet",
+        "--id",
+        "0",
+        "--encoding",
+        "borsh",
+        "oracle",
+        "set-manual-trip",
+        "--price-id",
+        PRICE_ID,
+        "--tripped",
+    ])
+    .expect("into spec");
+
+    assert_eq!(
+        spec.encoding,
+        templar_gateway_types::ProposalEncoding::Borsh
+    );
+}
+
 #[test]
 fn create_proposal_id_is_optional_for_auto_fetch() {
     // With --id omitted, the id is left unresolved (the dispatcher fetches the

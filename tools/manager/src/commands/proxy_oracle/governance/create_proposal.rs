@@ -9,7 +9,7 @@ use templar_common::oracle::pyth::PriceIdentifier;
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
-use templar_gateway_types::NearToken;
+use templar_gateway_types::{NearToken, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
     AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig,
 };
@@ -40,6 +40,10 @@ pub struct CreateProposal {
     /// Blocks for the full (effective) TTL, so it is only practical for short ones.
     #[arg(long, conflicts_with = "print")]
     execute_when_ready: bool,
+    /// Argument encoding for the contract call. `borsh` is cheaper and carries larger payloads, but
+    /// leaves an operation explorers and indexers cannot read — use it for wasm upgrades.
+    #[arg(long, value_name = "ENCODING", default_value = "json")]
+    encoding: ProposalEncoding,
     #[command(flatten)]
     pub(crate) signer: SignerArgs,
     #[command(subcommand)]
@@ -89,6 +93,7 @@ impl CreateProposal {
             id,
             operation: self.operation.into_operation()?,
             requested_ttl: self.requested_ttl,
+            encoding: self.encoding,
         })
     }
 }

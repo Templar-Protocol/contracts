@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
+use templar_gateway_types::ProposalEncoding;
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -120,6 +121,8 @@ pub struct CreateProposal {
     pub id: u32,
     pub operation: Operation,
     pub requested_ttl: Nanoseconds,
+    #[serde(default, skip_serializing_if = "ProposalEncoding::is_json")]
+    pub encoding: ProposalEncoding,
 }
 
 /// Cancel a governance proposal.

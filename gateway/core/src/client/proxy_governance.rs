@@ -1,13 +1,15 @@
 use near_account_id::AccountId;
-use templar_common::Nanoseconds;
+use templar_gateway_types::common::ContractArgs;
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicyWire, Operation, Proposal, Role,
+    CreateProposalArgs, GovernancePolicyWire, Operation, Proposal, Role,
 };
 
 use crate::client::{
     macros::{contract_views, contract_writes},
-    NearClient,
+    ContractWriteOptions, NearClient,
 };
+use crate::operation::PlannedTransaction;
+use crate::GatewayResult;
 
 use super::BoundContractClient;
 
@@ -32,12 +34,7 @@ impl BoundContractClient for ProxyGovernanceClient<'_> {
 pub struct GovGetArgs {
     pub id: u32,
 }
-#[derive(serde::Serialize)]
-pub struct GovCreateArgs {
-    pub id: u32,
-    pub operation: Operation,
-    pub requested_ttl: Nanoseconds,
-}
+pub type GovCreateArgs = CreateProposalArgs<Operation>;
 #[derive(serde::Serialize)]
 pub struct GovActionArgs {
     pub id: u32,
@@ -74,6 +71,31 @@ impl ProxyGovernanceClient<'_> {
         pub fn list_role(GovListRoleArgs) -> Vec<AccountId>;
         pub fn get_roles(GovGetRolesArgs) -> Vec<Role>;
         pub fn get_proxy_oracle_id(()) -> AccountId;
+    }
+
+    /// Borsh-encoded twin of [`Self::create_proposal`], for payloads JSON makes too costly or too
+    /// large. `contract_writes!` always emits `ContractArgs::Json`, so this is hand-written.
+    pub fn create_proposal_borsh(
+        &self,
+        options: ContractWriteOptions,
+        args: &CreateProposalArgs<Operation>,
+    ) -> GatewayResult<PlannedTransaction> {
+        let encoded = near_sdk::borsh::to_vec(args)?;
+        Ok(PlannedTransaction {
+            signer_account_id: options.signer_account_id,
+            receiver_id: self.contract_id().to_owned(),
+            actions: vec![
+                ::near_api::types::transaction::actions::Action::FunctionCall(Box::new(
+                    ::near_api::types::transaction::actions::FunctionCallAction {
+                        method_name: "create_proposal_borsh".to_owned(),
+                        args: ContractArgs::Raw(encoded.into()).try_into_bytes()?,
+                        gas: options.gas,
+                        deposit: options.deposit,
+                    },
+                )),
+            ],
+            continue_on_failure: false,
+        })
     }
 
     contract_writes! {
