@@ -1,0 +1,15 @@
+name: Install cargo-near
+description: Install the pinned cargo-near CLI from upstream's prebuilt release binaries.
+inputs:
+  version:
+    description: cargo-near release to install
+    required: false
+    default: 0.19.2
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-near
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: curl --proto '=https' --tlsv1.2 -LsSf "https://github.com/near/cargo-near/releases/download/cargo-near-v${VERSION}/cargo-near-installer.sh" | sh

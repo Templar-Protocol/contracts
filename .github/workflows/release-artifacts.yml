@@ -73,10 +73,7 @@ jobs:
 
       - name: Install cargo-near
         if: steps.catalog.outputs.build == 'true'
-        uses: taiki-e/install-action@cde8c9e634f4a17bc06b61413ac0ef75450eac46
-        with:
-          # Same version the rest of CI pins.
-          tool: cargo-near@0.19.2
+        uses: ./.github/actions/cargo-near
 
       - name: Build reproducibly at the tag
         id: build
