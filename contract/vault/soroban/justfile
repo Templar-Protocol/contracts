@@ -12,7 +12,7 @@ set dotenv-load := false
 #
 # WITH BLEND INTEGRATION (for yield):
 #   1. just setup
-#   2. SOROBAN_ADAPTER_ADMIN=C... just deploy-all-with-blend <BLEND_POOL_ADDRESS>
+#   2. SOROBAN_ADAPTER_ADMIN=G... just deploy-all-with-blend <BLEND_POOL_ADDRESS>
 #   3. just demo-deposit
 #
 # PREREQUISITES:
@@ -701,10 +701,6 @@ deploy-blend-adapter pool_address:
 	if ! admin=$(SOROBAN_ADAPTER_VAULT_ID="$vault_id" just -f "{{justfile_directory()}}/justfile" _resolve-adapter-admin); then \
 		exit 1; \
 	fi; \
-	case "$admin" in \
-		C*) ;; \
-		*) echo "Error: Blend adapter admin must be a contract address (C...)." >&2; exit 1 ;; \
-	esac; \
 	network="${SOROBAN_NETWORK:-{{default_network}}}"; \
 	source="${SOROBAN_IDENTITY:-{{default_identity}}}"; \
 	echo "Deploying Blend adapter..."; \
@@ -922,7 +918,7 @@ blend-adapter-status:
 		echo "Pool:       $(just blend-invoke pool 2>/dev/null || echo 'error')"; \
 	fi
 
-# Propose a new Blend adapter admin contract.
+# Propose a new Blend adapter admin address.
 blend-adapter-set-admin new_admin:
 	@admin="${SOROBAN_ADAPTER_ADMIN:-$(cat {{state_dir}}/governance_id 2>/dev/null)}"; \
 	if [ -z "$admin" ]; then admin="${SOROBAN_CONTRACT_ID:-$(cat {{state_dir}}/vault_id 2>/dev/null)}"; fi; \
@@ -1512,7 +1508,7 @@ help:
 	@echo "  just allocate-supply <mkt> <amt>  Supply to market via adapter"
 	@echo "  just allocate-withdraw <mkt> <amt>  Withdraw from market via adapter"
 	@echo "  just fund-adapter <amount>       Transfer tokens to adapter (manual)"
-	@echo "  just blend-adapter-set-admin <admin_contract>"
+	@echo "  just blend-adapter-set-admin <admin_address>"
 	@echo "  just demo-e2e-blend              Full Blend integration e2e"
 	@echo ""
 	@echo "CUSTODIAL ADAPTER:"

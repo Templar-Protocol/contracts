@@ -4,51 +4,36 @@
 //! # Features
 //!
 //! - **default** — Metadata and artifact IDs only; no WASM bytes.
-//! - **workspace-loader** — Read WASM bytes at runtime from
-//!   `target/near/{name}/{name}.wasm` and provide a `cargo near build` helper.
-//! - **embedded-wasm** — Compile-time WASM blobs via `include_bytes!`.
-//! - **clap** — Optional parsing helpers for command-line argument handling.
+//! - **workspace-loader** — WASM from `target/near/`: whatever the tree
+//!   currently builds.
+//! - **fetch** — *Released* WASM from its GitHub Release, verified against the
+//!   catalog's SHA-256 pin: the exact bytes a version shipped as.
+//! - **clap** — Parsing helpers for command-line arguments.
 //!
 //! # Version keys
 //!
-//! Version keys follow the format `{package_name}@{version}#{sha256_hex}`
-//! defined by `templar-tools-common`. This crate provides formatting and
-//! hashing helpers that produce the same output.
+//! `{package_name}@{version}#{sha256_hex}`, matching `templar-tools-common`.
 
-#[cfg(feature = "embedded-wasm")]
-pub(crate) mod embedded;
+#[cfg(test)]
+mod catalog;
+#[cfg(feature = "fetch")]
+pub mod fetch;
 mod ids;
 #[cfg(all(feature = "workspace-loader", feature = "clap"))]
 pub mod prebuild;
 #[cfg(feature = "workspace-loader")]
 mod workspace_loader;
 
-#[cfg(feature = "embedded-wasm")]
-pub use embedded::embedded_sizes;
-pub use ids::{artifact_catalog, ArtifactId, ArtifactMetadata, ArtifactParseError};
+pub use ids::{
+    artifact_catalog, artifact_from_release_tag, ArtifactId, ArtifactMetadata, ArtifactParseError,
+    ArtifactRelease,
+};
 #[cfg(feature = "workspace-loader")]
 pub use workspace_loader::{
     build_artifact, load_artifact, load_artifact_bytes, BuildContractError, LoadError,
 };
 
 use sha2::Digest;
-use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-/// Errors returned by artifact operations in the default configuration.
-#[derive(Error, Debug)]
-pub enum ArtifactError {
-    /// There is no WASM bytes source available — neither `embedded-wasm` nor
-    /// `workspace-loader` is enabled.
-    #[error(
-        "No WASM byte source available. Enable the `embedded-wasm` or \
-         `workspace-loader` feature."
-    )]
-    NoWasmSource,
-}
 
 // ---------------------------------------------------------------------------
 // Version keys
@@ -58,7 +43,15 @@ pub enum ArtifactError {
 ///
 /// This matches the format produced by `templar-tools-common::build`.
 pub fn format_version_key(name: &str, version: &str, wasm_bytes: &[u8]) -> String {
-    format!("{name}@{version}#{}", sha256_hex(wasm_bytes))
+    version_key_from_digest(name, version, &sha256_hex(wasm_bytes))
+}
+
+/// The same key when the digest is already known.
+///
+/// A released artifact's catalog pin *is* its digest, so callers holding
+/// verified bytes would only be rediscovering a value they already have.
+pub fn version_key_from_digest(name: &str, version: &str, sha256_hex: &str) -> String {
+    format!("{name}@{version}#{sha256_hex}")
 }
 
 /// Compute the SHA-256 hex digest of a WASM blob.
@@ -120,7 +113,8 @@ mod tests {
         let meta = ArtifactId::Vault.metadata();
         assert_eq!(meta.id, ArtifactId::Vault);
         assert_eq!(meta.package_name, "templar-vault-contract");
-        assert_eq!(meta.version, "1.2.1");
+        // No NEAR vault has shipped yet, so there is no released version.
+        assert_eq!(meta.version(), None);
     }
 
     #[test]
@@ -189,13 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_artifact_id_metadata_is_complete() {
-        for id in ArtifactId::ALL {
-            assert_eq!(id.metadata().id, id);
-        }
-    }
-
-    #[test]
     fn test_catalog_target_names_match_convention() {
         for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
             let target_name = artifact.cargo_target_name;
@@ -255,6 +242,12 @@ mod tests {
         assert_eq!(parsed["package_name"], "templar-market-contract");
         assert_eq!(parsed["cargo_target_name"], "templar_market_contract");
         assert_eq!(parsed["source_path"], "contract/market");
-        assert_eq!(parsed["version"], "1.4.0");
+        // The release history is compiled in from `releases/` and reached
+        // through `releases()`, so it is not part of this struct's serialized
+        // shape — the gateway's DTO projects what it needs.
+        assert!(parsed.get("releases").is_none());
+        assert_eq!(meta.releases()[0].version, "1.0.0");
+        // Newest *released* version — the crate's Cargo.toml is further ahead.
+        assert_eq!(meta.version(), Some("1.3.0"));
     }
 }

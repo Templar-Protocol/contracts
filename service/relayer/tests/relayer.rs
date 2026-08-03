@@ -69,7 +69,7 @@ use templar_universal_account::{
     ExecuteArgsMessage, KeyId, PayloadExecutionParameters, NEAR_TESTNET_CHAIN_ID,
 };
 
-use templar_gateway_testing::wasm::UNIVERSAL_ACCOUNT_0_2_0;
+use templar_gateway_testing::{wasm, ArtifactId};
 use test_utils::{market_configuration, DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 
 mod common;
@@ -979,9 +979,13 @@ pub async fn universal_account_regression_0_2_0(#[future(awt)] mut init_test: In
 
     // Deploy the historical `0.2.0` universal-account wasm to a fresh account.
     let ua = common::create_account(&harness, "ua-0-2-0").await.unwrap();
-    common::deploy_code(&harness.network, &ua, UNIVERSAL_ACCOUNT_0_2_0.to_vec())
-        .await
-        .unwrap();
+    common::deploy_code(
+        &harness.network,
+        &ua,
+        wasm::released(ArtifactId::UniversalAccount, "0.2.0").await,
+    )
+    .await
+    .unwrap();
     common::call(
         &harness.network,
         &ua,

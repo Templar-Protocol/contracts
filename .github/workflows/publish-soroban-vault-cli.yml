@@ -1,6 +1,12 @@
 name: Publish Soroban Vault CLI Image
 
+# Fires automatically on the crate's release tag, so the published image version
+# is the version release-plz actually released rather than free text someone
+# typed. `workflow_dispatch` is kept for ad-hoc/dev images.
 on:
+  push:
+    tags:
+      - "templar-soroban-vault-cli-v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -14,7 +20,7 @@ on:
         default: false
         type: boolean
 
-run-name: Publish Soroban Vault CLI image (${{ inputs.tag }})
+run-name: Publish Soroban Vault CLI image (${{ inputs.tag || github.ref_name }})
 
 concurrency:
   group: publish-soroban-vault-cli-${{ github.ref }}
@@ -40,6 +46,19 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+
+          # On a release tag, derive the image tag from the version
+          # (`templar-soroban-vault-cli-v1.2.0` -> `1.2.0`); otherwise use the
+          # dispatch input. Strip the exact package prefix: `##*-v` cuts at the
+          # *last* `-v`, so a version like `0.2.0-v2` published as `2`.
+          if [[ -z "${INPUT_TAG:-}" ]]; then
+            prefix="templar-soroban-vault-cli-v"
+            if [[ "$GITHUB_REF_NAME" != "$prefix"* ]]; then
+              echo "Ref ${GITHUB_REF_NAME} is not a ${prefix}* tag" >&2
+              exit 1
+            fi
+            INPUT_TAG="${GITHUB_REF_NAME#"$prefix"}"
+          fi
 
           if [[ ! "$INPUT_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "Invalid Docker tag: $INPUT_TAG" >&2

@@ -13,7 +13,6 @@ use templar_gateway_methods_spec::{
 };
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_governance_common::OperationKind;
 
 use crate::commands::market::Export;
 use crate::context::CliContext;
@@ -147,41 +146,49 @@ async fn ensure_admin_holds_the_role(
     Ok(())
 }
 
-/// The governance contract's default proposal TTL. Stored per operation kind,
-/// so every kind is queried and a non-uniform set refused: flattening one would
-/// remove a real timelock on the next deploy.
+/// The governance contract's single proposal TTL, or a refusal.
+///
+/// The policy carries an independent timelock per reflexive bucket, one for the
+/// target default, and one per method override. A spec carries a single
+/// `ttl_default`, so a policy that is not uniform cannot be expressed and is
+/// refused rather than flattened — flattening would drop a real timelock on the
+/// next deploy.
 async fn governance_ttl(
     ctx: &CliContext,
     governance_id: &AccountId,
 ) -> anyhow::Result<Nanoseconds> {
-    use clap::ValueEnum as _;
+    let policy = ctx
+        .client
+        .read(governance::GetGovernancePolicy {
+            governance_id: governance_id.clone(),
+        })
+        .await
+        .with_context(|| format!("read the governance policy from {governance_id}"))?
+        .policy;
 
-    let mut uniform: Option<(OperationKind, Nanoseconds)> = None;
-    for kind in OperationKind::value_variants() {
-        let ttl = match ctx
-            .client
-            .read(governance::GetOperationTtl {
-                governance_id: governance_id.clone(),
-                kind: *kind,
-            })
-            .await
-        {
-            Ok(result) => result.ttl_ns,
-            // A kind the deployment predates has no TTL to recover, which is
-            // not the same as a failed read.
-            Err(error) if is_unknown_kind(&error, *kind) => continue,
-            Err(error) => {
-                return Err(anyhow::Error::new(error)
-                    .context(format!("read {kind:?} TTL from {governance_id}")))
-            }
-        };
+    let labeled = [
+        ("reflexive.set_policy", policy.reflexive_ttls.set_policy),
+        ("reflexive.set_role", policy.reflexive_ttls.set_role),
+        ("reflexive.self_upgrade", policy.reflexive_ttls.self_upgrade),
+        ("default_target", policy.default_target.ttl),
+    ]
+    .into_iter()
+    .map(|(label, ttl)| (label.to_owned(), ttl))
+    .chain(
+        policy
+            .method_policies
+            .iter()
+            .map(|(method, entry)| (format!("method_policies.{method}"), entry.ttl)),
+    );
 
-        match uniform {
-            None => uniform = Some((*kind, ttl)),
-            Some((first_kind, first)) => anyhow::ensure!(
-                first == ttl,
-                "`{governance_id}` uses per-operation TTLs ({first_kind:?} is {}ns, \
-                 {kind:?} is {}ns). A spec carries a single `ttl_default` and cannot \
+    let mut uniform: Option<(String, Nanoseconds)> = None;
+    for (label, ttl) in labeled {
+        match &uniform {
+            None => uniform = Some((label, ttl)),
+            Some((first_label, first)) => anyhow::ensure!(
+                *first == ttl,
+                "`{governance_id}` uses per-operation TTLs ({first_label} is {}ns, \
+                 {label} is {}ns). A spec carries a single `ttl_default` and cannot \
                  express that, so this market cannot be exported.",
                 first.as_ns(),
                 ttl.as_ns(),
@@ -191,23 +198,7 @@ async fn governance_ttl(
 
     uniform
         .map(|(_, ttl)| ttl)
-        .context("governance exposes no operation kinds to read a TTL from")
-}
-
-/// Operation kinds that may postdate a deployed governance contract. An
-/// allowlist, because a wrongly skipped kind drops out of the uniformity check
-/// and its timelock with it.
-const POSTDATED_KINDS: [OperationKind; 1] = [OperationKind::SelfUpgrade];
-
-/// Whether the contract rejected `kind` as a variant it does not know. Narrow
-/// on both axes — allowlisted kind, and the error must name it — because a bare
-/// phrase match would swallow genuine query failures.
-fn is_unknown_kind(error: &templar_gateway_core::GatewayError, kind: OperationKind) -> bool {
-    if !POSTDATED_KINDS.contains(&kind) {
-        return false;
-    }
-    let rendered = error.to_string();
-    rendered.contains("unknown variant") && rendered.contains(&format!("{kind:?}"))
+        .context("governance exposes no TTLs to read")
 }
 
 /// A configured proxy, or a legible error. An oracle serving neither constant is
@@ -297,53 +288,4 @@ async fn version_key(
         .deployment
         .with_context(|| format!("`{registry_id}` has no deployment record for {account_id}"))?
         .version_key)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{is_unknown_kind, OperationKind};
-    use templar_gateway_core::GatewayError;
-
-    fn error(message: &str) -> GatewayError {
-        GatewayError::NearQuery(message.to_owned())
-    }
-
-    /// The case the skip exists for: a governance contract older than this
-    /// build does not know `SelfUpgrade`.
-    #[test]
-    fn a_postdated_kind_the_contract_rejects_is_skippable() {
-        assert!(is_unknown_kind(
-            &error("unknown variant `SelfUpgrade`, expected one of `SetProxy`, ..."),
-            OperationKind::SelfUpgrade,
-        ));
-    }
-
-    /// A kind that does not postdate any deployment is never absent by design,
-    /// so its rejection is a real failure.
-    #[test]
-    fn a_kind_every_deployment_has_is_not_skippable() {
-        assert!(!is_unknown_kind(
-            &error("unknown variant `SetProxy`, expected one of ..."),
-            OperationKind::SetProxy,
-        ));
-    }
-
-    /// An error that does not name the kind asked for is a different failure,
-    /// and swallowing it would drop that kind from the uniformity check.
-    #[test]
-    fn an_error_naming_another_variant_is_not_skippable() {
-        assert!(!is_unknown_kind(
-            &error("unknown variant `Something`, expected one of ..."),
-            OperationKind::SelfUpgrade,
-        ));
-    }
-
-    /// Any other failure propagates, however it is worded.
-    #[test]
-    fn an_unrelated_failure_is_not_skippable() {
-        assert!(!is_unknown_kind(
-            &error("timed out talking to the RPC"),
-            OperationKind::SelfUpgrade,
-        ));
-    }
 }

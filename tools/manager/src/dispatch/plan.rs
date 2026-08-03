@@ -22,10 +22,10 @@ use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
 use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
-use templar_proxy_oracle_near_governance_common::Operation;
+use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
 
 use crate::commands::market::{Apply, Plan};
-use crate::commands::proxy_oracle::governance::{uniform_ttls, GovernanceInit};
+use crate::commands::proxy_oracle::governance::GovernanceInit;
 use crate::context::{print_json, CliContext};
 use crate::spec::journal::{self, Journal};
 use crate::spec::{
@@ -39,8 +39,11 @@ use crate::spec::{
 /// rather than from the market.
 ///
 /// The registry refuses a deposit below `1e19 * code.len()`, and the market's is
-/// the last step — undersized there, it fails after 8.5 NEAR is spent. Each
-/// keeps 50 KB of headroom, held by `deposits_cover_the_pinned_artifacts`.
+/// the last step — undersized there, it fails after 8.5 NEAR is spent. Each was
+/// measured against its pinned release to keep ~50 KB of headroom: governance
+/// 347 KB, oracle 484 KB, market 521 KB. Nothing re-checks that automatically —
+/// released artifacts are fetched, not in the tree — so a version bump that
+/// grows a contract past its headroom needs these raised with it.
 /// Over-provisioning burns nothing: the deposit is forwarded to the new account.
 const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_near(4);
 const ORACLE_DEPOSIT: NearToken = NearToken::from_millinear(5_400);
@@ -509,7 +512,11 @@ async fn oracle_stack(
     let governance_init = serde_json::to_vec(&GovernanceInit {
         proxy_oracle_id: oracle_id.clone(),
         admin_id: governance.admin.clone(),
-        ttls: uniform_ttls(governance.ttl_default),
+        // One TTL for every reflexive bucket and for the target default, which
+        // is what a spec's single `ttl_default` means. A deployment needing
+        // per-method timelocks raises them afterwards by proposal.
+        policy: GovernancePolicy::uniform(governance.ttl_default)
+            .context("build the governance policy from `ttl_default`")?,
     })
     .context("encode governance init args")?;
 
@@ -577,10 +584,14 @@ async fn set_proxy(
         gov::CreateProposal {
             governance_id: governance_id.clone(),
             id: proposal_id,
-            operation: Operation::SetProxy {
-                id: price_id,
-                proxy: Some(proxy),
-            },
+            operation: Operation::TargetFunctionCall(
+                templar_proxy_oracle_near_governance_common::target::admin_set_proxy(
+                    price_id,
+                    Some(proxy),
+                    None,
+                )
+                .context("encode the `admin_set_proxy` call")?,
+            ),
             requested_ttl: ttl_default,
         },
     )
@@ -1064,12 +1075,10 @@ impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
 #[cfg(test)]
 mod tests {
     use super::{apply_skips, ensure_compatible, Network, PLAN_SCHEMA_VERSION};
-    use super::{GOVERNANCE_DEPOSIT, MARKET_DEPOSIT, ORACLE_DEPOSIT};
     use crate::spec::check::{Check, Status};
     use crate::spec::plan::testing::{alpha_market, public_key};
     use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
     use rstest::rstest;
-    use templar_contract_artifacts::ArtifactId;
 
     fn checks() -> Vec<Check> {
         vec![
@@ -1157,31 +1166,6 @@ mod tests {
     /// The steps of a plan carrying one deploy with the given args.
     fn steps_with(args: PlanArgs) -> Vec<PlanStep> {
         vec![step_with("deploy market", args)]
-    }
-
-    /// The registry refuses `deposit < 1e19 * code.len()`, so a contract that
-    /// outgrows its constant fails the deploy — the market's on the last step,
-    /// after 8.5 NEAR is spent. Bumping a pinned artifact past its deposit must
-    /// therefore break the build, not a deployment.
-    #[rstest]
-    #[case(ArtifactId::ProxyGovernance, GOVERNANCE_DEPOSIT)]
-    #[case(ArtifactId::ProxyOracle, ORACLE_DEPOSIT)]
-    #[case(ArtifactId::Market, MARKET_DEPOSIT)]
-    fn deposits_cover_the_pinned_artifacts(
-        #[case] artifact: ArtifactId,
-        #[case] deposit: near_api::types::NearToken,
-    ) {
-        const YOCTO_PER_BYTE: u128 = 10u128.pow(19);
-        const HEADROOM_BYTES: u128 = 50_000;
-
-        let required = artifact.embedded_bytes().len() as u128 * YOCTO_PER_BYTE;
-        let covered = deposit.as_yoctonear();
-
-        assert!(
-            covered >= required + HEADROOM_BYTES * YOCTO_PER_BYTE,
-            "{artifact:?} needs {required} yocto for its code and the deposit is \
-             {covered}; raise the constant so it keeps 50 KB of room to grow"
-        );
     }
 
     /// `ensure_targets_free` acts on what executes, which is the steps.

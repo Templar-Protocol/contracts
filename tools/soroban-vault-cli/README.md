@@ -74,8 +74,8 @@ Every deployment that requests a Blend or custodial adapter must also pass
 `--adapter-admin <address|vault>` (or `SOROBAN_ADAPTER_ADMIN`). Governance is never selected
 implicitly. The `vault` alias, and an explicit address equal to the vault, are accepted only after
 the CLI calls `vault.version()` and detects companion-upgrade capability `0x40`. The current default
-runtime does not advertise that capability. Blend adapter admins must be contract addresses;
-custodial adapter admins may be independently controlled accounts or contracts.
+runtime does not advertise that capability. Blend and custodial adapter admins may be
+independently controlled accounts or contracts.
 
 For a new stack, `--admin` is passed explicitly to the governance contract, the initial vault
 curator configuration, and the share-token constructor. The share token keeps a separate immutable
@@ -96,7 +96,7 @@ tmplr-soroban-vault \
   --blend-pool CPOOL... \
   --blend-pool CPOOL2... \
   --custodian G... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To add adapters later without redeploying the stack, use `deploy adapters`. If the manifest already
@@ -111,7 +111,7 @@ tmplr-soroban-vault deploy adapters \
   --asset-token CASSET... \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 ```
 
 To deploy only a fresh curator proxy for an existing vault, use `deploy curator-proxy`. Vault and
@@ -154,14 +154,14 @@ tmplr-soroban-vault deploy plan stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault deploy plan adapters \
   --vault CVAULT... \
   --governance CGOV... \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 ```
 
 Recover an interrupted deployment by reconciling first, then resuming if the repair plan reports
@@ -175,7 +175,7 @@ tmplr-soroban-vault deploy resume \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian G... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 ```
 
 The CLI validates Soroban account and contract addresses at parse time for operational commands.
@@ -537,7 +537,7 @@ tmplr-soroban-vault deploy stack \
   --governance-timelock-ns 86400000000000 \
   --blend-pool CPOOL... \
   --custodian GCUSTODIAN... \
-  --adapter-admin CADAPTERADMIN...
+  --adapter-admin GADAPTERADMIN...
 
 tmplr-soroban-vault governance submit-set-sentinel \
   --admin GCURATOR_OR_MULTISIG... \
@@ -614,7 +614,9 @@ stellar contract invoke \
 - Zero governance timelocks require `--allow-zero-timelock`.
 - Existing manifests must record a nonempty network label matching `--network`. This label check does not authenticate custom network passphrases; do not reuse one network label with a different passphrase.
 - Adapter deployment requires an explicit `--adapter-admin`; selecting the vault fails closed unless runtime capability `0x40` is detected first.
-- Blend adapter admins must be contract addresses. Custodial adapter admins must differ from the bound asset token.
+- Blend and custodial adapter admins may be accounts or contracts, but must differ from the
+  configured governance contract. Custodial adapter admins must also differ from the bound asset
+  token.
 - Share-token deployment rejects `admin == vault`; the manifest retains the initial admin as constructor provenance and reconciliation verifies the immutable vault binding.
 - `--fresh-state deploy stack` atomically reserves an unused manifest path before network calls; planning and dry-run modes require the path to be absent without creating it.
 - `--dry-run` prints the `stellar` commands with source-account environment overrides redacted, returns planned contract ids in the response, and never writes the manifest.

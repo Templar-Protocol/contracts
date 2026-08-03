@@ -1,8 +1,9 @@
 [package]
 name = "templar-4626-proxy-soroban"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
-license = "GPL-3.0-only"
+rust-version.workspace = true
+license.workspace = true
 description = "Stub Soroban ERC-4626 proxy contract for Templar Protocol"
 
 [lib]

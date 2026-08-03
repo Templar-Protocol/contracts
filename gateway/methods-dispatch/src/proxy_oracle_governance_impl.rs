@@ -3,7 +3,7 @@ use templar_gateway_core::{
     client::{
         proxy_governance::{
             GovActionArgs, GovCreateArgs, GovGetArgs, GovGetRolesArgs, GovHasRoleArgs, GovListArgs,
-            GovListRoleArgs, GovTtlArgs,
+            GovListRoleArgs,
         },
         ContractWriteOptions,
     },
@@ -40,18 +40,17 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::ProposalCount, C> f
 }
 
 #[async_trait]
-impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetOperationTtl, C> for Dispatch {
+impl<C: HasNearClient> DispatchRead<proxy_oracle_governance::GetGovernancePolicy, C> for Dispatch {
     async fn dispatch(
-        request: proxy_oracle_governance::GetOperationTtl,
+        request: proxy_oracle_governance::GetGovernancePolicy,
         ctx: C,
-    ) -> GatewayResult<proxy_oracle_governance::GetOperationTtlResult> {
-        let params = request;
-        let ttl_ns = ctx
+    ) -> GatewayResult<proxy_oracle_governance::GetGovernancePolicyResult> {
+        let policy = ctx
             .near_client()
-            .proxy_governance(params.governance_id)
-            .get_operation_ttl(GovTtlArgs { kind: params.kind })
+            .proxy_governance(request.governance_id)
+            .get_governance_policy(())
             .await?;
-        Ok(proxy_oracle_governance::GetOperationTtlResult { ttl_ns })
+        Ok(proxy_oracle_governance::GetGovernancePolicyResult { policy })
     }
 }
 

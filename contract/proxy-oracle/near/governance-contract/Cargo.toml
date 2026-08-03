@@ -1,9 +1,10 @@
 [package]
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 name = "templar-proxy-oracle-near-governance-contract"
 repository.workspace = true
-version = "0.1.0"
+version = "0.2.0"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -35,6 +36,7 @@ base64.workspace = true
 near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-token.workspace = true
+rstest.workspace = true
 serde_json.workspace = true
 templar-common.workspace = true
 templar-gateway-testing.workspace = true

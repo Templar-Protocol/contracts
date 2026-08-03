@@ -245,9 +245,9 @@ async fn proxy_oracle_governance(
             let governance_id = a.resolve(&ctx).await?;
             ctx.read(gov::ProposalCount { governance_id }).await
         }
-        ProxyOracleGovernanceNs::GetOperationTtl(a) => {
+        ProxyOracleGovernanceNs::GetGovernancePolicy(a) => {
             let governance_id = a.target.resolve(&ctx).await?;
-            ctx.read(a.into_spec(governance_id)).await
+            ctx.read(gov::GetGovernancePolicy { governance_id }).await
         }
         ProxyOracleGovernanceNs::GetProxyOracleId(a) => {
             let governance_id = a.resolve(&ctx).await?;

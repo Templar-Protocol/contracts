@@ -1,7 +1,7 @@
 mod create;
 mod create_proposal;
 mod execute_proposal;
-mod get_operation_ttl;
+mod get_governance_policy;
 mod get_roles;
 mod has_role;
 mod list_proposals;
@@ -10,7 +10,7 @@ mod list_role;
 pub use create::{GovernanceCreate, GovernanceInit};
 pub use create_proposal::CreateProposal;
 pub use execute_proposal::ExecuteProposalArgs;
-pub use get_operation_ttl::GetOperationTtl;
+pub use get_governance_policy::GetGovernancePolicy;
 pub use get_roles::GetRoles;
 pub use has_role::HasRole;
 pub use list_proposals::ListProposals;
@@ -20,13 +20,12 @@ use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use near_account_id::AccountId;
 use serde::de::DeserializeOwned;
-use templar_common::Nanoseconds;
+
 use templar_gateway_methods_spec::proxy_oracle_governance as spec;
 use templar_gateway_types::Base64Bytes;
-use templar_proxy_oracle_near_governance_common::TtlConfig;
 // Re-exported so the leaf command modules parse them directly as `clap::ValueEnum`
 // (derived upstream behind the crate's `clap` feature), avoiding a local mirror.
-pub use templar_proxy_oracle_near_governance_common::{OperationKind, Role};
+pub use templar_proxy_oracle_near_governance_common::{ReflexiveKind, Role};
 
 use crate::commands::signer::SignerArgs;
 use crate::resolve::GovernanceTarget;
@@ -50,8 +49,8 @@ pub enum ProxyOracleGovernanceNs {
     NextProposalId(GovernanceTarget),
     /// Read the total number of proposals.
     ProposalCount(GovernanceTarget),
-    /// Read the configured TTL for an operation kind.
-    GetOperationTtl(GetOperationTtl),
+    /// Read the governance policy table.
+    GetGovernancePolicy(GetGovernancePolicy),
     /// Read the proxy-oracle account this contract governs.
     GetProxyOracleId(GovernanceTarget),
     /// Check whether an account holds a role.
@@ -99,23 +98,6 @@ impl CancelProposal {
             governance_id,
             id: self.proposal.id,
         }
-    }
-}
-
-pub(crate) fn uniform_ttls(ttl: Nanoseconds) -> TtlConfig {
-    TtlConfig {
-        set_proxy: ttl,
-        configure_circuit_breakers: ttl,
-        add_circuit_breaker: ttl,
-        remove_circuit_breaker: ttl,
-        set_manual_trip: ttl,
-        rearm: ttl,
-        set_enforced: ttl,
-        set_action_ttl: ttl,
-        set_role: ttl,
-        admin_upgrade: ttl,
-        admin_function_call: ttl,
-        self_upgrade: ttl,
     }
 }
 

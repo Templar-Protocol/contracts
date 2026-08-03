@@ -1,8 +1,11 @@
 [package]
 name = "templar-vault-kernel"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
-license = "GPL-3.0-only"
+rust-version.workspace = true
+license.workspace = true
+description = "Storage-agnostic vault kernel: actions, effects, and state transitions"
+repository.workspace = true
 
 [lib]
 path = "src/lib.rs"

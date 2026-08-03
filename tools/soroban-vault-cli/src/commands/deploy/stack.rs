@@ -448,7 +448,6 @@ pub(in crate::commands) fn deploy_stack<E: CommandExecutor>(
             .context("adapter deployment requires --adapter-admin <address|vault>")?;
         validate_adapter_admin(
             adapter_admin,
-            include_blend,
             Some(&vault),
             Some(&governance),
             include_custodial.then_some(asset_token.as_str()),

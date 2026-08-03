@@ -3,7 +3,8 @@
 # ============================================
 # Build Stage
 # ============================================
-FROM rust:1.85-bookworm AS builder
+# Must be >= `rust-version` in the workspace Cargo.toml.
+FROM rust:1.86-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -78,7 +79,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 LABEL org.opencontainers.image.title="Templar Funding Bridge"
 LABEL org.opencontainers.image.description="Multi-chain treasury management service for NEAR Protocol"
 LABEL org.opencontainers.image.vendor="Templar Protocol"
-LABEL org.opencontainers.image.licenses="GPL-3.0"
+LABEL org.opencontainers.image.licenses="GPL-3.0-only"
 LABEL org.opencontainers.image.source="https://github.com/templar-protocol/contracts"
 LABEL org.opencontainers.image.documentation="https://github.com/templar-protocol/contracts/tree/main/service/funding-bridge"
 
