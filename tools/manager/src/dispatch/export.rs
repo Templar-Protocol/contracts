@@ -64,39 +64,48 @@ pub(super) async fn reconstruct(
 
     let oracle = &configuration.price_oracle_configuration;
     let oracle_id = oracle.account_id.clone();
-    let governance_id = governance_account_id(&name, &registry_id)?;
 
-    // Which mode this market is in, decided from chain state before anything
-    // proxy-shaped is read. A direct market's oracle is not ours: it has no
-    // proxy to fetch, and the governance account beside it was never deployed,
-    // so reading either fails on a market that is perfectly healthy.
-    let proxy_mode = oracle_id == crate::spec::oracle_account_id(&name, &registry_id)?
+    // A market whose oracle is not the one this tool would have created reads
+    // somebody else's. Decided before anything proxy-shaped is read or derived:
+    // fetching its proxies or the governance beside it fails on a market that
+    // is perfectly healthy, and a name whose `proxy-oracle-` form exceeds
+    // NEAR's length limit is itself proof the market is not a proxy deployment.
+    let proxy_mode = crate::spec::oracle_account_id(&name, &registry_id)
+        .is_ok_and(|derived| derived == oracle_id)
         && oracle.collateral_asset_price_id == COLLATERAL_PRICE_ID
         && oracle.borrow_asset_price_id == BORROW_PRICE_ID;
 
-    if !proxy_mode {
-        return MarketSpec::from_deployed(Deployed {
-            versions: Versions {
+    let (versions, governance, proxies) = if proxy_mode {
+        let governance_id = governance_account_id(&name, &registry_id)?;
+        (
+            versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
+            Some(GovernanceSpec {
+                admin: governance_admin.clone(),
+                ttl_default: governance_ttl(ctx, &governance_id).await?,
+            }),
+            Some((
+                proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?,
+                proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?,
+            )),
+        )
+    } else {
+        (
+            Versions {
                 market: version_key(ctx, &registry_id, market_id).await?,
                 proxy_oracle: None,
                 proxy_governance: None,
             },
-            governance: None,
-            collateral_proxy: None,
-            borrow_proxy: None,
-            market_id: market_id.clone(),
-            configuration,
-        });
-    }
+            None,
+            None,
+        )
+    };
 
+    let (collateral_proxy, borrow_proxy) = proxies.unzip();
     MarketSpec::from_deployed(Deployed {
-        versions: versions(ctx, &name, &registry_id, &oracle_id, market_id).await?,
-        governance: Some(GovernanceSpec {
-            admin: governance_admin.clone(),
-            ttl_default: governance_ttl(ctx, &governance_id).await?,
-        }),
-        collateral_proxy: Some(proxy(ctx, &oracle_id, COLLATERAL_PRICE_ID).await?),
-        borrow_proxy: Some(proxy(ctx, &oracle_id, BORROW_PRICE_ID).await?),
+        versions,
+        governance,
+        collateral_proxy,
+        borrow_proxy,
         market_id: market_id.clone(),
         configuration,
     })

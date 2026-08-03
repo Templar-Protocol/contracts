@@ -107,16 +107,6 @@ pub enum OracleMode {
 }
 
 impl OracleMode {
-    /// The oracle the market points at, given the proxy this spec would
-    /// otherwise create.
-    #[must_use]
-    pub fn account_id(&self, proxy_id: AccountId) -> AccountId {
-        match self {
-            Self::Proxy => proxy_id,
-            Self::Direct { account_id } => account_id.clone(),
-        }
-    }
-
     #[must_use]
     pub const fn is_direct(&self) -> bool {
         matches!(self, Self::Direct { .. })
@@ -319,9 +309,31 @@ impl MarketSpec {
         derived_id(&self.name, &self.registry)
     }
 
-    /// `proxy-oracle-<name>.<registry>` — the market's dedicated oracle.
+    /// `proxy-oracle-<name>.<registry>` — the oracle a proxy deployment creates.
+    /// Derivable whatever the mode, so callers that mean "the oracle this market
+    /// reads" want [`Self::reads_oracle_id`] instead.
     pub fn oracle_id(&self) -> anyhow::Result<AccountId> {
         derived_id(&oracle_name(&self.name), &self.registry)
+    }
+
+    /// The oracle this market reads.
+    ///
+    /// A direct market names it; a proxy market derives it. Derived lazily: the
+    /// prefixed form is longer than the market's own id, so a name that is valid
+    /// for a direct market can exceed NEAR's limit as `proxy-oracle-<name>`.
+    pub fn reads_oracle_id(&self) -> anyhow::Result<AccountId> {
+        match &self.oracle {
+            OracleMode::Direct { account_id } => Ok(account_id.clone()),
+            OracleMode::Proxy => self.oracle_id(),
+        }
+    }
+
+    /// The proxy oracle this deployment creates, if it creates one.
+    pub fn own_proxy_id(&self) -> anyhow::Result<Option<AccountId>> {
+        match &self.oracle {
+            OracleMode::Direct { .. } => Ok(None),
+            OracleMode::Proxy => self.oracle_id().map(Some),
+        }
     }
 
     /// `proxy-gov-<name>.<registry>` — owns the oracle, so it must be deployed
@@ -366,7 +378,7 @@ impl MarketSpec {
         collateral_decimals: i32,
         borrow_decimals: i32,
     ) -> anyhow::Result<MarketConfiguration> {
-        let oracle_id = self.oracle.account_id(self.oracle_id()?);
+        let oracle_id = self.reads_oracle_id()?;
         let (collateral_price_id, borrow_price_id) = self.price_identifiers()?;
         let price_maximum_age_s = u32::try_from(exact_units(
             self.market.price_maximum_age,

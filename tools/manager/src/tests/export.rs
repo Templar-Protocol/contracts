@@ -264,3 +264,36 @@ fn exports_a_direct_market_as_direct() {
         configuration,
     );
 }
+
+/// A direct market's oracle is the account it reads, never the proxy id a spec
+/// would otherwise derive. `market verify` reports this and passes it as the
+/// deployed proxy, so the wrong value names an account that does not exist.
+#[test]
+fn a_direct_market_resolves_to_the_oracle_it_reads() {
+    let configuration: MarketConfiguration =
+        read_json(&alpha("ixlm-ixlmusdc.templar-alpha.near.json"));
+    let deployed = configuration.price_oracle_configuration.account_id.clone();
+
+    let spec = MarketSpec::from_deployed(Deployed {
+        market_id: "ixlm-ixlmusdc.templar-alpha.near"
+            .parse()
+            .expect("valid market id"),
+        configuration,
+        collateral_proxy: None,
+        borrow_proxy: None,
+        versions: Versions {
+            market: "v1.3.0".to_owned(),
+            proxy_oracle: None,
+            proxy_governance: None,
+        },
+        governance: None,
+    })
+    .expect("a direct market must export");
+
+    assert_eq!(spec.reads_oracle_id().expect("reads"), deployed);
+    assert_ne!(
+        spec.oracle_id().expect("derived"),
+        deployed,
+        "the derived proxy must differ, or this proves nothing"
+    );
+}

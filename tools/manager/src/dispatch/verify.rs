@@ -26,7 +26,8 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
     let mut spec =
         super::export::reconstruct(&ctx, &args.market_id, &args.governance_admin).await?;
 
-    let oracle_id = spec.oracle_id()?;
+    let oracle_id = spec.reads_oracle_id()?;
+    let deployed_proxy = spec.own_proxy_id()?;
 
     // Fields that never reach the chain cannot be recovered from it, so an
     // intended spec supplies them. Without this the reference cross-check — the
@@ -61,16 +62,15 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
             .clone_from(&intended.borrow.reference_tolerance);
     }
 
-    // The same checks `spec check` runs, against the reconstructed spec — not a
-    // parallel set. A verify that checked less than a preflight would pass
-    // markets a preflight would refuse. The oracle is named so the aggregation
-    // resolves against the breakers the deployed one actually carries.
+    // The same checks `spec check` runs: one that checked less would pass
+    // markets a preflight refuses. The proxy is named so the aggregation
+    // resolves against the breakers the deployed oracle carries.
     let mut checks = super::preflight::run_all(
         &ctx,
         &mut spec,
         false,
         args.accept_decimals_mismatch,
-        Some(&oracle_id),
+        deployed_proxy.as_ref(),
     )
     .await?;
 
@@ -88,7 +88,7 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
     print_json(&crate::spec::check::Report {
         subject: VerifiedMarket {
             market_id: args.market_id.clone(),
-            oracle_id: spec.oracle_id()?,
+            oracle_id,
         },
         checks: &checks,
     })?;

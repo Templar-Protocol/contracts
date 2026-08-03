@@ -36,7 +36,7 @@ pub(super) async fn check(ctx: CliContext, args: CheckArgs) -> anyhow::Result<()
     let market_id = spec.market_id()?;
     print_json(&crate::spec::check::Report {
         subject: CheckedSpec {
-            oracle_id: spec.oracle.account_id(spec.oracle_id()?),
+            oracle_id: spec.reads_oracle_id()?,
             governance_id: spec.governance_id()?,
             network: spec.network()?.to_string(),
             collateral_proxy: spec.collateral.clone().into_proxy(price_maximum_age),

@@ -87,17 +87,9 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         Derived {
             creates_its_own_oracle: !spec.oracle.is_direct(),
             market_id: spec.market_id()?,
-            // The oracle the market will read, which for a direct market is
-            // not the proxy id this spec would otherwise derive. Naming the
-            // wrong one misstates the most safety-critical fact in the file.
-            //
-            // Derived only when a proxy is actually created: the prefixed ids
-            // are longer than the market's own, so eagerly deriving them
-            // rejected direct plans whose market name was perfectly valid.
-            oracle_id: match &spec.oracle {
-                crate::spec::OracleMode::Direct { account_id } => account_id.clone(),
-                crate::spec::OracleMode::Proxy => spec.oracle_id()?,
-            },
+            // Naming the wrong oracle misstates the most safety-critical fact
+            // in the file.
+            oracle_id: spec.reads_oracle_id()?,
             governance_id: if spec.oracle.is_direct() {
                 None
             } else {
