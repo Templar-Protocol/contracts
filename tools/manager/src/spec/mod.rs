@@ -46,6 +46,10 @@ pub fn default_reference_tolerance() -> Decimal {
     templar_common::dec!("0.015")
 }
 
+/// A year. Nothing legitimate approaches it, and past the deployment block's
+/// Unix-ms timestamp the market's snapshot arithmetic underflows.
+const MAXIMUM_TIME_CHUNK_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
+
 /// Bumped on a breaking spec change; unknown versions are rejected. Every
 /// struct here is `deny_unknown_fields`, so adding a field is breaking in the
 /// reader direction: an older build rejects a document carrying it.
@@ -53,15 +57,19 @@ pub const SCHEMA_VERSION: u32 = 4;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+///
+/// The parsed form. A spec *file* states `versions` and `[governance]` flat
+/// beside `oracle`, because profile composition merges tables and cannot merge
+/// enum variants; [`RawMarketSpec`] is that shape, and the conversion between
+/// them is where "a proxy states its governance" stops being a rule to check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawMarketSpec", into = "RawMarketSpec")]
 pub struct MarketSpec {
     pub schema: u32,
 
     /// Profiles merged beneath this file, in order. Resolved and emptied by
     /// [`extends::load`] before deserialization, so a loaded spec always has an
     /// empty list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<std::path::PathBuf>,
 
     /// Registry that owns the deployment; every account id derives from it.
@@ -70,15 +78,11 @@ pub struct MarketSpec {
     /// Market subaccount label, e.g. `iethfxrp-ixlmusdc`.
     pub name: String,
 
-    pub versions: Versions,
+    /// Registry version key for the market contract, which both modes deploy.
+    pub market_version: String,
 
     /// Which oracle the market reads, and therefore what a deployment creates.
-    #[serde(default)]
     pub oracle: OracleMode,
-
-    /// Absent for a direct market, which deploys no oracle to govern.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub governance: Option<GovernanceSpec>,
 
     pub collateral: AssetSpec<CollateralAsset>,
     pub borrow: AssetSpec<BorrowAsset>,
@@ -87,14 +91,20 @@ pub struct MarketSpec {
 
 /// Which oracle a market reads: a dedicated proxy this deployment creates, or
 /// an existing account whose own price identifiers each asset then names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+///
+/// `Proxy` carries what only a proxy deployment has, so a spec that deploys one
+/// without saying who governs it, or which versions to deploy, does not parse.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OracleMode {
-    /// Deploy a dedicated proxy oracle for this market.
-    #[default]
-    Proxy,
-    /// Read an oracle that already exists.
-    Direct { account_id: AccountId },
+    Proxy {
+        governance: GovernanceSpec,
+        /// Registry version keys for the two contracts a proxy deployment adds.
+        oracle_version: String,
+        governance_version: String,
+    },
+    Direct {
+        account_id: AccountId,
+    },
 }
 
 impl OracleMode {
@@ -104,9 +114,46 @@ impl OracleMode {
     }
 }
 
-/// Registry version keys for the contracts a deployment creates. The proxy keys
-/// are optional because a direct market creates neither; `config.oracle_mode`
-/// requires them of a proxy spec.
+/// The shape a spec file is written in: `versions` and `[governance]` sit flat
+/// beside `oracle`, so a profile can supply them and a market override one.
+///
+/// Only [`MarketSpec`]'s serde impls construct this. `extends::load` merges at
+/// this level, which is why the variant-carried form cannot be the file shape —
+/// merging `[oracle.proxy]` from a profile with `[oracle.direct]` from a market
+/// yields a table that is both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RawMarketSpec {
+    pub schema: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extends: Vec<std::path::PathBuf>,
+    pub registry: AccountId,
+    pub name: String,
+    pub versions: Versions,
+    #[serde(default)]
+    pub oracle: RawOracleMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<GovernanceSpec>,
+    pub collateral: AssetSpec<CollateralAsset>,
+    pub borrow: AssetSpec<BorrowAsset>,
+    pub market: MarketParams,
+}
+
+/// `oracle = "proxy"` or `[oracle.direct]`, with no payload — the payload lives
+/// in sibling tables so profiles can compose it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawOracleMode {
+    #[default]
+    Proxy,
+    Direct {
+        account_id: AccountId,
+    },
+}
+
+/// Registry version keys, as written. The proxy keys are optional here and
+/// required by the conversion into [`MarketSpec`], which is the only place that
+/// distinction exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Versions {
@@ -115,6 +162,83 @@ pub struct Versions {
     pub proxy_oracle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_governance: Option<String>,
+}
+
+impl TryFrom<RawMarketSpec> for MarketSpec {
+    type Error = anyhow::Error;
+
+    fn try_from(raw: RawMarketSpec) -> anyhow::Result<Self> {
+        let oracle = match raw.oracle {
+            // A direct market drops the proxy fields rather than refusing them:
+            // the shared mainnet profiles state `[governance]` and both proxy
+            // versions for the proxy markets, and every direct market inherits
+            // them without asking.
+            RawOracleMode::Direct { account_id } => OracleMode::Direct { account_id },
+            RawOracleMode::Proxy => OracleMode::Proxy {
+                governance: raw.governance.context(
+                    "this spec deploys its own proxy oracle but states no \
+                     `[governance]`; the oracle would have no owner able to \
+                     configure it",
+                )?,
+                oracle_version: raw
+                    .versions
+                    .proxy_oracle
+                    .context("this spec deploys its own proxy oracle but states no `versions.proxy_oracle`")?,
+                governance_version: raw.versions.proxy_governance.context(
+                    "this spec deploys its own proxy oracle but states no `versions.proxy_governance`",
+                )?,
+            },
+        };
+
+        Ok(Self {
+            schema: raw.schema,
+            extends: raw.extends,
+            registry: raw.registry,
+            name: raw.name,
+            market_version: raw.versions.market,
+            oracle,
+            collateral: raw.collateral,
+            borrow: raw.borrow,
+            market: raw.market,
+        })
+    }
+}
+
+impl From<MarketSpec> for RawMarketSpec {
+    fn from(spec: MarketSpec) -> Self {
+        let (oracle, governance, proxy_oracle, proxy_governance) = match spec.oracle {
+            OracleMode::Direct { account_id } => {
+                (RawOracleMode::Direct { account_id }, None, None, None)
+            }
+            OracleMode::Proxy {
+                governance,
+                oracle_version,
+                governance_version,
+            } => (
+                RawOracleMode::Proxy,
+                Some(governance),
+                Some(oracle_version),
+                Some(governance_version),
+            ),
+        };
+
+        Self {
+            schema: spec.schema,
+            extends: spec.extends,
+            registry: spec.registry,
+            name: spec.name,
+            versions: Versions {
+                market: spec.market_version,
+                proxy_oracle,
+                proxy_governance,
+            },
+            oracle,
+            governance,
+            collateral: spec.collateral,
+            borrow: spec.borrow,
+            market: spec.market,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -212,6 +336,14 @@ pub fn governance_name(name: &str) -> String {
 }
 
 fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
+    // A dotted label parses as a valid account id but is not a *direct* child,
+    // which is what `registry.deploy` requires — so it would pass every derived
+    // id and fail on chain with the deposit already attached.
+    anyhow::ensure!(
+        !label.contains('.'),
+        "`{label}` is not a single account label; a registry deploys only its \
+         direct sub-accounts, so `name` cannot contain a dot"
+    );
     format!("{label}.{registry}")
         .parse()
         .with_context(|| format!("`{label}.{registry}` is not a valid account id"))
@@ -257,28 +389,17 @@ impl MarketSpec {
         }
     }
 
-    /// The fields only a proxy deployment has. Absent is a valid spec — a
-    /// direct market deploys neither contract — so the error names the mode
-    /// rather than reading as a missing required field.
-    pub fn governance_spec(&self) -> anyhow::Result<&GovernanceSpec> {
-        self.governance.as_ref().context(
-            "this spec deploys its own proxy oracle but states no `[governance]`; \
-             the oracle would have no owner able to configure it",
-        )
-    }
-
-    pub fn proxy_oracle_version(&self) -> anyhow::Result<&str> {
-        self.versions.proxy_oracle.as_deref().context(
-            "this spec deploys its own proxy oracle but states no \
-             `versions.proxy_oracle`",
-        )
-    }
-
-    pub fn proxy_governance_version(&self) -> anyhow::Result<&str> {
-        self.versions.proxy_governance.as_deref().context(
-            "this spec deploys its own proxy oracle but states no \
-             `versions.proxy_governance`",
-        )
+    /// The governance spec and the two version keys a proxy deployment needs,
+    /// or `None` for a direct market that creates neither.
+    pub const fn proxy(&self) -> Option<(&GovernanceSpec, &String, &String)> {
+        match &self.oracle {
+            OracleMode::Direct { .. } => None,
+            OracleMode::Proxy {
+                governance,
+                oracle_version,
+                governance_version,
+            } => Some((governance, oracle_version, governance_version)),
+        }
     }
 
     /// `<name>.<registry>` — where the market contract lands.
@@ -297,7 +418,7 @@ impl MarketSpec {
     pub fn reads_oracle_id(&self) -> anyhow::Result<AccountId> {
         match &self.oracle {
             OracleMode::Direct { account_id } => Ok(account_id.clone()),
-            OracleMode::Proxy => self.oracle_id(),
+            OracleMode::Proxy { .. } => self.oracle_id(),
         }
     }
 
@@ -305,7 +426,7 @@ impl MarketSpec {
     pub fn own_proxy_id(&self) -> anyhow::Result<Option<AccountId>> {
         match &self.oracle {
             OracleMode::Direct { .. } => Ok(None),
-            OracleMode::Proxy => self.oracle_id().map(Some),
+            OracleMode::Proxy { .. } => self.oracle_id().map(Some),
         }
     }
 
@@ -313,7 +434,7 @@ impl MarketSpec {
     pub fn own_governance_id(&self) -> anyhow::Result<Option<AccountId>> {
         match &self.oracle {
             OracleMode::Direct { .. } => Ok(None),
-            OracleMode::Proxy => self.governance_id().map(Some),
+            OracleMode::Proxy { .. } => self.governance_id().map(Some),
         }
     }
 
@@ -367,9 +488,12 @@ impl MarketSpec {
             "time_chunk",
             "milliseconds",
         )?;
+        // Above the block's Unix-ms timestamp, `now()` divides to zero and
+        // `Market::new` unwraps `0.checked_sub(1)` — a panic on the last step.
         anyhow::ensure!(
-            time_chunk_ms > 0,
-            "`time_chunk` must be at least 1ms; a zero-length chunk has no snapshot schedule"
+            (1..=MAXIMUM_TIME_CHUNK_MS).contains(&time_chunk_ms),
+            "`time_chunk` must be between 1ms and {MAXIMUM_TIME_CHUNK_MS}ms; \
+             {time_chunk_ms}ms leaves the market with no usable snapshot schedule"
         );
 
         // `total_weight` panics on overflow and nothing on the deploy path calls

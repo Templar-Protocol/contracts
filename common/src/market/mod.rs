@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroU16;
 
 use near_sdk::{near, AccountId};
@@ -32,7 +32,10 @@ pub struct BorrowAssetMetrics {
 #[near(serializers = [json, borsh])]
 pub struct YieldWeights {
     pub supply: NonZeroU16,
-    pub r#static: HashMap<AccountId, u16>,
+    /// Ordered so the JSON encoding is a function of the value: a deployment
+    /// plan compares `init_args` byte-for-byte, and a `HashMap` re-encodes in a
+    /// different order per process. Borsh sorts either, so state is unchanged.
+    pub r#static: BTreeMap<AccountId, u16>,
 }
 
 impl YieldWeights {
@@ -42,7 +45,7 @@ impl YieldWeights {
     pub fn new_with_supply_weight(supply: u16) -> Self {
         Self {
             supply: supply.try_into().unwrap(),
-            r#static: HashMap::new(),
+            r#static: BTreeMap::new(),
         }
     }
 

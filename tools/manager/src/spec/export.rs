@@ -54,14 +54,25 @@ impl MarketSpec {
                     account_id: oracle.account_id.clone(),
                 }
             } else {
-                super::OracleMode::Proxy
+                super::OracleMode::Proxy {
+                    governance: deployed.governance.context(
+                        "this market has a dedicated proxy oracle, so its governance \
+                         must be read before a spec can be reconstructed",
+                    )?,
+                    oracle_version: deployed.versions.proxy_oracle.context(
+                        "no registry deployment record names the proxy oracle's version",
+                    )?,
+                    governance_version: deployed
+                        .versions
+                        .proxy_governance
+                        .context("no registry deployment record names the governance version")?,
+                }
             },
             schema: SCHEMA_VERSION,
             extends: Vec::new(),
             registry,
             name,
-            versions: deployed.versions,
-            governance: deployed.governance,
+            market_version: deployed.versions.market,
             collateral: asset_spec(
                 "collateral",
                 deployed.configuration.collateral_asset.clone(),

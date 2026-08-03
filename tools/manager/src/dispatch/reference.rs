@@ -437,7 +437,7 @@ fn compare(
     // The resolved name is half the point: it is how a human confirms the right
     // coin was pulled, not merely a matching ticker.
     let identity = format!("{} `{}` \"{}\"", label, listing.id, listing.name);
-    let Some(deviation) = deviation(aggregated, reference) else {
+    let Some(difference) = relative_difference(aggregated, reference) else {
         return (
             Check::new(
                 id,
@@ -450,10 +450,10 @@ fn compare(
     };
 
     // Lossy is right here: this is a tolerance band, not an exact comparison.
-    let within = deviation <= tolerance.to_f64_lossy();
+    let within = difference.abs() <= tolerance.to_f64_lossy();
     let detail = format!(
         "{identity} ${reference} vs aggregated ${aggregated} ({:+.3}%)",
-        signed_percent(aggregated, reference)
+        difference * 100.0
     );
 
     (
@@ -520,7 +520,7 @@ fn pair(
     let ours = scaled(&collateral) / aggregated;
     let theirs = collateral_reference / borrow_reference;
 
-    let Some(deviation) = deviation(ours, theirs) else {
+    let Some(difference) = relative_difference(ours, theirs) else {
         return Check::new(
             id,
             Status::Skipped {
@@ -531,11 +531,11 @@ fn pair(
 
     let detail = format!(
         "{label} {theirs} vs aggregated {ours} ({:+.3}%)",
-        signed_percent(ours, theirs)
+        difference * 100.0
     );
     Check::new(
         id,
-        if deviation <= tolerance.to_f64_lossy() {
+        if difference.abs() <= tolerance.to_f64_lossy() {
             Status::passed(detail)
         } else {
             Status::failed(format!(
@@ -546,17 +546,11 @@ fn pair(
     )
 }
 
-/// Absolute relative difference. `None` when the reference is zero.
-fn deviation(ours: f64, theirs: f64) -> Option<f64> {
-    (theirs != 0.0).then(|| ((ours - theirs) / theirs).abs())
-}
-
-fn signed_percent(ours: f64, theirs: f64) -> f64 {
-    if theirs == 0.0 {
-        0.0
-    } else {
-        (ours - theirs) / theirs * 100.0
-    }
+/// Signed relative difference. `None` when the reference is zero, which is the
+/// one case no comparison can be made from — the sign and the magnitude come
+/// from the same quotient, so they cannot disagree about it.
+fn relative_difference(ours: f64, theirs: f64) -> Option<f64> {
+    (theirs != 0.0).then(|| (ours - theirs) / theirs)
 }
 
 #[cfg(test)]

@@ -37,12 +37,6 @@ impl Status {
         }
     }
 
-    pub fn skipped(reason: impl Into<String>) -> Self {
-        Self::Skipped {
-            reason: reason.into(),
-        }
-    }
-
     pub const fn is_failure(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }
@@ -106,129 +100,114 @@ pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
     ]
 }
 
-/// One side's sources, without needing the caller to name the generic asset
-/// class twice.
-fn asset_sources<'a>(spec: &'a MarketSpec, side: &str) -> &'a [super::oracle::SourceSpec] {
-    if side == "collateral" {
-        &spec.collateral.sources
-    } else {
-        &spec.borrow.sources
-    }
-}
-
 /// Fields belonging to the other oracle mode are refused rather than ignored:
 /// both modes share one `AssetSpec`, so an author who wrote `sources` on a
 /// direct spec would otherwise believe they are being aggregated.
 fn mode_is_fully_described(spec: &MarketSpec) -> Check {
     let id = "config.oracle_mode";
     let direct = spec.oracle.is_direct();
-    let mut problems = Vec::new();
 
-    for (side, price_id, sources, aggregator, min_sources, max_age, max_clock_drift) in [
-        (
-            "collateral",
-            spec.collateral.price_id,
-            spec.collateral.sources.len(),
-            spec.collateral.aggregator,
-            spec.collateral.min_sources,
-            spec.collateral.max_age,
-            spec.collateral.max_clock_drift,
-        ),
-        (
-            "borrow",
-            spec.borrow.price_id,
-            spec.borrow.sources.len(),
-            spec.borrow.aggregator,
-            spec.borrow.min_sources,
-            spec.borrow.max_age,
-            spec.borrow.max_clock_drift,
-        ),
-    ] {
-        // The omission that silently changes behavior: no aggregator deploys
-        // `median_low`, where every deployed borrow feed reads `median_high`.
-        if !direct && aggregator.is_none() {
-            problems.push(format!(
-                "{side} states no `aggregator`; a proxy would silently deploy \
-                 `median_low`, more permissive than the `median_high` every \
-                 deployed borrow feed uses"
-            ));
-        }
-        if direct && aggregator.is_some() {
-            problems.push(format!(
-                "{side}.aggregator is set, but this market aggregates nothing; \
-                 it would be ignored"
-            ));
-        }
-        // Required, and checked here rather than left to `config.validate`:
-        // that check skips itself when decimals are unresolved, so an offline
-        // run of a direct spec missing a `price_id` exited zero.
-        if direct && price_id.is_none() {
-            problems.push(format!(
-                "{side} states no `price_id`; a pre-existing oracle serves its \
-                 own identifiers and this spec has nothing to derive one from"
-            ));
-        }
-        if direct && min_sources > 0 {
-            problems.push(format!(
-                "{side}.min_sources is set, but this market aggregates nothing; \
-                 it would be ignored"
-            ));
-        }
-        if direct && (max_age.is_some() || max_clock_drift.is_some()) {
-            problems.push(format!(
-                "{side} sets a freshness bound, but the oracle it reads enforces \
-                 its own; it would be ignored"
-            ));
-        }
-        // `priority` ranks its sources by position: it carries no weights and
-        // no minimum. Accepting either would silently drop what was authored,
-        // the same failure the mode fields have.
-        if !direct {
-            let weighted = aggregator.unwrap_or_default().is_weighted();
-            let stated: Vec<_> = asset_sources(spec, side)
-                .iter()
-                .filter_map(|source| source.weight())
-                .collect();
-            if weighted && stated.len() != sources {
-                problems.push(format!(
-                    "{side} uses a median aggregator, which weighs its sources, \
-                     but only {} of {sources} state a `weight`",
-                    stated.len()
-                ));
-            }
-            if !weighted && !stated.is_empty() {
-                problems.push(format!(
-                    "{side} uses `priority`, which ranks sources by position; \
-                     the {} `weight`(s) stated would be ignored",
-                    stated.len()
-                ));
-            }
-            if !weighted && min_sources > 0 {
-                problems.push(format!(
-                    "{side}.min_sources is set, but `priority` takes the first \
-                     source that answers and honors no minimum"
-                ));
-            }
-        }
-        if direct && sources > 0 {
-            problems.push(format!(
-                "{side} names {sources} source(s), but this market reads an \
-                 oracle it does not configure; they would be ignored"
-            ));
-        }
-        if !direct && price_id.is_some() {
-            problems.push(format!(
-                "{side}.price_id is set, but a proxy oracle serves the constants \
-                 this tool owns; it would be ignored"
-            ));
-        }
-    }
+    let mut problems = side_problems("collateral", &spec.collateral, direct);
+    problems.extend(side_problems("borrow", &spec.borrow, direct));
 
     if problems.is_empty() {
         Check::new(id, Status::passed(if direct { "direct" } else { "proxy" }))
     } else {
         Check::new(id, Status::failed(problems.join("; ")))
     }
+}
+
+/// One side's mode-dependent fields. Generic over the asset class rather than
+/// flattened to a tuple: erasing it lost `sources` to a `usize` and needed a
+/// second, stringly-typed lookup to get the slice back.
+fn side_problems<A: templar_common::asset::AssetClass>(
+    side: &str,
+    asset: &super::oracle::AssetSpec<A>,
+    direct: bool,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let sources = asset.sources.len();
+
+    if direct {
+        // Required, and checked here rather than left to `config.validate`:
+        // that check skips itself when decimals are unresolved, so an offline
+        // run of a direct spec missing a `price_id` exited zero.
+        if asset.price_id.is_none() {
+            problems.push(format!(
+                "{side} states no `price_id`; a pre-existing oracle serves its \
+                 own identifiers and this spec has nothing to derive one from"
+            ));
+        }
+        for (field, set) in [
+            ("aggregator", asset.aggregator.is_some()),
+            ("min_sources", asset.min_sources > 0),
+            (
+                "freshness bound",
+                asset.max_age.is_some() || asset.max_clock_drift.is_some(),
+            ),
+        ] {
+            if set {
+                problems.push(format!(
+                    "{side}.{field} is set, but this market reads an oracle it \
+                     does not configure; it would be ignored"
+                ));
+            }
+        }
+        if sources > 0 {
+            problems.push(format!(
+                "{side} names {sources} source(s), but this market reads an \
+                 oracle it does not configure; they would be ignored"
+            ));
+        }
+        return problems;
+    }
+
+    if asset.price_id.is_some() {
+        problems.push(format!(
+            "{side}.price_id is set, but a proxy oracle serves the constants \
+             this tool owns; it would be ignored"
+        ));
+    }
+    // The omission that silently changes behavior: no aggregator deploys
+    // `median_low`, where every deployed borrow feed reads `median_high`.
+    let Some(aggregator) = asset.aggregator else {
+        problems.push(format!(
+            "{side} states no `aggregator`; a proxy would silently deploy \
+             `median_low`, more permissive than the `median_high` every \
+             deployed borrow feed uses"
+        ));
+        return problems;
+    };
+
+    // `priority` ranks its sources by position: it carries no weights and no
+    // minimum. Accepting either would silently drop what was authored.
+    let stated = asset
+        .sources
+        .iter()
+        .filter(|source| source.weight().is_some())
+        .count();
+    if aggregator.is_weighted() {
+        if stated != sources {
+            problems.push(format!(
+                "{side} uses a median aggregator, which weighs its sources, but \
+                 only {stated} of {sources} state a `weight`"
+            ));
+        }
+    } else {
+        if stated > 0 {
+            problems.push(format!(
+                "{side} uses `priority`, which ranks sources by position; the \
+                 {stated} `weight`(s) stated would be ignored"
+            ));
+        }
+        if asset.min_sources > 0 {
+            problems.push(format!(
+                "{side}.min_sources is set, but `priority` takes the first \
+                 source that answers and honors no minimum"
+            ));
+        }
+    }
+    problems
 }
 
 /// What the chain said about a token's decimals.
@@ -398,22 +377,14 @@ fn source_problems<A: templar_common::asset::AssetClass>(
 fn validate_configuration(spec: &MarketSpec) -> Check {
     let id = "config.validate";
 
-    let (Some(collateral_decimals), Some(borrow_decimals)) =
-        (spec.collateral.decimals, spec.borrow.decimals)
-    else {
-        return Check::new(
-            id,
-            Status::Skipped {
-                reason:
-                    "asset decimals resolve on chain (ENG-541); set `decimals` to check offline"
-                        .to_owned(),
-            },
-        );
-    };
-
-    let configuration = spec
-        .clone()
-        .into_market_configuration(i32::from(collateral_decimals), i32::from(borrow_decimals));
+    // Unresolved decimals are stood in for rather than skipping the check:
+    // `MarketConfiguration::validate` reads none of them, and skipping took MCR
+    // ordering, the ranges and the durations down with it.
+    let decimals = |declared: Option<u8>| i32::from(declared.unwrap_or(0));
+    let configuration = spec.clone().into_market_configuration(
+        decimals(spec.collateral.decimals),
+        decimals(spec.borrow.decimals),
+    );
 
     match configuration {
         Err(error) => Check::new(id, Status::failed(format!("{error:#}"))),

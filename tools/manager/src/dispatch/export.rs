@@ -30,7 +30,7 @@ pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> 
     // reports the same fact as a `governance.admin` check, so failing hard inside
     // it would turn a monitoring run into an abort. An export is a record, and a
     // record naming the wrong admin is worse than none.
-    if spec.governance.is_some() {
+    if !spec.oracle.is_direct() {
         ensure_admin_holds_the_role(&ctx, &spec.governance_id()?, &args.governance_admin).await?;
     }
 

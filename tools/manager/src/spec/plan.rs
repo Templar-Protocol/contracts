@@ -166,8 +166,8 @@ impl PlanStep {
 pub struct PlanFile {
     pub schema: u32,
     pub tool_version: String,
-    pub network: String,
     /// Fully resolved: `extends` applied, decimals filled in by the preflight.
+    /// The network is derived from its registry, so it is not stated twice.
     /// Re-derivation must not depend on files beside the plan.
     pub spec: super::MarketSpec,
     /// The key the deploys grant full access to. An input to `build`, so it is
@@ -181,14 +181,12 @@ impl PlanFile {
     /// Build the artifact from labeled transactions, canonicalizing JSON args.
     #[cfg(test)]
     pub fn new(
-        network: String,
         spec: super::MarketSpec,
         public_key: PublicKey,
         checks: Vec<Check>,
         steps: Vec<(String, PlannedTransaction)>,
     ) -> anyhow::Result<Self> {
         Ok(Self::from_steps(
-            network,
             spec,
             public_key,
             checks,
@@ -207,7 +205,6 @@ impl PlanFile {
     }
 
     pub fn from_steps(
-        network: String,
         spec: super::MarketSpec,
         public_key: PublicKey,
         checks: Vec<Check>,
@@ -216,7 +213,6 @@ impl PlanFile {
         Self {
             schema: PLAN_SCHEMA_VERSION,
             tool_version: env!("CARGO_PKG_VERSION").to_owned(),
-            network,
             spec,
             public_key,
             checks,
@@ -236,14 +232,9 @@ impl PlanFile {
     }
 }
 
-/// `sha256:…` over a value's *canonical* JSON encoding: `yield_weights.static`
-/// is a `HashMap`, so a plain encoding hashes differently every process.
-pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
-    let bytes = serde_json_canonicalizer::to_vec(value).context("serialize for digest")?;
-    Ok(format!(
-        "sha256:{}",
-        templar_contract_artifacts::sha256_hex(&bytes)
-    ))
+/// `sha256:…` over bytes.
+pub fn digest(bytes: &[u8]) -> String {
+    format!("sha256:{}", templar_contract_artifacts::sha256_hex(bytes))
 }
 
 #[cfg(test)]

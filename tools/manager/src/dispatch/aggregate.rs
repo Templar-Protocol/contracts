@@ -8,7 +8,7 @@
 
 use anyhow::Context as _;
 use templar_common::asset::AssetClass;
-use templar_common::oracle::{lazer, pyth, redstone as redstone_types};
+use templar_common::oracle::{pyth, redstone as redstone_types};
 use templar_common::Nanoseconds;
 use templar_gateway_methods_spec::{contract, redstone};
 use templar_gateway_types::common::ContractArgs;
@@ -353,18 +353,19 @@ async fn fetch(ctx: &CliContext, source: &SourceSpec) -> anyhow::Result<Option<P
         SourceSpec::Lazer {
             oracle, feed_id, ..
         } => {
-            let result = ctx
-                .client
-                .read(contract::ViewFunction {
-                    contract_id: oracle.clone(),
-                    method_name: "get_feed_data".to_owned().into(),
-                    args: ContractArgs::Json(serde_json::json!({ "feed_id": feed_id })),
+            // The bulk read, because it is the one the deployed proxy makes.
+            // An adapter serving only the singular form would pass here and
+            // fail in production.
+            ctx.client
+                .read(templar_gateway_methods_spec::lazer::GetFeedsData {
+                    oracle_id: oracle.clone(),
+                    feed_ids: vec![*feed_id],
                 })
                 .await
-                .with_context(|| format!("read lazer feed {feed_id} from {oracle}"))?;
-
-            serde_json::from_value::<Option<lazer::FeedData>>(result.value)
-                .context("decode lazer feed data")?
+                .with_context(|| format!("read lazer feed {feed_id} from {oracle}"))?
+                .feeds
+                .remove(feed_id)
+                .flatten()
                 // EMA, matching the adapter's own consumer path — spot would be
                 // a different number than the market will see.
                 .and_then(|feed| feed.to_ema_price())

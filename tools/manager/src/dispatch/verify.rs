@@ -34,27 +34,9 @@ pub(super) async fn market(ctx: CliContext, args: Verify) -> anyhow::Result<()> 
         .map(|path| crate::spec::extends::load(path))
         .transpose()?;
     if let Some(intended) = &intended {
-        spec.collateral
-            .symbol
-            .clone_from(&intended.collateral.symbol);
-        spec.collateral
-            .reference
-            .clone_from(&intended.collateral.reference);
-        spec.borrow.symbol.clone_from(&intended.borrow.symbol);
-        spec.borrow.reference.clone_from(&intended.borrow.reference);
-        // The tolerances travel with them. `market export` cannot recover a
-        // judgement call either, so it emits the default — leaving these behind
-        // verifies a deliberately wider band against 1.5% and fails it, or
-        // verifies a narrower one against 1.5% and passes it.
-        spec.market
-            .reference_tolerance
-            .clone_from(&intended.market.reference_tolerance);
-        spec.collateral
-            .reference_tolerance
-            .clone_from(&intended.collateral.reference_tolerance);
-        spec.borrow
-            .reference_tolerance
-            .clone_from(&intended.borrow.reference_tolerance);
+        spec.collateral.adopt_offchain(&intended.collateral);
+        spec.borrow.adopt_offchain(&intended.borrow);
+        spec.market.reference_tolerance = intended.market.reference_tolerance;
     }
 
     // The same checks `spec check` runs: one that checked less would pass
@@ -237,7 +219,7 @@ fn matches_intent(deployed: &MarketSpec, intended: &MarketSpec, path: &std::path
                 .into_market_configuration(i32::from(collateral), i32::from(borrow))?,
             collateral_proxy: spec.collateral.clone().into_proxy(age),
             borrow_proxy: spec.borrow.clone().into_proxy(age),
-            governance_ttl: spec.governance.as_ref().map(|it| it.ttl_default),
+            governance_ttl: spec.proxy().map(|(governance, ..)| governance.ttl_default),
         })
         .context("project the spec")
     };

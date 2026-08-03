@@ -249,10 +249,7 @@ fn exports_a_direct_market_as_direct() {
     );
     assert_eq!(spec.borrow.price_id, Some(oracle.borrow_asset_price_id));
     assert!(spec.collateral.sources.is_empty() && spec.collateral.aggregator.is_none());
-    assert!(
-        spec.governance.is_none(),
-        "a direct market governs no oracle"
-    );
+    assert!(spec.proxy().is_none(), "a direct market governs no oracle");
 
     // And it must re-derive to exactly what is deployed.
     assert_eq!(

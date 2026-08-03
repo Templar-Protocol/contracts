@@ -53,8 +53,18 @@ pub fn path_for(plan: &Path) -> PathBuf {
 }
 
 /// A step's digest over everything but its label.
+///
+/// Over the bytes each call will send, not over their JSON: an encoding that is
+/// not a function of the value would let a resume skip a step it never ran.
 pub fn executable_digest(step: &super::plan::PlanStep) -> anyhow::Result<String> {
-    super::plan::digest(&(&step.signer_id, &step.receiver_id, &step.function_calls))
+    let mut bytes = format!("{}\n{}\n", step.signer_id, step.receiver_id).into_bytes();
+    for call in &step.function_calls {
+        bytes.extend_from_slice(call.method_name.as_bytes());
+        bytes.extend_from_slice(&call.gas.to_le_bytes());
+        bytes.extend_from_slice(&call.deposit.as_yoctonear().to_le_bytes());
+        bytes.extend_from_slice(&call.args.to_bytes()?);
+    }
+    Ok(super::plan::digest(&bytes))
 }
 
 impl Journal {

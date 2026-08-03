@@ -36,7 +36,6 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Stable digests: plan/spec hashing must not depend on map iteration order.
-serde_json_canonicalizer.workspace = true
 sputnikdao2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
@@ -61,6 +60,10 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+# `embedded-wasm` only here: `deposits_cover_the_pinned_artifacts` needs the
+# blobs' sizes, and the released binary must not carry 1.4 MB of wasm to hold a
+# constant to account.
+templar-contract-artifacts = { workspace = true, features = ["embedded-wasm"] }
 
 [lints]
 workspace = true

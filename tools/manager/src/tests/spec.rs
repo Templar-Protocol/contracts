@@ -168,7 +168,7 @@ fn extends_applies_profiles_then_lets_the_market_win() {
 
     // From alpha-mainnet.toml.
     assert_eq!(spec.registry.as_str(), "templar-alpha.near");
-    assert_eq!(spec.versions.market, "v1.3.0");
+    assert_eq!(spec.market_version, "v1.3.0");
     // From irs-stable.toml.
     assert!(matches!(
         spec.market.interest_rate_strategy,
@@ -372,20 +372,59 @@ fn a_priority_aggregator_passes_the_offline_checks() {
     );
 }
 
-/// Without stated decimals the configuration cannot be built offline. That must
-/// read as "not run", never as "fine".
+/// A proxy deployment creates a governance contract and two registry
+/// deployments, so a spec that deploys one without saying who governs it, or
+/// which versions to deploy, is not a spec — it does not parse.
+#[rstest::rstest]
+#[case::no_governance("governance")]
+#[case::no_oracle_version("proxy_oracle")]
+#[case::no_governance_version("proxy_governance")]
+fn a_proxy_spec_missing_what_only_a_proxy_has_does_not_parse(#[case] drop: &str) {
+    let mut raw: crate::spec::RawMarketSpec = alpha_market().into();
+    match drop {
+        "governance" => raw.governance = None,
+        "proxy_oracle" => raw.versions.proxy_oracle = None,
+        _ => raw.versions.proxy_governance = None,
+    }
+
+    let error = crate::spec::MarketSpec::try_from(raw)
+        .map(|_| ())
+        .expect_err("a proxy deployment states all three");
+
+    assert!(
+        format!("{error:#}").contains(drop),
+        "the refusal must name the field: {error:#}"
+    );
+}
+
+/// Decimals are the one input `MarketConfiguration::validate` ignores, so their
+/// absence must not take MCR ordering, the ranges and the durations with it —
+/// which skipping the whole check did.
 #[test]
-fn config_validate_is_skipped_not_passed_without_decimals() {
+fn config_validate_runs_without_stated_decimals() {
     let mut spec = alpha_market();
     spec.collateral.decimals = None;
+    spec.borrow.decimals = None;
 
-    let checks = check::run_offline(&spec);
-    let validate = checks
-        .iter()
-        .find(|check| check.id == "config.validate")
-        .expect("config.validate should always be reported");
+    let passed = |spec: &_| {
+        matches!(
+            check::run_offline(spec)
+                .into_iter()
+                .find(|check| check.id == "config.validate")
+                .expect("config.validate should always be reported")
+                .status,
+            Status::Passed { .. }
+        )
+    };
 
-    assert!(matches!(validate.status, Status::Skipped { .. }));
+    assert!(passed(&spec), "decimals do not decide this verdict");
+
+    // Above 1: the market would let every supplied token be borrowed.
+    spec.market.maximum_usage_ratio = templar_common::dec!("1.5");
+    assert!(
+        !passed(&spec),
+        "and an invalid configuration is still caught without them"
+    );
 }
 
 /// The whole decimals matrix, pure and offline. The override exists because a
@@ -431,7 +470,8 @@ fn an_unverified_override_says_so() {
 #[rstest::rstest]
 #[case::sub_second_age("price_maximum_age", "1500ms", "whole number of seconds")]
 #[case::sub_milli_chunk("time_chunk", "500us", "whole number of milliseconds")]
-#[case::zero_chunk("time_chunk", "0s", "at least 1ms")]
+#[case::zero_chunk("time_chunk", "0s", "between 1ms and")]
+#[case::year_long_chunk("time_chunk", "400d", "between 1ms and")]
 fn durations_that_would_not_survive_the_chain_are_rejected(
     #[case] field: &str,
     #[case] value: &str,

@@ -12,7 +12,7 @@ use std::{
 use anyhow::Context as _;
 use toml::Value;
 
-use super::{MarketSpec, SCHEMA_VERSION};
+use super::{MarketSpec, RawMarketSpec, SCHEMA_VERSION};
 
 /// Read `path`, resolve its `extends` chain, and deserialize the result.
 pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
@@ -33,12 +33,18 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
         );
     }
 
-    let mut spec: MarketSpec = merged
+    // Parsed in two steps, because the two failures are different. The raw shape
+    // is what the file states, so it is what an unread key is measured against;
+    // the conversion below is where a proxy that names no governance stops
+    // being expressible.
+    let raw: RawMarketSpec = merged
         .clone()
         .try_into()
         .with_context(|| format!("invalid market spec {}", path.display()))?;
+    ensure_every_key_was_read(&merged, &raw, path)?;
 
-    ensure_every_key_was_read(&merged, &spec, path)?;
+    let mut spec = MarketSpec::try_from(raw)
+        .with_context(|| format!("invalid market spec {}", path.display()))?;
 
     // Unreachable via the check above unless `schema` was absent or not an
     // integer, in which case deserialization has now produced the real value.
@@ -61,8 +67,12 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
 /// types they embed — `AmountRange`, the interest-rate strategies, the fees,
 /// `YieldWeights`. A typo in one of those deserializes to that field's default:
 /// `maximim` leaves a range unbounded and deploys.
-fn ensure_every_key_was_read(merged: &Value, spec: &MarketSpec, path: &Path) -> anyhow::Result<()> {
-    let read = Value::try_from(spec).context("re-serialize the spec to find unread keys")?;
+fn ensure_every_key_was_read(
+    merged: &Value,
+    raw: &RawMarketSpec,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let read = Value::try_from(raw).context("re-serialize the spec to find unread keys")?;
 
     let mut unread = Vec::new();
     collect_unread(merged, &read, "", &mut unread);
@@ -188,15 +198,20 @@ fn merge_to_depth(base: &mut Value, overlay: Value, depth: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_every_key_was_read, Path, Value};
+    use super::{ensure_every_key_was_read, Path, RawMarketSpec, Value};
     use crate::spec::plan::testing::alpha_market;
+
+    /// The file shape the alpha fixture is written in.
+    fn raw() -> RawMarketSpec {
+        alpha_market().into()
+    }
 
     /// The case `deny_unknown_fields` cannot see: `AmountRange` is an on-chain
     /// type, so a misspelled `maximum` deserializes to `None` — an unbounded
     /// range — and the market deploys with it.
     #[test]
     fn a_typo_inside_an_embedded_on_chain_type_is_refused() {
-        let spec = alpha_market();
+        let spec = raw();
         let mut merged = Value::try_from(&spec).expect("a spec serializes");
         merged["market"]["borrow_range"]
             .as_table_mut()
@@ -216,7 +231,7 @@ mod tests {
     /// specs are the wider proof; this one names the mechanism.
     #[test]
     fn a_spec_stating_only_what_it_means_is_accepted() {
-        let spec = alpha_market();
+        let spec = raw();
         let merged = Value::try_from(&spec).expect("a spec serializes");
 
         ensure_every_key_was_read(&merged, &spec, Path::new("m.toml")).expect("nothing is unread");

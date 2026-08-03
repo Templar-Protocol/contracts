@@ -38,6 +38,8 @@ pub struct Check {
 /// JSON. Everything the spec itself owns — structure, unknown-key rejection,
 /// asset strings, source kinds, durations — is described precisely.
 pub fn print_schema() -> anyhow::Result<()> {
-    let schema = schemars::schema_for!(crate::spec::MarketSpec);
+    // The *file* shape, which is what an author writes. `MarketSpec` is the
+    // parsed form and states the same fields under a different arrangement.
+    let schema = schemars::schema_for!(crate::spec::RawMarketSpec);
     crate::context::print_json(&schema)
 }

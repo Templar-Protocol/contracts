@@ -27,8 +27,6 @@ const GAS_PRICE_SAFETY_DENOMINATOR: u128 = 2;
 pub(super) struct Requirement {
     pub deposits: NearToken,
     pub gas: NearToken,
-    /// The running total's high-water mark.
-    pub peak: NearToken,
     /// Cumulative requirement after each step this account signs, in order.
     /// Kept so a shortfall can name the step the deploy would actually stop at.
     cumulative: Vec<(usize, NearToken)>,
@@ -38,9 +36,16 @@ impl Requirement {
     fn charge(&mut self, index: usize, deposit: NearToken, gas: NearToken) {
         self.deposits = self.deposits.saturating_add(deposit);
         self.gas = self.gas.saturating_add(gas);
-        let running = self.deposits.saturating_add(self.gas);
-        self.peak = self.peak.max(running);
-        self.cumulative.push((index, running));
+        self.cumulative
+            .push((index, self.deposits.saturating_add(self.gas)));
+    }
+
+    /// The whole requirement. Nothing credits the account mid-run, so the
+    /// running total only rises and the last entry is its high-water mark.
+    pub fn peak(&self) -> NearToken {
+        self.cumulative
+            .last()
+            .map_or(NearToken::from_yoctonear(0), |(_, running)| *running)
     }
 
     /// Where execution would actually stop. Not the peak: nothing credits an
@@ -146,7 +151,9 @@ fn verdict(need: &Requirement, available: NearToken, steps: &[PlanStep]) -> Stat
     let detail = format!(
         "needs {} ({} deposits + {} prepaid gas, refunds not credited); \
          {available} spendable after storage staking",
-        need.peak, need.deposits, need.gas,
+        need.peak(),
+        need.deposits,
+        need.gas,
     );
 
     let Some(stops_at) = need.stops_at(available) else {
@@ -158,8 +165,8 @@ fn verdict(need: &Requirement, available: NearToken, steps: &[PlanStep]) -> Stat
 
     Status::failed(format!(
         "{detail}. SHORT {} — would stop at `{label}`; top up to at least {}.",
-        need.peak.saturating_sub(available),
-        need.peak,
+        need.peak().saturating_sub(available),
+        need.peak(),
     ))
 }
 
@@ -205,8 +212,8 @@ mod tests {
             step("alice.near", NearToken::from_near(1), 0),
         ];
 
-        assert_eq!(need(&steps, "alice.near").peak, NearToken::from_near(4));
-        assert_eq!(need(&steps, "bob.near").peak, NearToken::from_near(5));
+        assert_eq!(need(&steps, "alice.near").peak(), NearToken::from_near(4));
+        assert_eq!(need(&steps, "bob.near").peak(), NearToken::from_near(5));
     }
 
     /// Where a deploy stops depends on the *balance*, not on where the peak is.
@@ -257,7 +264,11 @@ mod tests {
         let need = need(&steps, "alice.near");
 
         assert_eq!(need.gas, NearToken::from_yoctonear(450), "300 × 1.5");
-        assert_eq!(need.peak, need.gas, "no deposit, so gas is the whole cost");
+        assert_eq!(
+            need.peak(),
+            need.gas,
+            "no deposit, so gas is the whole cost"
+        );
     }
 
     /// Staked storage cannot be spent. Comparing against `amount` alone strands

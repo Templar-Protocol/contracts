@@ -8,7 +8,7 @@ use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
 use templar_gateway_core::GatewayError;
-use templar_gateway_methods_spec::{account, contract, registry};
+use templar_gateway_methods_spec::{account, contract, lst_oracle, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
 
 use crate::commands::spec::Check as CheckArgs;
@@ -273,10 +273,10 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
-    let mut labeled = vec![("market", Some(spec.versions.market.clone()))];
-    if !spec.oracle.is_direct() {
-        labeled.push(("oracle", spec.versions.proxy_oracle.clone()));
-        labeled.push(("governance", spec.versions.proxy_governance.clone()));
+    let mut labeled = vec![("market", &spec.market_version)];
+    if let Some((_, oracle_version, governance_version)) = spec.proxy() {
+        labeled.push(("oracle", oracle_version));
+        labeled.push(("governance", governance_version));
     }
 
     let registered = match ctx
@@ -310,41 +310,20 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .map(|(label, key)| {
             Check::new(
                 format!("registry.version.{label}"),
-                match key {
-                    // A proxy spec that names no version for a contract it
-                    // deploys cannot be planned; reported here rather than
-                    // aborting the whole report.
-                    None => Status::failed(format!(
-                        "this spec deploys its own proxy oracle but states no \
-                         `versions.proxy_{label}`"
-                    )),
-                    Some(key) if registered.iter().any(|known| *known == key) => {
-                        Status::passed(key)
-                    }
-                    Some(key) => Status::failed(format!(
+                if registered.iter().any(|known| known == key) {
+                    Status::passed(key.clone())
+                } else {
+                    Status::failed(format!(
                         "`{key}` is not registered in {}; the deploy would fail partway",
                         spec.registry
-                    )),
+                    ))
                 },
             )
         })
         .collect()
 }
 
-/// Whether the contract simply has no such method, as opposed to rejecting the
-/// call. Matched on the runtime's own wording, since `GatewayError` carries
-/// contract failures as text.
-fn is_missing_method(error: &templar_gateway_core::GatewayError) -> bool {
-    let rendered = error.to_string();
-    rendered.contains("MethodNotFound") || rendered.contains("doesn't exist")
-}
-
 /// Whether the contract tried to make a cross-contract call during a view.
-///
-/// The LST oracle's `price_feed_exists` forwards to the underlying oracle for
-/// any identifier it does not transform, which a view call cannot do. The
-/// market's own price call is promise-backed and works, so this bounds what a
-/// view can confirm — it is not evidence against the oracle.
 fn is_prohibited_in_view(error: &templar_gateway_core::GatewayError) -> bool {
     error.to_string().contains("ProhibitedInView")
 }
@@ -353,9 +332,6 @@ fn is_prohibited_in_view(error: &templar_gateway_core::GatewayError) -> bool {
 /// it does read checked by nothing. `MarketConfiguration` is immutable after
 /// init, so a mistyped `price_id` would be permanent.
 async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
-    use templar_gateway_methods_spec::contract;
-    use templar_gateway_types::common::ContractArgs;
-
     let crate::spec::OracleMode::Direct { account_id } = &spec.oracle else {
         return Vec::new();
     };
@@ -376,77 +352,114 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .await,
     )];
 
-    let Ok((collateral, borrow)) = spec.price_identifiers() else {
-        return checks;
-    };
-    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
-        let hex = hex::encode(id.0);
+    if let Ok((collateral, borrow)) = spec.price_identifiers() {
         checks.push(Check::new(
-            format!("oracle.serves.{side}"),
-            match ctx
-                .client
-                .read(contract::ViewFunction {
-                    contract_id: account_id.clone(),
-                    method_name: "get_price".to_owned().into(),
-                    args: ContractArgs::Json(serde_json::json!({ "price_identifier": hex })),
-                })
-                .await
-            {
-                // A failure, not the Skipped a proxy source gets: this oracle
-                // is not ours to configure, so the spec asserting an identifier
-                // that is absent means the identifier is wrong.
-                Ok(result) if result.value.is_null() => Status::failed(format!(
-                    "`{account_id}` serves no price for {hex}. For an oracle this \
-                     deployment does not configure, an unknown identifier is a \
-                     wrong one — and it cannot be corrected after init."
-                )),
-                Ok(_) => Status::passed(format!("{hex} on {account_id}")),
-                // Not every oracle answers `get_price`; a proxy oracle exposes
-                // `price_feed_exists`. Falling through rather than giving up,
-                // since three shipped specs read oracles of that kind.
-                Err(error) if is_missing_method(&error) => {
-                    match ctx
-                        .client
-                        .read(
-                            templar_gateway_methods_spec::proxy_oracle::PriceFeedExists {
-                                oracle_id: account_id.clone(),
-                                price_identifier: id,
-                            },
-                        )
-                        .await
-                    {
-                        Ok(result) if result.exists => {
-                            Status::passed(format!("{hex} on {account_id} (proxy)"))
-                        }
-                        Ok(_) => Status::failed(format!(
-                            "`{account_id}` serves no feed for {hex}. It cannot be \
-                             corrected after init."
-                        )),
-                        Err(inner) if is_missing_method(&inner) => Status::skipped(format!(
-                            "`{account_id}` answers neither `get_price` nor \
-                             `price_feed_exists`, so this build cannot confirm \
-                             it serves {hex}. Check it by hand before \
-                             deploying — this is not a pass."
-                        )),
-                        Err(inner) if is_prohibited_in_view(&inner) => Status::skipped(format!(
-                            "`{account_id}` answers `price_feed_exists` for {hex} \
-                             with a cross-contract call, which a view cannot make. \
-                             The market's own price call is promise-backed and is \
-                             unaffected; confirm the feed by hand."
-                        )),
-                        Err(inner) => Status::failed(format!(
-                            "`{account_id}` did not answer for {hex}: {inner}"
-                        )),
-                    }
-                }
-                Err(error) => Status::failed(format!(
-                    "`{account_id}` did not answer for {hex}: {error}. A mistyped \
-                     `price_id` cannot be corrected after init."
-                )),
-            },
+            "oracle.serves_pair",
+            serves_pair(ctx, spec, account_id, collateral, borrow).await,
         ));
     }
     checks
+}
+
+/// Make the market's own price call: both identifiers, one call, its own
+/// `price_maximum_age`. An oracle that answers a per-feed probe but not this is
+/// one the market cannot read, and the configuration naming it is immutable.
+async fn serves_pair(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+    oracle_id: &AccountId,
+    collateral: templar_common::oracle::pyth::PriceIdentifier,
+    borrow: templar_common::oracle::pyth::PriceIdentifier,
+) -> Status {
+    let age = spec.market.price_maximum_age.as_secs();
+    let price_ids = vec![borrow, collateral];
+
+    let (answering, prices) = match list_ema_prices(ctx, oracle_id, &price_ids, age).await {
+        Ok(prices) => (oracle_id.clone(), prices),
+        // The LST wrapper answers every untransformed feed with a promise, which
+        // a view cannot make. It serves those feeds out of the oracle it wraps,
+        // so ask that one instead of reporting what a view cannot see.
+        Err(error) if is_prohibited_in_view(&error) => {
+            let Some(wrapped) = wrapped_oracle(ctx, oracle_id).await else {
+                return Status::failed(format!(
+                    "`{oracle_id}` answers the market's price call with a \
+                     cross-contract call and names no wrapped oracle, so this \
+                     build cannot confirm it serves either feed"
+                ));
+            };
+            match list_ema_prices(ctx, &wrapped, &price_ids, age).await {
+                Ok(prices) => (wrapped, prices),
+                Err(error) => {
+                    return Status::failed(format!("`{wrapped}` did not answer: {error}"))
+                }
+            }
+        }
+        Err(error) => {
+            return Status::failed(format!(
+                "`{oracle_id}` did not answer the market's price call: {error}. A \
+                 mistyped `price_id` cannot be corrected after init."
+            ))
+        }
+    };
+
+    // An unknown identifier is omitted from the response; a known but stale one
+    // comes back with no price. Both leave the market unable to price, and
+    // neither can be corrected after init.
+    let mut missing = Vec::new();
+    let mut stale = Vec::new();
+    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
+        match prices.iter().find(|entry| entry.price_id == id) {
+            None => missing.push(format!("{side} ({id})")),
+            Some(entry) if entry.price.is_none() => stale.push(format!("{side} ({id})")),
+            Some(_) => {}
+        }
+    }
+
+    if !missing.is_empty() {
+        return Status::failed(format!(
+            "`{answering}` serves no feed for {}. For an oracle this deployment \
+             does not configure, an unknown identifier is a wrong one.",
+            missing.join(" and "),
+        ));
+    }
+    if !stale.is_empty() {
+        return Status::failed(format!(
+            "`{answering}` has no price within {age}s for {}. The market would \
+             read this oracle with the same bound.",
+            stale.join(" and "),
+        ));
+    }
+    Status::passed(format!("both feeds priced within {age}s by `{answering}`"))
+}
+
+async fn list_ema_prices(
+    ctx: &CliContext,
+    oracle_id: &AccountId,
+    price_ids: &[templar_common::oracle::pyth::PriceIdentifier],
+    age: u64,
+) -> Result<Vec<templar_gateway_methods_spec::pyth::PriceEntry>, GatewayError> {
+    ctx.client
+        .read(
+            templar_gateway_methods_spec::pyth::ListEmaPricesNoOlderThan {
+                oracle_id: oracle_id.clone(),
+                price_ids: price_ids.to_vec(),
+                age,
+            },
+        )
+        .await
+        .map(|result| result.prices)
+}
+
+/// The oracle an LST wrapper forwards untransformed feeds to. `None` when the
+/// account is not an LST wrapper, which is how the caller tells the two apart.
+async fn wrapped_oracle(ctx: &CliContext, oracle_id: &AccountId) -> Option<AccountId> {
+    ctx.client
+        .read(lst_oracle::GetOracleId {
+            oracle_id: oracle_id.clone(),
+        })
+        .await
+        .ok()
+        .map(|result| result.pyth_oracle_id)
 }
 
 /// Yield recipients must exist, or that share of yield is unclaimable.
@@ -454,11 +467,8 @@ async fn accounts(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let mut checks = vec![account_check(ctx, "protocol", &spec.market.protocol_account_id).await];
 
     // Check ids are a contract — `--skip-check` and the plan artifact key on
-    // them — so each recipient gets its own, and they are emitted in a stable
-    // order rather than `HashMap`'s.
-    let mut recipients: Vec<_> = spec.market.yield_weights.r#static.keys().collect();
-    recipients.sort();
-    for account_id in recipients {
+    // them — so each recipient gets its own.
+    for account_id in spec.market.yield_weights.r#static.keys() {
         checks.push(account_check(ctx, &format!("yield_static.{account_id}"), account_id).await);
     }
     checks
@@ -516,36 +526,24 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
 
 #[cfg(test)]
 mod tests {
-    use super::{is_missing_method, is_prohibited_in_view, underlying_ft};
+    use super::{is_prohibited_in_view, underlying_ft};
     use templar_common::asset::{CollateralAsset, FungibleAsset};
 
-    /// The LST oracle forwards `price_feed_exists` for an untransformed feed,
-    /// which a view rejects. Treated as a failure, it fails three shipped specs
-    /// (`stnear-usdc`, `stnear-usdc-1`, `liqtest-stnear-usdc`) whose markets
-    /// price perfectly well — the real call is promise-backed.
+    /// The LST wrapper answers the market's price call with a promise, which a
+    /// view rejects. That is the signal to ask the oracle it wraps — not a
+    /// verdict on the feed, and not something an ordinary failure should reach.
     #[test]
-    fn a_view_prohibited_promise_is_not_a_missing_method() {
-        let error = templar_gateway_core::GatewayError::NearQuery(
+    fn only_a_view_prohibited_promise_redirects_to_the_wrapped_oracle() {
+        let promise = templar_gateway_core::GatewayError::NearQuery(
             "wasm execution failed: ProhibitedInView { method_name: \"promise_create\" }"
                 .to_owned(),
         );
-
-        assert!(is_prohibited_in_view(&error));
-        assert!(
-            !is_missing_method(&error),
-            "the two must not overlap, or the fallback ladder short-circuits"
-        );
-    }
-
-    /// And an ordinary query failure is still a failure.
-    #[test]
-    fn an_unrelated_failure_is_neither() {
-        let error = templar_gateway_core::GatewayError::NearQuery(
+        let unrelated = templar_gateway_core::GatewayError::NearQuery(
             "timed out talking to the RPC".to_owned(),
         );
 
-        assert!(!is_prohibited_in_view(&error));
-        assert!(!is_missing_method(&error));
+        assert!(is_prohibited_in_view(&promise));
+        assert!(!is_prohibited_in_view(&unrelated));
     }
 
     /// Which token defines an asset's decimals is not obvious, and getting it

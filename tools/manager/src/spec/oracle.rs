@@ -295,6 +295,14 @@ fn pyth_request(
 }
 
 impl<A: AssetClass> AssetSpec<A> {
+    /// Take the fields that never reach the chain, and so cannot be exported.
+    /// Must stay in step with what `spec::export::asset_spec` drops.
+    pub fn adopt_offchain(&mut self, intended: &Self) {
+        self.symbol.clone_from(&intended.symbol);
+        self.reference.clone_from(&intended.reference);
+        self.reference_tolerance = intended.reference_tolerance;
+    }
+
     /// Build the on-chain proxy configuration. An unset `max_age` falls back to
     /// `default_max_age`, an unset drift to [`DEFAULT_MAX_CLOCK_DRIFT`].
     pub fn into_proxy(self, default_max_age: Nanoseconds) -> Proxy<Source> {

@@ -10,10 +10,14 @@ work in place of the flags.
 
 ```sh
 tmplrmgr market plan  deployments/alpha/<market>.toml --out plan.json \
-    --network mainnet --signer-id <you> --public-key ed25519:…
+    --network mainnet --signer-id "$REGISTRY_OWNER" --public-key ed25519:…
 tmplrmgr market apply --plan plan.json \
-    --network mainnet --signer-id <you> --sign-with keychain
+    --network mainnet --signer-id "$REGISTRY_OWNER" --sign-with keychain
 ```
+
+The signer is not a personal account: `registry.deploy` asserts the registry's
+owner, and a proxy spec additionally requires it to equal `governance.admin`,
+which the mainnet profiles set to the registry itself.
 
 `plan` reads the chain and writes a file; it sends nothing and takes no
 credential. `apply` sends what the file says.
@@ -60,16 +64,15 @@ storage registration per NEP-141 asset, rather than one.
 ## Checking before and after
 
 ```sh
-tmplrmgr spec check   deployments/alpha/<market>.toml       # before deploying
-tmplrmgr market verify <account-id> --governance-admin <account-id> \
-    --against deployments/alpha/<market>.toml               # after
+tmplrmgr spec check   deployments/alpha/<market>.toml --network mainnet
+tmplrmgr market verify <account-id> --network mainnet \
+    --governance-admin <account-id> \
+    --against deployments/alpha/<market>.toml
 ```
 
-`market verify` currently reconstructs a spec by reading back a proxy oracle
-this tool deployed, so it works for proxy markets only — the 16 direct markets
-are covered by `spec check`, which validates the oracle they read and the
-price identifiers it serves. Extending verify to direct markets is tracked
-separately.
+Both modes verify. A direct market reconstructs without proxies or governance,
+so the two governance checks are skipped and everything else runs;
+`--governance-admin` is still required and means nothing there.
 
 `verify` re-runs the preflight against what is actually on chain and exits
 non-zero on failure, so it can run on a schedule. That matters because the
