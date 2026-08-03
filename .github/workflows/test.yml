@@ -76,6 +76,8 @@ jobs:
         with:
           filters: |
             near_integration:
+              # This job is the only consumer of the cargo-near action.
+              - '.github/actions/cargo-near/**'
               - '.github/workflows/test.yml'
               - '.config/nextest.toml'
               - 'justfile'
