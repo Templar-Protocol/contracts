@@ -26,9 +26,11 @@ use templar_proxy_oracle_kernel::proxy::{
     FreshnessFilter, Proxy,
 };
 use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
-use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOperation};
+use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOperation, Role};
 
-use common::{call, code_hash, deploy_global_contract, view, CreateProposalArgs, ProposalIdArgs};
+use common::{
+    call, call_borsh, code_hash, deploy_global_contract, view, CreateProposalArgs, ProposalIdArgs,
+};
 
 /// `add` requires `breaker_id == next_id`, which starts at zero and only ever increments.
 const BREAKER: u32 = 0;
@@ -41,6 +43,48 @@ const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 #[serde(crate = "near_sdk::serde")]
 struct PriceIdArgs {
     id: PriceIdentifier,
+}
+
+#[derive(Clone, Copy)]
+enum Encoding {
+    Json,
+    Borsh,
+}
+
+impl Encoding {
+    async fn create_proposal(
+        self,
+        governed: &Governed,
+        id: u32,
+        operation: Operation,
+    ) -> Result<()> {
+        match self {
+            Self::Json => call(
+                &governed.network,
+                &governed.governance,
+                "create_proposal",
+                CreateProposalArgs {
+                    id,
+                    operation,
+                    requested_ttl: Nanoseconds::zero(),
+                },
+                &governed.admin,
+                ONE_YOCTO,
+            )
+            .await
+            .map(|_| ()),
+            Self::Borsh => call_borsh(
+                &governed.network,
+                &governed.governance,
+                "create_proposal_borsh",
+                (id, operation, Nanoseconds::zero()),
+                &governed.admin,
+                ONE_YOCTO,
+            )
+            .await
+            .map(|_| ()),
+        }
+    }
 }
 
 /// An oracle owned by a governance contract, with a proxy and one circuit breaker already in place.
@@ -56,22 +100,19 @@ impl Governed {
     /// Run `operation` through the full create → execute path as the admin. Every TTL is zero
     /// (`deploy_governance_contract` installs a uniform zero policy), so it matures immediately.
     async fn govern(&mut self, operation: Operation) -> Result<()> {
+        self.govern_with(operation, Encoding::Json).await
+    }
+
+    /// [`Self::govern`] driven through `create_proposal_borsh`.
+    async fn govern_borsh(&mut self, operation: Operation) -> Result<()> {
+        self.govern_with(operation, Encoding::Borsh).await
+    }
+
+    async fn govern_with(&mut self, operation: Operation, encoding: Encoding) -> Result<()> {
         let id = self.next_id;
         self.next_id += 1;
 
-        call(
-            &self.network,
-            &self.governance,
-            "create_proposal",
-            CreateProposalArgs {
-                id,
-                operation,
-                requested_ttl: Nanoseconds::zero(),
-            },
-            &self.admin,
-            ONE_YOCTO,
-        )
-        .await?;
+        encoding.create_proposal(self, id, operation).await?;
         call(
             &self.network,
             &self.governance,
@@ -81,6 +122,7 @@ impl Governed {
             ONE_YOCTO,
         )
         .await
+        .map(|_| ())
     }
 
     async fn proxy(&self) -> Result<Option<Proxy<Source>>> {
@@ -280,6 +322,45 @@ async fn admin_upgrade_replaces_the_oracle_code(
         .await?,
         Some(governed.governance.clone()),
         "the upgraded oracle should still be owned by its governance"
+    );
+    Ok(())
+}
+
+/// `create_proposal_borsh` drives real governed effects, not just a stored body.
+#[rstest]
+#[tokio::test]
+async fn borsh_entrypoint_drives_target_and_reflexive_operations(
+    #[future(awt)] harness: SandboxHarness,
+) -> Result<()> {
+    let mut governed = governed(&harness).await?;
+
+    governed
+        .govern_borsh(Operation::TargetFunctionCall(
+            target::admin_set_manual_trip(PRICE_ID, true, None, None)?,
+        ))
+        .await?;
+    assert!(
+        governed.breakers().await?.is_manually_tripped(),
+        "borsh-created target call should have tripped the breaker"
+    );
+
+    let operator: AccountId = "operator.near".parse()?;
+    governed
+        .govern_borsh(Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: operator.clone(),
+            role: Role::ManualTripper,
+            set: true,
+        }))
+        .await?;
+    assert!(
+        view::<bool>(
+            &governed.network,
+            &governed.governance,
+            "has_role",
+            json!({ "account_id": operator, "role": "ManualTripper" }),
+        )
+        .await?,
+        "borsh-created reflexive op should have granted the role"
     );
     Ok(())
 }

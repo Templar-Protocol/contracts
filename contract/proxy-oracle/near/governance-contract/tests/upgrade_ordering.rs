@@ -22,16 +22,18 @@ mod common;
 
 use anyhow::Result;
 use near_api::types::AccountId;
-use near_api::{Contract, NetworkConfig};
+use near_api::NetworkConfig;
 use near_sdk::json_types::Base64VecU8;
 use near_sdk::NearToken;
 use serde_json::{json, Value};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
-use templar_gateway_testing::{wasm, ArtifactId, SandboxHarness, TEST_FINALITY_POLICY};
+use templar_gateway_testing::{wasm, ArtifactId, SandboxHarness};
 use templar_proxy_oracle_near_governance_common::{LegacyOperation, Operation, Proposal};
 
-use common::{call, code_hash, deploy_code, signer, view, CreateProposalArgs, ProposalIdArgs};
+use common::{
+    call, code_hash, deploy_code, deploy_with_init, view, CreateProposalArgs, ProposalIdArgs,
+};
 
 /// The raw blob (`0xDEADBEEF`) of the pending `AdminUpgrade` proposal seeded on the old gov, whose
 /// stored body the v0→v1 migrate must reshape into a generic `admin_upgrade` target call.
@@ -65,25 +67,6 @@ fn old_ttls() -> Value {
 
 /// Deploy `code` to `account` via its full-access key, atomically calling `method` (`new` to init,
 /// `migrate` to bootstrap-upgrade).
-async fn deploy_with_init(
-    network: &NetworkConfig,
-    account: &AccountId,
-    code: Vec<u8>,
-    method: &str,
-    args: Value,
-) -> Result<()> {
-    Contract::deploy(account.clone())
-        .use_code(code)
-        .with_init_call(method, args)?
-        .max_gas()
-        .with_signer(signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
-        .await?
-        .assert_success();
-    Ok(())
-}
-
 /// An OLD oracle (owned by the gov account) governed by an OLD gov. Returns `(oracle, gov)`.
 async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     let oracle = harness.create_user("oracle").await?.0;

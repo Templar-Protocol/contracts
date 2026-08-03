@@ -81,6 +81,17 @@ macro_rules! gen_ext_governance {
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
             ) -> $crate::interface::Proposal<$operation_ty>;
+            /// Borsh-argument twin of `create_proposal`, for wasm-carrying payloads that base64-in-JSON
+            /// makes too costly to parse or too large for a transaction. Returns nothing; read the
+            /// stored body with `get_proposal`.
+            ///
+            /// Arguments decode positionally, so `(id, operation, requested_ttl)` is a wire contract.
+            fn create_proposal_borsh(
+                &mut self,
+                #[serializer(borsh)] id: u32,
+                #[serializer(borsh)] operation: $operation_ty,
+                #[serializer(borsh)] requested_ttl: $crate::Nanoseconds,
+            );
             fn cancel_proposal(&mut self, id: u32);
             fn execute_proposal(&mut self, id: u32);
         }

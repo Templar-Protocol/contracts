@@ -79,6 +79,38 @@ impl Contract {
     fn id_to_u32(id: u64) -> u32 {
         u32::try_from(id).unwrap_or_else(|_| env::panic_str("Proposal ID exceeds u32"))
     }
+
+    /// Shared body of both `create_proposal` entrypoints, which differ only in argument encoding.
+    fn create_proposal_inner(
+        &mut self,
+        id: u32,
+        operation: Operation,
+        requested_ttl: Nanoseconds,
+    ) -> Proposal<Operation> {
+        near_sdk::assert_one_yocto();
+        self.assert_authorized(&operation);
+
+        let effective_ttl = self.header.effective_ttl(&operation, requested_ttl);
+        if effective_ttl > MAX_PROPOSAL_TTL {
+            env::panic_str("Proposal TTL exceeds maximum allowed");
+        }
+
+        let proposal = self
+            .header
+            .create(
+                u64::from(id),
+                operation,
+                Nanoseconds::near_timestamp(),
+                env::predecessor_account_id(),
+                effective_ttl,
+            )
+            .unwrap_or_reject();
+        let kind = proposal.operation.kind();
+        let method = proposal.operation.method();
+        self.proposals.insert(id, proposal.clone());
+        Event::Created { id, kind, method }.emit();
+        proposal
+    }
 }
 
 #[near]
@@ -126,29 +158,17 @@ impl ProxyGovernanceInterface for Contract {
         operation: Operation,
         requested_ttl: Nanoseconds,
     ) -> Proposal<Operation> {
-        near_sdk::assert_one_yocto();
-        self.assert_authorized(&operation);
+        self.create_proposal_inner(id, operation, requested_ttl)
+    }
 
-        let effective_ttl = self.header.effective_ttl(&operation, requested_ttl);
-        if effective_ttl > MAX_PROPOSAL_TTL {
-            env::panic_str("Proposal TTL exceeds maximum allowed");
-        }
-
-        let proposal = self
-            .header
-            .create(
-                u64::from(id),
-                operation,
-                Nanoseconds::near_timestamp(),
-                env::predecessor_account_id(),
-                effective_ttl,
-            )
-            .unwrap_or_reject();
-        let kind = proposal.operation.kind();
-        let method = proposal.operation.method();
-        self.proposals.insert(id, proposal.clone());
-        Event::Created { id, kind, method }.emit();
-        proposal
+    #[payable]
+    fn create_proposal_borsh(
+        &mut self,
+        #[serializer(borsh)] id: u32,
+        #[serializer(borsh)] operation: Operation,
+        #[serializer(borsh)] requested_ttl: Nanoseconds,
+    ) {
+        self.create_proposal_inner(id, operation, requested_ttl);
     }
 
     #[payable]
