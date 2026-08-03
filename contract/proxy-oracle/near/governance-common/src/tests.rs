@@ -1,5 +1,10 @@
 use super::*;
 use near_sdk::json_types::Base58CryptoHash;
+use rstest::rstest;
+use templar_common::{oracle::pyth::PriceIdentifier, Decimal};
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, StepwiseChange,
+};
 
 fn method_policy(ttl_secs: u64, role: Role) -> MethodPolicy {
     MethodPolicy {
@@ -510,31 +515,36 @@ fn governance_policy_round_trip() {
     );
 }
 
+/// Bytes-valued target args serialize as base64, not as a JSON array of numbers — the shape the
+/// oracle's `Base64VecU8`/`UpgradeSource` parameters expect.
 #[test]
-fn legacy_admin_upgrade_maps_to_target_call_with_upgrade_gas() {
-    let legacy = LegacyOperation::AdminUpgrade {
+fn legacy_target_args_encode_bytes_as_base64() {
+    let upgrade = target_call(LegacyOperation::AdminUpgrade {
         code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
         migrate_args: Base64VecU8(vec![0xbe, 0xef]),
-    };
-    let Operation::TargetFunctionCall(call) = Operation::try_from(legacy).unwrap() else {
-        panic!("expected target call");
-    };
-    assert_eq!(call.method_name, "admin_upgrade");
-    assert_eq!(call.gas, GAS_FOR_ADMIN_UPGRADE);
-    // args are the JSON of admin_upgrade(code, migrate_args); `UpgradeSource::Code` is a bare base64.
-    let args: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&call.args.0).unwrap();
+    });
+    let args = json_args(&upgrade);
     assert_eq!(args["code"], near_sdk::serde_json::json!("3q0="));
     assert_eq!(args["migrate_args"], near_sdk::serde_json::json!("vu8="));
+
+    let trip = target_call(LegacyOperation::SetManualTrip {
+        id: pid(),
+        is_manually_tripped: true,
+        metadata: Some(vec![0x01, 0x02, 0x03]),
+    });
+    assert_eq!(
+        json_args(&trip)["metadata"],
+        near_sdk::serde_json::json!("AQID")
+    );
 }
 
 #[test]
 fn target_builders_apply_gas_default_and_override() {
-    let pid = templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]);
     // No override → the method default.
-    let default = target::admin_set_proxy(pid, None, None).unwrap();
+    let default = target::admin_set_proxy(pid(), None, None).unwrap();
     assert_eq!(default.gas, target::GAS_FOR_TARGET_DEFAULT);
     // An override lands on the built call.
-    let overridden = target::admin_set_proxy(pid, None, Some(Gas::from_tgas(120))).unwrap();
+    let overridden = target::admin_set_proxy(pid(), None, Some(Gas::from_tgas(120))).unwrap();
     assert_eq!(overridden.gas, Gas::from_tgas(120));
     // `admin_upgrade` keeps its own (280 Tgas) default.
     let upgrade = target::admin_upgrade(
@@ -546,60 +556,207 @@ fn target_builders_apply_gas_default_and_override() {
     assert_eq!(upgrade.gas, GAS_FOR_ADMIN_UPGRADE);
 }
 
-#[test]
-fn legacy_set_manual_trip_metadata_is_base64() {
-    let legacy = LegacyOperation::SetManualTrip {
-        id: templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
-        is_manually_tripped: true,
-        metadata: Some(vec![0x01, 0x02, 0x03]),
-    };
-    let Operation::TargetFunctionCall(call) = Operation::try_from(legacy).unwrap() else {
-        panic!("expected target call");
-    };
-    assert_eq!(call.method_name, "admin_set_manual_trip");
-    let args: near_sdk::serde_json::Value = near_sdk::serde_json::from_slice(&call.args.0).unwrap();
-    // base64 of [1,2,3]
-    assert_eq!(args["metadata"], near_sdk::serde_json::json!("AQID"));
+fn pid() -> PriceIdentifier {
+    PriceIdentifier([0xaa; 32])
 }
 
-#[test]
-fn legacy_reflexive_and_ttl_edits_map_through() {
-    let set_role = LegacyOperation::SetRole {
+fn target_call(legacy: LegacyOperation) -> FunctionCall {
+    match Operation::try_from(legacy).unwrap() {
+        Operation::TargetFunctionCall(call) => call,
+        reflexive @ Operation::Reflexive(_) => panic!("expected a target call, got {reflexive:?}"),
+    }
+}
+
+fn json_args(call: &FunctionCall) -> near_sdk::serde_json::Value {
+    near_sdk::serde_json::from_slice(&call.args.0).unwrap()
+}
+
+fn breaker() -> CircuitBreaker {
+    CircuitBreaker::StepwiseChange(StepwiseChange {
+        max_relative_change: Decimal::ONE_HALF,
+    })
+}
+
+const EDIT_TTL_SECS: u64 = 7;
+const EDIT_TTL: Nanoseconds = Nanoseconds::from_secs(EDIT_TTL_SECS);
+
+fn method_edit(method: &str, role: Role) -> ReflexiveOperation {
+    ReflexiveOperation::SetMethodPolicy {
+        method: method.to_owned(),
+        policy: Some(method_policy(EDIT_TTL_SECS, role)),
+    }
+}
+
+/// Which `admin_*` method (and gas) each pre-restructure variant becomes; the args those builders
+/// produce are proved against the real oracle in `tests/governed_operations.rs`. Exhaustive over
+/// [`LegacyOperation`], which describes the released `0.1.0` wire and can never gain a variant.
+#[rstest]
+#[case::set_proxy(LegacyOperation::SetProxy { id: pid(), proxy: None }, "admin_set_proxy", target::GAS_FOR_TARGET_DEFAULT)]
+#[case::configure_circuit_breakers(
+    LegacyOperation::ConfigureCircuitBreakers {
+        id: pid(),
+        config: CircuitBreakerSetConfig { sample_interval_ns: Nanoseconds::from_secs(60), history_len: 8 },
+    },
+    "admin_configure_circuit_breakers",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::add_circuit_breaker(
+    LegacyOperation::AddCircuitBreaker { id: pid(), breaker_id: 1, breaker: breaker() },
+    "admin_add_circuit_breaker",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::remove_circuit_breaker(
+    LegacyOperation::RemoveCircuitBreaker { id: pid(), breaker_id: 1 },
+    "admin_remove_circuit_breaker",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::set_manual_trip(
+    LegacyOperation::SetManualTrip { id: pid(), is_manually_tripped: true, metadata: None },
+    "admin_set_manual_trip",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::rearm(
+    LegacyOperation::Rearm {
+        id: pid(),
+        breaker_id: 1,
+        armed_after_ns: Nanoseconds::from_secs(5),
+        accepted_history_source: AcceptedHistorySource::Empty,
+    },
+    "admin_rearm",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::set_enforced(
+    LegacyOperation::SetEnforced { id: pid(), breaker_id: 1, is_enforced: false },
+    "admin_set_enforced",
+    target::GAS_FOR_TARGET_DEFAULT
+)]
+#[case::admin_upgrade(
+    LegacyOperation::AdminUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
+        migrate_args: Base64VecU8(Vec::new()),
+    },
+    "admin_upgrade",
+    GAS_FOR_ADMIN_UPGRADE
+)]
+// The raw-call escape hatch: name and gas pass through untouched.
+#[case::admin_function_call(
+    LegacyOperation::AdminFunctionCall {
+        method_name: "own_accept_owner".to_owned(),
+        args: Base64VecU8(b"{}".to_vec()),
+        attached_deposit: U128(1),
+        gas: Gas::from_tgas(7),
+    },
+    "own_accept_owner",
+    Gas::from_tgas(7)
+)]
+fn every_legacy_target_operation_maps_to_its_admin_method(
+    #[case] legacy: LegacyOperation,
+    #[case] expected_method: &str,
+    #[case] expected_gas: Gas,
+) {
+    let call = target_call(legacy);
+    assert_eq!(call.method_name, expected_method);
+    assert_eq!(call.gas, expected_gas);
+}
+
+/// The two legacy variants that were already reflexive keep their exact payload.
+#[rstest]
+#[case::set_role(
+    LegacyOperation::SetRole {
         account_id: "op.near".parse().unwrap(),
         role: Role::CircuitBreakerOperator,
         set: false,
-    };
+    },
+    ReflexiveOperation::SetRole {
+        account_id: "op.near".parse().unwrap(),
+        role: Role::CircuitBreakerOperator,
+        set: false,
+    }
+)]
+#[case::self_upgrade(
+    LegacyOperation::SelfUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
+        migrate_args: Base64VecU8(b"{\"from_version\":\"v0\"}".to_vec()),
+    },
+    ReflexiveOperation::SelfUpgrade {
+        code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad])),
+        migrate_args: Base64VecU8(b"{\"from_version\":\"v0\"}".to_vec()),
+    }
+)]
+fn every_legacy_reflexive_operation_keeps_its_payload(
+    #[case] legacy: LegacyOperation,
+    #[case] expected: ReflexiveOperation,
+) {
     assert_eq!(
-        Operation::try_from(set_role).unwrap(),
-        Operation::Reflexive(ReflexiveOperation::SetRole {
-            account_id: "op.near".parse().unwrap(),
-            role: Role::CircuitBreakerOperator,
-            set: false,
-        })
+        Operation::try_from(legacy).unwrap(),
+        Operation::Reflexive(expected)
     );
+}
 
-    let target_ttl = LegacyOperation::SetActionTtl {
-        kind: LegacyOperationKind::SetProxy,
-        new_ttl: Nanoseconds::from_secs(7),
-    };
+/// A legacy `SetActionTtl` names an operation *kind*; the new form names a method (or a reflexive
+/// bucket). Each kind's landing spot also fixes the role that method is granted to, so a wrong
+/// mapping here would silently re-privilege it at migration.
+#[rstest]
+#[case::set_proxy(
+    LegacyOperationKind::SetProxy,
+    method_edit("admin_set_proxy", Role::ProxyConfigurationManager)
+)]
+#[case::configure_circuit_breakers(
+    LegacyOperationKind::ConfigureCircuitBreakers,
+    method_edit("admin_configure_circuit_breakers", Role::ProxyConfigurationManager)
+)]
+#[case::add_circuit_breaker(
+    LegacyOperationKind::AddCircuitBreaker,
+    method_edit("admin_add_circuit_breaker", Role::ProxyConfigurationManager)
+)]
+#[case::remove_circuit_breaker(
+    LegacyOperationKind::RemoveCircuitBreaker,
+    method_edit("admin_remove_circuit_breaker", Role::ProxyConfigurationManager)
+)]
+#[case::set_manual_trip(
+    LegacyOperationKind::SetManualTrip,
+    method_edit("admin_set_manual_trip", Role::ManualTripper)
+)]
+#[case::rearm(
+    LegacyOperationKind::Rearm,
+    method_edit("admin_rearm", Role::CircuitBreakerOperator)
+)]
+#[case::set_enforced(
+    LegacyOperationKind::SetEnforced,
+    method_edit("admin_set_enforced", Role::CircuitBreakerOperator)
+)]
+#[case::admin_upgrade(
+    LegacyOperationKind::AdminUpgrade,
+    method_edit("admin_upgrade", Role::Admin)
+)]
+// The old catch-all kind governed every unlisted method, which is now the target default.
+#[case::admin_function_call(
+    LegacyOperationKind::AdminFunctionCall,
+    ReflexiveOperation::SetTargetDefault { policy: MethodPolicy { ttl: EDIT_TTL, role: Role::Admin } }
+)]
+#[case::set_action_ttl(
+    LegacyOperationKind::SetActionTtl,
+    ReflexiveOperation::SetReflexiveTtl { kind: ReflexiveKind::SetPolicy, ttl: EDIT_TTL }
+)]
+#[case::set_role(
+    LegacyOperationKind::SetRole,
+    ReflexiveOperation::SetReflexiveTtl { kind: ReflexiveKind::SetRole, ttl: EDIT_TTL }
+)]
+#[case::self_upgrade(
+    LegacyOperationKind::SelfUpgrade,
+    ReflexiveOperation::SetReflexiveTtl { kind: ReflexiveKind::SelfUpgrade, ttl: EDIT_TTL }
+)]
+fn every_legacy_ttl_edit_kind_maps_to_its_policy_edit(
+    #[case] kind: LegacyOperationKind,
+    #[case] expected: ReflexiveOperation,
+) {
     assert_eq!(
-        Operation::try_from(target_ttl).unwrap(),
-        Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
-            method: "admin_set_proxy".to_owned(),
-            policy: Some(method_policy(7, Role::ProxyConfigurationManager)),
+        Operation::try_from(LegacyOperation::SetActionTtl {
+            kind,
+            new_ttl: EDIT_TTL,
         })
-    );
-
-    let reflexive_ttl = LegacyOperation::SetActionTtl {
-        kind: LegacyOperationKind::SelfUpgrade,
-        new_ttl: Nanoseconds::from_secs(9),
-    };
-    assert_eq!(
-        Operation::try_from(reflexive_ttl).unwrap(),
-        Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
-            kind: ReflexiveKind::SelfUpgrade,
-            ttl: Nanoseconds::from_secs(9),
-        })
+        .unwrap(),
+        Operation::Reflexive(expected)
     );
 }
 
@@ -727,24 +884,4 @@ fn the_example_policy_files_parse() {
             .collect()
     };
     assert_eq!(roles(&steady), roles(&bootstrap));
-}
-
-/// The migration still converts the v0 typed form; that mapping is faithful because the seeded
-/// policy's roles are exactly the v0 ones at the instant it runs.
-#[test]
-fn legacy_operations_still_convert_for_the_migration() {
-    let converted = Operation::try_from(LegacyOperation::SetRole {
-        account_id: "op.near".parse().unwrap(),
-        role: Role::Admin,
-        set: true,
-    })
-    .unwrap();
-    assert_eq!(
-        converted,
-        Operation::Reflexive(ReflexiveOperation::SetRole {
-            account_id: "op.near".parse().unwrap(),
-            role: Role::Admin,
-            set: true,
-        })
-    );
 }

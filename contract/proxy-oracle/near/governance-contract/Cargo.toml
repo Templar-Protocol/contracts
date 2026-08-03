@@ -36,7 +36,9 @@ base64.workspace = true
 near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-token.workspace = true
+rstest.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 templar-common.workspace = true
 templar-gateway-testing.workspace = true
 templar-proxy-oracle-near-governance-common.workspace = true

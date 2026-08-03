@@ -69,6 +69,17 @@ fn pid() -> PriceIdentifier {
     PriceIdentifier([0; 32])
 }
 
+/// A contract whose policy edits mature immediately, so a test can execute one in the same block.
+fn contract_with_immediate_policy_edits() -> Contract {
+    let mut contract = contract();
+    contract
+        .header
+        .ttls
+        .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
+        .unwrap();
+    contract
+}
+
 /// Build a target op from the pre-restructure typed form (exercises the shared mapping).
 fn target(legacy: LegacyOperation) -> Operation {
     Operation::try_from(legacy).unwrap()
@@ -590,27 +601,43 @@ fn admin_upgrade_execution_dispatches_target_call_with_upgrade_gas() {
     }
 }
 
+/// A method ttl above `default_target` passes create-time validation but must revert at execute,
+/// where the ceiling invariant is authoritative. Only the v0→v1 migration queues one — see
+/// `state::migration::tests::a_pending_ttl_raise_above_the_seeded_default_migrates_over_the_ceiling`.
 #[test]
-fn set_method_policy_above_default_reverts_at_execute() {
+fn set_method_policy_above_default_reverts_at_execute_until_the_default_is_raised() {
     testing_env!(context_with_admin());
-    let mut contract = contract();
-    contract
-        .header
-        .ttls
-        .set_reflexive_ttl(ReflexiveKind::SetPolicy, Nanoseconds::zero())
-        .unwrap();
-
-    // default_target is DAY; a method ttl above it passes create-time validation but must revert at
-    // execute (the ceiling invariant is authoritative there).
-    let operation = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+    let above_default = DAY.saturating_add(Nanoseconds::from_secs(1));
+    let raise_method = Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
         method: "admin_set_proxy".to_owned(),
         policy: Some(MethodPolicy {
-            ttl: DAY.saturating_add(Nanoseconds::from_secs(1)),
+            ttl: above_default,
             role: Role::ProxyConfigurationManager,
         }),
     });
-    contract.create_proposal(0, operation, Nanoseconds::zero());
-    assert!(panics(|| contract.execute_proposal(0)));
+
+    let mut blocked = contract_with_immediate_policy_edits();
+    blocked.create_proposal(0, raise_method.clone(), Nanoseconds::zero());
+    assert!(panics(|| blocked.execute_proposal(0)));
+
+    let mut unblocked = contract_with_immediate_policy_edits();
+    unblocked.create_proposal(
+        0,
+        Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
+            policy: MethodPolicy {
+                ttl: above_default,
+                role: Role::Admin,
+            },
+        }),
+        Nanoseconds::zero(),
+    );
+    unblocked.execute_proposal(0);
+    unblocked.create_proposal(1, raise_method, Nanoseconds::zero());
+    unblocked.execute_proposal(1);
+    assert_eq!(
+        unblocked.header.ttls.resolve("admin_set_proxy").ttl,
+        above_default
+    );
 }
 
 #[test]

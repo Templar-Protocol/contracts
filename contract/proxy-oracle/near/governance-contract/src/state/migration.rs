@@ -141,7 +141,8 @@ mod tests {
     use templar_common::Nanoseconds;
     use templar_proxy_oracle_governance_kernel::Governance;
     use templar_proxy_oracle_near_governance_common::{
-        FunctionCall, LegacyTtlConfig, Role, GAS_FOR_ADMIN_UPGRADE,
+        FunctionCall, LegacyOperationKind, LegacyTtlConfig, ReflexiveOperation, Role,
+        GAS_FOR_ADMIN_UPGRADE,
     };
 
     fn legacy_ttls() -> LegacyTtlConfig {
@@ -160,14 +161,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn v0_to_v1_seeds_policy_and_migrates_a_pending_admin_upgrade_proposal() {
-        testing_env!(VMContextBuilder::new().build());
-
+    /// Write a v0 contract state holding exactly one pending proposal, as the migration will find it.
+    fn seed_v0_state(id: u32, operation: legacy::Operation) {
         let mut old = legacy::State {
             header: Governance {
-                next_id: 8,
-                active_ids: vec![7],
+                next_id: u64::from(id) + 1,
+                active_ids: vec![u64::from(id)],
                 ttls: legacy_ttls(),
                 max_pending_proposals: 64,
             },
@@ -175,12 +174,9 @@ mod tests {
             proxy_oracle_id: "proxy.near".parse().unwrap(),
         };
         old.proposals.insert(
-            7,
+            id,
             Proposal {
-                operation: legacy::Operation::AdminUpgrade {
-                    code: Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef]),
-                    migrate_args: Base64VecU8(vec![0xca, 0xfe]),
-                },
+                operation,
                 created_at: Nanoseconds::from_secs(10),
                 ttl: Nanoseconds::from_secs(15),
                 created_by: "admin.near".parse().unwrap(),
@@ -189,6 +185,18 @@ mod tests {
         old.proposals.flush();
         near_sdk::env::state_write(&old);
         write_state_version(0);
+    }
+
+    #[test]
+    fn v0_to_v1_seeds_policy_and_migrates_a_pending_admin_upgrade_proposal() {
+        testing_env!(VMContextBuilder::new().build());
+        seed_v0_state(
+            7,
+            legacy::Operation::AdminUpgrade {
+                code: Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef]),
+                migrate_args: Base64VecU8(vec![0xca, 0xfe]),
+            },
+        );
 
         let new = V0ToV1.run().expect("migration succeeds");
 
@@ -228,6 +236,41 @@ mod tests {
                 panic!("expected admin_upgrade target call, got {reflexive:?}")
             }
         }
+    }
+
+    /// The edge this module's doc calls out, and the only way one reaches the queue. Executing it
+    /// reverts: `tests::set_method_policy_above_default_reverts_at_execute_until_the_default_is_raised`.
+    #[test]
+    fn a_pending_ttl_raise_above_the_seeded_default_migrates_over_the_ceiling() {
+        testing_env!(VMContextBuilder::new().build());
+        let over_ceiling = Nanoseconds::from_secs(100);
+        seed_v0_state(
+            0,
+            legacy::Operation::SetActionTtl {
+                kind: LegacyOperationKind::SetProxy,
+                new_ttl: over_ceiling,
+            },
+        );
+
+        let new = V0ToV1.run().expect("migration succeeds");
+
+        let migrated = new.proposals.get(&0).expect("proposal 0 migrated");
+        let Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
+            method,
+            policy: Some(policy),
+        }) = &migrated.operation
+        else {
+            panic!(
+                "expected a method-policy edit, got {:?}",
+                migrated.operation
+            )
+        };
+        assert_eq!(method, "admin_set_proxy");
+        assert_eq!(policy.ttl, over_ceiling);
+        assert!(
+            policy.ttl > new.header.ttls.default_target().ttl,
+            "the raise must land above the seeded default, or this edge no longer exists"
+        );
     }
 
     // The full migrate() run path is exercised in the sandbox upgrade_ordering test; here we cover

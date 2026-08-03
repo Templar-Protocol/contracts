@@ -1,7 +1,7 @@
 //! The pre-restructure operation set (12 typed variants) and its mapping to the new generic
-//! [`Operation`]. Consumed by the borsh state migration and legacy-JSON acceptance on
-//! `create_proposal`; the manager CLI builds current-format operations directly via [`crate::target`].
-//! Target-call serialization is shared with the CLI through that module.
+//! [`Operation`]. Consumed only by the borsh state migration — `create_proposal` rejects this shape
+//! on the wire. The manager CLI builds current-format operations directly via [`crate::target`],
+//! which is also where the target-call serialization both paths share lives.
 //!
 //! The old create-time payload checks (`EmptyProxyDefinition`, `CircuitBreakerHistoryTooLong`) are not
 //! reproduced here — the generic form is opaque to governance, so they move to the proxy oracle
