@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-governance-contract-v0.2.0...templar-proxy-oracle-near-governance-contract-v0.3.0) - 2026-08-03
+
+### Added
+
+- *(proxy-oracle-governance)* [**breaking**] reflexive vs. target-function-call operations (ENG-516) ([#527](https://github.com/Templar-Protocol/contracts/pull/527))
+- *(proxy-oracle-governance)* accept borsh-serialized proposals (ENG-557) ([#556](https://github.com/Templar-Protocol/contracts/pull/556))
+
 ## [0.2.0](https://github.com/Templar-Protocol/contracts/compare/templar-proxy-oracle-near-governance-contract-v0.1.0...templar-proxy-oracle-near-governance-contract-v0.2.0) - 2026-08-03
 
 ### Added
