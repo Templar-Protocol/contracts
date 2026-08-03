@@ -19,8 +19,10 @@ use super::check::Check;
 
 /// Bumped when this artifact's shape changes. `apply` hard-refuses a mismatch:
 /// every struct here is `deny_unknown_fields`, and this file authorizes spending
-/// real NEAR.
-pub const PLAN_SCHEMA_VERSION: u32 = 4;
+/// real NEAR. Held to the shape by `the_plan_shape_is_pinned_to_its_version`,
+/// so forgetting the bump is a test failure rather than a resume that dies on
+/// an unknown field.
+pub const PLAN_SCHEMA_VERSION: u32 = 5;
 
 /// A function call's arguments, in whichever form a human can actually read.
 /// Not `ContractArgs`, whose `{"encoding": …, "value": …}` buries them.
@@ -232,9 +234,17 @@ impl PlanFile {
     }
 }
 
-/// `sha256:…` over bytes.
+/// Prefix naming what was hashed. Journals persist these, so a change to the
+/// encoding must be legible as a format difference rather than as a plan that
+/// changed under a completed step.
+pub const DIGEST_FORMAT: &str = "sha256-wire";
+
+/// `sha256-wire:…` over bytes.
 pub fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{}", templar_contract_artifacts::sha256_hex(bytes))
+    format!(
+        "{DIGEST_FORMAT}:{}",
+        templar_contract_artifacts::sha256_hex(bytes)
+    )
 }
 
 #[cfg(test)]

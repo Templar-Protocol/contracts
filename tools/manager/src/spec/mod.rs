@@ -46,10 +46,6 @@ pub fn default_reference_tolerance() -> Decimal {
     templar_common::dec!("0.015")
 }
 
-/// A year. Nothing legitimate approaches it, and past the deployment block's
-/// Unix-ms timestamp the market's snapshot arithmetic underflows.
-const MAXIMUM_TIME_CHUNK_MS: u64 = 365 * 24 * 60 * 60 * 1_000;
-
 /// Bumped on a breaking spec change; unknown versions are rejected. Every
 /// struct here is `deny_unknown_fields`, so adding a field is breaking in the
 /// reader direction: an older build rejects a document carrying it.
@@ -116,6 +112,13 @@ impl OracleMode {
 
 /// The shape a spec file is written in: `versions` and `[governance]` sit flat
 /// beside `oracle`, so a profile can supply them and a market override one.
+///
+/// In proxy mode — the default — `governance`, `versions.proxy_oracle` and
+/// `versions.proxy_governance` are all required, and a spec omitting any of them
+/// is refused when it is parsed into a `MarketSpec`. They are optional here
+/// because a direct market inherits them from a shared profile and ignores them.
+/// That conditional is stated rather than encoded: this type's generated schema
+/// describes the fields, not the rule relating them.
 ///
 /// Only [`MarketSpec`]'s serde impls construct this. `extends::load` merges at
 /// this level, which is why the variant-carried form cannot be the file shape —
@@ -335,6 +338,16 @@ pub fn governance_name(name: &str) -> String {
     format!("proxy-gov-{name}")
 }
 
+/// Milliseconds since the Unix epoch, standing in for the deploying block's
+/// clock. Only ever grows, so a spec this accepts stays accepted.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(u64::MAX, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
     // A dotted label parses as a valid account id but is not a *direct* child,
     // which is what `registry.deploy` requires — so it would pass every derived
@@ -488,12 +501,21 @@ impl MarketSpec {
             "time_chunk",
             "milliseconds",
         )?;
-        // Above the block's Unix-ms timestamp, `now()` divides to zero and
-        // `Market::new` unwraps `0.checked_sub(1)` — a panic on the last step.
+        // The contract's own bound, not a rounder one: `now()` is
+        // `block_timestamp_ms / duration_ms`, and `Market::new` unwraps
+        // `previous()`, so a chunk longer than the deploying block's clock
+        // panics at init. Wall-clock stands in for that block, and the bound
+        // only ever loosens.
         anyhow::ensure!(
-            (1..=MAXIMUM_TIME_CHUNK_MS).contains(&time_chunk_ms),
-            "`time_chunk` must be between 1ms and {MAXIMUM_TIME_CHUNK_MS}ms; \
-             {time_chunk_ms}ms leaves the market with no usable snapshot schedule"
+            time_chunk_ms > 0,
+            "`time_chunk` must be at least 1ms; a zero-length chunk has no \
+             snapshot schedule"
+        );
+        anyhow::ensure!(
+            time_chunk_ms <= unix_now_ms(),
+            "`time_chunk` is {time_chunk_ms}ms, longer than the time since the \
+             Unix epoch, so the market's first snapshot would precede chunk zero \
+             and initialization would panic"
         );
 
         // `total_weight` panics on overflow and nothing on the deploy path calls

@@ -7,6 +7,7 @@
 use anyhow::Context as _;
 use near_account_id::AccountId;
 use templar_common::asset::{AssetClass, FungibleAsset};
+use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::{account, contract, lst_oracle, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
@@ -323,11 +324,6 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .collect()
 }
 
-/// Whether the contract tried to make a cross-contract call during a view.
-fn is_prohibited_in_view(error: &templar_gateway_core::GatewayError) -> bool {
-    error.to_string().contains("ProhibitedInView")
-}
-
 /// A direct market skips the three checks a proxy gets, which left the oracle
 /// it does read checked by nothing. `MarketConfiguration` is immutable after
 /// init, so a mistyped `price_id` would be permanent.
@@ -368,74 +364,119 @@ async fn serves_pair(
     ctx: &CliContext,
     spec: &MarketSpec,
     oracle_id: &AccountId,
-    collateral: templar_common::oracle::pyth::PriceIdentifier,
-    borrow: templar_common::oracle::pyth::PriceIdentifier,
+    collateral: PriceIdentifier,
+    borrow: PriceIdentifier,
 ) -> Status {
     let age = spec.market.price_maximum_age.as_secs();
-    let price_ids = vec![borrow, collateral];
 
-    let (answering, prices) = match list_ema_prices(ctx, oracle_id, &price_ids, age).await {
-        Ok(prices) => (oracle_id.clone(), prices),
-        // The LST wrapper answers every untransformed feed with a promise, which
-        // a view cannot make. It serves those feeds out of the oracle it wraps,
-        // so ask that one instead of reporting what a view cannot see.
-        Err(error) if is_prohibited_in_view(&error) => {
-            let Some(wrapped) = wrapped_oracle(ctx, oracle_id).await else {
-                return Status::failed(format!(
-                    "`{oracle_id}` answers the market's price call with a \
-                     cross-contract call and names no wrapped oracle, so this \
-                     build cannot confirm it serves either feed"
-                ));
-            };
-            match list_ema_prices(ctx, &wrapped, &price_ids, age).await {
-                Ok(prices) => (wrapped, prices),
-                Err(error) => {
-                    return Status::failed(format!("`{wrapped}` did not answer: {error}"))
-                }
-            }
-        }
+    let asked = match answering_oracle(ctx, oracle_id, &[collateral, borrow]).await {
+        Ok(asked) => asked,
+        Err(error) => return Status::failed(format!("{error:#}")),
+    };
+    let prices = match list_ema_prices(ctx, &asked.oracle_id, &asked.dispatched, age).await {
+        Ok(prices) => prices,
         Err(error) => {
             return Status::failed(format!(
-                "`{oracle_id}` did not answer the market's price call: {error}. A \
-                 mistyped `price_id` cannot be corrected after init."
+                "`{}` did not answer the market's price call: {error}. A mistyped \
+                 `price_id` cannot be corrected after init.",
+                asked.oracle_id,
             ))
         }
     };
 
-    // An unknown identifier is omitted from the response; a known but stale one
-    // comes back with no price. Both leave the market unable to price, and
-    // neither can be corrected after init.
-    let mut missing = Vec::new();
-    let mut stale = Vec::new();
-    for (side, id) in [("collateral", collateral), ("borrow", borrow)] {
-        match prices.iter().find(|entry| entry.price_id == id) {
-            None => missing.push(format!("{side} ({id})")),
-            Some(entry) if entry.price.is_none() => stale.push(format!("{side} ({id})")),
+    // Absent and stale are different problems with different remedies, so the
+    // oracle's own answer decides which: it omits an identifier it does not
+    // serve and returns a served-but-stale one with no price.
+    let (mut unserved, mut stale) = (Vec::new(), Vec::new());
+    for ((side, id), dispatched) in [("collateral", collateral), ("borrow", borrow)]
+        .into_iter()
+        .zip(&asked.dispatched)
+    {
+        let named = if *dispatched == id {
+            format!("{side} ({id})")
+        } else {
+            format!("{side} ({id}, served as {dispatched})")
+        };
+        match prices.iter().find(|entry| entry.price_id == *dispatched) {
+            None => unserved.push(named),
+            Some(entry) if entry.price.is_none() => stale.push(named),
             Some(_) => {}
         }
     }
 
-    if !missing.is_empty() {
+    if !unserved.is_empty() {
         return Status::failed(format!(
-            "`{answering}` serves no feed for {}. For an oracle this deployment \
-             does not configure, an unknown identifier is a wrong one.",
-            missing.join(" and "),
+            "`{}` serves no feed for {}. This deployment does not configure that \
+             oracle, so an identifier it does not know is a wrong one — and the \
+             market configuration naming it is immutable after init.",
+            asked.oracle_id,
+            unserved.join(" and "),
         ));
     }
     if !stale.is_empty() {
         return Status::failed(format!(
-            "`{answering}` has no price within {age}s for {}. The market would \
-             read this oracle with the same bound.",
+            "`{}` has no price within {age}s for {}. The market reads it with the \
+             same bound, so it would price nothing until something publishes.",
+            asked.oracle_id,
             stale.join(" and "),
         ));
     }
-    Status::passed(format!("both feeds priced within {age}s by `{answering}`"))
+    Status::passed(format!(
+        "both feeds priced within {age}s by `{}`",
+        asked.oracle_id
+    ))
+}
+
+/// Which account actually answers a price call, and under which identifiers.
+struct Answering {
+    oracle_id: AccountId,
+    /// Parallel to the ids asked for, in order.
+    dispatched: Vec<PriceIdentifier>,
+}
+
+/// Resolve who answers, by asking rather than assuming.
+///
+/// An LST wrapper answers every price call with a cross-contract call, which a
+/// view cannot make. It serves each identifier out of the oracle it wraps —
+/// under that oracle's own identifier for a transformed feed, and under the
+/// original for a pass-through — so the mapping is read from the wrapper rather
+/// than reproduced here.
+async fn answering_oracle(
+    ctx: &CliContext,
+    oracle_id: &AccountId,
+    price_ids: &[PriceIdentifier],
+) -> anyhow::Result<Answering> {
+    let Some(wrapped) = wrapped_oracle(ctx, oracle_id).await else {
+        return Ok(Answering {
+            oracle_id: oracle_id.clone(),
+            dispatched: price_ids.to_vec(),
+        });
+    };
+
+    let mut dispatched = Vec::with_capacity(price_ids.len());
+    for price_id in price_ids {
+        let transformer = ctx
+            .client
+            .read(lst_oracle::GetTransformer {
+                oracle_id: oracle_id.clone(),
+                price_identifier: *price_id,
+            })
+            .await
+            .with_context(|| format!("read `{oracle_id}`'s transformer for {price_id}"))?
+            .transformer;
+        dispatched.push(transformer.map_or(*price_id, |it| it.price_id));
+    }
+
+    Ok(Answering {
+        oracle_id: wrapped,
+        dispatched,
+    })
 }
 
 async fn list_ema_prices(
     ctx: &CliContext,
     oracle_id: &AccountId,
-    price_ids: &[templar_common::oracle::pyth::PriceIdentifier],
+    price_ids: &[PriceIdentifier],
     age: u64,
 ) -> Result<Vec<templar_gateway_methods_spec::pyth::PriceEntry>, GatewayError> {
     ctx.client
@@ -450,8 +491,8 @@ async fn list_ema_prices(
         .map(|result| result.prices)
 }
 
-/// The oracle an LST wrapper forwards untransformed feeds to. `None` when the
-/// account is not an LST wrapper, which is how the caller tells the two apart.
+/// The oracle an LST wrapper forwards to. `None` when the account is not one,
+/// which is how the caller tells a wrapper from a plain oracle.
 async fn wrapped_oracle(ctx: &CliContext, oracle_id: &AccountId) -> Option<AccountId> {
     ctx.client
         .read(lst_oracle::GetOracleId {
@@ -526,25 +567,8 @@ pub(super) async fn exists(ctx: &CliContext, account_id: &AccountId) -> anyhow::
 
 #[cfg(test)]
 mod tests {
-    use super::{is_prohibited_in_view, underlying_ft};
+    use super::underlying_ft;
     use templar_common::asset::{CollateralAsset, FungibleAsset};
-
-    /// The LST wrapper answers the market's price call with a promise, which a
-    /// view rejects. That is the signal to ask the oracle it wraps — not a
-    /// verdict on the feed, and not something an ordinary failure should reach.
-    #[test]
-    fn only_a_view_prohibited_promise_redirects_to_the_wrapped_oracle() {
-        let promise = templar_gateway_core::GatewayError::NearQuery(
-            "wasm execution failed: ProhibitedInView { method_name: \"promise_create\" }"
-                .to_owned(),
-        );
-        let unrelated = templar_gateway_core::GatewayError::NearQuery(
-            "timed out talking to the RPC".to_owned(),
-        );
-
-        assert!(is_prohibited_in_view(&promise));
-        assert!(!is_prohibited_in_view(&unrelated));
-    }
 
     /// Which token defines an asset's decimals is not obvious, and getting it
     /// wrong silently mis-scales every price the market sees.

@@ -470,8 +470,11 @@ fn an_unverified_override_says_so() {
 #[rstest::rstest]
 #[case::sub_second_age("price_maximum_age", "1500ms", "whole number of seconds")]
 #[case::sub_milli_chunk("time_chunk", "500us", "whole number of milliseconds")]
-#[case::zero_chunk("time_chunk", "0s", "between 1ms and")]
-#[case::year_long_chunk("time_chunk", "400d", "between 1ms and")]
+#[case::zero_chunk("time_chunk", "0s", "at least 1ms")]
+// Longer than the time since the Unix epoch (~20,600 days), where `now()`
+// divides to zero and the market's first `previous()` underflows at init. A
+// 400-day chunk is pointless but safe, and is deliberately still accepted.
+#[case::chunk_past_the_epoch("time_chunk", "100000d", "precede chunk zero")]
 fn durations_that_would_not_survive_the_chain_are_rejected(
     #[case] field: &str,
     #[case] value: &str,

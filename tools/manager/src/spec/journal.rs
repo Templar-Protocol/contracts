@@ -135,6 +135,19 @@ impl Journal {
     /// skipping a changed one would deploy something nobody reviewed.
     pub fn remaining(&self, file: &PlanFile) -> anyhow::Result<Vec<usize>> {
         for entry in &self.entries {
+            // Checked before the comparison below, which would otherwise report
+            // a build that hashes differently as a plan that changed under a
+            // step that in fact ran exactly as recorded.
+            let format = entry.digest.split_once(':').map_or("", |(it, _)| it);
+            anyhow::ensure!(
+                format == super::plan::DIGEST_FORMAT,
+                "this journal records step {} with a `{format}` digest, but this \
+                 build writes `{}`. It was written by a different build; finish \
+                 the deployment with that one, or start from a fresh plan.",
+                entry.step,
+                super::plan::DIGEST_FORMAT,
+            );
+
             let step = file.steps.get(entry.step).with_context(|| {
                 format!(
                     "the journal records step {} (`{}`) as done, but this plan has \

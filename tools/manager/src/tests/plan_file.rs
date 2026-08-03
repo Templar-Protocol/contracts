@@ -89,6 +89,60 @@ fn plan_file(steps: Vec<(String, PlannedTransaction)>) -> PlanFile {
     .expect("plan file should build")
 }
 
+/// The artifact is persisted and read back by a later run, so its shape is a
+/// compatibility surface: every struct in it is `deny_unknown_fields`, and a
+/// field added or removed without a version bump makes an interrupted
+/// deployment unresumable in both directions.
+///
+/// Pinning the whole nested key set — the spec travels inside the plan — turns
+/// that into a test failure here rather than an opaque "unknown field" in front
+/// of an operator mid-deploy.
+#[test]
+fn the_plan_shape_is_pinned_to_its_version() {
+    fn key_paths(value: &serde_json::Value, path: &str, into: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    let path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    into.push(path.clone());
+                    key_paths(value, &path, into);
+                }
+            }
+            // One element is enough: every element of a homogeneous list has
+            // the same shape, and indices would make the pin order-dependent.
+            serde_json::Value::Array(items) => {
+                if let Some(first) = items.first() {
+                    key_paths(first, &format!("{path}[]"), into);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let rendered = serde_json::to_value(plan_file(sample_steps())).expect("serialize");
+    let mut paths = Vec::new();
+    key_paths(&rendered, "", &mut paths);
+    paths.sort();
+    paths.dedup();
+
+    let fingerprint = crate::spec::plan::digest(paths.join("\n").as_bytes());
+    assert_eq!(
+        (crate::spec::plan::PLAN_SCHEMA_VERSION, fingerprint.as_str()),
+        (
+            5,
+            "sha256-wire:d032675fbbcfdfc34079282bf2649f4b484acebf12d20220bd3f6b5065b3d6b4"
+        ),
+        "the plan artifact's shape changed. Bump PLAN_SCHEMA_VERSION and update \
+         this pin, so a plan from another build is refused by name rather than \
+         failing on an unknown field.\n\nshape:\n{}",
+        paths.join("\n"),
+    );
+}
+
 /// The headline criterion: what `apply` sends is exactly what `plan` showed.
 ///
 /// Compared after conversion into the file, because that conversion
@@ -445,11 +499,31 @@ mod journal {
     fn a_journal_for_another_plan_is_refused() {
         let file = plan_file(sample_steps());
         let journal = Journal {
-            entries: vec![entry(99, "sha256:whatever".to_owned())],
+            entries: vec![entry(
+                99,
+                crate::spec::plan::digest(b"a step of some other plan"),
+            )],
         };
 
         let error = journal.remaining(&file).expect_err("out of range");
         assert!(format!("{error:#}").contains("different plan"), "{error:#}");
+    }
+
+    /// A build that hashes steps differently produces digests that match
+    /// nothing. Named as the format difference it is, rather than reported as
+    /// every completed step having changed under the operator.
+    #[test]
+    fn a_journal_from_a_build_with_another_digest_format_is_refused() {
+        let file = plan_file(sample_steps());
+        let journal = Journal {
+            entries: vec![entry(0, "sha256:from-an-older-build".to_owned())],
+        };
+
+        let error = journal.remaining(&file).expect_err("foreign digest format");
+        assert!(
+            format!("{error:#}").contains("different build"),
+            "{error:#}"
+        );
     }
 
     /// A step that was submitted but never resolved is neither progress nor
