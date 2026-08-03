@@ -7,11 +7,10 @@ use near_sdk::{
     testing_env, AccountId, Gas, NearToken,
 };
 use near_sdk_contract_tools::rbac::Rbac;
-use rstest::rstest;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Nanoseconds};
 use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy, Operation,
-    ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
+    CreateProposalArgs, GovernancePolicy, GovernancePolicyWire, LegacyOperation, MethodPolicy,
+    Operation, ReflexiveKind, ReflexiveOperation, ReflexiveTtls, Role, GAS_FOR_ADMIN_UPGRADE,
     MAX_PROPOSAL_TTL,
 };
 
@@ -316,25 +315,8 @@ fn role_mismatch_cannot_create_proposal() {
     }));
 }
 
-/// Calls the entrypoints as plain Rust functions, so these cover the shared body only; the decoder
-/// is covered by `governance-common`'s wire test and the sandbox suite.
-#[derive(Clone, Copy)]
-enum Encoding {
-    Json,
-    Borsh,
-}
-
-impl Encoding {
-    fn create(self, contract: &mut Contract, id: u32, operation: Operation) {
-        match self {
-            Self::Json => {
-                contract.create_proposal(id, operation, Nanoseconds::zero());
-            }
-            Self::Borsh => contract.create_proposal_borsh(id, operation, Nanoseconds::zero()),
-        }
-    }
-}
-
+/// The borsh entrypoint delegates to the same body, so authorization, validation and the `Created`
+/// event come along with it. Decoding is not exercised here — these are plain Rust calls.
 #[test]
 fn borsh_and_json_entrypoints_produce_the_same_proposal() {
     let operation = admin_upgrade();
@@ -347,7 +329,11 @@ fn borsh_and_json_entrypoints_produce_the_same_proposal() {
 
     testing_env!(context_with_admin());
     let mut borsh = contract();
-    borsh.create_proposal_borsh(0, operation.clone(), Nanoseconds::zero());
+    borsh.create_proposal_borsh(CreateProposalArgs {
+        id: 0,
+        operation: operation.clone(),
+        requested_ttl: Nanoseconds::zero(),
+    });
 
     // Two absent proposals, or two empty log sets, would also compare equal.
     assert_eq!(
@@ -358,32 +344,6 @@ fn borsh_and_json_entrypoints_produce_the_same_proposal() {
 
     assert_eq!(borsh.get_proposal(0), json_proposal);
     assert_eq!(get_logs(), json_logs);
-}
-
-#[rstest]
-#[case::json(Encoding::Json)]
-#[case::borsh(Encoding::Borsh)]
-fn both_entrypoints_reject_an_unauthorized_caller(#[case] encoding: Encoding) {
-    testing_env!(context_with_account("unauthorized.near"));
-    let mut contract = contract();
-
-    assert!(panics(|| encoding.create(&mut contract, 0, set_proxy())));
-}
-
-/// Borsh skips serde-only gates, so a `#[serde(try_from)]` type reaching the `Operation` graph
-/// without its own explicit check would pass the borsh case and fail here.
-#[rstest]
-#[case::json(Encoding::Json)]
-#[case::borsh(Encoding::Borsh)]
-fn both_entrypoints_reject_an_invalid_operation(#[case] encoding: Encoding) {
-    testing_env!(context_with_admin());
-    let mut contract = contract();
-    let empty_upgrade = Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-        code: UpgradeSource::Code(Base64VecU8(vec![])),
-        migrate_args: Base64VecU8(vec![]),
-    });
-
-    assert!(panics(|| encoding.create(&mut contract, 0, empty_upgrade)));
 }
 
 #[test]

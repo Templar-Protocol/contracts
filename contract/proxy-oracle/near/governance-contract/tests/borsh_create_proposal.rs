@@ -8,18 +8,16 @@ use anyhow::Result;
 use near_api::types::AccountId;
 use near_api::NetworkConfig;
 use near_sdk::json_types::Base64VecU8;
-use near_sdk::NearToken;
 use rstest::rstest;
 use serde_json::json;
 use templar_common::{upgrade::UpgradeSource, Nanoseconds};
 use templar_gateway_testing::{harness, wasm, SandboxHarness};
-use templar_proxy_oracle_near_governance_common::{
-    GovernancePolicy, Operation, Proposal, ReflexiveOperation,
+use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation, Proposal};
+
+use common::{
+    call, call_borsh, deploy_with_init, self_upgrade, view, CreateProposalArgs, ProposalIdArgs,
+    ONE_YOCTO,
 };
-
-use common::{call, call_borsh, deploy_with_init, view, CreateProposalArgs, ProposalIdArgs};
-
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 
 /// Base64 puts the JSON transaction past `max_transaction_size` (1,572,864) while borsh stays under.
 /// The RPC's own body cap rejects it first (`413`, since the JSON-RPC envelope base64s the signed
@@ -43,20 +41,13 @@ async fn governance(harness: &SandboxHarness) -> Result<(NetworkConfig, AccountI
     Ok((harness.network.clone(), gov, admin))
 }
 
-fn self_upgrade(code: Vec<u8>) -> Operation {
-    Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-        code: UpgradeSource::Code(Base64VecU8(code)),
-        migrate_args: Base64VecU8(Vec::new()),
-    })
-}
-
 async fn stored_operation(
     network: &NetworkConfig,
     gov: &AccountId,
     id: u32,
 ) -> Result<Option<Operation>> {
     Ok(
-        view::<Option<Proposal<Operation>>>(network, gov, "get_proposal", json!({ "id": id }))
+        view::<Option<Proposal<Operation>>>(network, gov, "get_proposal", ProposalIdArgs { id })
             .await?
             .map(|proposal| proposal.operation),
     )
@@ -71,7 +62,7 @@ async fn borsh_stores_the_same_operation_for_less_gas(
     let (network, gov, admin) = governance(&harness).await?;
     let code = wasm::proxy_governance().await.to_vec();
     let code_len = code.len();
-    let operation = self_upgrade(code);
+    let operation = self_upgrade(UpgradeSource::Code(Base64VecU8(code)));
 
     let json_gas = call(
         &network,
@@ -92,7 +83,11 @@ async fn borsh_stores_the_same_operation_for_less_gas(
         &network,
         &gov,
         "create_proposal_borsh",
-        (1u32, &operation, Nanoseconds::zero()),
+        CreateProposalArgs {
+            id: 1,
+            operation: operation.clone(),
+            requested_ttl: Nanoseconds::zero(),
+        },
         &admin,
         ONE_YOCTO,
     )
@@ -124,7 +119,10 @@ async fn borsh_stores_the_same_operation_for_less_gas(
 #[tokio::test]
 async fn borsh_carries_a_payload_json_cannot(#[future(awt)] harness: SandboxHarness) -> Result<()> {
     let (network, gov, admin) = governance(&harness).await?;
-    let operation = self_upgrade(vec![0u8; OVERSIZED_CODE_LEN]);
+    let operation = self_upgrade(UpgradeSource::Code(Base64VecU8(vec![
+        0u8;
+        OVERSIZED_CODE_LEN
+    ])));
 
     let error = call(
         &network,
@@ -147,7 +145,11 @@ async fn borsh_carries_a_payload_json_cannot(#[future(awt)] harness: SandboxHarn
         &network,
         &gov,
         "create_proposal_borsh",
-        (0u32, &operation, Nanoseconds::zero()),
+        CreateProposalArgs {
+            id: 0,
+            operation,
+            requested_ttl: Nanoseconds::zero(),
+        },
         &admin,
         ONE_YOCTO,
     )

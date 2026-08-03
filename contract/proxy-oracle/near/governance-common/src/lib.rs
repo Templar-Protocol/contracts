@@ -10,7 +10,9 @@ use near_sdk::{
 };
 use templar_common::upgrade::UpgradeSource;
 
-pub use interface::{error, Event, Governance, OperationPolicy, Proposal, Validatable};
+pub use interface::{
+    error, CreateProposalArgs, Event, Governance, OperationPolicy, Proposal, Validatable,
+};
 pub use legacy::{LegacyOperation, LegacyOperationKind, LegacyTtlConfig};
 pub use templar_common::Nanoseconds;
 

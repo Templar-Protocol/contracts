@@ -65,8 +65,6 @@ fn old_ttls() -> Value {
     })
 }
 
-/// Deploy `code` to `account` via its full-access key, atomically calling `method` (`new` to init,
-/// `migrate` to bootstrap-upgrade).
 /// An OLD oracle (owned by the gov account) governed by an OLD gov. Returns `(oracle, gov)`.
 async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     let oracle = harness.create_user("oracle").await?.0;

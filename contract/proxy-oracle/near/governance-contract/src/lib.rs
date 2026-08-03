@@ -12,8 +12,8 @@ use templar_common::{
     Nanoseconds, UnwrapReject,
 };
 use templar_proxy_oracle_near_governance_common::{
-    gen_ext_governance, Event, GovernancePolicy, Operation, Proposal, ReflexiveOperation, Role,
-    MAX_PROPOSAL_TTL,
+    gen_ext_governance, CreateProposalArgs, Event, GovernancePolicy, Operation, Proposal,
+    ReflexiveOperation, Role, MAX_PROPOSAL_TTL,
 };
 
 mod state;
@@ -81,12 +81,14 @@ impl Contract {
     }
 
     /// Shared body of both `create_proposal` entrypoints, which differ only in argument encoding.
+    ///
+    /// Returns a borrow so the borsh entrypoint, whose payload is the large one, never copies it.
     fn create_proposal_inner(
         &mut self,
         id: u32,
         operation: Operation,
         requested_ttl: Nanoseconds,
-    ) -> Proposal<Operation> {
+    ) -> &Proposal<Operation> {
         near_sdk::assert_one_yocto();
         self.assert_authorized(&operation);
 
@@ -107,9 +109,9 @@ impl Contract {
             .unwrap_or_reject();
         let kind = proposal.operation.kind();
         let method = proposal.operation.method();
-        self.proposals.insert(id, proposal.clone());
+        self.proposals.insert(id, proposal);
         Event::Created { id, kind, method }.emit();
-        proposal
+        &self.proposals[&id]
     }
 }
 
@@ -159,16 +161,12 @@ impl ProxyGovernanceInterface for Contract {
         requested_ttl: Nanoseconds,
     ) -> Proposal<Operation> {
         self.create_proposal_inner(id, operation, requested_ttl)
+            .clone()
     }
 
     #[payable]
-    fn create_proposal_borsh(
-        &mut self,
-        #[serializer(borsh)] id: u32,
-        #[serializer(borsh)] operation: Operation,
-        #[serializer(borsh)] requested_ttl: Nanoseconds,
-    ) {
-        self.create_proposal_inner(id, operation, requested_ttl);
+    fn create_proposal_borsh(&mut self, #[serializer(borsh)] args: CreateProposalArgs<Operation>) {
+        self.create_proposal_inner(args.id, args.operation, args.requested_ttl);
     }
 
     #[payable]

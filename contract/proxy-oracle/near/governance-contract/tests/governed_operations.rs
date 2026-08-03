@@ -13,7 +13,6 @@ use near_api::types::AccountId;
 use near_api::NetworkConfig;
 use near_sdk::json_types::Base64VecU8;
 use near_sdk::serde::Serialize;
-use near_sdk::NearToken;
 use rstest::rstest;
 use serde_json::json;
 use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Decimal, Nanoseconds};
@@ -29,15 +28,14 @@ use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOperation, Role};
 
 use common::{
-    call, call_borsh, code_hash, deploy_global_contract, view, CreateProposalArgs, ProposalIdArgs,
+    call, call_borsh, code_hash, deploy_global_contract, self_upgrade, view, CreateProposalArgs,
+    ProposalIdArgs, ONE_YOCTO,
 };
 
 /// `add` requires `breaker_id == next_id`, which starts at zero and only ever increments.
 const BREAKER: u32 = 0;
 
 const PRICE_ID: PriceIdentifier = PriceIdentifier([0xaa; 32]);
-
-const ONE_YOCTO: NearToken = NearToken::from_yoctonear(1);
 
 #[derive(Serialize)]
 #[serde(crate = "near_sdk::serde")]
@@ -77,7 +75,11 @@ impl Encoding {
                 &governed.network,
                 &governed.governance,
                 "create_proposal_borsh",
-                (id, operation, Nanoseconds::zero()),
+                CreateProposalArgs {
+                    id,
+                    operation,
+                    requested_ttl: Nanoseconds::zero(),
+                },
                 &governed.admin,
                 ONE_YOCTO,
             )
@@ -377,11 +379,9 @@ async fn self_upgrade_redeploys_governance_and_keeps_it_working(
     let mut governed = governed(&harness).await?;
 
     governed
-        .govern(Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-            code: UpgradeSource::Code(Base64VecU8(wasm::proxy_governance().await.to_vec())),
-            // The state version is already current, so `migrate` must be given nothing to do.
-            migrate_args: Base64VecU8(Vec::new()),
-        }))
+        .govern(self_upgrade(UpgradeSource::Code(Base64VecU8(
+            wasm::proxy_governance().await.to_vec(),
+        ))))
         .await?;
 
     // Still governing after replacing its own code, which a redeployed hash cannot show.
@@ -400,10 +400,7 @@ async fn self_upgrade_redeploys_governance_and_keeps_it_working(
     )
     .await?;
     governed
-        .govern(Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-            code: UpgradeSource::GlobalHash(published),
-            migrate_args: Base64VecU8(Vec::new()),
-        }))
+        .govern(self_upgrade(UpgradeSource::GlobalHash(published)))
         .await?;
     assert_ne!(
         before,

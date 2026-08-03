@@ -9,6 +9,7 @@ use near_api::types::AccountId;
 use near_api::{Account, Contract, NetworkConfig};
 use near_sdk::json_types::Base58CryptoHash;
 use near_sdk::serde::{de::DeserializeOwned, Serialize};
+use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation};
 
 pub use templar_gateway_testing::test_signer as signer;
 use templar_gateway_testing::TEST_FINALITY_POLICY;
@@ -46,7 +47,8 @@ pub async fn deploy_global_contract(
     Ok(Base58CryptoHash::from(hash))
 }
 
-/// Deploy `code` to `account` and run its init `method` in the same transaction.
+/// Deploy `code` to `account` via its full-access key, atomically calling `method` (`new` to init,
+/// `migrate` to bootstrap-upgrade).
 pub async fn deploy_with_init(
     network: &NetworkConfig,
     account: &AccountId,
@@ -142,14 +144,16 @@ async fn call_raw(
     Ok(outcome)
 }
 
-/// `create_proposal` named args (no typed struct is exported by the contract's ABI). Generic over the
-/// operation so the pre-restructure `LegacyOperation` wire and the current `Operation` share one.
-#[derive(Serialize)]
-#[serde(crate = "near_sdk::serde")]
-pub struct CreateProposalArgs<O> {
-    pub id: u32,
-    pub operation: O,
-    pub requested_ttl: templar_common::Nanoseconds,
+pub use templar_proxy_oracle_near_governance_common::CreateProposalArgs;
+
+pub const ONE_YOCTO: near_sdk::NearToken = near_sdk::NearToken::from_yoctonear(1);
+
+/// A `SelfUpgrade` with nothing for `migrate` to do — the state version is already current.
+pub fn self_upgrade(code: templar_common::upgrade::UpgradeSource) -> Operation {
+    Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+        code,
+        migrate_args: near_sdk::json_types::Base64VecU8(Vec::new()),
+    })
 }
 
 #[derive(Serialize)]

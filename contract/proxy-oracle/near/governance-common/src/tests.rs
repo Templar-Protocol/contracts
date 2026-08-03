@@ -478,63 +478,34 @@ fn operation_borsh_and_json_round_trip() {
     );
 }
 
-/// Mirrors the struct near-sdk derives for `create_proposal_borsh`'s arguments.
-#[derive(near_sdk::borsh::BorshDeserialize)]
-#[borsh(crate = "near_sdk::borsh")]
-struct CreateProposalBorshArgs {
-    id: u32,
-    operation: Operation,
-    requested_ttl: Nanoseconds,
-}
+/// A signed transaction may not exceed this (NEAR `max_transaction_size`), and the proposal travels
+/// inside one as function-call arguments.
+const MAX_TRANSACTION_SIZE: usize = 1_572_864;
 
-/// Pins the entrypoint's wire contract: a client encoding the arguments as a tuple produces exactly
-/// what near-sdk's derived struct decodes, in declaration order.
-#[rstest]
-#[case::target_function_call(target("admin_set_proxy", 30))]
-#[case::set_reflexive_ttl(Operation::Reflexive(ReflexiveOperation::SetReflexiveTtl {
-    kind: ReflexiveKind::SelfUpgrade,
-    ttl: Nanoseconds::from_secs(3600),
-}))]
-#[case::set_target_default(Operation::Reflexive(ReflexiveOperation::SetTargetDefault {
-    policy: method_policy(120, Role::Admin),
-}))]
-#[case::set_method_policy(Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
-    method: "admin_rearm".to_owned(),
-    policy: Some(method_policy(60, Role::CircuitBreakerOperator)),
-}))]
-#[case::reset_method_policy(Operation::Reflexive(ReflexiveOperation::SetMethodPolicy {
-    method: "admin_rearm".to_owned(),
-    policy: None,
-}))]
-#[case::set_role(Operation::Reflexive(ReflexiveOperation::SetRole {
-    account_id: "op.near".parse().unwrap(),
-    role: Role::ManualTripper,
-    set: true,
-}))]
-#[case::self_upgrade_code(Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-    code: UpgradeSource::Code(Base64VecU8(vec![0xde, 0xad, 0xbe, 0xef])),
-    migrate_args: Base64VecU8(b"{}".to_vec()),
-}))]
-#[case::self_upgrade_global_hash(Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
-    code: UpgradeSource::GlobalHash(Base58CryptoHash::from([7u8; 32])),
-    migrate_args: Base64VecU8(b"{}".to_vec()),
-}))]
-fn create_proposal_borsh_args_decode_from_a_tuple(#[case] operation: Operation) {
-    let id = 7u32;
-    let requested_ttl = Nanoseconds::from_secs(42);
+/// The size claim behind `create_proposal_borsh`, checked directly rather than inferred from a
+/// sandbox rejection: base64 puts a wasm of this class past the transaction limit as JSON while borsh
+/// leaves headroom. Encoded sizes only — no node, no protocol behaviour.
+#[test]
+fn borsh_fits_an_upgrade_payload_json_cannot() {
+    let args = CreateProposalArgs {
+        id: 0,
+        operation: Operation::Reflexive(ReflexiveOperation::SelfUpgrade {
+            code: UpgradeSource::Code(Base64VecU8(vec![0u8; 1_250_000])),
+            migrate_args: Base64VecU8(Vec::new()),
+        }),
+        requested_ttl: Nanoseconds::zero(),
+    };
 
-    let encoded = near_sdk::borsh::to_vec(&(id, &operation, requested_ttl)).unwrap();
-    let decoded = near_sdk::borsh::from_slice::<CreateProposalBorshArgs>(&encoded).unwrap();
+    let json = near_sdk::serde_json::to_vec(&args).unwrap().len();
+    let borsh = near_sdk::borsh::to_vec(&args).unwrap().len();
 
-    assert_eq!(decoded.id, id);
-    assert_eq!(decoded.operation, operation);
-    assert_eq!(decoded.requested_ttl, requested_ttl);
-
-    let mut trailing = encoded;
-    trailing.push(0);
     assert!(
-        near_sdk::borsh::from_slice::<CreateProposalBorshArgs>(&trailing).is_err(),
-        "trailing bytes must not decode"
+        json > MAX_TRANSACTION_SIZE,
+        "json encoding was {json} bytes"
+    );
+    assert!(
+        borsh < MAX_TRANSACTION_SIZE,
+        "borsh encoding was {borsh} bytes"
     );
 }
 
