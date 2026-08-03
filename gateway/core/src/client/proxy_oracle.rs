@@ -70,6 +70,11 @@ pub struct GetProxyCircuitBreakerSetArgs {
 pub struct UpdatePricesArgs {
     pub price_ids: Vec<PriceIdentifier>,
 }
+#[derive(serde::Serialize)]
+pub struct AdminSetProxyArgs {
+    pub id: PriceIdentifier,
+    pub proxy: Option<Proxy<Source>>,
+}
 
 impl ProxyOracleClient<'_> {
     pub async fn cached_get_proxy(
@@ -134,5 +139,6 @@ impl ProxyOracleClient<'_> {
 
     contract_writes! {
         pub fn update_prices(UpdatePricesArgs);
+        pub fn admin_set_proxy(AdminSetProxyArgs);
     }
 }

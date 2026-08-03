@@ -12,7 +12,9 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use near_api::{types::AccountId, Contract, NetworkConfig};
 use serde_json::json;
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_methods_spec::proxy_oracle;
+use templar_gateway_testing::{ManagedAccountId, SandboxHarness};
+use templar_gateway_types::OperationStatus;
 use templar_proxy_oracle_kernel::proxy::{FreshnessFilter, Proxy};
 use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest, state};
 use test_utils::pyth_price_id::stable::CRYPTO_USDC_USD;
@@ -67,6 +69,9 @@ fn expected_usdc_proxy() -> Proxy<Source> {
     )
 }
 
+/// Re-dump the fixture from the live mainnet deployment. Raw `near_api` on
+/// purpose: this reads an account's whole storage trie off mainnet rather than
+/// calling a contract method, so it has no gateway operation to go through.
 #[tokio::test]
 #[ignore = "fixture generator"]
 async fn generate_mainnet_state_patch() -> Result<()> {
@@ -94,49 +99,48 @@ async fn generate_mainnet_state_patch() -> Result<()> {
 #[tokio::test]
 async fn migrate_mainnet_patch_exactly() -> Result<()> {
     let harness = SandboxHarness::start().await?;
+    let client = harness.client()?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;
-    let network = &harness.network;
 
-    common::call(network, &proxy, &proxy, "migrate", migration(), 300, 0).await?;
+    // `migrate` is `#[private]` and has no typed gateway operation of its own —
+    // see `migrate_v0.rs::migrate_v0_fixture_exactly`.
+    harness
+        .call_function(
+            &ManagedAccountId(proxy.clone()),
+            &proxy,
+            "migrate",
+            migration(),
+        )
+        .await?;
 
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
-        1
-    );
-    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+    let version = harness.contract_state_version(&proxy).await?;
+    assert_eq!(version.stored, 1);
+    assert!(!version.needs_migration);
 
-    let mut proxies: Vec<PriceIdentifier> = common::view(
-        network,
-        &proxy,
-        "list_proxies",
-        json!({ "offset": null, "count": null }),
-    )
-    .await?;
+    let mut proxies = client
+        .read(proxy_oracle::ListProxies {
+            oracle_id: proxy.clone(),
+            offset: None,
+            count: None,
+        })
+        .await?
+        .proxies;
     proxies.sort();
     assert_eq!(proxies, vec![USDC_PRICE_ID, USTRY_PRICE_ID]);
 
-    assert_eq!(
-        common::view::<Option<Proxy<Source>>>(
-            network,
-            &proxy,
-            "get_proxy",
-            json!({ "id": USTRY_PRICE_ID }),
-        )
-        .await?
-        .unwrap(),
-        expected_ustry_proxy()
-    );
-    assert_eq!(
-        common::view::<Option<Proxy<Source>>>(
-            network,
-            &proxy,
-            "get_proxy",
-            json!({ "id": USDC_PRICE_ID }),
-        )
-        .await?
-        .unwrap(),
-        expected_usdc_proxy()
-    );
+    for (price_id, expected) in [
+        (USTRY_PRICE_ID, expected_ustry_proxy()),
+        (USDC_PRICE_ID, expected_usdc_proxy()),
+    ] {
+        let stored = client
+            .read(proxy_oracle::GetProxy {
+                oracle_id: proxy.clone(),
+                id: price_id,
+            })
+            .await?
+            .proxy;
+        assert_eq!(stored.unwrap(), expected);
+    }
 
     Ok(())
 }
@@ -144,35 +148,36 @@ async fn migrate_mainnet_patch_exactly() -> Result<()> {
 #[tokio::test]
 async fn failed_migration_reverts_contract_code() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = &harness.network;
     let account_id = harness.proxy_oracle_signer_account_id.0.clone();
 
     // Reproduce the legacy v0 contract (v0 code + v0 state), without migrating.
-    common::deploy_code(
-        network,
-        &account_id,
-        templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
-    )
-    .await?;
+    harness
+        .deploy_code(
+            &account_id,
+            templar_gateway_testing::wasm::PROXY_ORACLE_V0.to_vec(),
+        )
+        .await?;
     harness.patch_state(&account_id, patch()).await?;
 
     // Atomically deploy the current wasm and migrate with an invalid version in
     // one transaction. The migrate call fails, so the whole transaction — the
     // code deploy included — must revert, leaving the contract on the v0 code.
-    let result = Contract::deploy(account_id.clone())
-        .use_code(templar_gateway_testing::wasm::proxy_oracle().await.to_vec())
-        .with_init_call("migrate", json!({ "from_version": "invalid" }))?
-        .max_gas()
-        .with_signer(common::signer())
-        .wait_until(templar_gateway_testing::TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
+    let result = harness
+        .try_deploy_and_init(
+            &account_id,
+            templar_gateway_testing::wasm::proxy_oracle().await.to_vec(),
+            "migrate",
+            json!({ "from_version": "invalid" }),
+        )
         .await?;
-    assert!(result.is_failure(), "invalid migration should fail");
+    assert_eq!(
+        result.operation.status,
+        OperationStatus::Failed,
+        "invalid migration should fail"
+    );
 
     // The deploy reverted with the migrate, so the contract still reports v0.
-    let metadata: serde_json::Value =
-        common::view(network, &account_id, "contract_source_metadata", json!({})).await?;
-    assert_eq!(metadata["version"], "0.1.0");
+    assert_eq!(harness.contract_version(&account_id).await?, "0.1.0");
 
     Ok(())
 }

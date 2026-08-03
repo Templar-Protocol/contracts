@@ -42,10 +42,12 @@ hex-literal.workspace = true
 near-api.workspace = true
 near-sdk = { workspace = true, features = ["unit-testing"] }
 near-sdk-contract-tools.workspace = true
-near-token.workspace = true
 rstest.workspace = true
 serde_json.workspace = true
+templar-gateway-client.workspace = true
+templar-gateway-methods-spec.workspace = true
 templar-gateway-testing.workspace = true
+templar-gateway-types.workspace = true
 test-utils.workspace = true
 tokio.workspace = true
 

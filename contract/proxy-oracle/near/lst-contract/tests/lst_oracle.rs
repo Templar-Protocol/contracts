@@ -12,79 +12,17 @@
 )]
 
 use anyhow::Result;
-use near_api::{types::AccountId, Contract, NetworkConfig};
-use near_sdk::{
-    json_types::U128,
-    serde::{de::DeserializeOwned, Serialize},
-    serde_json::{json, Value},
-    AccountIdRef, Gas,
-};
-use near_token::NearToken;
+use near_api::types::AccountId;
+use near_sdk::{json_types::U128, serde_json::json, AccountIdRef, Gas};
 use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp};
-use templar_gateway_testing::{test_signer as signer, SandboxHarness, TEST_FINALITY_POLICY};
+use templar_gateway_methods_spec::lst_oracle;
+use templar_gateway_testing::{ManagedAccountId, SandboxHarness};
 use templar_proxy_oracle_near_common::price_transformer::{Call, PriceTransformer};
 use test_utils::{DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
 ));
-
-async fn view<T: DeserializeOwned + Send + Sync>(
-    network: &NetworkConfig,
-    contract_id: &AccountId,
-    method: &str,
-    args: impl Serialize,
-) -> Result<T> {
-    Ok(Contract(contract_id.clone())
-        .call_function(method, args)
-        .read_only::<T>()
-        .at(TEST_FINALITY_POLICY.query_reference())
-        .fetch_from(network)
-        .await?
-        .data)
-}
-
-/// Signed call, asserting success and discarding the result.
-async fn call(
-    network: &NetworkConfig,
-    contract_id: &AccountId,
-    signer_id: &AccountId,
-    method: &str,
-    args: impl Serialize,
-    deposit_yocto: u128,
-) -> Result<()> {
-    Contract(contract_id.clone())
-        .call_function(method, args)
-        .transaction()
-        .gas(Gas::from_tgas(100))
-        .deposit(NearToken::from_yoctonear(deposit_yocto))
-        .with_signer(signer_id.clone(), signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
-        .await?
-        .assert_success();
-    Ok(())
-}
-
-/// Signed call returning the (possibly promise-resolved) JSON result.
-async fn call_json<T: DeserializeOwned>(
-    network: &NetworkConfig,
-    contract_id: &AccountId,
-    signer_id: &AccountId,
-    method: &str,
-    args: impl Serialize,
-) -> Result<T> {
-    let result = Contract(contract_id.clone())
-        .call_function(method, args)
-        .transaction()
-        .gas(Gas::from_tgas(100))
-        .with_signer(signer_id.clone(), signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
-        .await?
-        .into_result()?;
-    Ok(result.json::<T>()?)
-}
 
 /// A Pyth price at the current *chain* time, not the host clock — see
 /// [`SandboxHarness::chain_timestamp`].
@@ -113,7 +51,7 @@ fn redemption_rate_call(account_id: &AccountIdRef) -> Call {
     Call::new(
         account_id,
         "redemption_rate",
-        Value::Null,
+        near_sdk::serde_json::Value::Null,
         Gas::from_tgas(3),
     )
 }
@@ -129,20 +67,20 @@ fn expected_transformer(collateral_asset: &AccountIdRef) -> PriceTransformer {
 #[tokio::test]
 async fn lst_oracle() -> Result<()> {
     let harness = SandboxHarness::start().await?;
-    let network = harness.network.clone();
+    let client = harness.client()?;
 
     // Reuse the harness's mock FT as the LST collateral asset, exposing a 2:1
-    // redemption rate (2 * 10^24, i.e. 24-decimal native).
+    // redemption rate (2 * 10^24, i.e. 24-decimal native). Mock-only method, so
+    // it goes through the generic function-call escape hatch.
     let collateral_asset = harness.ft_contract_id.clone();
-    call(
-        &network,
-        &collateral_asset,
-        &collateral_asset,
-        "set_redemption_rate",
-        json!({ "redemption_rate": U128(2 * 10u128.pow(24)) }),
-        0,
-    )
-    .await?;
+    harness
+        .call_function(
+            &ManagedAccountId(collateral_asset.clone()),
+            &collateral_asset,
+            "set_redemption_rate",
+            json!({ "redemption_rate": U128(2 * 10u128.pow(24)) }),
+        )
+        .await?;
 
     // Underlying (mock pyth) oracle with the base borrow/collateral feeds.
     let underlying = harness.deploy_mock_oracle("oracle").await?;
@@ -163,43 +101,53 @@ async fn lst_oracle() -> Result<()> {
 
     // LST oracle wrapping the underlying oracle, with a transformer for the LST
     // collateral feed.
-    let lst_oracle = harness
+    let lst_oracle_id = harness
         .deploy_lst_oracle("lst-oracle", underlying.clone())
         .await?;
     harness
         .create_lst_transformer(
-            lst_oracle.clone(),
+            lst_oracle_id.clone(),
             COLLATERAL_LST_ID,
             expected_transformer(&collateral_asset),
         )
         .await?;
 
     // The LST oracle reports its backing oracle.
-    let underlying_oracle_actual: AccountId =
-        view(&network, &lst_oracle, "oracle_id", json!({})).await?;
+    let underlying_oracle_actual: AccountId = client
+        .read(lst_oracle::GetOracleId {
+            oracle_id: lst_oracle_id.clone(),
+        })
+        .await?
+        .pyth_oracle_id;
     assert_eq!(underlying_oracle_actual, underlying);
 
     // The transformer is listed and round-trips.
-    let transformers: Vec<PriceIdentifier> = view(
-        &network,
-        &lst_oracle,
-        "list_transformers",
-        json!({ "offset": null, "count": null }),
-    )
-    .await?;
+    let transformers = client
+        .read(lst_oracle::ListTransformers {
+            oracle_id: lst_oracle_id.clone(),
+            pagination: templar_gateway_types::common::Pagination::default(),
+        })
+        .await?
+        .price_ids;
     assert_eq!(transformers, vec![COLLATERAL_LST_ID]);
 
-    let transformer: Option<PriceTransformer> = view(
-        &network,
-        &lst_oracle,
-        "get_transformer",
-        json!({ "price_identifier": COLLATERAL_LST_ID }),
-    )
-    .await?;
+    let transformer = client
+        .read(lst_oracle::GetTransformer {
+            oracle_id: lst_oracle_id.clone(),
+            price_identifier: COLLATERAL_LST_ID,
+        })
+        .await?
+        .transformer;
     assert_eq!(
         transformer.unwrap(),
         expected_transformer(&collateral_asset)
     );
+
+    // `price_feed_exists` and `list_ema_prices_no_older_than` return a
+    // `PromiseOrValue` here — they fan out to the underlying oracle — so unlike
+    // the proxy oracle's plain views they cannot be served as view calls. They
+    // are driven as function calls and read back from the return value.
+    let lst_signer = ManagedAccountId(lst_oracle_id.clone());
 
     // The transformer feed plus both forwarded underlying feeds exist; an
     // unknown feed does not.
@@ -208,37 +156,37 @@ async fn lst_oracle() -> Result<()> {
         DEFAULT_COLLATERAL_PRICE_ID,
         DEFAULT_BORROW_PRICE_ID,
     ] {
-        let exists: bool = call_json(
-            &network,
-            &lst_oracle,
-            &lst_oracle,
-            "price_feed_exists",
-            json!({ "price_identifier": should_exist }),
-        )
-        .await?;
+        let exists: bool = harness
+            .call_function_json(
+                &lst_signer,
+                &lst_oracle_id,
+                "price_feed_exists",
+                json!({ "price_identifier": should_exist }),
+            )
+            .await?;
         assert!(exists, "price ID {should_exist} should exist");
     }
-    let missing: bool = call_json(
-        &network,
-        &lst_oracle,
-        &lst_oracle,
-        "price_feed_exists",
-        json!({ "price_identifier": PriceIdentifier([0x88; 32]) }),
-    )
-    .await?;
+    let missing: bool = harness
+        .call_function_json(
+            &lst_signer,
+            &lst_oracle_id,
+            "price_feed_exists",
+            json!({ "price_identifier": PriceIdentifier([0x88; 32]) }),
+        )
+        .await?;
     assert!(!missing);
 
     // End-to-end price resolution: the borrow feed passes through unchanged, and
     // the LST collateral feed is the underlying collateral price scaled by the
     // 2:1 redemption rate.
-    let oracle_response: OracleResponse = call_json(
-        &network,
-        &lst_oracle,
-        &lst_oracle,
-        "list_ema_prices_no_older_than",
-        json!({ "price_ids": [DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID], "age": 60 }),
-    )
-    .await?;
+    let oracle_response: OracleResponse = harness
+        .call_function_json(
+            &lst_signer,
+            &lst_oracle_id,
+            "list_ema_prices_no_older_than",
+            json!({ "price_ids": [DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID], "age": 60 }),
+        )
+        .await?;
 
     assert_eq!(
         oracle_response

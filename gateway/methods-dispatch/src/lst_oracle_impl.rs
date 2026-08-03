@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use templar_gateway_core::{
-    client::lst_oracle::{GetTransformerArgs, ListTransformersArgs},
-    DispatchRead, GatewayResult, HasNearClient,
+    client::lst_oracle::{CreateTransformerArgs, GetTransformerArgs, ListTransformersArgs},
+    client::ContractWriteOptions,
+    DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::lst_oracle;
 
@@ -54,5 +55,27 @@ impl<C: HasNearClient> DispatchRead<lst_oracle::GetTransformer, C> for Dispatch 
             })
             .await?;
         Ok(lst_oracle::GetTransformerResult { transformer })
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<lst_oracle::CreateTransformer, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<lst_oracle::CreateTransformer>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .lst_oracle(body.oracle_id)
+            .create_transformer(
+                ContractWriteOptions::new(request.signer_account_id)
+                    .tgas(100)
+                    .one_yocto(),
+                CreateTransformerArgs {
+                    price_identifier: body.price_identifier,
+                    entry: body.entry,
+                },
+            )
+            .map(OperationPlan::from)
     }
 }

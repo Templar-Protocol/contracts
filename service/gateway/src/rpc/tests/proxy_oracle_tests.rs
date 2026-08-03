@@ -166,6 +166,75 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
     Ok(())
 }
 
+/// The direct owner-gated write, for an oracle whose owner is a plain account
+/// rather than a governance contract. A freshly deployed oracle owns itself, so
+/// it signs for its own `admin_set_proxy`.
+#[tokio::test]
+async fn proxy_oracle_admin_set_proxy_writes_and_clears_a_definition() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    let signer = stack.harness.proxy_oracle_signer_account_id.clone();
+
+    let price_id = PriceIdentifier([0xa5; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(
+            "pyth.near".parse().expect("valid oracle id"),
+            PriceIdentifier([0xb5; 32]),
+        )
+        .into()],
+        FreshnessFilter::empty(),
+    );
+
+    let _ = stack
+        .controller
+        .request::<proxy_oracle::AdminSetProxy>(&WriteRequest {
+            signer_account_id: signer.clone(),
+            idempotency_key: None,
+            body: proxy_oracle::AdminSetProxy {
+                oracle_id: oracle_id.clone(),
+                id: price_id,
+                proxy: Some(proxy.clone()),
+            },
+        })
+        .await?;
+
+    let got = stack
+        .controller
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id: oracle_id.clone(),
+            id: price_id,
+        })
+        .await?;
+    assert_eq!(got.proxy, Some(proxy));
+
+    // A null `proxy` removes the definition.
+    let _ = stack
+        .controller
+        .request::<proxy_oracle::AdminSetProxy>(&WriteRequest {
+            signer_account_id: signer,
+            idempotency_key: None,
+            body: proxy_oracle::AdminSetProxy {
+                oracle_id: oracle_id.clone(),
+                id: price_id,
+                proxy: None,
+            },
+        })
+        .await?;
+
+    let list = stack
+        .controller
+        .request::<proxy_oracle::ListProxies>(&proxy_oracle::ListProxies {
+            oracle_id,
+            offset: None,
+            count: None,
+        })
+        .await?;
+    assert_eq!(list.proxies, vec![]);
+
+    stack.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn proxy_oracle_get_proxy_normalizes_legacy_v0() -> Result<()> {
     let stack = TestStack::start().await?;

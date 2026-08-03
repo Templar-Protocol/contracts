@@ -20,6 +20,13 @@ async fn lst_oracle_endpoints_work_against_sandbox() -> Result<()> {
             gas: near_sdk::json_types::U64(near_sdk::Gas::from_tgas(3).as_gas()),
         },
     );
+    // `create_transformer` is owner-gated and the oracle owns itself, so only the
+    // oracle account can sign it — and `deploy_lst_oracle` mints that account
+    // *after* `TestStack::start` snapshotted the signer set into
+    // `GatewayService::spawn`, so the RPC service holds no key for it. Drive the
+    // write through the harness (whose in-process client is rebuilt per call and
+    // therefore knows every account); it plans the same
+    // `lstOracle.createTransformer` operation through the same dispatch.
     stack
         .harness
         .create_lst_transformer(

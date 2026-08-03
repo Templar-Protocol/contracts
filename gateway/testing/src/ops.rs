@@ -27,7 +27,9 @@ use templar_common::{
     withdrawal_queue::{WithdrawalQueueStatus, WithdrawalRequestStatus},
 };
 use templar_gateway_client::Client;
-use templar_gateway_methods_spec::{chain, ft, market, mt, registry, storage, tx, vault};
+use templar_gateway_methods_spec::{
+    account, chain, contract, ft, market, mt, pyth, registry, storage, tx, vault,
+};
 use templar_gateway_types::{
     common::{ContractArgs, Pagination, WriteOperationResult},
     operation::{ReceiptOutcome, ReceiptStatus},
@@ -1829,18 +1831,210 @@ impl SandboxHarness {
     }
 
     /// Fetch the market's current oracle prices (the `OracleResponse` shape the
-    /// market expects), by reading the mock oracle directly.
+    /// market expects), by reading its oracle directly.
     pub async fn get_oracle_prices(&self, market: &DeployedMarket) -> Result<OracleResponse> {
         let oracle = &market.configuration.price_oracle_configuration;
-        let args = serde_json::to_vec(&serde_json::json!({
-            "price_ids": [oracle.borrow_asset_price_id, oracle.collateral_asset_price_id],
-            "age": oracle.price_maximum_age_s,
-        }))?;
-        self.gateway_client()
-            .contract(oracle.account_id.clone())
-            .view_function::<OracleResponse>("list_ema_prices_no_older_than", args)
+        self.oracle_ema_prices(
+            &oracle.account_id,
+            vec![
+                oracle.borrow_asset_price_id,
+                oracle.collateral_asset_price_id,
+            ],
+            oracle.price_maximum_age_s.into(),
+        )
+        .await
+    }
+
+    /// Read an oracle's cached EMA prices no older than `age` seconds. Works for
+    /// any contract serving the pyth read interface — a mock oracle, a real pyth
+    /// oracle, or a proxy oracle reading back its own aggregation cache.
+    ///
+    /// Not usable on the LST oracle, whose `list_ema_prices_no_older_than`
+    /// returns a `PromiseOrValue` and so cannot run as a view — drive that one
+    /// through [`call_function_json`](Self::call_function_json).
+    pub async fn oracle_ema_prices(
+        &self,
+        oracle_id: &AccountId,
+        price_ids: Vec<templar_common::oracle::pyth::PriceIdentifier>,
+        age: u64,
+    ) -> Result<OracleResponse> {
+        Ok(self
+            .client()?
+            .read(pyth::ListEmaPricesNoOlderThan {
+                oracle_id: oracle_id.clone(),
+                price_ids,
+                age,
+            })
             .await
-            .map_err(|error| anyhow::anyhow!("get_oracle_prices failed: {error}"))
+            .map_err(|error| anyhow::anyhow!("oracle_ema_prices failed: {error}"))?
+            .prices
+            .into_iter()
+            .map(|entry| (entry.price_id, entry.price))
+            .collect())
+    }
+
+    /// Read a contract's stored/target state versions and its own
+    /// `needs_migration` answer.
+    pub async fn contract_state_version(
+        &self,
+        contract_id: &AccountId,
+    ) -> Result<contract::GetStateVersionResult> {
+        self.client()?
+            .read(contract::GetStateVersion {
+                contract_id: contract_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("contract_state_version failed: {error}"))
+    }
+
+    /// Read a contract's NEP-330 version string.
+    pub async fn contract_version(&self, contract_id: &AccountId) -> Result<String> {
+        Ok(self
+            .client()?
+            .read(contract::GetVersion {
+                contract_id: contract_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("contract_version failed: {error}"))?
+            .version_string)
+    }
+
+    /// The account's deployed code hash, as a stable string for equality checks
+    /// (a change proves the code was actually replaced).
+    pub async fn code_hash(&self, account_id: &AccountId) -> Result<String> {
+        Ok(self
+            .client()?
+            .read(account::Get {
+                account_id: account_id.clone(),
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("code_hash failed: {error}"))?
+            .code_hash)
+    }
+
+    /// Deploy raw wasm to `account_id` with no init call. Signed by the account
+    /// itself, which is the only key that can deploy to it.
+    pub async fn deploy_code(&self, account_id: &AccountId, code: Vec<u8>) -> Result<()> {
+        self.execute(
+            &ManagedAccountId(account_id.clone()),
+            tx::DeployContract {
+                account_id: account_id.clone(),
+                code: Base64Bytes(code),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Deploy wasm to `account_id` and run `method_name` in the same
+    /// transaction, so a failing init reverts the deploy with it. Returns the
+    /// operation result without asserting success — the atomicity tests need the
+    /// failing case.
+    pub async fn try_deploy_and_init(
+        &self,
+        account_id: &AccountId,
+        code: Vec<u8>,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(
+            &ManagedAccountId(account_id.clone()),
+            tx::DeployAndInit {
+                account_id: account_id.clone(),
+                code: Base64Bytes(code),
+                method_name: ContractMethodName(method_name.to_owned()),
+                args: ContractArgs::Json(serde_json::to_value(args)?),
+                gas: NearGas::from_tgas(300),
+                deposit: near_token::NearToken::from_yoctonear(0),
+            },
+        )
+        .await
+    }
+
+    /// [`try_deploy_and_init`](Self::try_deploy_and_init), asserting success.
+    pub async fn deploy_and_init(
+        &self,
+        account_id: &AccountId,
+        code: Vec<u8>,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<()> {
+        let result = self
+            .try_deploy_and_init(account_id, code, method_name, args)
+            .await?;
+        anyhow::ensure!(
+            result.operation.status == OperationStatus::Succeeded,
+            "deploy+{method_name} on {account_id} failed: {}",
+            result
+                .operation
+                .failure_message()
+                .unwrap_or("<no failure message>"),
+        );
+        Ok(())
+    }
+
+    /// The generic write escape hatch: call `method_name` on `contract_id` as
+    /// `signer`. For contract methods with no typed gateway operation — mock-only
+    /// setters, and reads the contract exposes as promise-returning calls.
+    pub async fn call_function(
+        &self,
+        signer: &ManagedAccountId,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<WriteOperationResult> {
+        self.execute(signer, Self::function_call(contract_id, method_name, args)?)
+            .await
+    }
+
+    /// [`call_function`](Self::call_function) without the success assertion, for
+    /// tests that expect the contract to reject the call.
+    pub async fn try_call_function(
+        &self,
+        signer: &ManagedAccountId,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<WriteOperationResult> {
+        self.try_execute(signer, Self::function_call(contract_id, method_name, args)?)
+            .await
+    }
+
+    /// [`call_function`](Self::call_function), deserializing the call's return
+    /// value. This is how a `PromiseOrValue`-returning "read" (the LST oracle's
+    /// `price_feed_exists` and `list_ema_prices_no_older_than`, which fan out to
+    /// the underlying oracle and so cannot run as views) is read.
+    pub async fn call_function_json<T: serde::de::DeserializeOwned>(
+        &self,
+        signer: &ManagedAccountId,
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<T> {
+        let result = self
+            .call_function(signer, contract_id, method_name, args)
+            .await?;
+        let bytes = result
+            .operation
+            .final_outcome()
+            .and_then(|outcome| outcome.return_value.as_ref())
+            .with_context(|| format!("{contract_id}.{method_name} returned no value"))?;
+        serde_json::from_slice(&bytes.0)
+            .with_context(|| format!("failed to decode {contract_id}.{method_name} return value"))
+    }
+
+    fn function_call(
+        contract_id: &AccountId,
+        method_name: &str,
+        args: impl serde::Serialize,
+    ) -> Result<tx::FunctionCall> {
+        Ok(tx::FunctionCall {
+            receiver_id: contract_id.clone(),
+            method_name: ContractMethodName(method_name.to_owned()),
+            args: ContractArgs::Json(serde_json::to_value(args)?),
+            gas: NearGas::from_tgas(300),
+            deposit: near_token::NearToken::from_yoctonear(0),
+        })
     }
 
     /// Read an account's borrow status given an oracle response.
@@ -1949,7 +2143,11 @@ impl SandboxHarness {
     /// nothing would otherwise satisfy this assertion, and the test would pass
     /// while exercising nothing. Tests that *expect* a rejection must use
     /// [`try_execute`](Self::try_execute) instead.
-    async fn execute<Op>(&self, signer: &ManagedAccountId, op: Op) -> Result<WriteOperationResult>
+    pub async fn execute<Op>(
+        &self,
+        signer: &ManagedAccountId,
+        op: Op,
+    ) -> Result<WriteOperationResult>
     where
         Op: templar_gateway_types::MethodSpec<Output = WriteOperationResult>,
         templar_gateway_methods_dispatch::Dispatch:
@@ -1986,7 +2184,7 @@ impl SandboxHarness {
     /// Like [`execute`](Self::execute) but returns the operation result without
     /// asserting success — for tests that expect a contract rejection. Only
     /// errors on a planning/submission failure, not an on-chain one.
-    async fn try_execute<Op>(
+    pub async fn try_execute<Op>(
         &self,
         signer: &ManagedAccountId,
         op: Op,

@@ -76,6 +76,27 @@ async fn contract_get_kind_endpoint_identifies_protocol_contracts() -> Result<()
     Ok(())
 }
 
+/// A freshly deployed contract is already at its code's target state version, so
+/// it reports matching stored/target versions and needs no migration.
+#[tokio::test]
+async fn contract_get_state_version_endpoint_reports_a_current_deployment() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let proxy_oracle_id = stack.harness.deploy_proxy_oracle().await?;
+
+    let version = stack
+        .controller
+        .request::<contract::GetStateVersion>(&contract::GetStateVersion {
+            contract_id: proxy_oracle_id,
+        })
+        .await?;
+
+    assert_eq!(version.stored, version.target);
+    assert!(!version.needs_migration);
+
+    stack.shutdown().await;
+    Ok(())
+}
+
 async fn kind_of(stack: &TestStack, contract_id: AccountId) -> Result<ContractKind> {
     Ok(stack
         .controller

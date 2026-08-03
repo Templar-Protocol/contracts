@@ -25,6 +25,7 @@ use templar_common::{
     Nanoseconds,
 };
 use templar_gateway_core::NearClient;
+use templar_gateway_methods_spec::{lst_oracle, proxy_oracle};
 use templar_gateway_runtime::ManagedSigner;
 use templar_gateway_types::ManagedAccountId;
 use templar_proxy_oracle_kernel::proxy::Proxy;
@@ -805,24 +806,25 @@ impl SandboxHarness {
         Ok(id)
     }
 
+    /// Create an LST price transformer via the owner-gated `create_transformer`.
+    /// The oracle account owns itself after `deploy_lst_oracle`, so it signs as
+    /// itself.
     pub async fn create_lst_transformer(
         &self,
         oracle_id: AccountId,
         price_identifier: PriceIdentifier,
         entry: PriceTransformer,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "create_transformer",
-            serde_json::json!({
-                "price_identifier": price_identifier,
-                "entry": entry,
-            }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(1),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            lst_oracle::CreateTransformer {
+                oracle_id,
+                price_identifier,
+                entry,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Set a proxy definition directly via the owner-gated `admin_set_proxy`
@@ -834,37 +836,37 @@ impl SandboxHarness {
         price_identifier: PriceIdentifier,
         proxy: Option<Proxy<Source>>,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "admin_set_proxy",
-            serde_json::json!({ "id": price_identifier, "proxy": proxy }),
-            &oracle_id,
-            100,
-            NearToken::from_yoctonear(0),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            proxy_oracle::AdminSetProxy {
+                oracle_id,
+                id: price_identifier,
+                proxy,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Refresh the proxy oracle's cached prices for `price_ids` by invoking
     /// `update_prices`, which fans out to each proxy's underlying sources and
     /// caches the aggregated result so a subsequent
     /// `list_ema_prices_no_older_than` read sees it. Signed as the oracle
-    /// account (permissionless, but the call still needs a signer). Generously
-    /// gassed since it triggers a cross-contract fan-out per proxy.
+    /// account (permissionless, but the call still needs a signer).
     pub async fn update_proxy_prices(
         &self,
         oracle_id: AccountId,
         price_ids: Vec<PriceIdentifier>,
     ) -> Result<()> {
-        self.call_contract(
-            &oracle_id,
-            "update_prices",
-            serde_json::json!({ "price_ids": price_ids }),
-            &oracle_id,
-            300,
-            NearToken::from_yoctonear(0),
+        self.execute(
+            &ManagedAccountId(oracle_id.clone()),
+            proxy_oracle::UpdatePrices {
+                oracle_id,
+                price_ids,
+            },
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Deploy a governance contract for `oracle_id` (admin = `admin_id`, all TTLs

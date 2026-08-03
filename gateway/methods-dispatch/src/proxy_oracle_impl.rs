@@ -3,8 +3,8 @@ use near_api::types::transaction::actions::{Action, DeployContractAction, Functi
 use serde::Serialize;
 use templar_gateway_core::{
     client::proxy_oracle::{
-        GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs, PriceFeedExistsArgs,
-        UpdatePricesArgs,
+        AdminSetProxyArgs, GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs,
+        PriceFeedExistsArgs, UpdatePricesArgs,
     },
     client::ContractWriteOptions,
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
@@ -59,6 +59,26 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle::UpdatePrices, C> for Dispatch {
                 ContractWriteOptions::new(request.signer_account_id).tgas(100),
                 UpdatePricesArgs {
                     price_ids: body.price_ids,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<proxy_oracle::AdminSetProxy, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle::AdminSetProxy>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .proxy_oracle(body.oracle_id)
+            .admin_set_proxy(
+                ContractWriteOptions::new(request.signer_account_id).tgas(100),
+                AdminSetProxyArgs {
+                    id: body.id,
+                    proxy: body.proxy,
                 },
             )
             .map(OperationPlan::from)
