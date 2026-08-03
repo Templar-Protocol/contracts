@@ -1,12 +1,8 @@
-//! Per-operation signer inputs. Clap selects either execution credentials or a
-//! plan-only output format on every write; reads reject signer arguments.
-//! Dispatch rejects print mode only for orchestrated writes that cannot produce
-//! one transaction without performing execution steps.
+//! Per-operation signer inputs: clap selects either execution credentials or a
+//! plan-only output format on every write.
 //!
 //! Credentials resolve to an [`Arc<Signer>`] rather than a [`SecretKey`], so a
-//! backend that holds its key outside this process is expressible.
-//! `--sign-with` selects the backend; `--print sputnik` remains the key-less path and never
-//! reaches credential resolution at all.
+//! backend holding its key outside this process is expressible.
 
 use std::{ffi::OsStr, fmt, sync::Arc};
 
@@ -28,16 +24,9 @@ pub(crate) enum PrintFormat {
 
 /// A backend that holds the signing key *outside* this process.
 ///
-/// The in-process path — `--secret-key` / `$SECRET_KEY` — is deliberately not a
-/// variant. Naming it would let `--sign-with secret-key` satisfy clap's
-/// "a backend was chosen" condition while supplying no key, so the invocation
-/// would parse and only fail later. Absent `--sign-with`, the secret key is
-/// required; present, it is not.
-///
-/// A Ledger backend was tried and removed: near-api's `ledger` feature pulls
-/// hidapi, which needs libudev headers, and cargo unifies features across a
-/// workspace build — so every crate here and in CI would inherit that system
-/// dependency for something nothing needs yet.
+/// The in-process path is deliberately not a variant: naming it would let
+/// `--sign-with secret-key` satisfy clap's "a backend was chosen" while
+/// supplying no key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SigningBackend {
     /// The OS keychain, looked up by account id.
@@ -76,13 +65,9 @@ pub struct SignerArgs {
     /// Plan the write without executing it, then print the selected representation.
     #[arg(long, value_enum, value_name = "FORMAT")]
     print: Option<PrintFormat>,
-    /// Public key embedded by deploy/create writes. Required in plan-only mode,
-    /// and for backends that hold their key outside this process.
-    ///
-    /// Deliberately not in conflict with `--secret-key`: an ambient `SECRET_KEY`
-    /// is extremely common, and a conflict would make the documented
-    /// `--sign-with keychain --public-key …` flow fail at parse time until the
-    /// operator unset an environment variable the selected backend ignores.
+    /// Public key embedded by deploy/create writes. Deliberately not in conflict
+    /// with `--secret-key`: clap's conflicts fire on env values, so an ambient
+    /// `SECRET_KEY` would break the documented keychain flow at parse time.
     #[arg(long, value_name = "PUBLIC_KEY")]
     public_key: Option<CliPublicKey>,
 }
@@ -105,12 +90,8 @@ impl SignerArgs {
         ManagedAccountId::from(self.signer_id.clone())
     }
 
-    /// The key the operator *asserted* via `--public-key`, unvalidated.
-    ///
-    /// Distinct from [`Self::public_key`], which for the in-process backend
-    /// derives the real one. For an external backend nothing here can check the
-    /// assertion — only a resolved signer can — so the caller that resolves is
-    /// the one that must.
+    /// The key the operator *asserted* via `--public-key`, unvalidated: only a
+    /// resolved signer can check it, so the caller that resolves must.
     pub const fn asserted_public_key(&self) -> Option<CliPublicKey> {
         self.public_key
     }
@@ -120,12 +101,8 @@ impl SignerArgs {
         self.print
     }
 
-    /// The signer's public key, used by from-registry deploys that grant it a
-    /// full access key on the new account.
-    ///
-    /// Only the `secret-key` backend can derive this locally. Plan mode has no
-    /// credential, and the keychain backend holds its key outside this process,
-    /// so both require `--public-key`.
+    /// The signer's public key, granted full access on accounts a deploy
+    /// creates. Only the in-process backend derives it locally.
     pub fn public_key(&self) -> anyhow::Result<PublicKey> {
         // The in-process backend derives from the key it will actually sign
         // with. Returning a supplied `--public-key` here would grant a full
@@ -177,13 +154,9 @@ impl SignerArgs {
             None => Signer::from_secret_key(self.secret()?.clone())
                 .context("build a signer from --secret-key")?,
             Some(SigningBackend::Keychain) => {
-                // Said out loud rather than made a parse error. `SECRET_KEY` is
-                // commonly exported, and clap's `conflicts_with` fires on
-                // environment values too — so declaring these mutually
-                // exclusive would break the documented `--sign-with keychain`
-                // flow until the operator unset a variable the backend ignores.
-                // The failure worth preventing is *silent* shadowing, and a
-                // warning prevents that without failing a valid invocation.
+                // Warned, not refused: clap's conflicts fire on env values, so
+                // exclusivity would break the documented keychain flow. The
+                // failure worth preventing is the *silence*.
                 if self.secret_key.is_some() {
                     eprintln!(
                         "warning: --sign-with keychain is set, so the supplied \

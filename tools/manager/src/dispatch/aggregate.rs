@@ -1,16 +1,10 @@
-//! Offline aggregation dry-run: fetch each upstream feed, then run the proxy's
-//! own aggregation locally.
+//! Offline aggregation dry-run: query each adapter directly, then apply
+//! [`Proxy::resolve`](templar_proxy_oracle_kernel::proxy::Proxy::resolve) — the
+//! same `no_std` code the contract runs — so the number a market would consume
+//! is visible before the first transaction.
 //!
-//! Nothing needs to be deployed. The oracle this market will use does not exist
-//! yet, so the adapters are queried directly and
-//! [`Proxy::resolve`](templar_proxy_oracle_kernel::proxy::Proxy::resolve) — pure
-//! `no_std`, the same code the contract runs — is applied to the results against
-//! an empty circuit-breaker set. That makes the number a market would actually
-//! consume visible *before* the first transaction.
-//!
-//! Absence of a price is not a failure. An adapter carries a feed once someone
-//! pushes one, so a market deployed for the first time may name a feed with no
-//! data yet; that is reported, not rejected (see ENG-541).
+//! Absence of a price is reported, not rejected: an adapter carries a feed only
+//! once someone pushes one.
 
 use anyhow::Context as _;
 use templar_common::asset::AssetClass;
@@ -31,14 +25,9 @@ use crate::spec::{
     MarketSpec, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
 };
 
-/// `oracle.aggregate.{collateral,borrow,pair}`.
-///
-/// Both legs are fetched first, then judged against a single wall-clock reading
-/// taken after every result has arrived — mirroring the deployed contract, whose
-/// callback captures one block timestamp at that same point and resolves both
-/// legs against it. Per-leg clocks let a fresh collateral and a week-old borrow
-/// each pass on their own terms and produce a ratio the contract could never
-/// accept.
+/// `oracle.aggregate.{collateral,borrow,pair}`, both legs judged against one
+/// wall-clock reading taken after every result arrives — as the contract's
+/// callback does. Per-leg clocks would admit a ratio it could never accept.
 pub(super) async fn checks(
     ctx: &CliContext,
     spec: &MarketSpec,
@@ -93,14 +82,9 @@ pub(super) async fn checks(
     (checks, collateral_price, borrow_price)
 }
 
-/// The oracle's configured breakers for a feed.
-///
-/// `Ok(empty)` has two legitimate sources: no oracle is deployed yet (planning),
-/// or the deployed proxy has no set. A *failed read* is neither. An empty set
-/// trips on nothing, so substituting one can only turn a `Failed` aggregation
-/// into a `Passed` — which on `market verify` reports a market healthy whose
-/// live breaker may be blocking every price. The error is returned so the leg
-/// reports "could not check" instead.
+/// The oracle's configured breakers for a feed. A failed read is returned
+/// rather than treated as an empty set, which trips on nothing and so could
+/// only turn a Failed aggregation into a Passed.
 async fn breakers(
     ctx: &CliContext,
     oracle_id: Option<&near_account_id::AccountId>,
@@ -280,13 +264,9 @@ fn leg<A: AssetClass>(
     (price, checks)
 }
 
-/// The collateral/borrow price ratio — the number a human recognizes.
-///
-/// Deliberately *not* decimals-adjusted. Decimals convert a raw token amount
-/// into a value when the market sizes a position; they play no part in the ratio
-/// of two USD prices. Applying them here would report 29.96 for a pair that
-/// trades at 2.996 — plausible enough to be believed, which is precisely the
-/// class of error this check exists to catch.
+/// The collateral/borrow price ratio. Deliberately not decimals-adjusted:
+/// decimals size a position, not a ratio of two USD prices, and applying them
+/// reports 29.96 for a pair trading at 2.996.
 fn pair(collateral: Option<Price>, borrow: Option<Price>) -> Check {
     let id = "oracle.aggregate.pair";
     let (Some(collateral), Some(borrow)) = (collateral, borrow) else {

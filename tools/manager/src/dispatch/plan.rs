@@ -87,8 +87,6 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
         Derived {
             creates_its_own_oracle: !spec.oracle.is_direct(),
             market_id: spec.market_id()?,
-            // Naming the wrong oracle misstates the most safety-critical fact
-            // in the file.
             oracle_id: spec.reads_oracle_id()?,
             governance_id: if spec.oracle.is_direct() {
                 None
@@ -161,15 +159,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // could hand back a different key than the one checked below.
     let (signer, client, signing_key) = ctx.signing_client_and_key(&args.signer).await?;
 
-    // Whoever holds these keys controls the three new accounts. A mistyped or
-    // substituted `--public-key` at plan time is invisible in the artifact —
-    // the keys live inside the encoded args — so where the applier's own key is
-    // derivable it must be the one being granted.
-    // Asked of the backend, not taken from `--public-key`: for an external
-    // backend the flag is only what the operator *asserted*, and checking a
-    // grant against an assertion checks nothing. Errors propagate — an applier
-    // who cannot say which key they hold cannot verify the one being handed
-    // control of three new accounts, and that is a refusal, not a pass.
+    // Asked of the backend, not of `--public-key`: checking a grant against
+    // the operator's own assertion checks nothing.
     {
         // Compared through the JSON encoding, which is the form the args carry.
         let mine = serde_json::to_value(signing_key)
@@ -317,18 +308,10 @@ async fn review(
     render(file);
     report_checks(file);
 
-    // Re-read, rather than trusting the plan's own `deployment.available.*`. A
-    // plan is written to be reviewed, and a target free at plan time can be
-    // claimed while that review happens — after which the first six steps
-    // succeed and the market deploy fails, which is the half-spent deploy the
-    // plan-time check exists to prevent.
-    // Distinctness over the whole plan — creating an account twice is broken
-    // however far the run got. Freeness over the *outstanding* steps only: a
-    // resume has already created the accounts its completed steps made, and
-    // checking those would abort every resume that has anything to resume.
-    // Scoping rather than skipping keeps the guard where it still bites: a step
-    // whose outcome was ambiguous is not journalled, so it stays outstanding and
-    // its target is still checked.
+    // Re-read, not trusted from the plan: a target free at plan time can be
+    // claimed while the plan is being reviewed.
+    // Distinctness over the whole plan; freeness over outstanding steps only,
+    // since a resume has already created what its completed steps made.
     ensure_targets_are_distinct(&planned_targets(file)?)?;
     let outstanding_file = PlanFile {
         steps: outstanding.to_vec(),
@@ -406,13 +389,8 @@ async fn review(
     Ok((credential, targets))
 }
 
-/// The deployment, in order.
-///
-/// The order is a safety property, not a preference: `registry deploy` fails the
-/// whole transaction when the account already exists, and the governance
-/// contract must own the oracle before any feed can be configured. Deploying
-/// governance first means an oracle can never be handed to an account this plan
-/// did not create.
+/// The deployment, in order. Governance first, because it must own the oracle
+/// before any feed can be configured; see [`ensure_steps_are_ordered`].
 pub(crate) async fn build(
     client: &Client,
     spec: &MarketSpec,
@@ -637,13 +615,9 @@ async fn set_proxy(
     Ok(steps)
 }
 
-/// Plan one write, labelling every transaction it needs.
-///
-/// Not one transaction per write: `market.create` also registers storage for
-/// each NEP-141 asset, so a market with a NEP-141 side plans two or three. An
-/// earlier version required exactly one, which made `market plan` usable only
-/// for NEP-245 markets. Where a write expands, each transaction is numbered so
-/// the labels still describe what is being confirmed.
+/// Plan one write, labelling every transaction it needs. Not one per write:
+/// `market.create` also registers storage per NEP-141 asset, so a market plans
+/// two or three, and each is numbered when it expands.
 async fn step<S>(
     client: &Client,
     signer_id: &AccountId,
@@ -757,16 +731,9 @@ fn ensure_compatible(file: &PlanFile, network: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The accounts this plan's steps would create.
-///
-/// Read off the steps rather than `derived`, because the steps are what
-/// executes. Editing a deploy's `name` is a supported hand edit, and `derived`
-/// is metadata `into_operation_plan` never consults — checking it would check
-/// accounts the plan no longer touches while the edited one collides.
-///
-/// Works from each call's *bytes*, so re-encoding a deploy's args as `base64`
-/// (equally valid in this schema, and executed verbatim) cannot hide its target.
-/// Every account this plan would create.
+/// The accounts this plan's steps would create, read off the steps rather than
+/// `derived`: renaming a deploy is a supported edit, and `derived` is metadata
+/// the executor never consults.
 pub(crate) fn planned_targets(file: &PlanFile) -> anyhow::Result<Vec<AccountId>> {
     let mut targets = Vec::new();
     for step in &file.steps {
@@ -818,13 +785,9 @@ fn nep141_assets(file: &PlanFile) -> BTreeSet<String> {
 
 /// A deployment must still be a deployment.
 ///
-/// Every coherence check below is conditional on finding the component it
-/// validates, so *deleting* a step disables its guard rather than tripping it:
-/// remove the oracle deploy and governance and the market stay mutually
-/// consistent, the proposals fail against an account that does not exist —
-/// reporting success, because `admin_set_proxy` is detached — and the market is
-/// deployed pointing at nothing. So completeness is established before
-/// coherence, rather than left to guards that cannot fire.
+/// Every coherence check is conditional on finding the component it validates,
+/// so deleting a step disables its guard rather than tripping it. Completeness
+/// is therefore established first.
 fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
     let (mut governance, mut oracle, mut market, mut proposals) = (0, 0, 0, 0);
 
@@ -849,22 +812,9 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
         }
     }
 
-    // A direct-oracle deployment creates only the market — but "no proxy
-    // components" is also exactly what a *proxy* plan looks like once its four
-    // proxy steps are deleted, which is the fail-open this function exists to
-    // prevent. The two are told apart by the oracle the market is configured to
-    // read: a name this tool would have created means the steps that create it
-    // are missing, not absent by design.
-    // The plan states which shape it is, so neither branch guesses. A proxy
-    // plan requires every proxy component *unconditionally*: falling through to
-    // a name check when the flag says "proxy" is what let a plan with its proxy
-    // steps deleted and its market renamed pass, since the renamed market's
-    // derived proxy is not the one its configuration references.
-    // A market must be registered with each NEP-141 it holds, or it cannot
-    // receive that asset. Matched against the token contracts the encoded
-    // configuration names, not counted: a two-asset market carrying two
-    // registrations against the *same* token satisfied a count while leaving
-    // the other asset unreceivable.
+    // Matched against the tokens the encoded configuration names, not counted:
+    // two registrations against one token would satisfy a count while leaving
+    // the market's other asset unreceivable.
     let expected = nep141_assets(file);
     let registered: BTreeSet<String> = file
         .steps
@@ -927,14 +877,9 @@ fn ensure_plan_is_complete(file: &PlanFile) -> anyhow::Result<()> {
 
 /// The generated order is a safety property, so an edited plan must keep it.
 ///
-/// `build` documents why: governance must own the oracle before any feed can be
-/// configured, and the market must not exist until its feeds are. Every other
-/// guard here asks *what* a plan contains — counts, references, arguments — and
-/// none of them look at position, so moving the market deploy ahead of the
-/// oracle satisfies all of them while `send` executes the array order. The
-/// market then goes live pointing at an oracle that is missing or unconfigured,
-/// and because `admin_set_proxy` is dispatched detached, nothing later reports
-/// it.
+/// Every other guard asks what a plan contains, never where, while `send`
+/// executes the array order — so a reordered plan can put a market live against
+/// a feed nothing has configured.
 fn ensure_steps_are_ordered(file: &PlanFile) -> anyhow::Result<()> {
     if !file.derived.creates_its_own_oracle {
         return Ok(());
@@ -999,14 +944,9 @@ fn ensure_steps_are_ordered(file: &PlanFile) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The proposals must be executable, in this plan, in this order.
-///
-/// Their own arguments had gone unvalidated: every other guard here checks
-/// deploy arguments or the account references between steps. A proposal carries
-/// three editable values that decide whether the oracle ever gets configured —
-/// and an oracle that is never configured is the failure this whole guard suite
-/// exists to prevent, because `admin_set_proxy` is dispatched detached and the
-/// step still reports success.
+/// The proposals must be executable, in this plan, in this order: an oracle
+/// that is never configured still reports success, because `admin_set_proxy` is
+/// dispatched detached.
 fn ensure_proposals_are_runnable(file: &PlanFile) -> anyhow::Result<()> {
     let mut created: BTreeSet<u64> = BTreeSet::new();
     // Which feed each created proposal configures, and which were executed —
@@ -1149,15 +1089,9 @@ fn ensure_initializers_are_sound(file: &PlanFile) -> anyhow::Result<()> {
 }
 
 /// The accounts a deployment creates are named in more places than they are
-/// created, and an edit to one is not an edit to the others.
-///
-/// The oracle is created by its deploy, named by the governance initializer as
-/// `proxy_oracle_id`, and pointed at by the market configuration. Governance is
-/// created by its deploy, named by the oracle initializer as `owner_id`, and
-/// addressed by every proposal step. `planned_targets` follows a renamed
-/// account correctly — which is what makes this necessary rather than
-/// redundant: the renamed account really is deployed and collision-checked,
-/// while every stale reference still points at one the plan never creates.
+/// created, and an edit to one is not an edit to the others: a renamed account
+/// is deployed and collision-checked correctly while every stale reference
+/// still points at one the plan never creates.
 fn ensure_plan_is_coherent(file: &PlanFile) -> anyhow::Result<()> {
     let (mut oracle, mut governance, mut market) = (None, None, None);
     let (mut governance_says, mut market_says, mut oracle_says) = (None, None, None);
@@ -1323,13 +1257,9 @@ fn is_governance_proposal(call: &crate::spec::plan::PlanFunctionCall) -> anyhow:
         && args.get("id").is_some_and(serde_json::Value::is_number))
 }
 
-/// The account a single registry-deploy call would create.
-///
-/// A registry deploy is recognized by its argument shape — `name` beside a
-/// `version_key` — and creates `{name}` beneath the registry it is addressed to.
-///
-/// Fails closed: a call carrying a `version_key` whose target cannot be derived
-/// is an unreviewable step, not an absent one.
+/// The account a single registry-deploy call would create, recognized by `name`
+/// beside a `version_key`. Fails closed: a `version_key` whose target cannot be
+/// derived is an unreviewable step, not an absent one.
 fn deploy_target(
     step: &crate::spec::plan::PlanStep,
     call: &crate::spec::plan::PlanFunctionCall,
@@ -1375,14 +1305,9 @@ fn ensure_targets_are_distinct(targets: &[AccountId]) -> anyhow::Result<()> {
 
 /// Refuse a plan whose targets are taken.
 ///
-/// Best-effort, and deliberately so. `account::Get` cannot see a target another
-/// deploy has *reserved* but not yet created: `deploy_market` writes
-/// `RegistryEntry::Reserved` before scheduling `create_account`, and no registry
-/// view exposes it — `get_deployment` and `list_deployments` both filter to
-/// `Deployed`. Seeing it would need an additive view, the same contract change
-/// the soft-deleted-version gap needs (see `preflight::versions`). The registry
-/// itself is the authoritative guard and rejects the second deploy, so the
-/// unseen case costs a failed step, not a corrupted deployment.
+/// Best-effort: no registry view exposes a `Reserved` entry, so a target another
+/// deploy has reserved but not created is invisible here. The registry rejects
+/// it, so the unseen case costs a failed step, not a bad deployment.
 async fn ensure_targets_free(ctx: &CliContext, targets: &[AccountId]) -> anyhow::Result<()> {
     let occupied = occupied_targets(ctx, targets).await?;
     anyhow::ensure!(
@@ -1435,13 +1360,9 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
     Ok(checks)
 }
 
-/// The checks the plan carries.
-///
-/// `apply` is often run by someone other than whoever planned, and a plan can be
-/// hand-edited, so the verdicts travel with the artifact and are shown before
-/// the prompt. Only non-passing ones are printed: a suppressed check records the
-/// failure it overrode, and burying that in a wall of green is how an override
-/// stops being reviewed.
+/// The checks the plan carries, shown before the prompt because `apply` is
+/// often run by someone other than whoever planned. Only non-passing ones:
+/// burying an override in a wall of green is how it stops being reviewed.
 fn report_checks(file: &PlanFile) {
     let notable: Vec<_> = file
         .checks
@@ -1541,18 +1462,9 @@ fn init_arg(call: &crate::spec::plan::PlanFunctionCall, field: &str) -> Option<S
     )
 }
 
-/// A registry deploy's `init_args`, decoded.
-///
-/// `registry.deploy` takes them as base64 *inside* its JSON args, so the market
-/// configuration — the MCRs, the rate curve, the oracle account — is the one
-/// part of a deployment the artifact cannot show as JSON. Telling an operator to
-/// read the steps while hiding the payload that matters most would be hollow, so
-/// it is decoded for display. It stays base64 in the file: expanding it there
-/// would have to survive a byte-exact round trip, which is a schema change
-/// rather than a rendering one.
-/// Works from the call's bytes, like [`planned_targets`], so re-encoding the
-/// *outer* args as base64 cannot hide the payload from either the display or
-/// the `admin_id` guard built on it.
+/// A registry deploy's `init_args`, decoded for display and for the guards built
+/// on it. Stays base64 in the file: expanding it there would need a byte-exact
+/// round trip, which is a schema change.
 fn decoded_init_args(
     call: &crate::spec::plan::PlanFunctionCall,
 ) -> anyhow::Result<Option<serde_json::Value>> {
@@ -2331,13 +2243,8 @@ mod tests {
         }
     }
 
-    /// Both feeds must be proposed *and* executed, per feed.
-    ///
-    /// Deleting the two borrow-feed steps leaves the collateral create/execute
-    /// pair, which satisfied the old `proposals >= 2` total. Every other guard
-    /// is satisfied by that coherent subset, so the market deployed with a
-    /// borrow feed nothing ever configured — and `admin_set_proxy` is
-    /// dispatched detached, so nothing later reports it either.
+    /// Both feeds must be proposed *and* executed, per feed: a total of two is
+    /// satisfied by the collateral pair alone, leaving borrow unconfigured.
     #[test]
     fn a_plan_missing_one_feeds_proposals_is_refused() {
         use crate::spec::plan::{PlanFunctionCall, PlanStep};

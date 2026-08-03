@@ -1,9 +1,5 @@
 //! One side of a market's asset pair: the token, and the oracle sources that
-//! price it.
-//!
-//! Keeping those together is the point. Today the asset lives in
-//! `market-args.json` and its feeds in `proxy-*.json`, and nothing checks that
-//! the feed prices the asset it is paired with.
+//! price it. Kept together so a check can confirm the feed prices the asset.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -112,11 +108,8 @@ pub enum ReferenceAsset {
     /// Resolve `symbol` against the API. Ambiguity is an error listing the
     /// candidates, never a first match.
     ByTicker,
-    /// A pinned id, skipping resolution.
-    ///
-    /// This is how a wrapped asset records what it is priced as: `FXRP` pinned
-    /// to `ripple` asserts that the bridged token tracks XRP — an assumption
-    /// that otherwise lives only in someone's head.
+    /// A pinned id, skipping resolution. How a wrapped asset records what it is
+    /// priced as: `FXRP` pinned to `ripple` asserts the bridge tracks XRP.
     CoinGecko { id: String },
     /// No third-party listing exists. The reason is recorded so an absent check
     /// is visible in review rather than silently not running.
@@ -148,12 +141,9 @@ impl AggregatorSpec {
     }
 }
 
-/// A weighted price source, flattened for authoring.
-///
-/// The on-chain shape is `Source::Request(OracleRequest::Lazer(LazerRequest))`
-/// — three levels of externally-tagged enum, which TOML renders as
-/// `[collateral.sources.source.Request.Lazer]`. This is a deliberate parallel
-/// model; [`super::tests`] round-trips it against the on-chain encoding.
+/// A weighted price source, flattened for authoring: the on-chain shape is
+/// three levels of externally-tagged enum, which TOML renders unusably. A
+/// deliberate parallel model, round-tripped against the on-chain encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SourceSpec {
@@ -195,11 +185,8 @@ pub enum SourceSpec {
     },
 }
 
-/// Gas for the exchange-rate view, matching both deployed LST sources.
-///
-/// Constant rather than a spec field: it is a property of a no-argument view,
-/// not a per-market decision. Export refuses a transformer that differs rather
-/// than emitting a spec that would redeploy with the wrong value.
+/// Gas for the exchange-rate view. Constant, not a spec field: export refuses a
+/// transformer that differs rather than redeploying it with the wrong value.
 pub const LST_CALL_GAS: near_sdk::Gas = near_sdk::Gas::from_tgas(3);
 
 impl SourceSpec {
@@ -308,18 +295,12 @@ fn pyth_request(
 }
 
 impl<A: AssetClass> AssetSpec<A> {
-    /// Build the on-chain proxy configuration.
-    ///
-    /// An unset `max_age` falls back to `default_max_age` (the market's
-    /// `price_maximum_age`); an unset `max_clock_drift` falls back to
-    /// [`DEFAULT_MAX_CLOCK_DRIFT`], which is deliberately independent of it.
+    /// Build the on-chain proxy configuration. An unset `max_age` falls back to
+    /// `default_max_age`, an unset drift to [`DEFAULT_MAX_CLOCK_DRIFT`].
     pub fn into_proxy(self, default_max_age: Nanoseconds) -> Proxy<Source> {
         let sources = self.sources.into_iter().map(WeightedSource::from);
-        // `Median::new` defaults `min_sources` to 1; the field is public and the
-        // spec always states it, so set it rather than accept the default.
-        // `config.oracle_mode` refuses a proxy spec that states no aggregator,
-        // so by here it is present; the fallback keeps this total rather than
-        // panicking on a path the checks already closed.
+        // `config.oracle_mode` refuses a proxy spec with no aggregator, so the
+        // fallback keeps this total rather than panicking on a closed path.
         let aggregator = match self.aggregator.unwrap_or_default() {
             AggregatorSpec::Priority => Aggregator::Priority(
                 templar_proxy_oracle_kernel::proxy::aggregator::method::priority::Priority::new(

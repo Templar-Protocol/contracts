@@ -1,11 +1,8 @@
-//! Preflight checks over a [`MarketSpec`].
+//! Offline preflight checks over a [`MarketSpec`]; the on-chain ones live in
+//! [`crate::dispatch::preflight`].
 //!
-//! Every check has a stable id. `--skip-check <id>` (ENG-544) and the plan
-//! artifact both key on these, so ids are part of the tool's contract: renaming
-//! one breaks a caller's skip list.
-//!
-//! This module holds only the checks that need no network; the on-chain ones
-//! live in [`crate::dispatch::preflight`].
+//! Check ids are part of the tool's contract: `--skip-check` and the plan
+//! artifact both key on them, so renaming one breaks a caller's skip list.
 
 use serde::{Deserialize, Serialize};
 
@@ -81,12 +78,8 @@ pub struct Report<'a, T: Serialize> {
     pub checks: &'a [Check],
 }
 
-/// The gate every command applies to its checks.
-///
-/// The count lived here already; the *message* did not, and the three callers
-/// had drifted to three different ones. `subject` names what was checked, and
-/// `consequence` says what did not happen — an operator needs both, and only
-/// the caller knows either.
+/// The gate every command applies to its checks. `subject` names what was
+/// checked and `consequence` what did not happen; only the caller knows either.
 pub fn gate(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Result<()> {
     let failed = failures(checks);
     anyhow::ensure!(
@@ -98,12 +91,6 @@ pub fn gate(checks: &[Check], subject: &str, consequence: &str) -> anyhow::Resul
 }
 
 /// Run every offline check.
-///
-/// Decimals are supplied because `config.validate` needs a full
-/// [`templar_common::market::MarketConfiguration`], and resolving them is an
-/// on-chain read (ENG-541). Until that lands, the spec's own `decimals`
-/// override is the only source, and its absence is reported rather than
-/// guessed.
 pub fn run_offline(spec: &MarketSpec) -> Vec<Check> {
     vec![
         assets_distinct(spec),
@@ -123,17 +110,9 @@ fn asset_sources<'a>(spec: &'a MarketSpec, side: &str) -> &'a [super::oracle::So
     }
 }
 
-/// Fields belonging to the other oracle mode are refused rather than ignored.
-///
-/// `OracleMode` documents itself as making a half-described spec impossible,
-/// but the fields all live on the shared `AssetSpec`, so the type does not
-/// enforce it — a proxy spec may carry a `price_id` and a direct spec a list of
-/// `sources`, and both are silently dropped. Silently dropped is the problem:
-/// an author who wrote `sources` on a direct spec believes those sources are
-/// being aggregated, and nothing tells them otherwise.
-///
-/// Enforced here rather than by splitting `AssetSpec` by mode, which is the
-/// deeper fix and a larger change than this issue should carry.
+/// Fields belonging to the other oracle mode are refused rather than ignored:
+/// both modes share one `AssetSpec`, so an author who wrote `sources` on a
+/// direct spec would otherwise believe they are being aggregated.
 fn mode_is_fully_described(spec: &MarketSpec) -> Check {
     let id = "config.oracle_mode";
     let direct = spec.oracle.is_direct();
@@ -408,12 +387,8 @@ fn source_problems<A: templar_common::asset::AssetClass>(
     }
 }
 
-/// The contract's own invariants — mcr ordering, the interest-rate ceiling at
-/// full utilization, the liquidation-spread bound, withdrawal-range coherence.
-///
-/// These already run at market init. Running them here moves the failure from
-/// "after governance and the oracle are deployed and ~8.5 NEAR is spent" to
-/// "before the first transaction".
+/// The contract's own init-time invariants, run here so the failure lands
+/// before the first transaction rather than after ~8.5 NEAR is spent.
 fn validate_configuration(spec: &MarketSpec) -> Check {
     let id = "config.validate";
 

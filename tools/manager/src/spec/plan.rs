@@ -1,16 +1,10 @@
 //! The plan artifact: a serializable, hand-editable form of an
-//! [`OperationPlan`], for when the spec cannot express what a market needs or a
-//! check is wrong.
+//! [`OperationPlan`], for when the spec cannot express what a market needs.
 //!
-//! ## Why JSON args are canonicalized
-//!
-//! `near_api` serializes `FunctionCallAction::args` as base64, which is useless
-//! in a file someone has to edit. Carrying them as JSON means re-encoding
-//! through [`serde_json::Value`], which sorts object keys the gateway emitted in
-//! declaration order — so the original bytes cannot be preserved. Conversion
-//! into this file therefore canonicalizes, and the canonical form is what gets
-//! digested, displayed, and executed: what `apply` sends is what `plan` showed.
-//! Key order means nothing to a contract decoding with `serde_json`.
+//! JSON args are canonicalized on conversion, since re-encoding through
+//! [`serde_json::Value`] cannot preserve the gateway's key order. The canonical
+//! form is what gets digested, displayed and executed, so what `apply` sends is
+//! what `plan` showed.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -28,11 +22,7 @@ use super::check::Check;
 pub const PLAN_SCHEMA_VERSION: u32 = 3;
 
 /// A function call's arguments, in whichever form a human can actually edit.
-///
-/// Deliberately not [`templar_gateway_types::common::ContractArgs`], which
-/// models the same choice but serializes as `{"encoding": …, "value": …}`. This
-/// file is read and edited by hand, so the terser `{"json": …}` is the shape
-/// worth having.
+/// Not `ContractArgs`, whose `{"encoding": …, "value": …}` is worse to hand-edit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanArgs {
@@ -52,13 +42,8 @@ impl PlanArgs {
         }
     }
 
-    /// The bytes this will send.
-    ///
-    /// Borrowing rather than consuming, because the collision check has to read
-    /// the same bytes the executor will. Re-checks representability: `from_bytes`
-    /// runs at generation, but it is the *edited* file that gets sent, and a
-    /// hand-written number too large for `u64` would otherwise be re-encoded in
-    /// exponent form — a value nobody wrote.
+    /// The bytes this will send. Re-checks representability, because it is the
+    /// *edited* file that gets sent.
     pub(crate) fn to_bytes(&self) -> anyhow::Result<Vec<u8>> {
         match self {
             Self::Json(value) => {
@@ -76,13 +61,9 @@ impl PlanArgs {
 
 /// Whether every number survives a decode/re-encode unchanged.
 ///
-/// `serde_json` without `arbitrary_precision` demotes an integer too large for
-/// `u64` to `f64`, which re-encodes in exponent form — a different value than
-/// the operator reviewed, on a transaction that spends real money. Today every
-/// large number reaching these args is a string (`U128`, `Decimal`,
-/// `NearToken`), so nothing hits this; the classifier is method-agnostic by
-/// design, so the first one that does must fall back to opaque bytes rather
-/// than be silently rewritten.
+/// `serde_json` demotes an integer too large for `u64` to `f64` and re-encodes
+/// it in exponent form — a different value than the operator reviewed, on a
+/// transaction that spends real money.
 fn exactly_representable(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Number(number) => number.is_i64() || number.is_u64(),
@@ -137,11 +118,8 @@ impl PlanStep {
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
-        // Not carried in the artifact. A tolerated revert still completes the
-        // operation as `Succeeded`, so an editable `continue_on_failure` would
-        // let a hand-edit turn a reverted governance call into `apply` exiting
-        // zero. Nothing a deployment plans sets it, so it is refused rather
-        // than rendered.
+        // Editable, it would let a hand-edit turn a reverted governance call
+        // into `apply` exiting zero. Nothing a deployment plans sets it.
         anyhow::ensure!(
             !transaction.continue_on_failure,
             "`{label}` tolerates its own failure, which a deployment plan must \
@@ -186,17 +164,10 @@ impl PlanStep {
 pub struct Derived {
     /// Whether this deployment creates its own proxy oracle.
     ///
-    /// Recorded rather than inferred. The shape of a direct plan — one deploy,
-    /// no proposals — is indistinguishable from a proxy plan whose proxy steps
-    /// were deleted, and three attempts to tell them apart from account names
-    /// were each wrong in a different way. It is covered by `summary_digest`,
-    /// so editing it is reported as drift like any other claim in the file.
-    ///
-    /// Not `#[serde(default)]`: a plan written before this field existed would
-    /// default to `false`, read as "direct", and skip the completeness
-    /// requirement that is the entire point — a defaulted bool defaults to the
-    /// unsafe answer. The schema version is bumped instead, so such a file is
-    /// refused outright rather than misread.
+    /// Recorded rather than inferred: a direct plan is shape-identical to a
+    /// proxy plan whose proxy steps were deleted. Deliberately not
+    /// `#[serde(default)]` — `false` would read as "direct" and skip the
+    /// completeness requirement.
     pub creates_its_own_oracle: bool,
     pub market_id: AccountId,
     /// The oracle the market will read — the proxy this plan creates, or the
@@ -225,16 +196,9 @@ pub struct PlanFile {
     /// whole-file digest: with seven steps, "something changed" is not
     /// actionable.
     pub step_digests: Vec<String>,
-    /// Digest over everything this file states except the steps themselves —
-    /// provenance, derived ids, check results, and the step digests. Without
-    /// it, editing a check from `failed` to `passed`, repointing
-    /// `derived.market_id`, or rewriting the `spec_digest` that `render`
-    /// presents as the plan's source all report the plan as unmodified.
-    ///
-    /// It covers `step_digests` because `drift` detects a removed step only by
-    /// comparing lengths: deleting a step *and* its digest entry otherwise
-    /// reported "unmodified since generation" on the line `review` prints above
-    /// the confirmation prompt.
+    /// Digest over everything but the steps themselves, so editing a check to
+    /// `passed` or repointing `derived.market_id` reports as drift. Covers
+    /// `step_digests` too, since `drift` detects a removed step only by length.
     pub summary_digest: String,
     pub derived: Derived,
     pub checks: Vec<Check>,
@@ -412,12 +376,8 @@ fn summary_digest(
     ))
 }
 
-/// `sha256:…` over a value's *canonical* JSON encoding.
-///
-/// Canonical because a spec's `yield_weights.static` is a `HashMap`, whose
-/// iteration order is randomized per process — hashing the plain encoding gave
-/// the same spec a different `spec_digest` on every invocation, which is the
-/// opposite of the traceability the field exists for.
+/// `sha256:…` over a value's *canonical* JSON encoding: `yield_weights.static`
+/// is a `HashMap`, so a plain encoding hashes differently every process.
 pub fn digest(value: &impl Serialize) -> anyhow::Result<String> {
     let bytes = serde_json_canonicalizer::to_vec(value).context("serialize for digest")?;
     Ok(format!(

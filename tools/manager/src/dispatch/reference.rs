@@ -1,15 +1,9 @@
-//! Cross-check the aggregated prices against an independent source.
+//! Cross-check the aggregated prices against an independent source: oracles can
+//! agree with each other and still be wrong together.
 //!
-//! The oracles can agree with each other and still be wrong together — a
-//! transposed feed id, a wrapped token that does not track what it claims to.
-//! Only something outside the system catches that, which is what makes the
-//! spec's `symbol` and `reference` load-bearing rather than decorative.
-//!
-//! The distinction that matters here is between *could not check* and *checked
-//! and disagrees*. Unreachable, rate-limited, or unpinnable is a warning; a
-//! price outside tolerance is a failure. Collapsing the two either makes a
-//! mainnet deploy hostage to a third party's uptime, or lets a real mismatch
-//! through as a shrug.
+//! *Could not check* and *checked and disagrees* stay distinct. Collapsing them
+//! either makes a deploy hostage to a third party's uptime, or lets a real
+//! mismatch through as a shrug.
 
 use std::collections::BTreeMap;
 
@@ -42,12 +36,8 @@ pub struct Listing {
 /// touching the checks.
 #[async_trait::async_trait]
 pub trait ReferencePriceSource {
-    /// One coin by its id. `None` when no such coin exists.
-    ///
-    /// Separate from [`Self::candidates`] deliberately: a pinned id needs no
-    /// resolution, and making every run pay for a full catalogue to learn one
-    /// coin's name would bake one implementation's cheapest strategy into the
-    /// interface.
+    /// One coin by its id. Separate from [`Self::candidates`] so a pinned id
+    /// need not pay for a full catalogue.
     async fn lookup(&self, id: &str) -> anyhow::Result<Option<Listing>>;
 
     /// Every coin using `symbol`. The full set, because picking one of several
@@ -61,14 +51,9 @@ pub trait ReferencePriceSource {
     fn label(&self) -> &'static str;
 }
 
-/// What an asset resolved to, or the verdict explaining why it did not.
-///
-/// The `Err` carries a [`Status`], not a message, because the two failure modes
-/// are not the same kind of thing. A source that cannot be reached is
-/// `Skipped` — nothing was learned. A pinned id or ticker the source does not
-/// know is `Failed`: the spec asserted that coin exists and the source just
-/// disproved it. Collapsing them would let a fat-fingered id read exactly like
-/// a network blip and exit zero.
+/// What an asset resolved to, or the verdict explaining why it did not. The
+/// `Err` carries a [`Status`] because unreachable (`Skipped`) and disproved
+/// (`Failed`) must not read alike.
 type Resolved = Result<Listing, Status>;
 
 /// Which CoinGecko plan a key belongs to. The two are not interchangeable: a
@@ -111,12 +96,8 @@ pub struct CoinGecko {
 }
 
 impl CoinGecko {
-    /// `COINGECKO_API_KEY` is optional; the demo tier is ample for the two calls
-    /// a preflight makes.
-    ///
-    /// `COINGECKO_PRO` selects the paid host and header. Explicit rather than
-    /// sniffed from the key's shape, which CoinGecko does not document as
-    /// stable.
+    /// `COINGECKO_API_KEY` is optional. `COINGECKO_PRO` selects the paid host
+    /// and header, explicitly rather than sniffed from the key's shape.
     pub fn from_env() -> anyhow::Result<Self> {
         let plan = if std::env::var_os("COINGECKO_PRO").is_some() {
             Plan::Pro

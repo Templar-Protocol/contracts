@@ -1,17 +1,9 @@
 //! An append-only record of what a deploy actually did, so an interrupted one
 //! can be resumed instead of restarted.
 //!
-//! The shell deploy this replaces was not re-runnable: a stale version key
-//! aborted at the oracle step and left an orphaned governance contract to be
-//! deleted by hand. Ordering was its only safety property.
-//!
-//! ## Keyed on the plan, not the spec
-//!
-//! Each entry records the digest of the step it completed. Resuming recomputes
-//! those digests and refuses if one changed — so a hand-edited plan resumes
-//! correctly, and an edit *under a completed step* is named rather than
-//! silently re-run or silently skipped. Editing a step that has not run yet is
-//! fine, which is the point: the artifact exists to be edited.
+//! Entries key on the digest of the step they completed, not on the spec:
+//! editing an unrun step is the artifact's purpose, while an edit *under* a
+//! completed step is named rather than silently re-run or skipped.
 
 use std::path::{Path, PathBuf};
 
@@ -20,14 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use super::plan::PlanFile;
 
-/// What happened to a step.
-///
-/// `Attempted` is written *before* the transaction is submitted. Without it, a
-/// step whose outcome is unknown — a timeout, or an operation that never
-/// reached a terminal state — is indistinguishable from one that never ran, and
-/// resume would re-send it. For a registry deploy that is not a free retry: the
-/// deposit is transferred into the batch, and a failed `create_account` refunds
-/// it to the registry, not to the operator.
+/// What happened to a step. `Attempted` is written *before* submission: a step
+/// whose outcome is unknown must not read as one that never ran, since
+/// re-sending a registry deploy refunds its deposit to the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
@@ -85,24 +72,11 @@ impl Journal {
         }
     }
 
-    /// Record an entry and persist immediately.
+    /// Record an entry and persist it before the next step runs.
     ///
-    /// Written around every step rather than at the end: a journal flushed only
-    /// on completion records nothing about the run that was interrupted, which
-    /// is the only run it exists for.
-    ///
-    /// Rewrites through a temporary file and renames, because this is a
-    /// whole-file format: a truncating write re-risks the entire history on
-    /// every step, and a crash inside that window — precisely the scenario this
-    /// module exists for — would leave unparseable JSON and no record at all.
-    ///
-    /// The temporary file is fsynced before the rename and the directory after
-    /// it. A rename alone survives a *process* crash, because the page cache
-    /// outlives the process; it does not survive the machine loss this module
-    /// names as its reason to exist, where the journal can reappear truncated
-    /// or the directory entry be lost entirely. The consequence is the one this
-    /// module opens with: a submitted step reads as one that never ran, and
-    /// re-sending a registry deploy strands its deposit.
+    /// Written through a temp file, fsynced, renamed, then the directory
+    /// fsynced: a truncating write risks the whole history on every step, and a
+    /// rename alone survives a process crash but not machine loss.
     pub fn record(&mut self, path: &Path, entry: Entry) -> anyhow::Result<()> {
         match self
             .entries

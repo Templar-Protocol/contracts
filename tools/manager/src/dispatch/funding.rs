@@ -1,12 +1,6 @@
-//! Will this deploy strand halfway?
+//! Whether every account that signs can pay, reported before anything is sent.
 //!
-//! Reports, before anything is sent, whether every account that signs has the
-//! balance to do so. The failure this prevents is discovering at step 4 that the
-//! operator is short — with governance and the oracle already deployed and their
-//! deposits spent.
-//!
-//! Reads the plan's *steps*, so it survives a hand-edited plan. That makes it
-//! one of the few checks that still means something after an edit.
+//! Reads the plan's *steps*, so it still means something after a hand edit.
 
 use std::collections::BTreeMap;
 
@@ -49,13 +43,8 @@ impl Requirement {
         self.cumulative.push((index, running));
     }
 
-    /// The first step whose cumulative requirement exceeds what is available —
-    /// where execution would actually stop.
-    ///
-    /// Not the step that reaches the peak: with nothing crediting an account the
-    /// running total only rises, so the peak is always the *last* step and would
-    /// name the same step however short the account is. Where it stops depends
-    /// on the balance, so it cannot be computed until the balance is known.
+    /// Where execution would actually stop. Not the peak: nothing credits an
+    /// account, so the peak is always the last step whatever the balance.
     fn stops_at(&self, available: NearToken) -> Option<usize> {
         self.cumulative
             .iter()
@@ -65,10 +54,6 @@ impl Requirement {
 }
 
 /// Walk the steps in order, charging each signer.
-///
-/// Sequential rather than a per-account sum: nothing in a plan credits an
-/// account today, so the two coincide, but the sequential model stays correct
-/// if that changes.
 pub(super) fn simulate(
     steps: &[PlanStep],
     gas_price: NearToken,
@@ -106,15 +91,9 @@ pub(super) fn simulate(
     Ok(required)
 }
 
-/// Spendable balance: what is left after the storage stake is backed.
-///
-/// An account holding 44 NEAR with 44 staked for storage cannot spend it, and a
-/// check against `amount` alone strands you on an account that looks funded.
-///
-/// `locked` is *not* subtracted. `amount` is already the liquid balance, and the
-/// protocol backs the storage stake with `amount + locked` — so a validator's
-/// stake absorbs its storage cost rather than adding to it. Subtracting `locked`
-/// as well double-counts it and reports a well-funded staking account as short.
+/// Spendable balance: `amount` less whatever the storage stake is not already
+/// backed by `locked`. Subtracting `locked` outright double-counts it and
+/// reports a well-funded staking account as short.
 fn available(account: &account::GetResult) -> NearToken {
     let storage = STORAGE_AMOUNT_PER_BYTE.saturating_mul(u128::from(account.storage_usage));
     account
@@ -122,11 +101,8 @@ fn available(account: &account::GetResult) -> NearToken {
         .saturating_sub(storage.saturating_sub(account.locked))
 }
 
-/// `funding.<account_id>` for every distinct signer in the plan.
-///
-/// One `view_account` per signer plus one block read, so it is cheap enough to
-/// run at plan time *and* again at apply: balances drift, and the plan-time
-/// answer is only as good as the moment it was taken.
+/// `funding.<account_id>` for every distinct signer. Cheap enough to re-run at
+/// apply, which matters because balances drift.
 pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Result<Vec<Check>> {
     // A failed read is a failed *check*, matching `targets_available`: aborting
     // the whole run on a transient RPC hiccup leaves no override, since the
@@ -164,11 +140,8 @@ pub(super) async fn checks(ctx: &CliContext, steps: &[PlanStep]) -> anyhow::Resu
     Ok(checks)
 }
 
-/// Compare what is needed against what is spendable.
-///
-/// Gross, not net: gas refunds are not credited, and the detail says so — a
-/// conservative answer to "will I get stuck" is the correct one, but it must not
-/// read as a miscalculation.
+/// Compare need against spendable. Gross, not net: gas refunds are uncredited,
+/// and the detail says so, so a conservative answer does not read as a bug.
 fn verdict(need: &Requirement, available: NearToken, steps: &[PlanStep]) -> Status {
     let detail = format!(
         "needs {} ({} deposits + {} prepaid gas, refunds not credited); \

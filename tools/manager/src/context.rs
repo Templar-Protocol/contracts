@@ -75,18 +75,8 @@ impl CliContext {
         Ok((account_id, client))
     }
 
-    /// A signing client together with the public key that client will actually
-    /// sign with, from **one** resolution of the backend.
-    ///
-    /// The key is distinct from [`SignerArgs::public_key`], which for an
-    /// external backend returns what the operator *asserted* via
-    /// `--public-key`; verifying a full-access grant against an assertion
-    /// verifies nothing, so this asks the resolved backend.
-    ///
-    /// One resolution, because the keychain backend discovers the account's
-    /// keys on chain and may prompt: resolving separately for the check and for
-    /// the send repeats that, and — worse — lets the key that was checked
-    /// differ from the key that signs.
+    /// A signing client and the key it will sign with, from one resolution:
+    /// resolving twice can prompt twice and yield two different keys.
     pub(crate) async fn signing_client_and_key(
         &self,
         signer: &SignerArgs,
@@ -97,15 +87,8 @@ impl CliContext {
             .await
             .context("ask the signing backend which key it will sign with")?;
 
-        // Every write flows through here, which is the only place an asserted
-        // `--public-key` can be checked against the key that will actually
-        // sign. `SignerArgs::public_key` validates the in-process backend
-        // against the secret it derives from, but for an external backend it
-        // can only hand back what the operator typed — and a deploy embeds that
-        // value as the full access key on an account it is creating. A typo, or
-        // a keychain holding a different one of the account's keys, would grant
-        // control to a key the operator does not have while omitting the one
-        // that signed.
+        // A deploy embeds this key as the full access key on the account it
+        // creates, and an external backend cannot validate it before resolving.
         if let Some(asserted) = signer.asserted_public_key() {
             anyhow::ensure!(
                 asserted == public_key,

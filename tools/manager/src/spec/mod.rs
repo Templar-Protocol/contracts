@@ -1,14 +1,9 @@
-//! The declarative market deployment spec.
+//! The declarative market deployment spec: one TOML file in which every value
+//! that must agree is written once, and anything derivable — account ids, price
+//! identifiers, proxy freshness bounds — is derived rather than declared.
 //!
-//! One TOML file replaces the four the retired deploy read (`env.sh`,
-//! `market-args.json`, `proxy-collateral.json`, `proxy-borrow.json`). The point
-//! is not brevity — it is that every value which must agree is now written
-//! exactly once. Anything derivable is derived here rather than declared:
-//! account ids, price identifiers, and the proxy freshness bounds.
-//!
-//! Everything in this module is offline. Building and checking a spec must never
-//! need a network, which is what lets `market export` (ENG-540) round-trip
-//! specs in unit tests.
+//! Everything here is offline; building and checking a spec never needs a
+//! network.
 
 pub mod check;
 pub mod export;
@@ -90,12 +85,8 @@ pub struct MarketSpec {
     pub market: MarketParams,
 }
 
-/// Which oracle a market reads.
-///
-/// `Proxy` deploys a dedicated proxy oracle plus the governance contract that
-/// owns it, aggregating the sources each asset names. `Direct` points at an
-/// oracle that already exists, so a deployment creates only the market and each
-/// asset names that oracle's own price identifier instead of sources.
+/// Which oracle a market reads: a dedicated proxy this deployment creates, or
+/// an existing account whose own price identifiers each asset then names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum OracleMode {
@@ -113,13 +104,9 @@ impl OracleMode {
     }
 }
 
-/// Registry version keys for the contracts a deployment creates.
-///
-/// The two proxy keys are optional because a direct market creates neither
-/// contract. `config.oracle_mode` requires them for a proxy spec, so the
-/// optionality cannot be used to under-specify a deployment that needs them —
-/// it exists so `market export` can describe a direct market without inventing
-/// versions for contracts that were never deployed.
+/// Registry version keys for the contracts a deployment creates. The proxy keys
+/// are optional because a direct market creates neither; `config.oracle_mode`
+/// requires them of a proxy spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Versions {
@@ -231,13 +218,8 @@ fn derived_id(label: &str, registry: &AccountId) -> anyhow::Result<AccountId> {
 }
 
 /// Convert a spec duration to the coarser unit the chain stores it in, refusing
-/// anything that would not survive the conversion.
-///
-/// The spec accepts any unit `parse_duration` does, but the chain stores
-/// `price_maximum_age` in whole seconds and `time_chunk` in whole milliseconds.
-/// Dividing silently would make `price_maximum_age = "1500ms"` mean 1s to the
-/// market while the proxy still enforced 1.5s, and `time_chunk = "500us"`
-/// collapse to a zero-length chunk.
+/// what would not survive: dividing silently would make `"1500ms"` mean 1s to
+/// the market while the proxy still enforced 1.5s.
 fn exact_units(value: Nanoseconds, per_unit: u64, field: &str, unit: &str) -> anyhow::Result<u64> {
     let ns = value.as_ns();
     anyhow::ensure!(
@@ -262,13 +244,8 @@ fn into_valid<A: templar_common::asset::AssetClass + PartialOrd>(
 }
 
 impl MarketSpec {
-    /// The network this spec targets, derived from the registry's top-level
-    /// account rather than declared.
-    ///
-    /// A spec is bound to one chain by its account ids — `templar-alpha.near`
-    /// exists only on mainnet — so carrying a `network` field alongside them
-    /// would just be a second place for the same fact to be wrong. `plan`
-    /// cross-checks this against `--network`.
+    /// The network this spec targets, derived from the registry rather than
+    /// declared: a `network` field would be a second place to be wrong.
     pub fn network(&self) -> anyhow::Result<Network> {
         match self.registry.as_str().rsplit('.').next() {
             Some("near") => Ok(Network::Mainnet),
@@ -309,18 +286,14 @@ impl MarketSpec {
         derived_id(&self.name, &self.registry)
     }
 
-    /// `proxy-oracle-<name>.<registry>` — the oracle a proxy deployment creates.
-    /// Derivable whatever the mode, so callers that mean "the oracle this market
-    /// reads" want [`Self::reads_oracle_id`] instead.
+    /// `proxy-oracle-<name>.<registry>`, derivable in either mode. Callers
+    /// meaning "the oracle this market reads" want [`Self::reads_oracle_id`].
     pub fn oracle_id(&self) -> anyhow::Result<AccountId> {
         derived_id(&oracle_name(&self.name), &self.registry)
     }
 
-    /// The oracle this market reads.
-    ///
-    /// A direct market names it; a proxy market derives it. Derived lazily: the
-    /// prefixed form is longer than the market's own id, so a name that is valid
-    /// for a direct market can exceed NEAR's limit as `proxy-oracle-<name>`.
+    /// The oracle this market reads. Derived lazily: `proxy-oracle-<name>` can
+    /// exceed NEAR's length limit for a name that is itself valid.
     pub fn reads_oracle_id(&self) -> anyhow::Result<AccountId> {
         match &self.oracle {
             OracleMode::Direct { account_id } => Ok(account_id.clone()),
@@ -342,12 +315,9 @@ impl MarketSpec {
         governance_account_id(&self.name, &self.registry)
     }
 
-    /// The price identifiers the market will use.
-    ///
-    /// A proxy oracle serves the two constants this tool owns, so a proxy spec
-    /// need not state them. A pre-existing oracle serves whatever identifiers it
-    /// was given, so a direct spec must name them: there is nothing to derive
-    /// them from, and guessing would point the market at someone else's feed.
+    /// The price identifiers the market will use. A proxy serves the constants
+    /// this tool owns; a direct spec must name its oracle's own, since guessing
+    /// would point the market at someone else's feed.
     pub fn price_identifiers(&self) -> anyhow::Result<(PriceIdentifier, PriceIdentifier)> {
         if !self.oracle.is_direct() {
             return Ok((COLLATERAL_PRICE_ID, BORROW_PRICE_ID));
@@ -367,12 +337,8 @@ impl MarketSpec {
         ))
     }
 
-    /// Build the on-chain market configuration.
-    ///
-    /// Decimals are supplied by the caller because resolving them reads the
-    /// token's metadata on chain (ENG-541); this module stays offline. The
-    /// spec's own `decimals` override, when present, is what that lookup
-    /// reconciles against.
+    /// Build the on-chain market configuration. Decimals are supplied because
+    /// resolving them reads token metadata, and this module stays offline.
     pub fn into_market_configuration(
         self,
         collateral_decimals: i32,

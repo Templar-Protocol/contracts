@@ -1,17 +1,9 @@
 //! The inverse of [`super::MarketSpec::into_market_configuration`]: reconstruct
-//! a spec from what is actually deployed.
+//! a spec from what is actually deployed. The validation gate for the whole
+//! tool — it must reproduce markets we already run before creating new ones.
 //!
-//! This is the epic's validation gate. The tool must reproduce markets we
-//! already run before it is trusted to create new ones.
-//!
-//! **Scope is deliberately narrow.** A spec expresses only proxy-oracle
-//! deployments — a dedicated oracle at `proxy-oracle-<market-name>.<registry>`
-//! with the [`COLLATERAL_PRICE_ID`]/[`BORROW_PRICE_ID`] constants. Of the alpha
-//! markets, most predate that: thirteen read `pyth-oracle.near` directly, two
-//! use a proxy named after the *asset pair* rather than the market, and one uses
-//! the LST oracle. Every one of those is **refused, not approximated** — a spec
-//! that re-derives to a different oracle account would be a silent wrong answer,
-//! and worse than no answer.
+//! A market this cannot express is **refused, not approximated**: a spec that
+//! re-derived to a different oracle would be a silent wrong answer.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -168,12 +160,9 @@ fn asset_spec<A: AssetClass>(
 
     let (aggregator, min_sources, sources) = split_aggregator(proxy.aggregator)?;
 
-    // `None` means opposite things on the two sides of this conversion. On chain
-    // it is *unbounded* — `FreshnessFilter::accepts` admits a price of any age.
-    // In a spec it means *unspecified*, and `AssetSpec::into_proxy` fills it from
-    // `price_maximum_age` / `DEFAULT_MAX_CLOCK_DRIFT`. Copying it through would
-    // turn "accept any age" into "enforce the market's bound" on the next
-    // deploy, silently and with no diff to notice.
+    // `None` is *unbounded* on chain but *unspecified* in a spec, where
+    // `into_proxy` fills it — so copying it through would silently start
+    // enforcing a bound the oracle does not have.
     let freshness = &proxy.freshness_filter;
     anyhow::ensure!(
         freshness.max_age_ns.is_some() && freshness.max_clock_drift_ns.is_some(),

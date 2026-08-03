@@ -29,14 +29,10 @@ fn alpha_market() -> MarketSpec {
     .expect("fixture spec should load")
 }
 
-/// The load-bearing test: the spec must reproduce a market we already run
-/// before it is allowed to create new ones. Compared against the very
-/// `market-args.json` each market was deployed with.
+/// The spec must reproduce a market we already run before creating new ones.
 ///
-/// Both sides are compared as parsed `MarketConfiguration`s, not as JSON text.
-/// `Decimal` does not round-trip its own decimal representation — `"1.2"`
-/// re-serializes as `"1.199…9"` — so comparing text would assert on formatting
-/// rather than on meaning, and would fail for a spec that is in fact identical.
+/// Compared as parsed `MarketConfiguration`s: `Decimal` does not round-trip its
+/// own text, so comparing JSON would assert on formatting.
 #[test]
 fn reproduces_the_live_alpha_market_configuration() {
     let deployed: Value = serde_json::from_str(
@@ -109,13 +105,9 @@ fn price_identifiers_are_constant() {
     );
 }
 
-/// `SourceSpec` is a deliberate parallel model of the three-level
-/// externally-tagged on-chain enum. This is what keeps it honest.
-///
-/// Compared against the checked-in `proxy-*.json` that the retired deploy
-/// actually configures, rather than an inline literal — an inline expectation
-/// would only assert that this module agrees with itself, which is how the
-/// `max_clock_drift` default was wrong here in the first place.
+/// `SourceSpec` parallels the on-chain enum, so it is checked against the
+/// deployed `proxy-*.json` rather than an inline literal that would only assert
+/// this module agrees with itself.
 #[test]
 fn derived_proxies_match_the_deployed_proxy_files() {
     let spec = alpha_market();
@@ -188,12 +180,8 @@ fn extends_applies_profiles_then_lets_the_market_win() {
     assert!(spec.extends.is_empty());
 }
 
-/// A value a profile already set is replaced, not merged into.
-///
-/// Merging key by key turns `{ Flat = "0" }` under `{ Proportional = "0.001" }`
-/// into a two-variant table that deserializes to nothing, and lets a profile's
-/// `borrow_range.maximum` survive a market that states only a minimum. Caught
-/// by the v1 migration, where two markets override both.
+/// A value a profile already set is replaced, not merged into: merging an
+/// externally-tagged enum key by key yields a table that parses to nothing.
 #[test]
 fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
     use templar_common::fee::Fee;
@@ -211,24 +199,13 @@ fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
     );
 }
 
-/// Every shared asset profile must name one token consistently and carry the
-/// standard source pair.
+/// Two obligations, holding against different things: the token identity must
+/// still agree with the market that holds it, while the source pair must be the
+/// standard Lazer-8/RedStone-2 shape, which deliberately does *not* match the
+/// seven markets still on Pyth.
 ///
-/// Two separate obligations, because they hold against different things:
-///
-/// * The token identity — asset, decimals, aggregator, `min_sources` — must
-///   still agree with the market that holds it. Those are properties of the
-///   asset, and a profile that disagreed would redeploy a different market.
-/// * The sources must be exactly one Lazer leg at weight 8 and one RedStone leg
-///   at weight 2. This deliberately does *not* match every deployed market:
-///   Pyth is being retired, so seven of these profiles are a migration target
-///   rather than a description. Asserting the shape is what keeps a stray
-///   `pyth` source or a mistyped weight from creeping back in.
-///
-/// `symbol` and `reference` are removed before the first comparison and their
-/// presence asserted separately: neither reaches the chain, so `market export`
-/// cannot recover them and no migrated spec has them. Supplying them is what
-/// lets the reference cross-check run at all.
+/// `symbol`/`reference` are asserted present but excluded from the comparison,
+/// since no exported spec can recover them.
 #[rstest]
 #[case("v1-borrow-ixlmusdc", "borrow", &["iethwbtc-ixlmusdc", "ixlm-ixlmusdc-1"])]
 #[case("v1-collateral-iada", "collateral", &["iada-ixlmusdc"])]
@@ -496,16 +473,8 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
 }
 
 /// Every migrated market must reproduce the configuration it was generated
-/// from (ENG-548).
-///
-/// The load-bearing test for the migration: these specs replace checked-in
-/// `market-args.json` files that are the record of what is actually deployed.
-/// Compared as parsed `MarketConfiguration`s rather than as JSON text, because
-/// `Decimal` does not round-trip its own representation — comparing text would
-/// assert on formatting and fail for specs that are in fact identical.
-///
-/// The counts are asserted so that deleting a spec, or pointing the loop at an
-/// empty directory, fails instead of passing vacuously.
+/// from. Counts are asserted so an empty directory fails rather than passing
+/// vacuously.
 #[rstest]
 #[case("alpha", "templar-alpha.near", 18)]
 #[case("v1", "v1.tmplr.near", 27)]
@@ -549,13 +518,8 @@ fn migrated_specs_reproduce_their_deployed_configurations(
             .into_market_configuration(i32::from(collateral), i32::from(borrow))
             .unwrap_or_else(|e| panic!("convert {name}: {e:#}"));
 
-        // `TimeChunkConfiguration` has two encodings of one number: the legacy
-        // `V0::BlockTimestampMs { divisor }` and `V1 { duration_ms }`, which
-        // `duration_ms()` reads identically. Two v1 markets carry the legacy
-        // form. A spec states the duration, so it always builds `V1` — the
-        // durations are compared, and the encoding deliberately is not, rather
-        // than adding a spec field whose only purpose is to reproduce a form
-        // nothing new should deploy.
+        // Two encodings of one number, which `duration_ms()` reads identically.
+        // The duration is compared and the encoding deliberately is not.
         assert_eq!(
             derived.time_chunk_configuration.duration_ms(),
             deployed.time_chunk_configuration.duration_ms(),

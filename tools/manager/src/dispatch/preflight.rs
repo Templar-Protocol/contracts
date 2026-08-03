@@ -64,11 +64,8 @@ struct CheckedSpec {
 }
 
 /// Every check, online then offline, writing resolved decimals back into the
-/// spec as it goes.
-///
-/// Shared with `market plan` (ENG-544), which embeds the same results in its
-/// artifact — running a *different* set of checks there would let a plan be
-/// written for a spec `spec check` rejects.
+/// spec. Shared with `market plan`, which would otherwise write plans for specs
+/// `spec check` rejects.
 pub(super) async fn run_all(
     ctx: &CliContext,
     spec: &mut MarketSpec,
@@ -108,12 +105,8 @@ pub(super) async fn run_all(
     Ok(checks)
 }
 
-/// Every check that needs the chain, in a stable order so two runs of the same
-/// spec produce comparable reports. Takes the spec mutably to write back the
-/// decimals it resolves.
-/// Nothing here propagates: a read that fails is a *check* that failed, and the
-/// operator still gets the rest of the report. Aborting on the first RPC error
-/// would hide every other problem in the spec.
+/// Every check that needs the chain, in a stable order. Nothing propagates: a
+/// failed read is a failed *check*, so one RPC error cannot hide the rest.
 async fn run(
     ctx: &CliContext,
     spec: &mut MarketSpec,
@@ -202,12 +195,9 @@ async fn source_status(ctx: &CliContext, source: &SourceSpec) -> Status {
     .await
 }
 
-/// The NEP-141 account whose `ft_metadata` defines this asset's decimals.
-///
-/// A NEP-245 wrapper does not define them: `intents.near` holds many tokens, and
-/// the value that matters belongs to the *underlying* one its token id names.
-/// Where that id does not name a NEP-141 account, nothing on chain answers — and
-/// that is precisely the case the spec's `decimals` override exists for.
+/// The NEP-141 account whose `ft_metadata` defines this asset's decimals. A
+/// NEP-245 wrapper does not: `intents.near` holds many tokens, and the value
+/// belongs to the underlying one its token id names.
 fn underlying_ft<A: AssetClass>(asset: &FungibleAsset<A>) -> Option<AccountId> {
     if let Some(contract_id) = asset.clone().into_nep141() {
         return Some(contract_id);
@@ -219,21 +209,11 @@ fn underlying_ft<A: AssetClass>(asset: &FungibleAsset<A>) -> Option<AccountId> {
         .ok()
 }
 
-/// What the chain says about the decimals of the token that defines them, or a
-/// failed check.
+/// What the chain says about this asset's decimals, or a failed check.
 ///
-/// `asset.exists` only covers `contract_id`, which for a NEP-245 asset is the
-/// *wrapper* — `intents.near` — not the token named inside its token id. So this
-/// is the only place the underlying account is ever touched, and swallowing its
-/// errors here means a mistyped bridge address produces an all-green report.
-/// That is the worst outcome the preflight can have, so:
-///
-/// - a token id naming an account that does not exist is a **failure**, not
-///   "unverified";
-/// - any other read failure is a **failure**, not "this token publishes no
-///   metadata";
-/// - only a real account with absent or unparseable metadata is `Unavailable`,
-///   which is the case the spec's `decimals` override exists for.
+/// The only place the *underlying* account is touched — `asset.exists` covers
+/// the NEP-245 wrapper — so every read failure here is a failure, not
+/// "unverified". Only a real account with unusable metadata is `Unavailable`.
 async fn underlying_decimals<A: AssetClass>(
     ctx: &CliContext,
     side: &str,
@@ -285,17 +265,11 @@ async fn ft_decimals(ctx: &CliContext, account_id: &AccountId) -> anyhow::Result
         .and_then(|decimals| u8::try_from(decimals).ok()))
 }
 
-/// Every version key must already be registered, or the deploy fails partway —
-/// which is how the retired shell deploy left orphaned governance contracts.
+/// Every version key must already be registered, or the deploy fails partway.
 ///
-/// Membership is all this can check. `remove_version` soft-deletes: it sets
-/// `VersionEntry::Code.code = None` but keeps the key, and `code_hash()` still
-/// answers with the stored hash — so `list_versions` and `get_version_code_hash`
-/// both report a removed version as present, while `deploy` aborts with
-/// "Version code has been deleted". No registry view distinguishes the two, so
-/// closing this needs an additive view reporting code availability (the same
-/// contract change ENG-463/464 wants for ABI validation). Until then a
-/// soft-deleted version passes here and fails mid-deploy.
+/// Membership is all this can check: `remove_version` soft-deletes, and no
+/// registry view distinguishes that from a live version, so a soft-deleted one
+/// passes here and fails mid-deploy. Closing it needs an additive view.
 async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     // A direct market deploys only itself, so the proxy versions it never uses
     // need not be registered.
@@ -365,14 +339,9 @@ fn is_missing_method(error: &templar_gateway_core::GatewayError) -> bool {
     rendered.contains("MethodNotFound") || rendered.contains("doesn't exist")
 }
 
-/// A direct market's oracle gets none of the validation a proxy's does.
-///
-/// A proxy spec is checked three ways — the sources exist, they aggregate, the
-/// result matches a third party. A direct spec skips all three, because there
-/// is no aggregation of ours to reproduce. That left the oracle it *does* read
-/// checked by nothing: a mistyped `price_id`, or an oracle account that does
-/// not exist, passed every check and deployed. `MarketConfiguration` is
-/// immutable after init, so the market would be permanently unable to price.
+/// A direct market skips the three checks a proxy gets, which left the oracle
+/// it does read checked by nothing. `MarketConfiguration` is immutable after
+/// init, so a mistyped `price_id` would be permanent.
 async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     use templar_gateway_methods_spec::contract;
     use templar_gateway_types::common::ContractArgs;
@@ -413,32 +382,18 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
                 })
                 .await
             {
-                // Absent is a **failure** here, and deliberately not the
-                // Skipped that ENG-541 established for proxy sources. That rule
-                // covers an adapter we are configuring, which may legitimately
-                // await its first push. This is an oracle we do not control,
-                // and the spec is asserting an identifier already exists on it
-                // — so "not there" means the identifier is wrong, which is the
-                // whole reason this check exists. Reporting it as not-run would
-                // exit zero for the mistyped `price_id` it was added to catch,
-                // and `MarketConfiguration` is immutable after init.
+                // A failure, not the Skipped a proxy source gets: this oracle
+                // is not ours to configure, so the spec asserting an identifier
+                // that is absent means the identifier is wrong.
                 Ok(result) if result.value.is_null() => Status::failed(format!(
                     "`{account_id}` serves no price for {hex}. For an oracle this \
                      deployment does not configure, an unknown identifier is a \
                      wrong one — and it cannot be corrected after init."
                 )),
                 Ok(_) => Status::passed(format!("{hex} on {account_id}")),
-                // The four oracles these specs read do not share one method
-                // surface: `pyth-oracle.near` answers `get_price`, while the
-                // LST and proxy oracles expose their own. A missing method is
-                // "this build cannot probe that oracle kind", which is not
-                // evidence the identifier is wrong — and reporting it as such
-                // would fail every spec reading those three.
-                // Not every oracle answers `get_price`. A proxy oracle exposes
-                // `price_feed_exists`, so fall through to it rather than give
-                // up: three of the shipped specs read oracles of that kind, and
-                // reporting them unprobeable left them with no price validation
-                // at all — a `Skipped` that no gate counts.
+                // Not every oracle answers `get_price`; a proxy oracle exposes
+                // `price_feed_exists`. Falling through rather than giving up,
+                // since three shipped specs read oracles of that kind.
                 Err(error) if is_missing_method(&error) => {
                     match ctx
                         .client

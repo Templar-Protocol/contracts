@@ -1,14 +1,8 @@
-//! Profile composition for [`super::MarketSpec`].
+//! Profile composition for [`super::MarketSpec`]: `extends` merges each listed
+//! file beneath the declaring one, in order, before a single deserialization.
 //!
-//! `extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-stable.toml"]`
-//! deep-merges each listed file beneath the declaring one, in order, before a
-//! single deserialization. That is the whole feature — the shared interest-rate
-//! curve currently copy-pasted across markets becomes one file, without a
-//! template engine.
-//!
-//! Merging happens on [`toml::Value`] rather than on typed values because a
-//! profile is a *fragment*: it does not satisfy `MarketSpec`'s required fields
-//! on its own, so it cannot be deserialized before merging.
+//! Merged as [`toml::Value`] because a profile is a fragment — it does not
+//! satisfy `MarketSpec`'s required fields, so it cannot be deserialized first.
 
 use std::{
     collections::BTreeSet,
@@ -111,18 +105,12 @@ fn take_extends(value: &mut Value, declaring_file: &Path) -> anyhow::Result<Vec<
         .collect()
 }
 
-/// Merge `overlay` into `base`, with `overlay` winning.
+/// Merge `overlay` into `base`, with `overlay` winning, stopping at `[section]`
+/// keys: values below replace wholesale.
 ///
-/// Merging stops at a spec's `[section]` keys: the document and each section
-/// merge key by key, and every value below that replaces wholesale.
-///
-/// The depth limit is load-bearing, not a simplification. A spec's values
-/// include externally-tagged enums — `origination_fee = { Flat = "0" }` in a
-/// profile against `{ Proportional = "0.001" }` in a market — and merging those
-/// key by key yields `{ Flat, Proportional }`, a two-variant table that
-/// deserializes to nothing. The same applies to any value whose absent keys
-/// mean something: `borrow_range = { minimum = "1" }` over a profile's
-/// `{ minimum, maximum }` must drop the maximum, not inherit it.
+/// The depth limit is load-bearing. Merging an externally-tagged enum key by
+/// key yields `{ Flat, Proportional }`, which deserializes to nothing, and a
+/// range stating only a minimum would inherit the profile's maximum.
 fn merge(base: &mut Value, overlay: Value) {
     merge_to_depth(base, overlay, 2);
 }

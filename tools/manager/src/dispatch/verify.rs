@@ -1,16 +1,11 @@
 //! `market verify` — re-run the preflight against a market that already exists.
 //!
-//! The closure for the gap ENG-544 opened deliberately. A hand-edited plan
-//! bypasses every spec-level check, because by then the arguments are already
-//! encoded. The market contract still runs `MarketConfiguration::validate()` at
-//! init, so that path has a backstop; **the oracle wiring has none** — and
-//! `admin_set_proxy` is dispatched detached, so the proposal that should have
-//! configured a feed reports success even when the oracle rejected it. Deployed
-//! state is the only witness.
+//! A hand-edited plan bypasses every spec-level check. The market contract
+//! backstops its own configuration at init; the oracle wiring has no backstop,
+//! and `admin_set_proxy` is dispatched detached, so a proposal reports success
+//! even when the oracle rejected it. Deployed state is the only witness.
 //!
-//! Useful independently, too: confirm a market still resolves prices after an
-//! upstream adapter is migrated or a source reconfigured. Exits non-zero on
-//! failure so it can run on a schedule.
+//! Exits non-zero on failure, so it can also run on a schedule.
 
 use anyhow::Context as _;
 use near_account_id::AccountId;
@@ -120,15 +115,9 @@ struct VerifiedMarket {
 
 /// Does governance actually control the oracle this market reads?
 ///
-/// `governance.admin` proves only that the supplied admin holds the role on the
-/// account a spec *derives*. It says nothing about whether that account owns the
-/// deployed oracle. A legacy deployment can leave a correctly named oracle owned
-/// by the registry — nine of the eleven v1 proxy oracles are exactly that — so
-/// without this the whole governance chain verifies clean while nobody named in
-/// the spec can configure the feed.
-///
-/// Both directions are asked: the oracle's owner must be the governance
-/// contract, and the governance contract must govern that oracle.
+/// `governance.admin` proves only that the admin holds the role on the account
+/// a spec *derives*. Nine of the eleven v1 proxy oracles are owned by the
+/// registry instead, which would otherwise verify clean.
 async fn governance_controls_the_oracle(
     ctx: &CliContext,
     spec: &MarketSpec,
@@ -190,13 +179,9 @@ async fn governance_controls_the_oracle(
     ])
 }
 
-/// Is `--governance-admin` actually the admin?
-///
-/// It cannot be recovered from chain state — the role is granted at init and no
-/// view names its holder — so it is supplied. Supplied is not the same as true:
-/// the reconstructed spec embeds it, and an unverified assertion would flow
-/// into every comparison below as though it were fact. `hasRole` can settle it,
-/// so it does.
+/// Is `--governance-admin` actually the admin? No view names the role's holder,
+/// so it is supplied — and an unverified assertion would flow into every
+/// comparison below as fact.
 async fn admin_holds_the_role(
     ctx: &CliContext,
     spec: &MarketSpec,
@@ -227,15 +212,10 @@ async fn admin_holds_the_role(
 
 /// Does what is deployed still match what was intended?
 ///
-/// Compares the two specs' **on-chain projections**, not the specs themselves.
-/// A reconstruction cannot recover what never reached the chain — `symbol`,
-/// `reference`, and the freshness bounds an authored spec leaves to defaults —
-/// so comparing documents reports drift for a market that is byte-identical to
-/// its own spec, on every scheduled run forever. What is deployable is what is
-/// comparable.
-///
-/// `versions` is likewise not compared: a deployment records the version it was
-/// created with, while a spec names the version to deploy *next*.
+/// Compares on-chain projections, not the specs: a reconstruction cannot
+/// recover what never reached the chain, so comparing documents would report
+/// drift forever. `versions` is excluded too — a deployment records what it was
+/// created with, a spec names what to deploy next.
 fn matches_intent(deployed: &MarketSpec, intended: &MarketSpec, path: &std::path::Path) -> Check {
     let id = "verify.matches_intent";
 

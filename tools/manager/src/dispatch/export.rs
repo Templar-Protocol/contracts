@@ -36,17 +36,11 @@ pub(super) async fn market(ctx: CliContext, args: Export) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// The spec equivalent to what is deployed at `market_id`.
+/// The spec equivalent to what is deployed at `market_id`, shared with `market
+/// verify` so the two cannot disagree about what a deployment is.
 ///
-/// Shared with `market verify` (ENG-547), which re-runs the preflight against
-/// it: verifying a *differently* reconstructed spec than `export` emits would
-/// mean the two disagree about what the deployment is.
-///
-/// Reads the oracle's actual proxies, so a market whose feeds were never
-/// configured fails here rather than verifying clean. That matters because
-/// `admin_set_proxy` is dispatched detached: the proposal that should have set
-/// them reports success even when the oracle rejected it, so on-chain state is
-/// the only witness.
+/// Reads the oracle's actual proxies: `admin_set_proxy` is dispatched detached,
+/// so on-chain state is the only witness that a feed was ever configured.
 pub(super) async fn reconstruct(
     ctx: &CliContext,
     market_id: &AccountId,
@@ -65,11 +59,8 @@ pub(super) async fn reconstruct(
     let oracle = &configuration.price_oracle_configuration;
     let oracle_id = oracle.account_id.clone();
 
-    // A market whose oracle is not the one this tool would have created reads
-    // somebody else's. Decided before anything proxy-shaped is read or derived:
-    // fetching its proxies or the governance beside it fails on a market that
-    // is perfectly healthy, and a name whose `proxy-oracle-` form exceeds
-    // NEAR's length limit is itself proof the market is not a proxy deployment.
+    // Decided before anything proxy-shaped is read or derived, since neither
+    // exists for a direct market. An underivable proxy name proves direct mode.
     let proxy_mode = crate::spec::oracle_account_id(&name, &registry_id)
         .is_ok_and(|derived| derived == oracle_id)
         && oracle.collateral_asset_price_id == COLLATERAL_PRICE_ID
@@ -111,13 +102,9 @@ pub(super) async fn reconstruct(
     })
 }
 
-/// The governance contract's default proposal TTL, read rather than assumed.
-///
-/// `GovernanceSpec` carries one TTL, but the contract stores one *per operation
-/// kind*. Defaulting to `0s` would be silently destructive: re-deploying an
-/// exported spec for a governance contract with a real timelock would remove
-/// that timelock. So every kind is queried, a uniform value is recovered, and a
-/// non-uniform set is refused rather than flattened.
+/// The governance contract's default proposal TTL. Stored per operation kind,
+/// so every kind is queried and a non-uniform set refused: flattening one would
+/// remove a real timelock on the next deploy.
 async fn governance_ttl(
     ctx: &CliContext,
     governance_id: &AccountId,
@@ -135,12 +122,8 @@ async fn governance_ttl(
             .await
         {
             Ok(result) => result.ttl_ns,
-            // A deployed contract older than this build does not know every
-            // operation kind — `SelfUpgrade` postdates the governance running
-            // on the alpha markets, and asking for its TTL panics the contract.
-            // A kind the deployment does not have has no TTL to recover, which
-            // is not the same as a failed read: matched on the contract's own
-            // "unknown variant" so a genuine RPC failure still propagates.
+            // A kind the deployment predates has no TTL to recover, which is
+            // not the same as a failed read.
             Err(error) if is_unknown_kind(&error, *kind) => continue,
             Err(error) => {
                 return Err(anyhow::Error::new(error)
@@ -166,21 +149,14 @@ async fn governance_ttl(
         .context("governance exposes no operation kinds to read a TTL from")
 }
 
-/// Operation kinds this build knows may postdate a deployed governance
-/// contract, and whose absence is therefore expected rather than suspicious.
-///
-/// An allowlist, because skipping a kind removes it from the uniformity check
-/// — and a *wrongly* skipped kind is how a per-operation timelock gets
-/// flattened into a single `ttl_default` and then removed by the next deploy.
+/// Operation kinds that may postdate a deployed governance contract. An
+/// allowlist, because a wrongly skipped kind drops out of the uniformity check
+/// and its timelock with it.
 const POSTDATED_KINDS: [OperationKind; 1] = [OperationKind::SelfUpgrade];
 
-/// Whether the contract rejected `kind` as a variant it does not know.
-///
-/// Narrow on both axes: only kinds known to postdate a deployment are
-/// skippable, and the error must name the kind that was asked for. A bare
-/// "unknown variant" match would also swallow a genuine query failure whose
-/// message happened to contain that phrase, and every swallowed kind silently
-/// widens what `ttl_default` claims to cover.
+/// Whether the contract rejected `kind` as a variant it does not know. Narrow
+/// on both axes — allowlisted kind, and the error must name it — because a bare
+/// phrase match would swallow genuine query failures.
 fn is_unknown_kind(error: &templar_gateway_core::GatewayError, kind: OperationKind) -> bool {
     if !POSTDATED_KINDS.contains(&kind) {
         return false;
@@ -228,16 +204,9 @@ async fn versions(
         proxy_governance: Some(version_key(ctx, registry_id, &governance_id).await?),
     };
 
-    // A deployment record outlives its version, so a recovered key can name a
-    // version the registry no longer offers at all. That case is caught here.
-    //
-    // What this does NOT catch is soft-deletion: `remove_version` only sets
-    // `VersionEntry::Code.code = None`, leaving the key in the map and
-    // `get_version_code_hash` still answering with the hash. No registry view
-    // distinguishes that, so an exported spec can still name a version whose
-    // redeployment fails with "Version code has been deleted" — after earlier
-    // contracts in the deploy have already been created. Closing that needs a
-    // registry view reporting code availability, which is a contract change.
+    // Catches a version the registry no longer offers, but not soft-deletion:
+    // `remove_version` keeps the key and the hash, and no view distinguishes
+    // that from a live version.
     let live = ctx
         .client
         .read(registry::ListVersions {
