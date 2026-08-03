@@ -11,6 +11,8 @@ use templar_common::oracle::pyth::PriceIdentifier;
 use templar_gateway_core::GatewayError;
 use templar_gateway_methods_spec::{account, contract, lst_oracle, registry};
 use templar_gateway_types::common::{ContractArgs, Pagination};
+use templar_proxy_oracle_kernel::Price;
+use templar_proxy_oracle_near_common::convert::pyth_price_try_to_kernel;
 
 use crate::commands::spec::Check as CheckArgs;
 use crate::context::{print_json, CliContext};
@@ -118,13 +120,20 @@ async fn run(
     checks.extend(asset_checks(ctx, "collateral", &mut spec.collateral, accept_mismatch).await);
     checks.extend(asset_checks(ctx, "borrow", &mut spec.borrow, accept_mismatch).await);
     checks.extend(versions(ctx, spec).await);
-    checks.extend(direct_oracle(ctx, spec).await);
+    let (direct_checks, direct_prices) = direct_oracle(ctx, spec).await;
+    checks.extend(direct_checks);
     checks.extend(accounts(ctx, spec).await);
     // Aggregation before the cross-check: it produces the prices the reference
     // source is compared against.
     let (aggregate_checks, collateral, borrow) =
         super::aggregate::checks(ctx, spec, deployed_oracle).await;
     checks.extend(aggregate_checks);
+
+    // Exactly one mode produces prices: a proxy market from the aggregation
+    // dry-run, a direct one from the call `oracle.serves_pair` already made. The
+    // cross-check is the only thing that judges the *value* rather than its
+    // presence, so a direct market needs it just as much.
+    let (collateral, borrow) = (collateral.or(direct_prices.0), borrow.or(direct_prices.1));
 
     match super::reference::CoinGecko::from_env() {
         Ok(source) => {
@@ -327,9 +336,16 @@ async fn versions(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
 /// A direct market skips the three checks a proxy gets, which left the oracle
 /// it does read checked by nothing. `MarketConfiguration` is immutable after
 /// init, so a mistyped `price_id` would be permanent.
-async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
+#[allow(
+    clippy::type_complexity,
+    reason = "one price per side, beside the checks"
+)]
+async fn direct_oracle(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+) -> (Vec<Check>, (Option<Price>, Option<Price>)) {
     let crate::spec::OracleMode::Direct { account_id } = &spec.oracle else {
-        return Vec::new();
+        return (Vec::new(), (None, None));
     };
 
     let mut checks = vec![Check::new(
@@ -348,39 +364,45 @@ async fn direct_oracle(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
         .await,
     )];
 
-    if let Ok((collateral, borrow)) = spec.price_identifiers() {
-        checks.push(Check::new(
-            "oracle.serves_pair",
-            serves_pair(ctx, spec, account_id, collateral, borrow).await,
-        ));
-    }
-    checks
+    let Ok((collateral, borrow)) = spec.price_identifiers() else {
+        return (checks, (None, None));
+    };
+    let (status, prices) = serves_pair(ctx, spec, account_id, collateral, borrow).await;
+    checks.push(Check::new("oracle.serves_pair", status));
+    (checks, prices)
 }
 
 /// Make the market's own price call: both identifiers, one call, its own
 /// `price_maximum_age`. An oracle that answers a per-feed probe but not this is
 /// one the market cannot read, and the configuration naming it is immutable.
+#[allow(
+    clippy::type_complexity,
+    reason = "one price per side, beside the verdict"
+)]
 async fn serves_pair(
     ctx: &CliContext,
     spec: &MarketSpec,
     oracle_id: &AccountId,
     collateral: PriceIdentifier,
     borrow: PriceIdentifier,
-) -> Status {
+) -> (Status, (Option<Price>, Option<Price>)) {
     let age = spec.market.price_maximum_age.as_secs();
 
     let asked = match answering_oracle(ctx, oracle_id, &[collateral, borrow]).await {
         Ok(asked) => asked,
-        Err(error) => return Status::failed(format!("{error:#}")),
+        Err(error) => return (Status::failed(format!("{error:#}")), (None, None)),
     };
     let prices = match list_ema_prices(ctx, &asked.oracle_id, &asked.dispatched, age).await {
         Ok(prices) => prices,
         Err(error) => {
-            return Status::failed(format!(
-                "`{}` did not answer the market's price call: {error}. A mistyped \
-                 `price_id` cannot be corrected after init.",
-                asked.oracle_id,
-            ))
+            return (
+                Status::failed(format!(
+                    "`{}` did not answer the market's price call: {error}. A mistyped \
+                     `price_id` cannot be corrected after init.",
+                    asked.oracle_id,
+                )),
+                (None, None),
+            )
         }
     };
 
@@ -405,26 +427,46 @@ async fn serves_pair(
     }
 
     if !unserved.is_empty() {
-        return Status::failed(format!(
-            "`{}` serves no feed for {}. This deployment does not configure that \
-             oracle, so an identifier it does not know is a wrong one — and the \
-             market configuration naming it is immutable after init.",
-            asked.oracle_id,
-            unserved.join(" and "),
-        ));
+        return (
+            Status::failed(format!(
+                "`{}` serves no feed for {}. This deployment does not configure that \
+                 oracle, so an identifier it does not know is a wrong one — and the \
+                 market configuration naming it is immutable after init.",
+                asked.oracle_id,
+                unserved.join(" and "),
+            )),
+            (None, None),
+        );
     }
     if !stale.is_empty() {
-        return Status::failed(format!(
-            "`{}` has no price within {age}s for {}. The market reads it with the \
-             same bound, so it would price nothing until something publishes.",
-            asked.oracle_id,
-            stale.join(" and "),
-        ));
+        return (
+            Status::failed(format!(
+                "`{}` has no price within {age}s for {}. The market reads it with the \
+                 same bound, so it would price nothing until something publishes.",
+                asked.oracle_id,
+                stale.join(" and "),
+            )),
+            (None, None),
+        );
     }
-    Status::passed(format!(
-        "both feeds priced within {age}s by `{}`",
-        asked.oracle_id
-    ))
+
+    // Handed back for the reference cross-check, which is the only thing that
+    // judges what these feeds *say* rather than that they answered.
+    let of = |dispatched: &PriceIdentifier| {
+        prices
+            .iter()
+            .find(|entry| entry.price_id == *dispatched)
+            .and_then(|entry| entry.price.as_ref())
+            .and_then(pyth_price_try_to_kernel)
+    };
+    let found = (of(&asked.dispatched[0]), of(&asked.dispatched[1]));
+    (
+        Status::passed(format!(
+            "both feeds priced within {age}s by `{}`",
+            asked.oracle_id
+        )),
+        found,
+    )
 }
 
 /// Which account actually answers a price call, and under which identifiers.
@@ -508,8 +550,11 @@ async fn accounts(ctx: &CliContext, spec: &MarketSpec) -> Vec<Check> {
     let mut checks = vec![account_check(ctx, "protocol", &spec.market.protocol_account_id).await];
 
     // Check ids are a contract — `--skip-check` and the plan artifact key on
-    // them — so each recipient gets its own.
-    for account_id in spec.market.yield_weights.r#static.keys() {
+    // them — so each recipient gets its own, in a stable order rather than
+    // `HashMap`'s.
+    let mut recipients: Vec<_> = spec.market.yield_weights.r#static.keys().collect();
+    recipients.sort();
+    for account_id in recipients {
         checks.push(account_check(ctx, &format!("yield_static.{account_id}"), account_id).await);
     }
     checks

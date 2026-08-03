@@ -144,7 +144,27 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         .iter()
         .filter_map(|index| file.steps.get(*index).cloned())
         .collect();
-    let targets = review(&ctx, &file, &outstanding, &remaining, &journal_path).await?;
+    // Re-run against the chain as it is now, not replayed from the artifact.
+    // `file.checks` records what was true when the plan was written, and a feed
+    // can go stale or a version be removed while a plan is being read — every
+    // one of those is a reason not to send. It is also what makes a non-funding
+    // `--skip-check` mean anything here, which `Apply`'s own help promises.
+    let mut checks =
+        super::preflight::run_all(&ctx, &mut file.spec.clone(), false, false, None).await?;
+    checks.extend(super::funding::checks(&ctx, &outstanding).await?);
+    let matched = apply_skips(&mut checks, &args.skip_check);
+    ensure_every_skip_matched(&args.skip_check, &matched)?;
+
+    let targets = review(
+        &ctx,
+        &file,
+        &checks,
+        &outstanding,
+        &remaining,
+        &journal_path,
+    )
+    .await?;
+    gate(&checks, file.spec.market_id()?.as_str())?;
 
     // Resolved once, here, and carried through to the send: the keychain
     // backend discovers keys on chain and may prompt, and a second resolution
@@ -168,20 +188,6 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
             remaining.len(),
         ))?;
     }
-
-    let mut funding = super::funding::checks(&ctx, &outstanding).await?;
-    let matched = apply_skips(&mut funding, &args.skip_check);
-    ensure_every_skip_matched(&args.skip_check, &matched)?;
-    let short = crate::spec::check::failures(&funding);
-    for check in &funding {
-        eprintln!("  {} — {:?}", check.id, check.status);
-    }
-    anyhow::ensure!(
-        short == 0,
-        "{short} signer(s) cannot cover this plan. Top up and re-run, or pass \
-         `--skip-check` if the check is wrong; stopping now costs nothing, \
-         stopping at step 4 does not."
-    );
 
     // Again, immediately before sending: the prompt above has no time limit, and
     // the check is only worth what it is worth at the moment of the send.
@@ -275,12 +281,13 @@ async fn send(
 async fn review(
     ctx: &CliContext,
     file: &PlanFile,
+    checks: &[Check],
     outstanding: &[crate::spec::plan::PlanStep],
     remaining: &[usize],
     journal_path: &std::path::Path,
 ) -> anyhow::Result<Vec<AccountId>> {
     render(file);
-    report_checks(file);
+    report_checks(checks);
 
     // Re-read, not trusted from the plan: a target free at plan time can be
     // claimed while the plan is being reviewed. Over the outstanding steps only,
@@ -775,6 +782,13 @@ fn deploy_target(
 /// A free account is not a free name: `registry.deploy` refuses any id its
 /// deployment map still holds, and `market remove` deletes the account without
 /// removing that entry, so a torn-down name is free and unusable at once.
+///
+/// Best-effort in one direction: `get_deployment` reports a `Reserved` entry as
+/// absent, and no registry view distinguishes it, so a name another deploy has
+/// reserved but not yet created is invisible here. That window is a concurrent
+/// in-flight deploy of the same name — a failed one removes its entry — and the
+/// registry rejects it either way, so the unseen case costs a failed step
+/// rather than a bad deployment. Closing it needs an additive view.
 async fn target_conflict(
     ctx: &CliContext,
     registry_id: &AccountId,
@@ -852,21 +866,20 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
     Ok(checks)
 }
 
-/// The checks the plan carries, shown before the prompt because `apply` is
-/// often run by someone other than whoever planned. Only non-passing ones:
-/// burying an override in a wall of green is how it stops being reviewed.
-fn report_checks(file: &PlanFile) {
-    let notable: Vec<_> = file
-        .checks
+/// The checks as they stand now, shown before the prompt because `apply` is
+/// often run by someone other than whoever planned, and later. Only non-passing
+/// ones: burying an override in a wall of green is how it stops being reviewed.
+fn report_checks(checks: &[Check]) {
+    let notable: Vec<_> = checks
         .iter()
         .filter(|check| !matches!(check.status, Status::Passed { .. }))
         .collect();
 
-    let failed = crate::spec::check::failures(&file.checks);
+    let failed = crate::spec::check::failures(checks);
     eprintln!(
         "\n{} check(s): {} passed, {} not run, {failed} FAILED",
-        file.checks.len(),
-        file.checks.len() - notable.len(),
+        checks.len(),
+        checks.len() - notable.len(),
         notable.len() - failed,
     );
     for check in notable {
@@ -874,8 +887,9 @@ fn report_checks(file: &PlanFile) {
     }
     if failed > 0 {
         eprintln!(
-            "This plan carries FAILED checks. `market plan` refuses to write one, \
-             so this file was edited or produced by another build."
+            "These are re-run now, not read from the plan. A check that passed \
+             when the plan was written and fails here means the chain moved \
+             under it."
         );
     }
 }

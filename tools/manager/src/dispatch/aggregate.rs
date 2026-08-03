@@ -35,7 +35,8 @@ pub(super) async fn checks(
 ) -> (Vec<Check>, Option<Price>, Option<Price>) {
     // Nothing to dry-run for a direct market: this reproduces a *proxy's*
     // aggregation, and an oracle we did not configure has none of ours to
-    // reproduce. Reported as not run rather than silently passing.
+    // reproduce. Reported as not run rather than silently passing. Its prices
+    // still reach the reference cross-check — `oracle.serves_pair` reads them.
     if spec.oracle.is_direct() {
         return (
             vec![Check::new(

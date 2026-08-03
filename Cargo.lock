@@ -13197,6 +13197,7 @@ dependencies = [
  "near-contract-standards",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
  "templar-common",
  "templar-gateway-core",
  "templar-gateway-methods-spec",
