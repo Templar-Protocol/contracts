@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.4.2...templar-market-contract-v1.5.0) - 2026-08-04
+
+### Added
+
+- declarative market deployment — one spec, plan/apply, real preflight (ENG-537) ([#540](https://github.com/Templar-Protocol/contracts/pull/540))
+
 ## [1.4.1](https://github.com/Templar-Protocol/contracts/compare/templar-market-contract-v1.4.0...templar-market-contract-v1.4.1) - 2026-08-03
 
 ### Added
