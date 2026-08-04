@@ -11,7 +11,7 @@ min_sources = 1
 sources = [
     # Pyth Lazer has not yet enabled this feed
     # { kind = "lazer", oracle = "pyth-lazer.v1.tmplr.near", feed_id = 1800, weight = 3 },
-    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "0210be8d6073809a6b26cede532b7e60bacd4478a0f9f1c3f2e6d86a7f0bdce6", weight = 1 },
+    # { kind = "pyth", oracle = "pyth-oracle.near", price_id = "0210be8d6073809a6b26cede532b7e60bacd4478a0f9f1c3f2e6d86a7f0bdce6", weight = 1 },
     { kind = "red_stone", oracle = "redstone-adapter.v1.tmplr.near", price_id = "deJTRSY_FUNDAMENTAL/USD", weight = 5 },
 ]
 
