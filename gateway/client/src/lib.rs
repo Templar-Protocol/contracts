@@ -65,14 +65,10 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// Register a pre-built signer for an account.
+    /// Register a pre-built signer, under the account it signs for.
     #[must_use]
-    pub fn with_signer(
-        mut self,
-        account_id: impl Into<ManagedAccountId>,
-        signer: PooledSigner,
-    ) -> Self {
-        self.signers.insert(account_id.into(), signer);
+    pub fn with_signer(mut self, signer: PooledSigner) -> Self {
+        self.signers.insert(signer.account_id().clone(), signer);
         self
     }
 
@@ -92,7 +88,7 @@ impl ClientBuilder {
         account_id: impl Into<ManagedAccountId>,
         secret_keys: impl IntoIterator<Item = SecretKey>,
     ) -> GatewayResult<Self> {
-        Ok(self.with_signer(account_id, PooledSigner::new(secret_keys)?))
+        Ok(self.with_signer(PooledSigner::new(account_id, secret_keys)?))
     }
 
     /// Use a specific operation store (e.g. a durable `PostgresStore`) for

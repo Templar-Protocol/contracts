@@ -156,7 +156,8 @@ mod tests {
 
         let gateway_signers = HashMap::from([(
             gateway_signer_account_id.clone(),
-            PooledSigner::new([gateway_secret_key]).expect("failed to create pooled signer"),
+            PooledSigner::new(gateway_signer_account_id.clone(), [gateway_secret_key])
+                .expect("failed to create pooled signer"),
         )]);
 
         let ft_contract_id: AccountId = "mock-ft.near".parse()?;

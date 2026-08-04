@@ -111,8 +111,8 @@ impl App {
             builder =
                 builder.secret_keys(args.ua.account_id.clone(), args.ua.secret_key.clone())?;
         }
-        for (account_id, signer) in signers {
-            builder = builder.with_signer(account_id, signer);
+        for (_, signer) in signers {
+            builder = builder.with_signer(signer);
         }
         // The methods client and the oracle-updates client share one operation
         // driver (store, signer pool, executor) and a base context, so idempotency,

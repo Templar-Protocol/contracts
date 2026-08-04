@@ -415,11 +415,11 @@ async fn init_relayer_app(
         [
             (
                 relay_user.clone(),
-                templar_gateway_testing::test_pooled_signer(),
+                templar_gateway_testing::test_pooled_signer(relay_user.clone()).await,
             ),
             (
                 ua_account.clone(),
-                templar_gateway_testing::test_pooled_signer(),
+                templar_gateway_testing::test_pooled_signer(ua_account.clone()).await,
             ),
         ],
     )

@@ -97,11 +97,12 @@ impl Config {
         let mut signers = HashMap::new();
 
         for config in &self.managed_signers {
-            let entry =
-                PooledSigner::new(config.secret_keys.iter().cloned()).with_context(|| {
-                    format!("failed to initialize signer for {}", config.account_id)
-                })?;
-            signers.insert(ManagedAccountId(config.account_id.clone()), entry);
+            let account_id = ManagedAccountId(config.account_id.clone());
+            let entry = PooledSigner::new(account_id.clone(), config.secret_keys.iter().cloned())
+                .with_context(|| {
+                format!("failed to initialize signer for {}", config.account_id)
+            })?;
+            signers.insert(account_id, entry);
         }
 
         Ok(signers)

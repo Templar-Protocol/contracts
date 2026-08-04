@@ -217,10 +217,11 @@ impl SandboxHarness {
             .map(|(label, balance)| Ok((self.unique_account_id(label)?, *balance)))
             .collect::<Result<Vec<_>>>()?;
         crate::sandbox_ext::create_accounts(&self.network, &accounts, &test_secret_key()?).await?;
-        Ok(accounts
-            .into_iter()
-            .map(|(account_id, _)| self.register_account(account_id))
-            .collect())
+        let mut registered = Vec::with_capacity(accounts.len());
+        for (account_id, _) in accounts {
+            registered.push(self.register_account(account_id).await);
+        }
+        Ok(registered)
     }
 
     /// Like `create_account` but mints the account with a
@@ -244,17 +245,17 @@ impl SandboxHarness {
             balance,
         )
         .await?;
-        Ok(self.register_account(account_id))
+        Ok(self.register_account(account_id).await)
     }
 
     /// Register a freshly-created account on the shared signer. near-api caches
     /// nonces per `(account_id, public_key)`, so one signer safely covers every
     /// harness account and preserves nonce continuity across gateway and raw
     /// optimistic test transactions.
-    fn register_account(&self, account_id: AccountId) -> (AccountId, Arc<Signer>) {
-        let signer = test_signer();
-        self.register_signer(ManagedAccountId(account_id.clone()), test_pooled_signer());
-        (account_id, signer)
+    async fn register_account(&self, account_id: AccountId) -> (AccountId, Arc<Signer>) {
+        let managed = ManagedAccountId(account_id.clone());
+        self.register_signer(managed.clone(), test_pooled_signer(managed).await);
+        (account_id, test_signer())
     }
 
     /// A unique `{label}-{seq}.{tenant_root}` id. The per-harness `seq` keeps
@@ -1288,15 +1289,10 @@ pub fn test_signer() -> Arc<Signer> {
     Arc::clone(&SIGNER)
 }
 
-/// [`test_signer`] as a single gateway lane. Keeps the key paired with the
-/// signer that holds it, and shares that signer's nonce cache with direct
-/// near-api use.
-#[must_use]
-pub fn test_pooled_signer() -> PooledSigner {
-    PooledSigner::from_signer(
-        test_signer(),
-        test_secret_key()
-            .expect("fixed test secret key is valid")
-            .public_key(),
-    )
+/// [`test_signer`] as a single gateway lane for `account_id`, sharing that
+/// signer's nonce cache with direct near-api use.
+pub async fn test_pooled_signer(account_id: impl Into<ManagedAccountId>) -> PooledSigner {
+    PooledSigner::from_signer(account_id, test_signer())
+        .await
+        .expect("fixed test signer holds a key")
 }

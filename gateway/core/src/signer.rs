@@ -1,7 +1,14 @@
-use std::sync::Arc;
+use std::{iter, sync::Arc};
 
 use futures::future::select_all;
-use near_api::{PublicKey, SecretKey, Signer};
+use near_api::{
+    types::{
+        transaction::{actions::Action, PrepopulateTransaction, SignedTransaction},
+        AccountId,
+    },
+    NetworkConfig, PublicKey, SecretKey, Signer,
+};
+use templar_gateway_types::ManagedAccountId;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{GatewayError, GatewayResult};
@@ -16,8 +23,16 @@ struct KeySlot {
 }
 
 impl KeySlot {
-    async fn lease(&self) -> SigningKeyLease {
+    fn new(public_key: PublicKey, signer: Arc<Signer>) -> Self {
+        Self {
+            public_key,
+            signer: Arc::new(Mutex::new(signer)),
+        }
+    }
+
+    async fn lease(&self, account_id: ManagedAccountId) -> SigningKeyLease {
         SigningKeyLease {
+            account_id,
             public_key: self.public_key,
             signer: Arc::clone(&self.signer).lock_owned().await,
         }
@@ -31,14 +46,20 @@ impl KeySlot {
 /// Clones share the same lanes.
 #[derive(Clone)]
 pub struct PooledSigner {
-    slots: Vec<KeySlot>,
+    account_id: ManagedAccountId,
+    /// Split from `others` so a pool always has a lane to hand out.
+    primary: KeySlot,
+    others: Vec<KeySlot>,
 }
 
 impl PooledSigner {
     /// Errors if `secret_keys` is empty or repeats a key. A repeat would build
     /// two lanes over one access key, which is the race this type exists to
     /// prevent.
-    pub fn new(secret_keys: impl IntoIterator<Item = SecretKey>) -> GatewayResult<Self> {
+    pub fn new(
+        account_id: impl Into<ManagedAccountId>,
+        secret_keys: impl IntoIterator<Item = SecretKey>,
+    ) -> GatewayResult<Self> {
         let mut slots: Vec<KeySlot> = Vec::new();
 
         for secret_key in secret_keys {
@@ -50,44 +71,62 @@ impl PooledSigner {
             }
             let signer = Signer::from_secret_key(secret_key)
                 .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
-            slots.push(KeySlot {
-                public_key,
-                signer: Arc::new(Mutex::new(signer)),
-            });
+            slots.push(KeySlot::new(public_key, signer));
         }
 
-        if slots.is_empty() {
-            return Err(GatewayError::InvalidSignerKey(
-                "at least one secret key is required".to_owned(),
-            ));
-        }
+        let mut slots = slots.into_iter();
+        let primary = slots.next().ok_or_else(|| {
+            GatewayError::InvalidSignerKey("at least one secret key is required".to_owned())
+        })?;
 
-        Ok(Self { slots })
+        Ok(Self {
+            account_id: account_id.into(),
+            primary,
+            others: slots.collect(),
+        })
     }
 
-    /// Wrap an existing signer's `public_key` as a single lane.
+    /// Wrap an existing signer's current key as this account's single lane.
     ///
     /// For sharing one [`Signer`] — and so one nonce cache — between pooled and
-    /// direct near-api use. The signer must hold `public_key`, since signing
-    /// binds to it; any other key it holds goes unused and unguarded here.
+    /// direct near-api use. The key is taken from the signer rather than named
+    /// by the caller, so the lane cannot guard a key the signer does not hold.
     ///
     /// Each call builds a *new* lane, so an account must be wrapped once and the
     /// result cloned; wrapping the same key twice would race it. A lane excludes
     /// other lease holders, not direct use of the same signer.
+    pub async fn from_signer(
+        account_id: impl Into<ManagedAccountId>,
+        signer: Arc<Signer>,
+    ) -> GatewayResult<Self> {
+        let public_key = signer
+            .get_public_key()
+            .await
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
+
+        Ok(Self {
+            account_id: account_id.into(),
+            primary: KeySlot::new(public_key, signer),
+            others: Vec::new(),
+        })
+    }
+
     #[must_use]
-    pub fn from_signer(signer: Arc<Signer>, public_key: PublicKey) -> Self {
-        Self {
-            slots: vec![KeySlot {
-                public_key,
-                signer: Arc::new(Mutex::new(signer)),
-            }],
-        }
+    pub fn account_id(&self) -> &ManagedAccountId {
+        &self.account_id
+    }
+
+    fn slots(&self) -> impl Iterator<Item = &KeySlot> {
+        iter::once(&self.primary).chain(&self.others)
     }
 
     /// Lease the first idle key, waiting only when every key is already in use.
     pub async fn lease_next(&self) -> SigningKeyLease {
-        // `new` rejects an empty pool, so there is always a future to select.
-        let (lease, _, _) = select_all(self.slots.iter().map(|slot| Box::pin(slot.lease()))).await;
+        let (lease, _, _) = select_all(
+            self.slots()
+                .map(|slot| Box::pin(slot.lease(self.account_id.clone()))),
+        )
+        .await;
         lease
     }
 
@@ -95,30 +134,60 @@ impl PooledSigner {
     /// with it, whose nonce is bound to that key. `None` when the pool does not
     /// hold the key, and so cannot allocate a nonce on it at all.
     pub async fn lease(&self, public_key: &PublicKey) -> Option<SigningKeyLease> {
-        let slot = self
-            .slots
-            .iter()
-            .find(|slot| slot.public_key == *public_key)?;
-        Some(slot.lease().await)
+        let slot = self.slots().find(|slot| slot.public_key == *public_key)?;
+        Some(slot.lease(self.account_id.clone()).await)
     }
 }
 
 /// Exclusive right to allocate and broadcast a nonce on one access key. Held
 /// from signing through submission; dropping it releases the key.
+///
+/// The signer stays inside: [`presign`](Self::presign) is the only way to reach
+/// it, so a signature can be produced neither on another key nor for another
+/// account, and never after the lane has been released.
+#[must_use = "dropping a lease releases the key without doing anything with it"]
 pub struct SigningKeyLease {
+    account_id: ManagedAccountId,
     public_key: PublicKey,
     signer: OwnedMutexGuard<Arc<Signer>>,
 }
 
 impl SigningKeyLease {
     #[must_use]
+    pub fn account_id(&self) -> &ManagedAccountId {
+        &self.account_id
+    }
+
+    #[must_use]
     pub fn public_key(&self) -> PublicKey {
         self.public_key
     }
 
-    #[must_use]
-    pub fn signer(&self) -> Arc<Signer> {
-        Arc::clone(&self.signer)
+    /// Allocate this key's next nonce and sign under it. The signature is not
+    /// yet on the network, so the caller must hold the lease until it is: a
+    /// later nonce reaching the chain first invalidates this one.
+    pub async fn presign(
+        &self,
+        network: &NetworkConfig,
+        receiver_id: AccountId,
+        actions: Vec<Action>,
+    ) -> GatewayResult<SignedTransaction> {
+        let transaction = PrepopulateTransaction {
+            signer_id: self.account_id.0.clone(),
+            receiver_id,
+            actions,
+        };
+
+        let (nonce, block_hash, _) = self
+            .signer
+            .fetch_tx_nonce(transaction.signer_id.clone(), self.public_key, network)
+            .await
+            .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
+
+        self.signer
+            .sign(transaction, self.public_key, nonce, block_hash)
+            .await
+            .map_err(|error| GatewayError::NearTransaction(error.to_string()))
     }
 }
 
@@ -136,11 +205,19 @@ mod tests {
         SecretKey::ED25519(ED25519SecretKey::from_secret_key([index + 1; 32]))
     }
 
+    fn pool(secret_keys: impl IntoIterator<Item = SecretKey>) -> PooledSigner {
+        PooledSigner::new(
+            "pooled.near".parse::<near_api::AccountId>().unwrap(),
+            secret_keys,
+        )
+        .expect("valid pool")
+    }
+
     /// Blind rotation would hand out the busy key and stall behind it while a
     /// free lane sat idle.
     #[tokio::test]
     async fn leases_an_idle_key_rather_than_a_busy_one() {
-        let pool = PooledSigner::new([key(0), key(1)]).expect("two keys");
+        let pool = pool([key(0), key(1)]);
         let held = pool.lease(&key(0).public_key()).await.expect("first key");
 
         let idle = pool.lease_next().await;
@@ -151,7 +228,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_key_admits_one_lease_at_a_time() {
-        let pool = PooledSigner::new([key(0)]).expect("one key");
+        let pool = pool([key(0)]);
         let held = pool.lease_next().await;
 
         assert!(
@@ -169,19 +246,31 @@ mod tests {
 
     #[test]
     fn rejects_an_empty_pool() {
-        assert!(PooledSigner::new([]).is_err());
+        assert!(
+            PooledSigner::new("pooled.near".parse::<near_api::AccountId>().unwrap(), []).is_err()
+        );
     }
 
     /// Two lanes over one access key would race its nonce — the defect this
     /// type prevents — so a repeated key is a configuration error.
     #[test]
     fn rejects_a_duplicated_key() {
-        assert!(PooledSigner::new([key(0), key(1), key(0)]).is_err());
+        assert!(PooledSigner::new(
+            "pooled.near".parse::<near_api::AccountId>().unwrap(),
+            [key(0), key(1), key(0)]
+        )
+        .is_err());
     }
 
     #[tokio::test]
     async fn declines_a_key_outside_the_pool() {
-        let pool = PooledSigner::new([key(0)]).expect("one key");
+        let pool = pool([key(0)]);
         assert!(pool.lease(&key(1).public_key()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn leases_carry_the_pool_account() {
+        let pool = pool([key(0)]);
+        assert_eq!(pool.lease_next().await.account_id(), pool.account_id());
     }
 }

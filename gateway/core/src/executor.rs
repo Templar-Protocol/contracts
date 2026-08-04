@@ -182,36 +182,23 @@ impl SignTransaction for NearTransactionSigner {
         lease: &SigningKeyLease,
         transaction: PlannedTransaction,
     ) -> GatewayResult<PreparedTransactionResult> {
-        let signer = lease.signer();
-        // Naming the key keeps the signature on the leased lane; `presign_with`
-        // would instead take whichever key near-api's rotation hands back.
-        let public_key = lease.public_key();
-        let (nonce, block_hash, _) = signer
-            .fetch_tx_nonce(
-                transaction.signer_account_id.0.clone(),
-                public_key,
+        // The lease signs as its own account, so a step leased against a
+        // different one would be recorded under an account that did not sign it.
+        if transaction.signer_account_id != *lease.account_id() {
+            return Err(GatewayError::UnsupportedSignerAccount(format!(
+                "{} cannot sign for {}",
+                lease.account_id().0,
+                transaction.signer_account_id.0
+            )));
+        }
+
+        let signed_transaction = lease
+            .presign(
                 &self.network,
+                transaction.receiver_id.clone(),
+                transaction.actions.clone(),
             )
-            .await
-            .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
-
-        let presigned = near_api::Transaction::use_transaction(
-            PrepopulateTransaction {
-                signer_id: transaction.signer_account_id.0.clone(),
-                receiver_id: transaction.receiver_id.clone(),
-                actions: transaction.actions.clone(),
-            },
-            signer,
-        )
-        .presign_offline(public_key, block_hash, nonce)
-        .await
-        .map_err(|error| GatewayError::NearTransaction(error.to_string()))?;
-
-        let Some(signed_transaction) = presigned.transaction.signed() else {
-            return Err(GatewayError::NearTransaction(
-                "failed to extract presigned transaction".to_owned(),
-            ));
-        };
+            .await?;
         let tx_hash = signed_transaction.get_hash().into();
 
         Ok(PreparedTransactionResult {

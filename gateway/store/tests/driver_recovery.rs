@@ -143,7 +143,7 @@ struct FakeSigner {
 impl FakeSigner {
     fn with_keys(count: u8) -> Self {
         Self {
-            pool: PooledSigner::new((0..count).map(pool_secret_key)).unwrap(),
+            pool: PooledSigner::new(signer_id(), (0..count).map(pool_secret_key)).unwrap(),
             nonces: Mutex::new(HashMap::new()),
         }
     }

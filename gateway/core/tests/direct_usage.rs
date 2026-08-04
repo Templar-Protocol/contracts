@@ -48,7 +48,7 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
         network.clone(),
         std::collections::HashMap::from([(
             signer_account_id.clone(),
-            PooledSigner::from_signer(signer, test_secret_key()?.public_key()),
+            PooledSigner::from_signer(signer_account_id.clone(), signer).await?,
         )]),
     );
 
