@@ -64,8 +64,6 @@ pub enum ProposalEncoding {
 }
 
 impl ProposalEncoding {
-    /// Serialization skips the default so a request that does not opt in is byte-identical to one
-    /// written before this field existed — which keeps its idempotency fingerprint stable.
     pub fn is_json(&self) -> bool {
         matches!(self, Self::Json)
     }

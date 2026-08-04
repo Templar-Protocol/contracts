@@ -175,22 +175,23 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
             requested_ttl: body.requested_ttl,
         };
 
-        // Only the opt-in path pays for a version read, and uncached: the metadata cache holds for
-        // an hour, which would refuse borsh for that long after a governance upgrade.
-        let version = match body.encoding {
-            ProposalEncoding::Json => None,
-            ProposalEncoding::Borsh => Some(
-                ctx.near_client()
+        match body.encoding {
+            ProposalEncoding::Json => ctx
+                .near_client()
+                .proxy_governance(governance_id)
+                .create_proposal(options, args),
+            ProposalEncoding::Borsh => {
+                // Uncached: the metadata cache holds for an hour, which would refuse borsh for
+                // that long after a governance upgrade.
+                let version = ctx
+                    .near_client()
                     .contract(governance_id.clone())
                     .version::<Governance>()
-                    .await?,
-            ),
-        };
-
-        let governance = ctx.near_client().proxy_governance(governance_id);
-        match version {
-            None => governance.create_proposal(options, args),
-            Some(version) => governance.create_proposal_borsh(options, version, args),
+                    .await?;
+                ctx.near_client()
+                    .proxy_governance(governance_id)
+                    .create_proposal_borsh(options, version, args)
+            }
         }
         .map(OperationPlan::from)
     }
@@ -240,45 +241,21 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
 
 #[cfg(test)]
 mod tests {
-    use near_api::{types::transaction::actions::Action, NetworkConfig, RPCEndpoint};
-    use templar_gateway_core::{HasNearClient, NearClient, PlanWrite};
+    use near_api::types::transaction::actions::Action;
+    use templar_gateway_core::{GatewayError, PlanWrite};
     use templar_gateway_methods_spec::proxy_oracle_governance;
     use templar_gateway_types::{common::WriteRequest, ManagedAccountId, ProposalEncoding};
-    use templar_proxy_oracle_near_governance_common::{target, Operation};
+    use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
 
     use super::Dispatch;
-
-    #[derive(Clone)]
-    struct TestCtx(NearClient);
-
-    impl HasNearClient for TestCtx {
-        fn near_client(&self) -> &NearClient {
-            &self.0
-        }
-    }
-
-    /// Points at a closed port, so any path that touches the network fails.
-    fn offline_ctx() -> TestCtx {
-        // One retry, not the default five: the backoff would otherwise spend ~310ms per test
-        // waiting out connection-refused on a port nothing is listening to.
-        let mut network =
-            NetworkConfig::from_rpc_url("test", "http://127.0.0.1:1".parse().unwrap());
-        network.rpc_endpoints =
-            vec![RPCEndpoint::new("http://127.0.0.1:1".parse().unwrap()).with_retries(1)];
-        TestCtx(NearClient::new(network))
-    }
+    use crate::test_ctx::{offline_ctx, TestCtx};
 
     fn operation() -> Operation {
-        Operation::TargetFunctionCall(
-            target::admin_rearm(
-                templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
-                0,
-                templar_common::Nanoseconds::zero(),
-                templar_proxy_oracle_kernel::proxy::circuit_breaker::AcceptedHistorySource::Empty,
-                None,
-            )
-            .expect("build rearm call"),
-        )
+        Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: "op.near".parse().unwrap(),
+            role: Role::Admin,
+            set: true,
+        })
     }
 
     fn request(
@@ -321,11 +298,14 @@ mod tests {
         assert!(action.args.starts_with(b"{"), "expected json arguments");
     }
 
-    /// The converse of the above: the same offline client fails, so opting in does read a version.
     #[tokio::test]
     async fn borsh_encoding_reads_the_version_first() {
-        plan(ProposalEncoding::Borsh)
+        let error = plan(ProposalEncoding::Borsh)
             .await
             .expect_err("borsh planning must consult the governance version");
+        assert!(
+            matches!(error, GatewayError::NearQuery(_)),
+            "the failure must come from the version query, not from planning: {error:?}"
+        );
     }
 }

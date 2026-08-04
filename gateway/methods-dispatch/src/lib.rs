@@ -15,6 +15,8 @@ mod redstone_impl;
 mod ref_finance_impl;
 mod registry_impl;
 mod storage_impl;
+#[cfg(test)]
+mod test_ctx;
 mod token_impl;
 mod token_ops;
 mod tx_impl;

@@ -2,7 +2,7 @@ use std::borrow::Borrow;
 
 use near_account_id::AccountId;
 use near_api::types::transaction::actions::{Action, FunctionCallAction};
-use templar_gateway_types::GovernanceVersion;
+use templar_gateway_types::{common::ContractArgs, GovernanceVersion};
 use templar_proxy_oracle_near_governance_common::{
     CreateProposalArgs, GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -78,9 +78,6 @@ impl ProxyGovernanceClient<'_> {
 
     /// Borsh-encoded twin of [`Self::create_proposal`], for payloads JSON makes too costly or too
     /// large.
-    ///
-    /// Takes the callee's `version` rather than trusting the caller to have checked it: an older
-    /// contract has no such method, and the call would fail on chain after paying for it.
     pub fn create_proposal_borsh(
         &self,
         options: ContractWriteOptions,
@@ -88,19 +85,21 @@ impl ProxyGovernanceClient<'_> {
         args: impl Borrow<GovCreateArgs>,
     ) -> GatewayResult<PlannedTransaction> {
         if !version.supports_borsh_create_proposal() {
-            let required = GovernanceVersion::from(GovernanceVersion::BORSH_CREATE_PROPOSAL);
+            let (major, minor, patch) = GovernanceVersion::BORSH_CREATE_PROPOSAL;
             return Err(GatewayError::UnsupportedFeature(format!(
-                "governance {} is version {version}; borsh proposals require v{required}",
+                "governance {} is version {version}; \
+                 borsh proposals require v{major}.{minor}.{patch}",
                 self.contract_id(),
             )));
         }
 
+        let encoded = near_sdk::borsh::to_vec(args.borrow())?;
         Ok(PlannedTransaction::single_action(
             options.signer_account_id,
             self.contract_id().to_owned(),
             Action::FunctionCall(Box::new(FunctionCallAction {
                 method_name: "create_proposal_borsh".to_owned(),
-                args: near_sdk::borsh::to_vec(args.borrow())?,
+                args: ContractArgs::Raw(encoded.into()).try_into_bytes()?,
                 gas: options.gas,
                 deposit: options.deposit,
             })),
@@ -118,7 +117,7 @@ impl ProxyGovernanceClient<'_> {
 mod tests {
     use near_api::{types::transaction::actions::Action, NetworkConfig};
     use templar_gateway_types::{GovernanceVersion, ManagedAccountId};
-    use templar_proxy_oracle_near_governance_common::{target, Operation};
+    use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
 
     use super::{GovCreateArgs, NearClient};
     use crate::client::ContractWriteOptions;
@@ -126,16 +125,11 @@ mod tests {
     fn args() -> GovCreateArgs {
         GovCreateArgs {
             id: 7,
-            operation: Operation::TargetFunctionCall(
-                target::admin_rearm(
-                    templar_common::oracle::pyth::PriceIdentifier([0xaa; 32]),
-                    0,
-                    templar_common::Nanoseconds::zero(),
-                    templar_proxy_oracle_kernel::proxy::circuit_breaker::AcceptedHistorySource::Empty,
-                    None,
-                )
-                .expect("build rearm call"),
-            ),
+            operation: Operation::Reflexive(ReflexiveOperation::SetRole {
+                account_id: "op.near".parse().unwrap(),
+                role: Role::Admin,
+                set: true,
+            }),
             requested_ttl: templar_common::Nanoseconds::zero(),
         }
     }
@@ -169,7 +163,6 @@ mod tests {
         assert_eq!(action.args, near_sdk::borsh::to_vec(&args()).unwrap());
     }
 
-    /// The guard lives here rather than in the caller so no second caller can skip it.
     #[test]
     fn refuses_a_contract_without_the_entrypoint() {
         let error = plan((0, 2, 0)).expect_err("0.2.0 has no borsh entrypoint");
