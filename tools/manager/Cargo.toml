@@ -12,11 +12,18 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+# Decoding `registry.deploy` init args for display (ENG-544).
+base64.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
 hex.workspace = true
 near-account-id.workspace = true
-near-api.workspace = true
+# `keystore` backs `--sign-with keychain`. near-api's `ledger` feature is
+# deliberately not enabled: it pulls hidapi, which needs libudev headers, and
+# cargo unifies features across a workspace build — every crate here and in CI
+# would inherit that system dependency. Nothing needs Ledger signing today.
+near-api = { workspace = true, features = ["keystore"] }
 # Native binary linking the proxy-oracle contract crates (`Operation`/`Proxy`/
 # `Source`): on non-wasm, `near_sdk::env::abort` references the `panic` host
 # import, which only near-sdk's `unit-testing` mock defines. `unit-testing` is
@@ -24,8 +31,12 @@ near-api.workspace = true
 # matching it here keeps standalone (`-p templar-manager`) and workspace builds
 # collision-free. Mirrors service/gateway, the other native bin over these crates.
 near-sdk = { workspace = true, features = ["unit-testing", "non-contract-usage"] }
+# Reference-price cross-check (ENG-543): the only outbound HTTP this tool makes.
+reqwest = { workspace = true, features = ["json"] }
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Stable digests: plan/spec hashing must not depend on map iteration order.
 sputnikdao2.workspace = true
 templar-common.workspace = true
 templar-contract-artifacts.workspace = true
@@ -43,12 +54,17 @@ templar-proxy-oracle-kernel.workspace = true
 templar-proxy-oracle-near-common.workspace = true
 templar-proxy-oracle-near-governance-common = { workspace = true, features = ["clap"] }
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+# `fetch` only here: `requires_network_deposits_cover_the_released_artifacts`
+# downloads the pinned releases to size them, and no other code path needs the
+# bytes.
+templar-contract-artifacts = { workspace = true, features = ["fetch"] }
 
 [lints]
 workspace = true

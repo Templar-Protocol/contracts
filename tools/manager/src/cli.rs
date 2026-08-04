@@ -9,7 +9,7 @@ use templar_gateway_oracle_updates_dispatch::OracleSourceArgs;
 use super::commands::signer::SignerArgs;
 use super::commands::{
     AccountNs, ContractNs, FtNs, MarketNs, OracleNs, OwnerNs, ProxyOracleNs, PythNs, RecoverNep141,
-    RedstoneNs, RegistryNs, StorageNs,
+    RedstoneNs, RegistryNs, SpecNs, StorageNs,
 };
 
 #[derive(Parser, Debug)]
@@ -152,6 +152,12 @@ pub enum Command {
     },
     /// Recover a NEP-141 balance from the signer to a beneficiary and unregister storage.
     RecoverNep141(RecoverNep141),
+    /// Work with a declarative market deployment spec. `check` reads the chain
+    /// unless `--offline`.
+    Spec {
+        #[command(subcommand)]
+        command: SpecNs,
+    },
     /// Invoke a gateway read method by its full RPC name with raw JSON params.
     Read(GenericMethodCall),
     /// Invoke a gateway write method by its full RPC name with raw JSON params.

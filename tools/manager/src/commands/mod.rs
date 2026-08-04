@@ -14,6 +14,7 @@ pub mod recover;
 pub mod redstone;
 pub mod registry;
 pub mod signer;
+pub mod spec;
 pub mod storage;
 
 pub use account::AccountNs;
@@ -27,6 +28,7 @@ pub use pyth::PythNs;
 pub use recover::RecoverNep141;
 pub use redstone::RedstoneNs;
 pub use registry::RegistryNs;
+pub use spec::SpecNs;
 pub use storage::StorageNs;
 
 use anyhow::Context as _;

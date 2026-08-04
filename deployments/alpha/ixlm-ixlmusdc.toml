@@ -1,0 +1,31 @@
+extends = ["../profiles/alpha-mainnet.toml", "../profiles/irs-standard.toml"]
+
+name = "ixlm-ixlmusdc"
+
+# Reads an oracle it does not deploy, so this market creates only itself.
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB5v7AhLyPMDwS8uJgQV24KaAPXtwyVWu2KXbbfQU6NXRCz"
+price_id = "b7a8eba68a997cd0210c2e1e4ee811ad2d174b3611c22d9ebf16f4cb7e9ba850"
+symbol = "XLM"
+reference = { coin_gecko = { id = "stellar" } }
+decimals = 7
+
+[borrow]
+asset = "nep245:intents.near:nep245:v2_1.omni.hot.tg:1100_111bzQBB65GxAPAVoxqmMcgYo5oS3txhqs1Uh1cgahKQUeTUq1TJu"
+price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+symbol = "USDC"
+reference = { coin_gecko = { id = "usd-coin" } }
+decimals = 7
+
+[market]
+mcr_maintenance = "1.5"
+mcr_liquidation = "1.4"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+borrow_range = { minimum = "1", maximum = "10000000000" }
+supply_range = { minimum = "400000", maximum = "10000000000" }
+supply_withdrawal_range = { minimum = "400000" }
+borrow_maximum_duration_ms = 31536000000

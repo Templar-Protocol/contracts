@@ -16,11 +16,16 @@ fn prices_in_request_order(
         Option<templar_common::oracle::pyth::Price>,
     >,
 ) -> Vec<pyth::PriceEntry> {
+    // Only what the oracle answered for. Filling in the rest with `price: None`
+    // would make an identifier it does not serve indistinguishable from one it
+    // serves but has no recent price for.
     price_ids
         .into_iter()
-        .map(|price_id| pyth::PriceEntry {
-            price: response.get(&price_id).cloned().unwrap_or(None),
-            price_id,
+        .filter_map(|price_id| {
+            response.get(&price_id).map(|price| pyth::PriceEntry {
+                price_id,
+                price: price.clone(),
+            })
         })
         .collect()
 }

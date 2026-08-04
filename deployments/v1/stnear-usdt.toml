@@ -1,0 +1,31 @@
+extends = ["../profiles/v1-mainnet.toml", "../profiles/irs-standard.toml"]
+
+name = "stnear-usdt"
+
+[collateral]
+asset = "nep141:meta-pool.near"
+decimals = 24
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "lst", oracle = "pyth-oracle.near", price_id = "c415de8d2eba7db216527dff4b60e8f3a5311c740dadb233e13e12547e226750", contract = "meta-pool.near", method = "get_st_near_price", decimals = 24, weight = 1 },
+]
+
+[borrow]
+asset = "nep141:usdt.tether-token.near"
+decimals = 6
+aggregator = "median_low"
+min_sources = 1
+sources = [
+    { kind = "pyth", oracle = "pyth-oracle.near", price_id = "2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b", weight = 1 },
+]
+
+[market]
+mcr_maintenance = "1.4"
+mcr_liquidation = "1.33333333333333333333333333333333333333"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.1"
+price_maximum_age = "60s"
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "40000" }
+supply_withdrawal_range = { minimum = "40000" }

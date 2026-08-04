@@ -1,0 +1,28 @@
+extends = ["../profiles/v1-mainnet.toml"]
+
+name = "ibtc-iethusdc-1"
+
+# Reads an oracle it does not deploy, so this market creates only itself.
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep245:intents.near:nep141:btc.omft.near"
+price_id = "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43"
+decimals = 8
+
+[borrow]
+asset = "nep245:intents.near:nep141:eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near"
+price_id = "eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a"
+decimals = 6
+
+[market]
+interest_rate_strategy = { Piecewise = { base = "0", optimal = "0.9", rate_1 = "0.0888888888888888888888888888888888889", rate_2 = "2.4" } }
+mcr_maintenance = "1.25"
+mcr_liquidation = "1.2"
+maximum_usage_ratio = "0.99"
+liquidation_maximum_spread = "0.08"
+price_maximum_age = "60s"
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "40000" }
+supply_withdrawal_range = { minimum = "40000" }

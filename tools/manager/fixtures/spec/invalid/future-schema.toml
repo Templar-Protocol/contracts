@@ -1,0 +1,20 @@
+# A spec from a newer build: a version this one cannot speak, carrying a field
+# it does not know. The version must be what gets reported.
+extends = ["../base.toml"]
+
+schema = 99
+name = "future-market"
+a_field_from_the_future = true
+
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep141:collateral.near"
+price_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+decimals = 8
+
+[borrow]
+asset = "nep141:borrow.near"
+price_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+decimals = 6

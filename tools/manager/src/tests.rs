@@ -9,13 +9,16 @@ use super::commands::signer::PrintFormat;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 mod deploy_script;
+mod export;
 mod ft;
 mod market;
 mod oracle;
 mod plan;
+mod plan_file;
 mod proxy_oracle;
 mod redstone;
 mod registry;
+mod spec;
 mod storage;
 
 #[test]
@@ -33,6 +36,7 @@ fn help_lists_all_top_level_commands() {
         "owner",
         "pyth",
         "redstone",
+        "spec",
         "recover-nep141",
         "read",
         "write",
@@ -180,7 +184,9 @@ fn parses_write_fallback_with_json() {
         super::cli::Command::Write(call) => {
             assert_eq!(call.call.method, "registry.removeVersion");
             assert!(call.call.json.is_some());
-            call.signer.resolve().expect("credentials should resolve");
+            call.signer
+                .public_key()
+                .expect("credentials should resolve");
         }
         _ => panic!("expected Write variant"),
     }
@@ -218,6 +224,84 @@ fn write_requires_secret_key_or_print() {
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
     );
+}
+
+/// The whole point of `--sign-with`: naming a backend that holds the key
+/// elsewhere must satisfy the credential requirement with nothing in the
+/// environment. Credentials are cleared so an ambient `SECRET_KEY` cannot make
+/// this pass for the wrong reason.
+#[test]
+fn write_with_an_external_backend_needs_no_secret_key() {
+    let result = with_cleared_credential_env(|| {
+        try_parse_write(["--signer-id", "dao.near", "--sign-with", "keychain"])
+    });
+
+    result.expect("--sign-with keychain should satisfy the credential requirement");
+}
+
+/// `--sign-with` names only external backends. `secret-key` is not one, so it
+/// cannot be typed — an invocation that would parse while supplying no
+/// credential is unrepresentable rather than merely discouraged.
+#[test]
+fn sign_with_cannot_name_the_in_process_backend() {
+    let error = with_cleared_credential_env(|| {
+        try_parse_write(["--signer-id", "dao.near", "--sign-with", "secret-key"])
+    })
+    .expect_err("`secret-key` is not a --sign-with backend");
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+}
+
+/// A supplied `--public-key` must never become the full access key on a new
+/// account when the signer holds a different secret — that would hand control
+/// of the account to a key the operator does not have.
+#[test]
+fn public_key_cannot_override_the_signing_key() {
+    let cli = with_cleared_credential_env(|| {
+        try_parse_write([
+            "--signer-id",
+            "signer.testnet",
+            "--secret-key",
+            TEST_SECRET_KEY,
+            "--public-key",
+            "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+        ])
+    })
+    .expect("clap accepts the pair; the conflict is semantic");
+
+    let Command::Write(call) = cli.command else {
+        panic!("expected Write variant")
+    };
+    let error = call
+        .signer
+        .public_key()
+        .expect_err("a contradicting --public-key must not be honored");
+
+    assert!(
+        error.to_string().contains("a key you do not hold"),
+        "error should say why: {error}"
+    );
+}
+
+/// An ambient `SECRET_KEY` is extremely common. It must not break the documented
+/// `--sign-with keychain --public-key …` flow, whose backend ignores it.
+#[test]
+fn an_ambient_secret_does_not_block_an_external_backend() {
+    let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+    let original = std::env::var_os("SECRET_KEY");
+    std::env::set_var("SECRET_KEY", TEST_SECRET_KEY);
+
+    let result = try_parse_write([
+        "--signer-id",
+        "dao.near",
+        "--sign-with",
+        "keychain",
+        "--public-key",
+        "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
+    ]);
+
+    restore_env("SECRET_KEY", original);
+    result.expect("an ignored ambient secret must not fail parsing");
 }
 
 #[test]
@@ -260,7 +344,7 @@ fn print_conflicts_with_secret_key_from_environment() {
 }
 
 #[test]
-fn public_key_requires_print_mode() {
+fn public_key_is_not_a_credential() {
     let error = with_cleared_credential_env(|| {
         try_parse_write([
             "--signer-id",
@@ -269,13 +353,16 @@ fn public_key_requires_print_mode() {
             "ed25519:5TMKtTtD5uuMF28ovo7vVge7oAu58eXjySJWTrwcEB5w",
         ])
     })
-    .expect_err("--public-key is plan-only");
+    .expect_err("--public-key names a key, it does not authorize a write");
 
     assert_eq!(
         error.kind(),
         clap::error::ErrorKind::MissingRequiredArgument
     );
-    assert!(error.to_string().contains("--print <FORMAT>"));
+    assert!(
+        error.to_string().contains("--secret-key"),
+        "the error should name the missing credential: {error}"
+    );
 }
 
 #[test]
@@ -295,15 +382,18 @@ fn read_command_rejects_credentials() {
     assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
+/// Deliberately not a parse error. Clap validates an env value whatever else was
+/// passed, and `SECRET_KEY` is a name other tools use — validating it here failed
+/// every write, including `--print` and `--sign-with`, which never read it. It is
+/// parsed on use instead; see `commands::signer::tests`.
 #[test]
-fn invalid_secret_key_error_does_not_echo_input() {
+fn an_invalid_secret_key_is_not_a_parse_error() {
     let secret = "not-a-real-secret-key";
-    let error = try_parse_write(["--signer-id", "signer.testnet", "--secret-key", secret])
-        .expect_err("invalid secret key should fail at the clap boundary");
+    let cli = try_parse_write(["--signer-id", "signer.testnet", "--secret-key", secret])
+        .expect("an unusable credential must not fail the parse");
 
-    let message = error.to_string();
-    assert!(message.contains("invalid --secret-key"), "{message}");
-    assert!(!message.contains(secret), "secret leaked: {message}");
+    let rendered = format!("{cli:?}");
+    assert!(!rendered.contains(secret), "secret leaked: {rendered}");
 }
 
 #[test]
@@ -320,7 +410,7 @@ fn signer_env_satisfies_write_credentials() {
         let cli = try_parse_write([]).map_err(|error| anyhow::anyhow!(error.to_string()))?;
 
         match cli.command {
-            super::cli::Command::Write(call) => call.signer.resolve().map(|_| ()),
+            super::cli::Command::Write(call) => call.signer.public_key().map(|_| ()),
             _ => anyhow::bail!("expected Write variant"),
         }
     })();

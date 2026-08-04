@@ -41,11 +41,14 @@ pub struct GovernanceCreate {
 }
 
 /// Init args for the governance contract's `new(proxy_oracle_id, admin_id, policy)`.
+///
+/// Public because `market plan` seats a governance contract as part of a
+/// deployment and must encode the same init args this subcommand does.
 #[derive(serde::Serialize)]
-struct GovernanceInit {
-    proxy_oracle_id: AccountId,
-    admin_id: AccountId,
-    policy: GovernancePolicy,
+pub struct GovernanceInit {
+    pub proxy_oracle_id: AccountId,
+    pub admin_id: AccountId,
+    pub policy: GovernancePolicy,
 }
 
 impl GovernanceCreate {
