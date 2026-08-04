@@ -20,6 +20,7 @@
 use anyhow::Result;
 use near_api::types::AccountId;
 use near_sdk::json_types::Base64VecU8;
+use near_sdk::NearToken;
 use serde_json::{json, Value};
 use templar_common::upgrade::UpgradeSource;
 use templar_common::Nanoseconds;
@@ -115,7 +116,7 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
     // `proxyOracleGovernance.createProposal` carries a *current* `Operation`, so seeding the legacy
     // shape goes through the generic function-call escape hatch.
     harness
-        .call_function(
+        .call_function_payable(
             &admin,
             &gov_account.0,
             "create_proposal",
@@ -124,6 +125,7 @@ async fn setup(harness: &SandboxHarness) -> Result<(AccountId, AccountId)> {
                 operation: seeded_upgrade(),
                 requested_ttl: Nanoseconds::zero(),
             },
+            NearToken::from_yoctonear(1),
         )
         .await?;
 

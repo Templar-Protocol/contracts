@@ -18,7 +18,6 @@ use near_sdk::{
     testing_env, NearToken,
 };
 use near_sdk_contract_tools::owner::OwnerExternal as _;
-use serde_json::json;
 use templar_common::{
     oracle::{
         lazer,
@@ -717,6 +716,14 @@ async fn proxy_oracle(#[case] method: TestMethod) -> Result<()> {
     Ok(())
 }
 
+/// `new` args. `owner_id: None` must serialize as an explicit `null` rather than
+/// be omitted, which is what proves the fallback runs on the contract side.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct NewArgs {
+    owner_id: Option<AccountId>,
+}
+
 /// The `owner_id` init arg must survive JSON deserialization over the wire, since
 /// `registry deploy` is the only way the oracle is initialized in production and it
 /// passes init args as raw bytes. Deploying the wasm without an init call and then
@@ -747,14 +754,16 @@ async fn init_args_seat_the_owner_over_the_wire() -> Result<()> {
             &explicit_oracle,
             &explicit_oracle.0,
             "new",
-            json!({ "owner_id": governance.0 }),
+            NewArgs {
+                owner_id: Some(governance.0.clone()),
+            },
         ),
         // Omitted owner: `new` falls back to its predecessor, so sign it as `registry`.
         harness.call_function(
             &registry,
             &default_oracle.0,
             "new",
-            json!({ "owner_id": null }),
+            NewArgs { owner_id: None },
         ),
     )?;
 

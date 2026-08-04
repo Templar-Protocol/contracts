@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use near_api::types::AccountId;
-use near_sdk::{json_types::U128, serde_json::json, AccountIdRef, Gas};
+use near_sdk::{json_types::U128, AccountIdRef, Gas};
 use templar_common::oracle::pyth::{self, OracleResponse, PriceIdentifier, PythTimestamp};
 use templar_gateway_methods_spec::lst_oracle;
 use templar_gateway_testing::{ManagedAccountId, SandboxHarness};
@@ -23,6 +23,25 @@ use test_utils::{DEFAULT_BORROW_PRICE_ID, DEFAULT_COLLATERAL_PRICE_ID};
 const COLLATERAL_LST_ID: PriceIdentifier = PriceIdentifier(hex_literal::hex!(
     "cc11000000000000000000000000000000000000000000000000000000000000"
 ));
+
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct SetRedemptionRateArgs {
+    redemption_rate: U128,
+}
+
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct PriceFeedExistsArgs {
+    price_identifier: PriceIdentifier,
+}
+
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct ListEmaPricesArgs {
+    price_ids: Vec<PriceIdentifier>,
+    age: u64,
+}
 
 /// A Pyth price at the current *chain* time, not the host clock — see
 /// [`SandboxHarness::chain_timestamp`].
@@ -78,7 +97,9 @@ async fn lst_oracle() -> Result<()> {
             &ManagedAccountId(collateral_asset.clone()),
             &collateral_asset,
             "set_redemption_rate",
-            json!({ "redemption_rate": U128(2 * 10u128.pow(24)) }),
+            SetRedemptionRateArgs {
+                redemption_rate: U128(2 * 10u128.pow(24)),
+            },
         )
         .await?;
 
@@ -161,7 +182,9 @@ async fn lst_oracle() -> Result<()> {
                 &lst_signer,
                 &lst_oracle_id,
                 "price_feed_exists",
-                json!({ "price_identifier": should_exist }),
+                PriceFeedExistsArgs {
+                    price_identifier: should_exist,
+                },
             )
             .await?;
         assert!(exists, "price ID {should_exist} should exist");
@@ -171,7 +194,9 @@ async fn lst_oracle() -> Result<()> {
             &lst_signer,
             &lst_oracle_id,
             "price_feed_exists",
-            json!({ "price_identifier": PriceIdentifier([0x88; 32]) }),
+            PriceFeedExistsArgs {
+                price_identifier: PriceIdentifier([0x88; 32]),
+            },
         )
         .await?;
     assert!(!missing);
@@ -184,7 +209,10 @@ async fn lst_oracle() -> Result<()> {
             &lst_signer,
             &lst_oracle_id,
             "list_ema_prices_no_older_than",
-            json!({ "price_ids": [DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID], "age": 60 }),
+            ListEmaPricesArgs {
+                price_ids: vec![DEFAULT_BORROW_PRICE_ID, COLLATERAL_LST_ID],
+                age: 60,
+            },
         )
         .await?;
 

@@ -10,7 +10,6 @@ use std::{
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use near_api::{types::AccountId, Contract, NetworkConfig};
-use serde_json::json;
 use templar_common::{oracle::pyth::PriceIdentifier, Nanoseconds};
 use templar_gateway_methods_spec::proxy_oracle;
 use templar_gateway_testing::{ManagedAccountId, SandboxHarness};
@@ -40,6 +39,14 @@ fn patch() -> StatePatch {
 
 fn migration() -> state::migration::Migration {
     state::migration::Migration::from(state::migration::V0ToV1)
+}
+
+/// A `from_version` the `Migration` enum cannot represent, so the contract has to
+/// reject it at deserialization — which is the point of the revert test.
+#[derive(near_sdk::serde::Serialize)]
+#[serde(crate = "near_sdk::serde")]
+struct InvalidMigration {
+    from_version: &'static str,
 }
 
 fn expected_ustry_proxy() -> Proxy<Source> {
@@ -171,7 +178,9 @@ async fn failed_migration_reverts_contract_code() -> Result<()> {
             &account_id,
             templar_gateway_testing::wasm::proxy_oracle().await.to_vec(),
             "migrate",
-            json!({ "from_version": "invalid" }),
+            InvalidMigration {
+                from_version: "invalid",
+            },
         )
         .await?;
     assert_eq!(
