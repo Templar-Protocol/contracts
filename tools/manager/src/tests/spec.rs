@@ -177,12 +177,12 @@ fn extends_applies_profiles_then_lets_the_market_win() {
 /// externally-tagged enum key by key yields a table that parses to nothing.
 #[test]
 fn a_market_replaces_a_profile_value_rather_than_merging_into_it() {
-    use templar_common::fee::Fee;
+    use crate::spec::amount::FeeSpec;
 
     let spec = extends::load(&fixture("overrides-values.toml")).expect("spec should load");
 
     assert!(
-        matches!(spec.market.origination_fee, Fee::Proportional(_)),
+        matches!(spec.market.origination_fee, FeeSpec::Proportional(_)),
         "the profile's `Flat` variant leaked through: {:?}",
         spec.market.origination_fee
     );
@@ -298,6 +298,23 @@ fn a_future_schema_reports_the_version_not_an_unknown_field() {
     );
 }
 
+/// The one migration that could go wrong silently. Schema 4 wrote amounts as
+/// bare base-unit integers, which are still well-formed numbers — read as whole
+/// units they would be `10^decimals` too large. The version must refuse the file
+/// outright, and say why, rather than letting a parse error somewhere else
+/// suggest renumbering it.
+#[test]
+fn a_pre_migration_spec_is_refused_rather_than_reinterpreted() {
+    let error = extends::load(&fixture("invalid/schema-4-amounts.toml"))
+        .expect_err("bare base-unit amounts must not be read as whole units");
+
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema 4") && rendered.contains("state its unit"),
+        "the refusal must name the version and what changed: {rendered}"
+    );
+}
+
 #[test]
 fn extends_cycles_are_rejected() {
     let error =
@@ -390,6 +407,14 @@ fn a_proxy_spec_missing_what_only_a_proxy_has_does_not_parse(#[case] drop: &str)
     );
 }
 
+fn config_validate_verdict(spec: &crate::spec::MarketSpec) -> Status {
+    check::run_offline(spec)
+        .into_iter()
+        .find(|check| check.id == "config.validate")
+        .expect("config.validate should always be reported")
+        .status
+}
+
 /// Decimals are the one input `MarketConfiguration::validate` ignores, so their
 /// absence must not take MCR ordering, the ranges and the durations with it —
 /// which skipping the whole check did.
@@ -398,17 +423,13 @@ fn config_validate_runs_without_stated_decimals() {
     let mut spec = alpha_market();
     spec.collateral.decimals = None;
     spec.borrow.decimals = None;
+    // Every deployed spec floors borrowing at `1 atom` beside `tokens` amounts,
+    // which no stand-in can order — see
+    // `config_validate_will_not_order_mixed_units_without_decimals`. Uniform
+    // units here, so this test is about the decimals and nothing else.
+    spec.market.borrow_range.minimum = crate::spec::amount::Amount::tokens(1, 6);
 
-    let passed = |spec: &_| {
-        matches!(
-            check::run_offline(spec)
-                .into_iter()
-                .find(|check| check.id == "config.validate")
-                .expect("config.validate should always be reported")
-                .status,
-            Status::Passed { .. }
-        )
-    };
+    let passed = |spec: &_| matches!(config_validate_verdict(spec), Status::Passed { .. });
 
     assert!(passed(&spec), "decimals do not decide this verdict");
 
@@ -417,6 +438,64 @@ fn config_validate_runs_without_stated_decimals() {
     assert!(
         !passed(&spec),
         "and an invalid configuration is still caught without them"
+    );
+}
+
+/// All-`tokens` amounts scale by one factor, so the only thing this check
+/// compares across them — their ordering — survives an unresolved decimals. A
+/// stand-in too small for the finest amount would instead fail the whole check.
+#[test]
+fn config_validate_holds_amount_orderings_without_stated_decimals() {
+    use crate::spec::amount::Amount;
+
+    let mut spec = alpha_market();
+    spec.borrow.decimals = None;
+    spec.market.supply_range.minimum = Amount::tokens(4, 2);
+    spec.market.supply_withdrawal_range.minimum = Amount::tokens(4, 2);
+    spec.market.borrow_range.minimum = Amount::tokens(125, 8);
+
+    assert!(
+        matches!(config_validate_verdict(&spec), Status::Passed { .. }),
+        "{:?}",
+        config_validate_verdict(&spec)
+    );
+
+    // The contract's own rule: a withdrawal floor above the supply floor strands
+    // a position that can never be withdrawn. It must still be caught here.
+    spec.market.supply_withdrawal_range.minimum = Amount::tokens(5, 1);
+    assert!(
+        matches!(config_validate_verdict(&spec), Status::Failed { .. }),
+        "an ordering the contract refuses must fail without decimals too: {:?}",
+        config_validate_verdict(&spec)
+    );
+}
+
+/// Mixing the units defeats the stand-in: an `atoms` amount is the same number
+/// at every decimals and a `tokens` amount is not, so no single factor orders
+/// them the way the chain will. These exact values pass under the stand-in and
+/// are refused at init — the check must say it could not run rather than pass.
+#[test]
+fn config_validate_will_not_order_mixed_units_without_decimals() {
+    use crate::spec::amount::Amount;
+
+    let mut spec = alpha_market();
+    spec.borrow.decimals = None;
+    spec.market.supply_range.minimum = Amount::Atoms(500_000);
+    spec.market.supply_withdrawal_range.minimum = Amount::tokens(6, 1);
+
+    assert!(
+        matches!(config_validate_verdict(&spec), Status::Skipped { .. }),
+        "a verdict this check cannot support must not read as a pass: {:?}",
+        config_validate_verdict(&spec)
+    );
+
+    // With the real decimals the same spec is refused, which is the answer the
+    // stand-in would have hidden.
+    spec.borrow.decimals = Some(6);
+    assert!(
+        matches!(config_validate_verdict(&spec), Status::Failed { .. }),
+        "{:?}",
+        config_validate_verdict(&spec)
     );
 }
 

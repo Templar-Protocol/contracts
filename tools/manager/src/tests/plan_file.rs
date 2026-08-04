@@ -135,7 +135,7 @@ fn the_plan_shape_is_pinned_to_its_version() {
         (crate::spec::plan::PLAN_SCHEMA_VERSION, fingerprint.as_str()),
         (
             1,
-            "d032675fbbcfdfc34079282bf2649f4b484acebf12d20220bd3f6b5065b3d6b4"
+            "30a5d5da5cdc96957423df293f23d87c7d75a6026f74bc856996cd3bdf70268b"
         ),
         "the plan artifact's shape changed. Update this pin — and once the tool \
          has shipped, bump PLAN_SCHEMA_VERSION with it, so a plan written by \

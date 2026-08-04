@@ -3,6 +3,7 @@ mod commands;
 mod context;
 mod dispatch;
 mod proxy;
+mod report;
 mod resolve;
 mod spec;
 
@@ -31,8 +32,10 @@ fn init_tracing(console_default: tracing::level_filters::LevelFilter) {
         .with_default_directive(console_default.into())
         .from_env_lossy();
     // Logs are diagnostics; keep stdout clean for machine-readable JSON results.
+    // Colored on the same terms as the check report, which shares this stream.
     let console_layer = fmt::layer()
         .with_writer(std::io::stderr)
+        .with_ansi(crate::report::stderr_is_color_capable())
         .with_filter(console_filter);
     let registry = tracing_subscriber::registry().with(console_layer);
 

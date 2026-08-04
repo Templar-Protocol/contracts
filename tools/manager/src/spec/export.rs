@@ -18,6 +18,7 @@ use templar_proxy_oracle_near_common::{
 };
 
 use super::{
+    amount::{self, FeeSpec, TimeBasedFeeSpec},
     oracle::{AggregatorSpec, AssetSpec, SourceSpec, LST_CALL_GAS},
     GovernanceSpec, MarketParams, MarketSpec, Versions, BORROW_PRICE_ID, COLLATERAL_PRICE_ID,
     SCHEMA_VERSION,
@@ -87,7 +88,7 @@ impl MarketSpec {
                 deployed.borrow_proxy,
                 Some(oracle.borrow_asset_price_id),
             )?,
-            market: market_params(&deployed.configuration),
+            market: market_params(&deployed.configuration)?,
         };
         // Built before the oracle check so the error can name the derived id,
         // which needs a complete spec. Freshness bounds come straight from the
@@ -305,8 +306,16 @@ fn split_aggregator(
     Ok((kind, min_sources, sources))
 }
 
-fn market_params(configuration: &MarketConfiguration) -> MarketParams {
-    MarketParams {
+fn market_params(configuration: &MarketConfiguration) -> anyhow::Result<MarketParams> {
+    // Every amount below is borrow-denominated, so one figure scales them all.
+    let decimals = configuration
+        .price_oracle_configuration
+        .borrow_asset_decimals;
+    let decimals = u8::try_from(decimals).with_context(|| {
+        format!("the borrow asset declares {decimals} decimals, which a spec cannot express")
+    })?;
+
+    Ok(MarketParams {
         time_chunk: Nanoseconds::from_ns(
             configuration
                 .time_chunk_configuration
@@ -322,13 +331,19 @@ fn market_params(configuration: &MarketConfiguration) -> MarketParams {
         liquidation_maximum_spread: configuration.liquidation_maximum_spread,
         reference_tolerance: super::default_reference_tolerance(),
         interest_rate_strategy: configuration.borrow_interest_rate_strategy.clone(),
-        origination_fee: configuration.borrow_origination_fee.clone(),
-        supply_withdrawal_fee: configuration.supply_withdrawal_fee.clone(),
+        origination_fee: FeeSpec::from_on_chain(&configuration.borrow_origination_fee, decimals),
+        supply_withdrawal_fee: TimeBasedFeeSpec::from_on_chain(
+            &configuration.supply_withdrawal_fee,
+            decimals,
+        ),
         yield_weights: configuration.yield_weights.clone(),
         protocol_account_id: configuration.protocol_account_id.clone(),
         borrow_maximum_duration_ms: configuration.borrow_maximum_duration_ms.map(|ms| ms.0),
-        borrow_range: (*configuration.borrow_range).clone(),
-        supply_range: (*configuration.supply_range).clone(),
-        supply_withdrawal_range: (*configuration.supply_withdrawal_range).clone(),
-    }
+        borrow_range: amount::Range::from_on_chain(&configuration.borrow_range, decimals),
+        supply_range: amount::Range::from_on_chain(&configuration.supply_range, decimals),
+        supply_withdrawal_range: amount::Range::from_on_chain(
+            &configuration.supply_withdrawal_range,
+            decimals,
+        ),
+    })
 }

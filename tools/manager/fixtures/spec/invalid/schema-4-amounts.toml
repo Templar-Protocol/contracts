@@ -1,0 +1,26 @@
+# A spec as it was written before schema 5: bare integers in base units. Every
+# one of these is still a syntactically plausible amount, so the version gate is
+# what has to stop it — reinterpreted as whole units they would be 10^decimals
+# too large.
+extends = ["../base.toml"]
+
+schema = 4
+name = "pre-migration-market"
+
+[oracle.direct]
+account_id = "pyth-oracle.near"
+
+[collateral]
+asset = "nep141:collateral.near"
+price_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+decimals = 8
+
+[borrow]
+asset = "nep141:borrow.near"
+price_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+decimals = 6
+
+[market]
+borrow_range = { minimum = "1" }
+supply_range = { minimum = "40000" }
+supply_withdrawal_range = { minimum = "40000" }

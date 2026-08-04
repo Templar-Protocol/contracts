@@ -25,7 +25,7 @@ mcr_maintenance = "1.25"
 mcr_liquidation = "1.25"
 maximum_usage_ratio = "0.99"
 liquidation_maximum_spread = "0.08"
-borrow_range = { minimum = "1", maximum = "1000000000" }
-supply_range = { minimum = "40000", maximum = "1000000000" }
-supply_withdrawal_range = { minimum = "40000" }
+borrow_range = { minimum = "1 atom", maximum = "1000 tokens" }
+supply_range = { minimum = "0.04 tokens", maximum = "1000 tokens" }
+supply_withdrawal_range = { minimum = "0.04 tokens" }
 borrow_maximum_duration_ms = 31536000000
