@@ -24,6 +24,37 @@ fn mocks_are_never_released() {
     }
 }
 
+/// `current()` is the last entry of `releases()`, so it names the newest
+/// release only while each list ascends — an order `build.rs` imposes rather
+/// than inherits from `read_dir`. By version, not by date: a 3.1.0 backported
+/// after 4.0.0 sorts before it, leaving `current()` at 4.0.0.
+#[test]
+fn releases_ascend_by_version() {
+    for artifact in ArtifactId::ALL.iter().map(|id| id.metadata()) {
+        let versions = artifact
+            .releases()
+            .iter()
+            .map(|release| {
+                // `build.rs` rejects any spelling this cannot parse.
+                semver::Version::parse(release.version).unwrap_or_else(|error| {
+                    panic!(
+                        "{}: release {} is not valid semver: {error}",
+                        artifact.package_name, release.version,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            versions.is_sorted_by(|a, b| a < b),
+            "{}'s releases are not in strictly ascending version order: {:?}. \
+             `current()` would not be the newest release.",
+            artifact.package_name,
+            versions.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        );
+    }
+}
+
 /// Parsed `release-plz.toml`.
 fn release_plz_config() -> toml::Value {
     let path = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("release-plz.toml");
