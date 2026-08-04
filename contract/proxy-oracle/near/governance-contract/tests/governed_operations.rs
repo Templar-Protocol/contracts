@@ -8,178 +8,27 @@
 
 mod common;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use near_api::types::AccountId;
-use near_api::NetworkConfig;
 use near_sdk::json_types::Base64VecU8;
-use near_sdk::serde::Serialize;
 use rstest::rstest;
 use serde_json::json;
-use templar_common::{oracle::pyth::PriceIdentifier, upgrade::UpgradeSource, Decimal, Nanoseconds};
+use templar_common::{upgrade::UpgradeSource, Decimal, Nanoseconds};
 use templar_gateway_testing::{harness, wasm, SandboxHarness};
-use templar_proxy_oracle_kernel::proxy::{
-    circuit_breaker::{
-        AcceptedHistorySource, CircuitBreaker, CircuitBreakerSet, CircuitBreakerSetConfig,
-        CircuitBreakerStatus, StepwiseChange,
-    },
-    FreshnessFilter, Proxy,
+use templar_proxy_oracle_kernel::proxy::circuit_breaker::{
+    AcceptedHistorySource, CircuitBreaker, CircuitBreakerSetConfig, CircuitBreakerStatus,
+    StepwiseChange,
 };
-use templar_proxy_oracle_near_common::{input::Source, request::OracleRequest};
 use templar_proxy_oracle_near_governance_common::{target, Operation, ReflexiveOperation, Role};
 
-use common::{
-    call, call_borsh, code_hash, deploy_global_contract, self_upgrade, view, CreateProposalArgs,
-    ProposalIdArgs, ONE_YOCTO,
-};
+use common::{code_hash, deploy_global_contract, governed, self_upgrade, view, PRICE_ID};
 
 /// `add` requires `breaker_id == next_id`, which starts at zero and only ever increments.
 const BREAKER: u32 = 0;
 
-const PRICE_ID: PriceIdentifier = PriceIdentifier([0xaa; 32]);
-
-#[derive(Serialize)]
-#[serde(crate = "near_sdk::serde")]
-struct PriceIdArgs {
-    id: PriceIdentifier,
-}
-
-#[derive(Clone, Copy)]
-enum Encoding {
-    Json,
-    Borsh,
-}
-
-impl Encoding {
-    async fn create_proposal(
-        self,
-        governed: &Governed,
-        id: u32,
-        operation: Operation,
-    ) -> Result<()> {
-        match self {
-            Self::Json => call(
-                &governed.network,
-                &governed.governance,
-                "create_proposal",
-                CreateProposalArgs {
-                    id,
-                    operation,
-                    requested_ttl: Nanoseconds::zero(),
-                },
-                &governed.admin,
-                ONE_YOCTO,
-            )
-            .await
-            .map(|_| ()),
-            Self::Borsh => call_borsh(
-                &governed.network,
-                &governed.governance,
-                "create_proposal_borsh",
-                CreateProposalArgs {
-                    id,
-                    operation,
-                    requested_ttl: Nanoseconds::zero(),
-                },
-                &governed.admin,
-                ONE_YOCTO,
-            )
-            .await
-            .map(|_| ()),
-        }
-    }
-}
-
-/// An oracle owned by a governance contract, with a proxy and one circuit breaker already in place.
-struct Governed {
-    network: NetworkConfig,
-    oracle: AccountId,
-    governance: AccountId,
-    admin: AccountId,
-    next_id: u32,
-}
-
-impl Governed {
-    /// Run `operation` through the full create → execute path as the admin. Every TTL is zero
-    /// (`deploy_governance_contract` installs a uniform zero policy), so it matures immediately.
-    async fn govern(&mut self, operation: Operation) -> Result<()> {
-        self.govern_with(operation, Encoding::Json).await
-    }
-
-    async fn govern_borsh(&mut self, operation: Operation) -> Result<()> {
-        self.govern_with(operation, Encoding::Borsh).await
-    }
-
-    async fn govern_with(&mut self, operation: Operation, encoding: Encoding) -> Result<()> {
-        let id = self.next_id;
-        self.next_id += 1;
-
-        encoding.create_proposal(self, id, operation).await?;
-        call(
-            &self.network,
-            &self.governance,
-            "execute_proposal",
-            ProposalIdArgs { id },
-            &self.admin,
-            ONE_YOCTO,
-        )
-        .await
-        .map(|_| ())
-    }
-
-    async fn proxy(&self) -> Result<Option<Proxy<Source>>> {
-        view(
-            &self.network,
-            &self.oracle,
-            "get_proxy",
-            PriceIdArgs { id: PRICE_ID },
-        )
-        .await
-    }
-
-    async fn breakers(&self) -> Result<CircuitBreakerSet> {
-        view::<Option<CircuitBreakerSet>>(
-            &self.network,
-            &self.oracle,
-            "get_proxy_circuit_breaker_set",
-            PriceIdArgs { id: PRICE_ID },
-        )
-        .await?
-        .context("the seeded proxy is gone")
-    }
-}
-
-fn proxy() -> Proxy<Source> {
-    Proxy::median_low(
-        [OracleRequest::pyth("pyth.near".parse().unwrap(), PriceIdentifier([0xbb; 32])).into()],
-        FreshnessFilter::empty(),
-    )
-}
-
 fn breaker() -> CircuitBreaker {
     CircuitBreaker::StepwiseChange(StepwiseChange {
         max_relative_change: Decimal::ONE_HALF,
-    })
-}
-
-/// Deploy the oracle with a proxy in place, then hand it to a governance contract. The proxy is
-/// seeded while the oracle still owns itself — one direct call instead of a governance round-trip.
-async fn governed(harness: &SandboxHarness) -> Result<Governed> {
-    let oracle = harness.deploy_proxy_oracle().await?;
-    let admin = harness.create_user("admin").await?.0;
-    harness
-        .admin_set_proxy(oracle.clone(), PRICE_ID, Some(proxy()))
-        .await?;
-    let governance = harness
-        .deploy_governance_contract(oracle.clone(), admin.clone())
-        .await?;
-
-    Ok(Governed {
-        network: harness.network.clone(),
-        oracle,
-        governance,
-        admin,
-        // `deploy_governance_contract` consumes id 0 for the ownership handover.
-        next_id: 1,
     })
 }
 

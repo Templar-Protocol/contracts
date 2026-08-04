@@ -61,10 +61,6 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
-# `fetch` only here: `requires_network_deposits_cover_the_released_artifacts`
-# downloads the pinned releases to size them, and no other code path needs the
-# bytes.
-templar-contract-artifacts = { workspace = true, features = ["fetch"] }
 
 [lints]
 workspace = true

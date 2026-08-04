@@ -10,6 +10,7 @@ pub mod spec;
 pub mod version;
 
 pub use block::BlockSummary;
+pub use common::ProposalEncoding;
 pub use contract::{ContractKind, OracleContractKind};
 pub use error::{CoreError, CoreResult};
 pub use operation::{
@@ -21,6 +22,6 @@ pub use primitive::{
 };
 pub use spec::{MethodKind, MethodSpec, RpcMethodMeta};
 pub use version::{
-    Market, MarketVersion, ParseError as VersionParseError, ProxyOracle, ProxyOracleVersion,
-    Registry, RegistryVersion, Version,
+    Market, MarketVersion, ParseError as VersionParseError, ProxyGovernance,
+    ProxyGovernanceVersion, ProxyOracle, ProxyOracleVersion, Registry, RegistryVersion, Version,
 };

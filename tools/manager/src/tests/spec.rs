@@ -508,8 +508,11 @@ fn sources_check_catches_an_unsatisfiable_minimum() {
     );
 }
 
-/// Every migrated market must reproduce the configuration it was generated
-/// from. Counts are asserted so an empty directory fails rather than passing
+/// A spec must not drift from the market it already deploys — `market apply`
+/// would turn that drift into an unintended config change.
+///
+/// Driven by the recordings, so a spec with no recording is exercised by no test
+/// at all. Counts are asserted so an empty directory fails rather than passing
 /// vacuously.
 #[rstest]
 #[case("alpha", "templar-alpha.near", 18)]
@@ -522,23 +525,27 @@ fn migrated_specs_reproduce_their_deployed_configurations(
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let specs = manifest.join("../../deployments").join(suite);
     let configs = manifest.join("fixtures/deployed").join(suite);
+    let suffix = format!(".{registry}.json");
 
     let mut checked = 0;
-    for entry in std::fs::read_dir(&specs).unwrap_or_else(|e| panic!("read {suite} specs: {e}")) {
-        let path = entry.expect("readable entry").path();
-        if path.extension().is_none_or(|ext| ext != "toml") {
+    for entry in std::fs::read_dir(&configs).unwrap_or_else(|e| panic!("read {suite} configs: {e}"))
+    {
+        let recorded = entry.expect("readable entry").path();
+        // Proxy-mode markets keep their `proxy-*.json` in a subdirectory.
+        if recorded.is_dir() {
             continue;
         }
-        let name = path
-            .file_stem()
-            .expect("spec has a stem")
-            .to_string_lossy()
-            .to_string();
+        // Skipping an unrecognized name instead would leave it uncompared.
+        let name = recorded
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(&suffix))
+            .unwrap_or_else(|| panic!("{} is not named <market>{suffix}", recorded.display()));
 
-        let spec = extends::load(&path).unwrap_or_else(|e| panic!("load {name}: {e:#}"));
-        let source = configs.join(format!("{name}.{registry}.json"));
+        let spec = extends::load(&specs.join(format!("{name}.toml")))
+            .unwrap_or_else(|e| panic!("load {name}: {e:#}"));
         let deployed: Value = serde_json::from_str(
-            &std::fs::read_to_string(&source)
+            &std::fs::read_to_string(&recorded)
                 .unwrap_or_else(|e| panic!("read config for {name}: {e}")),
         )
         .unwrap_or_else(|e| panic!("parse config for {name}: {e}"));
@@ -572,5 +579,8 @@ fn migrated_specs_reproduce_their_deployed_configurations(
         checked += 1;
     }
 
-    assert_eq!(checked, expected, "every {suite} market must be covered");
+    assert_eq!(
+        checked, expected,
+        "every recorded {suite} configuration must be covered"
+    );
 }

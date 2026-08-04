@@ -10,6 +10,7 @@ use templar_gateway_core::{
     DispatchRead, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
 };
 use templar_gateway_methods_spec::proxy_oracle_governance;
+use templar_gateway_types::{ProposalEncoding, ProxyGovernance};
 
 use crate::Dispatch;
 
@@ -164,19 +165,35 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::CreateProposal, C> for
         ctx: C,
     ) -> GatewayResult<OperationPlan> {
         let body = request.body;
-        ctx.near_client()
-            .proxy_governance(body.governance_id)
-            .create_proposal(
-                ContractWriteOptions::new(request.signer_account_id)
-                    .one_yocto()
-                    .tgas(300),
-                GovCreateArgs {
-                    id: body.id,
-                    operation: body.operation,
-                    requested_ttl: body.requested_ttl,
-                },
-            )
-            .map(OperationPlan::from)
+        let governance_id = body.governance_id;
+        let options = ContractWriteOptions::new(request.signer_account_id)
+            .one_yocto()
+            .tgas(300);
+        let args = GovCreateArgs {
+            id: body.id,
+            operation: body.operation,
+            requested_ttl: body.requested_ttl,
+        };
+
+        match body.encoding {
+            ProposalEncoding::Json => ctx
+                .near_client()
+                .proxy_governance(governance_id)
+                .create_proposal(options, args),
+            ProposalEncoding::Borsh => {
+                // Uncached: the metadata cache holds for an hour, which would refuse borsh for
+                // that long after a governance upgrade.
+                let version = ctx
+                    .near_client()
+                    .contract(governance_id.clone())
+                    .version::<ProxyGovernance>()
+                    .await?;
+                ctx.near_client()
+                    .proxy_governance(governance_id)
+                    .create_proposal_borsh(options, version, args)
+            }
+        }
+        .map(OperationPlan::from)
     }
 }
 
@@ -219,5 +236,76 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle_governance::ExecuteProposal, C> fo
                 GovActionArgs { id: body.id },
             )
             .map(OperationPlan::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use near_api::types::transaction::actions::Action;
+    use templar_gateway_core::{GatewayError, PlanWrite};
+    use templar_gateway_methods_spec::proxy_oracle_governance;
+    use templar_gateway_types::{common::WriteRequest, ManagedAccountId, ProposalEncoding};
+    use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
+
+    use super::Dispatch;
+    use crate::test_ctx::{offline_ctx, TestCtx};
+
+    fn operation() -> Operation {
+        Operation::Reflexive(ReflexiveOperation::SetRole {
+            account_id: "op.near".parse().unwrap(),
+            role: Role::Admin,
+            set: true,
+        })
+    }
+
+    fn request(
+        encoding: ProposalEncoding,
+    ) -> WriteRequest<proxy_oracle_governance::CreateProposal> {
+        WriteRequest {
+            signer_account_id: ManagedAccountId("admin.near".parse().unwrap()),
+            idempotency_key: None,
+            body: proxy_oracle_governance::CreateProposal {
+                governance_id: "gov.near".parse().unwrap(),
+                id: 7,
+                operation: operation(),
+                requested_ttl: templar_common::Nanoseconds::zero(),
+                encoding,
+            },
+        }
+    }
+
+    async fn plan(
+        encoding: ProposalEncoding,
+    ) -> templar_gateway_core::GatewayResult<templar_gateway_core::OperationPlan> {
+        <Dispatch as PlanWrite<proxy_oracle_governance::CreateProposal, TestCtx>>::plan(
+            request(encoding),
+            offline_ctx(),
+        )
+        .await
+    }
+
+    /// Planning offline *is* the assertion: it can only succeed if no version was read.
+    #[tokio::test]
+    async fn json_encoding_plans_without_reading_a_version() {
+        let plan = plan(ProposalEncoding::Json)
+            .await
+            .expect("json planning must not touch the network");
+
+        let [Action::FunctionCall(action)] = &plan.steps[0].actions[..] else {
+            panic!("expected one function call");
+        };
+        assert_eq!(action.method_name, "create_proposal");
+        assert!(action.args.starts_with(b"{"), "expected json arguments");
+    }
+
+    #[tokio::test]
+    async fn borsh_encoding_reads_the_version_first() {
+        let error = plan(ProposalEncoding::Borsh)
+            .await
+            .expect_err("borsh planning must consult the governance version");
+        assert!(
+            matches!(error, GatewayError::NearQuery(_)),
+            "the failure must come from the version query, not from planning: {error:?}"
+        );
     }
 }

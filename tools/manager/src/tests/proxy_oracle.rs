@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use near_sdk::json_types::{Base58CryptoHash, Base64VecU8, U128};
 use near_sdk::Gas;
 
+use templar_gateway_types::ProposalEncoding;
+
 use super::{
     parse_create_proposal, parse_governance, try_parse_governance, with_cleared_credential_env,
     CREDS,
@@ -593,6 +595,28 @@ fn requested_ttl_defaults_to_zero_and_is_carried() {
         serde_json::to_value(&defaulted).unwrap()["requested_ttl"],
         json!("0")
     );
+}
+
+#[rstest::rstest]
+#[case::defaults_to_json(&[], ProposalEncoding::Json)]
+#[case::opts_into_borsh(&["--encoding", "borsh"], ProposalEncoding::Borsh)]
+fn create_proposal_carries_the_encoding(
+    #[case] extra: &[&str],
+    #[case] expected: ProposalEncoding,
+) {
+    let mut argv = vec!["--governance-id", "gov.testnet", "--id", "0"];
+    argv.extend_from_slice(extra);
+    argv.extend_from_slice(&[
+        "oracle",
+        "set-manual-trip",
+        "--price-id",
+        PRICE_ID,
+        "--tripped",
+    ]);
+
+    let spec = create_proposal(&argv).expect("into spec");
+
+    assert_eq!(spec.encoding, expected);
 }
 
 #[test]
