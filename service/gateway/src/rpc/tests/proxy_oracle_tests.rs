@@ -2,7 +2,7 @@ use super::*;
 
 use near_sdk::json_types::Base64VecU8;
 use templar_common::upgrade::UpgradeSource;
-use templar_gateway_types::ProposalEncoding;
+use templar_gateway_types::{OperationStatus, ProposalEncoding};
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_common::state::legacy::v0;
 use templar_proxy_oracle_near_governance_common::{
@@ -173,6 +173,139 @@ async fn proxy_oracle_governance_endpoints_work_against_sandbox() -> Result<()> 
         })
         .await?;
     assert!(cancelled.proposal.is_none());
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+/// The direct owner-gated write, for an oracle whose owner is a plain account
+/// rather than a governance contract. A freshly deployed oracle owns itself, so
+/// it signs for its own `admin_set_proxy`.
+#[tokio::test]
+async fn proxy_oracle_admin_set_proxy_writes_and_clears_a_definition() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    let signer = stack.harness.proxy_oracle_signer_account_id.clone();
+
+    let price_id = PriceIdentifier([0xa5; 32]);
+    let proxy = Proxy::median_low(
+        [OracleRequest::pyth(
+            "pyth.near".parse().expect("valid oracle id"),
+            PriceIdentifier([0xb5; 32]),
+        )
+        .into()],
+        FreshnessFilter::empty(),
+    );
+
+    let _ = stack
+        .controller
+        .request::<proxy_oracle::AdminSetProxy>(&WriteRequest {
+            signer_account_id: signer.clone(),
+            idempotency_key: None,
+            body: proxy_oracle::AdminSetProxy {
+                oracle_id: oracle_id.clone(),
+                id: price_id,
+                proxy: Some(proxy.clone()),
+            },
+        })
+        .await?;
+
+    let got = stack
+        .controller
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id: oracle_id.clone(),
+            id: price_id,
+        })
+        .await?;
+    assert_eq!(got.proxy, Some(proxy));
+
+    // A null `proxy` removes the definition.
+    let _ = stack
+        .controller
+        .request::<proxy_oracle::AdminSetProxy>(&WriteRequest {
+            signer_account_id: signer,
+            idempotency_key: None,
+            body: proxy_oracle::AdminSetProxy {
+                oracle_id: oracle_id.clone(),
+                id: price_id,
+                proxy: None,
+            },
+        })
+        .await?;
+
+    let list = stack
+        .controller
+        .request::<proxy_oracle::ListProxies>(&proxy_oracle::ListProxies {
+            oracle_id: oracle_id.clone(),
+            offset: None,
+            count: None,
+        })
+        .await?;
+    assert_eq!(list.proxies, vec![]);
+    let cleared = stack
+        .controller
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id,
+            id: price_id,
+        })
+        .await?;
+    assert_eq!(cleared.proxy, None);
+
+    stack.shutdown().await;
+    Ok(())
+}
+
+/// The gateway does not pre-check the signer for `admin_set_proxy`, so the
+/// rejection has to come from the oracle itself: a non-owner write reaches the
+/// contract, panics there, and leaves no definition behind.
+#[tokio::test]
+async fn proxy_oracle_admin_set_proxy_rejects_a_non_owner_signer() -> Result<()> {
+    let stack = TestStack::start().await?;
+    let oracle_id = stack.harness.deploy_proxy_oracle().await?;
+    // A managed operator account seeded before the service snapshotted its
+    // signers, and not the self-owning oracle.
+    let intruder = stack.harness.registry_signer_account_id.clone();
+    assert_ne!(intruder, stack.harness.proxy_oracle_signer_account_id);
+
+    let price_id = PriceIdentifier([0xa5; 32]);
+    let result = stack
+        .controller
+        .request::<proxy_oracle::AdminSetProxy>(&WriteRequest {
+            signer_account_id: intruder,
+            idempotency_key: None,
+            body: proxy_oracle::AdminSetProxy {
+                oracle_id: oracle_id.clone(),
+                id: price_id,
+                proxy: Some(Proxy::median_low(
+                    [OracleRequest::pyth(
+                        "pyth.near".parse().expect("valid oracle id"),
+                        PriceIdentifier([0xb5; 32]),
+                    )
+                    .into()],
+                    FreshnessFilter::empty(),
+                )),
+            },
+        })
+        .await?;
+
+    assert_eq!(result.operation.status, OperationStatus::Failed);
+    let failure = result
+        .operation
+        .failure_message()
+        .expect("a rejected admin_set_proxy reports its panic message");
+    assert!(
+        failure.contains("Owner only"),
+        "expected an owner-gate rejection, got: {failure}"
+    );
+
+    let got = stack
+        .controller
+        .request::<proxy_oracle::GetProxy>(&proxy_oracle::GetProxy {
+            oracle_id,
+            id: price_id,
+        })
+        .await?;
+    assert_eq!(got.proxy, None, "a rejected write must not seat a proxy");
 
     stack.shutdown().await;
     Ok(())

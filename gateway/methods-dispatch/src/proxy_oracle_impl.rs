@@ -3,8 +3,8 @@ use near_api::types::transaction::actions::{Action, DeployContractAction, Functi
 use serde::Serialize;
 use templar_gateway_core::{
     client::proxy_oracle::{
-        GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs, PriceFeedExistsArgs,
-        UpdatePricesArgs,
+        AdminSetProxyArgs, GetProxyArgs, GetProxyCircuitBreakerSetArgs, ListProxiesArgs,
+        PriceFeedExistsArgs, UpdatePricesArgs,
     },
     client::ContractWriteOptions,
     DispatchRead, GatewayError, GatewayResult, HasNearClient, OperationPlan, PlanWrite,
@@ -59,6 +59,26 @@ impl<C: HasNearClient> PlanWrite<proxy_oracle::UpdatePrices, C> for Dispatch {
                 ContractWriteOptions::new(request.signer_account_id).tgas(100),
                 UpdatePricesArgs {
                     price_ids: body.price_ids,
+                },
+            )
+            .map(OperationPlan::from)
+    }
+}
+
+#[async_trait]
+impl<C: HasNearClient> PlanWrite<proxy_oracle::AdminSetProxy, C> for Dispatch {
+    async fn plan(
+        request: templar_gateway_types::common::WriteRequest<proxy_oracle::AdminSetProxy>,
+        ctx: C,
+    ) -> GatewayResult<OperationPlan> {
+        let body = request.body;
+        ctx.near_client()
+            .proxy_oracle(body.oracle_id)
+            .admin_set_proxy(
+                ContractWriteOptions::new(request.signer_account_id).tgas(100),
+                AdminSetProxyArgs {
+                    id: body.id,
+                    proxy: body.proxy,
                 },
             )
             .map(OperationPlan::from)
@@ -156,9 +176,15 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::GetProxy, C> for Dispatch {
         ctx: C,
     ) -> GatewayResult<proxy_oracle::GetProxyResult> {
         let params = request;
+        // Uncached on purpose. No write path invalidates the definition cache, so
+        // a `cached_get_proxy` here answers a point read about current
+        // configuration with state up to `CONFIG_CACHE_TTL` stale — including
+        // right after the caller's own `admin_set_proxy`. `oracle_resolution`
+        // keeps the cache, where the staleness is bounded by design and the read
+        // is hot.
         ctx.near_client()
             .proxy_oracle(params.oracle_id)
-            .cached_get_proxy(GetProxyArgs { id: params.id })
+            .get_proxy(GetProxyArgs { id: params.id })
             .await
             .map(|proxy| proxy_oracle::GetProxyResult { proxy })
     }
