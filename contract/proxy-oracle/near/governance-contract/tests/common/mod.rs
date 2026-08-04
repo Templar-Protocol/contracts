@@ -68,23 +68,6 @@ pub async fn deploy_with_init(
     Ok(())
 }
 
-/// Deploy raw wasm to `account` via its full-access key, with no init call (a bare code refresh).
-pub async fn deploy_code(
-    network: &NetworkConfig,
-    account: &AccountId,
-    code: Vec<u8>,
-) -> Result<()> {
-    Contract::deploy(account.clone())
-        .use_code(code)
-        .without_init_call()
-        .with_signer(signer())
-        .wait_until(TEST_FINALITY_POLICY.transaction_status())
-        .send_to(network)
-        .await?
-        .assert_success();
-    Ok(())
-}
-
 /// Submit a mutating call to `contract_id` signed as `signer_id` (all harness accounts share the
 /// test key), attaching `deposit`.
 ///

@@ -105,16 +105,7 @@ async fn bench_transactions(harness: &SandboxHarness, report: &mut Report) -> Re
     .await?;
     report
         .measure("minimal fn-call tx", || async {
-            harness
-                .call_contract(
-                    &ft_id,
-                    "increment",
-                    serde_json::json!({}),
-                    &ft_id,
-                    100,
-                    NearToken::from_yoctonear(0),
-                )
-                .await
+            call_contract(&harness.network, &ft_id, "increment").await
         })
         .await?;
 
@@ -204,6 +195,26 @@ async fn report_fast_forward(harness: &SandboxHarness) -> Result<()> {
     println!(
         "fast_forward({FAST_FORWARD_BLOCKS}) advanced chain time by {advance:?} ({per_block:?}/block)"
     );
+    Ok(())
+}
+
+/// A no-arg, self-signed call on the raw `near_api` path. Deliberately not the
+/// harness's gateway-backed `call_function`: this measures the node's
+/// block-latency floor, which in-process planning overhead would inflate.
+async fn call_contract(
+    network: &NetworkConfig,
+    contract_id: &AccountId,
+    method: &str,
+) -> Result<()> {
+    Contract(contract_id.clone())
+        .call_function(method, ())
+        .transaction()
+        .gas(near_sdk::Gas::from_tgas(100))
+        .with_signer(contract_id.clone(), test_signer())
+        .wait_until(TEST_FINALITY_POLICY.transaction_status())
+        .send_to(network)
+        .await?
+        .assert_success();
     Ok(())
 }
 

@@ -5,7 +5,7 @@ use templar_proxy_oracle_near_common::price_transformer::PriceTransformer;
 
 use crate::client::{
     cache::{config_cache, immutable_cache, load_cached},
-    macros::contract_views,
+    macros::{contract_views, contract_writes},
     NearClient,
 };
 
@@ -61,6 +61,12 @@ pub struct GetTransformerArgs {
     pub price_identifier: PriceIdentifier,
 }
 
+#[derive(serde::Serialize)]
+pub struct CreateTransformerArgs {
+    pub price_identifier: PriceIdentifier,
+    pub entry: PriceTransformer,
+}
+
 impl LstOracleClient<'_> {
     pub async fn cached_oracle_id(&self) -> crate::GatewayResult<near_account_id::AccountId> {
         load_cached(
@@ -98,5 +104,9 @@ impl LstOracleClient<'_> {
         pub fn oracle_id(()) -> near_account_id::AccountId;
         pub fn list_transformers(ListTransformersArgs) -> Vec<PriceIdentifier>;
         pub fn get_transformer(GetTransformerArgs) -> Option<PriceTransformer>;
+    }
+
+    contract_writes! {
+        pub fn create_transformer(CreateTransformerArgs);
     }
 }
