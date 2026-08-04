@@ -3,7 +3,7 @@ use std::{collections::VecDeque, sync::Arc};
 use chrono::{DateTime, Utc};
 use near_api::types::{
     transaction::{actions::Action, SignedTransaction},
-    AccountId,
+    AccountId, PublicKey,
 };
 use serde::{Deserialize, Serialize};
 use templar_gateway_types::{
@@ -213,6 +213,19 @@ pub enum CurrentStepRef<'a> {
     Failed,
 }
 
+/// Which access key the next step needs.
+pub(crate) enum SigningTarget<'a> {
+    /// Signed in an earlier pass, so its nonce is bound to this key.
+    Bound {
+        signer_account_id: &'a ManagedAccountId,
+        public_key: PublicKey,
+    },
+    /// Not signed yet, so any of the account's keys will do.
+    Next {
+        signer_account_id: &'a ManagedAccountId,
+    },
+}
+
 impl StoredOperation {
     pub fn operation_id(&self) -> &OperationId {
         &self.id
@@ -327,6 +340,34 @@ impl StoredOperation {
             store,
             transaction,
         })
+    }
+
+    /// The access key the next step must sign or resubmit with, or `None` when
+    /// no step is ready for either. Lives beside the step cursor so it cannot
+    /// disagree with [`begin_next_preparation`](Self::begin_next_preparation)
+    /// about which step is next.
+    pub(crate) fn signing_target(&self) -> Option<SigningTarget<'_>> {
+        match &self.current_step {
+            Some(CurrentStep::Prepared {
+                transaction,
+                signed_transaction,
+                ..
+            }) => Some(SigningTarget::Bound {
+                signer_account_id: &transaction.signer_account_id,
+                public_key: signed_transaction.transaction.public_key(),
+            }),
+            Some(
+                CurrentStep::Submitted { .. }
+                | CurrentStep::Reverted { .. }
+                | CurrentStep::Rejected { .. },
+            ) => None,
+            None => self
+                .remaining_steps
+                .front()
+                .map(|transaction| SigningTarget::Next {
+                    signer_account_id: &transaction.signer_account_id,
+                }),
+        }
     }
 
     #[must_use]

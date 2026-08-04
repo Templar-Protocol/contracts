@@ -37,11 +37,11 @@ use std::{
     sync::Arc,
 };
 
-use near_api::{NetworkConfig, SecretKey, Signer};
+use near_api::{NetworkConfig, SecretKey};
 use templar_gateway_core::{
     DispatchRead, FinalityPolicy, GatewayContext, GatewayError, GatewayResult, NearClient,
     NearOperationExecutor, NearTransactionSigner, OperationDriver, OperationPlan, PlanWrite,
-    SharedOperationStore,
+    PooledSigner, SharedOperationStore,
 };
 use templar_gateway_store::MemoryStore;
 
@@ -59,20 +59,16 @@ use templar_gateway_types::{
 /// idempotency/replay (an in-process [`MemoryStore`] by default).
 pub struct ClientBuilder {
     network: NetworkConfig,
-    signers: HashMap<ManagedAccountId, Arc<Signer>>,
+    signers: HashMap<ManagedAccountId, PooledSigner>,
     store: SharedOperationStore,
     finality_policy: FinalityPolicy,
 }
 
 impl ClientBuilder {
-    /// Register a pre-built signer for an account.
+    /// Register a pre-built signer, under the account it signs for.
     #[must_use]
-    pub fn with_signer(
-        mut self,
-        account_id: impl Into<ManagedAccountId>,
-        signer: Arc<Signer>,
-    ) -> Self {
-        self.signers.insert(account_id.into(), signer);
+    pub fn with_signer(mut self, signer: PooledSigner) -> Self {
+        self.signers.insert(signer.account_id().clone(), signer);
         self
     }
 
@@ -82,32 +78,17 @@ impl ClientBuilder {
         account_id: impl Into<ManagedAccountId>,
         secret_key: SecretKey,
     ) -> GatewayResult<Self> {
-        let signer = Signer::from_secret_key(secret_key)
-            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
-        Ok(self.with_signer(account_id, signer))
+        self.secret_keys(account_id, [secret_key])
     }
 
-    /// Register a rotating signer from one or more secret keys.
-    ///
-    /// Each key keeps its own nonce sequence. Errors if no keys are provided.
-    pub async fn secret_keys(
+    /// Register one nonce lane per key, so this account's writes run
+    /// concurrently up to the number of keys. Errors if no keys are provided.
+    pub fn secret_keys(
         self,
         account_id: impl Into<ManagedAccountId>,
         secret_keys: impl IntoIterator<Item = SecretKey>,
     ) -> GatewayResult<Self> {
-        let mut keys = secret_keys.into_iter();
-        let first = keys.next().ok_or_else(|| {
-            GatewayError::InvalidSignerKey("at least one secret key is required".to_owned())
-        })?;
-        let signer = Signer::from_secret_key(first)
-            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
-        for key in keys {
-            signer
-                .add_secret_key_to_pool(key)
-                .await
-                .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
-        }
-        Ok(self.with_signer(account_id, signer))
+        Ok(self.with_signer(PooledSigner::new(account_id, secret_keys)?))
     }
 
     /// Use a specific operation store (e.g. a durable `PostgresStore`) for

@@ -5,7 +5,7 @@ use near_api::{Contract, NetworkConfig, SecretKey, Signer};
 use near_token::NearToken;
 use templar_gateway_core::{
     ExecuteOperation, FinalityPolicy, GatewayContext, NearClient, NearOperationExecutor,
-    NearTransactionSigner, PlanWrite, SignTransaction,
+    NearTransactionSigner, PlanWrite, PooledSigner, SignTransaction,
 };
 use templar_gateway_methods_dispatch::Dispatch;
 use templar_gateway_methods_spec::tx;
@@ -46,7 +46,10 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
 
     let transaction_signer = NearTransactionSigner::new(
         network.clone(),
-        std::collections::HashMap::from([(signer_account_id.clone(), signer)]),
+        std::collections::HashMap::from([(
+            signer_account_id.clone(),
+            PooledSigner::from_signer(signer_account_id.clone(), signer).await?,
+        )]),
     );
 
     for (finality_policy, rate) in [
@@ -83,8 +86,11 @@ async fn core_finality_policies_keep_immediate_reads_consistent() -> Result<()> 
 
         let operation_executor =
             NearOperationExecutor::with_finality_policy(network.clone(), finality_policy);
+        let lease = transaction_signer
+            .lease_next_signing_key(&signer_account_id)
+            .await?;
         let prepared = transaction_signer
-            .sign_transaction(plan.steps[0].clone())
+            .sign_transaction(&lease, plan.steps[0].clone())
             .await?;
         let result = operation_executor
             .submit_transaction(prepared.signed_transaction)

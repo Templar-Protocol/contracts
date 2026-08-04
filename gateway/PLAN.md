@@ -47,6 +47,7 @@ Responsibilities:
 - NEAR client/query surface used by planning
 - shared contract/query helpers used by dispatch and workflow
 - shared traits such as the oracle payload source abstraction
+- signer ownership and per-access-key write execution lanes
 
 Requirements:
 
@@ -55,6 +56,19 @@ Requirements:
 - no actor lifecycle management
 - no durable store implementation
 - keep gateway planning and workflow semantics together unless `PlanWrite` stops returning workflow-native types
+
+#### Write execution lanes
+
+A NEAR nonce is per access key, not per account, and the network rejects any transaction whose nonce is not above the key's current one. So each access key is a serialized lane: `PooledSigner` holds one single-key `near_api::Signer` per key, and the driver leases a lane across signing and broadcast. Writes on different keys stay fully parallel, which is what makes access-key pooling a throughput multiplier rather than a correctness mechanism.
+
+Four consequences worth keeping in mind:
+
+- The lanes are process-local, so this assumes no other process holds the same `(account_id, private_key)` pair. Making that safe across processes means moving the lock to shared state (e.g. a Postgres advisory lock keyed on the access key), not changing the lease.
+- A step that is already `Prepared` carries a nonce bound to the key that signed it, so resubmission must take *that* lane rather than the next idle one. A key rotated out of the configuration since has no lane here — and nothing here can allocate its nonce — so its stored signature replays unguarded rather than blocking recovery.
+- The driver holds a lane until the step's on-chain outcome is recorded, not merely until broadcast. That is wider than the nonce invariant requires and caps a key at one write per finality round-trip; narrowing it needs a submit path that returns before execution, which `FinalityPolicy` deliberately does not expose today.
+- A lane released while one of its nonces is allocated but unpublished strands that nonce: the next writer reads the bumped cache, takes a higher nonce, and lands first, after which the earlier transaction can never execute. Two windows do this — a step persisted as `Prepared` whose task unwinds before broadcast, and a submission that errors after reaching the network. Neither is fixed by holding the lane longer: a restart drops every lane regardless, and blocking a key until reconciliation costs its whole throughput on any RPC hiccup. The structural fix is to stop replaying a stale signature — resolve the recorded hash, then re-sign under a fresh nonce (ENG-477) — backed by reconciliation that recognises a superseded nonce.
+
+Prior art: `client/vault/src/key_pool/` solves the same problem one level further along (health tracking, load-aware selection) on a different stack — `near_crypto::InMemorySigner` rather than `near_api::Signer`, in a `cdylib` crate — so the two cannot share code today. Port from it rather than writing a third implementation if this pool grows.
 
 Internal structure direction:
 
@@ -105,8 +119,6 @@ This crate owns runtime-hosted execution.
 
 Responsibilities:
 
-- signer ownership
-- write execution lanes
 - actor/message-passing execution scaffolding
 - transaction submission orchestration
 - runtime startup and lifecycle

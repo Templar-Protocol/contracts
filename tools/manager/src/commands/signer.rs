@@ -1,15 +1,16 @@
 //! Per-operation signer inputs: clap selects either execution credentials or a
 //! plan-only output format on every write.
 //!
-//! Credentials resolve to an [`Arc<Signer>`] rather than a [`SecretKey`], so a
-//! backend holding its key outside this process is expressible.
+//! Credentials resolve to a signer rather than a [`SecretKey`], so a backend
+//! holding its key outside this process is expressible.
 
-use std::{ffi::OsStr, fmt, sync::Arc};
+use std::{ffi::OsStr, fmt};
 
 use anyhow::Context as _;
 use clap::{builder::TypedValueParser, error::ErrorKind, Args, ValueEnum};
 use near_account_id::AccountId;
 use near_api::{NetworkConfig, PublicKey as CliPublicKey, SecretKey, Signer};
+use templar_gateway_core::PooledSigner;
 use templar_gateway_types::{primitive::PublicKey, ManagedAccountId};
 
 /// Placeholder for the secret key in `Debug` output, so `{:?}` on a command that
@@ -142,14 +143,15 @@ impl SignerArgs {
         Ok(PublicKey::from(self.secret()?.public_key()))
     }
 
-    /// The signing account together with a signer for it.
+    /// The signing account's key as a gateway nonce lane, and the key that lane
+    /// will sign with.
     ///
     /// Async because the keychain backend discovers the account's keys on chain
     /// before matching them against the OS keystore.
     pub async fn resolve(
         &self,
         network: &NetworkConfig,
-    ) -> anyhow::Result<(ManagedAccountId, Arc<Signer>)> {
+    ) -> anyhow::Result<(PooledSigner, CliPublicKey)> {
         if self.print.is_some() {
             anyhow::bail!("--print is not supported for this orchestrated write");
         }
@@ -175,7 +177,18 @@ impl SignerArgs {
             }
         };
 
-        Ok((self.account_id(), signer))
+        let public_key = signer
+            .get_public_key()
+            .await
+            .context("ask the signing backend which key it will sign with")?;
+
+        // Both backends produce a single-key signer: `Signer::new` seeds its
+        // pool with one entry, the keychain's first matching key.
+        let pooled = PooledSigner::from_signer(self.account_id(), signer)
+            .await
+            .context("register the signing key as a gateway nonce lane")?;
+
+        Ok((pooled, public_key))
     }
 
     /// Both callers reject print mode before reaching here, so this only has to
