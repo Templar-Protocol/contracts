@@ -9,7 +9,7 @@
 //! ```bash
 //! cargo run -p templar-contract-artifacts --features clap --bin record-release -- \
 //!   proxy-oracle 0.3.0 templar-proxy-oracle-near-contract-v0.3.0 \
-//!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256>
+//!   templar_proxy_oracle_near_contract-0.3.0.wasm <sha256> <length>
 //! ```
 
 use std::process::ExitCode;
@@ -33,6 +33,9 @@ struct Args {
 
     /// SHA-256 of the released bytes, as 64 hex characters.
     sha256: String,
+
+    /// Byte length of those same bytes.
+    length: usize,
 }
 
 /// Directory of per-release files, relative to this crate's manifest.
@@ -58,6 +61,7 @@ fn record(args: &Args) -> Result<String, String> {
         tag,
         asset,
         sha256: sha,
+        length,
     } = args;
     let sha = sha.to_ascii_lowercase();
 
@@ -69,7 +73,7 @@ fn record(args: &Args) -> Result<String, String> {
         ));
     }
 
-    let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\n");
+    let row = format!("{artifact}\t{version}\t{tag}\t{asset}\t{sha}\t{length}\n");
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(RELEASES)
         .join(format!("{artifact}@{version}.tsv"));
@@ -88,22 +92,25 @@ fn record(args: &Args) -> Result<String, String> {
     match created {
         Ok(()) => Ok(format!("recorded {artifact}@{version} as {sha} ({tag})")),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Compare the recorded digest rather than the raw line: a replay is
-            // still a replay if the file was reformatted.
+            // Compare the recorded fields rather than the raw line: a replay is
+            // still a replay if the file was reformatted. Both are derived from
+            // the released bytes, so a row agreeing on one and not the other
+            // describes bytes that never existed — `fetch` would refuse the
+            // asset, and the deposit guard would size a deploy from a length
+            // nothing was ever built at.
             let existing =
                 std::fs::read_to_string(&path).map_err(|error| format!("{path:?}: {error}"))?;
-            let recorded = existing
-                .trim()
-                .split('\t')
-                .nth(4)
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            if recorded == sha {
+            let fields = existing.trim().split('\t').collect::<Vec<_>>();
+            let recorded_sha = fields.get(4).unwrap_or(&"").to_ascii_lowercase();
+            let recorded_length = *fields.get(5).unwrap_or(&"");
+
+            if recorded_sha == sha && recorded_length == length.to_string() {
                 Ok(format!("{artifact}@{version} is already recorded as {sha}"))
             } else {
                 Err(format!(
-                    "{artifact}@{version} is already recorded as {recorded}, \
-                     refusing to rewrite it to {sha}. Released bytes are immutable."
+                    "{artifact}@{version} is already recorded as {recorded_sha} \
+                     ({recorded_length} bytes), refusing to rewrite it to {sha} \
+                     ({length} bytes). Released bytes are immutable."
                 ))
             }
         }
@@ -123,6 +130,7 @@ mod tests {
             tag,
             asset,
             &"a".repeat(64),
+            "1",
         ])
         .expect("clap takes these as opaque strings")
     }
@@ -144,9 +152,26 @@ mod tests {
             .expect("0.3.0 is catalogued");
         let mut replay = args("0.3.0", release.tag, release.asset);
         replay.sha256 = release.sha256.to_owned();
+        replay.length = release.length;
 
         let message = record(&replay).expect("a replay is not an error");
         assert!(message.contains("already recorded"), "{message}");
+    }
+
+    /// Digest and length describe the same bytes, so a replay agreeing on one
+    /// and not the other is not a replay.
+    #[test]
+    fn recording_a_different_length_for_a_recorded_digest_is_refused() {
+        let release = ArtifactId::ProxyOracle
+            .metadata()
+            .release("0.3.0")
+            .expect("0.3.0 is catalogued");
+        let mut replay = args("0.3.0", release.tag, release.asset);
+        replay.sha256 = release.sha256.to_owned();
+        replay.length = release.length + 1;
+
+        let error = record(&replay).expect_err("the recorded length is immutable too");
+        assert!(error.contains("refusing to rewrite"), "{error}");
     }
 
     #[test]

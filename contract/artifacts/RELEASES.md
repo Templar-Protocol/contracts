@@ -4,14 +4,15 @@ Under `releases/`, one file per release named `<artifact>@<version>.tsv`, holdin
 tab-separated row:
 
 ```text
-artifact  version  tag  asset  sha256
+artifact  version  tag  asset  sha256  length
 ```
 
 Appended to by CI when a release tag is cut — never edited by hand. `tag` and
-`asset` are recorded as observed rather than derived; see `ArtifactRelease` in
-`src/ids.rs`. Everything here was recovered from code actually deployed on
-NEAR mainnet, each tag pointing at the commit its WASM names in NEP-330
-metadata.
+`asset` are recorded as observed rather than derived, and `length` is the
+asset's size in bytes, which is what lets a deposit be sized without
+downloading it; see `ArtifactRelease` in `src/ids.rs`. Everything here was
+recovered from code actually deployed on NEAR mainnet, each tag pointing at the
+commit its WASM names in NEP-330 metadata.
 
 `build.rs` reads this directory, validates every row, and compiles the
 catalog. Filenames are for uniqueness and browsing only: each file is

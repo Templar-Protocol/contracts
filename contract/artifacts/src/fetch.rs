@@ -4,9 +4,10 @@
 //! `contract/artifacts/releases/` records the tag and asset it shipped as.
 //! See `RELEASING.md` for why they are built at the tag's own commit.
 //!
-//! Every read is verified against the catalog's SHA-256 pin, including of an
-//! existing cache entry — so a branch whose catalog disagrees re-downloads
-//! rather than reusing wrong bytes, and offline that mismatch is an error.
+//! Every read is verified against the catalog's byte length and SHA-256 pin,
+//! including of an existing cache entry — so a branch whose catalog disagrees
+//! re-downloads rather than reusing wrong bytes, and offline that mismatch is
+//! an error.
 //!
 //! ```text
 //! ${TEMPLAR_ARTIFACT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}}/templar-contract-artifacts
@@ -84,6 +85,18 @@ pub enum FetchError {
         url: String,
         status: u16,
         attempts: u32,
+    },
+
+    #[error(
+        "{artifact}@{version} downloaded from {url} is {actual} bytes, but the \
+         catalog records {expected}. Refusing the bytes."
+    )]
+    LengthMismatch {
+        artifact: ArtifactId,
+        version: String,
+        url: String,
+        expected: usize,
+        actual: usize,
     },
 
     #[error(
@@ -211,7 +224,7 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
     // cache entry, not as evidence of tampering: re-download and let the
     // verification below decide.
     if let Ok(cached) = std::fs::read(&path) {
-        if sha256_hex(&cached) == expected {
+        if cached.len() == release.length && sha256_hex(&cached) == expected {
             return Ok(remember(key, cached));
         }
     }
@@ -225,6 +238,18 @@ pub async fn released_bytes(artifact: ArtifactId, version: &str) -> Result<Vec<u
 
     let url = asset_url(release);
     let bytes = download(&url).await?;
+
+    // Before the digest, so a size disagreement reports bytes a reader can
+    // check against the Release rather than an opaque hash.
+    if bytes.len() != release.length {
+        return Err(FetchError::LengthMismatch {
+            artifact,
+            version: version.to_owned(),
+            url,
+            expected: release.length,
+            actual: bytes.len(),
+        });
+    }
 
     let actual = sha256_hex(&bytes);
     if actual != expected {
