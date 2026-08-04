@@ -1,6 +1,6 @@
 # Shared by every alpha market. These values were duplicated across each
 # market's `env.sh` and `market-args.json` before the spec existed.
-schema = 4
+schema = 5
 
 registry = "templar-alpha.near"
 
@@ -18,7 +18,7 @@ time_chunk = "10m"
 price_maximum_age = "60s"
 # 1.5% band for the third-party price cross-check.
 reference_tolerance = "0.015"
-origination_fee = { Flat = "0" }
-supply_withdrawal_fee = { fee = { Flat = "0" }, duration = "0", behavior = "Fixed" }
+origination_fee = { Flat = "0 atoms" }
+supply_withdrawal_fee = { fee = { Flat = "0 atoms" }, duration = "0", behavior = "Fixed" }
 yield_weights = { supply = 4, static = { "revenue.tmplr.near" = 1 } }
 protocol_account_id = "revenue.tmplr.near"

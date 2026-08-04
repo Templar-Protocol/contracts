@@ -27,6 +27,7 @@ use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
 use crate::commands::market::{Apply, Plan};
 use crate::commands::proxy_oracle::governance::GovernanceInit;
 use crate::context::{print_json, CliContext};
+use crate::report::Reporter;
 use crate::spec::journal::{self, Journal};
 use crate::spec::{
     check::{Check, Status},
@@ -50,22 +51,29 @@ const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_800);
 /// `market plan` — run the preflight, then write the deployment as a file.
 pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
     let mut spec = crate::spec::extends::load(&args.path)?;
+    let mut reporter = ctx.reporter(&args.skip_check);
 
-    let mut checks =
-        super::preflight::run_all(&ctx, &mut spec, false, args.accept_decimals_mismatch, None)
-            .await?;
+    super::preflight::run_all(
+        &ctx,
+        &mut spec,
+        false,
+        args.accept_decimals_mismatch,
+        None,
+        &mut reporter,
+    )
+    .await?;
     // Plan-time only, deliberately not in `run_all`: `spec check` validates a
     // spec, which stays valid after its market is deployed, while planning a
     // deployment needs its three target accounts free. `registry deploy` fails
     // on an occupied account, so a collision on the *market* — the last step —
     // would otherwise be discovered only after governance and the oracle were
     // deployed and both proposals executed.
-    checks.extend(targets_available(&ctx, &spec).await?);
+    targets_available(&ctx, &spec, &mut reporter).await?;
 
-    let mut matched = apply_skips(&mut checks, &args.skip_check);
     // Gated before `build`, which has hard bails of its own: letting it run
     // first would replace a full check report with a single unrelated error.
-    gate(&checks, spec.market_id()?.as_str())?;
+    // Not `ensure_every_skip_matched` yet — the funding checks do not exist.
+    gate(&mut reporter, spec.market_id()?.as_str())?;
 
     let public_key = PublicKey::from(args.public_key);
     let steps =
@@ -73,13 +81,12 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
 
     // After the steps exist, because it reads them; before the plan is written,
     // because a signer that cannot pay is a reason not to write one.
-    let mut funding = super::funding::checks(&ctx, &steps).await?;
-    matched.extend(apply_skips(&mut funding, &args.skip_check));
-    ensure_every_skip_matched(&args.skip_check, &matched)?;
-    checks.extend(funding);
-    gate(&checks, spec.market_id()?.as_str())?;
+    super::funding::checks(&ctx, &steps, &mut reporter).await?;
+    reporter.ensure_every_skip_matched()?;
+    gate(&mut reporter, spec.market_id()?.as_str())?;
+    reporter.digest();
 
-    let file = PlanFile::from_steps(spec, public_key, checks, steps);
+    let file = PlanFile::from_steps(spec, public_key, reporter.into_checks(), steps);
 
     let rendered = serde_json::to_string_pretty(&file).context("render the plan")?;
     match &args.out {
@@ -97,6 +104,10 @@ pub(super) async fn plan(ctx: CliContext, args: Plan) -> anyhow::Result<()> {
 pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(&args.plan)
         .with_context(|| format!("read {}", args.plan.display()))?;
+    // Before the document is deserialized, not after: a plan written to another
+    // shape fails on the field that moved, and this is the refusal that says
+    // what to do about it.
+    ensure_schema(&text, &args.plan)?;
     let file: PlanFile =
         serde_json::from_str(&text).with_context(|| format!("parse {}", args.plan.display()))?;
 
@@ -156,7 +167,8 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
     // can go stale or a version be removed while a plan is being read — every
     // one of those is a reason not to send. It is also what makes a non-funding
     // `--skip-check` mean anything here, which `Apply`'s own help promises.
-    let mut checks = super::preflight::run_all(
+    let mut reporter = ctx.reporter(&args.skip_check);
+    super::preflight::run_all(
         &ctx,
         &mut file.spec.clone(),
         false,
@@ -166,14 +178,14 @@ pub(super) async fn apply(ctx: CliContext, args: Apply) -> anyhow::Result<()> {
         // so the mismatch is reported rather than refused.
         true,
         deployed_oracle.as_ref(),
+        &mut reporter,
     )
     .await?;
-    checks.extend(super::funding::checks(&ctx, &outstanding).await?);
-    let matched = apply_skips(&mut checks, &args.skip_check);
-    ensure_every_skip_matched(&args.skip_check, &matched)?;
+    super::funding::checks(&ctx, &outstanding, &mut reporter).await?;
+    reporter.ensure_every_skip_matched()?;
 
-    let targets = review(&ctx, &file, &checks, &outstanding, &journal_path).await?;
-    gate(&checks, file.spec.market_id()?.as_str())?;
+    let targets = review(&ctx, &file, &mut reporter, &outstanding, &journal_path).await?;
+    gate(&mut reporter, file.spec.market_id()?.as_str())?;
 
     // Resolved once, here, and carried through to the send: the keychain
     // backend discovers keys on chain and may prompt, and a second resolution
@@ -300,12 +312,18 @@ async fn send(
 async fn review(
     ctx: &CliContext,
     file: &PlanFile,
-    checks: &[Check],
+    reporter: &mut Reporter,
     outstanding: &[crate::spec::plan::PlanStep],
     journal_path: &std::path::Path,
 ) -> anyhow::Result<Vec<AccountId>> {
-    render(file);
-    report_checks(checks);
+    reporter.render_plan(file);
+    reporter.digest();
+    // These are re-run now, not read from the plan: a check that passed when
+    // the plan was written and fails here means the chain moved under it.
+    reporter.note(
+        "\nThe checks above were re-run against the chain as it is now, not \
+         read from the plan.",
+    );
 
     // Re-read, not trusted from the plan: a target free at plan time can be
     // claimed while the plan is being reviewed. Over the outstanding steps only,
@@ -725,68 +743,45 @@ where
         .collect())
 }
 
-/// Mark the named checks skipped, recording the verdict each one reached — a
-/// bare "skipped" would hide the failure the operator chose to override. An id
-/// matching nothing is an error, since a typo would otherwise read as a
-/// successful suppression.
-fn apply_skips(checks: &mut [Check], skip: &[String]) -> BTreeSet<String> {
-    let mut matched_ids = BTreeSet::new();
-    for id in skip {
-        let mut matched = false;
-        for check in checks.iter_mut() {
-            if &check.id != id {
-                continue;
-            }
-            matched = true;
-            let previous = match &check.status {
-                Status::Passed { detail } => format!("would have passed: {detail}"),
-                Status::Failed { detail } => format!("would have failed: {detail}"),
-                Status::Skipped { reason } => format!("was already skipped: {reason}"),
-            };
-            check.status = Status::Skipped {
-                reason: format!("--skip-check {id} ({previous})"),
-            };
-        }
-        if matched {
-            matched_ids.insert(id.clone());
-        }
-    }
-    matched_ids
-}
-
-/// A skip that matched nothing is a typo, and a typo must not read as a
-/// successful suppression. Checked once, after every phase has run, because the
-/// funding checks do not exist until the steps are built.
-fn ensure_every_skip_matched(skip: &[String], matched: &BTreeSet<String>) -> anyhow::Result<()> {
-    for id in skip {
-        anyhow::ensure!(
-            matched.contains(id),
-            "--skip-check `{id}` names no check in this run. Check ids are listed \
-             by `spec check`; a typo here would silently suppress nothing."
-        );
-    }
-    Ok(())
-}
-
-/// Print the checks and refuse when any failed.
-fn gate(checks: &[Check], market_id: &str) -> anyhow::Result<()> {
+/// Report the checks and refuse when any failed.
+fn gate(reporter: &mut Reporter, market_id: &str) -> anyhow::Result<()> {
+    let checks = reporter.checks();
     if crate::spec::check::failures(checks) > 0 {
         print_json(&checks)?;
-        crate::spec::check::gate(checks, market_id, "no plan was written")?;
+        reporter.digest();
+        crate::spec::check::gate(reporter.checks(), market_id, "no plan was written")?;
     }
     Ok(())
 }
 
-/// The only two hard refusals: this build cannot read a foreign schema
-/// faithfully, and a network mismatch would send a mainnet deployment to testnet
-/// or the reverse. Everything else is reported and confirmed, never blocked.
-fn ensure_compatible(file: &PlanFile, network: Network) -> anyhow::Result<()> {
+/// The declared schema alone, read before the document it labels.
+///
+/// A plan whose shape moved fails to deserialize on whatever moved — the spec's
+/// amounts, say — and the operator reads that instead of the version that
+/// explains it. Checking the label first is what makes the version mean
+/// anything: it is the one field whose whole purpose is to be readable across
+/// shapes.
+fn ensure_schema(text: &str, path: &std::path::Path) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Labelled {
+        schema: u32,
+    }
+
+    let declared = serde_json::from_str::<Labelled>(text)
+        .with_context(|| format!("read the schema of {}", path.display()))?
+        .schema;
     anyhow::ensure!(
-        file.schema == PLAN_SCHEMA_VERSION,
-        "this plan declares schema {} but this build speaks {PLAN_SCHEMA_VERSION}. \
-         Regenerate it with `market plan`.",
-        file.schema,
+        declared == PLAN_SCHEMA_VERSION,
+        "this plan declares schema {declared} but this build speaks \
+         {PLAN_SCHEMA_VERSION}. Regenerate it with `market plan`.",
     );
+    Ok(())
+}
+
+/// The remaining hard refusal: a network mismatch would send a mainnet
+/// deployment to testnet or the reverse. Everything else is reported and
+/// confirmed, never blocked. The schema is refused earlier, by [`ensure_schema`].
+fn ensure_compatible(file: &PlanFile, network: Network) -> anyhow::Result<()> {
     // Asked of the spec, which derives it from the registry account. A network
     // stated beside the spec would be a second place to be wrong, and the one an
     // edit would reach.
@@ -913,7 +908,11 @@ async fn ensure_targets_free(
 }
 
 /// Every account this deployment creates must be free.
-async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Result<Vec<Check>> {
+async fn targets_available(
+    ctx: &CliContext,
+    spec: &MarketSpec,
+    reporter: &mut Reporter,
+) -> anyhow::Result<()> {
     // Only what this deployment creates. A direct market creates just itself,
     // and reporting the derived proxy names as "free" would tell an operator
     // this deploy is about to make accounts it never touches.
@@ -927,7 +926,7 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
         ]
     };
 
-    let mut checks = Vec::new();
+    reporter.phase("accounts this deploy would create");
     for (label, account_id) in targets {
         let status = match target_conflict(ctx, &spec.registry, &account_id).await {
             Ok(None) => Status::passed(format!("`{account_id}` is free")),
@@ -936,75 +935,9 @@ async fn targets_available(ctx: &CliContext, spec: &MarketSpec) -> anyhow::Resul
             }
             Err(error) => Status::failed(format!("{error:#}")),
         };
-        checks.push(Check::new(format!("deployment.available.{label}"), status));
+        reporter.record(Check::new(format!("deployment.available.{label}"), status));
     }
-    Ok(checks)
-}
-
-/// The checks as they stand now, shown before the prompt because `apply` is
-/// often run by someone other than whoever planned, and later. Only non-passing
-/// ones: burying an override in a wall of green is how it stops being reviewed.
-fn report_checks(checks: &[Check]) {
-    let notable: Vec<_> = checks
-        .iter()
-        .filter(|check| !matches!(check.status, Status::Passed { .. }))
-        .collect();
-
-    let failed = crate::spec::check::failures(checks);
-    eprintln!(
-        "\n{} check(s): {} passed, {} not run, {failed} FAILED",
-        checks.len(),
-        checks.len() - notable.len(),
-        notable.len() - failed,
-    );
-    for check in notable {
-        eprintln!("  {} — {:?}", check.id, check.status);
-    }
-    if failed > 0 {
-        eprintln!(
-            "These are re-run now, not read from the plan. A check that passed \
-             when the plan was written and fails here means the chain moved \
-             under it."
-        );
-    }
-}
-
-/// The plan, for a human about to authorize it.
-fn render(file: &PlanFile) {
-    eprintln!(
-        "Plan for {}.{} on {}",
-        file.spec.name,
-        file.spec.registry,
-        file.spec
-            .network()
-            .map_or_else(|_| "?".to_owned(), |n| n.to_string())
-    );
-    for (index, step) in file.steps.iter().enumerate() {
-        eprintln!("\n  [{index}] {}", step.label);
-        eprintln!("      {} -> {}", step.signer_id, step.receiver_id);
-        for call in &step.function_calls {
-            eprintln!(
-                "      {}  deposit {}  gas {}",
-                call.method_name, call.deposit, call.gas
-            );
-            // Reported rather than swallowed: this is the only place an
-            // operator sees the keys and the init args, so a display that
-            // silently shows neither is worse than one that says why.
-            match granted_keys(call) {
-                Ok(keys) => {
-                    for key in keys {
-                        eprintln!("      grants full access to: {key}");
-                    }
-                }
-                Err(error) => eprintln!("      keys unreadable: {error:#}"),
-            }
-            match decoded_init_args(call) {
-                Ok(Some(init_args)) => eprintln!("      init_args: {init_args}"),
-                Ok(None) => {}
-                Err(error) => eprintln!("      init_args unreadable: {error:#}"),
-            }
-        }
-    }
+    Ok(())
 }
 
 /// Refuse a plan that would leave the applier without a key on an account it
@@ -1040,7 +973,9 @@ fn ensure_granted_keys_are_yours(file: &PlanFile, mine: &str) -> anyhow::Result<
 /// args, which are not printed, yet they decide who controls the three new
 /// accounts. A mistyped or substituted `--public-key` at plan time is
 /// indistinguishable from a correct one unless an operator can see it.
-fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Vec<String>> {
+pub(crate) fn granted_keys(
+    call: &crate::spec::plan::PlanFunctionCall,
+) -> anyhow::Result<Vec<String>> {
     // Opaque (borsh) args grant no keys, as opposed to args this build cannot
     // encode at all — which `json_args` refuses rather than reports as empty.
     let Some(args) = json_args(call)? else {
@@ -1066,7 +1001,7 @@ fn granted_keys(call: &crate::spec::plan::PlanFunctionCall) -> anyhow::Result<Ve
 /// A registry deploy's `init_args`, decoded for display and for the guards built
 /// on it. Stays base64 in the file: expanding it there would need a byte-exact
 /// round trip, which is a schema change.
-fn decoded_init_args(
+pub(crate) fn decoded_init_args(
     call: &crate::spec::plan::PlanFunctionCall,
 ) -> anyhow::Result<Option<serde_json::Value>> {
     use base64::Engine as _;
@@ -1161,65 +1096,12 @@ impl PlanWrite<PreparedPlan, GatewayContext> for PlanDispatch {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_skips, ensure_compatible, Network, PLAN_SCHEMA_VERSION};
+    use super::{ensure_compatible, Network, PLAN_SCHEMA_VERSION};
     use super::{GOVERNANCE_DEPOSIT, MARKET_DEPOSIT, ORACLE_DEPOSIT};
-    use crate::spec::check::{Check, Status};
     use crate::spec::plan::testing::{alpha_market, public_key};
     use crate::spec::plan::{PlanArgs, PlanFile, PlanFunctionCall, PlanStep};
     use rstest::rstest;
     use templar_contract_artifacts::ArtifactId;
-
-    fn checks() -> Vec<Check> {
-        vec![
-            Check {
-                id: "config.validate".to_owned(),
-                status: Status::passed("ok"),
-            },
-            Check {
-                id: "reference.price.collateral".to_owned(),
-                status: Status::failed("off by 4%"),
-            },
-        ]
-    }
-
-    /// The point of `--skip-check`: one verdict is suppressed, everything else
-    /// is untouched.
-    #[test]
-    fn skipping_leaves_every_other_check_alone() {
-        let mut checks = checks();
-        apply_skips(&mut checks, &["reference.price.collateral".to_owned()]);
-
-        assert!(matches!(checks[0].status, Status::Passed { .. }));
-        assert!(matches!(checks[1].status, Status::Skipped { .. }));
-    }
-
-    /// A suppressed failure must still say what it was: `Skipped` also means
-    /// "not run", so hiding a known failure in it turns a red check green with
-    /// nothing left to review.
-    #[test]
-    fn a_skipped_check_records_the_verdict_it_suppressed() {
-        let mut checks = checks();
-        apply_skips(&mut checks, &["reference.price.collateral".to_owned()]);
-
-        let Status::Skipped { reason } = &checks[1].status else {
-            panic!("expected Skipped, got {:?}", checks[1].status);
-        };
-        assert!(
-            reason.contains("would have failed") && reason.contains("off by 4%"),
-            "the suppressed verdict must survive in the report: {reason}"
-        );
-    }
-
-    /// A typo must not read as a successful suppression.
-    #[test]
-    fn an_unknown_skip_id_is_an_error() {
-        let skip = ["config.validte".to_owned()];
-        let matched = apply_skips(&mut checks(), &skip);
-        let error =
-            super::ensure_every_skip_matched(&skip, &matched).expect_err("a typo names no check");
-
-        assert!(error.to_string().contains("names no check"), "{error:#}");
-    }
 
     fn bare_plan(schema: u32) -> PlanFile {
         PlanFile {
@@ -1480,9 +1362,29 @@ mod tests {
 
     #[test]
     fn a_schema_mismatch_is_refused() {
-        let error = ensure_compatible(&bare_plan(PLAN_SCHEMA_VERSION + 1), Network::Mainnet)
+        let plan = serde_json::to_string(&bare_plan(PLAN_SCHEMA_VERSION + 1)).expect("serialize");
+        let error = super::ensure_schema(&plan, std::path::Path::new("plan.json"))
             .expect_err("wrong schema");
 
+        assert!(error.to_string().contains("Regenerate it"), "{error:#}");
+    }
+
+    /// The version is only worth declaring if it survives the shape it labels.
+    /// A plan from another build fails to deserialize on whatever moved — here an
+    /// amount written before units were mandatory — and an operator reading that
+    /// has no idea the answer is to regenerate the plan.
+    #[test]
+    fn an_unreadable_plan_is_refused_by_its_schema_not_by_what_moved() {
+        let plan = serde_json::to_string(&bare_plan(PLAN_SCHEMA_VERSION + 1)).expect("serialize");
+        let foreign = plan.replace("\"1 atoms\"", "\"1\"");
+        assert_ne!(foreign, plan, "the probe must actually downgrade an amount");
+        assert!(
+            serde_json::from_str::<PlanFile>(&foreign).is_err(),
+            "the probe must be unreadable, or it proves nothing"
+        );
+
+        let error = super::ensure_schema(&foreign, std::path::Path::new("plan.json"))
+            .expect_err("wrong schema");
         assert!(error.to_string().contains("Regenerate it"), "{error:#}");
     }
 }

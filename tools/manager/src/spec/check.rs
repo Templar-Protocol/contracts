@@ -395,10 +395,28 @@ fn validate_configuration(spec: &MarketSpec) -> Check {
     // Unresolved decimals are stood in for rather than skipping the check:
     // `MarketConfiguration::validate` reads none of them, and skipping took MCR
     // ordering, the ranges and the durations down with it.
-    let decimals = |declared: Option<u8>| i32::from(declared.unwrap_or(0));
+    //
+    // Only where a stand-in exists, though. Reporting a pass this check cannot
+    // support is worse than reporting that it could not run.
+    let Some(borrow_decimals) = spec
+        .borrow
+        .decimals
+        .or_else(|| spec.market.stand_in_borrow_decimals())
+    else {
+        return Check::new(
+            id,
+            Status::Skipped {
+                reason: "the borrow asset's decimals are unresolved and this spec \
+                         states amounts in both `atoms` and `tokens`, which order \
+                         differently at different decimals. State `borrow.decimals`, \
+                         or run this check online."
+                    .to_owned(),
+            },
+        );
+    };
     let configuration = spec.clone().into_market_configuration(
-        decimals(spec.collateral.decimals),
-        decimals(spec.borrow.decimals),
+        i32::from(spec.collateral.decimals.unwrap_or(0)),
+        i32::from(borrow_decimals),
     );
 
     match configuration {

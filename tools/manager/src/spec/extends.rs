@@ -28,7 +28,9 @@ pub fn load(path: &Path) -> anyhow::Result<MarketSpec> {
             schema == i64::from(SCHEMA_VERSION),
             "{} declares schema {schema} but this build understands \
              {SCHEMA_VERSION}. Re-generate it with `market export`, or use a \
-             build that speaks it.",
+             build that speaks it. Schema 5 made every amount state its unit \
+             (`0.04 tokens`, `1 atom`), so a schema 4 file must be re-authored \
+             rather than renumbered.",
             path.display(),
         );
     }

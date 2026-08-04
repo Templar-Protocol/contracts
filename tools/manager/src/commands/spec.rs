@@ -29,14 +29,24 @@ pub struct Check {
     /// Only correct when the spec is right and the token is lying.
     #[arg(long)]
     pub(crate) accept_decimals_mismatch: bool,
+
+    /// Ignore a named check. Every other check still runs — this suppresses one
+    /// verdict, not the preflight, and the report records what it suppressed.
+    #[arg(long = "skip-check", value_name = "CHECK_ID")]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "the flag is `--skip-check` on every command that has it; \
+                  renaming it here to please the lint would rename the flag"
+    )]
+    pub(crate) skip_check: Vec<String>,
 }
 
 /// Print the spec's JSON Schema.
 ///
-/// The embedded on-chain types (`InterestRateStrategy`, `Fee`, `TimeBasedFee`,
-/// `YieldWeights`) do not implement `JsonSchema`, so they appear as unconstrained
-/// JSON. Everything the spec itself owns — structure, unknown-key rejection,
-/// asset strings, source kinds, durations — is described precisely.
+/// The embedded on-chain types (`InterestRateStrategy`, `YieldWeights`) do not
+/// implement `JsonSchema`, so they appear as unconstrained JSON. Everything the
+/// spec itself owns — structure, unknown-key rejection, asset strings, source
+/// kinds, durations, amounts — is described precisely.
 pub fn print_schema() -> anyhow::Result<()> {
     // The *file* shape, which is what an author writes. `MarketSpec` is the
     // parsed form and states the same fields under a different arrangement.

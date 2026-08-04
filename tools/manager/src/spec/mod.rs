@@ -5,6 +5,7 @@
 //! Everything here is offline; building and checking a spec never needs a
 //! network.
 
+pub mod amount;
 pub mod check;
 pub mod export;
 pub mod extends;
@@ -18,8 +19,7 @@ use near_account_id::AccountId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::{
-    asset::{BorrowAsset, CollateralAsset},
-    fee::{Fee, TimeBasedFee},
+    asset::{AssetClass, BorrowAsset, CollateralAsset},
     interest_rate_strategy::InterestRateStrategy,
     market::{
         AmountRange, MarketConfiguration, PriceOracleConfiguration, ValidAmountRange, YieldWeights,
@@ -30,6 +30,7 @@ use templar_common::{
 };
 use templar_gateway_client::Network;
 
+use amount::{FeeSpec, TimeBasedFeeSpec};
 use oracle::AssetSpec;
 use serde_util::duration;
 
@@ -49,7 +50,7 @@ pub fn default_reference_tolerance() -> Decimal {
 /// Bumped on a breaking spec change; unknown versions are rejected. Every
 /// struct here is `deny_unknown_fields`, so adding a field is breaking in the
 /// reader direction: an older build rejects a document carrying it.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// A complete market deployment: the market contract, its dedicated proxy
 /// oracle, and the governance contract that owns that oracle.
@@ -260,7 +261,11 @@ pub struct GovernanceSpec {
 /// [`MarketConfiguration`] minus everything this module derives.
 ///
 /// The on-chain types are embedded rather than re-modeled, so a field added
-/// there surfaces here as a compile error instead of silently going unset.
+/// there surfaces here as a compile error instead of silently going unset. The
+/// exception is anything holding a borrow-denominated amount, which must carry
+/// its unit to be authorable: those keep the property in
+/// [`MarketSpec::into_market_configuration`], which builds the on-chain types
+/// by struct literal and exhaustive match.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MarketParams {
@@ -297,10 +302,6 @@ pub struct MarketParams {
     #[schemars(with = "serde_json::Value")]
     pub interest_rate_strategy: InterestRateStrategy,
     #[schemars(with = "serde_json::Value")]
-    pub origination_fee: Fee<BorrowAsset>,
-    #[schemars(with = "serde_json::Value")]
-    pub supply_withdrawal_fee: TimeBasedFee<BorrowAsset>,
-    #[schemars(with = "serde_json::Value")]
     pub yield_weights: YieldWeights,
 
     pub protocol_account_id: AccountId,
@@ -308,12 +309,57 @@ pub struct MarketParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub borrow_maximum_duration_ms: Option<u64>,
 
-    #[schemars(with = "serde_json::Value")]
-    pub borrow_range: AmountRange<BorrowAsset>,
-    #[schemars(with = "serde_json::Value")]
-    pub supply_range: AmountRange<BorrowAsset>,
-    #[schemars(with = "serde_json::Value")]
-    pub supply_withdrawal_range: AmountRange<BorrowAsset>,
+    // Borrow-denominated, so every amount states its unit.
+    pub origination_fee: FeeSpec,
+    pub supply_withdrawal_fee: TimeBasedFeeSpec,
+    pub borrow_range: amount::Range,
+    pub supply_range: amount::Range,
+    pub supply_withdrawal_range: amount::Range,
+}
+
+impl MarketParams {
+    /// Every amount this states, in the order a reader meets them.
+    fn amounts(&self) -> impl Iterator<Item = amount::Amount> + '_ {
+        self.origination_fee
+            .amount()
+            .into_iter()
+            .chain(self.supply_withdrawal_fee.fee.amount())
+            .chain(self.borrow_range.amounts())
+            .chain(self.supply_range.amounts())
+            .chain(self.supply_withdrawal_range.amounts())
+    }
+
+    /// A decimals value that stands in for an unresolved one, or `None` when no
+    /// value can.
+    ///
+    /// Scaling every borrow-denominated amount by one factor preserves the
+    /// orderings between them, which is all [`MarketConfiguration::validate`]
+    /// compares — but only while they share a unit. An `atoms` amount is the
+    /// same number at every decimals and a `tokens` amount is not, so a spec
+    /// mixing the two orders differently under any stand-in than it will on
+    /// chain: `500000 atoms` sits above `0.6 tokens` at one decimal and below it
+    /// at six.
+    pub fn stand_in_borrow_decimals(&self) -> Option<u8> {
+        let (mut any_atoms, mut deepest) = (false, None);
+        for amount in self.amounts() {
+            match amount {
+                // Zero is zero at every decimals, so it orders identically under
+                // any stand-in whichever unit it is written in. Every spec keeps
+                // its fees at `0 atoms`, which would otherwise mix them all.
+                amount::Amount::Atoms(0) => {}
+                amount::Amount::Atoms(_) => any_atoms = true,
+                amount::Amount::Tokens { scale, .. } => {
+                    deepest = Some(deepest.unwrap_or(0).max(scale));
+                }
+            }
+        }
+        match (any_atoms, deepest) {
+            (true, Some(_)) => None,
+            // All `atoms` convert to themselves at every decimals, so anything
+            // orders them the way the chain will.
+            (_, deepest) => Some(deepest.unwrap_or_default()),
+        }
+    }
 }
 
 /// A free function because `market export` derives this before it has a spec to
@@ -370,15 +416,20 @@ fn exact_units(value: Nanoseconds, per_unit: u64, field: &str, unit: &str) -> an
     Ok(ns / per_unit)
 }
 
-/// Convert an authored range through the validating `TryFrom`.
+/// Scale an authored range to base units, then through the validating
+/// `TryFrom`.
 ///
-/// The spec holds `AmountRange` rather than `ValidAmountRange` because
-/// deserializing the latter directly would bypass the min/max invariant that
-/// conversion enforces.
-fn into_valid<A: templar_common::asset::AssetClass + PartialOrd>(
-    range: AmountRange<A>,
+/// The spec holds unit-carrying amounts rather than `ValidAmountRange` because
+/// deserializing the latter directly would bypass both the unit and the min/max
+/// invariant that conversion enforces.
+fn into_valid<A: AssetClass + PartialOrd>(
+    range: amount::Range,
+    decimals: u8,
     field: &str,
 ) -> anyhow::Result<ValidAmountRange<A>> {
+    let range: AmountRange<A> = range
+        .into_on_chain(decimals)
+        .with_context(|| format!("invalid `{field}`"))?;
     ValidAmountRange::try_from(range)
         .with_context(|| format!("invalid `{field}`: maximum must not be below minimum"))
 }
@@ -483,6 +534,10 @@ impl MarketSpec {
     ) -> anyhow::Result<MarketConfiguration> {
         let oracle_id = self.reads_oracle_id()?;
         let (collateral_price_id, borrow_price_id) = self.price_identifiers()?;
+        // Every amount below is borrow-denominated; nothing here is stated in
+        // collateral.
+        let amount_decimals = u8::try_from(borrow_decimals)
+            .context("the borrow asset's decimals do not fit a u8, so no amount can be scaled")?;
         let price_maximum_age_s = u32::try_from(exact_units(
             self.market.price_maximum_age,
             1_000_000_000,
@@ -549,16 +604,25 @@ impl MarketSpec {
             borrow_mcr_maintenance: self.market.mcr_maintenance,
             borrow_mcr_liquidation: self.market.mcr_liquidation,
             borrow_asset_maximum_usage_ratio: self.market.maximum_usage_ratio,
-            borrow_origination_fee: self.market.origination_fee,
+            borrow_origination_fee: self
+                .market
+                .origination_fee
+                .into_on_chain(amount_decimals)
+                .context("invalid `origination_fee`")?,
             borrow_interest_rate_strategy: self.market.interest_rate_strategy,
             borrow_maximum_duration_ms: self.market.borrow_maximum_duration_ms.map(Into::into),
-            borrow_range: into_valid(self.market.borrow_range, "borrow_range")?,
-            supply_range: into_valid(self.market.supply_range, "supply_range")?,
+            borrow_range: into_valid(self.market.borrow_range, amount_decimals, "borrow_range")?,
+            supply_range: into_valid(self.market.supply_range, amount_decimals, "supply_range")?,
             supply_withdrawal_range: into_valid(
                 self.market.supply_withdrawal_range,
+                amount_decimals,
                 "supply_withdrawal_range",
             )?,
-            supply_withdrawal_fee: self.market.supply_withdrawal_fee,
+            supply_withdrawal_fee: self
+                .market
+                .supply_withdrawal_fee
+                .into_on_chain(amount_decimals)
+                .context("invalid `supply_withdrawal_fee`")?,
             yield_weights: self.market.yield_weights,
             protocol_account_id: self.market.protocol_account_id,
             liquidation_maximum_spread: self.market.liquidation_maximum_spread,
