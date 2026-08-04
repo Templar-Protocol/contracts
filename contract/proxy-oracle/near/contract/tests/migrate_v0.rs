@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 mod common;
 
@@ -12,13 +12,14 @@ use near_sdk::{
     borsh, json_types::Base64VecU8, mock::with_mocked_blockchain, test_utils::VMContextBuilder,
     testing_env,
 };
-use serde_json::json;
 use templar_common::{
     oracle::pyth::PriceIdentifier,
     versioned_state::{write_state_version, MigrateExternalInterface},
     Nanoseconds,
 };
-use templar_gateway_testing::SandboxHarness;
+use templar_gateway_methods_spec::proxy_oracle;
+use templar_gateway_testing::{ManagedAccountId, SandboxHarness};
+use templar_gateway_types::OperationStatus;
 use templar_proxy_oracle_kernel::proxy::{
     aggregator::method::median::MedianLow, Aggregator, FreshnessFilter, Proxy, WeightedSource,
 };
@@ -298,75 +299,70 @@ fn init_writes_current_state_version() {
     assert!(!Contract::needs_migration());
 }
 
+/// Read a migrated proxy definition back off-chain.
+async fn stored_proxy(
+    client: &templar_gateway_client::Client,
+    proxy: &near_api::types::AccountId,
+    id: PriceIdentifier,
+) -> Result<Proxy<Source>> {
+    Ok(client
+        .read(proxy_oracle::GetProxy {
+            oracle_id: proxy.clone(),
+            id,
+        })
+        .await?
+        .proxy
+        .unwrap())
+}
+
 #[tokio::test]
 async fn migrate_v0_fixture_exactly() -> Result<()> {
     let harness = SandboxHarness::start().await?;
+    let client = harness.client()?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;
-    let network = &harness.network;
 
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
-        0
-    );
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
-        1
-    );
-    assert!(common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+    let version = harness.contract_state_version(&proxy).await?;
+    assert_eq!((version.stored, version.target), (0, 1));
+    assert!(version.needs_migration);
 
-    common::call(network, &proxy, &proxy, "migrate", migration(), 300, 0).await?;
+    // `migrate` is `#[private]` and has no typed gateway operation of its own:
+    // the production upgrade path is the atomic deploy+migrate
+    // (`proxyOracle.upgrade` / governance `AdminUpgrade`), so a standalone
+    // migrate goes through the generic function-call escape hatch, self-signed.
+    harness
+        .call_function(
+            &ManagedAccountId(proxy.clone()),
+            &proxy,
+            "migrate",
+            migration(),
+        )
+        .await?;
 
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_stored_state_version", json!({})).await?,
-        1
-    );
-    assert_eq!(
-        common::view::<u32>(network, &proxy, "get_target_state_version", json!({})).await?,
-        1
-    );
-    assert!(!common::view::<bool>(network, &proxy, "needs_migration", json!({})).await?);
+    let version = harness.contract_state_version(&proxy).await?;
+    assert_eq!((version.stored, version.target), (1, 1));
+    assert!(!version.needs_migration);
 
-    let mut proxies: Vec<PriceIdentifier> = common::view(
-        network,
-        &proxy,
-        "list_proxies",
-        json!({ "offset": null, "count": null }),
-    )
-    .await?;
+    let mut proxies = client
+        .read(proxy_oracle::ListProxies {
+            oracle_id: proxy.clone(),
+            offset: None,
+            count: None,
+        })
+        .await?
+        .proxies;
     proxies.sort();
     assert_eq!(proxies, vec![BTC_PRICE_ID, ETH_PRICE_ID, STNEAR_PRICE_ID]);
 
     assert_eq!(
-        common::view::<Option<Proxy<Source>>>(
-            network,
-            &proxy,
-            "get_proxy",
-            json!({ "id": BTC_PRICE_ID }),
-        )
-        .await?
-        .unwrap(),
+        stored_proxy(&client, &proxy, BTC_PRICE_ID).await?,
         expected_btc_proxy()
     );
     assert_eq!(
-        common::view::<Option<Proxy<Source>>>(
-            network,
-            &proxy,
-            "get_proxy",
-            json!({ "id": ETH_PRICE_ID }),
-        )
-        .await?
-        .unwrap(),
+        stored_proxy(&client, &proxy, ETH_PRICE_ID).await?,
         expected_eth_proxy()
     );
     assert_eq!(
-        common::view::<Option<Proxy<Source>>>(
-            network,
-            &proxy,
-            "get_proxy",
-            json!({ "id": STNEAR_PRICE_ID }),
-        )
-        .await?
-        .unwrap(),
+        stored_proxy(&client, &proxy, STNEAR_PRICE_ID).await?,
         expected_stnear_proxy()
     );
 
@@ -378,19 +374,21 @@ async fn migrate_is_private() -> Result<()> {
     let harness = SandboxHarness::start().await?;
     let proxy = common::deploy_from_patch(&harness, patch()).await?;
 
-    let caller = common::create_account(&harness, "caller").await?;
+    let caller = harness.create_user("caller").await?;
 
-    let result = common::try_call(
-        &harness.network,
-        &proxy,
-        &caller,
-        "migrate",
-        migration(),
-        300,
-        0,
-    )
-    .await?;
-    common::assert_failure_contains(result, "migrate function is private");
+    let result = harness
+        .try_call_function(&caller, &proxy, "migrate", migration())
+        .await?;
+
+    assert_eq!(result.operation.status, OperationStatus::Failed);
+    let failure = result
+        .operation
+        .failure_message()
+        .expect("a rejected migrate reports its panic message");
+    assert!(
+        failure.contains("migrate function is private"),
+        "expected a private-migrate rejection, got: {failure}"
+    );
 
     Ok(())
 }

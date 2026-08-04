@@ -3,6 +3,15 @@ use templar_proxy_oracle_governance_kernel as kernel;
 
 use crate::OperationKind;
 
+/// Borsh decodes positionally, so this field order is `create_proposal_borsh`'s wire format.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[near(serializers = [json, borsh])]
+pub struct CreateProposalArgs<O> {
+    pub id: u32,
+    pub operation: O,
+    pub requested_ttl: crate::Nanoseconds,
+}
+
 pub type Proposal<T> = kernel::Proposal<T, AccountId>;
 pub type Governance = kernel::Governance<crate::GovernancePolicy>;
 
@@ -81,6 +90,12 @@ macro_rules! gen_ext_governance {
                 operation: $operation_ty,
                 requested_ttl: $crate::Nanoseconds,
             ) -> $crate::interface::Proposal<$operation_ty>;
+            /// Borsh-argument twin of `create_proposal`, for payloads too large or too costly to send
+            /// as base64-in-JSON. Returns nothing; read the stored body with `get_proposal`.
+            fn create_proposal_borsh(
+                &mut self,
+                #[serializer(borsh)] args: $crate::interface::CreateProposalArgs<$operation_ty>,
+            );
             fn cancel_proposal(&mut self, id: u32);
             fn execute_proposal(&mut self, id: u32);
         }

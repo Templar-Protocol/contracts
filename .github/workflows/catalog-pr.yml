@@ -1,0 +1,212 @@
+name: Catalog PR
+
+# Records every released WASM that `release-artifacts.yml` has published and the
+# catalog does not yet pin — as one commit, on one standing PR. It runs when a
+# build finishes rather than when a tag is pushed, because a release batch tags
+# several contracts at once and this is where they converge. See "Contract WASM
+# artifacts" in RELEASING.md.
+
+on:
+  # `workflow_run` only fires from the default branch, so changes here cannot be
+  # exercised on a branch — they take effect when they merge.
+  workflow_run:
+    workflows: [Release Artifacts]
+    types: [completed]
+  # To re-drive the catalog after fixing a failure here, rather than recording
+  # the rows by hand. Every pending row is picked up either way.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # list and download the build jobs' rows
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+# The single writer. A queued run that a later one displaces costs nothing: each
+# run records *every* pending row, so the survivor does the displaced run's work
+# too — and each build completing queues another run after itself.
+concurrency:
+  group: catalog-pr
+  cancel-in-progress: false
+
+jobs:
+  record:
+    name: Record released WASMs on the catalog PR
+    # Deliberately not filtered on the build's conclusion. A failed build's
+    # completion still queues a run, and queuing is what displaces the pending
+    # one — so it has to be able to do that run's work. Which rows are
+    # trustworthy is decided by their source run below, not by this event.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          # `workflow_run` starts at the default branch whatever the build was
+          # triggered by; name it anyway, since the catalog PR branches from it.
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Collect the pending rows
+        id: rows
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROWS: ${{ runner.temp }}/rows
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROWS"
+
+          # Any job in the repository can upload an artifact under any name,
+          # including one added by a fork's pull request — so a row counts only
+          # if the run that produced it is a successful run of the workflow that
+          # builds releases.
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/release-artifacts.yml/runs?status=success&per_page=100" \
+            --jq '.workflow_runs[].id' | sort > trusted-runs
+
+          # Both listings are newest-first, and one page of either holds eleven
+          # full batches: nine artifacts are releasable, and a row matters only
+          # while the artifact carrying it lives.
+          gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=catalog-row&per_page=100" \
+            --jq '.artifacts[] | select(.expired | not) | [.id, .workflow_run.id] | @tsv' > candidates
+
+          while IFS=$'\t' read -r id run; do
+            if ! grep -qx "$run" trusted-runs; then
+              echo "::warning::Ignoring a catalog row from run ${run}: not one of the last 100 successful release builds."
+              continue
+            fi
+            gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "row-${id}.zip"
+            unzip -oq "row-${id}.zip" -d "$ROWS"
+          done < candidates
+
+          echo "count=$(find "$ROWS" -name '*.tsv' | wc -l)" >> "$GITHUB_OUTPUT"
+
+      # After the collection, and skipped with it: every tag runs this workflow,
+      # including the Soroban ones that build no WASM at all, and a toolchain is
+      # only worth installing once there is a row to record.
+      - uses: ./.github/actions/rust
+        if: steps.rows.outputs.count != '0'
+        with:
+          targets: ""
+
+      - name: Record them on the catalog PR
+        if: steps.rows.outputs.count != '0'
+        env:
+          # Carries the PR write, and makes the PR's own commits trigger CI —
+          # `GITHUB_TOKEN` pushes do not.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          ROWS: ${{ runner.temp }}/rows
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rows=("$ROWS"/*.tsv)
+          if [ "${#rows[@]}" -eq 0 ]; then
+            echo "::notice::No release has a catalog row waiting."
+            exit 0
+          fi
+
+          branch="record/releases"
+          # `persist-credentials: false` above, so authenticate every remote
+          # operation here instead of leaving a credential in git's config.
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          body="${RUNNER_TEMP}/catalog-pr-body.md"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch --quiet --force "$remote" "+refs/heads/dev:refs/remotes/origin/dev"
+          if git fetch --quiet --force "$remote" \
+               "+refs/heads/${branch}:refs/remotes/origin/${branch}"; then
+            head=$(git rev-parse "origin/${branch}")
+          else
+            head=
+          fi
+
+          # Reuse the branch while it holds rows `dev` lacks. Once its PR merges
+          # every row is in `dev` — squashed, so there is no ancestry to test —
+          # and the next batch starts a fresh branch.
+          unmerged=$(git diff --name-only --diff-filter=A origin/dev \
+            "${head:-origin/dev}" -- contract/artifacts/releases)
+          if [ -n "$unmerged" ]; then
+            git checkout -B "$branch" "$head"
+          else
+            git checkout -B "$branch" origin/dev
+          fi
+
+          # `record-release` refuses to rewrite a recorded digest and no-ops on
+          # an exact replay. That is what lets every run consider every live row
+          # without having to know which ones it has already recorded.
+          for row in "${rows[@]}"; do
+            IFS=$'\t' read -r artifact version tag asset sha < "$row"
+            cargo run --quiet -p templar-contract-artifacts \
+              --features workspace-loader,clap --bin record-release -- \
+              "$artifact" "$version" "$tag" "$asset" "$sha"
+          done
+
+          # build.rs validates the rows, but only at compile time — so compile,
+          # before committing rather than after.
+          cargo build --quiet -p templar-contract-artifacts
+
+          # Stage first, then ask the index: a release is a *new* file, which
+          # `git diff` does not see, so checking before staging would report
+          # "already recorded" for every release and never open the PR.
+          git add contract/artifacts/releases
+          if git diff --cached --quiet; then
+            echo "::notice::Every published release is already in the catalog."
+            exit 0
+          fi
+
+          {
+            echo "chore(artifacts): record released contract WASMs"
+            echo
+            git diff --cached --name-only --diff-filter=A -- contract/artifacts/releases |
+              sort |
+              while read -r file; do
+                IFS=$'\t' read -r artifact version tag _asset _sha < "$file"
+                printf -- '- %s %s (%s)\n' "$artifact" "$version" "$tag"
+              done
+          } > "${RUNNER_TEMP}/commit-message"
+          git commit --quiet --file "${RUNNER_TEMP}/commit-message"
+
+          # Leased even though this job is the only writer: if that ever stops
+          # being true, the row loses a push rather than the branch losing a row.
+          git push --quiet --force-with-lease="refs/heads/${branch}:${head}" \
+            "$remote" "HEAD:refs/heads/${branch}"
+
+          # Built from the branch, so the PR describes every release on it and
+          # not just the batch that happened to open it.
+          {
+            printf '%s\n' \
+              "Records the contract WASMs CI built at their release tags and" \
+              "published, one file per release under" \
+              "\`contract/artifacts/releases/\`:" \
+              "" \
+              "| Artifact | Version | Tag | SHA-256 |" \
+              "| --- | --- | --- | --- |"
+            git diff --name-only --diff-filter=A origin/dev HEAD -- contract/artifacts/releases |
+              sort |
+              while read -r file; do
+                IFS=$'\t' read -r artifact version tag _asset sha < "$file"
+                printf '| `%s` | %s | `%s` | `%s` |\n' "$artifact" "$version" "$tag" "$sha"
+              done
+            printf '%s\n' \
+              "" \
+              "Until this merges, \`templar-contract-artifacts\` will not serve these" \
+              "versions — an unrecorded version has no reviewed hash to check" \
+              "downloaded bytes against." \
+              "" \
+              "Reproduce any row from a fresh clone, against the artifact's crate" \
+              "directory:" \
+              "" \
+              "    git checkout <tag>" \
+              "    cargo near build reproducible-wasm --manifest-path <crate>/Cargo.toml"
+          } > "$body"
+
+          gh pr create \
+            --base dev \
+            --head "$branch" \
+            --title "chore(artifacts): record released contract WASMs" \
+            --body-file "$body" \
+          || gh pr edit "$branch" --body-file "$body"

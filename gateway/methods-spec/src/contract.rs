@@ -34,6 +34,29 @@ pub struct VersionResult {
     pub parsed: Option<templar_gateway_types::Version<()>>,
 }
 
+/// Read a contract's state-versioning status.
+///
+/// Answers the `MigrateExternalInterface` views every `impl_versioned_state!`
+/// contract exposes, so an operator can tell whether a deployment is behind its
+/// code's target state version before upgrading it.
+#[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[method(read = "contract.getStateVersion", output = GetStateVersionResult)]
+pub struct GetStateVersion {
+    pub contract_id: AccountId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct GetStateVersionResult {
+    /// The version of the state currently written to the account.
+    pub stored: u32,
+    /// The version the deployed code expects.
+    pub target: u32,
+    /// The contract's own answer rather than a derived `stored != target`: a
+    /// stored version *newer* than the deployed code supports is an error the
+    /// contract reports by panicking, which the derived comparison would hide.
+    pub needs_migration: bool,
+}
+
 /// Identify the kind of deployed protocol contract.
 #[derive(MethodSpec, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[method(read = "contract.getKind", output = GetKindResult)]
