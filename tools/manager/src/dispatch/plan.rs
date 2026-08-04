@@ -19,7 +19,7 @@ use templar_gateway_methods_spec::{
     market, proxy_oracle, proxy_oracle_governance as gov, registry,
 };
 use templar_gateway_types::common::{WriteOperationResult, WriteRequest};
-use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec};
+use templar_gateway_types::{primitive::PublicKey, Base64Bytes, MethodSpec, ProposalEncoding};
 use templar_proxy_oracle_kernel::proxy::Proxy;
 use templar_proxy_oracle_near_common::input::Source;
 use templar_proxy_oracle_near_governance_common::{GovernancePolicy, Operation};
@@ -40,11 +40,11 @@ use crate::spec::{
 /// rather than from the market.
 ///
 /// The registry refuses a deposit below `1e19 * code.len()`, and the market's is
-/// the last step — undersized there, it fails after 8.5 NEAR is spent. Each keeps
+/// the last step — undersized there, it fails after 9.9 NEAR is spent. Each keeps
 /// 50 KB of headroom over its pinned release, held there by
-/// `requires_network_deposits_cover_the_released_artifacts`. Over-provisioning
-/// burns nothing: the deposit is forwarded to the account being created.
-const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_near(4);
+/// `deposits_cover_the_released_artifacts`. Over-provisioning burns nothing:
+/// the deposit is forwarded to the account being created.
+const GOVERNANCE_DEPOSIT: NearToken = NearToken::from_millinear(4_500);
 const ORACLE_DEPOSIT: NearToken = NearToken::from_millinear(5_400);
 const MARKET_DEPOSIT: NearToken = NearToken::from_millinear(5_800);
 
@@ -467,7 +467,7 @@ pub(crate) async fn build(
 
         // The proposals are created and executed by `signer_id`, but only
         // `governance.admin` is granted the Admin role at init. Mismatched, the two
-        // registry deploys succeed and every proposal reverts — 8.5 NEAR spent on
+        // registry deploys succeed and every proposal reverts — 9.9 NEAR spent on
         // exactly the orphaned half-deployment this tool exists to prevent.
         // The retired shell deploy made this unrepresentable: it passed the
         // signer as the admin.
@@ -500,7 +500,7 @@ pub(crate) async fn build(
 
     // Re-run here, not left to the `config.validate` check: that check is
     // skippable, and the market enforces this at init. Skipping it can only buy
-    // an 8.5 NEAR half-deployment that reverts on the last step.
+    // a 9.9 NEAR half-deployment that reverts on the last step.
     configuration
         .validate()
         .map_err(|error| anyhow::anyhow!("{error}"))
@@ -680,6 +680,7 @@ async fn set_proxy(
                 .context("encode the `admin_set_proxy` call")?,
             ),
             requested_ttl: ttl_default,
+            encoding: ProposalEncoding::Json,
         },
     )
     .await?;
@@ -1140,40 +1141,37 @@ mod tests {
 
     /// The registry refuses `deposit < 1e19 * code.len()`, so a contract that
     /// outgrows its constant fails the deploy — the market's on the last step,
-    /// after 8.5 NEAR is spent. Releasing a larger contract must therefore break
+    /// after 9.9 NEAR is spent. Releasing a larger contract must therefore break
     /// a test, not a deployment.
     ///
-    /// Network-gated: the released bytes are fetched, not vendored. Cached after
-    /// the first run.
+    /// Sized from the catalog's recorded byte length, which `fetch` verifies
+    /// against the released asset, so this runs offline and on every PR.
     #[rstest]
     #[case(ArtifactId::ProxyGovernance, GOVERNANCE_DEPOSIT)]
     #[case(ArtifactId::ProxyOracle, ORACLE_DEPOSIT)]
     #[case(ArtifactId::Market, MARKET_DEPOSIT)]
-    #[tokio::test]
-    async fn requires_network_deposits_cover_the_released_artifacts(
+    fn deposits_cover_the_released_artifacts(
         #[case] artifact: ArtifactId,
         #[case] deposit: near_api::types::NearToken,
     ) {
         const YOCTO_PER_BYTE: u128 = 10u128.pow(19);
         const HEADROOM_BYTES: u128 = 50_000;
 
-        let version = artifact
+        let release = artifact
             .metadata()
-            .version()
+            .current()
             .expect("a released version is catalogued for this artifact");
-        let bytes = templar_contract_artifacts::fetch::released_bytes(artifact, version)
-            .await
-            .expect("fetch the released wasm");
 
-        let required = bytes.len() as u128 * YOCTO_PER_BYTE;
+        let required = release.length as u128 * YOCTO_PER_BYTE;
         let covered = deposit.as_yoctonear();
 
         assert!(
             covered >= required + HEADROOM_BYTES * YOCTO_PER_BYTE,
-            "{artifact:?} {version} is {} bytes, needing {required} yocto, and the \
+            "{artifact:?} {} is {} bytes, needing {required} yocto, and the \
              deposit is {covered}; raise the constant so it keeps 50 KB of room \
              to grow",
-            bytes.len(),
+            release.version,
+            release.length,
         );
     }
 

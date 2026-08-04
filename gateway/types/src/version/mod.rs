@@ -1,9 +1,11 @@
 mod market_version;
+mod proxy_governance_version;
 mod proxy_oracle_version;
 mod redstone_adapter_version;
 mod registry_version;
 
 pub use market_version::{Market, MarketVersion};
+pub use proxy_governance_version::{ProxyGovernance, ProxyGovernanceVersion};
 pub use proxy_oracle_version::{ProxyOracle, ProxyOracleVersion};
 pub use redstone_adapter_version::{RedstoneAdapter, RedstoneAdapterVersion};
 pub use registry_version::{Registry, RegistryVersion};

@@ -164,6 +164,11 @@ pub struct ArtifactRelease {
     /// Root of trust: [`crate::fetch`] refuses bytes that do not match this
     /// reviewed, in-repo value.
     pub sha256: &'static str,
+    /// Byte length of the released asset.
+    ///
+    /// Recorded so that sizing a release — what a deploy deposit has to cover —
+    /// needs no download.
+    pub length: usize,
 }
 
 /// Canonical metadata for a single contract artifact.

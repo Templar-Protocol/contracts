@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use templar_common::Nanoseconds;
 use templar_gateway_macros::MethodSpec;
+use templar_gateway_types::ProposalEncoding;
 use templar_proxy_oracle_near_governance_common::{
     GovernancePolicyWire, Operation, Proposal, Role,
 };
@@ -120,6 +121,8 @@ pub struct CreateProposal {
     pub id: u32,
     pub operation: Operation,
     pub requested_ttl: Nanoseconds,
+    #[serde(default, skip_serializing_if = "ProposalEncoding::is_json")]
+    pub encoding: ProposalEncoding,
 }
 
 /// Cancel a governance proposal.
@@ -136,4 +139,43 @@ pub struct CancelProposal {
 pub struct ExecuteProposal {
     pub governance_id: near_account_id::AccountId,
     pub id: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use templar_common::Nanoseconds;
+    use templar_proxy_oracle_near_governance_common::{Operation, ReflexiveOperation, Role};
+
+    use super::{CreateProposal, ProposalEncoding};
+
+    fn body(encoding: ProposalEncoding) -> CreateProposal {
+        CreateProposal {
+            governance_id: "gov.near".parse().unwrap(),
+            id: 7,
+            operation: Operation::Reflexive(ReflexiveOperation::SetRole {
+                account_id: "op.near".parse().unwrap(),
+                role: Role::Admin,
+                set: true,
+            }),
+            requested_ttl: Nanoseconds::zero(),
+            encoding,
+        }
+    }
+
+    /// The persisted idempotency fingerprint hashes these params, so a default request must
+    /// serialize as it did before `encoding` existed or retries stop matching their stored operation.
+    #[test]
+    fn the_default_encoding_stays_off_the_wire() {
+        let json = serde_json::to_value(body(ProposalEncoding::Json)).unwrap();
+        assert!(json.get("encoding").is_none(), "{json}");
+        assert_eq!(
+            serde_json::from_value::<CreateProposal>(json)
+                .unwrap()
+                .encoding,
+            ProposalEncoding::Json
+        );
+
+        let opted_in = serde_json::to_value(body(ProposalEncoding::Borsh)).unwrap();
+        assert_eq!(opted_in["encoding"], serde_json::json!("borsh"));
+    }
 }

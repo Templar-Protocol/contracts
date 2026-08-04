@@ -227,23 +227,15 @@ impl<C: HasNearClient> DispatchRead<proxy_oracle::PriceFeedExists, C> for Dispat
 
 #[cfg(test)]
 mod tests {
-    use near_api::{types::transaction::actions::Action, NetworkConfig};
-    use templar_gateway_core::{HasNearClient, NearClient, PlanWrite};
+    use near_api::types::transaction::actions::Action;
+    use templar_gateway_core::PlanWrite;
     use templar_gateway_methods_spec::proxy_oracle;
     use templar_gateway_types::{
         common::WriteRequest, Base64Bytes, ManagedAccountId, ProxyOracleVersion,
     };
 
     use super::{v0_upgrade_actions, Dispatch, ProxyOracleInitArgs};
-
-    #[derive(Clone)]
-    struct TestCtx(NearClient);
-
-    impl HasNearClient for TestCtx {
-        fn near_client(&self) -> &NearClient {
-            &self.0
-        }
-    }
+    use crate::test_ctx::{offline_ctx, TestCtx};
 
     /// Must stay an object: a bare `null` payload fails to deserialize into
     /// `new`'s argument struct, where a missing `owner_id` defaults to `None`.
@@ -324,14 +316,10 @@ mod tests {
                 migration: proxy_oracle::Migration::V0,
             },
         };
-        let ctx = TestCtx(NearClient::new(NetworkConfig::from_rpc_url(
-            "test",
-            "http://127.0.0.1:1".parse().unwrap(),
-        )));
-
-        let error = <Dispatch as PlanWrite<proxy_oracle::Upgrade, TestCtx>>::plan(request, ctx)
-            .await
-            .expect_err("wrong signer must be rejected before the unreachable metadata RPC");
+        let error =
+            <Dispatch as PlanWrite<proxy_oracle::Upgrade, TestCtx>>::plan(request, offline_ctx())
+                .await
+                .expect_err("wrong signer must be rejected before the unreachable metadata RPC");
         assert!(error
             .to_string()
             .contains("must be signed by the oracle account"));

@@ -27,6 +27,10 @@ release_always = false
 # changelog; the title's job is to make the release lever recognisable.
 pr_name = "chore: release"
 
+# The label the repo's release filters key off. release-plz reapplies it on
+# every update, so a hand-removed label comes back on the next push to `dev`.
+pr_labels = ["release"]
+
 # Per-crate tags: `templar-gateway-client-v0.2.0`. Required for independent
 # versioning — a bare `v0.2.0` cannot say which crate it refers to.
 git_tag_name = "{{ package }}-v{{ version }}"
