@@ -13,13 +13,6 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::{GatewayError, GatewayResult};
 
-async fn current_key(signer: &Signer) -> GatewayResult<PublicKey> {
-    signer
-        .get_public_key()
-        .await
-        .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))
-}
-
 /// One pooled access key. NEAR nonces are per access key, so the guard must span
 /// nonce allocation through broadcast — hence the signer sits behind the mutex
 /// rather than beside it. Assumes no other process holds this same key.
@@ -99,8 +92,11 @@ impl PooledSigner {
     /// direct near-api use. The key is taken from the signer rather than named
     /// by the caller, so the lane cannot guard a key the signer does not hold.
     ///
-    /// Errors on a signer holding more than one key: a lane guards exactly one,
-    /// and the rest would be left free for near-api to rotate onto unguarded.
+    /// **The caller must pass a signer holding exactly one key.** near-api
+    /// exposes no way to count a signer's keys — `get_public_key` rotates
+    /// through them and reveals one at a time — so this cannot be checked here.
+    /// A lane guards the single key it is given; any sibling key stays free for
+    /// near-api to rotate onto with nothing serializing its nonce.
     ///
     /// Each call builds a *new* lane, so an account must be wrapped once and the
     /// result cloned; wrapping the same key twice would race it. A lane excludes
@@ -109,14 +105,10 @@ impl PooledSigner {
         account_id: impl Into<ManagedAccountId>,
         signer: Arc<Signer>,
     ) -> GatewayResult<Self> {
-        let public_key = current_key(&signer).await?;
-        // `get_public_key` rotates: it hands back `keys[n++ % len]`, so a second
-        // call repeats only for a single-key signer.
-        if current_key(&signer).await? != public_key {
-            return Err(GatewayError::InvalidSignerKey(
-                "a lane requires a single-key signer".to_owned(),
-            ));
-        }
+        let public_key = signer
+            .get_public_key()
+            .await
+            .map_err(|error| GatewayError::InvalidSignerKey(error.to_string()))?;
 
         Ok(Self {
             account_id: account_id.into(),
@@ -207,7 +199,7 @@ impl SigningKeyLease {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
 
     use near_api::types::crypto::secret_key::ED25519SecretKey;
     use tokio::time::timeout;
@@ -276,21 +268,17 @@ mod tests {
         assert!(pool.lease(&key(1).public_key()).await.is_none());
     }
 
-    /// A lane guards one key; near-api would rotate a multi-key signer onto the
-    /// others, which no lane holds.
+    /// The lane guards a key the signer actually holds, because it takes the key
+    /// from the signer rather than accepting one named alongside it.
     #[tokio::test]
-    async fn from_signer_rejects_a_multi_key_signer() {
+    async fn from_signer_takes_the_signers_own_key() {
         let signer = Signer::from_secret_key(key(0)).expect("valid key");
-        assert!(PooledSigner::from_signer(account(), Arc::clone(&signer))
-            .await
-            .is_ok());
 
-        signer
-            .add_secret_key_to_pool(key(1))
+        let pool = PooledSigner::from_signer(account(), signer)
             .await
-            .expect("valid key");
+            .expect("single-key signer");
 
-        assert!(PooledSigner::from_signer(account(), signer).await.is_err());
+        assert_eq!(pool.lease_next().await.public_key(), key(0).public_key());
     }
 
     #[tokio::test]

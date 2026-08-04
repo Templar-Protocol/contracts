@@ -976,12 +976,24 @@ async fn prepared_step_resubmits_under_the_key_that_signed_it() {
 
 /// A key rotated out of the configuration since the step was signed leaves the
 /// stored signature valid on chain, and no lane here can allocate a nonce on
-/// that key — so recovery replays it rather than failing startup.
+/// that key — so recovery replays it rather than failing startup, and without
+/// taking a lane it does not need. Holding the pool's only lane for the
+/// duration proves the second half: an implementation that leased before
+/// replaying would block here instead of finishing.
 #[tokio::test]
 async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
     let store = Arc::new(MemoryStore::new());
     let log = Arc::new(BroadcastLog::default());
-    let driver = broadcast_driver(store.clone(), log.clone(), 1, Duration::ZERO);
+    let signer = Arc::new(FakeSigner::with_keys(1));
+    let driver = OperationDriver::new(
+        store.clone(),
+        signer.clone(),
+        Arc::new(BroadcastExecutor {
+            log: log.clone(),
+            broadcast_delay: Duration::ZERO,
+        }),
+    );
+    let _lane = signer.pool.lease_next().await;
 
     let retired_key = pool_public_key(7);
     let op = stored(
@@ -996,7 +1008,10 @@ async fn prepared_step_replays_under_a_key_the_pool_no_longer_holds() {
     );
     store.save_operation(op.clone()).await.unwrap();
 
-    let result = driver.execute_remaining_steps(op).await.unwrap();
+    let result = timeout(Duration::from_secs(5), driver.execute_remaining_steps(op))
+        .await
+        .expect("replay must not wait on a lane")
+        .unwrap();
 
     assert_eq!(result.status(), OperationStatus::Succeeded);
     assert_eq!(log.nonces_for(retired_key), vec![42]);
